@@ -41,6 +41,14 @@ enum Target {
     Entity(EntityHandle),
 }
 
+/// The first position of each moving piston in `block_ticks.moving_pistons`
+/// and in `World::moving_pistons`, taken before a tick's pushes.
+#[derive(Default)]
+struct PistonIndex {
+    ticked: horizon_client::fast_hash::FxHashMap<BlockPos, usize>,
+    drawn: horizon_client::fast_hash::FxHashMap<[i32; 3], usize>,
+}
+
 /// `Entity.getStepHeight` of each body, read before the push.
 struct StepHeights {
     player: f32,
@@ -69,29 +77,80 @@ impl Game<'_> {
     /// TNT duper's TNT stops at the block that has not moved yet (#11399).
     pub(super) fn push_piston_entities(&mut self, pushes: Vec<Push>) {
         let mut accumulators = std::collections::HashMap::new();
+        // Where each moving piston first sits in both lists, so a clock of a
+        // thousand pistons doesn't scan them a thousand times a tick.
+        let mut index = PistonIndex::default();
+        for (i, (p, _)) in self.block_ticks.moving_pistons.iter().enumerate() {
+            index.ticked.entry(*p).or_insert(i);
+        }
+        for (i, (p, _)) in self.world.moving_pistons.iter().enumerate() {
+            index.drawn.entry(*p).or_insert(i);
+        }
+        let steps = self.push_step_heights();
+        let targets = self.piston_push_targets(&pushes, &steps);
         for push in pushes {
             let pos = push.0;
-            self.push_for_piston(push, &mut accumulators);
-            self.advance_piston_collision(pos);
+            self.push_for_piston(push, &targets, &steps, &mut accumulators);
+            self.advance_piston_collision(pos, &index);
         }
+    }
+
+    /// The bodies any of this tick's moving blocks can reach, in
+    /// `push_targets` order. A moving block's box sits within a block of its
+    /// position and sweeps at most one more, so every box a push tests (its
+    /// search area, a honey block's sticky area) lies inside the block grown
+    /// by 2. Only the pushed body moves during the pushes, so a body outside
+    /// all of those at the start is never reached: its box is read once a
+    /// tick instead of once per moving block.
+    fn piston_push_targets(&self, pushes: &[Push], steps: &StepHeights) -> Vec<Target> {
+        let Some(reach) = pushes
+            .iter()
+            .map(|(p, ..)| {
+                let low = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+                Aabb::new(
+                    low.add_vector(Vec3::new(-2.0, -2.0, -2.0)),
+                    low.add_vector(Vec3::new(3.0, 3.0, 3.0)),
+                )
+            })
+            .reduce(|a, b| a.union_bounds(b))
+        else {
+            return Vec::new();
+        };
+        let at = pushes[0].0;
+        self.push_targets()
+            .filter(|&target| {
+                self.push_body(target, at, steps)
+                    .is_some_and(|body| body.bounds.intersects(reach))
+            })
+            .collect()
     }
 
     /// The collision view of the moving piston at `pos` takes the progress
     /// its tick gave it. One no longer moving keeps its entry until
     /// `sync_moving_pistons`.
-    fn advance_piston_collision(&mut self, pos: BlockPos) {
-        let Some(state) = self
-            .block_ticks
-            .moving_pistons
-            .iter()
-            .find(|(p, _)| *p == pos)
-            .map(|(_, piston)| piston.shape_state())
-        else {
+    fn advance_piston_collision(&mut self, pos: BlockPos, index: &PistonIndex) {
+        let ticked = &self.block_ticks.moving_pistons;
+        // The index holds while the pushes leave both lists as they were;
+        // otherwise the first match is searched for, as before.
+        let found = index
+            .ticked
+            .get(&pos)
+            .filter(|&&i| ticked.get(i).is_some_and(|(p, _)| *p == pos))
+            .copied()
+            .or_else(|| ticked.iter().position(|(p, _)| *p == pos));
+        let Some(state) = found.map(|i| ticked[i].1.shape_state()) else {
             return;
         };
         let at = [pos.x, pos.y, pos.z];
-        if let Some(entry) = self.world.moving_pistons.iter_mut().find(|(p, _)| *p == at) {
-            entry.1 = state;
+        let drawn = &mut self.world.moving_pistons;
+        let slot = index
+            .drawn
+            .get(&at)
+            .filter(|&&i| drawn.get(i).is_some_and(|(p, _)| *p == at))
+            .copied()
+            .or_else(|| drawn.iter().position(|(p, _)| *p == at));
+        if let Some(i) = slot {
+            drawn[i].1 = state;
         }
     }
 
@@ -189,6 +248,8 @@ impl Game<'_> {
     fn push_for_piston(
         &mut self,
         (pos, piston, new_progress): Push,
+        targets: &[Target],
+        steps: &StepHeights,
         accumulators: &mut std::collections::HashMap<Target, PistonMovement>,
     ) {
         let delta_progress = f64::from(new_progress - piston.progress);
@@ -236,7 +297,6 @@ impl Game<'_> {
             0.0
         };
 
-        let steps = self.push_step_heights();
         let search = shape.bounds().map(|bounds| {
             piston_push::movement_search_area(
                 piston_push::move_by_position_and_progress(pos, bounds, piston.shape_state()),
@@ -244,12 +304,16 @@ impl Game<'_> {
                 delta_progress,
             )
         });
-        // `for_each`: a chain folds list by list, where `next` would re-check every
-        // link for each entity.
-        self.push_targets().for_each(|target| {
-            let Some(body) = self.push_body(target, pos, &steps) else {
+        targets.iter().copied().for_each(|target| {
+            let Some(body) = self.push_body(target, pos, steps) else {
                 return;
             };
+            // `level.getEntities(null, area)`: a body outside the search area
+            // meets none of the boxes (each sweeps a slab inside it) and is
+            // not on a slime block, so it is skipped before the box math.
+            if search.is_some_and(|area| !area.intersects(body.bounds)) {
+                return;
+            }
             let amount = piston_push::collided_amount(
                 &boxes,
                 pos,
@@ -278,7 +342,7 @@ impl Game<'_> {
                 // an entity that is still inside its own block.
                 if !piston.extending
                     && piston.source
-                    && let Some(after) = self.push_body(target, pos, &steps)
+                    && let Some(after) = self.push_body(target, pos, steps)
                     && let Some(fix) = piston_push::fix_within_piston_base(
                         pos,
                         after.bounds,
@@ -303,8 +367,8 @@ impl Game<'_> {
         // Vanilla selects honey passengers after all collided entities have moved.
         if honey && movement.normal()[1] == 0 {
             let area = piston_push::sticky_area(pos, piston.shape_state(), sticky_top);
-            for target in self.push_targets() {
-                let Some(body) = self.push_body(target, pos, &steps) else {
+            for &target in targets {
+                let Some(body) = self.push_body(target, pos, steps) else {
                     continue;
                 };
                 if piston_push::sticky_entity_selected(
