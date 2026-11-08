@@ -1935,7 +1935,7 @@ impl Game<'_> {
         let target = self.closest_node(p.x, p.y, p.z);
         let (fx, fz) = (p.x.floor() as i32, p.z.floor() as i32);
         let sd = (f64::from(fx) - dp.x).hypot(f64::from(fz) - dp.z);
-        let ho = (0.4 + sd / 80.0 - 1.0).min(10.0);
+        let ho = (f64::from(0.4_f32) + sd / 80.0 - 1.0).min(10.0);
         let last = [fx, (p.y + ho).floor() as i32, fz];
         let mut path = self.dragon_path(current, target, Some(last));
         if let Some(path) = path.as_mut() {
@@ -2066,7 +2066,7 @@ impl Game<'_> {
                 };
                 if path.as_ref().is_some_and(|p| p.0.done()) {
                     let dist = (pp.x - pos.x).hypot(pp.z - pos.z);
-                    let ho = (0.4 + dist / 80.0 - 1.0).min(10.0);
+                    let ho = (f64::from(0.4_f32) + dist / 80.0 - 1.0).min(10.0);
                     *target = Some(Vec3::new(pp.x, pp.y + ho, pp.z));
                 }
                 let dt = far(*target);
