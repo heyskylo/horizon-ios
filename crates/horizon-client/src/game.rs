@@ -18132,13 +18132,22 @@ fn load_world_rest(
         let items = startup::time("rest.items", || Items::load(root, registry, facts, overlay))?;
         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
         progress.set(7);
-        // The recipe tables, the stations and the recipe book read one folder:
-        // hold its files so it is read once.
-        let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
-        let recipes = startup::time("rest.recipes", || Recipes::load(root, &items, overlay))?;
+        // The recipe tables, stations and recipe book share one filtered source
+        // set so the same JSON files are decoded only once.
+        let recipe_sources =
+            startup::time("rest.recipe_sources", || Recipes::sources(root, overlay))?;
         let stations = startup::time("rest.stations", || {
-            horizon_client::stations::StationData::load(root, &items, overlay)
+            horizon_client::stations::StationData::load_with_recipe_sources(
+                root,
+                &items,
+                overlay,
+                None,
+                &recipe_sources,
+            )
         });
+        let recipes = startup::time("rest.recipes", || {
+            Recipes::from_sources(root, &items, overlay, recipe_sources)
+        })?;
         Ok((items, recipes, stations))
     };
     let load_behaviours = || {
