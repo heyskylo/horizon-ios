@@ -1181,9 +1181,9 @@ pub struct Renderer {
     pub last_wait: std::time::Duration,
     /// CPU time of the last `render`, waits excluded.
     pub last_encode: std::time::Duration,
-    /// What the system says about the window's display, watched only while HDR output
-    /// is on; before `window`, so it's dropped first.
-    display: DisplayWatch,
+    /// Watched only while HDR is On or Auto, including Auto in SDR;
+    /// before `window`, so it's dropped first.
+    display: Option<DisplayWatch>,
     /// The watch was just made: the settings' Auto values take what it reported.
     display_fresh: bool,
     window: Arc<Window>,
@@ -2210,6 +2210,16 @@ fn frame_follows(
     hdr_float: bool,
 ) -> bool {
     current == frame_configuration(wide_frame, device, swapchain, linear_pack, hdr_float)
+}
+
+/// The frame-follow decision needs the same HDR availability as the output selection.
+fn update_hdr_output(
+    output: &mut Option<hdr::Output>,
+    frame_device: &mut (bool, bool, bool, bool),
+    now: Option<hdr::Output>,
+) {
+    *output = now;
+    frame_device.0 = output.is_some();
 }
 
 /// Opens a device on the first of `backend_order`'s backends that gives one.
@@ -4939,7 +4949,7 @@ impl Renderer {
         }
         let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
         Ok(Self {
-            display: DisplayWatch::default(),
+            display: None,
             display_fresh: false,
             instance,
             adapter,
@@ -6925,6 +6935,29 @@ impl Renderer {
             hdr_float,
         )
     }
+    /// Follows the selected mode even when Auto currently wants SDR. Off never asks
+    /// the system about the display; selecting On or Auto starts a fresh watch.
+    pub fn watch_hdr(&mut self, mode: crate::graphics::HdrMode) {
+        if mode == crate::graphics::HdrMode::Off {
+            self.display = None;
+            self.display_fresh = false;
+            crate::graphics::report_system_hdr(None);
+        } else if self.display.is_none() {
+            let (watch, now) =
+                DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter);
+            self.display = Some(watch);
+            if let Some(surface) = &self.surface {
+                update_hdr_output(
+                    &mut self.hdr_output,
+                    &mut self.frame_device,
+                    hdr::output(&surface.get_capabilities(&self.adapter)),
+                );
+                crate::graphics::offer_hdr(self.hdr_output.is_some());
+            }
+            now.publish();
+            self.display_fresh = true;
+        }
+    }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
     /// Offscreen (`hdr::offscreen_output`) the frame is drawn the same and its HDR screenshot
@@ -6952,20 +6985,6 @@ impl Renderer {
             } else if let Some(marker) = self.hdr_marker.take() {
                 let _ = std::fs::remove_file(marker);
             }
-            // Only HDR output asks the system about the display, so with HDR off the
-            // game never waits on the compositor for it.
-            self.display = if output.is_some() {
-                let (watch, now) = if self.surface.is_some() {
-                    DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter)
-                } else {
-                    (DisplayWatch::default(), None)
-                };
-                crate::graphics::report(now);
-                self.display_fresh = true;
-                watch
-            } else {
-                DisplayWatch::default()
-            };
             let format = self.frame_format;
             self.hdr = output.map(|output| {
                 hdr::Hdr::new(&self.device, &self.queue, format, output, self.hud_coverage)
@@ -7013,10 +7032,22 @@ impl Renderer {
         if std::mem::take(&mut self.display_fresh) {
             return true;
         }
-        let Some(now) = self.display.changed(self.surface.as_deref(), &self.adapter) else {
+        let Some(watch) = self.display.as_mut() else {
             return false;
         };
-        crate::graphics::report(now);
+        let Some(now) = watch.changed(self.surface.as_deref(), &self.adapter) else {
+            return false;
+        };
+        // Vulkan's offered formats can change with desktop HDR or the window's output.
+        if let Some(surface) = &self.surface {
+            update_hdr_output(
+                &mut self.hdr_output,
+                &mut self.frame_device,
+                hdr::output(&surface.get_capabilities(&self.adapter)),
+            );
+            crate::graphics::offer_hdr(self.hdr_output.is_some());
+        }
+        now.publish();
         true
     }
     /// The share of real frames frame generation shows a made frame before (1 while it
@@ -13084,6 +13115,21 @@ mod tests {
     }
 
     #[test]
+    fn hdr_availability_refresh_rebuilds_a_frame_created_in_sdr() {
+        use super::{LINEAR_FRAME, frame_follows, hdr::Output, update_hdr_output};
+        use wgpu::TextureFormat::Bgra8Unorm;
+
+        let mut output = None;
+        let mut device = (false, true, true, true);
+        let sdr = (Bgra8Unorm, false);
+        let follows = |frame, device, on| frame_follows(frame, on, device, Bgra8Unorm, false, on);
+        assert!(follows(sdr, device, false));
+        update_hdr_output(&mut output, &mut device, Some(Output::Pq));
+        assert!(!follows(sdr, device, true));
+        assert!(follows((LINEAR_FRAME, true), device, true));
+    }
+
+    #[test]
     fn only_a_no_pack_layered_world_applies_hdr_gain() {
         use super::no_pack_hdr_gain;
         assert!(no_pack_hdr_gain(true, false, true));
@@ -13475,6 +13521,59 @@ mod tests {
         assert_eq!(os_reported(&info(Some(1000.0), None)), None);
         assert_eq!(os_reported(&info(Some(f32::NAN), Some(80.0))), None);
         assert_eq!(os_reported(&wgpu::DisplayHdrInfo::default()), None);
+    }
+    #[test]
+    fn system_hdr_changes_are_kept_without_luminance_changes() {
+        let reading = |hdr| {
+            super::DisplayReading::os(&wgpu::DisplayHdrInfo {
+                coarse: Some(wgpu::DisplayCoarseRange {
+                    high_dynamic_range: hdr,
+                    ..Default::default()
+                }),
+                headroom: Some(wgpu::DisplayHeadroom {
+                    potential: hdr.map(|on| if on { 2.0 } else { 1.0 }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        };
+        let off = reading(Some(false));
+        let on = reading(Some(true));
+        let unknown = reading(None);
+        assert_eq!(on.hdr, Some(true));
+        assert_eq!(off.hdr, Some(false));
+        assert_eq!(unknown.hdr, None);
+        assert_eq!(on.luminance, None); // macOS reports EDR headroom, not absolute nits.
+        assert_ne!(on, off);
+        assert_ne!(off, unknown);
+    }
+    #[test]
+    fn macos_hdr_uses_potential_instead_of_brightness_dependent_current() {
+        let info = |current, potential| wgpu::DisplayHdrInfo {
+            headroom: Some(wgpu::DisplayHeadroom {
+                current: Some(current),
+                potential,
+                ..Default::default()
+            }),
+            coarse: Some(wgpu::DisplayCoarseRange {
+                high_dynamic_range: Some(current > 1.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for current in [1.0, 2.0, 4.0] {
+            assert_eq!(super::macos_hdr(&info(current, Some(2.0))), Some(true));
+            assert_eq!(super::macos_hdr(&info(current, Some(1.0))), Some(false));
+        }
+        for potential in [
+            None,
+            Some(0.0),
+            Some(-1.0),
+            Some(f32::NAN),
+            Some(f32::INFINITY),
+        ] {
+            assert_eq!(super::macos_hdr(&info(4.0, potential)), None);
+        }
     }
     #[test]
     fn surface_is_8_bit_and_not_srgb() {
@@ -14902,7 +15001,38 @@ struct DisplayWatch {
     wayland: Option<horizon_hdr::wayland::Watch>,
     /// Without Wayland's event, what wgpu last read and when to read it again: the OS
     /// sends no event for a moved window or a changed SDR brightness slider.
-    polled: Option<(Option<crate::graphics::Reported>, std::time::Instant)>,
+    polled: Option<(DisplayReading, std::time::Instant)>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DisplayReading {
+    luminance: Option<crate::graphics::Reported>,
+    hdr: Option<bool>,
+}
+impl DisplayReading {
+    fn os(info: &wgpu::DisplayHdrInfo) -> Self {
+        #[cfg(target_os = "macos")]
+        let hdr = macos_hdr(info);
+        #[cfg(not(target_os = "macos"))]
+        let hdr = info.coarse.and_then(|coarse| coarse.high_dynamic_range);
+        Self {
+            luminance: os_reported(info),
+            hdr,
+        }
+    }
+    fn publish(self) {
+        crate::graphics::report(self.luminance);
+        crate::graphics::report_system_hdr(self.hdr);
+    }
+}
+/// Potential EDR is fixed for a screen; current EDR follows brightness and must not
+/// repeatedly switch HDR output as the player adjusts the desktop's brightness.
+#[cfg(any(target_os = "macos", test))]
+fn macos_hdr(info: &wgpu::DisplayHdrInfo) -> Option<bool> {
+    info.headroom?
+        .potential
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map(|n| n > 1.0)
 }
 /// How often [`DisplayWatch`] reads the OS's values again where no event says they changed.
 const DISPLAY_POLL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -14912,18 +15042,22 @@ impl DisplayWatch {
         window: &Window,
         surface: Option<&wgpu::Surface>,
         adapter: &wgpu::Adapter,
-    ) -> (Self, Option<crate::graphics::Reported>) {
+    ) -> (Self, DisplayReading) {
         #[cfg(target_os = "linux")]
-        if let Some((wayland, now)) = horizon_hdr::wayland::Watch::new(window) {
+        if surface.is_some()
+            && let Some((wayland, now)) = horizon_hdr::wayland::Watch::new(window)
+        {
             let watch = Self {
                 wayland: Some(wayland),
                 polled: None,
             };
-            return (watch, now.map(reported));
+            return (watch, wayland_reading(now));
         }
         let _ = window;
-        let now = surface.and_then(|surface| os_reported(&surface.display_hdr_info(adapter)));
-        log_os_reported(now);
+        let now = surface.map_or_else(DisplayReading::default, |surface| {
+            DisplayReading::os(&surface.display_hdr_info(adapter))
+        });
+        log_os_reported(now.luminance);
         let watch = Self {
             #[cfg(target_os = "linux")]
             wayland: None,
@@ -14936,10 +15070,10 @@ impl DisplayWatch {
         &mut self,
         surface: Option<&wgpu::Surface>,
         adapter: &wgpu::Adapter,
-    ) -> Option<Option<crate::graphics::Reported>> {
+    ) -> Option<DisplayReading> {
         #[cfg(target_os = "linux")]
         if let Some(wayland) = &mut self.wayland {
-            return wayland.changed().map(|now| now.map(reported));
+            return wayland.changed().map(wayland_reading);
         }
         let (last, next) = self.polled.as_mut()?;
         let time = std::time::Instant::now();
@@ -14947,9 +15081,11 @@ impl DisplayWatch {
             return None;
         }
         *next = time + DISPLAY_POLL;
-        let now = surface.and_then(|surface| os_reported(&surface.display_hdr_info(adapter)));
+        let now = surface.map_or_else(DisplayReading::default, |surface| {
+            DisplayReading::os(&surface.display_hdr_info(adapter))
+        });
         (now != *last).then(|| {
-            log_os_reported(now);
+            log_os_reported(now.luminance);
             *last = now;
             now
         })
@@ -15047,6 +15183,19 @@ fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported>
 /// the SDR white of its desktop (which it doesn't report), so Auto can't match its desktop
 /// there. Other compositors are unchecked. The peak is kept within the settings' lowest and
 /// PQ's top, so the metadata never ends below the black level.
+#[cfg(target_os = "linux")]
+fn wayland_reading(now: Option<horizon_hdr::wayland::Luminances>) -> DisplayReading {
+    now.map_or_else(DisplayReading::default, |l| DisplayReading {
+        luminance: Some(reported(l)),
+        // The preferred target's headroom is the compositor's live report, not the
+        // swapchain's supported formats. Invalid or absent readings stay unknown.
+        hdr: (l.reference.is_finite()
+            && l.reference > 0.0
+            && l.target_max.is_finite()
+            && l.target_max > 0.0)
+            .then_some(l.target_max > l.reference),
+    })
+}
 #[cfg(target_os = "linux")]
 fn reported(l: horizon_hdr::wayland::Luminances) -> crate::graphics::Reported {
     let peak = (l.target_max * 203.0 / l.reference.max(1.0)).round() as u32;
