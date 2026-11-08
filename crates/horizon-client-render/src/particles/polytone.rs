@@ -1150,6 +1150,11 @@ pub(super) fn make(
     particle.no_render = hidden;
     particle.orientation = super::polytone_gpu::Orientation::parse(&def.rotation_mode);
     particle.additive = def.render_type == RenderType::AdditiveTranslucent;
+    // `light_level`: the block light the particle gives itself (wiki "Custom Particle Types"),
+    // a floor under the light where it is, as GPU particles have.
+    if def.light_level > 0 {
+        particle.light = super::Light::MinBlock(def.light_level);
+    }
     particle.behaviour = Behaviour::Controlled {
         translucent: def.render_type != RenderType::Opaque,
     };
@@ -1434,6 +1439,39 @@ mod tests {
         assert_eq!((p.lifetime, p.size), (10, 0.5));
         assert_eq!(&p.rgba[..2], &[0.75, 0.5]);
         assert!(matches!(p.sprite, Sprite::Index(10)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `light_level` is a floor under the block light a custom particle is drawn with (as the
+    /// real mod draws a lit `light_level` 8 particle at night, measured beside it): the world's
+    /// light where it is brighter.
+    #[test]
+    fn light_level_is_a_floor_under_the_block_light() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/spark.json",
+                serde_json::json!({"has_physics": false, "light_level": 8, "initializer": {"lifetime": "10"}}),
+            ),
+            (
+                "assets/test/polytone/block_modifiers/torch.json",
+                serde_json::json!({"targets": ["minecraft:torch"], "particle_emitters": [{"particle": "test:spark", "chance": "1"}]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        engine.polytone_animate(&level, [1, 64, 1]);
+        let p = engine.pending.pop().unwrap();
+        // Dark: the floor, 8 (light coordinates count 16 a level). The sky light is the world's.
+        assert_eq!(p.light_coords(0.0, 240, 0), (240, 128));
+        // A brighter block light is kept.
+        assert_eq!(p.light_coords(0.0, 0, 208), (0, 208));
         std::fs::remove_dir_all(root).unwrap();
     }
 

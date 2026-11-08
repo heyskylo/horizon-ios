@@ -226,6 +226,8 @@ enum Light {
     AgeEmission4,
     /// `FireflyParticle.getLightCoords`: block light fading in and out, no sky.
     Firefly,
+    /// A Polytone particle's `light_level`: block light at least this level.
+    MinBlock(u8),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Behaviour {
@@ -1098,6 +1100,7 @@ impl Particle {
                 let b = (b * b) * (b * b);
                 (sky, (block + (b.clamp(0.0, 1.0) * 240.0) as u32).min(240))
             }
+            Light::MinBlock(level) => (sky, block.max(u32::from(level) * 16)),
             Light::Firefly => (
                 0,
                 (255.0 * fade_amount(self.lifetime_progress(self.age as f32 + partial), 0.1, 0.3))
