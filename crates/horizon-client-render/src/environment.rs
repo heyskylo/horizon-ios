@@ -336,7 +336,16 @@ impl Resolver {
                 horizon_polytone::expr::Value::Bool(b) => Json::Bool(b),
                 result => Json::from(result.num()),
             };
-            Entry::with_modifier(attribute, op, &json).ok()
+            // A number out of the attribute's range is clamped into it, as the sampled value is
+            // (`AttributeRange.sanitize`), not dropped: a pack's fog end that goes negative deep
+            // underground is the thickest fog, not the default.
+            Entry::with_modifier(attribute, op, &json).ok().or_else(|| {
+                let n = json.as_f64()? as f32;
+                let Value::Float(clamped) = attribute.sanitize(Value::Float(n)) else {
+                    return None;
+                };
+                Entry::with_modifier(attribute, op, &Json::from(clamped)).ok()
+            })
         };
         Some(Entry::Dynamic(
             horizon_world::environment_attributes::Dynamic(Arc::new(f)),
@@ -773,6 +782,26 @@ mod tests {
             [1.0, 1.0, 1.0]
         );
         assert!(env.biome_post("minecraft:desert").is_none());
+    }
+
+    /// A number an expression gives outside the attribute's range is clamped into it, as vanilla
+    /// clamps a sampled value: a fog end that a pack takes below zero deep underground is fog
+    /// at once, not the default end.
+    #[test]
+    fn an_expression_value_out_of_range_is_clamped() {
+        let env = with_packs(&[(
+            "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+            r#"{"attributes_modifiers": {"visual/fog_end_distance": "64 - (p.y < 0) * 80"}}"#,
+        )]);
+        let end_at = |y: f64| {
+            env.set_frame(Frame {
+                player: [0.5, y, 0.5],
+                ..Frame::default()
+            });
+            sky_at(&env, "minecraft:plains", 0.0).fog_end
+        };
+        assert_eq!(end_at(70.0), 64.0);
+        assert_eq!(end_at(-2.0), 0.0);
     }
 
     #[test]
