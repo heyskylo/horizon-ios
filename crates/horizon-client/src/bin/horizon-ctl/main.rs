@@ -256,6 +256,34 @@ impl Session {
         }))
     }
 
+    /// `collect [RADIUS]`: walk over every dropped item within RADIUS, nearest first.
+    fn collect(&mut self, radius: f64) -> Result<Value, Failure> {
+        let before = self.game("inventory")?;
+        let mut tried = Vec::new();
+        let mut left = Vec::new();
+        // Each item is tried once; one that stays put after a walk is out of reach.
+        while let Some(item) = nearest_item(&self.game(&format!("entities {radius}"))?, &tried) {
+            let id = item["id"].as_i64().unwrap_or_default();
+            tried.push(id);
+            let pos = &item["pos"];
+            let _ = self.game(&format!(
+                "goto {} {} {} --near 0.4 --timeout 4",
+                pos[0], pos[1], pos[2]
+            ));
+            self.game("wait 4")?;
+            let near = self.game(&format!("entities {radius}"))?;
+            if let Some(still) = find_entity(&near, id) {
+                left.push(still);
+            }
+        }
+        let after = self.game("inventory")?;
+        Ok(json!({
+            "ok": true,
+            "inventory_change": count_change(&before["counts"], &after["counts"]),
+            "left": left,
+        }))
+    }
+
     /// Run one command (CLI words); Ok(reply) or a failure.
     pub fn run(&mut self, words: &[String]) -> Result<Value, Failure> {
         let Some(name) = words.first().map(String::as_str) else {
@@ -334,6 +362,13 @@ impl Session {
                 };
                 self.hunt(id, timeout)
             }
+            "collect" => match words {
+                [_] => self.collect(8.0),
+                [_, r] if r.parse::<f64>().is_ok_and(|r| r > 0.0) => {
+                    self.collect(r.parse().unwrap_or(8.0))
+                }
+                _ => Err(Failure::usage(format!("usage: {}", usage(name)))),
+            },
             "hold" => {
                 let (key, seconds) = match words {
                     [_, key, _] => (key.clone(), number(2, "SECONDS")?),
@@ -422,6 +457,15 @@ fn aimed_at(look: &Value, id: i64) -> Result<(), String> {
 /// The entity `id` in an `entities` reply.
 fn find_entity(reply: &Value, id: i64) -> Option<Value> {
     reply["entities"].as_array()?.iter().find(|e| e["id"].as_i64() == Some(id)).cloned()
+}
+
+/// The nearest dropped item in an `entities` reply (nearest first) whose id is not in `skip`.
+fn nearest_item(reply: &Value, skip: &[i64]) -> Option<Value> {
+    reply["entities"]
+        .as_array()?
+        .iter()
+        .find(|e| e["kind"] == "item" && !e["id"].as_i64().is_some_and(|id| skip.contains(&id)))
+        .cloned()
 }
 
 /// Item counts that changed from `before` to `after` (`inventory` replies' `counts`).
@@ -785,6 +829,18 @@ mod tests {
         assert_eq!(find_entity(&near, 90).unwrap()["type"], "minecraft:chicken");
         assert!(find_entity(&near, 7).is_none());
         assert!(find_entity(&json!({}), 90).is_none());
+    }
+
+    #[test]
+    fn nearest_item_skips_mobs_and_items_already_tried() {
+        let near = json!({ "entities": [
+            { "id": 1, "kind": "mob" },
+            { "id": 2, "kind": "item" },
+            { "id": 3, "kind": "item" },
+        ] });
+        assert_eq!(nearest_item(&near, &[]).unwrap()["id"], 2);
+        assert_eq!(nearest_item(&near, &[2]).unwrap()["id"], 3);
+        assert!(nearest_item(&near, &[2, 3]).is_none());
     }
 
     #[test]
