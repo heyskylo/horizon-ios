@@ -109,6 +109,60 @@ fn reader_matches_brigadier() {
     assert_eq!(e.message.plain(), "parsing.int.invalid");
     assert_eq!(e.context().unwrap(), "<--[HERE]");
 }
+
+#[test]
+fn resource_selector_wildcards_preserve_unicode_and_backtracking() {
+    let cases = [
+        ("minecraft:stone", "minecraft:*", true),
+        ("minecraft:stone", "minecraft:s?one", true),
+        ("minecraft:stone", "minecraft:s?on", false),
+        ("éclair", "?clair", true),
+        ("éclair", "??clair", false),
+        ("abc", "a**c", true),
+        ("abc", "*b*", true),
+        ("", "*", true),
+        ("", "?", false),
+    ];
+    for (text, pattern, expected) in cases {
+        assert_eq!(
+            wildcard_match(text, pattern),
+            expected,
+            "{text:?} vs {pattern:?}"
+        );
+    }
+}
+
+#[test]
+fn resource_selector_scans_normalized_ids() {
+    let ids = [
+        "minecraft:stone".to_owned(),
+        "minecraft:oak_stairs".to_owned(),
+        "example:stone".to_owned(),
+        "minecraft:éclair".to_owned(),
+    ];
+    assert_eq!(
+        select_resources(&ids, "stone")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:stone"]
+    );
+    assert_eq!(
+        select_resources(&ids, "minecraft:*stairs")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:oak_stairs"]
+    );
+    assert_eq!(
+        select_resources(&ids, "minecraft:?clair")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:éclair"]
+    );
+}
+
 #[test]
 fn parses_vanilla_commands() {
     assert_eq!(run("gamemode creative").unwrap().0, "gamemode");
