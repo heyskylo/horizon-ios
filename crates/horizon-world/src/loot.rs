@@ -1774,6 +1774,30 @@ impl<R: RandomSource> Context<'_, R> {
                 stack.components.retain(|(k, _)| k != id);
                 stack.components.push((id.to_owned(), content));
             }
+            // SetWrittenBookPagesFunction: the pages go through the function's
+            // `ListOperation` over the written book content the stack already
+            // has, keeping its title, author and generation. The item layer
+            // reads the content into the book's fields
+            // (`item_data::written_book_from_tag`).
+            "minecraft:set_written_book_pages" => {
+                let id = "minecraft:written_book_content";
+                let mut content = stack
+                    .components
+                    .iter()
+                    .find(|(k, _)| k == id)
+                    .map(|(_, v)| v.clone())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                let old = content["pages"].as_array().cloned().unwrap_or_default();
+                let mut spec = f.clone();
+                spec["values"] = f["pages"].clone();
+                let pages = list_operation(&spec, old, Value::clone);
+                if let Value::Object(map) = &mut content {
+                    map.insert("pages".to_owned(), Value::Array(pages));
+                }
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), content));
+            }
             // SetComponentsFunction: the patch's components, applied when the
             // stack becomes an item (trim on worn armour, see `mobs::finalize`).
             "minecraft:set_components" => {
@@ -2304,6 +2328,70 @@ mod namespace_tests {
         assert_eq!(content["generation"], 2);
         // The pages an earlier function wrote are still the book's.
         assert_eq!(content["pages"][0]["raw"], "page one");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `SetWrittenBookPagesFunction`: the function's pages go through its
+    /// `ListOperation` over the written book content an earlier function
+    /// wrote, keeping the title and author; the item layer reads the content
+    /// into the book's fields.
+    #[test]
+    fn set_written_book_pages_applies_the_page_operation() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-pages-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:written_book",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:written_book_content": {"title": {"raw": "A Guide"}, "author": "Cartographer", "pages": [{"raw": "page one"}]}}},
+                {"type": "minecraft:set_written_book_pages", "mode": "append", "pages": [{"raw": "page two"}]}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:written_book": {}}"#),
+            ("data/minecraft/loot_table/chests/pages.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/pages", 11, 27, None);
+        let book = filled.iter().flatten().next().expect("a book");
+        let content: Vec<_> = book
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:written_book_content")
+            .collect();
+        assert_eq!(content.len(), 1, "{:?}", book.components);
+        assert_eq!(
+            content[0].1,
+            serde_json::json!({
+                "title": {"raw": "A Guide"},
+                "author": "Cartographer",
+                "pages": [{"raw": "page one"}, {"raw": "page two"}],
+            })
+        );
+        // `replace_all`: the function's pages are the whole list.
+        fs::write(
+            root.join("data/minecraft/loot_table/chests/pages.json"),
+            table.replace(r#""mode": "append""#, r#""mode": "replace_all""#),
+        )
+        .unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/pages", 11, 27, None);
+        let book = filled.iter().flatten().next().expect("a book");
+        let content: Vec<_> = book
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:written_book_content")
+            .collect();
+        assert_eq!(
+            content[0].1,
+            serde_json::json!({
+                "title": {"raw": "A Guide"},
+                "author": "Cartographer",
+                "pages": [{"raw": "page two"}],
+            })
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
