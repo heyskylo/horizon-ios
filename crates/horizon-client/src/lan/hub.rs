@@ -378,6 +378,9 @@ pub struct Hub {
     /// The names a server mod shows over players' heads
     /// (`native_set_name_tag`), by UUID: their list entries' profile name.
     pub name_tags: std::collections::HashMap<u128, String>,
+    /// The name the server's user cache knew a joining player by, by UUID, looked up before the
+    /// cache learns the new one (PlayerList.placeNewPlayer's `oldName`); taken by the join line.
+    pub former_names: std::collections::HashMap<u128, String>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -551,6 +554,26 @@ impl Hub {
     }
 }
 
+impl Hub {
+    /// PlayerList.placeNewPlayer's join line: `multiplayer.player.joined`, or
+    /// `multiplayer.player.joined.renamed` with the cached old name when the
+    /// player's name changed (ignoring case) since the user cache last saw it.
+    fn joined_line(&mut self, uuid: u128, name: &str) -> Tag {
+        let display = self.player_display_name(uuid, name);
+        match self
+            .former_names
+            .remove(&uuid)
+            .filter(|old| !old.eq_ignore_ascii_case(name))
+        {
+            Some(old) => yellow_names(
+                "multiplayer.player.joined.renamed",
+                vec![display, string(&old)],
+            ),
+            None => yellow_names("multiplayer.player.joined", vec![display]),
+        }
+    }
+}
+
 /// A yellow translation of player names (`multiplayer.player.joined`).
 fn yellow_names(key: &str, names: Vec<Tag>) -> Tag {
     Tag::compound([
@@ -694,7 +717,7 @@ impl Hub {
             sync,
             ticks: 0,
             seat_order: 0,
-            sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
+            sound_seeds: Mutex::new(crate::random_source::create()),
             sound_order: Mutex::default(),
             immediate_respawn: false,
             reduced_debug_info: false,
@@ -747,6 +770,7 @@ impl Hub {
             list_names: std::collections::HashMap::new(),
             display_names: std::collections::HashMap::new(),
             name_tags: std::collections::HashMap::new(),
+            former_names: std::collections::HashMap::new(),
         }
     }
 
@@ -1025,7 +1049,8 @@ impl Hub {
         }));
     }
     /// ListPlayersCommand's reply: the players in join order (the host of a
-    /// LAN world first), as display names or names with ids, joined by
+    /// LAN world first), as display names (Player.getDisplayName, with the
+    /// team's colour and affixes) or names with ids, joined by
     /// gray commas (ComponentUtils.formatList).
     pub fn list_reply(&self, uuids: bool) -> Tag {
         let players: Vec<(u128, &str)> = self
@@ -1047,7 +1072,7 @@ impl Hub {
                     ),
                 ])
             } else {
-                display_name(uuid, name)
+                self.player_display_name(uuid, name)
             }
         };
         let names = match players.len() {
@@ -1453,10 +1478,7 @@ impl Hub {
         // not placed.
         if !held {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(self.guests[i].uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
@@ -1624,10 +1646,7 @@ impl Hub {
         };
         if announce {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
@@ -2255,6 +2274,8 @@ impl Hub {
                     let Some(g) = self.guest_mut(conn) else {
                         continue;
                     };
+                    // Out of the channel: the network thread may hand this player more.
+                    g.sender.undrained.taken(bytes);
                     // A kicked player's packets wait for nothing.
                     if !g.left_reason.is_empty() {
                         continue;
@@ -3302,6 +3323,8 @@ impl Hub {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            sync_position: false,
+            stepped: false,
             idle: false,
             bare: false,
             minecart_steps: None,
@@ -4201,10 +4224,15 @@ impl Hub {
                 // bow's arrow, a trident, a spear) and a stab use the player's
                 // position and known movement now (#8423): shot after the move, an
                 // arrow left the position of the tick after the release, a tick
-                // ahead of the camera's instead of a tick behind it.
+                // ahead of the camera's instead of a tick behind it. A STAB (8) does
+                // not hold the move: held a tick, the jump the move carries
+                // (handlePlayerPositionChange's jumpFromGround) ran a tick after the
+                // Lunge's impulse, and the server took two moves in the next tick
+                // (lunge_motion, every jump phase).
                 S::PlayerAction(p) => {
+                    let stab = p.action == 8;
                     events.push(HostEvent::Packet(conn, Box::new(S::PlayerAction(p))));
-                    held = self.move_queued(i);
+                    held = !stab && self.move_queued(i);
                 }
                 // handleUseItem uses the player's position and known movement now:
                 // a later move must not overtake a throw before the game runs it.
@@ -5159,10 +5187,10 @@ fn wrap_degrees(degrees: f32) -> f32 {
 const PACKETS_PER_TICK: usize = 400;
 /// The packets a player may have waiting (a second of its budget) before it is
 /// disconnected, as vanilla's rate-limit does: no real client gets near it.
-const INBOX_LIMIT: usize = 20 * PACKETS_PER_TICK;
+pub(crate) const INBOX_LIMIT: usize = 20 * PACKETS_PER_TICK;
 /// The same in bytes on the wire: 8000 full books would hold gigabytes. A
 /// real client's largest packets (a 100-page book) are a few hundred kB.
-const INBOX_BYTES: usize = 16 << 20;
+pub(crate) const INBOX_BYTES: usize = 16 << 20;
 
 /// The `minecraft:gravity` attribute of a player.
 const PLAYER_GRAVITY: f64 = 0.08;
@@ -6013,18 +6041,17 @@ mod tests {
         );
     }
 
-    /// #8423: a RELEASE_USE_ITEM shoots from the player's position and known
-    /// movement of the last move the server handled; the move the client sent
-    /// after it waits for the next tick, as vanilla handles the two in order.
-    #[test]
-    fn a_release_shoots_before_the_move_behind_it() {
+    /// Drains guest 0's inbox holding a player action (`action`) and the move
+    /// its client sent after it in the same client tick: the packets handed to
+    /// the game, and the guest's position and known movement before.
+    fn drain_action_then_move(action: i32) -> (Hub, Vec<S>, ([f64; 3], [f64; 3])) {
         let (mut hub, _rx) = hub_with_a_guest();
         hub.guests[0].load_timeout = 0;
         let before = (hub.guests[0].position, hub.guests[0].known_movement);
         let inbox = &mut hub.guests[0].inbox;
         inbox.push_back((
             S::PlayerAction(play::PlayerAction {
-                action: 6,
+                action,
                 pos: [0; 3],
                 direction: 0,
                 sequence: 0,
@@ -6058,14 +6085,23 @@ mod tests {
             border: &border,
             streaming: None,
         };
-        let events = hub.drain_packets(&mut ctx);
-        let handled: Vec<&S> = events
-            .iter()
+        let handled = hub
+            .drain_packets(&mut ctx)
+            .into_iter()
             .filter_map(|e| match e {
-                HostEvent::Packet(_, p) => Some(&**p),
+                HostEvent::Packet(_, p) => Some(*p),
                 _ => None,
             })
             .collect();
+        (hub, handled, before)
+    }
+
+    /// #8423: a RELEASE_USE_ITEM shoots from the player's position and known
+    /// movement of the last move the server handled; the move the client sent
+    /// after it waits for the next tick, as vanilla handles the two in order.
+    #[test]
+    fn a_release_shoots_before_the_move_behind_it() {
+        let (hub, handled, before) = drain_action_then_move(6);
         assert!(
             matches!(handled[..], [S::PlayerAction(_)]),
             "the game was handed {handled:?}"
@@ -6083,6 +6119,20 @@ mod tests {
             before,
             "the shot's position"
         );
+    }
+
+    /// A STAB's move runs in the same tick: held for the next one, the jump it
+    /// carries came a tick after the Lunge's impulse (lunge_motion).
+    #[test]
+    fn a_stab_keeps_the_move_behind_it_in_its_tick() {
+        let (hub, handled, before) = drain_action_then_move(8);
+        assert!(
+            matches!(handled[..], [S::PlayerAction(_)]),
+            "the game was handed {handled:?}"
+        );
+        let g = &hub.guests[0];
+        assert!(g.inbox.is_empty(), "the move waited for the next tick");
+        assert_eq!(g.position[0], before.0[0] + 0.3, "the move was not handled");
     }
 
     /// The owner's own shoulder parrots are sent when a slot changes.

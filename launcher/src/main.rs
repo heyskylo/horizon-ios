@@ -469,6 +469,10 @@ struct Launcher {
     pack_busy: bool,
     pack_log: VecDeque<String>,
     pack_error: Option<String>,
+    /// Other launchers' modpacks on this computer, offered above the imported ones, and whether
+    /// the scan for them runs now.
+    found_packs: Vec<horizon_launcher::other_launchers::Found>,
+    found_scanning: bool,
     /// The game starting now plays this pack's profile (its work folder).
     starting_pack: Option<std::path::PathBuf>,
     /// The Mods page: the browser's search, installs and updates (`mods_page.rs`).
@@ -579,8 +583,7 @@ impl Launcher {
         // `window.appearance()`, so both draw the same look.
         titlebar::apply_appearance(window, settings.appearance);
         let mut this = Self {
-            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
-                .with_glass(settings.glass_tint(), settings.glass_blur()),
+            theme: crate::theme::from_settings(&settings, window.appearance()),
             page: Page::from_env(),
             switches: 0,
             content_scroll: Scrollbar::default(),
@@ -737,6 +740,8 @@ impl Launcher {
             pack_busy: false,
             pack_log: VecDeque::new(),
             pack_error: None,
+            found_packs: Vec::new(),
+            found_scanning: false,
             starting_pack: None,
             mods: mods_page::Mods::new(cx),
             github: github_mods_page::Github::new(cx),
@@ -1196,10 +1201,10 @@ impl Launcher {
                             self.step_aside(cx);
                         }
                         Err(e) => {
-                            if e == account::NoOwner.to_string() {
+                            if e == account::NoOwner::default().to_string() {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;
-                                self.client_error = Some(account::NoOwner::in_window());
+                                self.client_error = Some(account::NoOwner::default().in_window());
                             } else {
                                 self.client_error = Some(e);
                             }
@@ -1212,10 +1217,13 @@ impl Launcher {
                         let mut cmd = backend::client_command(&tag);
                         let account::GameSession { file, offline, env } = match session {
                             Ok(pass) => pass,
-                            Err(account::NoOwner) => {
-                                self.owner = Some(false);
-                                self.owner_screen_open = true;
-                                self.client_error = Some(account::NoOwner::in_window());
+                            Err(refused) => {
+                                // A keyring that didn't answer isn't a missing owner (#12179).
+                                if refused.keyring.is_none() {
+                                    self.owner = Some(false);
+                                    self.owner_screen_open = true;
+                                }
+                                self.client_error = Some(refused.in_window());
                                 self.starting_pack = None;
                                 self.joining = None;
                                 self.quick_play = None;
@@ -1438,6 +1446,10 @@ impl Launcher {
                     }
                 }
                 Msg::PackDone(result) => self.pack_done(result),
+                Msg::FoundPacks(found) => {
+                    self.found_scanning = false;
+                    self.found_packs = found;
+                }
                 // Old versions log their session; it never reaches the window.
                 Msg::Line(_, line) if line.contains("Session ID is") => {}
                 Msg::Line(job, line) => {
@@ -1900,14 +1912,19 @@ impl Launcher {
             });
         let mods_tx = self.mods.tx.clone();
         std::thread::spawn(move || {
+            // One line per step: a terminal run shows where Play stops (#12179).
+            backend::play_step("checking the game's assets");
             backend::complete_assets(&tag);
             if let Some(auto) = auto {
+                backend::play_step("updating registry mods");
                 let (lines, _) = mods_page::auto_update(&[auto]);
                 if !lines.is_empty() {
                     let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
                 }
             }
+            backend::play_step("reading the sign-in");
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
+            backend::play_step("starting the game");
             let _ = tx.send(Msg::Session(session));
         });
     }
@@ -2009,6 +2026,10 @@ impl Launcher {
 
     fn begin_sign_in(&mut self, target: Option<account::Account>) {
         self.cancel_sign_in();
+        // The code page offers a private window: find the default browser meanwhile.
+        std::thread::spawn(|| {
+            horizon_launcher::private_window::detected();
+        });
         self.sign_in = Some(match &target {
             Some(account) => SignIn::start_for(account.clone()),
             None => SignIn::start(),
@@ -3305,9 +3326,7 @@ impl Launcher {
                                 .when(latest, |d| {
                                     d.child(caps(tr("auto-update")).flex_none().text_color(t.muted))
                                 })
-                                .when(selected, |d| {
-                                    d.child(div().size(px(6.)).rounded_full().bg(t.accent))
-                                }),
+                                .when(selected, |d| d.child(div().size(px(6.)).bg(t.accent))),
                         )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pin_version((!latest).then(|| tag.clone()));
@@ -3790,14 +3809,7 @@ impl Launcher {
             .text_size(px(theme::UI.px))
             .line_height(px(21.))
             .text_color(t.ink)
-            .child(
-                div()
-                    .flex_none()
-                    .mt(px(11.))
-                    .size(px(6.))
-                    .rounded_full()
-                    .bg(t.danger),
-            )
+            .child(div().flex_none().mt(px(11.)).size(px(6.)).bg(t.danger))
             .child(body)
     }
 
@@ -4045,6 +4057,7 @@ impl Launcher {
                         Some(appearance.into_any_element()),
                         &t,
                     ))
+                    .child(self.launcher_theme_row(cx))
                     .child(self.accent_row(cx))
                     .child(self.home_background_row(cx))
                     .child(self.language_row(cx))
@@ -4570,7 +4583,22 @@ impl Launcher {
                         .font_family(theme::MONO)
                         .text_color(t.ink)
                         .child(code.user_code.clone()),
-                ),
+                )
+                .when(!microsoft::has_private_window(), |col| {
+                    col.child(tr("Open this link in a private window to pick another account."))
+                })
+                .child({
+                    let uri = code.verification_uri.clone();
+                    div().flex().child(
+                        button(
+                            "sign-in-other",
+                            "Use a different Microsoft account",
+                            Kind::Ghost,
+                            &t,
+                        )
+                        .on_click(move |_, _, cx| microsoft::use_different_account(&uri, cx)),
+                    )
+                }),
             Some(SignInState::Done(Ok(a))) => {
                 div().child(trf("Signed in as {name}.", &[("name", &a.name)]))
             }
@@ -4606,6 +4634,23 @@ impl Launcher {
             None
         } else if let Some(SignInState::Code(code)) = &self.sign_in_state {
             let (uri, user_code) = (code.verification_uri.clone(), code.user_code.clone());
+            let (private_uri, link_uri) = (uri.clone(), uri.clone());
+            // A private window picks the account; without one the link is for the player to carry over.
+            let private = if microsoft::has_private_window() {
+                button(
+                    "sign-in-private",
+                    "Open in private window",
+                    Kind::Secondary,
+                    &t,
+                )
+                .on_click(move |_, _, cx| microsoft::open_private(&private_uri, cx))
+            } else {
+                button("sign-in-copy-link", "Copy link", Kind::Secondary, &t).on_click(
+                    move |_, _, cx| {
+                        copy_to_clipboard(cx, gpui::ClipboardItem::new_string(link_uri.clone()))
+                    },
+                )
+            };
             Some(
                 div()
                     .flex()
@@ -4620,6 +4665,7 @@ impl Launcher {
                             },
                         ),
                     )
+                    .child(private)
                     .child(
                         button("sign-in-open", "Open link", Kind::Secondary, &t)
                             .on_click(move |_, _, cx| cx.open_url(&uri)),
@@ -5270,6 +5316,7 @@ impl Render for Launcher {
         self.sky.free_replaced(window);
         self.pictures.free_retired(window);
         self.wardrobe_marks.free_replaced(window);
+        self.shop.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()
@@ -5287,10 +5334,11 @@ impl Render for Launcher {
         if self.opening.is_none() && window.focused(cx).is_none() {
             window.focus(&self.root_focus, cx);
         }
-        // Dark: the new design's scene; Light keeps the dawn sky until the design has a light
-        // look.
+        // The glass look draws the new design's scene in the dark appearance; the light look and
+        // the blocky looks keep the baked sky. The sky is tiles that don't depend on the
+        // window's size, so a resize costs no rebake.
         glass::begin_build(window);
-        let sky = if t.dark {
+        let sky = if t.glass && t.dark {
             self.scene.clone().into_any_element()
         } else {
             let (sky, next) = self.sky.render(

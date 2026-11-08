@@ -255,7 +255,7 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
-        if !horizon_cosmetics::enabled() {
+        if !super::enabled() {
             return;
         }
         if !self.own_body_in_view()

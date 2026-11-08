@@ -26,7 +26,7 @@ horizon-optifine = { path = "../horizon-optifine" }
 horizon-protocol = { path = "../horizon-protocol" }
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-shaders = { path = "../horizon-shaders" }
-horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-theme = { path = "../horizon-theme" }
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }

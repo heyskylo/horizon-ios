@@ -2715,24 +2715,35 @@ impl Goal for EatBlock {
 #[derive(Clone, Debug, Default)]
 pub struct BreathAir;
 impl BreathAir {
+    /// `BreathAirGoal.findAirPosition`: `BlockPos.neighborColumn` walks the
+    /// center, north, east, south and west columns, each bottom to top.
+    fn air_position(
+        [x, y, z]: [i32; 3],
+        mut gives_air: impl FnMut([i32; 3]) -> bool,
+    ) -> Option<[i32; 3]> {
+        for (dx, dz) in [(0, 0), (0, -1), (1, 0), (0, 1), (-1, 0)] {
+            for yy in y..=y + 8 {
+                let pos = [x + dx, yy, z + dz];
+                if gives_air(pos) {
+                    return Some(pos);
+                }
+            }
+        }
+        None
+    }
     fn find_air(m: &mut Mob, cx: &mut Cx) {
         let (x, y, z) = (
             m.position.x.floor() as i32,
             m.position.y.floor() as i32,
             m.position.z.floor() as i32,
         );
-        let mut dest = None;
-        for yy in y..=y + 8 {
-            let s = cx.w.world.block(x, yy, z);
+        let d = Self::air_position([x, y, z], |[x, y, z]| {
+            let s = cx.w.world.block(x, y, z);
             let f = cx.w.facts.get(s);
-            if (f.fluid == crate::blocks::Fluid::None || &*f.name == "minecraft:bubble_column")
+            (f.fluid == crate::blocks::Fluid::None || &*f.name == "minecraft:bubble_column")
                 && cx.w.data.state(s).flags & super::data::LAND != 0
-            {
-                dest = Some([x, yy, z]);
-                break;
-            }
-        }
-        let d = dest.unwrap_or([x, (m.position.y + 8.0).floor() as i32, z]);
+        })
+        .unwrap_or([x, (m.position.y + 8.0).floor() as i32, z]);
         m.nav_move_to(
             cx.w,
             [f64::from(d[0]), f64::from(d[1] + 1), f64::from(d[2])],
@@ -3475,5 +3486,29 @@ mod melee_range_tests {
         assert_eq!(rider.hitbox().min_position().y, at.y);
         rider.extra.mount = None;
         assert_eq!(rider.hitbox().min_position().y, at.y);
+    }
+}
+
+#[cfg(test)]
+mod breath_air_tests {
+    use super::BreathAir;
+
+    #[test]
+    fn searches_neighbor_columns_in_vanilla_order() {
+        let origin = [10, 20, 30];
+        let air = [[10, 27, 29], [11, 21, 30], [10, 22, 31], [9, 23, 30]];
+        assert_eq!(
+            BreathAir::air_position(origin, |p| air.contains(&p)),
+            Some([10, 27, 29])
+        );
+        assert_eq!(
+            BreathAir::air_position(origin, |p| p == [10, 28, 30] || air.contains(&p)),
+            Some([10, 28, 30])
+        );
+        for p in air {
+            assert_eq!(BreathAir::air_position(origin, |q| q == p), Some(p));
+        }
+        // One block above the 9-block columns: not searched.
+        assert_eq!(BreathAir::air_position(origin, |p| p == [10, 29, 30]), None);
     }
 }
