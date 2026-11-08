@@ -307,6 +307,7 @@ mod native_profiles;
 mod native_projectiles;
 mod native_quick_move;
 mod native_recipes;
+mod native_registry_name;
 mod native_reload_listeners;
 mod native_scene;
 mod native_server;

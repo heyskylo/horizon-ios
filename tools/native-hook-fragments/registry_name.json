@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "registry_name",
+      "target": "horizon_client::game::native_registry_name::Game<'_>::native_registry_name"
+    }
+  ],
+  "rust_summary": "the registry name of a numeric id (`native_registry_name`), so a mod can name the items, data components, entity types, sounds and particles that `native_client_packet`'s packets carry as numbers.",
+  "doc_summary": "`native_registry_name(registry, id)` (`host.registry_name`) gives the name of a protocol id in a registry (`minecraft:item`, `minecraft:entity_type`, ...). Bundles need \"hooks\": @API:registry_name@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_registry_name.rs"
+  ]
+}
