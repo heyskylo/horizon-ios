@@ -777,7 +777,20 @@ impl Game<'_> {
             );
         }
         list.sort_by(|a, b| a.0.total_cmp(&b.0));
-        json!({ "entities": list.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })
+        // What the search covered, so an empty list reads as "none within
+        // the radius" rather than "none at all": everything this client
+        // tracks, and the loaded chunks.
+        json!({
+            "entities": list.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+            "radius": radius,
+            "type": want,
+            "tracked": {
+                "mobs": self.mobs.iter().filter(|m| !m.removed).count(),
+                "items": self.dropped.len(),
+                "orbs": self.orbs.len(),
+            },
+            "loaded_chunks": self.world.chunks.len(),
+        })
     }
 
     pub(super) fn inventory_value(&self) -> Value {
