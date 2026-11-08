@@ -2795,9 +2795,11 @@ impl Game<'_> {
             self.global_level_event(1028, at, 0);
         }
         if let Some(d) = self.dragon.as_mut() {
-            d.position.y += 0.1;
+            // deathMove is new Vec3(0.0, 0.1F, 0.0): the float widened.
+            let rise = f64::from(0.1_f32);
+            d.position.y += rise;
             for part in &mut d.parts {
-                part.0.y += 0.1;
+                part.0.y += rise;
             }
         }
         if t >= 200 {
@@ -4593,9 +4595,11 @@ impl Game<'_> {
                 );
             }
             if let Some(d) = self.dragon.as_mut() {
-                d.position.y += 0.1;
+                // deathMove is new Vec3(0.0, 0.1F, 0.0): the float widened.
+                let rise = f64::from(0.1_f32);
+                d.position.y += rise;
                 for part in &mut d.parts {
-                    part.0.y += 0.1;
+                    part.0.y += rise;
                 }
             }
             // `EnderDragon.aiStep` after `tickDeath`: the client growl is
