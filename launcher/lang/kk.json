@@ -1251,5 +1251,9 @@
   "Buy": "Сатып алу",
   "Gift": "Сыйлау",
   "Found on this computer": "Осы компьютерден табылды",
-  "Looks": "Бейнелер"
+  "Looks": "Бейнелер",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Жүйенің кілттер байламы {seconds} секунд ішінде жауап бермеді. Оның жұмыс істеп тұрғанына және құлпы ашық екеніне көз жеткізіп, лаунчерді қайта іске қосыңыз.",
+  "Can't read {name}'s sign-in: {why}": "{name} кіруін оқу мүмкін емес: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

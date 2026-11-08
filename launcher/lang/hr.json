@@ -1251,5 +1251,9 @@
   "Buy": "Kupi",
   "Gift": "Pokloni",
   "Found on this computer": "Pronađeno na ovom računalu",
-  "Looks": "Izgledi"
+  "Looks": "Izgledi",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Privjesak za ključeve vašeg sustava nije odgovorio unutar {seconds} sekundi. Provjerite radi li i je li otključan, a zatim ponovno pokrenite pokretač.",
+  "Can't read {name}'s sign-in: {why}": "Nije moguće pročitati prijavu za {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

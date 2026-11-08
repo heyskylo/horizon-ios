@@ -149,9 +149,6 @@ impl Game<'_> {
         }
         self.score.storage =
             horizon_client::command_storage::CommandStorage::load(&self.world_root);
-        // ServerLevel.getWorldBorder: the level in place reads its own file; the other levels
-        // read theirs when they are opened (`open_level`).
-        self.border = self.load_border(self.dim);
         self.score.stopwatches = horizon_client::stopwatches::Stopwatches::load(&self.world_root);
         self.sync_score_registries();
     }

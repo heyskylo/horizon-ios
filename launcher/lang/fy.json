@@ -1251,5 +1251,9 @@
   "Buy": "Keapje",
   "Gift": "Kado jaan",
   "Found on this computer": "Fûn op dizze kompjûter",
-  "Looks": "Looks"
+  "Looks": "Looks",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "De kaaiboske fan dyn systeem hat net binnen {seconds} sekonden antwurde. Soargje derfoar dat er draait en ûntskoattele is, en start dan de launcher opnij.",
+  "Can't read {name}'s sign-in: {why}": "Kin de oanmelding fan {name} net lêze: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

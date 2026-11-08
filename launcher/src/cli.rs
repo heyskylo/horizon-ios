@@ -1943,7 +1943,12 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                         " "
                     };
                     let status = account::session::status(account::store(), &a.uuid);
-                    println!("{mark} {}  {}  {}", a.name, a.uuid, status.label());
+                    // Why it couldn't be checked (a keyring that didn't answer, #12179).
+                    let why = match status.state {
+                        account::session::State::Retry => format!(": {}", status.message),
+                        _ => String::new(),
+                    };
+                    println!("{mark} {}  {}  {}{why}", a.name, a.uuid, status.label());
                 }
                 for n in &accounts.offline {
                     let on = accounts.player() == account::Player::Offline(n.clone());
@@ -1955,7 +1960,11 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     );
                 }
                 if !accounts.has_owner(account::store()) {
-                    println!("{} {}", account::NoOwner, tr(backend::SIGN_IN_HINT));
+                    println!(
+                        "{} {}",
+                        account::NoOwner::default(),
+                        tr(backend::SIGN_IN_HINT)
+                    );
                 }
             }
         }
@@ -2490,7 +2499,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 }).collect());
             } else {
                 if datapack && !found.is_empty() {
-                    println!("{}\n", horizon_launcher::browser::DATAPACK_SUPPORT);
+                    println!("{}\n", horizon_launcher::browser::datapack_support());
                 }
                 for p in &found {
                     let support = p.support();
