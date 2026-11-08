@@ -126,6 +126,13 @@ impl Recording {
     }
 }
 
+impl Drop for Recording {
+    fn drop(&mut self) {
+        tick_profile::want_spans(tick_profile::SPANS_REPORT, false);
+        job_stats::enable(false);
+    }
+}
+
 /// What one span costs on this thread with spans on: the report's own overhead. The spans it
 /// records are thrown away.
 fn span_cost_nanos() -> f64 {
@@ -378,6 +385,13 @@ mod tests {
             r.add(sampled);
         }
         assert_eq!((r.ticks, r.sampled_ticks), (20, 5));
+    }
+
+    /// A recording that ends without `capture_end` (the capture failed to start, or shutdown) leaves spans off.
+    #[test]
+    fn a_dropped_recording_turns_spans_off() {
+        drop(Recording::start(1));
+        assert!(!horizon_client::spans::enabled());
     }
 
     /// On this machine, timing a span and a mob each cost well under a millisecond.

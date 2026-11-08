@@ -443,6 +443,9 @@ Notes on fields:
     projectiles together as `horizon:projectile`.
   - `Start.game_rules` and `Start.horizon_options` are the allowlists in `capture.proto`; a field is added there
     when a switch starts to matter for what a tick costs.
+  - `TickDetail.spans` holds the tick's own spans only; the spans recorded between ticks (the chunk pump) are left out
+    of `span_blocks`, `spans` and a slow tick's `top`, so span sums stay consistent with the tick's wall time.
+  - `HorizonOptions.max_view_distance` is 0 when the far ring was not created, even if `server.toml` sets a distance.
   - `Overhead.mob_timing_ms_per_tick` and `mob_timing_share` price the mob tick sampling next to `spans_*`.
 - `horizon-perf query` rounds numbers to 3 decimals. `spans --slow` averages over the slow ticks; `ticks` and `tick`
   prefer a unit's whole tree from `spans.worst` over the 8 largest spans of `slow` and `slow_history`.
@@ -574,6 +577,12 @@ say so in one line.
 Test (pieces S1b and R1): a fixture dedicated server has named players, a seed, a world name, a custom-named mob, a
 sign and a connected player's IP. It writes a capture; the test inflates it and asserts that none of those strings
 occurs in the bytes.
+
+For S1b that is two checks. `a_capture_of_a_server_with_names_text_and_a_seed_holds_none_of_them` (in `report.rs`) has no
+connected player and is `#[ignore]`d: it needs `HORIZON_TEST_RESOURCES`, so run it with `--ignored`. Players' names and
+IP addresses are covered by `tools/server_perf_e2e.py`, which joins bots named `SteveSecret` from `127.0.0.1` to a fixture
+server (build with `cargo build --profile fast -p horizon-client -p horizon-bots -p horizon-perf`, then run
+`python3 tools/server_perf_e2e.py --bin-dir target/fast`). It is not in CI yet: run it by hand before merging a change to what a capture holds.
 
 Uploads (§7.3) change nothing in the file: what a shared capture holds is exactly what the local one holds. Sharing is
 always an explicit action (the UI's Share button or `horizon-perf share`), shown with a one-line notice of the above;

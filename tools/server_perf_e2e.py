@@ -1,14 +1,4 @@
-#!/usr/bin/env python3
-"""A dedicated server's `horizon-report` capture, end to end, and what it must not hold (docs/perf-platform.md section 4.3).
-
-    python3 tools/server_perf_e2e.py --bin-dir target/fast
-
-A fixture server has a named world with a seed, a motd, two named players on 127.0.0.1, a custom-named cow and a
-sign with text. `horizon-report 4` on its console writes `reports/profile-<time>Z.hzperf`. The harness inflates it and
-checks that none of those strings is in the bytes, then reads it back through `horizon-perf`: the tick spans, the two
-players' network bytes and the counted cow. Build first:
-    cargo build --profile fast -p horizon-client --bin horizon-client -p horizon-bots -p horizon-perf
-"""
+"""A dedicated server's capture end to end and what it must not hold (docs/perf-platform.md section 4.3)."""
 import argparse
 import gzip
 import json

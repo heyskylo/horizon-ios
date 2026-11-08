@@ -1286,7 +1286,11 @@ impl Game<'_> {
             ),
             perf_epoch: Instant::now(),
             horizon: horizon_client::server_perf::horizon_options(
-                far as u32,
+                if self.lan.as_ref().is_some_and(|h| h.hub.far.is_some()) {
+                    far as u32
+                } else {
+                    0
+                },
                 horizon_client::lod_net::distance_property(
                     props.raw.get(horizon_client::lod_net::PROPERTY),
                 ),

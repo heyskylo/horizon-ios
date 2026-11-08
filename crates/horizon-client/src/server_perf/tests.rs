@@ -1011,3 +1011,96 @@ fn horizon_perf_queries_read_back_the_spans_the_network_and_the_world() {
         ("minecraft:overworld", 441, 7, 0)
     );
 }
+
+fn start_of(
+    scratch: &Scratch,
+    rules: &crate::gamerules::GameRules,
+    far: u32,
+    lod: u32,
+    anticheat: bool,
+) -> Start {
+    let mut perf = ServerPerf::new(0.0, 250.0);
+    let mut o = options(1.0);
+    o.start.game_rules = Some(game_rules(rules));
+    o.start.horizon_options = Some(horizon_options(far, lod, anticheat));
+    perf.start_capture(0.0, &scratch.0, o).unwrap();
+    let saved = stop(&mut perf, 1.0, R::Normal).unwrap().unwrap();
+    read(&saved.path).start.remove(0)
+}
+
+#[test]
+fn the_game_rules_read_back_as_set_and_a_default_world_reads_its_defaults() {
+    use crate::gamerules::{GameRules as Rules, Value};
+    use horizon_perf_format::v1::GameRules;
+    let scratch = Scratch::new("rules");
+    let rules = |sets: &[(&str, Value)]| {
+        let mut r = Rules::default();
+        for &(name, value) in sets {
+            assert!(r.set(name, value), "{name}");
+        }
+        r
+    };
+    let expect = |tick, cram, fire, time, grief, mobs, monsters, spawners| GameRules {
+        random_tick_speed: Some(tick),
+        max_entity_cramming: Some(cram),
+        fire_spread_radius_around_player: Some(fire),
+        advance_time: Some(time),
+        mob_griefing: Some(grief),
+        spawn_mobs: Some(mobs),
+        spawn_monsters: Some(monsters),
+        spawner_blocks_work: Some(spawners),
+    };
+    let rules_of = |r: &Rules| start_of(&scratch, r, 0, 0, false).game_rules.unwrap();
+
+    // Vanilla's defaults are non-zero and true: a misspelt name would read 0 and false.
+    assert_eq!(
+        rules_of(&Rules::default()),
+        expect(3, 24, 128, true, true, true, true, true)
+    );
+    let all = rules(&[
+        ("random_tick_speed", Value::Int(9)),
+        ("max_entity_cramming", Value::Int(5)),
+        ("fire_spread_radius_around_player", Value::Int(-1)),
+        ("advance_time", Value::Bool(false)),
+        ("mob_griefing", Value::Bool(false)),
+        ("spawn_mobs", Value::Bool(false)),
+        ("spawn_monsters", Value::Bool(false)),
+        ("spawner_blocks_work", Value::Bool(false)),
+    ]);
+    assert_eq!(
+        rules_of(&all),
+        expect(9, 5, -1, false, false, false, false, false)
+    );
+    // One switch at a time, so two switches cannot be swapped unseen.
+    let one = |name| rules_of(&rules(&[(name, Value::Bool(false))]));
+    assert_eq!(one("advance_time"), expect(3, 24, 128, false, true, true, true, true));
+    assert_eq!(one("mob_griefing"), expect(3, 24, 128, true, false, true, true, true));
+    assert_eq!(one("spawn_mobs"), expect(3, 24, 128, true, true, false, true, true));
+    assert_eq!(one("spawn_monsters"), expect(3, 24, 128, true, true, true, false, true));
+    assert_eq!(one("spawner_blocks_work"), expect(3, 24, 128, true, true, true, true, false));
+}
+
+#[test]
+fn the_horizon_options_read_back_as_given() {
+    use horizon_perf_format::v1::HorizonOptions;
+    let scratch = Scratch::new("horizon-options");
+    let rules = crate::gamerules::GameRules::default();
+    let on = start_of(&scratch, &rules, 24, 12, true).horizon_options;
+    assert_eq!(
+        on,
+        Some(HorizonOptions {
+            max_view_distance: Some(24),
+            lod_distance: Some(12),
+            anticheat: Some(true),
+        })
+    );
+    let off = start_of(&scratch, &rules, 0, 0, false).horizon_options;
+    assert_eq!(
+        off,
+        Some(HorizonOptions {
+            max_view_distance: Some(0),
+            lod_distance: Some(0),
+            anticheat: Some(false),
+        })
+    );
+}

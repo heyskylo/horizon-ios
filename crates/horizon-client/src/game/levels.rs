@@ -646,7 +646,7 @@ impl Game<'_> {
         let spans = if between.is_empty() {
             horizon_client::spans::merge(&raw)
         } else {
-            horizon_client::spans::merge(&[between, raw.clone()].concat())
+            horizon_client::spans::merge(&[&between[..], &raw[..]].concat())
         };
         let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes

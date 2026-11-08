@@ -14,7 +14,7 @@ struct Player {
     bytes_out: Vec<u64>,
 }
 
-/// Turns the running byte counts of the connections, read now and then, into bytes per block.
+/// Turns the running byte counts of the connections, read now and then, into bytes per block; a leaver's bytes since the last read are lost.
 #[derive(Default)]
 pub struct TrafficRecorder {
     players: Vec<Player>,
@@ -43,8 +43,7 @@ impl TrafficRecorder {
         }
     }
 
-    /// The connections' counts `t` seconds into the capture. A connection not seen before joined since the last call
-    /// and counts from zero; one no longer listed has left, and its bytes since the last call are lost.
+    /// The connections' counts `t` seconds into the capture; a new connection counts from zero, an unlisted one has left.
     pub fn sample(&mut self, t: f64, wire: &[(u32, (u64, u64))]) {
         let block = block_of(t);
         for &(conn, (now_in, now_out)) in wire {
