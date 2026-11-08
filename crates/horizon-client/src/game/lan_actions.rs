@@ -5104,6 +5104,10 @@ impl Game<'_> {
                     });
                 from = to;
             }
+            // handleMovePlayer moves the player before it checks the fall: a
+            // cobweb or a sweet berry bush it moves through has already made it
+            // forget the fall (`makeStuckInBlock`), so landing in one is safe.
+            let _ = w.server_stuck_in_blocks(start);
             for (moved, on_ground) in moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
                 let landed = (|| -> horizon_client::Result<()> {
