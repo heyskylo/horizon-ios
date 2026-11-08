@@ -98,8 +98,9 @@ pub(crate) struct PickedPack {
     pub draws_flat: bool,
     /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`: the frame is float.
     pub linear: bool,
-    /// No pack is available, and HDR is on under `HORIZON_HDR_FRAME=float`:
-    /// the frame is float where HDR output is offered (docs/design/hdr-linear-light.md, step 3).
+    /// HDR is on under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the
+    /// frame is the layered float one where HDR output is offered
+    /// (docs/design/hdr-linear-light.md, The HUD and menus).
     pub hdr_float: bool,
 }
 
@@ -122,10 +123,11 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
             && horizon_shader_api::Pack::read_manifest(&path)
                 .is_ok_and(|m| m.api == horizon_shader_api::Api::V0_2)
     };
+    let linear = active && linear();
     PickedPack {
         draws_flat: active && pack_draws_flat(&path),
-        linear: active && linear(),
-        hdr_float: !active
+        linear,
+        hdr_float: (!active || linear)
             && settings.horizon.hdr_wanted()
             && super::native_shaders::linear_frame_switch(),
     }
@@ -1083,9 +1085,10 @@ mod native_pack_tests {
             "schema = 1\nid = \"fixture\"\nname = \"Fixture\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"p.wgsl\"\n").unwrap();
         settings.horizon.shader_pack = path.to_string_lossy().into_owned();
         let switch = crate::game::native_shaders::linear_frame_switch();
+        // A 0.2 pack with HDR on asks for the layered frame, as no pack does.
         let shape = picked_pack_shape(&settings);
         assert_eq!(shape.linear, switch);
-        assert!(!shape.hdr_float);
+        assert_eq!(shape.hdr_float, switch);
         for api in [Api::V0_1, Api::V0_2] {
             let manifest = path.join(horizon_shader_api::MANIFEST);
             let text = std::fs::read_to_string(&manifest).unwrap();
@@ -1098,7 +1101,7 @@ mod native_pack_tests {
             remember(&path, fingerprint(&path), Some(api));
             let shape = picked_pack_shape(&settings);
             assert_eq!(shape.linear, switch && api == Api::V0_2);
-            assert!(!shape.hdr_float);
+            assert_eq!(shape.hdr_float, switch && api == Api::V0_2);
         }
         settings.mods.disabled.insert("frame_owner".into());
         let shape = picked_pack_shape(&settings);

@@ -304,7 +304,8 @@ fn screenshot_world(w: vec3<f32>) -> vec3<f32> {
 }
 
 override screenshot_world_only: bool = false;
-// Off with HDR Lighting off: Horizon lifts nothing, so the world is clipped at white as SDR draws it.
+// Off where Horizon lifts nothing (HDR Lighting off, or a shader pack's picture): the world is
+// clipped at white as SDR draws it.
 override screenshot_shoulder: bool = true;
 
 // The ordinary PNG, or the world's icon before the HUD: H as drawn, at 100%, over

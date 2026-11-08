@@ -5,7 +5,14 @@ use super::*;
 #[derive(Default)]
 pub(super) struct FrameAttempt(Option<FrameKey>);
 
-type FrameKey = (bool, bool, PathBuf, Option<Option<horizon_shader_api::Api>>);
+/// HDR wanted, HDR output offered, Smooth Gradients' wide frame, the pick's path, its outcome.
+type FrameKey = (
+    bool,
+    bool,
+    bool,
+    PathBuf,
+    Option<Option<horizon_shader_api::Api>>,
+);
 
 impl FrameAttempt {
     // Remember attempts, including failures, until the requested configuration changes.
@@ -68,7 +75,10 @@ impl Game<'_> {
         };
         let horizon = &self.settings.horizon;
         let wide_frame = horizon.wide_frame();
-        let key = (horizon.hdr_wanted(), wide_frame, path, outcome);
+        // On wants HDR whether or not it is offered; the offer can change while the game runs
+        // (Vulkan's formats follow desktop HDR and the window's output), and the frame with it.
+        let offered = horizon_client::graphics::hdr_offered();
+        let key = (horizon.hdr_wanted(), offered, wide_frame, path, outcome);
         if !self.frame_attempted.changed(key) {
             return;
         }
@@ -219,20 +229,22 @@ mod tests {
         let mut attempts = FrameAttempt::default();
         let mut rebuilds = 0;
         for key in [
-            (true, true, "p", None),
-            (true, true, "p", None),
-            (true, true, "p", Some(Some(Api::V0_2))),
-            (true, true, "p", Some(Some(Api::V0_2))),
-            (true, true, "p", Some(None)),
-            (true, true, "p", Some(None)),
-            (true, true, "q", None),
-            (false, false, "q", None),
+            (true, false, true, "p", None),
+            (true, false, true, "p", None),
+            // HDR output offered later, with HDR On: the frame is looked at again.
+            (true, true, true, "p", None),
+            (true, true, true, "p", Some(Some(Api::V0_2))),
+            (true, true, true, "p", Some(Some(Api::V0_2))),
+            (true, true, true, "p", Some(None)),
+            (true, true, true, "p", Some(None)),
+            (true, true, true, "q", None),
+            (false, true, false, "q", None),
         ] {
-            if attempts.changed((key.0, key.1, key.2.into(), key.3)) {
+            if attempts.changed((key.0, key.1, key.2, key.3.into(), key.4)) {
                 // A replacement fails: no success is recorded, just the attempted key.
                 rebuilds += 1;
             }
         }
-        assert_eq!(rebuilds, 5);
+        assert_eq!(rebuilds, 6);
     }
 }

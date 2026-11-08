@@ -245,16 +245,26 @@ fn each_hud_draw_clips_at_white_as_on_an_8_bit_frame() {
     quad(&mut batch, Blend::Alpha, rgba(0, 0, 0, 128), 0.0, 0.25);
     // Vanilla's frame in integers: 204 + 128 clips at 255, then the panel keeps 127/255 of it.
     let (backdrop, highlight, panel) = (204u32, 128u32, 128u32);
-    let (color, mask) = gpu.draw(&batch, f64::from(backdrop) / 255.0, 0.0, true);
     let clipped = (backdrop + highlight).min(255);
     let want = ((clipped * (255 - panel)) as f64 / 255.0).round() as u8;
     assert_eq!(want, 127);
-    // Unclipped, the panel would have kept 127/255 of 332: 165.
-    for pixel in [0, 1, 4, 5] {
-        assert_eq!(color[pixel * 4..pixel * 4 + 3], [want; 3], "{color:?}");
+    // The HUD layer's target, and the 8-bit frame a 0.2 pack finishes on in SDR, where the
+    // HUD draws without coverage.
+    for coverage in [true, false] {
+        let (color, mask) = gpu.draw(&batch, f64::from(backdrop) / 255.0, 0.0, coverage);
+        // Unclipped, the panel would have kept 127/255 of 332: 165.
+        for pixel in [0, 1, 4, 5] {
+            assert_eq!(
+                color[pixel * 4..pixel * 4 + 3],
+                [want; 3],
+                "{coverage}: {color:?}"
+            );
+        }
+        // The highlight hides nothing; the panel hides half of what is under it.
+        if coverage {
+            assert_eq!(mask[0], 128, "{mask:?}");
+        }
     }
-    // The highlight hides nothing; the panel hides half of what is under it.
-    assert_eq!(mask[0], 128, "{mask:?}");
 }
 
 #[test]
