@@ -443,7 +443,7 @@ pub const COMMANDS: &[Cmd] = &[
         &[opt("id", Ty::Str, "an owned emote's id, or stop")], mcp: true, local: false),
     // Act
     cmd!("break", Act, "break X Y Z [--timeout S]", "mine a block, holding the attack button until it breaks",
-        "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops and picked_up (inventory change).",
+        "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops, picked_up (inventory change, where a tool that broke shows as -1) and held (the item in hand afterwards, also on a timeout: a broken tool leaves the bare hand).",
         ["horizon-ctl break 10 64 3"], &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], flag("timeout", Ty::Num, "give up after this many seconds (default 30)")], mcp: true, local: false),
     cmd!("place", Act, "place X Y Z [--item ITEM] [--sneak]", "place the held item (or ITEM from the hotbar) at an empty position",
         "Clicks the face of a solid neighbour touching X Y Z. Replies with the block placed and the inventory change.",

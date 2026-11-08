@@ -2305,10 +2305,13 @@ impl Game<'_> {
                 b.collect_until = Some(self.ticks + 20);
             } else if timed_out {
                 let _ = self.agent_mouse(MouseButton::Left, false);
-                return Some(
-                    json!({ "error": "timed out before the block broke", "pos": b.pos,
-                                    "block": self.state_string(state), "ticks": self.ticks - b.started_tick }),
-                );
+                // The held item explains most slow breaks: a tool that broke
+                // mid-vein leaves the bare hand, and stone never breaks by hand.
+                return Some(json!({
+                    "error": "timed out before the block broke", "pos": b.pos,
+                    "block": self.state_string(state), "ticks": self.ticks - b.started_tick,
+                    "held": self.held().map(|s| self.stack_value(s)),
+                }));
             } else if self.screen != Screen::Playing {
                 return Some(
                     json!({ "error": format!("the {} screen opened", self.screen_label()), "pos": b.pos }),
@@ -2353,6 +2356,7 @@ impl Game<'_> {
             "ticks": b.broke_tick - b.started_tick,
             "drops": counts(b.drops.values().cloned()),
             "picked_up": delta(&b.inventory, &self.inventory_counts()),
+            "held": self.held().map(|s| self.stack_value(s)),
             "items_left_on_ground": remaining,
             "on_ground": self.dropped.iter().filter(|i| b.drops.contains_key(&i.id)).map(|i| json!({
                 "id": i.id, "item": &*i.stack.item, "count": i.stack.count,
