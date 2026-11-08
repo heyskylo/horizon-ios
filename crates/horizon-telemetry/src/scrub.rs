@@ -247,8 +247,17 @@ fn uuid_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
 fn replace_word(text: &str, word: &str, label: &str) -> String {
     let lower = text.to_lowercase();
     let needle = word.to_lowercase();
-    // Lowercasing can change byte lengths outside ASCII: then match exactly instead.
-    let (hay, needle) = if lower.len() == text.len() && needle.len() == word.len() {
+    // Lowercasing can change byte lengths outside ASCII: then match exactly instead. Equal total
+    // lengths aren't enough to stand one in for the other: a character can grow (`İ` is 2 bytes and
+    // lowercases to 3) while another shrinks (`K`, U+212A, is 3 and lowercases to 1), so the text
+    // keeps its length while its boundaries move, and a match's offsets in `lower` would slice the
+    // text mid-character.
+    let aligned = lower.len() == text.len()
+        && lower
+            .char_indices()
+            .map(|(at, _)| at)
+            .eq(text.char_indices().map(|(at, _)| at));
+    let (hay, needle) = if aligned && needle.len() == word.len() {
         (lower.as_str(), needle.as_str())
     } else {
         (text, word)
@@ -277,6 +286,24 @@ fn replace_word(text: &str, word: &str, label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lowercased haystack and the text must share their character boundaries, not just their
+    /// length: `İ` grows by a byte and U+212A shrinks by two, so a text holding two `İ` and a
+    /// U+212A kept its length while its offsets moved, and a later match sliced mid-character.
+    #[test]
+    fn a_text_whose_lowercase_moves_its_boundaries_is_matched_as_it_is() {
+        let s = Scrubber::bare().with_user("i\u{307}");
+        assert_eq!(s.scrub("\u{130}\u{130}\u{212A}"), "\u{130}\u{130}\u{212A}");
+        // A name that is there, in another case, is still hidden.
+        assert_eq!(
+            s.scrub("\u{130}\u{130}\u{212A} ANA"),
+            "\u{130}\u{130}\u{212A} ANA"
+        );
+        assert_eq!(
+            Scrubber::bare().with_user("ana").scrub("aNa here"),
+            "<user> here"
+        );
+    }
 
     #[test]
     fn user_folders_lose_their_name() {

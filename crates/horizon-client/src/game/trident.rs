@@ -31,7 +31,7 @@ pub(super) struct ThrownTrident {
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) in_ground: bool,
-    in_ground_time: u32,
+    pub(super) in_ground_time: u32,
     /// `AbstractArrow.shakeTime`: seven ticks after sticking, no pickup.
     shake: u32,
     dealt_damage: bool,
