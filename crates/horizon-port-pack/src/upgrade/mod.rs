@@ -556,6 +556,37 @@ mod tests {
     }
 
     #[test]
+    fn surface_rules_drop_biomes_nothing_defines() {
+        // 1.21.1 read `biome_is` as keys, so a name nothing defines (Terralith's
+        // "comment" biome) never matched; 26.3 resolves them and refuses the pack.
+        let rule = json!({"type": "minecraft:condition", "if_true": {"type": "minecraft:biome",
+            "biome_is": ["x:b", "x:comment_not_a_biome", "y:other_mods", "minecraft:plains"]},
+            "then_run": {"type": "minecraft:block", "result_state": {"Name": "minecraft:dirt"}}});
+        let settings = json!({"noise": {"min_y": -64, "height": 384, "size_horizontal": 1,
+            "size_vertical": 2}, "noise_router": {}, "surface_rule": rule});
+        let files = BTreeMap::from([
+            (
+                "data/x/worldgen/noise_settings/s.json".to_owned(),
+                serde_json::to_vec(&settings).unwrap(),
+            ),
+            ("data/x/worldgen/biome/b.json".to_owned(), b"{}".to_vec()),
+        ]);
+        let (out, r) = upgrade_pack(&files);
+        let rule: Value = serde_json::from_slice(
+            &out["data/x/worldgen/material_rule/s/upgraded/material_rule.json"],
+        )
+        .unwrap();
+        assert_eq!(
+            rule["if_true"]["biome_is"],
+            json!(["x:b", "minecraft:plains"])
+        );
+        assert_eq!(
+            r.lossy.get("surface rule: biomes nothing defines"),
+            Some(&1)
+        );
+    }
+
+    #[test]
     fn settings_move_aquifers_veins_and_spawn_target() {
         let settings = json!({"noise": {"min_y": -64, "height": 384, "size_horizontal": 1, "size_vertical": 2},
             "noise_router": {"barrier": 1.0, "fluid_level_floodedness": 2.0, "fluid_level_spread": 3.0,
