@@ -1543,6 +1543,8 @@ pub struct Renderer {
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
     pub separate_ao: bool,
+    /// Shader-pack terrain pages used by post processing, retained between frames.
+    pack_pages: Vec<(u32, wgpu::Buffer)>,
     /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::terrain_parts`).
     pack_lava_layers: Vec<u16>,
     pub hud: HudRenderer,
@@ -5128,6 +5130,7 @@ impl Renderer {
             shared_material_maps: [None, None],
             pack_terrain_flat: false,
             separate_ao: false,
+            pack_pages: Vec::new(),
             pack_lava_layers: Vec::new(),
             hud,
             menu_blur: None,
@@ -11403,14 +11406,12 @@ impl Renderer {
             };
             post.set_weather(weather);
             let flat = self.flat.as_ref().filter(|_| flat_frame);
-            let pages: Vec<(u32, wgpu::Buffer)> = match flat {
-                Some(_) if pack_draws_terrain || pack_draws_shadow => self
-                    .arena
-                    .page_buffers()
-                    .map(|(p, b)| (p, b.clone()))
-                    .collect(),
-                _ => Vec::new(),
-            };
+            self.pack_pages.clear();
+            if flat.is_some() && (pack_draws_terrain || pack_draws_shadow) {
+                self.pack_pages
+                    .extend(self.arena.page_buffers().map(|(p, b)| (p, b.clone())));
+            }
+            let pages = &self.pack_pages;
             let mut terrain =
                 |rp: &mut wgpu::RenderPass<'_>,
                  list: pack_post::TerrainList,
