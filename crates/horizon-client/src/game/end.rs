@@ -524,7 +524,7 @@ impl Game<'_> {
             let instance = horizon_client::sound_engine::SoundInstance::directional(
                 "minecraft:weather.end_flash",
                 horizon_client::sound_engine::WEATHER,
-                horizon_client::sound_engine::SoundEngine::unseeded(),
+                horizon_client::random_source::create(),
                 self.audio.listener,
                 flash.x_angle,
                 flash.y_angle,
