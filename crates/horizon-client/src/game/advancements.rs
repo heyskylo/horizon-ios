@@ -2,6 +2,13 @@
 //! events (`CriteriaTriggers`), awarding with rewards, the toast and the
 //! chat announcement, and `players/advancements/<uuid>.json`.
 use super::{Dim, Game};
+
+#[cfg(test)]
+#[path = "inventory_changed_tests.rs"]
+mod inventory_changed_tests;
+#[cfg(test)]
+#[path = "mod_toast_tests.rs"]
+mod mod_toast_tests;
 use horizon_client::actions::Action;
 use horizon_client::{
     advancements::{self as adv, EntityView, Frame, ItemView, Progress, Tree},
@@ -24,6 +31,9 @@ pub(super) struct Toast {
     icon: String,
     frame: Frame,
     title: Text,
+    /// A mod's own toast (`native_add_toast`): the line drawn in place of
+    /// the frame's label, `title` then being its description.
+    label: Option<Text>,
     slide: Slide,
     /// `ToastInstance.firstSlotIndex`: the 32-pixel slot it stacks in once it
     /// leaves the queue.
@@ -42,10 +52,31 @@ impl Toast {
             icon: String::new(),
             frame: Frame::Task,
             title: Text::literal(""),
+            label: None,
             slide: Slide::default(),
             slot: None,
             recipes: items,
             changed: true,
+            last_changed: 0,
+        }
+    }
+    /// A mod's own toast (`native_add_toast`, API @API:add_toast@): drawn as an `AdvancementToast`
+    /// with `label` in the frame label's place and `description` as its
+    /// title, yellow (pink, with the challenge sound, for a challenge).
+    pub(super) fn of_mod(icon: &str, label: Text, description: Text, challenge: bool) -> Self {
+        Self {
+            icon: icon.to_owned(),
+            frame: if challenge {
+                Frame::Challenge
+            } else {
+                Frame::Task
+            },
+            title: description,
+            label: Some(label),
+            slide: Slide::default(),
+            slot: None,
+            recipes: Vec::new(),
+            changed: false,
             last_changed: 0,
         }
     }
@@ -1021,6 +1052,7 @@ impl Game<'_> {
                     icon: d.icon.clone(),
                     frame: d.frame,
                     title: text_of(&d.title),
+                    label: None,
                     slide: Slide::default(),
                     slot: None,
                     recipes: Vec::new(),
@@ -1128,6 +1160,17 @@ impl Game<'_> {
             return;
         }
         self.adv.last_inventory = key;
+        // Native mods hear the change before any criterion is looked at, so
+        // they do with no `inventory_changed` advancement in the tree too
+        // (`native_player_inventory_changed`, API @API:player_inventory_changed@).
+        if self.remote.is_none()
+            && !self.no_player_here()
+            && !horizon_client::mod_api::mods().is_empty()
+        {
+            let stacks = inventory_slots(&self.inventory, &self.armor, &self.offhand);
+            let player = self.native_acting_id();
+            self.native_player_inventory_changed(player, &stacks);
+        }
         let stacks: Vec<ItemView> = self
             .inventory
             .iter()
@@ -2235,6 +2278,7 @@ impl Game<'_> {
         let x = batch.width - 160.0 * t.slide.portion;
         let fully_for = t.slide.fully_for;
         let (title, frame, icon) = (t.title.clone(), t.frame, t.icon.clone());
+        let mod_label = t.label.clone();
         let recipe = t
             .is_recipe()
             .then(|| t.recipes[t.displayed_recipe(fully_for, multiplier)].clone());
@@ -2261,7 +2305,7 @@ impl Game<'_> {
         // the frame's label; a longer one is wrapped at 125, the label fading
         // out first (to 1.5 s) and the lines fading in after it over 0.3 s.
         let lines = atlas.font.split(&title.resolve_legacy(), 125.0);
-        let label = Text::translate(key, &[]);
+        let label = mod_label.unwrap_or_else(|| Text::translate(key, &[]));
         let rgb = color & 0x00FF_FFFF;
         if let [line] = lines.as_slice() {
             batch.text_styled(atlas, &label, x + 30.0, y + 7.0, color, false);
@@ -2490,6 +2534,7 @@ impl Game<'_> {
                     icon: d.icon.clone(),
                     frame: d.frame,
                     title: text_of(&d.title),
+                    label: None,
                     slide: Slide::default(),
                     slot: None,
                     recipes: Vec::new(),
@@ -3421,4 +3466,19 @@ mod movement_predicate_tests {
             "actual movement predicate mismatches: {failures:?}"
         );
     }
+}
+
+/// A player's 41 slots in `Inventory` numbering, for
+/// `native_player_inventory_changed`: the main inventory (0..36), the armour
+/// feet to head (36..40; `armor` holds it head first), the off hand (40).
+pub(super) fn inventory_slots(
+    inventory: &[Option<ItemStack>],
+    armor: &[Option<ItemStack>; 4],
+    offhand: &Option<ItemStack>,
+) -> Vec<Option<ItemStack>> {
+    let mut slots: Vec<Option<ItemStack>> = inventory.iter().take(36).cloned().collect();
+    slots.resize(36, None);
+    slots.extend(armor.iter().rev().cloned());
+    slots.push(offhand.clone());
+    slots
 }

@@ -529,13 +529,19 @@ impl Game<'_> {
         }
         self.swing.tick();
         let main = self.inventory[self.selected].clone();
-        // Player.tick: a different item resets the attack strength, and
-        // detectEquipmentUpdates gives the player its modifiers.
-        if self.hand_strength.tick(main.as_ref().map(|s| HeldStack {
+        // Player.tick: a different item resets the attack strength; any change
+        // of the stack (`!ItemStack.matches`, e.g. another Efficiency level on
+        // the same tool) is what detectEquipmentUpdates gives the player its
+        // modifiers for.
+        let held = main.as_ref().map(|s| HeldStack {
             item: s.item.to_string(),
             rest: format!("{} {} {:?}", s.count, s.damage, s.extra),
-        })) {
+        });
+        let changed = self.hand_strength.main_hand_changed(&held);
+        if self.hand_strength.tick(held) {
             self.attack_ticks = 0;
+        }
+        if changed {
             self.apply_equipment();
         }
         self.attack_item = main.as_ref().map(|s| s.item.clone());
