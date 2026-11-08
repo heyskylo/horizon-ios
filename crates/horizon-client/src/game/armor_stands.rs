@@ -857,6 +857,13 @@ impl Game<'_> {
         let mut dead = Vec::new();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
+        // EntityGetter.getEntityCollisions: the boxes that stop a stand's move
+        // (a living shulker, a boat, a happy ghast held still), gathered when
+        // the first stand travels. A server's stand rides nothing (`vehicle`
+        // is set on a server's client only), so `isPassengerOfSameVehicle`
+        // leaves none of them out.
+        let mut obstacles: Option<horizon_client::entities::ObstacleGrid> = None;
+        let mut nearby = Vec::new();
         for i in 0..self.armor_stands.len() {
             let at = self.armor_stands[i].position;
             if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
@@ -865,6 +872,13 @@ impl Game<'_> {
                 continue;
             }
             self.armor_stand_location_effects(i, false);
+            // ArmorStand.travel: a marker or a NoGravity stand does not move.
+            let travels = !self.armor_stands[i].marker && !self.armor_stands[i].no_gravity;
+            if travels && obstacles.is_none() {
+                obstacles = Some(horizon_client::entities::ObstacleGrid::new(
+                    self.item_entity_collisions(),
+                ));
+            }
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
@@ -877,6 +891,13 @@ impl Game<'_> {
             let in_water = water_height > 0.0;
             let medium =
                 horizon_client::entities::StandMedium::from_heights(water_height, lava_height);
+            // Entity.collide asks for the entities meeting the box stretched
+            // by this tick's movement (the fluid push is already in it).
+            nearby.clear();
+            if let Some(grid) = obstacles.as_ref().filter(|_| travels) {
+                let area = a.bounds().expand_towards(a.velocity);
+                grid.near(area.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7)), &mut nearby);
+            }
             let (world, registry, facts, collision) = (
                 &self.world,
                 self.pack.assets.registry,
@@ -895,6 +916,7 @@ impl Game<'_> {
                 &self.res.motion().climbing,
                 in_water,
                 Some(self.border.geometry()),
+                &nearby,
             ) {
                 // LivingEntity.aiStep: `travel` first, then the blocks' push.
                 a.tick_settle(medium, step);

@@ -2114,7 +2114,7 @@ impl ArmorStand {
         in_water: bool,
         border: Option<&BorderGeometry>,
     ) {
-        if let Some(step) = self.tick_move(scene, facts, climbing, in_water, border) {
+        if let Some(step) = self.tick_move(scene, facts, climbing, in_water, border, &[]) {
             let medium = if in_water {
                 StandMedium::Water
             } else {
@@ -2410,7 +2410,10 @@ impl ArmorStand {
     /// The game runs the fluid push first (`Entity::push_by_fluid`), then
     /// this up to the blocks' push, then the bubble column
     /// (`Entity::push_by_bubble_column`), then [`ArmorStand::tick_settle`].
-    /// None: a marker or a stand with `NoGravity` does not travel.
+    /// `entities` are the boxes `EntityGetter.getEntityCollisions` gives the
+    /// stand (a living shulker, a boat, a happy ghast held still), which stop
+    /// its move as blocks do. None: a marker or a stand with `NoGravity` does
+    /// not travel.
     pub fn tick_move(
         &mut self,
         scene: &mut crate::collisions::SceneCollisions,
@@ -2418,6 +2421,7 @@ impl ArmorStand {
         climbing: &horizon_world::climbing::ClimbingRegistry<'_>,
         in_water: bool,
         border: Option<&BorderGeometry>,
+        entities: &[Aabb],
     ) -> Option<StandStep> {
         use crate::entity_rules::EntityRules;
         self.previous = self.position;
@@ -2476,18 +2480,20 @@ impl ArmorStand {
         }
         let mut velocity = wanted;
         let mut horizontal_collision = false;
-        // Entity.collide: the world border's walls stop the stand too.
+        // Entity.collide: the world border's walls and the entities that
+        // `canBeCollidedWith` the stand stop it too.
         let moved = SceneCollisions {
             world: scene.world,
             binding: scene.binding,
             subject: scene.subject,
         }
-        .resolve_in_border(
+        .resolve_in_border_with(
             self.bounds(),
             wanted,
             0.0,
             self.on_ground,
             border.map(|b| (b, [self.position.x, self.position.z])),
+            entities,
         );
         if let Ok(moved) = moved {
             self.position = Vec3::new(
@@ -4338,6 +4344,70 @@ mod armor_stand_motion_tests {
                 );
             } else {
                 assert!(east > 25.0, "no border: goes on, got {east}");
+            }
+        }
+    }
+
+    /// `Entity.collide` (#11877): the boxes `getEntityCollisions` gives a
+    /// stand (a shulker's here, one block on the test scene's ground, whose
+    /// top is at y = 4) stop it as blocks do. Dropped from y = 8 it rests on
+    /// the box's top at y = 5; sliding east at 2 blocks a tick from x = 18 it
+    /// stops with its east side on the box's west face, x = 20. With no boxes
+    /// it falls to the ground and slides on.
+    #[test]
+    fn a_stand_lands_on_and_stops_at_the_entity_boxes_it_is_given() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = BlockFacts::load(&root, assets.registry).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let world = World::test_scene(&assets, &render, 3).unwrap();
+        let empty = Default::default();
+        let climbing = horizon_world::climbing::ClimbingRegistry::new(
+            collision.registry(),
+            &empty,
+            &empty,
+            &empty,
+        )
+        .unwrap();
+        let shulker = Aabb::new(Vec3::new(20.0, 4.0, 20.0), Vec3::new(21.0, 5.0, 21.0));
+        let run = |stand: &mut ArmorStand, boxes: &[Aabb], ticks: usize| {
+            for _ in 0..ticks {
+                let mut scene = SceneCollisions {
+                    world: &world,
+                    binding: &collision,
+                    subject: None,
+                };
+                if let Some(step) =
+                    stand.tick_move(&mut scene, &facts, &climbing, false, None, boxes)
+                {
+                    stand.tick_settle(StandMedium::Air, step);
+                }
+            }
+        };
+        for (boxes, floor) in [(&[shulker][..], 5.0), (&[][..], 4.0)] {
+            let mut stand = ArmorStand::new(1, Vec3::new(20.5, 8.0, 20.5), 0.0);
+            run(&mut stand, boxes, 20);
+            let y = stand.position.y;
+            assert!((y - floor).abs() < 1.0e-9, "rests at {floor}, got {y}");
+            assert!(stand.on_ground, "on the ground at {floor}");
+        }
+        for (boxes, blocked) in [(&[shulker][..], true), (&[][..], false)] {
+            let mut stand = ArmorStand::new(1, Vec3::new(18.0, 4.0, 20.5), 0.0);
+            stand.on_ground = true;
+            stand.velocity = Vec3::new(2.0, 0.0, 0.0);
+            run(&mut stand, boxes, 1);
+            let east = stand.bounds().max_position().x;
+            if blocked {
+                assert!((east - 20.0).abs() < 1.0e-7, "stops at the box, got {east}");
+                assert_eq!(stand.velocity.x, 0.0, "the wall takes its speed");
+            } else {
+                assert!((east - 20.25).abs() < 1.0e-7, "goes on, got {east}");
             }
         }
     }
