@@ -914,18 +914,26 @@ impl Game<'_> {
             let point = |f: &[i32; 3]| [0, 1, 2].map(|i| centre[i] + f64::from(f[i]) * 0.45);
             dist(eye, point(a)).total_cmp(&dist(eye, point(b)))
         });
+        // The first other block a ray stopped at, to name what is in the way.
+        let mut in_the_way: Option<[i32; 3]> = None;
         for f in faces {
             for inset in [0.45, 0.3, 0.0] {
                 let point = [0, 1, 2].map(|i| centre[i] + f64::from(f[i]) * inset);
                 let (yaw, pitch) = yaw_pitch(eye, point);
                 let dir = super::view_vector(yaw, pitch);
-                if let Some(hit) = self.clip_ray(eye, dir, self.reach())
+                let hit = self.clip_ray(eye, dir, self.reach());
+                if let Some(hit) = &hit
                     && hit.pos == pos
                     && (face.is_none() || hit.face == f)
                 {
                     self.yaw = yaw;
                     self.pitch = pitch;
                     return Ok(hit.face);
+                }
+                if let Some(hit) = hit
+                    && hit.pos != pos
+                {
+                    in_the_way.get_or_insert(hit.pos);
                 }
             }
         }
@@ -934,6 +942,13 @@ impl Game<'_> {
             return Err(format!(
                 "block {pos:?} is {d:.1} blocks away, out of reach ({:.1}); goto it first",
                 self.reach()
+            )
+            .into());
+        }
+        if let Some(p) = in_the_way {
+            let name = &self.res.facts().get(self.world.block(p[0], p[1], p[2])).name;
+            return Err(format!(
+                "no face of block {pos:?} is visible from here: {name} at {p:?} is in the way"
             )
             .into());
         }
@@ -2092,9 +2107,24 @@ impl Game<'_> {
                     "screen": self.screen_label(),
                 });
                 if *place && !changed {
-                    v["error"] = json!(
+                    // The player's own box (0.6 wide, 1.8 high) in the cell
+                    // is the usual reason: say so.
+                    let p = self.position();
+                    let player_inside = pos.is_some_and(|b| {
+                        (0..3).all(|i| {
+                            let (lo, hi) = if i == 1 {
+                                (p[1], p[1] + 1.8)
+                            } else {
+                                (p[i] - 0.3, p[i] + 0.3)
+                            };
+                            lo < f64::from(b[i]) + 1.0 && hi > f64::from(b[i])
+                        })
+                    });
+                    v["error"] = json!(if player_inside {
+                        "the block did not change: the player is standing in that cell; move out of it first"
+                    } else {
                         "the block did not change (blocked by an entity, or the item cannot be placed)"
-                    );
+                    });
                 }
                 Some(v)
             }
