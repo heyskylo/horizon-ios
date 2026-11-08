@@ -264,7 +264,7 @@ fn decode_lz4(
             buffer[..compressed].copy_from_slice(block);
             output.resize(start + raw, 0);
             // `refill`: the block must be read to its last byte, no further.
-            if decompress_lz4_java(&buffer, &mut output[start..]) == Some(compressed) {
+            if decompress_lz4_java(buffer, &mut output[start..]) == Some(compressed) {
                 Ok(())
             } else {
                 Err(invalid("LZ4 stream is corrupted"))
