@@ -383,9 +383,6 @@ def main():
         groups = [g for g in groups if g[0] == args.only]
     if any(n in corpus_module.ISOLATED_EFFECTIVE_PRESENCE for n, _ in groups) and len(groups) != 1:
         parser.error('effective presence fixture requires exact --only group')
-    if args.seed_sync_gaps_diagnostic:
-        from seed_sync_corpus import cases as seed_sync_proof
-        groups = [('setup', corpus_module.group_setup()), ('seed sync proof', seed_sync_proof(corpus_module.cmd, corpus_module.setup, gaps=True))]
     if args.only in corpus_module.ISOLATED_FUNCTION_FEEDBACK:
         groups = [g for g in groups if g[0] == args.only]
     if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:
