@@ -6,6 +6,7 @@ pub mod bench_diff;
 pub mod cli;
 pub mod diff;
 pub mod error;
+pub mod export;
 pub mod follow;
 mod health;
 pub mod ids;
