@@ -756,8 +756,11 @@ fn extra_namespaces(
 ) -> Vec<String> {
     let mut candidates = BTreeSet::new();
     for name in zip.file_names().filter_map(Result::ok) {
-        if let Some((_, ns, _)) = split(&name)
+        // Tags alone (Farmer's Delight's `create:brittle`) add to another mod's tags: no claim,
+        // or two such mods would clash over a namespace neither owns.
+        if let Some((root, ns, rest)) = split(&name)
             && ns != id
+            && !(root == "data" && rest.starts_with("tags/"))
             && !NOT_CLAIMED.contains(&ns)
             && !pack_mod(ns)
         {
@@ -2492,6 +2495,15 @@ mod tests {
             ),
             // Compat for a mod outside the pack, named by nothing of its own.
             ("data/wares/loot_table/crate.json", r#"{"pools": []}"#),
+            // Tags for a mod outside the pack, named by its own model: no claim.
+            (
+                "data/create/tags/block/brittle.json",
+                r#"{"values": ["kaisyn:brick"]}"#,
+            ),
+            (
+                "assets/kaisyn/models/block/brick.json",
+                r#"{"parent": "create:block/casing"}"#,
+            ),
             // A pack mod's config naming the mod's sets, and a loader's file.
             (
                 "data/cristel/config/towers.json",
@@ -2521,6 +2533,7 @@ mod tests {
             report.outside,
             [
                 "data/wares/loot_table/crate.json",
+                "data/create/tags/block/brittle.json",
                 "data/cristel/config/towers.json",
                 "data/neoforge/loot_modifiers/global.json",
             ]
