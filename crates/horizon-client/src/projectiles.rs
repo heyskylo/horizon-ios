@@ -1536,10 +1536,14 @@ mod tests {
             );
             p.velocity = Vec3::ZERO;
             p.tick(&column);
+            // The box is in the column's water after the first move, so the
+            // drag is `getWaterDrag`'s 0.8F; the push was the first tick's only.
             assert_eq!(
                 p.velocity.y,
-                -0.03 * air,
-                "the push is the first tick's only"
+                -0.03 * f64::from(0.8_f32),
+                "drag {} surface {}",
+                column.drag,
+                column.surface
             );
         }
         // A kind that is no `ThrowableProjectile` is not pushed by a column its
