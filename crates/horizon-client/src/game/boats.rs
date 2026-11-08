@@ -1825,11 +1825,18 @@ impl Game<'_> {
                 && &*b.wood != "bamboo"
                 && !matches!(b.status, Status::UnderWater | Status::UnderFlowingWater)
             {
+                // Depth only, so its texture is never seen; one texel of the white sprite, the
+                // same at every corner (no derivatives, so the base level at any distance), keeps
+                // a shader pack's alpha test from throwing the patch away.
+                let white = (self.gui.atlas.sprites.get("horizon/white")).map_or(uv, |r| {
+                    let (u, v) = ((r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0);
+                    [u, v, u, v]
+                });
                 horizon_client::mobs::render::draw(
                     patch,
                     base,
                     &Poses::new(patch),
-                    uv,
+                    white,
                     0xFFFF_FFFF,
                     packed,
                     horizon_client::gfx::WATER_MASK_OVERLAY,
