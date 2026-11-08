@@ -5747,6 +5747,26 @@ def piston_entity_tick_order():
     return ops
 
 
+def item_block_escape():
+    """#12018: an item inside a block falls before it is pushed towards the open side."""
+    ops = setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                '/fill 0 200 1 2 200 1 stone', '/fill 1 200 0 1 200 2 stone',
+                '/setblock 1 201 1 stone', '/setblock 0 200 1 stone',
+                '/setblock 2 200 1 air',
+                '/summon item 1.5 200.25 1.5 {Item:{id:"minecraft:diamond",count:1},'
+                'PickupDelay:32767s,Tags:["escape"],Motion:[0.0d,0.2d,0.0d]}')
+    item = '@e[tag=escape,limit=1]'
+    # The east speed is random, but for two ticks the item's middle stays in
+    # the stone whatever it is: it escapes east both times, so its height and
+    # vertical motion are exact.
+    for _ in range(2):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity {item} Pos[1]'))
+        ops.append(cmd(f'/data get entity {item} Motion[1]'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
 def scheduled_item_birth():
     """#12017: an item a scheduled block tick drops ticks in that tick's entity pass;
     one an entity's block contact drops does not."""
@@ -6277,6 +6297,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
         ('carpet farms', carpet_farms(cmd, setup)),
