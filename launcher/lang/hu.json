@@ -462,7 +462,6 @@
   "Copying…": "Másolás…",
   "Filters": "Szűrők",
   "{count} followers": "{count} követő",
-  "{count} stars on GitHub": "{count} csillag a GitHubon",
   "Connect an AI agent": "Csatlakoztasson egy AI-ügynököt",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Minden kapcsoló ki van kapcsolva, hacsak nem kapcsolja be. Amit küld, az alatta van; a playhorizon.dev adatvédelmi oldala tartalmazza, hogy mennyi ideig tárolják.",
   "Players": "Játékosok",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Címkék",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.",
@@ -1257,5 +1255,14 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: a(z) {version} verzió fut, amely a játszott Horizonhoz készült",
-  "Recommended": "Ajánlott"
+  "Recommended": "Ajánlott",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Egy régebbi verzió, a(z) {version}, lefordul a játszott Horizonon: a telepítés ezt választja",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: a(z) {version} verzió nem fordult le, a(z) {older} kipróbálása",
+  "Use recommended (kept at {version})": "Ajánlott használata (a(z) {version} verziónál tartva)",
+  "Only what works on {instance}": "Csak ami fut ezen: {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} verzió, amely nem fut ezen ({instance}), el van rejtve",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "A Horizon {pin} számára készült: az indító a játszott {yours} verzióra fordítja, és csak akkor a {pin} verzióra, ha ott nem fordul le",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "A(z) {mods} nem fordult le a játszott Horizonon: fordítás arra, amelyhez készültek",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "A legutóbbi buildben a Horizon {commit} verzión a(z) {mods} miatt, nem ezen: {horizon}",
+  "In the last build, on {horizon}": "A legutóbbi buildben ezen: {horizon}"
 }

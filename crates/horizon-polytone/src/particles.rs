@@ -106,6 +106,8 @@ pub struct Emitter {
     /// Entity emitters: the model bone it sits on, and how far from the camera it still runs.
     pub bone: Option<String>,
     pub max_distance: Option<f64>,
+    /// Block emitters: `animate_tick` (the default), `block_broken` or `block_cracking`.
+    pub tick_source: Option<String>,
 }
 
 const EMITTER_FIELDS: [&str; 19] = [
@@ -131,8 +133,56 @@ impl Emitter {
                 .map(str::to_owned),
             bone: o.get("bone").and_then(Json::as_str).map(str::to_owned),
             max_distance: o.get("max_distance").and_then(Json::as_f64),
+            tick_source: o
+                .get("tick_source")
+                .and_then(Json::as_str)
+                .map(str::to_owned),
         })
     }
+}
+
+/// A sound emitter (wiki "Sound Emission"): the sound event, and as expressions how often
+/// (`chance`), where (`x`, `y`, `z`) and how (`volume`, `pitch`).
+pub struct SoundEmitter {
+    pub sound: String,
+    /// `chance`, `x`, `y`, `z`, `volume`, `pitch`: those present.
+    pub fields: BTreeMap<String, Program>,
+    /// Delayed by the distance, as fireworks' far bangs.
+    pub distance_delay: bool,
+    pub state_predicate: Option<Json>,
+    pub biomes: Option<Json>,
+}
+
+impl SoundEmitter {
+    pub fn parse(v: &Json) -> Result<Self, String> {
+        let o = v.as_object().ok_or("a sound emitter is not an object")?;
+        let sound = o
+            .get("sound")
+            .and_then(Json::as_str)
+            .ok_or("a sound emitter without a sound")?;
+        let sound = if sound.contains(':') {
+            sound.to_owned()
+        } else {
+            format!("minecraft:{sound}")
+        };
+        let (fields, _) = expressions(o, &["chance", "x", "y", "z", "volume", "pitch"])?;
+        Ok(Self {
+            sound,
+            fields,
+            distance_delay: o.get("distance_delay").and_then(Json::as_bool) == Some(true),
+            state_predicate: o.get("state_predicate").cloned(),
+            biomes: o.get("biomes").cloned(),
+        })
+    }
+}
+
+fn sound_emitters(v: Option<&Json>) -> Result<Vec<SoundEmitter>, String> {
+    v.and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, e)| SoundEmitter::parse(e).map_err(|err| format!("sound emitter {i}: {err}")))
+        .collect()
 }
 
 fn emitters(v: Option<&Json>) -> Result<Vec<Emitter>, String> {
@@ -183,8 +233,7 @@ pub struct CustomParticle {
     pub ticker: BTreeMap<String, Program>,
     pub ticker_customs: BTreeMap<String, Program>,
     pub emitters: Vec<Emitter>,
-    /// Sound emitters, kept as JSON.
-    pub sound_emitters: Vec<Json>,
+    pub sound_emitters: Vec<SoundEmitter>,
     pub has_physics: bool,
     pub kill_on_contact: bool,
     pub kill_when_still: bool,
@@ -203,6 +252,84 @@ pub struct CustomParticle {
     /// Fields kept as JSON for the renderer: `offset`, `colormap`, `model`, a GPU particle's
     /// `texture`, `shader` and `uniforms`.
     pub render: Map<String, Json>,
+    /// A GPU particle's own fields (wiki "GPU Particles"), for `"type": "gpu"`.
+    pub gpu: Option<Gpu>,
+}
+
+/// What a GPU particle (`"type": "gpu"`) adds: its whole motion and look are a function of
+/// the spawn record and the time, so it never ticks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gpu {
+    /// The texture's full path (`ns:textures/particle/....png`), a vertical strip of `frames`.
+    pub texture: String,
+    pub frames: u32,
+    /// Downward acceleration (blocks per tick squared) and the velocity kept per tick.
+    pub gravity: f64,
+    pub friction: f64,
+    /// Half-width at death, and colour at death (ARGB).
+    pub size_end: Option<f64>,
+    pub color_end: Option<u32>,
+    /// Fractions of the life spent fading in and out.
+    pub fade: [f64; 2],
+    /// Horizontal wobble amplitude (blocks), roll speed (radians per tick), height over width.
+    pub sway: f64,
+    pub spin: f64,
+    pub aspect: f64,
+    /// One spawn drawn as `count` quads spread over a `size` box.
+    pub area: Option<([f64; 3], u32)>,
+    /// Quads under the world surface are hidden.
+    pub kill_below_heightmap: bool,
+}
+
+impl Gpu {
+    fn parse(o: &Map<String, Json>) -> Result<Self, String> {
+        let num = |key: &str, default: f64| o.get(key).and_then(Json::as_f64).unwrap_or(default);
+        let color_end = match o.get("color_end").and_then(Json::as_str) {
+            Some(c) => Some(
+                u32::from_str_radix(c.trim_start_matches('#'), 16)
+                    .map_err(|_| format!("color_end {c} is no #AARRGGBB colour"))?,
+            ),
+            None => None,
+        };
+        let pair =
+            |v: &Json| -> Option<Vec<f64>> { v.as_array()?.iter().map(Json::as_f64).collect() };
+        let fade = o.get("fade").and_then(pair).unwrap_or_default();
+        let area = match o.get("area") {
+            Some(a) => {
+                let size = a.get("size").and_then(pair).filter(|s| s.len() == 3);
+                let size = size.ok_or("area needs a size [x, y, z]")?;
+                let count = a
+                    .get("count")
+                    .and_then(Json::as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 1024) as u32;
+                Some(([size[0], size[1], size[2]], count))
+            }
+            None => None,
+        };
+        Ok(Self {
+            texture: o
+                .get("texture")
+                .and_then(Json::as_str)
+                .ok_or("a GPU particle needs a texture")?
+                .to_owned(),
+            frames: o.get("frames").and_then(Json::as_u64).unwrap_or(1).max(1) as u32,
+            gravity: num("gravity", 0.0),
+            friction: num("friction", 1.0),
+            size_end: o.get("size_end").and_then(Json::as_f64),
+            color_end,
+            fade: [
+                fade.first().copied().unwrap_or(0.0),
+                fade.get(1).copied().unwrap_or(0.0),
+            ],
+            sway: num("sway", 0.0),
+            spin: num("spin", 0.0),
+            aspect: num("aspect", 1.0),
+            area,
+            kill_below_heightmap: o.get("kill_below_heightmap").and_then(Json::as_bool)
+                == Some(true),
+        })
+    }
 }
 
 const INITIALIZER: [&str; 13] = [
@@ -280,6 +407,10 @@ impl CustomParticle {
         .into_iter()
         .filter_map(|k| Some((k.to_owned(), o.get(k)?.clone())))
         .collect();
+        let gpu = match kind {
+            ParticleKind::Gpu => Some(Gpu::parse(o)?),
+            _ => None,
+        };
         Ok(Self {
             kind,
             render_type,
@@ -288,11 +419,7 @@ impl CustomParticle {
             ticker,
             ticker_customs,
             emitters: emitters(o.get("particle_emitters"))?,
-            sound_emitters: o
-                .get("sound_emitters")
-                .and_then(Json::as_array)
-                .cloned()
-                .unwrap_or_default(),
+            sound_emitters: sound_emitters(o.get("sound_emitters"))?,
             has_physics: flag("has_physics", true),
             kill_on_contact: flag("kill_on_contact", false),
             kill_when_still: flag("kill_when_still", true),
@@ -312,6 +439,7 @@ impl CustomParticle {
             light_level: count("light_level").map_or(0, |l| l.min(15) as u8),
             rotation_mode: text("rotation_mode").unwrap_or("look_at_xyz").to_owned(),
             render,
+            gpu,
         })
     }
 }
@@ -321,7 +449,7 @@ pub struct BlockEmitters {
     pub targets: Targets,
     pub priority: i32,
     pub particle_emitters: Vec<Emitter>,
-    pub sound_emitters: Vec<Json>,
+    pub sound_emitters: Vec<SoundEmitter>,
 }
 
 impl BlockEmitters {
@@ -331,11 +459,7 @@ impl BlockEmitters {
             return Ok(None);
         }
         let particle_emitters = emitters(json.get("particle_emitters"))?;
-        let sound_emitters = json
-            .get("sound_emitters")
-            .and_then(Json::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let sound_emitters = sound_emitters(json.get("sound_emitters"))?;
         if particle_emitters.is_empty() && sound_emitters.is_empty() {
             return Ok(None);
         }
@@ -362,6 +486,48 @@ impl EntityEmitters {
         Ok(Some(Self {
             targets: Targets::parse(json.get("targets"), implicit)?,
             emitters: emitters(json.get("emitters"))?,
+        }))
+    }
+}
+
+/// A particle modifier (wiki "Particle Modifiers"): expressions run once on each particle of the
+/// targeted types as it spawns. The real mod reads them in the legacy dialect (`AGE`, `SIZE`);
+/// `size` multiplies the particle's size and `speed` its motion, as vanilla's `Particle.scale`
+/// and `setPower` do (`size` observed on the real mod, #11486).
+pub struct ParticleModifier {
+    pub targets: Targets,
+    /// `color` (packed RGB), `red`, `green`, `blue`, `alpha`, `size`, `life`, `speed`: those
+    /// present.
+    pub fields: BTreeMap<String, Program>,
+    /// `colormap`, kept as JSON for the runtime.
+    pub colormap: Option<Json>,
+    /// `filter` (a block or item the particle carries), kept as JSON.
+    pub filter: Option<Json>,
+}
+
+const MODIFIER_FIELDS: [&str; 8] = [
+    "color", "red", "green", "blue", "alpha", "size", "life", "speed",
+];
+
+impl ParticleModifier {
+    /// `None` when the file is switched off or changes nothing.
+    pub fn parse(json: &Json, implicit: Option<&str>) -> Result<Option<Self>, String> {
+        if json.get("polytone_ignore").and_then(Json::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        let object = json
+            .as_object()
+            .ok_or("a particle modifier is not an object")?;
+        let (fields, _) = expressions(object, &MODIFIER_FIELDS)?;
+        let colormap = object.get("colormap").cloned();
+        if fields.is_empty() && colormap.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            targets: Targets::parse(json.get("targets"), implicit)?,
+            fields,
+            colormap,
+            filter: object.get("filter").cloned(),
         }))
     }
 }
@@ -404,7 +570,7 @@ mod tests {
             }
         );
         assert_eq!(
-            kind(json!({"type": "gpu", "render_type": "invisible"})).unwrap(),
+            kind(json!({"type": "gpu", "texture": "a:textures/particle/b.png"})).unwrap(),
             ParticleKind::Gpu
         );
         assert!(kind(json!({"type": "laser"})).is_err());
@@ -469,5 +635,76 @@ mod tests {
         .unwrap();
         assert_eq!(entity.emitters[0].max_distance, Some(32.0));
         assert!(entity.emitters[0].fields.contains_key("count"));
+    }
+
+    #[test]
+    fn a_gpu_particle_keeps_its_motion_and_look_fields() {
+        let p = CustomParticle::parse(&serde_json::json!({
+            "type": "gpu",
+            "texture": "my_pack:textures/particle/rain.png",
+            "frames": 4,
+            "gravity": 0.1,
+            "fade": [0.4, 0.2],
+            "color_end": "#80FF0000",
+            "area": {"size": [6, 6, 6], "count": 2},
+            "kill_below_heightmap": true
+        }))
+        .unwrap();
+        let gpu = p.gpu.unwrap();
+        assert_eq!(gpu.texture, "my_pack:textures/particle/rain.png");
+        assert_eq!((gpu.frames, gpu.gravity, gpu.friction), (4, 0.1, 1.0));
+        assert_eq!(gpu.fade, [0.4, 0.2]);
+        assert_eq!(gpu.color_end, Some(0x80FF_0000));
+        assert_eq!(gpu.area, Some(([6.0, 6.0, 6.0], 2)));
+        assert!(gpu.kill_below_heightmap);
+        // Without a texture a GPU particle is no particle.
+        assert!(CustomParticle::parse(&serde_json::json!({"type": "gpu"})).is_err());
+    }
+
+    #[test]
+    fn sound_emitters_compile_their_expressions() {
+        let p = CustomParticle::parse(&serde_json::json!({
+            "sound_emitters": [
+                {"sound": "block.bubble_column.upwards_ambient", "chance": "r.rand()*0.3",
+                 "volume": "sqrt(square(o.xd)+square(o.yd)+square(o.zd))", "distance_delay": true}
+            ]
+        }))
+        .unwrap();
+        let e = &p.sound_emitters[0];
+        assert_eq!(e.sound, "minecraft:block.bubble_column.upwards_ambient");
+        assert_eq!(e.fields.keys().collect::<Vec<_>>(), ["chance", "volume"]);
+        assert!(e.distance_delay);
+        assert!(
+            CustomParticle::parse(&serde_json::json!({"sound_emitters": [{"chance": "1"}]}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_particle_modifier_reads_its_expressions_and_skips_empty_files() {
+        let m = ParticleModifier::parse(
+            &json!({"size": "SIZE * 4", "life": "20 + rand() * 20", "colormap": "pack:cmap"}),
+            Some("minecraft:flame"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(m.targets.matches("minecraft:flame", |_| false));
+        let keys: Vec<&str> = m.fields.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["life", "size"]);
+        assert_eq!(m.colormap, Some(json!("pack:cmap")));
+        // Nothing to change, or switched off: no modifier.
+        assert!(
+            ParticleModifier::parse(&json!({"targets": ["minecraft:smoke"]}), None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            ParticleModifier::parse(
+                &json!({"size": "2", "polytone_ignore": true}),
+                Some("minecraft:flame")
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 }

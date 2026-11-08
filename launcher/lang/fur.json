@@ -462,7 +462,6 @@
   "Copying…": "Copiâ...",
   "Filters": "Filtris",
   "{count} followers": "{count} seguidôrs",
-  "{count} stars on GitHub": "{count} stelis su GitHub",
   "Connect an AI agent": "Conetî un agjent AI",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Ogni interrutôr al è spent fûr che se tu lu cjalis. Ce che al mande al è sot di lui; la pagjine di riservatece su playhorizon.dev e dîs cuant timp che si ten.",
   "Players": "Jugadôrs",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Etichetis",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.",
@@ -1257,5 +1255,14 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: e dopre la version {version}, fate pal Horizon che tu zuiis",
-  "Recommended": "Conseade"
+  "Recommended": "Conseade",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Une version plui vecje, {version}, si fâs sul Horizon che tu zuiis: la instalazion le sielç",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: la version {version} no si è fate, si prove {older}",
+  "Use recommended (kept at {version})": "Dopre chê conseade (tignude a {version})",
+  "Only what works on {instance}": "Dome ce che al va su {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versions che no van su {instance} a son platadis",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Fat par Horizon {pin}: il lanciadôr lu fâs su {yours}, chel che tu zuiis, e su {pin} dome se li nol si compile",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} no si son fats sul Horizon che tu zuiis: si fâs su chel che a son stâts fats",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Te ultime costruzion, su Horizon {commit} par {mods}, no su {horizon}",
+  "In the last build, on {horizon}": "Te ultime costruzion, su {horizon}"
 }

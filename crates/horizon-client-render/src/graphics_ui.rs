@@ -13,7 +13,7 @@ use crate::{
     lang,
     options_ui::{Event, Page as OptionsPage},
     settings::{Opt, Settings},
-    settings_shell::{self as shell, Group, Output, Row, Screen, Sheet, Value},
+    settings_shell::{self as shell, Binding, Group, Output, Row, Screen, Sheet, Value},
     text::Text,
 };
 
@@ -1331,7 +1331,7 @@ fn shown(item: Item, s: &Settings) -> bool {
 /// A control's label as its name and its value ("Render Distance" and "12 chunks").
 fn parts(item: Item, s: &Settings) -> (String, Option<String>) {
     // The shortcut's label is one translated "Shortcut: %s"; the row shows its key apart, as
-    // KeyBindsScreen does ("> key <" while it waits, `settings_shell::Value::Key`).
+    // KeyBindsScreen does ("> key <" while it waits, `settings_shell::Value::Binding`).
     if item == Item::Horizon(H::HdrKey) {
         let key = crate::keybinds::display_name(&s.horizon.hdr_key).plain();
         return (lang::get("Shortcut"), Some(key));
@@ -1345,9 +1345,10 @@ fn row(setting: Setting, s: &Settings) -> Row<Item> {
     let item = setting.item;
     let (name, value) = parts(item, s);
     let value = match (item, item.switch(s), item.slider(s)) {
-        (Item::Horizon(H::HdrKey), ..) => {
-            Value::Key(crate::graphics::HDR_KEY, value.unwrap_or_default())
-        }
+        (Item::Horizon(H::HdrKey), ..) => Value::Binding(Binding::key(
+            crate::graphics::HDR_KEY,
+            value.unwrap_or_default(),
+        )),
         (_, Some(on), _) => Value::Switch(on),
         (_, None, Some(position)) => Value::Slider {
             position,
@@ -1485,7 +1486,6 @@ impl Screen for GraphicsScreen {
                     Output::Push(OptionsPage::ShaderPacks),
                 ]
             }
-            Item::Horizon(H::HdrKey) => vec![Output::BindKey(crate::graphics::HDR_KEY)],
             _ => {
                 item.cycle(s, back, self.framebuffer);
                 vec![Output::Event(Event::Changed)]
@@ -1563,7 +1563,7 @@ mod tests {
     use super::*;
     use crate::{
         graphics_style as style,
-        settings_shell::{Columns, Hosted, Shell, Target},
+        settings_shell::{Capture, Columns, Hosted, Shell, Target},
     };
     use winit::keyboard::KeyCode as K;
 
@@ -1870,7 +1870,7 @@ mod tests {
         let key = row(&mut ui, &s, Item::Horizon(H::HdrKey));
         assert_eq!(
             press(&mut ui, &mut s, at(key)),
-            [CLICK, Output::BindKey(crate::graphics::HDR_KEY)]
+            [CLICK, Output::Bind(Capture::Key(crate::graphics::HDR_KEY))]
         );
         assert!(ui.changed());
     }
@@ -2121,7 +2121,8 @@ mod tests {
         );
         let key = find(&s, Item::Horizon(H::HdrKey));
         assert_eq!(key.name, "Shortcut");
-        assert!(matches!(key.value, Value::Key(crate::graphics::HDR_KEY, _)));
+        let waits = Capture::Key(crate::graphics::HDR_KEY);
+        assert!(matches!(key.value, Value::Binding(ref b) if b.capture == waits));
         let calibrate = find(&s, Item::Horizon(H::HdrCalibrate));
         assert_eq!(calibrate.value, Value::Press);
     }

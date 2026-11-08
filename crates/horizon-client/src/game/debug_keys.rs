@@ -1167,7 +1167,7 @@ impl Game<'_> {
                     (0.3125, 0.265_625)
                 }
                 K::WindCharge | K::BreezeWindCharge => (0.3125, 0.0),
-                K::LargeFireball { .. } => (1.0, 0.85),
+                K::LargeFireball { .. } | K::DragonFireball => (1.0, 0.85),
             };
             g.hitbox(
                 at(p.previous, p.position),

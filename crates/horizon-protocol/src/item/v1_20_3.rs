@@ -228,6 +228,7 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
 }
 
 fn from_tag(saved: &Tag, known: Option<(i32, i32)>) -> Result<Stack> {
+    let _nested = super::Nested::enter()?;
     let _pinned = ids::unrenumbered();
     let (item, count) = match known {
         Some(values) => values,

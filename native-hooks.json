@@ -5218,6 +5218,28 @@
       "mod_api": {
         "contract": "listen"
       }
+    },
+    {
+      "name": "world_hold",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_world_hold",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "collect",
+        "out": "hold"
+      }
+    },
+    {
+      "name": "world_warp",
+      "version": 1,
+      "target": "horizon_client_render::gfx::native_render::native_world_warp",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "collect",
+        "out": "warp"
+      }
     }
   ]
 }

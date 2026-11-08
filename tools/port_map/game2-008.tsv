@@ -97,7 +97,7 @@ ItemStack.hasNonDefault	skip:other		component presence query; Horizon reads stac
 ItemStack.validateComponents	skip:java		codec-side validation
 ItemStack.validateContainedItemSizes	skip:java		codec-side validation
 ItemStack.getDamageValue	skip:other		field accessor; Horizon keeps damage on the stack
-ItemStack.setDamageValue	skip:other		field write
+ItemStack.setDamageValue	port	crates/horizon-client/src/stations.rs::set_damage_value	stored clamped to [0, max_damage]; the anvil repair paths and the grindstone result call it (a mob's slot damage goes through set_slot_damage in mobs/finalize.rs)
 ItemStack.isBroken	inline	crates/horizon-client/src/game.rs::Game::damage_held	the break test (damage at or over max) is in damage_held
 ItemStack.nextDamageWillBreak	inline	crates/horizon-client/src/game/trident.rs::Game::use_trident	gap: minor: only the trident's check is ported here
 ItemStack.processDurabilityChange	port	crates/horizon-client/src/game/enchant_effects.rs::Game::durability_loss	the Unbreaking-adjusted loss

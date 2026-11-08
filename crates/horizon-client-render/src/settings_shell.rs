@@ -5,12 +5,13 @@
 //! A new screen implements [`Screen`], describing its rows from the settings, and [`Shell`] does
 //! everything else: drawing, clicks, one scroll path, a controller's focus and its declared
 //! buttons, keys and each row's description (`extras_ui` is the smallest; `graphics_ui` has
-//! pages, sliders, costs and Undo). `controller_ui` and `shader_ui` still drive the parts below
-//! by hand.
+//! pages, sliders, costs and Undo; `controller_ui` has bindings, [`Value::Binding`], whose wait
+//! for a button or a key the shell runs). `shader_ui` still drives the parts below by hand.
 use crate::{
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
     lang,
+    pad_glyph::{self, Glyph},
     settings::Settings,
     text::Text,
     ui,
@@ -573,6 +574,225 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
     }
 }
 
+/// A binding's reset button, at the end of its row at `y`.
+fn reset_rect(cols: &Columns, y: f32) -> [f32; 4] {
+    let right = cols.list_x + cols.list_w - RESET_INSET;
+    [right - RESET_W, y + RESET_INSET, RESET_W, style::CONTROL_H]
+}
+
+/// What a row takes the focus and a press on: all of it but a binding's reset.
+fn row_rect<R>(row: &Row<R>, cols: &Columns, y: f32) -> [f32; 4] {
+    let resets = row.binding().is_some_and(|b| b.reset.shown());
+    short_of_reset(cols, y, resets)
+}
+/// The row at `y`, short of its reset button where it has one.
+fn short_of_reset(cols: &Columns, y: f32, resets: bool) -> [f32; 4] {
+    let [x, y, w, h] = cols.row(y);
+    let w = if resets { w - RESET_W - RESET_GAP } else { w };
+    [x, y, w, h]
+}
+
+/// A row's lit background while it is pointed at or focused.
+fn lit(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, _]: [f32; 4]) {
+    style::fill(
+        batch,
+        atlas,
+        [x + 2.0, y + 1.0, w - 4.0, style::ROW - 2.0],
+        style::HOVER,
+    );
+}
+
+/// A value to read ([`Value::Read`]) at `y`: its name, and the value at the right, cut short to
+/// fit. `(label, name, value)`; `(hover, focused)`.
+fn read_row(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    cols: &Columns,
+    y: f32,
+    (label, name, value): (&str, &str, &str),
+    (hover, focused): (bool, bool),
+) {
+    let rect = cols.row(y);
+    crate::widgets::record(label, rect, true);
+    crate::widgets::narratable(|| {
+        crate::widgets::Narratable::button(label.to_owned(), rect, true)
+            .hovered(hover)
+            .focused(focused)
+    });
+    crate::widgets::target(rect);
+    if hover || focused {
+        lit(batch, atlas, rect);
+    }
+    let ty = y + ((style::ROW - 8.0) / 2.0).floor();
+    let left = rect[0] + style::INSET;
+    let name_w = atlas.font.width(name);
+    let shown = Text::literal(name.to_owned());
+    batch.text_styled(atlas, &shown, left, ty, style::WHITE, true);
+    let room = rect[2] - 2.0 * style::INSET - name_w - 8.0;
+    let value = style::fit(atlas, value, room);
+    let vx = rect[0] + rect[2] - style::INSET - atlas.font.width(&value);
+    batch.text_styled(atlas, &Text::literal(value), vx, ty, style::SOFT, true);
+    if focused {
+        style::ring(
+            batch,
+            atlas,
+            [rect[0] + 1.0, y, rect[2] - 2.0, style::ROW],
+            style::WHITE,
+        );
+    }
+}
+
+/// A controller binding's row as the shell reads it ([`Shown::Pad`]).
+struct PadRow<'a> {
+    /// The whole caption, for the narrator and the widget tree.
+    label: &'a str,
+    name: &'a str,
+    /// What the strip says, for the narrator.
+    hint: &'a str,
+    glyph: Option<Glyph>,
+    waits: bool,
+    shared: bool,
+    reset: Reset,
+    live: bool,
+    /// The row and its reset: pointed at, focused.
+    hover: (bool, bool),
+    focus: (bool, bool),
+}
+
+/// A controller binding's row at `y`: its name, a chip with the bound button's art ("Not Bound"
+/// while nothing is), marked "> <" in yellow while it waits and "[ ]" while its button does
+/// something else too, and its reset at the end.
+fn pad_row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32, view: &PadRow) {
+    let &PadRow {
+        label,
+        name,
+        hint,
+        glyph,
+        waits,
+        shared,
+        reset,
+        live,
+        hover: (hover, reset_hover),
+        focus: (focused, reset_focused),
+    } = view;
+    let rect = short_of_reset(cols, y, reset.shown());
+    if live && (hover || focused) {
+        lit(batch, atlas, rect);
+    }
+    crate::widgets::widget_cursor(hover, live);
+    crate::widgets::record(label, rect, live);
+    crate::widgets::narratable(|| {
+        let mut n = crate::widgets::Narratable::button(label.to_owned(), rect, live)
+            .hovered(hover)
+            .focused(focused);
+        n.hint = Some(hint.to_owned());
+        n
+    });
+    if live {
+        crate::widgets::target(rect);
+    }
+    // The chip: the button's art, or its name where there is no art or nothing is bound.
+    let art = glyph.filter(|g| pad_glyph::art(atlas, *g).is_some());
+    let text = match glyph {
+        Some(g) => g.label().to_owned(),
+        None => lang::get(NOT_BOUND),
+    };
+    let inner = match art {
+        Some(g) => pad_glyph::width(atlas, g),
+        None => atlas.font.width(&text),
+    };
+    let marks = match (waits, shared) {
+        (true, _) => Some((">", "<")),
+        (false, true) => Some(("[", "]")),
+        (false, false) => None,
+    };
+    let mark_w = marks.map_or(0.0, |(open, close)| {
+        atlas.font.width(open) + atlas.font.width(close) + 2.0 * PAD_MARK_GAP
+    });
+    let chip_w = (inner + mark_w + PAD_CHIP_PAD).max(PAD_CHIP_W);
+    let chip = [
+        rect[0] + rect[2] - chip_w - 2.0,
+        y + (style::ROW - style::CONTROL_H) / 2.0,
+        chip_w,
+        style::CONTROL_H,
+    ];
+    // Text in the chip only where there is no art, yellow with its marks.
+    let face = match (art, marks) {
+        (Some(_), _) => Text::literal(String::new()),
+        (None, Some(_)) => Text::literal(text).with_color(crate::text::YELLOW),
+        (None, None) => Text::literal(text),
+    };
+    style::button(batch, atlas, chip, &face, (live && hover, live, false));
+    let ty = y + ((style::ROW - 8.0) / 2.0).floor();
+    let middle = chip[0] + chip[2] / 2.0;
+    if let Some(g) = art {
+        pad_glyph::draw(batch, atlas, g, (middle - inner / 2.0 + 1.0).floor(), ty);
+    }
+    if let Some((open, close)) = marks {
+        let yellow = |mark: &str| Text::literal(mark.to_owned()).with_color(crate::text::YELLOW);
+        let left = middle - inner / 2.0 - PAD_MARK_GAP - atlas.font.width(open);
+        batch.text_styled(atlas, &yellow(open), left.floor(), ty, style::WHITE, true);
+        let right = middle + inner / 2.0 + PAD_MARK_GAP;
+        batch.text_styled(atlas, &yellow(close), right.ceil(), ty, style::WHITE, true);
+    }
+    let left = rect[0] + style::INSET;
+    let color = if live { style::WHITE } else { style::MUTED };
+    let shown = Text::literal(style::fit(atlas, name, chip[0] - 6.0 - left));
+    batch.text_styled(atlas, &shown, left, ty, color, true);
+    if focused {
+        style::ring(batch, atlas, rect, style::WHITE);
+    }
+    if !reset.shown() {
+        return;
+    }
+    // The reset: a target only where it would do something.
+    let resets = live && reset == Reset::Changed;
+    let reset = reset_rect(cols, y);
+    let reset_label = lang::get("controls.reset");
+    let reset_hover = resets && reset_hover;
+    crate::widgets::widget_cursor(reset_hover, resets);
+    crate::widgets::record(&reset_label, reset, resets);
+    crate::widgets::narratable(|| {
+        let what = lang::tr("narrator.controls.reset", &[&name]);
+        crate::widgets::Narratable::button(what, reset, resets)
+            .hovered(reset_hover)
+            .focused(reset_focused)
+    });
+    if resets {
+        crate::widgets::target(reset);
+    }
+    let shown = Text::literal(reset_label);
+    style::button(batch, atlas, reset, &shown, (reset_hover, resets, false));
+    if reset_focused {
+        style::ring(batch, atlas, reset, style::WHITE);
+    }
+}
+
+/// Lines a screen shows under its page list (`Screen::side`), from the place of the `below`th page.
+fn side_lines(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    cols: &Columns,
+    below: usize,
+    lines: &[String],
+) {
+    let [x, y, w, _] = cols.page(below);
+    for (i, line) in lines.iter().enumerate() {
+        let rect = [
+            x + SIDE_INSET,
+            y + SIDE_INSET + i as f32 * SIDE_LINE_H,
+            w - 2.0 * SIDE_INSET,
+            8.0,
+        ];
+        crate::widgets::record(line, rect, false);
+        let shown = Text::literal(style::fit(atlas, line, rect[2]));
+        batch.text_styled(atlas, &shown, rect[0], rect[1], style::MUTED, true);
+    }
+}
+/// A line under the page list: its inset, and its height.
+const SIDE_INSET: f32 = 2.0;
+const SIDE_LINE_H: f32 = 10.0;
+
 /// Vanilla's scroller, inside the panel's right edge, sized as `ui::Scroll` drags it.
 pub(crate) fn scroller(
     batch: &mut HudBatch,
@@ -761,13 +981,121 @@ pub(crate) enum Value {
         steps: Option<u32>,
         text: String,
     },
-    /// A key binding (`.0`: what the host waits on), as it reads now.
-    Key(&'static str, String),
+    /// A binding: a press makes the host wait for a key or a controller button
+    /// ([`Output::Bind`]), and the row shows what it is bound to now ([`Binding`]).
+    Binding(Binding),
+    /// A value to read beside the name, which the focus reaches (unlike `Note`), so the strip and
+    /// the narrator say what it is; nothing presses it.
+    Read(String),
     /// A button across the row.
     Press,
-    /// A line to read: nothing presses it and no focus lands on it.
+    /// A line to read, which no focus reaches (unlike `Read`) and nothing presses.
     Note,
 }
+
+/// What a binding row waits for once pressed, by the name the host binds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Capture {
+    /// A key or a mouse button, as on Key Binds (`OptionsUi::selected_key`): Escape unbinds.
+    Key(&'static str),
+    /// A controller button for a gameplay action (`OptionsUi::selected_pad_action`): the game binds
+    /// the next button pressed, Start cancels, and the keyboard's Escape unbinds, as on Key Binds.
+    Pad(&'static str),
+}
+
+/// What a binding row is bound to now.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Shown {
+    /// The key's name, as Key Binds shows it.
+    Key(String),
+    /// The controller button's glyph, drawn as its art; `None` while nothing is bound. `cancel`
+    /// is the button that cancels the wait (`MenuJob::Start`), named in the strip meanwhile.
+    Pad { glyph: Option<Glyph>, cancel: Glyph },
+}
+
+/// A binding row's value ([`Value::Binding`]). The screen says what it binds and what it is bound
+/// to; the shell starts the wait, shows it ("> A <"), draws the button, says in the strip that
+/// it isn't bound or what else its button does, and draws the row's reset.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Binding {
+    pub(crate) capture: Capture,
+    pub(crate) shown: Shown,
+    /// What else the same button does, by name: shown in the strip, and the button in yellow.
+    pub(crate) shared: Vec<String>,
+    /// Its reset button at the row's end (`Screen::reset`).
+    pub(crate) reset: Reset,
+}
+/// A binding row's reset button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reset {
+    /// The row has none (a key, as Key Binds lists it).
+    None,
+    /// Greyed: the binding is its default already.
+    Default,
+    /// Live: the binding differs from its default.
+    Changed,
+}
+impl Reset {
+    /// The row has a reset button, live or not.
+    fn shown(self) -> bool {
+        self != Reset::None
+    }
+}
+impl Binding {
+    /// A key's binding, as Key Binds lists it: no reset of its own.
+    pub(crate) fn key(name: &'static str, shown: String) -> Self {
+        Self {
+            capture: Capture::Key(name),
+            shown: Shown::Key(shown),
+            shared: Vec::new(),
+            reset: Reset::None,
+        }
+    }
+    /// What it reads as, for the narrator and the widget tree: a pad's shared button in brackets,
+    /// as the row draws it in yellow.
+    fn text(&self) -> String {
+        match &self.shown {
+            Shown::Key(text) => text.clone(),
+            Shown::Pad { glyph, .. } => {
+                let name = glyph.map_or_else(|| lang::get(NOT_BOUND), |g| g.label().to_owned());
+                if self.shared.is_empty() {
+                    name
+                } else {
+                    format!("[ {name} ]")
+                }
+            }
+        }
+    }
+    /// What the strip says about it while `waiting`, else when it isn't bound or shares its
+    /// button; `None` leaves the row's own description.
+    fn note(&self, waiting: bool) -> Option<String> {
+        match (&self.shown, waiting) {
+            (Shown::Pad { cancel, .. }, true) => Some(lang::tr(WAITING_PAD, &[&cancel.label()])),
+            (Shown::Pad { glyph: None, .. }, false) => Some(lang::get(UNBOUND)),
+            _ if !self.shared.is_empty() => Some(lang::tr(SHARED, &[&self.shared.join(", ")])),
+            _ => None,
+        }
+    }
+}
+/// Vanilla's word for a key bound to nothing.
+const NOT_BOUND: &str = "key.keyboard.unknown";
+/// The strip while a controller button is awaited, naming the one that cancels.
+const WAITING_PAD: &str = "Press the button for this. %s cancels.";
+/// The strip over a binding with no button.
+const UNBOUND: &str = "Not bound: press this row, then the button that should do it.";
+/// The strip over a binding whose button does other things too.
+const SHARED: &str = "This button also does: %s";
+/// A pad binding's chip, at least: wide enough for most labels in vanilla's font.
+const PAD_CHIP_W: f32 = 56.0;
+/// A pad binding's chip around its art or text, and the room for the marks ("> <", "[ ]").
+const PAD_CHIP_PAD: f32 = 8.0;
+/// Clear of the art's edge, which its sprite draws past (`pad_glyph::rect`).
+const PAD_MARK_GAP: f32 = 5.0;
+/// A binding's reset button at the row's end, and the gap left before it.
+const RESET_W: f32 = 36.0;
+const RESET_GAP: f32 = 4.0;
+/// The reset button's inset from the list's right edge.
+const RESET_INSET: f32 = 2.0;
 
 /// A row as a screen describes it, built afresh from the settings each time it is read.
 #[derive(Clone, Debug)]
@@ -841,10 +1169,18 @@ impl<R> Row<R> {
             } else {
                 lang::get_or("Off", "Off")
             }),
-            Value::Choice(text) | Value::Slider { text, .. } | Value::Key(_, text) => {
+            Value::Choice(text) | Value::Slider { text, .. } | Value::Read(text) => {
                 Some(text.clone())
             }
+            Value::Binding(binding) => Some(binding.text()),
             Value::Press | Value::Note => None,
+        }
+    }
+    /// Its binding, for a binding row.
+    fn binding(&self) -> Option<&Binding> {
+        match &self.value {
+            Value::Binding(binding) => Some(binding),
+            _ => None,
         }
     }
 }
@@ -869,8 +1205,8 @@ pub(crate) struct Sheet<P, R> {
 pub(crate) enum Output {
     /// Passed on to the game as it is.
     Event(crate::options_ui::Event),
-    /// Wait for a key or a mouse button to bind to this name.
-    BindKey(&'static str),
+    /// Wait for what a binding row binds: a key or a mouse button, or a controller button.
+    Bind(Capture),
     /// Open another options page over this one.
     Push(crate::options_ui::Page),
     /// Leave the screen.
@@ -911,6 +1247,14 @@ pub(crate) trait Screen {
     ) -> Option<Vec<Output>> {
         None
     }
+    /// A binding row's reset was pressed: its binding goes back to its default.
+    fn reset(&mut self, _s: &mut Settings, _row: Self::Row) -> Vec<Output> {
+        Vec::new()
+    }
+    /// Lines under the page list: whose settings these are, say.
+    fn side(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Whether the screen has Undo, which puts back what it changed (`undo`) since it opened.
     fn undoes(&self) -> bool {
         false
@@ -921,6 +1265,13 @@ pub(crate) trait Screen {
     fn changes(&self, outputs: &[Output]) -> bool {
         changes_settings(outputs)
     }
+    /// Whether what the screen changes differs now from `before`, for a screen that can tell:
+    /// Undo then shows exactly while it would do something, a binding the host made (the game
+    /// binds a controller button) included, and a value stepped back isn't a change. `None`
+    /// leaves it to `changes`.
+    fn differs(&self, _s: &Settings, _before: &Settings) -> Option<bool> {
+        None
+    }
 }
 
 /// Whether `outputs` say a setting changed, or a key is being bound to one.
@@ -929,7 +1280,7 @@ pub(crate) fn changes_settings(outputs: &[Output]) -> bool {
     let changed = |output: &Output| {
         matches!(
             output,
-            Output::BindKey(_) | Output::Event(Event::Changed | Event::SliderDrag)
+            Output::Bind(_) | Output::Event(Event::Changed | Event::SliderDrag)
         )
     };
     outputs.iter().any(changed)
@@ -956,7 +1307,7 @@ pub(crate) fn stamp_of(parts: &impl std::fmt::Debug) -> u64 {
 pub(crate) trait Hosted {
     /// The screen opens, afresh.
     fn open(&mut self);
-    /// `waiting`: the key binding the host waits on.
+    /// `waiting`: the binding the host waits on.
     fn draw(
         &mut self,
         s: &Settings,
@@ -964,7 +1315,7 @@ pub(crate) trait Hosted {
         atlas: &HudAtlas,
         cursor: (f32, f32),
         in_world: bool,
-        waiting: Option<&'static str>,
+        waiting: Option<Capture>,
     );
     /// A press (or a drag with `drag`) at `at`.
     fn click(
@@ -1023,6 +1374,8 @@ pub(crate) trait Hosted {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Target<P, R> {
     Row(R),
+    /// A binding row's reset button.
+    Reset(R),
     Page(P),
     Search,
     Undo,
@@ -1071,7 +1424,7 @@ pub(crate) struct Shell<S: Screen> {
     page: Option<S::Page>,
     /// While searching, the page last picked in the page list: current until the list scrolls.
     picked: Option<S::Page>,
-    waiting: Option<&'static str>,
+    waiting: Option<Capture>,
     /// The rows as last built, and what for.
     built: Option<(Built<S::Page, S::Row>, Rc<View<S::Page, S::Row>>)>,
     /// The settings as the screen found them, for Undo (`Screen::undoes`), and whether it
@@ -1150,10 +1503,15 @@ impl<S: Screen> Shell<S> {
             self.changed = true;
         }
     }
-    /// Remember the settings before the first change, for Undo.
+    /// Remember the settings before the first change, for Undo, and ask a screen that can tell
+    /// whether they differ now (`Screen::differs`).
     fn keep(&mut self, s: &Settings) {
-        if self.screen.undoes() && self.before.is_none() {
-            self.before = Some(Box::new(s.clone()));
+        if !self.screen.undoes() {
+            return;
+        }
+        let before = self.before.get_or_insert_with(|| Box::new(s.clone()));
+        if let Some(differs) = self.screen.differs(s, before) {
+            self.changed = differs;
         }
     }
     /// Undo, gone once it has put the settings back.
@@ -1263,22 +1621,21 @@ impl<S: Screen> Shell<S> {
         let lines = view.lines.iter();
         lines.filter_map(move |l| Some((&view.rows[l.setting?], top + l.y - scroll)))
     }
-    /// The row under the pointer, inside the list's view.
+    /// The row under the pointer, inside the list's view, and where it is.
     fn row_at<'a>(
         &self,
         view: &'a View<S::Page, S::Row>,
         (x, y): (f32, f32),
-    ) -> Option<&'a Row<S::Row>> {
+    ) -> Option<(&'a Row<S::Row>, f32)> {
         let cols = &view.cols;
         if y < cols.top || y >= cols.bottom {
             return None;
         }
         let mut placed = self.placed(view);
-        let hit = placed.find(|&(_, ry)| {
+        placed.find(|&(_, ry)| {
             let [rx, ry, rw, rh] = cols.row(ry);
             ui::hovered((x, y), rx, ry, rw, rh)
-        });
-        hit.map(|(row, _)| row)
+        })
     }
     /// Press `row`: `track` is where on its slider's track (`None` from the keyboard, or off it).
     fn activate(
@@ -1289,7 +1646,14 @@ impl<S: Screen> Shell<S> {
         track: Option<f32>,
     ) -> Vec<Output> {
         match row.value {
-            Value::Note => Vec::new(),
+            Value::Note | Value::Read(_) => Vec::new(),
+            // The shell, not the screen, starts the wait.
+            Value::Binding(ref binding) => {
+                self.can_change_value = false;
+                let outputs = vec![CLICK, Output::Bind(binding.capture)];
+                self.did(&outputs);
+                outputs
+            }
             Value::Slider { .. } => {
                 self.can_change_value = true;
                 let Some(position) = track else {
@@ -1322,13 +1686,18 @@ impl<S: Screen> Shell<S> {
                 out.push((Target::Page(page), cols.page(i)));
             }
         }
-        let rows: Vec<(S::Row, f32, bool)> = self
+        let rows: Vec<(&Row<S::Row>, f32, bool)> = self
             .placed(view)
-            .map(|(row, y)| (row.id, y, row.live))
+            .map(|(row, y)| (row, y, row.live))
             .collect();
-        for &(id, y, live) in &rows[reach(&rows, cols, near)] {
-            if live {
-                out.push((Target::Row(id), cols.row(y)));
+        for &(row, y, live) in &rows[reach(&rows, cols, near)] {
+            if !live {
+                continue;
+            }
+            out.push((Target::Row(row.id), row_rect(row, cols, y)));
+            // A binding's reset, right of it, only while it would do something.
+            if row.binding().is_some_and(|b| b.reset == Reset::Changed) {
+                out.push((Target::Reset(row.id), reset_rect(cols, y)));
             }
         }
         if self.changed {
@@ -1363,17 +1732,37 @@ impl<S: Screen> Shell<S> {
         let row = |id| view.rows.iter().find(|r| r.id == id);
         self.can_change_value = matches!(target, Target::Row(id)
             if row(id).is_some_and(|r| matches!(r.value, Value::Slider { .. })));
-        if matches!(target, Target::Row(_)) {
+        if matches!(target, Target::Row(_) | Target::Reset(_)) {
             scroll_into_view(&mut self.scroll, rect, &view.cols, view.content);
             self.picked = None;
         }
+    }
+    /// A binding row's reset: the binding goes back to its default and, as the reset goes away
+    /// with it, the focus to its row.
+    fn reset(&mut self, s: &mut Settings, row: S::Row) -> Vec<Output> {
+        let mut outputs = vec![CLICK];
+        outputs.extend(self.screen.reset(s, row));
+        self.did(&outputs);
+        self.focus = Some(Target::Row(row));
+        outputs
     }
     /// The search changed: the list starts over at its top.
     fn searched(&mut self) {
         self.scroll.amount = 0.0;
         self.picked = None;
     }
-    /// A row of the list at `y`.
+    /// What the strip and the narrator say about `row`: a binding's wait, its missing button or
+    /// its shared one, else what the row does.
+    fn strip_text(&self, row: &Row<S::Row>) -> String {
+        let note = row.binding().and_then(|b| b.note(self.waits(row)));
+        note.unwrap_or_else(|| row.described().to_owned())
+    }
+    /// Whether the host waits on `row`'s binding.
+    fn waits(&self, row: &Row<S::Row>) -> bool {
+        row.binding()
+            .is_some_and(|b| self.waiting == Some(b.capture))
+    }
+    /// A row of the list at `y`; `pointer`: the cursor, while it is over the list.
     fn draw_row(
         &self,
         batch: &mut HudBatch,
@@ -1381,7 +1770,7 @@ impl<S: Screen> Shell<S> {
         cols: &Columns,
         row: &Row<S::Row>,
         y: f32,
-        hover: bool,
+        pointer: Option<(f32, f32)>,
     ) {
         if row.value == Value::Note {
             let rect = cols.row(y);
@@ -1392,11 +1781,39 @@ impl<S: Screen> Shell<S> {
             batch.text_styled(atlas, &name, rect[0] + style::INSET, ty, style::MUTED, true);
             return;
         }
-        let waits = matches!(row.value, Value::Key(key, _) if self.waiting == Some(key));
+        let over = |[x, y, w, h]: [f32; 4]| pointer.is_some_and(|at| ui::hovered(at, x, y, w, h));
+        let hover = over(row_rect(row, cols, y));
+        let waits = self.waits(row);
         let value = row
             .value_text()
             .map(|text| if waits { format!("> {text} <") } else { text });
         let label = row.label(value.as_deref());
+        let focused = self.shows_focus(Target::Row(row.id));
+        let hint = self.strip_text(row);
+        if let Value::Read(value) = &row.value {
+            let view = (label.as_str(), row.name.as_str(), value.as_str());
+            read_row(batch, atlas, cols, y, view, (hover, focused));
+            crate::widgets::last_narratable(|n| n.hint = Some(hint.clone()));
+            return;
+        }
+        if let Some(binding) = row.binding()
+            && let Shown::Pad { glyph, .. } = binding.shown
+        {
+            let view = PadRow {
+                label: &label,
+                name: &row.name,
+                hint: &hint,
+                glyph,
+                waits,
+                shared: !binding.shared.is_empty(),
+                reset: binding.reset,
+                live: row.live,
+                hover: (hover, over(reset_rect(cols, y))),
+                focus: (focused, self.shows_focus(Target::Reset(row.id))),
+            };
+            pad_row(batch, atlas, cols, y, &view);
+            return;
+        }
         let view = RowView {
             label: &label,
             name: &row.name,
@@ -1411,15 +1828,15 @@ impl<S: Screen> Shell<S> {
             },
             live: row.live,
             hover,
-            focused: self.shows_focus(Target::Row(row.id)),
+            focused,
             held: self.dragging == Some(row.id),
-            key: matches!(row.value, Value::Key(..)).then_some(waits),
+            key: row.binding().map(|_| waits),
         };
         self::row(batch, atlas, cols, y, &view);
         if row.live && matches!(row.value, Value::Choice(_)) {
             crate::widgets::steps_value(cols.row(y));
         }
-        crate::widgets::last_narratable(|n| n.hint = Some(row.described().to_owned()));
+        crate::widgets::last_narratable(|n| n.hint = Some(hint.clone()));
     }
     /// The strip under the plate: the hovered or focused row's name and what it does; with none,
     /// what the open page holds.
@@ -1438,9 +1855,10 @@ impl<S: Screen> Shell<S> {
         style::panel(batch, atlas, cols.dock);
         let row = described.map(|i| &view.rows[i]);
         let why = row.and_then(|row| row.why.as_deref().filter(|_| !row.live));
-        let (name, about) = match row {
-            Some(row) => (row.name.as_str(), why.unwrap_or(row.described())),
-            None => {
+        let said = row.map(|row| self.strip_text(row));
+        let (name, about) = match (row, &said) {
+            (Some(row), Some(said)) => (row.name.as_str(), why.unwrap_or(said)),
+            _ => {
                 let Some(page) = view.pages.iter().find(|p| Some(p.0) == current) else {
                     return;
                 };
@@ -1484,7 +1902,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         atlas: &HudAtlas,
         cursor: (f32, f32),
         in_world: bool,
-        waiting: Option<&'static str>,
+        waiting: Option<Capture>,
     ) {
         self.waiting = waiting;
         self.keep(s);
@@ -1502,6 +1920,8 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             let name = &view.pages[i].1;
             page_tab(batch, atlas, cols.page(i), name, flags, cursor);
         }
+        let below = self.tabs(&view).len();
+        side_lines(batch, atlas, &cols, below, &self.screen.side());
         let focused = self.focus == Some(Target::Search);
         search_field(&mut self.search, batch, atlas, &cols, cursor, focused);
         let name_of = |page| view.pages.iter().find(|p| p.0 == page).map(|p| p.1.clone());
@@ -1514,6 +1934,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         self::plate(batch, atlas, &cols, &heading);
         let over_list = cursor.1 >= cols.top && cursor.1 < cols.bottom;
         let mut described = None;
+        let mut waiting = None;
         self::list(
             batch,
             atlas,
@@ -1525,19 +1946,23 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 let row = &view.rows[i];
                 let [rx, ry, rw, rh] = cols.row(y);
                 let hover = over_list && ui::hovered(cursor, rx, ry, rw, rh);
-                let focused = self.shows_focus(Target::Row(row.id));
-                // The pointer's row wins over the keyboard's.
+                let focused = self.shows_focus(Target::Row(row.id))
+                    || self.shows_focus(Target::Reset(row.id));
+                // A wait is what the strip says; then the pointer's row wins over the keyboard's.
+                if self.waits(row) {
+                    waiting = Some(i);
+                }
                 if hover || self.dragging == Some(row.id) || (focused && described.is_none()) {
                     described = Some(i);
                 }
-                self.draw_row(batch, atlas, &cols, row, y, hover);
+                self.draw_row(batch, atlas, &cols, row, y, over_list.then_some(cursor));
             },
         );
         scroller(batch, atlas, &cols, view.content, self.scroll.amount);
         if let Some((_, row)) = self.first_row(&view) {
             crate::widgets::focus_link(cols.search(), true, row);
         }
-        self.draw_dock(batch, atlas, &view, described, current);
+        self.draw_dock(batch, atlas, &view, waiting.or(described), current);
         // Undo, over Done, only once there is something to undo.
         if self.changed {
             let undo = cols.button(1);
@@ -1624,10 +2049,14 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 return vec![CLICK];
             }
         }
-        let Some(row) = self.row_at(&view, (x, y)).filter(|row| row.live) else {
+        let Some((row, row_y)) = self.row_at(&view, (x, y)).filter(|(row, _)| row.live) else {
             return Vec::new();
         };
         self.focus = Some(Target::Row(row.id));
+        if row.binding().is_some_and(|b| b.reset == Reset::Changed) && at(reset_rect(&cols, row_y))
+        {
+            return self.reset(s, row.id);
+        }
         // A press on the track sets the value there; on the name, only focuses.
         let track = (x >= cols.track().0).then(|| cols.slider_at(x));
         self.activate(s, row, shift, track)
@@ -1661,7 +2090,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
     ) -> Vec<Output> {
         if amount != 0.0 && s.extras.wheel_cycles_settings {
             let view = self.view(s, size);
-            if let Some(row) = self.row_at(&view, at).filter(|row| row.live)
+            if let Some((row, _)) = self.row_at(&view, at).filter(|(row, _)| row.live)
                 && let Some(outputs) = self.screen.wheel_step(s, row.id, amount > 0.0)
             {
                 self.did(&outputs);
@@ -1783,6 +2212,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 Some(row) => self.activate(s, row, shift, None),
                 None => Vec::new(),
             },
+            Some(Target::Reset(row)) => self.reset(s, row),
             Some(Target::Undo) => {
                 // Undo goes away with the change it undid: Done has the focus.
                 self.focus = Some(Target::Done);
@@ -1918,6 +2348,11 @@ impl<S: Screen> Shell<S> {
             Some(Target::Row(row)) => Some(row),
             _ => None,
         }
+    }
+    /// The names of the rows the list has now.
+    pub(crate) fn row_names(&mut self, s: &Settings) -> Vec<String> {
+        let view = self.view(s, (854.0, 480.0));
+        view.rows.iter().map(|r| r.name.clone()).collect()
     }
     /// The captions of the rows the list has now, as the widget tree reads them.
     pub(crate) fn row_labels(&mut self, s: &Settings) -> Vec<String> {
