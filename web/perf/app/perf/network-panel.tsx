@@ -36,26 +36,28 @@ export function NetworkPanel({ reader, capture }: Props) {
           <dd>{total.players}</dd>
         </div>
       </dl>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>{t("summary.player")}</th>
-            <th>{t("summary.out")}</th>
-            <th>{t("summary.in")}</th>
-            <th>{t("summary.peak")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {players.map((row) => (
-            <tr key={row.id}>
-              <td>{row.index}</td>
-              <td>{num(row.out_kib_s)} KiB/s</td>
-              <td>{num(row.in_kib_s)} KiB/s</td>
-              <td>{num(row.peak_out_kib_s)} KiB/s</td>
+      {players.length > 0 ? (
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>{t("summary.player")}</th>
+              <th>{t("summary.out")}</th>
+              <th>{t("summary.in")}</th>
+              <th>{t("summary.peak")}</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {players.map((row) => (
+              <tr key={row.id}>
+                <td>{row.index}</td>
+                <td>{num(row.out_kib_s)} KiB/s</td>
+                <td>{num(row.in_kib_s)} KiB/s</td>
+                <td>{num(row.peak_out_kib_s)} KiB/s</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
     </div>
   );
 }

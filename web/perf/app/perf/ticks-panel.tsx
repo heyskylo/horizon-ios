@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
-import { num } from "@/lib/format";
+import { at, num } from "@/lib/format";
 import { stats } from "@/lib/health";
 import { t } from "@/lib/i18n";
 import type { TickRow } from "@/lib/types";
@@ -21,15 +21,12 @@ export function TicksPanel({ reader, capture }: Props) {
   const { rows, error } = useRows<TickRow>(reader, capture, "ticks", { limit: 1000 });
   const [selected, setSelected] = useState<string | null>(null);
 
-  // keep same query shape as before
-
   const stat = stats(rows.map((row) => row.wall_ms));
   const worst = [...rows].sort((a, b) => b.wall_ms - a.wall_ms).slice(0, 8);
   const worstMs = worst[0]?.wall_ms || 1;
   const selectedTick = rows.find((row) => row.id === selected) ?? null;
 
   const histogram = useMemo(() => {
-    // 10 buckets over the observed range, wasm-less binning is fine for display.
     if (rows.length === 0) return [];
     const min = Math.min(...rows.map((r) => r.wall_ms));
     const max = Math.max(...rows.map((r) => r.wall_ms));
@@ -46,6 +43,12 @@ export function TicksPanel({ reader, capture }: Props) {
   if (rows.length === 0) return <p className={styles.empty}>{t("meta.empty")}</p>;
   return (
     <div className={styles.summary}>
+      <header>
+        <h3 className={styles.cardTitle}>
+          {t(capture.side === "client" ? "ticks.headingFrames" : "ticks.headingTicks", { count: rows.length })}
+        </h3>
+        <p className={styles.cardNote}>{t("ticks.note")}</p>
+      </header>
       <div className={styles.cards}>
         <div className={styles.stat}>
           <h3 className={styles.statTitle}>{t("ticks.min")}</h3>
@@ -64,7 +67,7 @@ export function TicksPanel({ reader, capture }: Props) {
           <p className={styles.statValue}>{num(stat?.max ?? null, 2)} ms</p>
         </div>
       </div>
-      <Spark values={rows.map((row) => row.wall_ms)} label="tick wall" width={600} height={80} />
+      <Spark values={[...rows].sort((a, b) => a.t - b.t).map((row) => row.wall_ms)} label={t("ticks.overTime")} width={600} height={80} />
       <div className={styles.histogram}>
         {histogram.map((count, idx) => (
           <div
@@ -74,6 +77,10 @@ export function TicksPanel({ reader, capture }: Props) {
             style={{ height: `${(count / Math.max(1, ...histogram)) * 100}%` }}
           />
         ))}
+      </div>
+      <div className={styles.axis}>
+        <span>{num(stat?.min ?? null, 1)} ms</span>
+        <span>{num(stat?.max ?? null, 1)} ms</span>
       </div>
       <div className={styles.ticks}>
         {worst.map((tick) => (
@@ -85,7 +92,7 @@ export function TicksPanel({ reader, capture }: Props) {
             onClick={() => setSelected(tick.id)}
           >
             <span className={styles.tickMs} data-over={tick.wall_ms > 50}>{num(tick.wall_ms, 2)} ms</span>
-            <span className={styles.tickAt}>{num(tick.t, 1)} s</span>
+            <span className={styles.tickAt}>{at(tick.t)}</span>
             <span className={styles.meterTrack} aria-hidden="true">
               <span className={styles.meterFill} style={{ width: `${(tick.wall_ms / worstMs) * 100}%` }} />
             </span>

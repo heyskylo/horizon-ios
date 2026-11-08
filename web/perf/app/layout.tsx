@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
   title: "Horizon performance captures",
+  icons: "/perf/horizon-64.png",
   description:
     "Read a .hzperf capture in your browser with the same reader as horizon-perf: health, metadata, call tree and comparisons.",
 };

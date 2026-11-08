@@ -5,13 +5,10 @@ import type { HorizonPerf } from "./generated/horizon_perf";
 import { fieldsFor, stepFor } from "./health";
 import type {
   CostRow,
-  DimensionRow,
   Envelope,
   GroupRow,
   HotRow,
   MetaRow,
-  NetPlayerRow,
-  NetTotalRow,
   SeriesRow,
   Side,
   SpanRow,
@@ -32,11 +29,9 @@ export interface Overview {
   spans: SpanRow[];
   hot: HotRow[];
   worst: TickRow[];
-  dimensions: DimensionRow[];
   entities: GroupRow[];
   blocks: GroupRow[];
   costs: CostRow[];
-  net: Envelope<NetTotalRow | NetPlayerRow> | null;
 }
 
 function count(selection: Record<string, unknown> | undefined, key: string): number | null {
@@ -90,11 +85,9 @@ export function loadOverview(
     spans: rows(spans),
     hot: rows(hot),
     worst: rows(worst),
-    dimensions: rows(ask<DimensionRow>("world", [], { limit: 8 })),
     entities: rows(ask<GroupRow>("group", [], { by: "entity", limit: 6 })),
     blocks: rows(ask<GroupRow>("group", [], { by: "block", limit: 6 })),
     costs: rows(ask<CostRow>("world", [], { by: "cost", limit: 6 })),
-    net: ask<NetTotalRow | NetPlayerRow>("net"),
   };
 }
 

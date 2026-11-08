@@ -8,7 +8,6 @@ import { t } from "@/lib/i18n";
 export interface LoadedCapture {
   handle: number;
   name: string;
-  bytes: number;
   meta: Envelope<MetaRow>;
   /** The side the panels show: the server when the capture has one, else the client. */
   side: Side;
@@ -17,6 +16,11 @@ export interface LoadedCapture {
 
 /** What a comparison needs of a capture. */
 export type CaptureRef = Pick<LoadedCapture, "handle" | "name">;
+
+/** A query failure is a sentence; a failure of the wasm call itself has a code and a message. */
+export function replyError(error: string | { message?: string } | undefined): string {
+  return (typeof error === "string" ? error : error?.message) ?? t("error.queryFailed");
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -61,13 +65,13 @@ export function useReader() {
         const meta = reader.query<MetaRow>(handle, { op: "meta", file: name });
         if (!meta.ok) {
           reader.close(handle);
-          throw new Error(meta.error?.message ?? t("error.metaFailed"));
+          throw new Error(meta.error ? replyError(meta.error) : t("error.metaFailed"));
         }
         const sides = meta.rows.map((row) => row.side);
         const side: Side = sides.includes("server") ? "server" : (sides[0] ?? "client");
         if (openHandle.current !== null) reader.close(openHandle.current);
         openHandle.current = handle;
-        setCapture({ handle, name, bytes: bytes.byteLength, meta, side, sides });
+        setCapture({ handle, name, meta, side, sides });
       } catch (failure) {
         setCapture(null);
         setError(message(failure));
@@ -111,7 +115,7 @@ export function useRows<R>(
       });
       return reply.ok
         ? { rows: reply.rows, error: null, reply }
-        : { rows: [], error: reply.error?.message ?? t("error.queryFailed"), reply };
+        : { rows: [], error: replyError(reply.error), reply };
     } catch (failure) {
       return { rows: [], error: message(failure), reply: null };
     }

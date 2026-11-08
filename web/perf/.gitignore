@@ -7,3 +7,4 @@ tsconfig.tsbuildinfo
 /lib/generated/*
 !/lib/generated/horizon_perf.d.ts
 /public/perf/fonts/
+/public/perf/horizon-64.png

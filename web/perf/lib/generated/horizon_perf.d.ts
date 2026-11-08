@@ -1,5 +1,5 @@
 // The type side of the JS wrapper `cargo xtask perf-wasm` writes (crates/horizon-perf/web/horizon_perf.js).
-import type { Envelope, QueryRequest } from "../types";
+import type { DiffRow, Envelope, QueryRequest } from "../types";
 
 export type ReplyKind = "json" | "bytes" | "text";
 
@@ -11,7 +11,7 @@ export interface DiffReply {
   /** False when the two captures cannot be compared; `text` is then absent. */
   ok?: boolean;
   text?: string;
-  reply?: unknown;
+  reply?: Envelope<DiffRow>;
   error?: { code: string; message: string };
 }
 

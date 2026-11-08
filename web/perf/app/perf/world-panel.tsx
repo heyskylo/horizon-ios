@@ -1,7 +1,7 @@
 "use client";
 
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
-import { grouped } from "@/lib/format";
+import { grouped, shortId } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { DimensionRow } from "@/lib/types";
 import { useRows } from "./use-capture";
@@ -32,7 +32,7 @@ export function WorldPanel({ reader, capture }: Props) {
       <tbody>
         {rows.map((row) => (
           <tr key={row.id}>
-            <td>{row.name}</td>
+            <td title={row.name}>{shortId(row.name)}</td>
             <td>{grouped(row.chunks)}</td>
             <td>{grouped(row.entities)}</td>
             <td>{grouped(row.block_entities)}</td>

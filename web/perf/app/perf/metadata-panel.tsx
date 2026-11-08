@@ -71,7 +71,7 @@ function Chips({ values }: { values: string[] }) {
 
 /** The metadata panel (UI1): everything the capture's `Start` says, one tab per subject. */
 export function MetadataPanel({ reader, capture }: Props) {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [picked, setPicked] = useState<Tab>("overview");
   const [memory, setMemory] = useState<MemoryRow[]>([]);
   const [net, setNet] = useState<Envelope<NetTotalRow | NetPlayerRow> | null>(null);
   const [world, setWorld] = useState<DimensionRow[]>([]);
@@ -97,16 +97,24 @@ export function MetadataPanel({ reader, capture }: Props) {
   const netRows = net?.rows ?? [];
   const total = netRows.find((entry): entry is NetTotalRow => "players" in entry);
   const players = netRows.filter((entry): entry is NetPlayerRow => "index" in entry);
+  const empty: Partial<Record<Tab, boolean>> = {
+    memory: memory.length === 0,
+    network: !total || total.out_kib_s + total.in_kib_s === 0,
+    world: world.length === 0,
+    mods: !row?.mods.length,
+  };
+  const shown = TABS.filter(([id]) => !empty[id]);
+  const tab = shown.some(([id]) => id === picked) ? picked : "overview";
 
   return (
     <div className={styles.metadata}>
       <nav className={styles.tabBar} aria-label={t("meta.tabs")}>
-        {TABS.map(([id, label]) => (
+        {shown.map(([id, label]) => (
           <button
             key={id}
             type="button"
             className={tab === id ? styles.tabActive : styles.tab}
-            onClick={() => setTab(id)}
+            onClick={() => setPicked(id)}
           >
             {t(label)}
           </button>

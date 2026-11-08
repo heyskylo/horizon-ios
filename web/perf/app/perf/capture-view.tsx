@@ -1,16 +1,17 @@
 "use client";
 
-import { createElement, useEffect, useRef, useState } from "react";
+import { createElement, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
-import { grouped } from "@/lib/format";
 import { t } from "@/lib/i18n";
-import type { Side } from "@/lib/types";
-import { HealthPanel } from "./health-panel";
+import { tabsFor } from "@/lib/tabs";
+import type { Tab } from "@/lib/tabs";
+import type { NetPlayerRow, NetTotalRow, Side } from "@/lib/types";
 import { GpuPanel } from "./gpu-panel";
 import { ComparePanel } from "./compare-panel";
 import { MetadataPanel } from "./metadata-panel";
 import { RawPanel } from "./raw-panel";
+import { Segmented } from "./segmented";
 import { SummaryPanel } from "./summary-panel";
 import { SpansPanel } from "./spans-panel";
 import { TicksPanel } from "./ticks-panel";
@@ -24,29 +25,8 @@ import { TreePanel } from "./tree-panel";
 import type { CaptureRef, LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
-const TABS = [
-  "summary",
-  "health",
-  "metadata",
-  "gpu",
-  "spans",
-  "ticks",
-  "world",
-  "net",
-  "memory",
-  "marks",
-  "warnings",
-  "hot",
-  "tree",
-  "compare",
-  "query",
-] as const;
-
-type Tab = (typeof TABS)[number];
-
 const PANELS: Record<Exclude<Tab, "compare">, ComponentType<{ reader: HorizonPerf; capture: LoadedCapture }>> = {
   summary: SummaryPanel,
-  health: HealthPanel,
   metadata: MetadataPanel,
   gpu: GpuPanel,
   spans: SpansPanel,
@@ -66,20 +46,33 @@ interface Props {
   capture: LoadedCapture;
   showSide: (side: Side) => void;
   onClose: () => void;
-  onNewProfile: () => void;
 }
 
 /** Everything shown for an open capture. */
-export function CaptureView({ reader, capture, showSide, onClose, onNewProfile }: Props) {
-  const [tab, setTab] = useState<Tab>("summary");
+export function CaptureView({ reader, capture, showSide, onClose }: Props) {
+  const [picked, setPicked] = useState<Tab>("summary");
   const [compareCapture, setCompareCapture] = useState<CaptureRef | null>(null);
   const compareHandle = useRef<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const sides = capture.sides.filter((side) => side !== "unspecified");
 
-  const chooseCompare = async (files: File[]) => {
-    const file = files[0];
-    if (!file) return;
+  const sides = capture.sides.filter((side) => side !== "unspecified");
+  const tabs = useMemo(() => {
+    const ask = <R,>(op: string) => {
+      try {
+        const reply = reader.query<R>(capture.handle, { op, file: capture.name, filters: { side: capture.side } });
+        return reply.ok ? reply.rows : [];
+      } catch {
+        return [];
+      }
+    };
+    const hasTraffic = ask<NetTotalRow | NetPlayerRow>("net").some(
+      (row) => "players" in row && row.out_kib_s + row.in_kib_s > 0,
+    );
+    return tabsFor((query) => ask(query).length > 0, hasTraffic);
+  }, [reader, capture.handle, capture.name, capture.side]);
+  const tab = tabs.includes(picked) ? picked : "summary";
+
+  const chooseCompare = async (file: File) => {
     try {
       const handle = reader.open(await file.arrayBuffer());
       if (compareHandle.current !== null) reader.close(compareHandle.current);
@@ -98,11 +91,10 @@ export function CaptureView({ reader, capture, showSide, onClose, onNewProfile }
     [reader],
   );
 
-  const exportCapture = async (kind: string) => {
-        try {
+  const exportCapture = (kind: string) => {
+    try {
       const bytes = reader.export(capture.handle, { kind });
-      const blob = new Blob([bytes as unknown as BlobPart], { type: "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "application/octet-stream" }));
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `${capture.name}.${kind === "perfetto" ? "pb" : kind === "folded" ? "folded" : "pprof"}`;
@@ -113,35 +105,30 @@ export function CaptureView({ reader, capture, showSide, onClose, onNewProfile }
     }
   };
 
+  const tabLabel = (id: Tab) => {
+    if (id !== "ticks") return t(`tab.${id}`);
+    return t(capture.side === "client" ? "tab.slowFrames" : "tab.slowTicks");
+  };
+
   return (
     <>
-    <header className={styles.captureBar}>
-        <div className={styles.captureName}>
-          <span className={styles.brand}>{t("app.brand")}</span>
-          <span className={styles.micro}>{grouped(capture.bytes / 1024)} KiB</span>
-        </div>
+      <header className={styles.captureBar}>
+        <span className={styles.brand}>{t("app.brand")}</span>
         <div className={styles.actions}>
           {sides.length > 1 ? (
-            <div className={styles.segmented} role="group" aria-label={t("app.side")}>
-              {sides.map((side) => (
-                <button
-                  key={side}
-                  type="button"
-                  className={side === capture.side ? styles.segmentActive : styles.segment}
-                  aria-pressed={side === capture.side}
-                  onClick={() => showSide(side)}
-                >
-                  {t(`side.${side}`)}
-                </button>
-              ))}
-            </div>
+            <Segmented
+              label={t("app.side")}
+              options={sides.map((side) => ({ id: side, text: t(`side.${side}`) }))}
+              value={capture.side}
+              onChange={showSide}
+            />
           ) : null}
           <select
             className={styles.select}
             aria-label={t("tab.export")}
             value=""
             onChange={(event) => {
-              if (event.target.value) void exportCapture(event.target.value);
+              if (event.target.value) exportCapture(event.target.value);
             }}
           >
             <option value="">{t("tab.export")}</option>
@@ -149,9 +136,6 @@ export function CaptureView({ reader, capture, showSide, onClose, onNewProfile }
             <option value="folded">folded</option>
             <option value="perfetto">Perfetto</option>
           </select>
-          <button type="button" className={styles.buttonSmall} onClick={onNewProfile}>
-            {t("app.newProfile")}
-          </button>
           <button type="button" className={styles.buttonSmall} onClick={onClose}>
             {t("app.close")}
           </button>
@@ -159,22 +143,22 @@ export function CaptureView({ reader, capture, showSide, onClose, onNewProfile }
       </header>
       {actionError ? <p className={styles.error}>{actionError}</p> : null}
 
-    <nav className={styles.tabBar} aria-label={t("app.tabs")}>
-      {TABS.map((id) => (
+      <nav className={styles.tabBar} aria-label={t("app.tabs")}>
+        {tabs.map((id) => (
           <button
             key={id}
             type="button"
             className={tab === id ? styles.tabActive : styles.tab}
-            onClick={() => setTab(id)}
+            onClick={() => setPicked(id)}
           >
-            {t(`tab.${id}`)}
+            {tabLabel(id)}
           </button>
         ))}
       </nav>
 
-    <section key={tab} className={styles.panel}>
+      <section key={tab} className={styles.panel}>
         {tab === "compare" ? (
-          <ComparePanel reader={reader} base={capture} other={compareCapture} onPick={(file) => void chooseCompare([file])} />
+          <ComparePanel reader={reader} base={capture} side={capture.side} other={compareCapture} onPick={(file) => void chooseCompare(file)} />
         ) : (
           createElement(PANELS[tab], { reader, capture })
         )}

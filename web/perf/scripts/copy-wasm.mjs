@@ -15,6 +15,7 @@ const fonts = join(repo, "crates", "horizon-theme", "fonts");
 const copies = [
   [join(from, "horizon_perf.wasm"), wasm],
   [join(from, "horizon_perf.js"), wrapper],
+  [join(repo, "crates", "horizon-theme", "icons", "horizon-64.png"), join(app, "public", "perf", "horizon-64.png")],
   ...["Geist-Regular", "Geist-Medium", "Geist-SemiBold", "GeistMono-Regular"].map((name) => [
     join(fonts, `${name}.ttf`),
     join(app, "public", "perf", "fonts", `${name}.ttf`),

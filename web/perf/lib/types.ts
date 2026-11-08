@@ -18,7 +18,7 @@ export interface Envelope<R> {
   selection?: Record<string, unknown>;
   rows: R[];
   warnings: string[];
-  error?: { code: string; message: string };
+  error?: string | { code: string; message: string };
 }
 
 export interface BuildInfo {
@@ -251,4 +251,14 @@ export interface QueryRequest {
   by?: string;
   file?: string;
   filters?: Record<string, unknown>;
+}
+
+/** One row of a comparison: A is the first capture, B the second. */
+export interface DiffRow {
+  id: string;
+  a: number | null;
+  b: number | null;
+  diff: number | null;
+  diff_pct: number | null;
+  verdict: "too_few_blocks" | "within_noise" | "negligible" | "slower" | "faster" | "new" | "gone";
 }

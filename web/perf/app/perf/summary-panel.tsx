@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
-import { grouped, mib, num } from "@/lib/format";
+import { at, grouped, mib, num, shortId, withUnit } from "@/lib/format";
 import { byField, stats } from "@/lib/health";
 import type { Stats } from "@/lib/health";
 import { t } from "@/lib/i18n";
@@ -17,7 +17,8 @@ import {
   topSpans,
 } from "@/lib/overview";
 import type { Overview, PhaseNode } from "@/lib/overview";
-import type { CostRow, GroupRow, HotRow, NetPlayerRow, NetTotalRow, TickRow } from "@/lib/types";
+import type { CostRow, GroupRow, HotRow, TickRow } from "@/lib/types";
+import { Segmented } from "./segmented";
 import { Spark } from "./spark";
 import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
@@ -170,7 +171,7 @@ function Phase({ node, depth, max }: { node: PhaseNode; depth: number; max: numb
 export interface ViewProps {
   capture: LoadedCapture;
   data: Overview;
-  /** `horizon-perf summary`'s text, shown as the exact report. */
+  /** `horizon-perf summary`'s text, for the copy button. */
   text: string;
 }
 
@@ -228,9 +229,6 @@ export function SummaryView({ capture, data, text }: ViewProps) {
     meta?.machine ? t("summary.threads", { count: meta.machine.cpu_threads }) : null,
   ].filter((part): part is string => Boolean(part));
 
-  const netRows = data.net?.ok ? data.net.rows : [];
-  const netTotal = netRows.find((row): row is NetTotalRow => "players" in row);
-  const netPlayers = netRows.filter((row): row is NetPlayerRow => "index" in row);
 
   const hotMax = largest(data.hot.map((row) => (hotBy === "self" ? row.self : row.total)));
   const entityRows = attributed(data.entities);
@@ -239,15 +237,21 @@ export function SummaryView({ capture, data, text }: ViewProps) {
   const blockMax = largest(blockRows.map((row) => row.value));
   const costMax = largest(data.costs.map((row) => row.ms_per_tick));
 
+  const hasSide = entityRows.length > 0 || blockRows.length > 0 || data.costs.length > 0;
+  const frameCpu = get("h:frame_cpu_ms_p50");
+  const frameGpu = get("h:frame_gpu_ms_p50");
+  const allocs = get("h:allocs_per_s");
+  const allocRate = get("h:alloc_mib_per_s");
+  const commit = get("h:allocator_commit_mb");
+
   return (
     <div className={styles.summary}>
       <header className={styles.summaryHead}>
         <div>
-          <h2 className={styles.summaryTitle}>{capture.name}</h2>
           <p className={styles.summaryMeta}>{header.join(" · ")}</p>
         </div>
         {text ? (
-          <button type="button" className={styles.buttonSmall} onClick={() => void copy()}>
+          <button type="button" className={styles.buttonSmall} title={t("summary.copyHint")} onClick={() => void copy()}>
             {copied ? t("summary.copied") : t("summary.copy")}
           </button>
         ) : null}
@@ -305,6 +309,8 @@ export function SummaryView({ capture, data, text }: ViewProps) {
               [t("health.p50"), num(frameP50?.median ?? null, 1)],
               [t("health.p99"), num(frameP99?.median ?? null, 1)],
               [t("health.max"), num(frameMax?.max ?? null, 1)],
+              ...(frameCpu ? ([[t("health.cpu"), num(frameCpu.median, 1)]] as [string, string][]) : []),
+              ...(frameGpu ? ([[t("health.gpu"), num(frameGpu.median, 1)]] as [string, string][]) : []),
             ]}
           >
             <Spark values={fields.get("h:frame_ms_p95")?.values ?? []} label={t("health.frame")} />
@@ -316,7 +322,6 @@ export function SummaryView({ capture, data, text }: ViewProps) {
           value={num(cpu?.mean ?? null, 2)}
           unit={t("health.unitCores")}
           rows={[
-            [t("health.process"), num(cpu?.mean ?? null, 2)],
             [
               t("health.system"),
               meta?.machine
@@ -343,19 +348,35 @@ export function SummaryView({ capture, data, text }: ViewProps) {
           <Spark values={resident} label={t("health.memory")} />
         </Tile>
 
-        <Tile
-          title={t("health.world")}
-          value={side === "server" ? num(players?.last ?? null, 0) : num(chunks?.last ?? null, 0)}
-          unit={side === "server" ? t("health.players") : t("health.chunks")}
-          rows={
-            side === "server"
-              ? [
-                  [t("health.chunks"), num(chunks?.last ?? null, 0)],
-                  [t("health.entities"), num(entities?.last ?? null, 0)],
-                ]
-              : [[t("health.entities"), num(entities?.last ?? null, 0)]]
-          }
-        />
+        {allocs || allocRate ? (
+          <Tile
+            title={t("health.allocations")}
+            value={withUnit(allocs?.mean, t("health.unitPerS"), 0)}
+            rows={[
+              [t("health.allocated"), withUnit(allocRate?.mean, t("health.unitMibPerS"), 2)],
+              [t("health.commit"), mib(commit?.last)],
+            ]}
+          />
+        ) : null}
+
+        {side === "server" ? (
+          <Tile
+            title={t("health.world")}
+            value={num(players?.last ?? null, 0)}
+            unit={players?.last === 1 ? t("health.player") : t("health.players")}
+            rows={[
+              [t("health.chunks"), num(chunks?.last ?? null, 0)],
+              [t("health.entities"), num(entities?.last ?? null, 0)],
+            ]}
+          />
+        ) : chunks ? (
+          <Tile
+            title={t("health.world")}
+            value={num(chunks.last, 0)}
+            unit={t("health.chunks")}
+            rows={[[t("health.entities"), num(entities?.last ?? null, 0)]]}
+          />
+        ) : null}
       </div>
 
       {phases.length > 0 ? (
@@ -385,26 +406,19 @@ export function SummaryView({ capture, data, text }: ViewProps) {
       </Card>
       ) : null}
 
-      <div className={styles.split}>
+      <div className={hasSide ? styles.split : styles.stack}>
         <div className={styles.stack}>
           {data.hot.length > 0 ? (
             <Card
               title={t("summary.hot")}
               note={t("summary.hotNote", { samples: grouped(data.samples ?? 0) })}
               actions={
-                <div className={styles.segmented} role="group" aria-label={t("summary.hot")}>
-                  {(["self", "total"] as const).map((id) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={hotBy === id ? styles.segmentActive : styles.segment}
-                      aria-pressed={hotBy === id}
-                      onClick={() => setHotBy(id)}
-                    >
-                      {t(`summary.${id}`)}
-                    </button>
-                  ))}
-                </div>
+                <Segmented
+                  label={t("summary.hot")}
+                  options={(["self", "total"] as const).map((id) => ({ id, text: t(`summary.${id}`) }))}
+                  value={hotBy}
+                  onChange={setHotBy}
+                />
               }
             >
               <div className={styles.meterList}>
@@ -429,14 +443,17 @@ export function SummaryView({ capture, data, text }: ViewProps) {
           ) : null}
 
           {data.worst.length > 0 ? (
-            <Card title={t("summary.worst")} note={t("summary.worstNote")}>
+            <Card
+              title={t(side === "client" ? "summary.worstFrames" : "summary.worst")}
+              note={t(side === "client" ? "summary.worstFramesNote" : "summary.worstNote")}
+            >
               <div className={styles.ticks}>
                 {data.worst.map((tick: TickRow) => (
                   <details key={tick.id} className={styles.tick}>
                     <summary className={styles.tickHead}>
                       <span className={styles.tickMs}>{num(tick.wall_ms, 1)} ms</span>
                       <span className={styles.tickAt}>
-                        {t("summary.at", { time: `${num(tick.t, 1)} s` })}
+                        {t("summary.at", { time: at(tick.t) })}
                       </span>
                       <span className={styles.tickSpans}>
                         {topSpans(tick).map(([name, , ms]) => (
@@ -445,8 +462,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                           </span>
                         ))}
                       </span>
-                      <code className={styles.id}>{tick.id}</code>
-                    </summary>
+                                          </summary>
                     <div className={styles.tickBody}>
                       {tick.spans.map(([name, depth, wall], index) => (
                         <div
@@ -464,34 +480,6 @@ export function SummaryView({ capture, data, text }: ViewProps) {
               </div>
             </Card>
           ) : null}
-
-          {data.dimensions.length > 0 ? (
-            <Card title={t("summary.world")}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>{t("summary.dimension")}</th>
-                    <th>{t("health.chunks")}</th>
-                    <th>{t("health.entities")}</th>
-                    <th>{t("meta.blockEntities")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.dimensions.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.name}</td>
-                      <td>{grouped(row.chunks)}</td>
-                      <td>{grouped(row.entities)}</td>
-                      <td>{grouped(row.block_entities)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {meta && meta.players > 0 ? (
-                <p className={styles.note}>{t("summary.playersOnline", { count: meta.players })}</p>
-              ) : null}
-            </Card>
-          ) : null}
         </div>
 
         <div className={styles.stack}>
@@ -501,7 +489,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 {entityRows.map((row: GroupRow) => (
                   <Meter
                     key={row.key}
-                    name={row.label}
+                    name={shortId(row.label)}
                     title={row.key ?? undefined}
                     width={share(row.value, entityMax)}
                     value={num(row.value, 2)}
@@ -518,7 +506,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 {blockRows.map((row: GroupRow) => (
                   <Meter
                     key={row.key}
-                    name={row.label}
+                    name={shortId(row.label)}
                     title={row.key ?? undefined}
                     width={share(row.value, blockMax)}
                     value={num(row.value, 2)}
@@ -540,7 +528,8 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 {data.costs.map((row: CostRow) => (
                   <Meter
                     key={row.id}
-                    name={row.name}
+                    name={shortId(row.name)}
+                    title={row.name}
                     width={share(row.ms_per_tick, costMax)}
                     tone="warn"
                     value={num(row.ms_per_tick, 2)}
@@ -550,59 +539,8 @@ export function SummaryView({ capture, data, text }: ViewProps) {
               </div>
             </Card>
           ) : null}
-
-          <Card title={t("summary.network")}>
-            {!netTotal ? (
-              <Empty text={t("meta.noNetwork")} />
-            ) : (
-              <>
-                <dl className={styles.kv}>
-                  <div className={styles.kvRow}>
-                    <dt>{t("summary.out")}</dt>
-                    <dd>{`${num(netTotal.out_kib_s, 1)} KiB/s`}</dd>
-                  </div>
-                  <div className={styles.kvRow}>
-                    <dt>{t("summary.in")}</dt>
-                    <dd>{`${num(netTotal.in_kib_s, 1)} KiB/s`}</dd>
-                  </div>
-                  <div className={styles.kvRow}>
-                    <dt>{t("health.players")}</dt>
-                    <dd>{grouped(netTotal.players)}</dd>
-                  </div>
-                </dl>
-                {netPlayers.length > 0 ? (
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>{t("summary.player")}</th>
-                        <th>{t("summary.out")}</th>
-                        <th>{t("summary.in")}</th>
-                        <th>{t("summary.peak")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {netPlayers.map((row) => (
-                        <tr key={row.id}>
-                          <td>{row.id}</td>
-                          <td>{num(row.out_kib_s, 1)}</td>
-                          <td>{num(row.in_kib_s, 1)}</td>
-                          <td>{num(row.peak_out_kib_s, 1)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : null}
-              </>
-            )}
-          </Card>
         </div>
       </div>
-
-      {text ? (
-        <Card title={t("summary.exact")} note={t("summary.exactNote")}>
-          <pre className={styles.pre}>{text}</pre>
-        </Card>
-      ) : null}
     </div>
   );
 }
@@ -621,9 +559,11 @@ export function SummaryPanel({ reader, capture }: Props) {
     } catch (failure) {
       setError(message(failure));
     }
-    // The exact text is the CLI's report; a capture without one loses only that card.
+    // A capture with no report only loses the copy button.
     try {
-      setText(reader.summary(capture.handle, { file: capture.name, side: capture.side }));
+      const report = reader.summary(capture.handle, { file: capture.name, side: capture.side });
+      const lead = `${capture.name}: `;
+      setText(report.startsWith(lead) ? report.slice(lead.length) : report);
     } catch {
       setText("");
     }

@@ -51,7 +51,7 @@
   box-sizing: border-box;
   min-height: 100vh;
   padding: 16px var(--gutter) 64px;
-  overflow-x: clip;
+  overflow: clip;
   background: var(--page);
   color: var(--ink);
   color-scheme: dark;
@@ -136,6 +136,16 @@
   color: var(--ink);
 }
 
+.select,
+.select:hover {
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b8f9c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px;
+}
+
 .buttonSmall[aria-pressed="true"] {
   background: var(--ink);
   color: var(--page);
@@ -193,17 +203,15 @@
   font-size: 12px;
 }
 
-/* The opening screen */
+/* The landing page */
 
 .landing,
 .landingActive {
-  position: relative;
-  z-index: 1;
   display: grid;
   align-content: start;
   justify-items: start;
   gap: 16px;
-  padding-top: clamp(48px, 14vh, 144px);
+  padding-top: clamp(48px, 12vh, 128px);
   animation: arrive 240ms ease-out both;
 }
 
@@ -218,22 +226,56 @@
   font-weight: 500;
   line-height: 1.05;
   letter-spacing: -0.025em;
+  text-wrap: balance;
   transition: color 120ms ease;
 }
 
 .lede {
-  max-width: 64ch;
+  max-width: 56ch;
   margin: 0 0 8px;
   color: var(--ink-soft);
   font-size: clamp(15px, 1.2vw, 17px);
   line-height: 1.6;
 }
 
+.landingLists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 48px 64px;
+  justify-self: stretch;
+  margin-top: 64px;
+}
+
+.landingHeading {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.landingList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.landingRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 24px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.landingCode {
+  color: var(--ink-soft);
+  font: 12px/1.5 var(--mono);
+}
+
 .wordmark {
-  position: absolute;
-  right: var(--gutter);
-  bottom: -0.1em;
-  left: var(--gutter);
+  margin: 96px 0 calc(-64px - 0.1em);
   color: var(--plate-soft);
   font-size: 18vw;
   font-weight: 500;
@@ -262,22 +304,10 @@
   margin-bottom: 8px;
 }
 
-.captureName {
-  display: flex;
-  gap: 12px;
-  align-items: baseline;
-}
-
 .brand {
   font-size: 20px;
   font-weight: 500;
   letter-spacing: -0.01em;
-}
-
-.micro {
-  color: var(--muted);
-  font: 11px/1.5 var(--mono);
-  letter-spacing: 0.04em;
 }
 
 .tabBar {
@@ -413,7 +443,6 @@
 
 /* Sections */
 
-.health,
 .summary {
   display: grid;
   gap: 32px;
@@ -427,17 +456,8 @@
   justify-content: space-between;
 }
 
-.summaryTitle {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
-  overflow-wrap: anywhere;
-}
-
 .summaryMeta {
-  margin: 2px 0 0;
+  margin: 0;
   color: var(--muted);
   font-size: 13px;
 }
@@ -596,6 +616,12 @@
   background: var(--warn);
 }
 
+.split .stack .meterHead,
+.split .stack .meterRow,
+.split .stack .meterRowStrong {
+  grid-template-columns: minmax(0, 1fr) minmax(56px, 0.8fr) 84px 68px;
+}
+
 .meterValue,
 .meterExtra {
   overflow: hidden;
@@ -638,13 +664,6 @@
   margin-right: 2px;
 }
 
-.flame {
-  display: block;
-  max-width: 100%;
-  border-radius: 8px;
-  background: var(--plate-soft);
-}
-
 /* Ticks */
 
 .histogram {
@@ -661,6 +680,14 @@
   min-height: 0;
   border-radius: 2px 2px 0 0;
   background: var(--bar);
+}
+
+.axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -24px;
+  color: var(--muted);
+  font: 11px/1.5 var(--mono);
 }
 
 .ticks {
@@ -687,7 +714,7 @@
 
 .tickHead {
   display: grid;
-  grid-template-columns: 84px 64px minmax(0, 1fr) auto;
+  grid-template-columns: 84px 76px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -718,6 +745,7 @@
 
 .tickAt {
   color: var(--muted);
+  white-space: nowrap;
   font-family: var(--mono);
   font-size: 12px;
 }
@@ -727,14 +755,6 @@
   flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
-}
-
-.id {
-  padding: 1px 6px;
-  border-radius: 6px;
-  background: var(--plate-soft);
-  color: var(--muted);
-  font: 11px/1.5 var(--mono);
 }
 
 .tickBody {
@@ -780,7 +800,7 @@
   }
 
   .tickHead {
-    grid-template-columns: 84px minmax(0, 1fr) auto;
+    grid-template-columns: 84px minmax(0, 1fr);
   }
 
   .tickAt {
@@ -871,6 +891,10 @@
 
 .table td:nth-child(n + 2) {
   color: var(--ink-soft);
+  text-align: right;
+}
+
+.table th:nth-child(n + 2) {
   text-align: right;
 }
 

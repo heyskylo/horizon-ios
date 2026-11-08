@@ -22,6 +22,16 @@ export function withUnit(value: number | null | undefined, unit: string, digits 
   return text === MISSING ? text : `${text} ${unit}`;
 }
 
+/** Seconds into a capture; the clock can read a hair before zero. */
+export function at(seconds: number): string {
+  return `${Math.max(0, seconds).toFixed(1)} s`;
+}
+
+/** Vanilla ids without their namespace; a mod's id keeps it. */
+export function shortId(id: string): string {
+  return id.replace(/^minecraft:/, "");
+}
+
 export function bool(value: boolean | null | undefined, yes = "yes", no = "no"): string {
   if (value === null || value === undefined) return MISSING;
   return value ? yes : no;
