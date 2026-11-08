@@ -80,6 +80,16 @@ public final class VanillaRecipeOracle {
                 }
                 return joiner.toString();
             }
+            case "smith_transform": {
+                var ops = net.minecraft.resources.RegistryOps.create(com.mojang.serialization.JsonOps.INSTANCE, ParityData.lookup);
+                var decoded = SmithingTransformRecipe.MAP_CODEC.codec().parse(ops, com.google.gson.JsonParser.parseString(f[1])).result();
+                if (decoded.isEmpty()) return "none";
+                var recipe = decoded.get();
+                var input = new SmithingRecipeInput(ParityData.stack(f[2]), ParityData.stack(f[3]), ParityData.stack(f[4]));
+                if (!recipe.matches(input, ParityData.level)) return "none";
+                var result = recipe.assemble(input);
+                return result.isEmpty() ? "none" : ParityData.canon(result);
+            }
             case "smith": {
                 var input = new SmithingRecipeInput(ParityData.stack(f[1]), ParityData.stack(f[2]), ParityData.stack(f[3]));
                 var found = recipes.getRecipeFor(RecipeType.SMITHING, input, null);

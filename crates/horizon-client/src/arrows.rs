@@ -172,6 +172,8 @@ pub struct ArrowState {
     pub pickup: Pickup,
     /// Its entity type is `SpectralArrow` (the type is its own, not the pickup item's).
     pub spectral: bool,
+    /// `SpectralArrow` saved duration; its constructor default is 200.
+    pub spectral_duration: i32,
     /// `pickupItemStack`: what picking the arrow up gives.
     pub pickup_item: crate::items::ItemStack,
     /// `AbstractArrow.firedFromWeapon`: the crossbow or bow it was shot from.
@@ -194,6 +196,9 @@ pub struct ArrowState {
     pub was_eye_in_water: bool,
     pub first_tick: bool,
     pub has_been_shot: bool,
+    /// `Projectile.canBreak`: the decoded top-level projectile predicate,
+    /// independent of its pickup item and firing weapon.
+    pub can_break: Option<horizon_world::nbt::Tag>,
     /// `ThrownTrident.dealtDamage`: it has hit an entity (or sat in a block
     /// for over 4 ticks) and hits no more.
     pub dealt_damage: bool,
@@ -240,6 +245,7 @@ impl ArrowState {
             last_state: None,
             pickup: Pickup::Disallowed,
             spectral: false,
+            spectral_duration: 200,
             pickup_item: crate::items::ItemStack::new("minecraft:arrow", 1),
             fired_from_weapon: None,
             no_physics: false,
@@ -254,6 +260,7 @@ impl ArrowState {
             was_eye_in_water: false,
             first_tick: true,
             has_been_shot: false,
+            can_break: None,
             dealt_damage: false,
             removed: false,
             random,

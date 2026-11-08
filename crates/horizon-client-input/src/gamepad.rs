@@ -490,6 +490,37 @@ impl GlyphStyle {
     }
 }
 
+/// How much the gameplay guide says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GuideDetail {
+    #[default]
+    Full,
+    /// Only what can be done to what's in front of the player or under the crosshair.
+    Basic,
+    Off,
+}
+impl GuideDetail {
+    pub const ALL: [GuideDetail; 3] = [GuideDetail::Full, GuideDetail::Basic, GuideDetail::Off];
+
+    /// The name in `horizon-controller.txt`.
+    pub fn name(self) -> &'static str {
+        match self {
+            GuideDetail::Full => "full",
+            GuideDetail::Basic => "basic",
+            GuideDetail::Off => "off",
+        }
+    }
+
+    /// Reads a name, or the `true` and `false` this option first saved. Anything else is full.
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "basic" => GuideDetail::Basic,
+            "off" | "false" => GuideDetail::Off,
+            _ => GuideDetail::Full,
+        }
+    }
+}
+
 /// The on-screen keyboard A opens on a text field in focus mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextKeyboard {
@@ -537,6 +568,8 @@ pub fn steam_keyboard(choice: TextKeyboard) -> bool {
 pub struct PadSettings {
     pub enabled: bool,
     pub vibration: bool,
+    /// The pad keeps driving the game while its window has no focus.
+    pub play_in_background: bool,
     /// A DualSense's triggers push back (Horizon's; docs/controllers.md).
     pub adaptive_triggers: bool,
     pub lightbar: Lightbar,
@@ -550,12 +583,18 @@ pub struct PadSettings {
     /// The sneak button flips sneaking (Bedrock's default) instead of
     /// holding it, unless vanilla's toggle crouch is on already.
     pub toggle_sneak: bool,
+    /// LT + A on a recipe crafts on every server, not only in single player and on LAN worlds
+    /// found in the server list. Off by default: a server's rules may count a repeated craft as a
+    /// macro.
+    pub craft_on_servers: bool,
     pub glyphs: GlyphStyle,
     /// A Nintendo pad's face buttons go by their letters (A confirms and jumps, as on the
     /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
     /// by default on the Switch only.
     pub nintendo_letters: bool,
     pub keyboard: TextKeyboard,
+    /// The gameplay guide: what the buttons do now, in the HUD's corners while the pad plays.
+    pub guide_detail: GuideDetail,
     /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
     pub pointer_speed: f32,
     pub scroll_speed: f32,
@@ -569,6 +608,7 @@ impl Default for PadSettings {
         Self {
             enabled: true,
             vibration: true,
+            play_in_background: false,
             adaptive_triggers: true,
             lightbar: Lightbar::Health,
             look_sensitivity: 0.5,
@@ -578,9 +618,11 @@ impl Default for PadSettings {
             look_deadzone: 0.12,
             trigger_threshold: 0.4,
             toggle_sneak: true,
+            craft_on_servers: false,
             glyphs: GlyphStyle::Auto,
             nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
+            guide_detail: GuideDetail::Full,
             pointer_speed: 1.0,
             scroll_speed: 12.0,
             repeat_delay: 0.35,
@@ -635,6 +677,7 @@ impl PadSettings {
             match key.trim() {
                 "enabled" => s.enabled = flag(s.enabled),
                 "vibration" => s.vibration = flag(s.vibration),
+                "playInBackground" => s.play_in_background = flag(s.play_in_background),
                 "adaptiveTriggers" => s.adaptive_triggers = flag(s.adaptive_triggers),
                 "lightbar" => s.lightbar = Lightbar::parse(value),
                 "lookSensitivity" => s.look_sensitivity = unit(s.look_sensitivity),
@@ -646,9 +689,11 @@ impl PadSettings {
                     s.trigger_threshold = unit(s.trigger_threshold).clamp(0.1, 0.9)
                 }
                 "toggleSneak" => s.toggle_sneak = flag(s.toggle_sneak),
+                "craftOnServers" => s.craft_on_servers = flag(s.craft_on_servers),
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
                 "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
+                "gameplayGuide" => s.guide_detail = GuideDetail::parse(value),
                 "pointerSpeed" => s.pointer_speed = bounded(s.pointer_speed, 0.25, 3.0),
                 "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
                 "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
@@ -706,7 +751,9 @@ impl PadSettings {
             self.keyboard.name(),
         );
         text.push_str(&format!(
-            "pointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            "craftOnServers:{}\ngameplayGuide:{}\npointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            bool_text(self.craft_on_servers),
+            self.guide_detail.name(),
             self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
         ));
         for (action, button) in &self.bindings {
@@ -715,6 +762,10 @@ impl PadSettings {
                 button.map_or("none", Button::name)
             ));
         }
+        text.push_str(&format!(
+            "playInBackground:{}\n",
+            bool_text(self.play_in_background)
+        ));
         text.push_str("bindLayout:1\n");
         text
     }
@@ -786,7 +837,8 @@ pub fn stick_axes(
     {
         // Default map: RightStickX is the stick's Y, LeftZ its X; RightStickY
         // is the right trigger and must not drive look.
-        (left, [left_z, right[0]])
+        // gilrs turns over only the axes it calls Y, and this Y is on one it doesn't.
+        (left, [left_z, -right[0]])
     } else {
         (left, right)
     }
@@ -1753,6 +1805,15 @@ bind_key.hotbar.2:north
     }
 
     #[test]
+    fn playing_in_the_background_is_off_until_saved_on() {
+        assert!(!PadSettings::parse("vibration:false\n").play_in_background);
+        let mut on = PadSettings::default();
+        assert!(!on.play_in_background);
+        on.play_in_background = true;
+        assert!(PadSettings::parse(&on.serialize()).play_in_background);
+    }
+
+    #[test]
     fn a_file_from_before_these_defaults_keeps_its_buttons() {
         // Saved settings that never bound D-pad down: it stays on the advancements.
         let s = PadSettings::parse("vibration:false\nbind_key.chat:up\n");
@@ -1793,6 +1854,7 @@ bind_key.hotbar.2:north
         s.look_sensitivity = 0.75;
         s.glyphs = GlyphStyle::PlayStation;
         s.nintendo_letters = !s.nintendo_letters;
+        s.guide_detail = GuideDetail::Basic;
         let text = s.serialize();
         assert!(text.contains(&format!("nintendoLetters:{}\n", s.nintendo_letters)));
         assert!(text.contains("bind_key.jump:east\n"));
@@ -1820,7 +1882,11 @@ bind_key.hotbar.2:north
             false,
         );
         assert_eq!(left, [0.2, 0.3]);
-        assert_eq!(right, [-0.5, 0.7], "X from LeftZ, Y from RightStickX");
+        assert_eq!(
+            right,
+            [-0.5, -0.7],
+            "X from LeftZ, Y from RightStickX, turned over"
+        );
         let kept = stick_axes(
             [0.2, 0.3],
             [0.7, -0.9],
