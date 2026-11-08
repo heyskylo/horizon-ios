@@ -1947,22 +1947,22 @@ impl Streaming {
                 if keys.iter().any(|k| self.decorating_finals.contains(k)) {
                     continue;
                 }
+                let has_final = keys.iter().any(|k| world.chunks.contains_key(k));
+                if has_final && !self.saves_beside_final {
+                    self.decorated.insert((x, z));
+                    waiting.borrow_mut().insert((x, z), false);
+                    continue;
+                }
+                if !keys.iter().all(|k| {
+                    world.chunks.contains_key(k) || matches!(self.protos.get(k), Some(Some(_)))
+                }) {
+                    continue;
+                }
                 let finals: Vec<(usize, Chunk)> = keys
                     .iter()
                     .enumerate()
                     .filter_map(|(i, k)| Some((i, (**world.chunks.get(k)?).clone())))
                     .collect();
-                if !finals.is_empty() && !self.saves_beside_final {
-                    self.decorated.insert((x, z));
-                    waiting.borrow_mut().insert((x, z), false);
-                    continue;
-                }
-                if !keys.iter().enumerate().all(|(i, k)| {
-                    finals.iter().any(|(f, _)| *f == i)
-                        || matches!(self.protos.get(k), Some(Some(_)))
-                }) {
-                    continue;
-                }
                 let region: Box<[Proto; 9]> = Box::new(std::array::from_fn(|i| {
                     let k = &keys[i];
                     if finals.iter().any(|(f, _)| *f == i) {
