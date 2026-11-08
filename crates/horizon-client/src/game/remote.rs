@@ -606,6 +606,11 @@ pub(super) struct Remote {
     /// sequence its block updates only replace the remembered state; then the block
     /// takes it.
     predictions: HashMap<[i32; 3], Prediction>,
+    /// The entities the level held when its `LocalPlayer` was added
+    /// (`ClientLevel.addEntity` on login or respawn): `ClientLevel.tickEntities`
+    /// ticks in the order entities were added, so these tick before the
+    /// player and every later one after it.
+    ticked_before_player: std::collections::HashSet<u32>,
     /// Open container: (window id, menu name).
     pub(super) menu: Option<(i32, String)>,
     /// The crafting result slot of the open menu as the server last set it
@@ -1175,6 +1180,7 @@ impl Game<'_> {
             level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
             sent_info: info,
             predictions: HashMap::new(),
+            ticked_before_player: std::collections::HashSet::new(),
             menu: None,
             craft_result: None,
             menu_title: None,
@@ -1403,6 +1409,7 @@ impl Game<'_> {
             level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
             sent_info: info,
             predictions: HashMap::new(),
+            ticked_before_player: std::collections::HashSet::new(),
             menu: None,
             craft_result: None,
             menu_title: None,
@@ -3746,6 +3753,13 @@ impl Game<'_> {
                     r.sequence = 0;
                 }
                 self.enter_remote_dimension(&p.spawn, true, reason);
+                // handleRespawn adds the new LocalPlayer after what the kept
+                // level holds; a new level holds nothing yet.
+                let before: std::collections::HashSet<u32> =
+                    self.mobs.iter().map(|m| m.id).collect();
+                if let Some(r) = self.remote.as_mut() {
+                    r.ticked_before_player = before;
+                }
                 if dimension_changed {
                     // LevelExtractor.setLevel: a new level drops the highlights.
                     self.test_highlights.clear();
@@ -3906,6 +3920,9 @@ impl Game<'_> {
                 let rotation =
                     [p.yaw, p.pitch, p.head_yaw].map(horizon_protocol::buf::unpack_degrees);
                 if let Some(r) = self.remote.as_mut() {
+                    // ClientLevel.addEntity: an id it holds already is removed
+                    // and added again, after the player.
+                    r.ticked_before_player.remove(&(p.id as u32));
                     // A new entity looks its PlayerInfo up afresh.
                     r.level_player_textures.remove(&p.id);
                     if kind == "minecraft:player" {
@@ -6631,6 +6648,10 @@ impl Game<'_> {
         // ClientLevel.tick: the End's sky flash, frozen or not.
         self.tick_end_flash();
         self.player_border();
+        // The entities added after the player tick after it: their pushes
+        // (from where they ended last tick, onto where the player ended)
+        // reach its next move, this one.
+        let pushed_after = self.remote_pushes(false);
         self.tick_remote_entities(running);
         self.tick_random_textures();
         // Breeze.tick's block dust: drawn by each client for the breezes it sees.
@@ -6679,7 +6700,8 @@ impl Game<'_> {
         self.tick_subtitles();
         self.tick_client_load();
         let entity_collisions = self.player_entity_collisions();
-        let pushed = self.remote_pushes();
+        // Those added before it tick before it: their pushes reach this move.
+        let pushed = pushed_after.add_vector(self.remote_pushes(true));
         let sprint_window = self.settings.sprint_window;
         let Some(player) = self.player.as_mut() else {
             return Ok(());
@@ -7033,8 +7055,10 @@ impl Game<'_> {
     /// `LivingEntity.pushEntities`, and of the boats' pushes: on a client
     /// `EntitySelector.pushableBy` lets entities push only the local player,
     /// so the server never sends these pushes. `doPush(player)` is
-    /// `player.push(entity)`.
-    fn remote_pushes(&self) -> Vec3 {
+    /// `player.push(entity)`. `before_player`: the mobs that tick before the
+    /// player (`ticked_before_player`) and the boats, else the mobs that tick
+    /// after it.
+    fn remote_pushes(&self, before_player: bool) -> Vec3 {
         let (Some(p), Some(r)) = (self.player.as_ref(), self.remote.as_ref()) else {
             return Vec3::ZERO;
         };
@@ -7059,7 +7083,8 @@ impl Game<'_> {
         let board = &self.score.board;
         let player_team = board.players_team(&r.profile_name);
         let mut push = Vec3::ZERO;
-        for m in &self.mobs {
+        let order = |id: u32| r.ticked_before_player.contains(&id) == before_player;
+        for m in self.mobs.iter().filter(|m| order(m.id)) {
             let listed = r
                 .level_players
                 .get(&(m.id as i32))
@@ -7101,7 +7126,14 @@ impl Game<'_> {
         // AbstractBoat.push(player) from the boat's own tick (its box grown
         // by 0.2 sideways) and from the player's pushEntities (its box).
         let area = Vec3::new(f64::from(0.2_f32), f64::from(-0.01_f32), f64::from(0.2_f32));
-        for b in self.boats.iter().filter(|b| self.riding != Some(b.id)) {
+        // The boats' pushes stay where they were measured: with the entities
+        // that tick before the player.
+        let boats = if before_player {
+            &self.boats[..]
+        } else {
+            &[][..]
+        };
+        for b in boats.iter().filter(|b| self.riding != Some(b.id)) {
             let bb = b.bounds();
             let times = usize::from(
                 bounds.intersects(bb.inflate(area))
