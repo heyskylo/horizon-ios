@@ -1354,8 +1354,51 @@ impl Mob {
         let stands_on_fluid = self.kind.flags.lava_walker && w.fluid(x, y, z) == Fluid::Lava;
         if self.is_in_liquid() && self.affected_by_fluids() && !stands_on_fluid {
             self.travel_in_fluid(w, input, events);
+        } else if self.extra.fall_flying {
+            self.travel_fall_flying(w, input, events);
         } else {
             self.travel_in_air(w, input, events);
+        }
+    }
+    /// `LivingEntity.travelFallFlying`: use the mob's existing authoritative move
+    /// and damage routes, with the shared `updateFallFlyingMovement` arithmetic.
+    fn travel_fall_flying(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+        if self.on_climbable(w) {
+            self.travel_in_air(w, input, events);
+            self.extra.fall_flying = false;
+            return;
+        }
+        let before = (self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z).sqrt();
+        self.velocity = crate::motion::fall_flying_movement(
+            self.velocity,
+            self.head_pitch,
+            self.yaw,
+            self.effective_gravity(),
+        );
+        self.do_move(w, events);
+        if self.horizontal_collision {
+            let damage = ((before
+                - (self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z).sqrt())
+                * 10.0
+                - 3.0) as f32;
+            if damage > 0.0 {
+                let monster = super::ai::is_monster(self.species());
+                let sound = match (monster, damage as i32 > 4) {
+                    (true, true) => "entity.hostile.big_fall",
+                    (true, false) => "entity.hostile.small_fall",
+                    (false, true) => "entity.generic.big_fall",
+                    (false, false) => "entity.generic.small_fall",
+                };
+                if !self.silent {
+                    events.push(MobEvent::Sound(
+                        sound,
+                        [self.position.x, self.position.y, self.position.z],
+                        1.0,
+                        1.0,
+                    ));
+                }
+                self.damage(damage, super::Damage::of(super::DamageKind::FlyIntoWall));
+            }
         }
     }
     /// LivingEntity.travelFlying: no gravity, `0.91F` drag in the air,

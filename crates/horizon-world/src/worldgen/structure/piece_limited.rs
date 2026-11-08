@@ -201,7 +201,7 @@ impl Counts {
         let PoolElement::Single { template, .. } = element else {
             return None;
         };
-        self.0.iter().position(|t| Arc::ptr_eq(t, template))
+        self.0.iter().position(|t| Arc::ptr_eq(t, template.arc()))
     }
 }
 
@@ -794,7 +794,7 @@ impl Assembler<'_> {
                 let need_template = &self.counted.0[need_index];
                 let found = candidates.iter().position(|(e, _)| {
                     matches!(e.as_ref(), PoolElement::Single { template, .. }
-                        if Arc::ptr_eq(template, need_template))
+                        if Arc::ptr_eq(template.arc(), need_template))
                 });
                 if let Some(i) = found {
                     if slot.depth >= (self.config.max_depth - 1).min(need.min_depth) {
@@ -1028,7 +1028,7 @@ mod tests {
     fn repurposed_moves_junctions_as_its_code_does() {
         let template = Arc::new(StructureTemplate::empty());
         let element = Arc::new(PoolElement::Single {
-            template,
+            template: crate::worldgen::structure::LazyTemplate::loaded(template),
             processors: Default::default(),
             processors_source: serde_json::Value::Null,
             legacy: false,

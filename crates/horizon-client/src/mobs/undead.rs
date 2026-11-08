@@ -884,7 +884,8 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let Some(t) = cx.w.target_info(who) else {
         return;
     };
-    let start = Vec3::new(m.position.x, m.eye_y() - 0.1, m.position.z);
+    // AbstractArrow(type, mob, ...) starts at getEyeY() - 0.1F, widened.
+    let start = Vec3::new(m.position.x, m.eye_y() - f64::from(0.1_f32), m.position.z);
     let height = t.bounds.max_position().y - t.bounds.min_position().y;
     let xd = t.position.x - m.position.x;
     let yd = t.position.y + height / 3.0 - start.y;
@@ -913,7 +914,7 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     ignite_for_wither_skeleton(m, &mut p);
     p.shoot(
         &mut arrow_random,
-        [xd, yd + dist * 0.2, zd],
+        [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         (14 - id * 4) as f32,
     );

@@ -33,15 +33,7 @@ pub(super) struct Impact {
 
 /// The type the mods know a projectile by: a spectral arrow is its own.
 fn projectile_type(p: &Projectile) -> &'static str {
-    let spectral = p
-        .arrow
-        .as_ref()
-        .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow");
-    if spectral {
-        "minecraft:spectral_arrow"
-    } else {
-        p.kind.id()
-    }
+    p.entity_type()
 }
 
 impl Game<'_> {

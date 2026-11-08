@@ -432,7 +432,15 @@ fn celestial_color(in: Out) -> vec4<f32> {
                       linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
         return in.color * (1.0 - fog);
     }
-    return textureSample(atlas, atlas_sampler, in.uv) * in.color * in.light_color;
+    let color = textureSample(atlas, atlas_sampler, in.uv) * in.color * in.light_color;
+    if in.overlay == 45u {
+        // A Polytone custom particle drawn additively: the fog over its colour, as vanilla's
+        // particle.fsh, under the additive blend (no alpha cutout: its faint texels add up).
+        let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                    linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
+        return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
+    }
+    return color;
 }
 @fragment fn fs_celestial(in: Out) -> @location(0) vec4<f32> {
     let color = celestial_color(in);
