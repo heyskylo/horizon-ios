@@ -619,7 +619,12 @@ impl Game<'_> {
                     events.push(MobEvent::SpawnKind {
                         kind: "minecraft:witch".into(),
                         at,
-                        setup: setup(m),
+                        // Villager.thunderHit: the witch's convertTo runs
+                        // finalizeSpawn(CONVERSION); the zombified piglin's does not.
+                        setup: SpawnSetup {
+                            skip_finalize: false,
+                            ..setup(m)
+                        },
                     });
                     continue;
                 }
