@@ -157,11 +157,8 @@ impl PrimedTnt {
                 self.velocity.z *= scale;
             }
         }
-        self.velocity = Vec3::new(
-            self.velocity.x * 0.98,
-            self.velocity.y * 0.98,
-            self.velocity.z * 0.98,
-        );
+        // Entity.scale(getAirDrag()): 0.98F, widened before it scales motion.
+        self.velocity = horizon_client::entity_rules::scale_air_drag(self.velocity);
         if self.on_ground {
             self.velocity = Vec3::new(
                 self.velocity.x * 0.7,
@@ -303,6 +300,7 @@ impl Game<'_> {
             ];
             let bounds = t.bounds();
             let (id, owner, guest, power) = (t.id, t.owner, t.guest, t.power);
+            let silent = self.entity_silent(id);
             let (owner, guest) = match owner {
                 Some(_) => (owner, guest),
                 None => self
@@ -330,8 +328,15 @@ impl Game<'_> {
                 },
                 |id| self.mob_display_name(id),
             );
-            let result = self
-                .with_hive_emptying_blast(|g| g.server_explode(center, power, interaction, false));
+            let result = self.with_hive_emptying_blast(|g| {
+                g.server_explode_from(
+                    center,
+                    power,
+                    interaction,
+                    false,
+                    super::explosion::ExplosionSource::default().with_silence(silent),
+                )
+            });
             self.combat.blast_owner = None;
             self.combat.blast_guest = None;
             self.combat.explosion_in_water = false;
@@ -1333,6 +1338,281 @@ mod tests {
                 "retained {field}"
             );
         }
+    }
+
+    #[test]
+    fn silent_tnt_keeps_the_blast_without_its_sound() {
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for silent in [false, true, false] {
+            let glass = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:glass")
+                .unwrap();
+            game.world.set(8, 64, 8, glass).unwrap();
+            game.audio.heard.clear();
+            game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 1, None, None);
+            game.tnts[0].no_gravity = true;
+            game.tnts[0].velocity = Vec3::ZERO;
+            let id = game.tnts[0].id;
+            set_silent(&mut game, id, silent);
+            let before = particle_count(&game);
+            game.tick_one_tnt(0, &[]).unwrap();
+            rows.push(format!(
+                "explosion {silent} {} {}",
+                particle_count(&game) > before,
+                sound_count(&game, "minecraft:entity.generic.explode") != 0
+            ));
+            assert!(game.tnts.is_empty(), "the fuse still expires");
+            assert!(
+                game.res.facts().is_air(game.world.block(8, 64, 8)),
+                "silence keeps block destruction"
+            );
+            assert!(particle_count(&game) > before, "the blast remains visible");
+            assert_eq!(
+                sound_count(&game, "minecraft:entity.generic.explode"),
+                u32::from(!silent),
+                "direct source Silent={silent}"
+            );
+            game.audio.heard.clear();
+            game.server_explode(
+                [8.5, 64.0, 8.5],
+                0.0,
+                super::super::explosion::BlockInteraction::Keep,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                game.audio.heard.get("minecraft:entity.generic.explode"),
+                Some(&1),
+                "a source-free blast stays audible"
+            );
+        }
+        write_silence_output("explosion", &rows);
+    }
+
+    #[test]
+    fn silent_potions_keep_the_splash_without_its_sound() {
+        use horizon_client::projectiles::{Hit, Projectile, ProjectileKind};
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for kind in ["splash_potion", "lingering_potion"] {
+            for potion in ["awkward", "swiftness", "healing"] {
+                for silent in [false, true] {
+                    game.audio.heard.clear();
+                    let stack = ItemStack::new(&format!("minecraft:{kind}"), 1)
+                        .with_potion(&format!("minecraft:{potion}"));
+                    let mut projectile = Projectile::new(
+                        ProjectileKind::potion(stack),
+                        Vec3::new(8.5, 64.0, 8.5),
+                        None,
+                    );
+                    projectile.id = game.take_entity_id();
+                    set_silent(&mut game, projectile.id, silent);
+                    let before = particle_count(&game);
+                    let clouds = game.breath_clouds.len();
+                    game.projectile_hit(
+                        &projectile,
+                        Hit::Block {
+                            pos: [8, 63, 8],
+                            at: projectile.position,
+                            face: [0, 1, 0],
+                        },
+                    )
+                    .unwrap();
+                    rows.push(format!(
+                        "{kind} {potion} {silent} {} {}",
+                        particle_count(&game) > before,
+                        sound_count(&game, "minecraft:entity.splash_potion.break") != 0
+                    ));
+                    assert!(
+                        particle_count(&game) > before,
+                        "{kind} {potion} Silent={silent}: visible splash"
+                    );
+                    assert_eq!(
+                        sound_count(&game, "minecraft:entity.splash_potion.break"),
+                        u32::from(!silent),
+                        "{kind} {potion} Silent={silent}"
+                    );
+                    assert_eq!(
+                        game.breath_clouds.len() - clouds,
+                        usize::from(kind == "lingering_potion" && potion != "awkward"),
+                        "silence leaves the lingering cloud intact"
+                    );
+                }
+            }
+        }
+        write_silence_output("potions", &rows);
+    }
+
+    fn write_silence_output(name: &str, rows: &[String]) {
+        if let Some(root) = std::env::var_os("HORIZON_SOURCE_SILENCE_OUTPUT") {
+            std::fs::write(
+                std::path::Path::new(&root).join(format!("{name}.txt")),
+                rows.join("\n") + "\n",
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn silent_creeper_keeps_the_blast_after_its_source_is_removed() {
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        for silent in [false, true, false] {
+            let id = game
+                .spawn_mob_for("minecraft:creeper", [8.5, 64.0, 8.5], true, true)
+                .unwrap();
+            let mob = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
+            mob.silent = silent;
+            mob.swell = mob.max_swell;
+            mob.extra.flag = true;
+            let mut events = Vec::new();
+            horizon_client::mobs::hostile::creeper_tick(mob, &mut events);
+            assert!(mob.removed);
+            game.mobs.retain(|m| m.id != id);
+            game.audio.heard.clear();
+            let particles = particle_count(&game);
+            game.handle_mob_events(events).unwrap();
+            assert!(particle_count(&game) > particles);
+            assert_eq!(
+                sound_count(&game, "minecraft:entity.generic.explode"),
+                u32::from(!silent)
+            );
+        }
+    }
+
+    #[test]
+    fn silent_launched_potions_and_bottles_keep_their_impact() {
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(8, 63, 8, stone).unwrap();
+        for kind in ["splash_potion", "lingering_potion", "experience_bottle"] {
+            for silent in [false, true, false] {
+                game.launch_thrown(
+                    ItemStack::new(&format!("minecraft:{kind}"), 1)
+                        .with_potion("minecraft:swiftness"),
+                    Vec3::new(8.5, 64.1, 8.5),
+                    Vec3::new(0.0, -1.0, 0.0),
+                    None,
+                );
+                let id = *game.potions.thrown_ids().last().unwrap();
+                set_silent(&mut game, id, silent);
+                game.audio.heard.clear();
+                let particles = particle_count(&game);
+                let clouds = game.breath_clouds.len();
+                let xp: u32 = game.orbs.iter().map(|o| o.value * o.count).sum();
+                game.tick_effects(true);
+                assert_eq!(game.potions.thrown_ids().count(), 0);
+                assert!(particle_count(&game) > particles, "{kind} keeps its splash");
+                assert_eq!(
+                    sound_count(&game, "minecraft:entity.splash_potion.break"),
+                    u32::from(!silent),
+                    "{kind} Silent={silent}"
+                );
+                assert_eq!(
+                    game.breath_clouds.len() - clouds,
+                    usize::from(kind == "lingering_potion")
+                );
+                let gained = game.orbs.iter().map(|o| o.value * o.count).sum::<u32>() - xp;
+                if kind == "experience_bottle" {
+                    assert!((3..=11).contains(&gained), "silence keeps the experience");
+                }
+            }
+        }
+    }
+
+    fn set_silent(game: &mut Game<'_>, id: u32, silent: bool) {
+        game.remember_tags(
+            id,
+            &horizon_world::nbt::Tag::Compound(
+                [(
+                    "Silent".into(),
+                    horizon_world::nbt::Tag::Byte(i8::from(silent)),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        );
+    }
+
+    fn sound_count(game: &Game<'_>, event: &str) -> u32 {
+        game.audio.heard.get(event).copied().unwrap_or(0)
+    }
+
+    #[test]
+    fn silent_bottles_preserve_xp_and_the_server_random_stream() {
+        use horizon_client::projectiles::{Hit, Projectile, ProjectileKind};
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for seed in [0, 1, -1, 42, i64::MIN, i64::MAX] {
+            let mut audible = None;
+            for silent in [false, true] {
+                game.world.random = horizon_core::random::LegacyRandom::new(seed);
+                game.orbs.clear();
+                let mut projectile = Projectile::new(
+                    ProjectileKind::ExperienceBottle,
+                    Vec3::new(8.5, 64.0, 8.5),
+                    None,
+                );
+                projectile.id = game.take_entity_id();
+                set_silent(&mut game, projectile.id, silent);
+                game.projectile_hit(
+                    &projectile,
+                    Hit::Block {
+                        pos: [8, 63, 8],
+                        at: projectile.position,
+                        face: [0, 1, 0],
+                    },
+                )
+                .unwrap();
+                let xp: u32 = game.orbs.iter().map(|o| o.value * o.count).sum();
+                let next = game.world.random.next_long();
+                assert!((3..=11).contains(&xp));
+                if let Some((audible_xp, audible_next)) = audible {
+                    assert_eq!(
+                        (xp, next),
+                        (audible_xp, audible_next),
+                        "Silent must not change XP or level RNG"
+                    );
+                    rows.push(format!(
+                        "bottle_rng {seed} {} {}",
+                        xp == audible_xp,
+                        next == audible_next
+                    ));
+                } else {
+                    audible = Some((xp, next));
+                }
+            }
+        }
+        write_silence_output("bottles", &rows);
+    }
+
+    fn source_silence_game() -> Option<Game<'static>> {
+        let mut game = server_game()?;
+        // Observe the server's real emission requests without a camera or render tick.
+        game.particles.requested = Some(Vec::new());
+        Some(game)
+    }
+
+    fn particle_count(game: &Game<'_>) -> usize {
+        game.particles.requested.as_ref().unwrap().len()
     }
 
     /// #10063: TNT lit between level ticks (flint and steel, a command) has its

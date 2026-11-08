@@ -94,6 +94,7 @@ pub mod preedit;
 pub mod providers;
 pub mod pvp;
 pub mod pvp_hud;
+pub mod random_source;
 pub mod screen_draw;
 pub mod screen_effects;
 pub mod sculk;

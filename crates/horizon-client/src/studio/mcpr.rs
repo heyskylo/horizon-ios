@@ -6,6 +6,7 @@
 //!   `[timestamp_ms: u32 big-endian][packet_length: u32 big-endian][packet_data: VarInt(packet_id) + payload]`
 //! - Optional `recording.tmcpr.crc32`: CRC32 of the packet stream.
 
+use super::spline::CameraTrack;
 use horizon_protocol::buf::{Reader, write_varint};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -365,6 +366,57 @@ impl McprWriter {
         }
     }
 
+    /// Atomically replace the optional camera path without touching the packet
+    /// stream, metadata, or other archive entries.
+    pub fn replace_camera_track(path: &Path, track: &CameraTrack) -> io::Result<()> {
+        let part = sibling(path, "camera.part");
+        let result = (|| {
+            let file = File::open(path)?;
+            let mut archive = zip::ZipArchive::new(file)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let mut output = zip::ZipWriter::new(create_private_file(&part)?);
+            for index in 0..archive.len() {
+                let mut entry = archive.by_index(index).map_err(io::Error::other)?;
+                let name = entry
+                    .name()
+                    .map(|name| name.into_owned())
+                    .map_err(io::Error::other)?;
+                if name == "camera.json" {
+                    continue;
+                }
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated)
+                    .large_file(entry.size() >= u32::MAX as u64);
+                if entry.is_dir() {
+                    output
+                        .add_directory(name, options)
+                        .map_err(io::Error::other)?;
+                } else {
+                    output.start_file(name, options).map_err(io::Error::other)?;
+                    io::copy(&mut entry, &mut output)?;
+                }
+            }
+            if !track.is_empty() {
+                output
+                    .start_file(
+                        "camera.json",
+                        zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated),
+                    )
+                    .map_err(io::Error::other)?;
+                serde_json::to_writer_pretty(&mut output, track).map_err(io::Error::other)?;
+            }
+            let file = output.finish().map_err(io::Error::other)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&part, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&part);
+        }
+        result
+    }
+
     fn package(&self, part: &Path) -> io::Result<()> {
         package_stream(
             &self.metadata,
@@ -552,6 +604,8 @@ pub struct McprReader {
     /// Sparse frame index; timestamps are normalized to never go backwards.
     packet_index: Vec<SparseIndexEntry>,
     total_packets: usize,
+    /// Optional camera keyframes stored by the Studio editor.
+    pub camera_track: Option<CameraTrack>,
 }
 
 fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str, max: u64) -> io::Result<Vec<u8>> {
@@ -567,6 +621,30 @@ fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str, max: u64) -> io::
         ));
     }
     Ok(bytes)
+}
+
+fn read_optional_json<T: for<'de> Deserialize<'de>>(
+    archive: &mut zip::ZipArchive<File>,
+    name: &str,
+    max: u64,
+) -> io::Result<Option<T>> {
+    match archive.by_name(name) {
+        Ok(entry) => {
+            let mut bytes = Vec::new();
+            entry.take(max + 1).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{name} is larger than {max} bytes"),
+                ));
+            }
+            serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        }
+        Err(zip::result::ZipError::FileNotFound) => Ok(None),
+        Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+    }
 }
 
 impl McprReader {
@@ -633,6 +711,8 @@ impl McprReader {
                 ));
             }
         }
+        let camera_track =
+            read_optional_json::<CameraTrack>(&mut archive, "camera.json", MAX_METADATA_BYTES)?;
         // A recording that stopped mid-write ends in a frame that isn't whole:
         // indexing and playback both stop before it.
         let mut packet_index = Vec::new();
@@ -664,6 +744,7 @@ impl McprReader {
             end: offset,
             packet_index,
             total_packets,
+            camera_track,
         })
     }
 
@@ -1112,6 +1193,37 @@ mod tests {
         assert_eq!(reader.total_packets(), 1);
         assert_eq!(reader.next_packet().unwrap().unwrap().id, 0x03);
         assert_eq!(reader.next_packet().unwrap(), None);
+    }
+
+    #[test]
+    fn camera_track_is_saved_without_changing_recorded_packets() {
+        let scratch = Scratch::new("camera_track");
+        let path = scratch.0.join("camera.mcpr");
+        let mut writer = McprWriter::new(path.clone(), Metadata::default()).unwrap();
+        writer.write_packet(0, 1, &[10, 20, 30]).unwrap();
+        writer.finish(0).unwrap();
+
+        let track = CameraTrack {
+            keyframes: vec![super::super::spline::CameraKeyframe::new(
+                125,
+                [1.0, 64.0, -2.0],
+                45.0,
+                -10.0,
+                70.0,
+            )],
+        };
+        McprWriter::replace_camera_track(&path, &track).unwrap();
+        let mut reader = McprReader::open(&path).unwrap();
+        assert_eq!(reader.camera_track, Some(track));
+
+        let packet = reader.next_packet().unwrap().unwrap();
+        assert_eq!(
+            (packet.timestamp_ms, packet.id, packet.payload),
+            (0, 1, vec![10, 20, 30])
+        );
+
+        McprWriter::replace_camera_track(&path, &CameraTrack::default()).unwrap();
+        assert!(McprReader::open(&path).unwrap().camera_track.is_none());
     }
 
     /// Seeking lands on the first packet of a millisecond, never in the middle
