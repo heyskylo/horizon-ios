@@ -525,7 +525,7 @@ impl Game<'_> {
     pub(super) fn thorns_damage(&mut self) -> Vec<f32> {
         let mut hits = Vec::new();
         self.player_thorns(|_, min, max| {
-            hits.push(super::dispenser::entity_random().next_float() * (max - min) + min);
+            hits.push(random_source::entity().next_float() * (max - min) + min);
         });
         hits
     }
