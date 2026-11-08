@@ -19,6 +19,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 mod tests;
 
+/// Tests that sample threads take turns: a sampler session arms every thread of the name it asks for, the other tests' too.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) static SAMPLED_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 mod samples;
 pub mod spans;
 mod system;
@@ -57,6 +61,14 @@ impl Role {
         thread: "tick",
         span_thread: "Server thread",
         background_probe: false,
+    };
+    pub const INTEGRATED: Role = Role {
+        side: Side::Server,
+        kind: Kind::Integrated,
+        unit: Unit::Tick,
+        thread: "tick",
+        span_thread: "Server thread",
+        background_probe: true,
     };
     pub const CLIENT: Role = Role {
         side: Side::Client,
@@ -150,7 +162,8 @@ pub struct CaptureStatus {
 struct Session {
     side: Side,
     unit: Unit,
-    writer: WriterThread<File>,
+    /// Unset when the session joined another side's file, which that side finishes.
+    writer: Option<WriterThread<File>>,
     tx: FieldSender,
     path: PathBuf,
     /// The folder retention trims; none for a capture written to a path of its own.
@@ -320,6 +333,44 @@ impl ServerPerf {
         };
         let writer = WriterThread::spawn(file)?;
         let tx = writer.sender();
+        self.open(t, t, Some(writer), tx, path.clone(), dir, options);
+        Ok(path)
+    }
+
+    /// Writes this side into the file another side opened; `origin`, on this side's clock, is the zero of every `t`. Call it on the tick thread.
+    pub fn join_capture(
+        &mut self,
+        t: f64,
+        origin: f64,
+        tx: FieldSender,
+        path: PathBuf,
+        options: CaptureOptions,
+    ) -> std::io::Result<()> {
+        if self.session.is_some() {
+            return Err(std::io::Error::other("a capture is already running"));
+        }
+        self.open(t, origin, None, tx, path, Path::new(""), options);
+        Ok(())
+    }
+
+    /// What another side needs to join the running capture: its sender, its file and the clock reading its `t` is zero at.
+    pub fn joinable(&self) -> Option<(FieldSender, PathBuf, f64)> {
+        let s = self.session.as_ref()?;
+        Some((s.tx.clone(), s.path.clone(), s.origin))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        &mut self,
+        t: f64,
+        origin: f64,
+        writer: Option<WriterThread<File>>,
+        tx: FieldSender,
+        path: PathBuf,
+        dir: &Path,
+        options: CaptureOptions,
+    ) {
+        let now_ms = unix_ms();
         let sampling = options
             .samples
             .then(|| {
@@ -342,9 +393,9 @@ impl ServerPerf {
             unit: self.role.unit,
             writer,
             tx,
-            path: path.clone(),
+            path,
             dir: options.file.is_none().then(|| dir.to_owned()),
-            origin: t,
+            origin,
             cursor: pushed + u64::from(partial),
             strings: Interner::default(),
             counters: CounterReporter::new(self.role.side),
@@ -389,16 +440,18 @@ impl ServerPerf {
         world.side = self.role.side as i32;
         session.entries();
         session.tx.send(Field::World(world));
-        for event in self.slow.snapshot(self.role.side, t, &mut session.strings) {
+        for event in self
+            .slow
+            .snapshot(self.role.side, origin, &mut session.strings)
+        {
             session.entries();
             session.tx.send(Field::SlowHistory(event));
         }
         session.entries();
-        for window in self.health.history(t) {
+        for window in self.health.history(origin) {
             session.tx.send(Field::History(window));
         }
         self.session = Some(session);
-        Ok(path)
     }
 
     /// Ends the running capture: writes the spans, workers, net and world here and finishes the file off the tick thread; false when none runs.
@@ -410,16 +463,17 @@ impl ServerPerf {
         session.pump(&self.health, t);
         let stop_t = t - session.origin;
         let overhead = session.close(stop_t, end);
-        let ending = match session.sampling.take().and_then(Sampling::stop) {
-            None => Ending::Done(session.finish(None, stop_t, reason, overhead)),
-            Some(stopped) => {
-                let worker = thread::Builder::new()
-                    .name("horizon-perf-finish".into())
-                    .spawn(move || session.finish(Some(stopped), stop_t, reason, overhead));
-                match worker {
-                    Ok(handle) => Ending::Running(handle),
-                    Err(e) => Ending::Done(Err(e)),
-                }
+        let stopped = session.sampling.take().and_then(Sampling::stop);
+        // The file's owner waits for the sides that joined it, so it never finishes on the caller's thread.
+        let ending = if stopped.is_none() && session.writer.is_none() {
+            Ending::Done(session.finish(None, stop_t, reason, overhead))
+        } else {
+            let worker = thread::Builder::new()
+                .name("horizon-perf-finish".into())
+                .spawn(move || session.finish(stopped, stop_t, reason, overhead));
+            match worker {
+                Ok(handle) => Ending::Running(handle),
+                Err(e) => Ending::Done(Err(e)),
             }
         };
         self.ending.push(ending);
@@ -673,6 +727,12 @@ impl Session {
             ..
         } = self;
         drop(tx);
+        let Some(writer) = writer else {
+            return Ok(Saved {
+                path,
+                deleted: Vec::new(),
+            });
+        };
         writer.finish()?;
         let deleted = match dir {
             Some(dir) => files::retain(&dir, &path, files::KEEP_FILES, files::KEEP_BYTES)?,

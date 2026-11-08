@@ -60,7 +60,7 @@ const HELP: &[&str] = &[
     "chat-log [N]                   the newest N chat messages (default 10)",
     "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr video-vanilla)",
     "stats [reset] [raw]            frame-time summary since the last reset (raw: every frame time too)",
-    "profile [client] start|stop|status|mark NAME  capture the client's performance to reports/ (horizon-ctl profile --help)",
+    "profile [client|server] start|stop|status|mark NAME  capture the performance of the window and, in single player, its server thread to reports/ (horizon-ctl profile --help)",
     "narration                      the narrator's status and the last messages it was asked to say",
     "bench SECONDS [raw]            reset stats, wait, then reply with the summary (raw: every frame time too)",
     "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]  fly the camera along a line at constant speed, then reply with the frame summary (raw: every frame time too)",

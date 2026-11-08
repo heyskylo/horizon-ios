@@ -36,6 +36,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) mod capture;
+
 /// How long the window waits for the server thread to answer a `call`.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The error of a `call` without an answer: the server stopped, or it was
@@ -664,6 +666,7 @@ impl Game<'_> {
         opening: Opening,
     ) -> Result<()> {
         let result = self.run_integrated_inner(launch, flags, tasks, ready, opening);
+        self.finish_server_capture();
         if let Err(error) = &result {
             self.native_players_leaving();
             self.native_lifecycle_close_failed(&error.to_string());
@@ -697,6 +700,13 @@ impl Game<'_> {
             let stopped = self.stop_integrated();
             return result.and(stopped);
         }
+        let slow_ms = self
+            .options
+            .spikes
+            .unwrap_or(super::dedicated::SLOW_TICK_MS);
+        self.profile
+            .server
+            .get_or_insert_with(|| capture::ServerSide::new(slow_ms));
         let mut next = Instant::now();
         let mut was_paused = false;
         while !flags.stop.load(Ordering::Relaxed) {
@@ -718,11 +728,11 @@ impl Game<'_> {
             was_paused = paused;
             if paused {
                 // Only the connections run.
-                self.tick_server_timed(true)?;
+                self.tick_server_measured(true)?;
             } else {
                 self.follow_distances(&flags);
                 let started = Instant::now();
-                self.tick_server_timed(false)?;
+                self.tick_server_measured(false)?;
                 // MinecraftServer.tickServer's tick times, for /tick query.
                 self.clock.record(started.elapsed());
                 self.debug_charts.log_tick(started, started.elapsed());
@@ -740,6 +750,7 @@ impl Game<'_> {
             self.publish_load_view();
             self.wait_for_next_server_tick(&mut next, paused);
         }
+        self.finish_server_capture();
         self.stop_integrated()
     }
 

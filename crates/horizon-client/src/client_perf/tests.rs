@@ -616,6 +616,146 @@ fn the_messages_the_game_shows_are_translation_keys_with_one_argument_each() {
     assert!(en.contains_key("horizon.perf.started"));
 }
 
+/// Server ticks, 20 a second, from second `from` up to but not including `to`.
+fn tick_server(server: &mut ServerPerf, from: f64, to: f64) {
+    for i in 0..((to - from) * 20.0).round() as u32 {
+        let t = from + f64::from(i) / 20.0;
+        server.tick(t, 10.0, None, WorldCounts::default, Wire::new);
+    }
+}
+
+fn server_options() -> CaptureOptions {
+    CaptureOptions {
+        window_s: None,
+        trigger: Trigger::Ctl,
+        start: Start {
+            same_process: true,
+            ..Start::default()
+        },
+        samples: false,
+        sampler: SamplerOptions::default(),
+        block_names: Vec::new(),
+        levels: Vec::new(),
+        wire: Wire::new(),
+    }
+}
+
+#[test]
+fn a_single_player_capture_holds_both_sides_whole_and_on_one_clock() {
+    let scratch = Scratch::new("both");
+    let mut client = ClientPerf::new(SLOW_FRAME_MS);
+    let mut server = ServerPerf::with_role(Role::INTEGRATED, 0.0, 250.0);
+    run(&mut client, 0, 2, 20, 16.0);
+    tick_server(&mut server, 0.0, 2.0);
+    let path = begin(&mut client, 2.0, &scratch.0, &no_samples());
+
+    let join = client.join().unwrap();
+    assert_eq!(join.path, path);
+    assert_eq!(join.trigger, Trigger::Ctl);
+    assert_eq!(join.options, no_samples());
+    assert_eq!(join.ends.unwrap().1, R::WindowCap);
+    let origin = join.origin.duration_since(client.epoch).as_secs_f64();
+    assert!((origin - 2.0).abs() < 1e-6, "{origin}");
+
+    // The server thread takes the request up in the middle of second 4.
+    run(&mut client, 2, 5, 20, 16.0);
+    tick_server(&mut server, 2.0, 4.5);
+    server
+        .join_capture(4.5, origin, join.sender, join.path, server_options())
+        .unwrap();
+    tick_server(&mut server, 4.5, 7.0);
+    assert!(server.mark(5.25, "from the server"));
+    assert!(client.mark(5.25, "from the client"));
+    run(&mut client, 5, 7, 20, 16.0);
+
+    assert!(server.begin_stop(7.0, R::Normal, CaptureEnd::default()));
+    assert!(client.stop(7.0, R::Normal));
+    let joined = server.take_saved(true).pop().unwrap().unwrap();
+    assert_eq!(joined.path, path);
+    assert!(joined.deleted.is_empty());
+    let c = read(&client.take_saved(true).pop().unwrap().unwrap().path);
+
+    assert_eq!((c.start.len(), c.stop.len()), (2, 2));
+    let start = |side| c.start.iter().find(|s| s.side() == side).unwrap();
+    assert_eq!(start(Side::Client).kind(), Kind::Client);
+    assert_eq!(start(Side::Server).kind(), Kind::Integrated);
+    assert!(start(Side::Server).same_process);
+    for side in [Side::Client, Side::Server] {
+        let stop = c.stop.iter().find(|s| s.side() == side).unwrap();
+        assert_eq!((stop.t, stop.reason()), (5.0, R::Normal), "{side:?}");
+    }
+
+    // Both sides count from the client's start (2 s); the server joined mid-second 4 and skips that partial second.
+    let seconds = |side| -> Vec<f64> {
+        c.health
+            .iter()
+            .filter(|h| h.side() == side)
+            .map(|h| h.t)
+            .collect()
+    };
+    assert_eq!(seconds(Side::Client), [0.0, 1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(seconds(Side::Server), [3.0, 4.0]);
+    for h in &c.health {
+        match h.side() {
+            Side::Server => assert_eq!((h.tps, h.fps), (Some(20.0), None)),
+            _ => assert_eq!((h.fps, h.tps), (Some(20.0), None)),
+        }
+    }
+    let mark = |name: &str| c.marks.iter().find(|m| m.name == name).unwrap();
+    assert_eq!(
+        (mark("from the server").side(), mark("from the server").t),
+        (Side::Server, 3.25)
+    );
+    assert_eq!(
+        (mark("from the client").side(), mark("from the client").t),
+        (Side::Client, 3.25)
+    );
+
+    let options = horizon_perf::SummaryOptions::default();
+    let report = horizon_perf::summarize(&c, "single player", &options).unwrap();
+    let (server_at, client_at) = (report.find("integrated server"), report.find(": client"));
+    assert!(server_at.is_some() && client_at.is_some(), "{report}");
+    assert!(server_at < client_at, "the server comes first:\n{report}");
+}
+
+#[test]
+fn a_server_that_joins_late_counts_from_the_captures_start_not_its_own() {
+    let scratch = Scratch::new("late");
+    let mut client = ClientPerf::new(SLOW_FRAME_MS);
+    // The server's clock reads 0 when the client's reads 10.
+    let mut server = ServerPerf::with_role(Role::INTEGRATED, 0.0, 250.0);
+    run(&mut client, 0, 3, 10, 16.0);
+    begin(&mut client, 3.0, &scratch.0, &no_samples());
+    let join = client.join().unwrap();
+    let origin = join.origin.duration_since(client.epoch).as_secs_f64() - 10.0;
+    assert!((origin + 7.0).abs() < 1e-6, "{origin}");
+    tick_server(&mut server, 0.0, 4.0);
+    server
+        .join_capture(4.0, origin, join.sender, join.path, server_options())
+        .unwrap();
+    tick_server(&mut server, 4.0, 5.0);
+    assert!(server.begin_stop(5.0, R::Shutdown, CaptureEnd::default()));
+    assert!(client.stop(15.0, R::Normal));
+    server.take_saved(true).pop().unwrap().unwrap();
+    let c = read(&client.take_saved(true).pop().unwrap().unwrap().path);
+    let stop = |side| c.stop.iter().find(|s| s.side() == side).unwrap();
+    assert_eq!(
+        (stop(Side::Server).t, stop(Side::Server).reason()),
+        (12.0, R::Shutdown)
+    );
+    assert_eq!(
+        (stop(Side::Client).t, stop(Side::Client).reason()),
+        (12.0, R::Normal)
+    );
+    let server_seconds: Vec<_> = c
+        .health
+        .iter()
+        .filter(|h| h.side() == Side::Server)
+        .map(|h| h.t)
+        .collect();
+    assert_eq!(server_seconds, [11.0]);
+}
+
 #[cfg(target_os = "linux")]
 mod sampled {
     use super::*;
@@ -636,6 +776,9 @@ mod sampled {
 
     #[test]
     fn the_render_thread_samples_count_the_frames_the_run_made() {
+        let _turn = server_perf::SAMPLED_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let scratch = Scratch::new("samples");
         let mut perf = ClientPerf::new(SLOW_FRAME_MS);
         let on = StartOptions {
@@ -684,5 +827,107 @@ mod sampled {
             Symbols::Unspecified
         );
         assert!(c.stop[0].overhead.is_some());
+    }
+
+    #[test]
+    fn each_side_samples_its_own_thread_and_side_client_selects_the_render_thread() {
+        let _turn = server_perf::SAMPLED_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use horizon_perf::request::QueryRequest;
+        use horizon_perf::wire::{Op, SideName};
+        let scratch = Scratch::new("sides");
+        let mut client = ClientPerf::new(SLOW_FRAME_MS);
+        let on = StartOptions {
+            hz: Some(500),
+            ..StartOptions::default()
+        };
+        let path = client
+            .start(
+                0.0,
+                &scratch.0,
+                Trigger::Env,
+                &on,
+                Start::default(),
+                Vec::new(),
+            )
+            .unwrap();
+        let join = client.join().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut perf = ServerPerf::with_role(Role::INTEGRATED, 0.0, 250.0);
+            let options = CaptureOptions {
+                samples: true,
+                sampler: SamplerOptions {
+                    hz: Some(500),
+                    ..SamplerOptions::default()
+                },
+                ..server_options()
+            };
+            perf.join_capture(0.0, 0.0, join.sender, join.path, options)
+                .unwrap();
+            for tick in 0..7u32 {
+                work::tick_start();
+                let started = sampler::thread_cpu_ns();
+                spin_frame(30);
+                let ns = sampler::thread_cpu_ns() - started;
+                work::tick_end(ns);
+                perf.tick(
+                    f64::from(tick) * 0.1,
+                    ns as f32 / 1e6,
+                    None,
+                    WorldCounts::default,
+                    Wire::new,
+                );
+            }
+            perf.begin_stop(0.7, R::Normal, CaptureEnd::default());
+            perf.take_saved(true).pop().unwrap().unwrap();
+        });
+        for frame in 0..7u32 {
+            work::tick_start();
+            let started = sampler::thread_cpu_ns();
+            spin_frame(30);
+            let ns = sampler::thread_cpu_ns() - started;
+            work::tick_end(ns);
+            let wall = ns as f32 / 1e6;
+            let t = f64::from(frame) * 0.1;
+            client.frame(t, wall, wall, None, None, WorldCounts::default);
+        }
+        client.stop(0.7, R::Normal);
+        server.join().unwrap();
+        let saved = client.take_saved(true).pop().unwrap().unwrap();
+        assert_eq!(saved.path, path);
+
+        let c = read(&path);
+        let threads: Vec<_> = c
+            .samples
+            .iter()
+            .map(|s| {
+                let name = c
+                    .strings
+                    .iter()
+                    .find(|e| e.side() == s.side() && e.id == s.threads[0].name)
+                    .unwrap();
+                (s.side(), name.text.as_str(), s.threads[0].units)
+            })
+            .collect();
+        assert!(
+            threads.contains(&(Side::Client, "render", 7)),
+            "{threads:?}"
+        );
+        assert!(threads.contains(&(Side::Server, "tick", 7)), "{threads:?}");
+        assert_eq!(c.stop.len(), 2);
+
+        let hot = |side| {
+            let request = QueryRequest {
+                side: Some(side),
+                ..QueryRequest::default()
+            };
+            let q = request.into_query(Op::Hot, Vec::new()).unwrap();
+            let answer = horizon_perf::ops::query(std::slice::from_ref(&path), &q).unwrap();
+            assert_eq!(answer.error, None);
+            answer.envelope.selection.unwrap().thread
+        };
+        assert_eq!(hot(SideName::Client).as_deref(), Some("render"));
+        assert_eq!(hot(SideName::Server).as_deref(), Some("tick"));
     }
 }

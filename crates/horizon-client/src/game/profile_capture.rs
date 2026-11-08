@@ -1,5 +1,9 @@
-//! Client captures (docs/perf-platform.md §4.1): `horizon-ctl profile`, F3+O and `HORIZON_PROFILE`.
+//! Captures (docs/perf-platform.md §4.1): `horizon-ctl profile`, F3+O and `HORIZON_PROFILE`. The window writes its own side; in single player the server thread writes its side into the same file.
 use super::Game;
+use super::integrated::{
+    NO_ANSWER,
+    capture::{Live, ServerSide, Target},
+};
 use crate::Result;
 use horizon_client::client_perf::{
     self, ClientPerf,
@@ -16,7 +20,8 @@ use horizon_perf_format::{
     v1::{BenchResult, StopReason, Trigger},
 };
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc::Sender};
+use std::time::Instant;
 
 /// The folder `HORIZON_PROFILE` names; captures go there instead of the game home's `reports/`.
 const ENV_DIR: &str = "HORIZON_PROFILE";
@@ -53,8 +58,31 @@ fn parse_trace<'a>(words: &[&'a str]) -> std::result::Result<Trace<'a>, &'static
     }
 }
 
+const NO_CAPTURE: &str = "no capture is running; start one with profile start";
+
+/// Whether the single-player server thread writes into the window's capture.
+enum ServerLink {
+    /// The capture is of the window alone.
+    Off,
+    /// The capture wants the server thread's side, which is asked to join once there is a server thread.
+    Pending,
+}
+
+/// A capture of the server thread alone, which writes its own file.
+struct ServerOnly {
+    live: Arc<Live>,
+    path: PathBuf,
+    since: Instant,
+}
+
 /// The game's capture state: the health history, the running capture and who is waiting on it.
 pub(super) struct Profile {
+    /// The server thread's health history and its side of a capture; set on its own Game only.
+    pub(super) server: Option<ServerSide>,
+    link: ServerLink,
+    /// The server thread's side of the running or last window capture, once it was asked.
+    joined: Option<Arc<Live>>,
+    server_only: Option<ServerOnly>,
     perf: ClientPerf,
     started_by: Trigger,
     stopped_by_key: bool,
@@ -72,6 +100,10 @@ pub(super) struct Profile {
 impl Profile {
     pub(super) fn new(slow_ms: f32) -> Self {
         Self {
+            server: None,
+            link: ServerLink::Off,
+            joined: None,
+            server_only: None,
             perf: ClientPerf::new(slow_ms),
             started_by: Trigger::Unspecified,
             stopped_by_key: false,
@@ -88,6 +120,31 @@ impl Profile {
     pub(super) fn gpu(&self) -> GpuSwitch {
         self.gpu
     }
+
+    fn server_live(&self) -> bool {
+        self.perf.capturing() && self.joined.as_ref().is_some_and(|l| l.active())
+    }
+
+    fn server_only_live(&self) -> bool {
+        self.server_only.as_ref().is_some_and(|s| s.live.active())
+    }
+
+    /// Whether the last window capture holds the server thread's side.
+    fn served(&self) -> bool {
+        self.joined.as_ref().is_some_and(|l| l.wrote())
+    }
+
+    /// The sides a capture is writing, server first.
+    fn sides(&self) -> Vec<ProfileSide> {
+        let server = self.server_live() || self.server_only_live();
+        [
+            server.then_some(ProfileSide::Server),
+            self.perf.capturing().then_some(ProfileSide::Client),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
 }
 
 fn reports_dir() -> PathBuf {
@@ -98,7 +155,7 @@ fn reports_dir() -> PathBuf {
 }
 
 /// The path as the player sees it: under the game home's folder when it is there.
-fn shown(path: &Path) -> String {
+pub(super) fn shown(path: &Path) -> String {
     path.strip_prefix(horizon_client::logging::game_home())
         .unwrap_or(path)
         .display()
@@ -121,56 +178,93 @@ fn json_of<T: serde::Serialize>(reply: &T) -> Result<Option<serde_json::Value>> 
     Ok(Some(serde_json::to_value(reply)?))
 }
 
-fn reply_text<T: serde::Serialize>(reply: &T) -> String {
+pub(super) fn reply_text<T: serde::Serialize>(reply: &T) -> String {
     serde_json::to_string(reply).unwrap_or_default()
 }
 
 impl Game<'_> {
-    /// `profile [client] start|stop|status|mark`; None while a `stop` waits for its file.
+    /// `profile [client|server] start|stop|status|mark`; None while a `stop` waits for its file.
     pub(super) fn profile_command(
         &mut self,
         words: &[&str],
         reply: &Sender<String>,
     ) -> Result<Option<serde_json::Value>> {
         let parsed = request::parse(words)?;
-        if parsed.side == Some(ProfileSide::Server) {
-            return Err("profile server: the server side is not captured from a window yet; use profile client".into());
-        }
         match parsed.request {
             Request::Start(options) => {
-                let path = self.start_profile(&options, Trigger::Ctl)?;
-                json_of(&Started {
-                    ok: true,
-                    side: ProfileSide::Client,
-                    path: shown(&path),
-                    seconds: options.seconds,
-                    samples: options.samples,
-                    gpu: options.gpu,
-                })
+                let started = self.start_profile(parsed.side, &options, Trigger::Ctl)?;
+                json_of(&started)
             }
             Request::Stop { bench } => {
-                let bench = bench.map(|path| read_bench(&path)).transpose()?;
-                self.stop_profile_with(StopReason::Normal, bench.into_iter().collect())?;
-                self.profile.reply = Some(reply.clone());
+                match parsed.side {
+                    Some(ProfileSide::Client) if !self.profile.perf.capturing() => {
+                        return Err("no client capture is running".into());
+                    }
+                    Some(ProfileSide::Server)
+                        if !self.profile.sides().contains(&ProfileSide::Server) =>
+                    {
+                        return Err("no server capture is running".into());
+                    }
+                    _ => {}
+                }
+                if self.profile.perf.capturing() {
+                    let bench = bench.map(|path| read_bench(&path)).transpose()?;
+                    self.stop_profile_with(StopReason::Normal, bench.into_iter().collect())?;
+                    self.profile.reply = Some(reply.clone());
+                } else {
+                    let integrated = self.integrated.as_ref().ok_or(NO_CAPTURE)?;
+                    let reply = reply.clone();
+                    if !integrated
+                        .post(move |g| g.stop_server_capture(StopReason::Normal, Some(reply)))
+                    {
+                        return Err(NO_ANSWER.into());
+                    }
+                }
                 Ok(None)
             }
             Request::Status => {
                 let t = self.profile.perf.now();
-                let status = self.profile.perf.status(t);
+                let client = self.profile.perf.status(t);
+                let alone = self
+                    .profile
+                    .server_only
+                    .as_ref()
+                    .filter(|_| client.is_none());
                 json_of(&Status {
                     ok: true,
-                    capturing: status.is_some(),
-                    sides: status.iter().map(|_| ProfileSide::Client).collect(),
-                    path: status.as_ref().map(|s| shown(&s.path)),
-                    elapsed_s: status.as_ref().map(|s| s.elapsed_s),
-                    bytes: status.as_ref().map(|s| s.bytes),
+                    capturing: client.is_some() || self.profile.server_only_live(),
+                    sides: self.profile.sides(),
+                    path: client
+                        .as_ref()
+                        .map(|s| shown(&s.path))
+                        .or_else(|| alone.map(|s| shown(&s.path))),
+                    elapsed_s: client
+                        .as_ref()
+                        .map(|s| s.elapsed_s)
+                        .or_else(|| alone.map(|s| s.since.elapsed().as_secs_f64())),
+                    bytes: client.as_ref().map(|s| s.bytes).or_else(|| {
+                        alone.and_then(|s| Some(std::fs::metadata(&s.path).ok()?.len()))
+                    }),
                 })
             }
             Request::Mark(name) => {
+                let want = |side| parsed.side.is_none_or(|only| only == side);
                 let t = self.profile.perf.now();
-                if !self.profile.perf.mark(t, &name) {
-                    return Err("no capture is running; start one with profile start".into());
+                let mut marked = None;
+                if want(ProfileSide::Client) && self.profile.perf.mark(t, &name) {
+                    marked = Some(t);
                 }
+                if want(ProfileSide::Server)
+                    && (self.profile.server_live() || self.profile.server_only_live())
+                    && let Some(integrated) = &self.integrated
+                {
+                    let label = name.clone();
+                    if integrated.post(move |g| g.mark_server_capture(&label)) {
+                        let alone = self.profile.server_only.as_ref();
+                        marked = marked.or(alone.map(|s| s.since.elapsed().as_secs_f64()));
+                    }
+                }
+                let t = marked.ok_or(NO_CAPTURE)?;
                 json_of(&Marked { ok: true, name, t })
             }
         }
@@ -204,7 +298,7 @@ impl Game<'_> {
                     file: Some(PathBuf::from(file)),
                     ..StartOptions::default()
                 };
-                self.start_profile(&options, Trigger::Ctl)
+                self.start_profile(None, &options, Trigger::Ctl)
                     .map_err(|e| format!("trace {file}: {e}"))?;
                 json_of(&Traced {
                     ok: true,
@@ -215,9 +309,23 @@ impl Game<'_> {
         }
     }
 
-    fn start_profile(&mut self, options: &StartOptions, trigger: Trigger) -> Result<PathBuf> {
-        if self.profile.perf.capturing() || self.profile.perf.saving() {
+    fn profile_busy(&self) -> bool {
+        self.profile.perf.capturing()
+            || self.profile.perf.saving()
+            || self.profile.server_only_live()
+    }
+
+    fn start_profile(
+        &mut self,
+        side: Option<ProfileSide>,
+        options: &StartOptions,
+        trigger: Trigger,
+    ) -> Result<Started> {
+        if self.profile_busy() {
             return Err("a capture is already running or still being saved".into());
+        }
+        if side == Some(ProfileSide::Server) {
+            return self.start_server_only(options, trigger);
         }
         let trigger = if trigger == Trigger::Ctl && self.options.benchmark.is_some() {
             Trigger::Benchmark
@@ -238,10 +346,83 @@ impl Game<'_> {
         self.profile.trace_file = options.file.as_ref().map(|f| f.display().to_string());
         self.profile.spans_were_on = spans::recording_here();
         spans::record_here(true);
+        self.profile.joined = None;
+        self.profile.link = if side.is_none() {
+            ServerLink::Pending
+        } else {
+            ServerLink::Off
+        };
+        self.join_server_capture();
         log::info!("Horizon: profiling the client to {}", path.display());
-        Ok(path)
+        Ok(Started {
+            ok: true,
+            sides: [
+                self.profile.served().then_some(ProfileSide::Server),
+                Some(ProfileSide::Client),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            path: shown(&path),
+            seconds: options.seconds,
+            samples: options.samples,
+            gpu: options.gpu,
+        })
     }
 
+    /// `profile server start` in single player: the server thread writes a file of its own.
+    fn start_server_only(&mut self, options: &StartOptions, trigger: Trigger) -> Result<Started> {
+        let integrated = self
+            .integrated
+            .as_ref()
+            .ok_or("profile server: no single-player world is open")?;
+        let live = Live::new();
+        let target = Target::Own {
+            options: options.clone(),
+            trigger,
+            dir: reports_dir(),
+        };
+        let handoff = live.clone();
+        let path = integrated
+            .call(move |g| g.start_server_capture(target, handoff))
+            .ok_or(NO_ANSWER)??;
+        let started = Started {
+            ok: true,
+            sides: vec![ProfileSide::Server],
+            path: shown(&path),
+            seconds: options.seconds,
+            samples: options.samples,
+        };
+        self.profile.server_only = Some(ServerOnly {
+            live,
+            path,
+            since: Instant::now(),
+        });
+        Ok(started)
+    }
+
+    /// Asks the server thread to write its side into the running capture, once there is a server thread to ask.
+    fn join_server_capture(&mut self) {
+        if !matches!(self.profile.link, ServerLink::Pending) {
+            return;
+        }
+        let (Some(integrated), Some(join)) = (&self.integrated, self.profile.perf.join()) else {
+            return;
+        };
+        let live = Live::new();
+        let handoff = live.clone();
+        let posted = integrated.post(move |g| {
+            if let Err(e) = g.start_server_capture(Target::Join(join), handoff) {
+                log::warn!("Horizon: the server thread is not captured: {e}");
+            }
+        });
+        if posted {
+            self.profile.joined = Some(live);
+            self.profile.link = ServerLink::Off;
+        }
+    }
+
+    /// Ends the window's capture and, when the server thread joined it, the server's side too.
     fn stop_profile(&mut self, reason: StopReason) -> Result<()> {
         self.stop_profile_with(reason, Vec::new())
     }
@@ -249,9 +430,14 @@ impl Game<'_> {
     fn stop_profile_with(&mut self, reason: StopReason, bench: Vec<BenchResult>) -> Result<()> {
         let t = self.profile.perf.now();
         let gpu = self.gpu_readout();
+        let server = self.profile.server_live();
         if !self.profile.perf.stop_with(t, reason, gpu, bench) {
             return Err("no capture is running".into());
         }
+        if server && let Some(integrated) = &self.integrated {
+            integrated.post(move |g| g.stop_server_capture(reason, None));
+        }
+        self.profile.link = ServerLink::Off;
         self.profile.gpu = GpuSwitch::Off;
         Ok(())
     }
@@ -267,7 +453,7 @@ impl Game<'_> {
             self.profile.stopped_by_key = true;
             self.stop_profile(StopReason::Normal).map(|()| None)
         } else {
-            self.start_profile(&StartOptions::default(), Trigger::Key)
+            self.start_profile(None, &StartOptions::default(), Trigger::Key)
                 .map(|_| Some(Text::translate("horizon.perf.started", &[])))
         };
         match outcome {
@@ -311,6 +497,9 @@ impl Game<'_> {
         if !self.profile.perf.capturing() {
             self.profile.gpu = GpuSwitch::Off;
         }
+        if matches!(self.profile.link, ServerLink::Pending) {
+            self.join_server_capture();
+        }
         if !self.profile.hardware_warmed {
             self.profile.hardware_warmed = true;
             server_perf::warm_hardware();
@@ -341,7 +530,7 @@ impl Game<'_> {
             } else {
                 return;
             };
-            if let Err(e) = self.start_profile(&options, Trigger::Env) {
+            if let Err(e) = self.start_profile(None, &options, Trigger::Env) {
                 log::warn!("Horizon: {var}: {e}");
             }
         }
@@ -358,6 +547,10 @@ impl Game<'_> {
     pub(super) fn finish_profile(&mut self) {
         if self.profile.perf.capturing() {
             let _ = self.stop_profile(StopReason::Shutdown);
+        }
+        // The file is whole only once the server thread's side is, which a closing game's server has no more ticks for.
+        if let Some(integrated) = &self.integrated {
+            integrated.request_stop();
         }
         for saved in self.profile.perf.take_saved(true) {
             self.profile_saved(saved);
@@ -379,7 +572,13 @@ impl Game<'_> {
                 if let Some(reply) = reply {
                     let _ = reply.send(reply_text(&Stopped {
                         ok: true,
-                        side: ProfileSide::Client,
+                        sides: [
+                            self.profile.served().then_some(ProfileSide::Server),
+                            Some(ProfileSide::Client),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect(),
                         path: shown(&saved.path),
                         open_at: files::PERF_UI_URL.to_owned(),
                         removed: saved.deleted.iter().map(|p| shown(p)).collect(),
