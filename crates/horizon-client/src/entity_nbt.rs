@@ -1243,6 +1243,14 @@ pub fn mob_to_nbt(
                     Tag::compound([("value", Tag::Int(m.extra.ints[2]))]),
                 ));
             }
+            // ITEM_PICKUP_COOLDOWN_TICKS (`Codec.INT`), which a throw sets to 60,
+            // while it runs.
+            if m.extra.ints[3] > 0 {
+                memories.push((
+                    "minecraft:item_pickup_cooldown_ticks",
+                    Tag::compound([("value", Tag::Int(m.extra.ints[3]))]),
+                ));
+            }
             // Always written, so a forgotten note block does not come back
             // from the compound the allay was loaded with.
             map.insert(
@@ -2525,6 +2533,8 @@ pub fn mob_from_nbt(
         };
         m.extra.ints[2] =
             number(memory("minecraft:liked_noteblock_cooldown_ticks")).unwrap_or(0) as i32;
+        m.extra.ints[3] =
+            number(memory("minecraft:item_pickup_cooldown_ticks")).unwrap_or(0) as i32;
         if let Some(st) = m.extra.allay.as_mut()
             && let Some(noteblock) = memory("minecraft:liked_noteblock")
             && let Some(Tag::IntArray(p)) = noteblock.get("pos")
