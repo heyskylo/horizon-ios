@@ -13,6 +13,7 @@ const SERVER: &[&str] = &[
     "VanillaGameplayFactsExporter",
     "VanillaEntityTypesExporter",
     "VanillaBlockBehaviourExporter",
+    "VanillaDataFixTablesExporter",
     "VanillaCommandParseOracle",
     "VanillaCreativeTabsExporter",
     "VanillaSimpleBlockOracle",
