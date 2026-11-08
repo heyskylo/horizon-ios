@@ -66,6 +66,7 @@ const PLAY: Context = Context {
     in_pack: false,
     level: 100,
     natives: true,
+    fit: None,
 };
 
 /// The browser's entry for `ruby` at `version`.
@@ -537,4 +538,50 @@ fn auto_update_does_not_revive_concurrently_removed_mod() {
     assert_eq!(ruby_entry.version, "1.1.0");
 
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_native_mod_updates_only_to_a_version_that_builds_on_the_horizon_played() {
+    const YOURS: &str = "1111111111111111111111111111111111111111";
+    const OTHER: &str = "2222222222222222222222222222222222222222";
+    let version = |number: &str, pin: &str| {
+        serde_json::json!({
+            "version": number, "api": format!("native-1/{pin}/{OTHER}"), "game": GAME,
+            "file": {"name": "skins.hnmod", "url": "https://example.invalid/skins.hnmod", "size": 1, "sha256": number},
+        })
+    };
+    let index: Index = serde_json::from_value(serde_json::json!({
+        "schema": 1,
+        "projects": [{
+            "id": "skins", "kind": "native-mod", "name": "Skins", "summary": "", "license": "MIT",
+            "source": "https://example.invalid",
+            "versions": [version("1.2.0", OTHER), version("1.1.0", YOURS), version("1.0.0", YOURS)],
+        }],
+    }))
+    .unwrap();
+    let entry = |number: &str| installed::Entry {
+        project: "skins".into(),
+        file: "horizon-native-mods/skins.hnmod".into(),
+        ..entry(number)
+    };
+    let plays = crate::native_fit::Plays {
+        revision: YOURS.into(),
+        hooks: None,
+    };
+    let fits = Context {
+        fit: Some((plays, Vec::new())),
+        ..PLAY
+    };
+    let to = |e: &installed::Entry, ctx: &Context| version_of(decide(&index, e, ctx));
+    assert_eq!(to(&entry("1.0.0"), &fits), Some("1.1.0".into()));
+    assert_eq!(
+        to(&entry("1.1.0"), &fits),
+        None,
+        "1.2.0 is for another Horizon"
+    );
+    assert_eq!(
+        to(&entry("1.0.0"), &PLAY),
+        Some("1.2.0".into()),
+        "fit unknown: the newest"
+    );
 }

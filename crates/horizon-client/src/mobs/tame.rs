@@ -63,7 +63,10 @@ pub fn register(m: &mut Mob) {
     let food = m.kind.food.clone();
     let g = &mut m.ai.goals;
     g.add(1, Float);
-    g.add(1, TamePanic(Panic::new(1.5)));
+    // `TamableAnimalPanicGoal(this, 1.5, PANIC_ENVIRONMENTAL_CAUSES)`.
+    let mut panic = Panic::new(1.5);
+    panic.environmental = true;
+    g.add(1, TamePanic(panic));
     g.add(2, SitWhenOrdered);
     g.add(3, AvoidLlamas::new());
     g.add(4, LeapAtTarget::new(0.4));
@@ -260,8 +263,10 @@ fn owner_distance_sqr(m: &Mob, w: &MobWorld) -> Option<f64> {
     owner(m, w).map(|(at, _, _)| m.distance_sqr(at))
 }
 
-/// `TamableAnimal.TamableAnimalPanicGoal`: panic from fire and freezing,
-/// teleporting to a far owner.
+/// `TamableAnimal.TamableAnimalPanicGoal`: the wrapped `PanicGoal` is built
+/// with the damage tag its species fears (`#panic_environmental_causes` for a
+/// wolf, the default `#panic_causes` for a cat or parrot), and a panic
+/// teleports a pet to a far owner.
 #[derive(Clone, Debug)]
 struct TamePanic(Panic);
 impl Goal for TamePanic {
@@ -270,8 +275,7 @@ impl Goal for TamePanic {
         self.0.flags()
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        // PanicGoal with PANIC_ENVIRONMENTAL_CAUSES: only burning or freezing.
-        m.fire_ticks > 0 && self.0.can_use(m, cx)
+        self.0.can_use(m, cx)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
@@ -2089,5 +2093,77 @@ mod cat_tempt_tests {
             Some((true, false)),
             "a wild cat is tempted; once tamed the same goal must stop"
         );
+    }
+}
+
+#[cfg(test)]
+mod tamable_panic_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use crate::mobs::{Damage, DamageKind};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// Whether the mob's `TamePanic` starts after `damage`, or `None` when
+    /// the extracted data is missing.
+    fn panics(name: &str, setup: fn(&mut Mob), damage: DamageKind) -> Option<bool> {
+        let mut outcome = None;
+        let ran = with_built_test_world(
+            &[],
+            |world, registry| {
+                for x in -2..=1 {
+                    for z in -2..=1 {
+                        world
+                            .chunks
+                            .insert((x, z), Arc::new(crate::chunk::Chunk::empty(x, z)));
+                    }
+                }
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                for x in -8..=8 {
+                    for z in -8..=8 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+            },
+            |w, types| {
+                let kind = Arc::new(types.types[name].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                setup(&mut m);
+                m.on_ground = true;
+                m.last_damage = Some((Damage::of(damage), i64::from(m.age)));
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcome = Some(goals.is_running("TamePanic"));
+                m.ai.goals = goals;
+            },
+        );
+        ran.then_some(outcome).flatten()
+    }
+
+    /// `TamableAnimal.TamableAnimalPanicGoal` is built with a damage tag: a
+    /// cat's and a parrot's take the default `#panic_causes` (any damage that
+    /// makes a mob panic), a wolf's `#panic_environmental_causes` (fire,
+    /// freezing, cactus, lightning, lava...).
+    #[test]
+    fn tamable_animals_panic_from_the_damage_they_fear() {
+        // Needs the extracted mob data (`with_built_test_world`); CI has none.
+        let (Some(cat), Some(frozen), Some(hit)) = (
+            panics("minecraft:cat", register_cat, DamageKind::PlayerAttack),
+            panics("minecraft:wolf", register, DamageKind::Freeze),
+            panics("minecraft:wolf", register, DamageKind::PlayerAttack),
+        ) else {
+            eprintln!("skipped: no extracted mob data");
+            return;
+        };
+        assert!(cat, "a cat hit by a player runs");
+        assert!(frozen, "a freezing wolf runs");
+        assert!(!hit, "a wolf hit by a player does not panic");
     }
 }

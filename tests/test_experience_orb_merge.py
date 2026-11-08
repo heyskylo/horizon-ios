@@ -53,7 +53,7 @@ impl Game {
     ORB_MERGES
     AWARD_ORB
     MERGE_NEW_ORB
-    MERGE_ORBS
+    MERGE_ORB
 }
 fn orb(id: u32, x: f64, value: u32, ticks: u32) -> ExperienceOrb {
     ExperienceOrb { id, x, value, count: 1, age: 10, ticks }
@@ -89,26 +89,30 @@ fn spawn_merge_is_vanilla_unless_a_mod_decides() {
 #[test]
 fn tick_merge_is_vanilla_unless_a_mod_decides() {
     let two = |a, b| vec![orb(1, 0.0, 3, a), orb(41, 0.2, 3, b)];
-    let mut g = game(two(1, 0), false, false);
-    g.merge_orbs();
+    let mut g = game(two(0, 0), false, false);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.orbs[0].count, g.orbs[0].age), (1, 2, 10));
     assert_eq!(g.asked, [(1, 41, 3, 3)]);
-    // only an orb on its scan tick asks
-    let mut g = game(two(0, 0), false, false);
-    g.merge_orbs();
+    // only an orb on its scan tick asks: tickCount 20 is not the cadence
+    let mut g = game(two(19, 0), false, false);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.asked.len()), (2, 0));
     // vanilla yes, mod no
-    let mut g = game(two(1, 0), true, false);
-    g.merge_orbs();
+    let mut g = game(two(0, 0), true, false);
+    g.merge_orb(0);
     assert_eq!(g.orbs.len(), 2);
     // different ids: vanilla no, mod yes
-    let mut g = game(vec![orb(1, 0.0, 3, 1), orb(2, 0.2, 3, 0)], true, false);
-    g.merge_orbs();
+    let mut g = game(vec![orb(1, 0.0, 3, 0), orb(2, 0.2, 3, 5)], true, false);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.orbs[0].count), (1, 2));
     // canceled merge keeps both
-    let mut g = game(two(1, 0), false, true);
-    g.merge_orbs();
+    let mut g = game(two(0, 0), false, true);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.merged.clone()), (2, vec![(1, 41)]));
+    // every eligible orb in reach is absorbed in the one scan
+    let mut g = game(vec![orb(1, 0.0, 3, 0), orb(41, 0.2, 3, 0), orb(81, 0.4, 3, 5)], false, false);
+    g.merge_orb(0);
+    assert_eq!((g.orbs.len(), g.orbs[0].count), (1, 3));
 }
 """
 
@@ -120,7 +124,7 @@ class ExperienceOrbMergeTests(unittest.TestCase):
         fixture = (FIXTURE.replace("ORB_MERGES", method(source, "orb_merges"))
                    .replace("AWARD_ORB", method(source, "award_orb"))
                    .replace("MERGE_NEW_ORB", method(source, "merge_new_orb"))
-                   .replace("MERGE_ORBS", method(source, "merge_orbs")))
+                   .replace("MERGE_ORB", method(source, "merge_orb")))
         with tempfile.TemporaryDirectory() as folder:
             src, exe = Path(folder) / "orb.rs", Path(folder) / "orb.exe"
             src.write_text(fixture, encoding="utf-8")

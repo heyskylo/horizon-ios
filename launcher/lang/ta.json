@@ -1255,5 +1255,7 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "உங்கள் கணினியின் கீரிங் {seconds} விநாடிகளுக்குள் பதிலளிக்கவில்லை. அது இயங்குகிறதா, திறக்கப்பட்டுள்ளதா என்பதை உறுதிசெய்து, பின்னர் லாஞ்சரை மறுதொடக்கம் செய்யவும்.",
   "Can't read {name}'s sign-in: {why}": "{name} இன் உள்நுழைவைப் படிக்க முடியவில்லை: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: நீங்கள் விளையாடும் Horizon-க்காக செய்யப்பட்ட பதிப்பு {version} பயன்படுத்தப்படுகிறது",
+  "Recommended": "பரிந்துரைக்கப்பட்டது"
 }

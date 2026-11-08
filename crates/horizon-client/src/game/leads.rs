@@ -225,8 +225,7 @@ impl Game<'_> {
     /// `Entity.spawnAtLocation(level, Items.LEAD)`: the item entity draws its
     /// motion from its own random, not the level's.
     pub(super) fn drop_lead_item(&mut self, at: [f64; 3]) {
-        let v = super::dispenser::new_item_motion();
-        self.spawn_item(ItemStack::new("minecraft:lead", 1), at, v, 10);
+        self.spawn_item_own(ItemStack::new("minecraft:lead", 1), at, 10);
     }
     /// `Leashable.dropLeash` / `removeLeash`: the lead falls as an item.
     pub(super) fn break_leash(&mut self, id: u32, drop: bool, sound: bool) {
@@ -320,8 +319,7 @@ impl Game<'_> {
         self.native_loot_drops(&context, &mut drops);
         for stack in drops {
             if stack.count > 0 && &*stack.item != "minecraft:air" {
-                let v = super::dispenser::new_item_motion();
-                self.spawn_item(stack, at, v, 10);
+                self.spawn_item_own(stack, at, 10);
             }
         }
     }

@@ -30,8 +30,10 @@ try:
     from . import lab, test_rust_parity as base
     from .integration_env import run_game
     from . import command_exec_corpus as corpus_module
+    from . import seed_agent
 except ImportError:
     import lab
+    import seed_agent
     from integration_env import run_game
     import test_rust_parity as base
     import command_exec_corpus as corpus_module
@@ -105,6 +107,8 @@ def main():
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--merchant-gate-fixture', action='store_true')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--hurt-cooldown-incoming-fixture', action='store_true',
+                        help='a mob hurt cooldown compares the incoming damage before its reductions (H248)')
     parser.add_argument('--level-world-border-fixture', action='store_true',
                         help='each builtin level keeps its own world border (H260)')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
@@ -153,6 +157,17 @@ def main():
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument('--baby-modifier-fixture', action='store_true', help='/attribute add and remove of a zombie\'s transient minecraft:baby modifier')
+    parser.add_argument('--baby-modifier-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
+    parser.add_argument('--mob-attribute-save-fixture', action='store_true', help='which attribute instances a pig, allay and armor stand save before and after a tick')
+    parser.add_argument('--mob-attribute-save-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
+    parser.add_argument('--mob-inventory-merge-fixture', action='store_true', help='Piglin and Villager saved inventories loaded as SimpleContainer.addItem does')
+    parser.add_argument('--mob-inventory-merge-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
+    parser.add_argument('--summon-passengers-fixture', action='store_true', help='summon trees with Passengers entries vanilla cannot load')
+    parser.add_argument('--summon-passengers-raw-diagnostic', action='store_true', help='add each parent\'s whole entity data')
+    parser.add_argument('--summon-uuid-fixture', action='store_true', help='summon trees whose UUIDs a live entity holds')
+    parser.add_argument('--summon-uuid-internal-diagnostic', action='store_true', help='add the trees with duplicate UUIDs inside them (known gap)')
+    parser.add_argument('--summon-uuid-raw-diagnostic', action='store_true', help='add each member\'s whole entity data')
     parser.add_argument('--mob-absorption-max-fixture', action='store_true', help='a mob\'s max_absorption with Absorption added, upgraded, cleared and run out')
     parser.add_argument('--mob-absorption-max-ops-fixture', action='store_true', help='the Absorption modifier among other max_absorption operations and the range clamp')
     parser.add_argument('--mob-absorption-max-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
@@ -169,6 +184,8 @@ def main():
     parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
                         help='retain all 312 mob-name records, including ten separate name/saved-text presentation observations')
     parser.add_argument('--potion-effect-icon-fixture', action='store_true')
+    parser.add_argument('--unsynced-randoms', action='store_true',
+                        help='leave out the sync_randoms steps: the control in which their fields differ run to run')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -194,6 +211,10 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_BOAT_TREE]
+    if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_EFFECTIVE_PRESENCE]
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_FUNCTION_FEEDBACK]
     if not args.only:
@@ -264,6 +285,8 @@ def main():
                   if name == 'potion custom effect icons']
     elif not args.only:
         groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_POTION_ICONS]
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_SEED_SYNC]
     if args.moving_piston_history_diagnostic:
         groups.append(('moving piston presentation diagnostic',
                        corpus_module.moving_piston_presentation_diagnostic()))
@@ -277,6 +300,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.hurt_cooldown_incoming_fixture:
+        try:
+            from .hurt_cooldown_incoming_corpus import hurt_cooldown_incoming
+        except ImportError:
+            from hurt_cooldown_incoming_corpus import hurt_cooldown_incoming
+        groups = [('setup', corpus_module.group_setup()), ('hurt cooldown incoming', hurt_cooldown_incoming())]
     if args.level_world_border_fixture:
         try:
             from .level_world_border_corpus import level_world_border
@@ -346,6 +375,14 @@ def main():
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.only in corpus_module.ISOLATED_BOAT_TREE:
+        groups = [g for g in groups if g[0] == args.only]
+    if any(n in corpus_module.ISOLATED_BOAT_TREE for n,_ in groups) and len(groups) != 1:
+        parser.error('boat tree fixture requires exact --only group')
+    if args.only in corpus_module.ISOLATED_EFFECTIVE_PRESENCE:
+        groups = [g for g in groups if g[0] == args.only]
+    if any(n in corpus_module.ISOLATED_EFFECTIVE_PRESENCE for n, _ in groups) and len(groups) != 1:
+        parser.error('effective presence fixture requires exact --only group')
     if args.only in corpus_module.ISOLATED_FUNCTION_FEEDBACK:
         groups = [g for g in groups if g[0] == args.only]
     if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:
@@ -371,6 +408,21 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.baby_modifier_fixture:
+        from baby_modifier_corpus import baby_modifier
+        groups = [('setup', corpus_module.group_setup()), ('baby modifier mutation', baby_modifier(args.baby_modifier_raw_diagnostic))]
+    if args.mob_attribute_save_fixture:
+        from mob_attribute_save_corpus import mob_attribute_save
+        groups = [('setup', corpus_module.group_setup()), ('mob attribute save', mob_attribute_save(args.mob_attribute_save_raw_diagnostic))]
+    if args.mob_inventory_merge_fixture:
+        from mob_inventory_merge_corpus import mob_inventory_merge
+        groups = [('setup', corpus_module.group_setup()), ('mob inventory merge', mob_inventory_merge(args.mob_inventory_merge_raw_diagnostic))]
+    if args.summon_passengers_fixture:
+        from summon_passengers_corpus import summon_passengers
+        groups = [('setup', corpus_module.group_setup()), ('summon invalid passengers', summon_passengers(args.summon_passengers_raw_diagnostic))]
+    if args.summon_uuid_fixture:
+        from summon_uuid_corpus import summon_uuid
+        groups = [('setup', corpus_module.group_setup()), ('summon UUID conflicts', summon_uuid(args.summon_uuid_raw_diagnostic, args.summon_uuid_internal_diagnostic))]
     if args.mob_absorption_max_fixture:
         from mob_absorption_max_corpus import mob_absorption_max
         groups = [('setup', corpus_module.group_setup()), ('mob absorption maximum', mob_absorption_max(args.mob_absorption_max_raw_diagnostic))]
@@ -409,7 +461,9 @@ def main():
         groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
     script = []
     for _, lines in groups:
-        script.extend(lines)
+        script.extend(op for op in lines if not (args.unsynced_randoms and op['op'] == 'sync_randoms'))
+    # docs/parity-workflow.md "Randoms that repeat": both engines' unseeded randoms repeat for a script that syncs them.
+    synced = any(op['op'] == 'sync_randoms' for op in script)
     script_path = build / 'script.jsonl'
     script_path.write_text(''.join(json.dumps({k: v for k, v in op.items() if k != 'expect_result'},
                                             ensure_ascii=False) + '\n' for op in script), encoding='utf-8')
@@ -454,6 +508,8 @@ def main():
         java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
     if args.function_admission_fixture:
         java_options.append('-Dhorizon.functionAdmissionFixture=true')
+    if synced:
+        java_options.append(seed_agent.java_option(build, lock['minecraft']['java_major']))
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
@@ -508,6 +564,8 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    if synced:
+        env.update(seed_agent.ENV)
     if args.raid_village_fixture and not args.raid_release_command_diagnostic:
         env['HORIZON_DEV_COMMANDS'] = '1'
     elif args.raid_release_command_diagnostic:

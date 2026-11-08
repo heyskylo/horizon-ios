@@ -158,7 +158,7 @@ impl Game<'_> {
             Some("west") => 90.0,
             _ => 0.0,
         };
-        if let Some(id) = self.spawn_mob("minecraft:happy_ghast", at, true)
+        if let Some(id) = self.spawn_mob_raw("minecraft:happy_ghast", at, true)
             && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
         {
             // DriedGhastBlock.spawnGhastling sets the baby age before

@@ -15,10 +15,11 @@ SpellcasterIllager.getCurrentSpell	skip:other		getter; Horizon reads extra.varia
 SpellcasterIllager.SpellcasterUseSpellGoal.canContinueToUse	port	crates/horizon-client/src/mobs/illager.rs::UseSpell::can_continue	target alive and warm-up left
 Vindicator.registerGoals	port	crates/horizon-client/src/mobs/illager.rs::register_vindicator	break door, open door, hold ground, melee, Johnny goal
 Vindicator.createAttributes	skip:data		attribute defaults (speed 0.35, follow 12, health 24, attack 5) live in data tables
-Vindicator.addAdditionalSaveData	missing		no `Johnny` flag is written: `mobs/illager.rs:78` tests the custom name itself, so only a vindicator renamed after being named Johnny differs
+Vindicator.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Johnny: 1b is written while the latched flag is set, nothing otherwise
+Vindicator.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Johnny, false when absent; a name that is Johnny latches it again on the next AI step
 Vindicator.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	raider spawn, then equipment and enchantments; the door flag it sets each tick comes from vindicator_server_ai_step
 Vindicator.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::populate	iron axe unless the mob is in a raid
-Vindicator.setCustomName	inline	crates/horizon-client/src/mobs/illager.rs::register_vindicator	gap: minor: the Johnny goal reads the current custom name each tick; vanilla latches the flag once a name is Johnny
+Vindicator.setCustomName	inline	crates/horizon-client/src/mobs/illager.rs::vindicator_server_ai_step	the latch, taken from the live name each AI step: once it is Johnny it stays, which is what adds `extra.johnny`
 Vindicator.VindicatorBreakDoorGoal.canContinueToUse	port	crates/horizon-client/src/mobs/doors.rs::BreakDoor::can_continue	still in a raid, plus the base break checks
 AbstractPiglin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	writes IsImmuneToZombification and TimeInOverworld
 AbstractPiglin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	reads immunity, time in overworld and the pick-up flag
