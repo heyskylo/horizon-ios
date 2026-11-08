@@ -11501,6 +11501,9 @@ impl Renderer {
                 pages,
                 &mut terrain,
             );
+            // Keep the capacity, not the buffers: a page the arena frees must not stay alive
+            // here until the next shader-pack frame (or forever once the pack is off).
+            self.pack_pages.clear();
             self.pack_post = Some((dimension, Some(post)));
         } else if let Some((color, depth)) = &scaled
             && native_post
