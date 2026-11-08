@@ -113,8 +113,8 @@ impl PrimedTnt {
     /// Entity.applyEffectsFromBlocks for a move from `from` to here
     /// (`original` the step it asked for, when the move was recorded): powder
     /// snow and cobwebs it went through make it stuck, a bubble column lifts or
-    /// drags it, and slime it stands on slows it. Returns the columns it is at
-    /// the top of, which send their surface particles.
+    /// drags it, and slime it stands on slows it, first. Returns the columns it
+    /// is at the top of, which send their surface particles.
     pub(super) fn apply_effects_from_blocks(
         &mut self,
         world: &horizon_client::world::World,
@@ -124,6 +124,20 @@ impl PrimedTnt {
         from: Vec3,
         original: Option<Vec3>,
     ) -> Vec<BlockPos> {
+        if self.on_ground {
+            // SlimeBlock.stepOn, before the blocks it is inside.
+            let under = world.block(
+                self.position.x.floor() as i32,
+                (self.position.y - f64::from(0.2_f32)).floor() as i32,
+                self.position.z.floor() as i32,
+            );
+            if &*facts.get(under).name == "minecraft:slime_block"
+                && let Some(scale) = horizon_client::entities::slime_step_on_scale(self.velocity.y)
+            {
+                self.velocity.x *= scale;
+                self.velocity.z *= scale;
+            }
+        }
         let mut tops = Vec::new();
         let stuck = horizon_client::falling_block::apply_effects_from_blocks(
             from,
@@ -145,20 +159,6 @@ impl PrimedTnt {
             tops.push(pos)
         }) {
             self.fall_distance = 0.0;
-        }
-        if self.on_ground {
-            // SlimeBlock.stepOn.
-            let under = world.block(
-                self.position.x.floor() as i32,
-                (self.position.y - f64::from(0.2_f32)).floor() as i32,
-                self.position.z.floor() as i32,
-            );
-            if &*facts.get(under).name == "minecraft:slime_block"
-                && let Some(scale) = horizon_client::entities::slime_step_on_scale(self.velocity.y)
-            {
-                self.velocity.x *= scale;
-                self.velocity.z *= scale;
-            }
         }
         tops
     }
