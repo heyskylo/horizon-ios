@@ -1130,7 +1130,7 @@ impl Projectile {
     /// through (`applyEffectsFromBlocks`), bubble columns among them:
     /// `ThrowableProjectile`, `AbstractHurtingProjectile` and `ShulkerBullet`.
     /// Arrows push themselves (`arrows::tick`); llama spit applies none.
-    fn applies_block_effects(&self) -> bool {
+    pub fn applies_block_effects(&self) -> bool {
         self.is_throwable_projectile()
             || matches!(
                 self.kind,
@@ -1180,6 +1180,17 @@ impl Projectile {
     /// the blocks the box swept through from `from`, each once, pushing when
     /// the move was long or the final box (deflated by 1e-5F) is inside it.
     fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        self.bubble_columns_since(from, |p| w.bubble_column(p));
+    }
+    /// [`bubble_columns_along`](Self::bubble_columns_along) with the bubble
+    /// columns read by `column`, for a move made by something else: a
+    /// piston's push applies the block effects too (`moveEntityByPiston`'s
+    /// `applyEffectsFromBlocks`).
+    pub fn bubble_columns_since(
+        &mut self,
+        from: Vec3,
+        column: impl Fn([i32; 3]) -> Option<(bool, bool)>,
+    ) {
         let to = self.position;
         let eps = f64::from(1.0e-5_f32);
         let deflated = self.bounds().deflate(Vec3::new(eps, eps, eps));
@@ -1221,7 +1232,7 @@ impl Projectile {
             if cells[..i].contains(&p) {
                 continue;
             }
-            let Some((drag, surface)) = w.bubble_column([p.x, p.y, p.z]) else {
+            let Some((drag, surface)) = column([p.x, p.y, p.z]) else {
                 continue;
             };
             let cell = Aabb::new(

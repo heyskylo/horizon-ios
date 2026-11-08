@@ -161,6 +161,33 @@ impl Game<'_> {
         if let Some(stuck) = stuck {
             self.creatures.projectiles[i].stuck_speed = stuck;
         }
+        // The bubble columns it went through push it too
+        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`), the
+        // projectiles whose own tick applies them.
+        if self.creatures.projectiles[i].applies_block_effects() {
+            let (world, registry, facts, collision) = (
+                &self.world,
+                self.pack.assets.registry,
+                self.res.facts(),
+                self.collision,
+            );
+            let p = &mut self.creatures.projectiles[i];
+            p.bubble_surfaces.clear();
+            p.bubble_columns_since(from, |at| {
+                horizon_client::motion::bubble_column_at(
+                    world,
+                    registry,
+                    facts,
+                    collision,
+                    BlockPos::new(at[0], at[1], at[2]),
+                )
+                .map(|c| (c.drag, c.surface))
+            });
+            let tops: Vec<[i32; 3]> = p.bubble_surfaces.drain(..).collect();
+            for [x, y, z] in tops {
+                self.bubble_column_particles(BlockPos::new(x, y, z));
+            }
+        }
     }
 
     /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for the entity-sensing
