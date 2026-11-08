@@ -239,11 +239,21 @@ impl Session {
                     [_, id] if id.parse::<i64>().is_ok() => id,
                     _ => return Err(Failure::usage(format!("usage: {}", usage(name)))),
                 };
-                self.game(&format!("look-at entity {id}"))?;
+                let id: i64 = id.parse().unwrap_or_default();
+                let look = self.game(&format!("look-at entity {id}"))?;
+                if let Err(error) = aimed_at(&look, id) {
+                    return Err(Failure {
+                        reply: json!({ "error": error, "target": look["target"] }),
+                        status: GAME_ERROR,
+                    });
+                }
+                let before = self.game("inventory")?;
                 self.game("mouse right click")?;
                 self.game("wait 2")?;
+                let after = self.game("inventory")?;
                 let mut screen = self.game("screen")?;
                 screen["ok"] = json!(true);
+                screen["inventory_change"] = count_change(&before["counts"], &after["counts"]);
                 Ok(screen)
             }
             "hold" => {
@@ -304,6 +314,51 @@ impl Session {
             thread::sleep(Duration::from_millis(250));
         }
     }
+}
+
+/// Whether `look` (a `look-at entity` reply) put entity `id` under the crosshair; if not,
+/// what is there instead, so a right click is not spent on a tree or the air.
+fn aimed_at(look: &Value, id: i64) -> Result<(), String> {
+    let target = &look["target"];
+    let entity = &target["entity"];
+    if entity["id"].as_i64() == Some(id) {
+        return Ok(());
+    }
+    Err(if let Some(other) = entity["id"].as_i64() {
+        format!(
+            "entity {id} is not under the crosshair: {} {other} is in the way",
+            entity["type"].as_str().unwrap_or("an entity")
+        )
+    } else if let Some(block) = target["block"]["block"].as_str() {
+        format!(
+            "entity {id} is not under the crosshair: {block} at {} is in the way",
+            target["block"]["pos"]
+        )
+    } else {
+        format!(
+            "entity {id} is not under the crosshair: it is out of reach or moved; walk closer"
+        )
+    })
+}
+
+/// Item counts that changed from `before` to `after` (`inventory` replies' `counts`).
+fn count_change(before: &Value, after: &Value) -> Value {
+    let empty = serde_json::Map::new();
+    let (before, after) = (
+        before.as_object().unwrap_or(&empty),
+        after.as_object().unwrap_or(&empty),
+    );
+    let mut change = serde_json::Map::new();
+    for item in before.keys().chain(after.keys()) {
+        let n = |m: &serde_json::Map<String, Value>| {
+            m.get(item).and_then(Value::as_i64).unwrap_or(0)
+        };
+        let delta = n(after) - n(before);
+        if delta != 0 {
+            change.insert(item.clone(), json!(delta));
+        }
+    }
+    Value::Object(change)
 }
 
 /// `logs [--lines N] [--crash]` for the game in `home`: the reply's `text` is the log's last
@@ -625,6 +680,34 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aimed_at_names_what_is_under_the_crosshair_instead() {
+        let on = json!({ "target": { "entity": { "id": 91, "type": "minecraft:sheep" } } });
+        assert_eq!(aimed_at(&on, 91), Ok(()));
+        let sheep = aimed_at(&on, 107).unwrap_err();
+        assert!(sheep.contains("minecraft:sheep 91 is in the way"), "{sheep}");
+        let log = json!({
+            "target": { "block": { "block": "minecraft:oak_log", "pos": [1, 2, 3] } }
+        });
+        let log = aimed_at(&log, 91).unwrap_err();
+        assert!(log.contains("minecraft:oak_log at [1,2,3] is in the way"), "{log}");
+        let nothing = aimed_at(&json!({ "target": null }), 91).unwrap_err();
+        assert!(nothing.contains("walk closer"), "{nothing}");
+    }
+
+    #[test]
+    fn count_change_keeps_only_items_whose_count_moved() {
+        let before = json!({ "minecraft:shears": 1, "minecraft:white_wool": 1 });
+        let after = json!({
+            "minecraft:shears": 1, "minecraft:white_wool": 3, "minecraft:stick": 2
+        });
+        assert_eq!(
+            count_change(&before, &after),
+            json!({ "minecraft:white_wool": 2, "minecraft:stick": 2 })
+        );
+        assert_eq!(count_change(&after, &before)["minecraft:stick"], json!(-2));
+    }
 
     #[test]
     fn logs_reads_the_end_of_latest_log_and_the_newest_crash_report() {
