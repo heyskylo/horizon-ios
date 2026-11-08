@@ -309,7 +309,12 @@ fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         ) {
             continue;
         }
-        // unRide: off its vehicle (it lands at the target below).
+        // unRide: whoever rides it gets off where it stands, and it gets
+        // off its own vehicle (it lands at the target below).
+        events.push(MobEvent::EjectPassengers {
+            mob: m.id,
+            from: m.position,
+        });
         super::riders::stop_riding(m, None);
         m.extra.variant3 = face;
         events.push(MobEvent::Sound(

@@ -2753,7 +2753,10 @@ impl Game<'_> {
                             .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
                     }
                 }
-                MobEvent::Tamed { .. } | MobEvent::Buck { .. } | MobEvent::StabDismount { .. } => {
+                MobEvent::Tamed { .. }
+                | MobEvent::Buck { .. }
+                | MobEvent::StabDismount { .. }
+                | MobEvent::EjectPassengers { .. } => {
                     self.mount_event(&e)
                 }
                 MobEvent::IronGolemHit {

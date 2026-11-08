@@ -2244,6 +2244,12 @@ pub enum MobEvent {
     Buck {
         mob: u32,
     },
+    /// `Entity.unRide`'s `ejectPassengers` before a move (a shulker's
+    /// teleport): whoever rides `mob` gets off where it stood, `from`.
+    EjectPassengers {
+        mob: u32,
+        from: Vec3,
+    },
     /// A piglin's admiring is over: barter or keep the item.
     FinishAdmiring {
         mob: u32,

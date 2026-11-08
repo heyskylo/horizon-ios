@@ -230,3 +230,48 @@ fn a_shulker_bullets_hit_teleports_an_open_shulker_before_it_returns() {
     }
     assert!(moved > 0, "no shulker teleported");
 }
+
+/// `Shulker.teleportSomewhere` -> `Entity.unRide`: a mob riding the shulker
+/// gets off where the shulker stood (`ejectPassengers`) instead of being
+/// carried to where it teleports.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_teleporting_shulker_leaves_its_rider_behind() {
+    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+    let mut game = floored_game(&root);
+    let at = Vec3::new(8.5, 4.0, 8.5);
+    let mut teleported = 0;
+    for seed in 0..40 {
+        let (id, rider) = (800 + 2 * seed as u32, 801 + 2 * seed as u32);
+        let mut mob = shulker(&game, id, at, seed);
+        // What `after_hurt` leaves after a low-health roll.
+        mob.extra.flag = true;
+        game.mobs.push(mob);
+        let mut zombie = enderman(&game, rider, at, 0);
+        zombie.kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        game.mobs.push(zombie);
+        horizon_client::mobs::riders::link(&mut game.mobs, rider, id);
+        game.settle_hurt_teleports().unwrap();
+        let s = game.mobs.iter().find(|m| m.id == id).unwrap();
+        let z = game.mobs.iter().find(|m| m.id == rider).unwrap();
+        if s.position.distance(at) > 0.5 {
+            teleported += 1;
+            assert_eq!(z.extra.mount, None, "seed {seed}: still riding");
+            assert_eq!(s.extra.rider, None, "seed {seed}: still carrying");
+            assert!(
+                z.position.distance(at) < 2.0,
+                "seed {seed}: rider at {:?}, shulker left {at:?}",
+                z.position
+            );
+        } else {
+            assert_eq!(z.extra.mount, Some(id), "seed {seed}: thrown off without a teleport");
+        }
+        game.mobs.clear();
+    }
+    assert!(teleported > 0, "no shulker teleported");
+}
