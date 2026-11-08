@@ -2956,6 +2956,11 @@ impl Minecart {
             raw,
         );
         if let Tag::Compound(map) = &mut tag {
+            // ContainerEntity.addChestVehicleSaveData belongs only to the
+            // container subclasses, never to a plain or specialized cart.
+            if self.kind.slots() == 0 {
+                map.remove(&JavaString::from("Items"));
+            }
             if self.kind == CartKind::CommandBlock {
                 for key in ["LastOutput", "LastExecution"] {
                     map.remove(&JavaString::from(key));
@@ -3015,7 +3020,13 @@ impl Minecart {
             }
             // A loaded loot table goes back while the items are still its roll;
             // otherwise the items replace it, as vanilla's unpackLootTable does.
-            if !self.loot.as_ref().is_some_and(|l| l.restore(map)) {
+            if self.loot.as_ref().is_some_and(|l| l.restore(map)) {
+                if let Some(table) = horizon_client::save::text(map.get(&"LootTable".into()))
+                    .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+                {
+                    map.insert("LootTable".into(), Tag::String(table.as_str().into()));
+                }
+            } else {
                 map.remove(&JavaString::from("LootTable"));
                 map.remove(&JavaString::from("LootTableSeed"));
             }
