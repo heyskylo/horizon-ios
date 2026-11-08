@@ -740,6 +740,9 @@ impl Mob {
         let vertical = wanted.y != moved.y;
         self.vertical_collision_below = vertical && wanted.y < 0.0;
         self.on_ground = self.vertical_collision_below;
+        // Entity.setOnGroundWithMovement's checkSupportingBlock, before
+        // checkFallDamage reads the landing block (getOnPosLegacy).
+        self.supporting = self.supporting_block(w, moved);
         // Strider.checkFallDamage: lava breaks any fall, and the fluid state
         // waits for the next baseTick; Bat and Bee.checkFallDamage do nothing.
         if self.kind.flags.lava_walker && self.fluids.in_lava {
@@ -778,8 +781,6 @@ impl Mob {
                 input,
             );
         }
-        // Entity.checkSupportingBlock
-        self.supporting = self.supporting_block(w, moved);
         self.movement_emission(w, moved, events);
         // Entity.move's last step: soul sand, honey and the like slow the
         // horizontal speed of whatever the mob stands in or on.
