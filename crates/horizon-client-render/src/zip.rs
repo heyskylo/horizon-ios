@@ -469,15 +469,15 @@ mod tests {
     #[test]
     fn entries_share_one_total_inflated_budget() {
         let zip = Zip::from_bytes(archive()).unwrap();
-        let mut tight = AtomicU64::new(16);
-        assert!(zip.read_within("a/b.txt", &mut tight).is_err());
+        let tight = AtomicU64::new(16);
+        assert!(zip.read_within("a/b.txt", &tight).is_err());
         let zip = Zip::from_bytes(archive()).unwrap();
-        let mut tight = AtomicU64::new(12);
+        let tight = AtomicU64::new(12);
         assert_eq!(
-            zip.read_within("pack.mcmeta", &mut tight).unwrap(),
+            zip.read_within("pack.mcmeta", &tight).unwrap(),
             b"{\"pack\":{}}"
         );
-        assert!(zip.read_within("a/b.txt", &mut tight).is_err());
+        assert!(zip.read_within("a/b.txt", &tight).is_err());
     }
 
     /// The offset of the central-directory header of `name`.
