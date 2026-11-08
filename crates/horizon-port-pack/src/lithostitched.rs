@@ -159,6 +159,12 @@ pub(crate) fn modifier(
         count(&mut report.modifiers_left, "conditions");
         return None;
     }
+    if let Some(action) = kind
+        .strip_prefix("lithostitched:")
+        .filter(|a| matches!(*a, "add_features" | "remove_features"))
+    {
+        return biome_modifier(v, action, report);
+    }
     // 1.8.1 reads `processor_lists`, not the wiki's `processor_list`.
     let (to, targets, list) = match kind {
         "lithostitched:add_template_pool_elements" => {
@@ -184,6 +190,37 @@ pub(crate) fn modifier(
         file["horizon:priority"] = priority.into();
     }
     Some((to, file))
+}
+
+/// An `add_features` or `remove_features` modifier as NeoForge's biome
+/// modifier of the same name (`("biome_modifier", file)`), which the game
+/// applies when the content root builds. Its `holder_set` biomes are
+/// unwrapped. A mod's own `<ns>:config` predicate runs Java the port cannot,
+/// so it is taken at the mod's default, on; any other predicate leaves the
+/// modifier out.
+fn biome_modifier(v: &Value, action: &str, report: &mut Upgrade) -> Option<(&'static str, Value)> {
+    let predicate = v["predicate"]["type"].as_str();
+    if predicate.is_some_and(|p| !p.ends_with(":config")) {
+        count(&mut report.modifiers_left, "predicate");
+        return None;
+    }
+    let biomes = match &v["biomes"] {
+        b if b["type"] == "lithostitched:holder_set" => b["set"].clone(),
+        b @ (Value::String(_) | Value::Array(_)) => b.clone(),
+        _ => Value::Null,
+    };
+    let add = action == "add_features";
+    if biomes.is_null() || v["features"].is_null() || (add && v["step"].is_null()) {
+        count(&mut report.modifiers_left, "target");
+        return None;
+    }
+    let mut file = json!({"type": format!("neoforge:{action}"), "biomes": biomes,
+        "features": v["features"]});
+    // A removal without a step takes the features out of every step.
+    if !v["step"].is_null() {
+        file[if add { "step" } else { "steps" }] = v["step"].clone();
+    }
+    Some(("biome_modifier", file))
 }
 
 /// Whether the game reads a Lithostitched processor as it is: one of its
@@ -407,6 +444,42 @@ mod tests {
                 ("lithostitched:set_pool_aliases".into(), 1),
                 ("target".into(), 2),
             ])
+        );
+    }
+
+    /// Regions Unexplored's vanilla changes: feature modifiers become
+    /// NeoForge's biome modifiers, which the game applies; a mod's own config
+    /// predicate is taken at its default (on), any other predicate is left.
+    #[test]
+    fn feature_modifiers_become_biome_modifiers() {
+        let mut report = Upgrade::default();
+        let loaded = |_: &str| true;
+        let biomes = json!({"type": "lithostitched:holder_set", "set": ["minecraft:badlands"]});
+        let add = json!({"type": "lithostitched:add_features", "biomes": biomes,
+            "features": "ru:saguaros", "step": "vegetal_decoration",
+            "predicate": {"type": "ru:config", "key": "vanilla_changes/saguaros"}});
+        let (kind, file) = modifier(&add, &loaded, &mut report).unwrap();
+        assert_eq!(kind, "biome_modifier");
+        assert_eq!(
+            file,
+            json!({"type": "neoforge:add_features", "biomes": ["minecraft:badlands"],
+                "features": "ru:saguaros", "step": "vegetal_decoration"})
+        );
+        let remove = json!({"type": "lithostitched:remove_features", "priority": 1000,
+            "biomes": {"type": "lithostitched:holder_set", "set": "minecraft:mangrove_swamp"},
+            "features": "minecraft:patch_waterlily", "step": "vegetal_decoration"});
+        let (_, file) = modifier(&remove, &loaded, &mut report).unwrap();
+        assert_eq!(
+            file,
+            json!({"type": "neoforge:remove_features", "biomes": "minecraft:mangrove_swamp",
+                "features": "minecraft:patch_waterlily", "steps": "vegetal_decoration"})
+        );
+        let mut gated = add.clone();
+        gated["predicate"] = json!({"type": "lithostitched:not", "predicate": {}});
+        assert!(modifier(&gated, &loaded, &mut report).is_none());
+        assert_eq!(
+            report.modifiers_left,
+            BTreeMap::from([("predicate".into(), 1)])
         );
     }
 
