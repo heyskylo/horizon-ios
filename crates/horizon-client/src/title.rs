@@ -395,6 +395,8 @@ pub enum Action {
     Connect {
         address: String,
         lan: bool,
+        /// The Realms screen asked for it (`ServerData.isRealm`).
+        realm: bool,
     },
     /// Create World's Data Packs screen on the new world's pack folder.
     DataPacks {
@@ -1388,6 +1390,7 @@ impl Title {
         Some(Action::Connect {
             address,
             lan: false,
+            realm: true,
         })
     }
     pub fn take_open_request(&mut self) -> Option<String> {
@@ -3747,6 +3750,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     crate::realms::Outcome::Connect(address) => Action::Connect {
                         address,
                         lan: false,
+                        realm: true,
                     },
                     crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
                     crate::realms::Outcome::Copy(text) => Action::CopyText(text),
@@ -3770,9 +3774,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     self.mode = Mode::Main;
                     Action::None
                 }
-                crate::multiplayer::Outcome::Connect { address, lan } => {
-                    Action::Connect { address, lan }
-                }
+                crate::multiplayer::Outcome::Connect { address, lan } => Action::Connect {
+                    address,
+                    lan,
+                    realm: false,
+                },
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
@@ -4303,6 +4309,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     Action::Connect {
                         address,
                         lan: false,
+                        realm: true,
                     },
                     true,
                 ),
@@ -4333,7 +4340,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     if matches!(screen, crate::multiplayer::Screen::Direct { .. }) {
                         crate::multiplayer::remember_direct_join(&self.saves, &address);
                     }
-                    (Action::Connect { address, lan }, true)
+                    (
+                        Action::Connect {
+                            address,
+                            lan,
+                            realm: false,
+                        },
+                        true,
+                    )
                 }
                 _ => (Action::None, false),
             },
@@ -4897,6 +4911,12 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             return;
         };
         self.allows_multiplayer = status.allows_multiplayer();
+        // `Minecraft`'s constructor: the account's `friendsPreferences` decide whether
+        // the friends service starts (`Minecraft.friendsEnabled`).
+        crate::social::init(
+            status.properties.friends_enabled,
+            status.properties.accept_friend_invites,
+        );
         if !QUEUED.swap(true, Ordering::Relaxed) {
             self.ban_queue
                 .extend(initial_notices(status, &session.name));
