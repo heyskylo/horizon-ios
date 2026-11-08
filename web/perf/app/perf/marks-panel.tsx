@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { num } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { MarkRow } from "@/lib/types";
+import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
@@ -14,21 +14,8 @@ interface Props {
 }
 
 export function MarksPanel({ reader, capture }: Props) {
-  const [rows, setRows] = useState<MarkRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const { rows, error } = useRows<MarkRow>(reader, capture, "marks");
 
-  useEffect(() => {
-    setError(null);
-    const reply = reader.query<MarkRow>(capture.handle, {
-      op: "marks",
-      file: capture.name,
-      filters: { side: capture.side },
-    });
-    if (!reply.ok) {
-      setError(reply.error?.message ?? t("error.queryFailed"));
-      setRows([]);
-    } else setRows(reply.rows);
-  }, [reader, capture]);
 
   if (error) return <p className={styles.error}>{error}</p>;
   if (rows.length === 0) return <p className={styles.empty}>{t("meta.empty")}</p>;

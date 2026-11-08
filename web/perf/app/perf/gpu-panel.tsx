@@ -105,10 +105,10 @@ export function GpuPanel({ reader, capture }: Props) {
         <table className={styles.table}>
           <thead>
             <tr>
-              <th>Pass</th>
+              <th>{t("table.pass")}</th>
               <th>GPU ms</th>
-              <th>Share</th>
-              <th>Id</th>
+              <th>{t("table.share")}</th>
+              <th>{t("table.id")}</th>
             </tr>
           </thead>
           <tbody>

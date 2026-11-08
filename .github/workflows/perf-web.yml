@@ -56,6 +56,9 @@ jobs:
       - name: Install the app
         run: npm ci
         working-directory: web/perf
+      - name: Test the app
+        run: npm test
+        working-directory: web/perf
       - name: Build the app
         run: npm run build
         working-directory: web/perf

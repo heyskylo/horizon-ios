@@ -29,7 +29,6 @@ use std::sync::Arc;
 
 use horizon_perf_format::v1::Capture;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::diff::DiffOptions;
 use crate::export::{ExportOptions, Format};
@@ -73,9 +72,32 @@ impl Reply {
 
 /// A stable failure code and a message for logs; the UI translates the code.
 fn failure(code: &str, message: impl Into<String>) -> Reply {
-    Reply::Json(
-        json!({"ok": false, "error": {"code": code, "message": message.into()}}).to_string(),
-    )
+    let reply = FailureReply {
+        ok: false,
+        error: FailureBody {
+            code,
+            message: message.into(),
+        },
+    };
+    Reply::Json(serde_json::to_string(&reply).expect("a reply of plain fields serializes"))
+}
+
+#[derive(Serialize)]
+struct FailureReply<'a> {
+    ok: bool,
+    error: FailureBody<'a>,
+}
+
+#[derive(Serialize)]
+struct FailureBody<'a> {
+    code: &'a str,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct OpenedReply {
+    ok: bool,
+    handle: u32,
 }
 
 /// The code the reader's error maps to, as §7.3 names them.
@@ -121,7 +143,8 @@ pub fn open(bytes: &[u8]) -> Reply {
             CAPTURES.with(|captures| {
                 captures.borrow_mut().insert(handle, Arc::new(capture));
             });
-            Reply::Json(json!({"ok": true, "handle": handle}).to_string())
+            let reply = OpenedReply { ok: true, handle };
+            Reply::Json(serde_json::to_string(&reply).expect("a reply of plain fields serializes"))
         }
         Err(error) => open_error(error),
     }

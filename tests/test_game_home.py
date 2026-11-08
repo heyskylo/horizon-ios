@@ -34,6 +34,7 @@ EXEMPT = {
     "test_item_use_order_parity.py": "starts servers through test_server_knockback_parity.run_side; its Server uses game_environment",
     "test_bed_explosion_parity.py": "starts servers through test_server_knockback_parity.run_side; its Server uses game_environment",
     "port_harness.py": "ports Java code, starts no game",
+    "profile_client_e2e.py": "starts its games through agent_control_e2e.scratch, which uses game_env",
 }
 
 

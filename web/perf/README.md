@@ -2,8 +2,7 @@
 
 `web/perf/` is the browser UI for `.hzperf` captures (docs/perf-platform.md §7). It is a Next.js
 App Router app, self-hosted at `https://horizon-perf.umceko.com`, and it is built to be copied into
-playhorizon.dev later: the UI lives in `app/perf/`, the upload API will live in `app/api/perf/`, and
-everything is configured through env vars.
+playhorizon.dev later: the UI lives in `app/perf/`.
 
 The page reads a capture in the browser. `cargo xtask perf-wasm` builds `horizon-perf` for
 `wasm32-unknown-unknown` with the `wasm` feature and writes `target/perf-wasm/{horizon_perf.wasm,horizon_perf.js}`;
@@ -26,13 +25,13 @@ starts, because `npm run dev` copies it in first.
 `PERF_WASM_DIR` points the copy at another folder when the wasm was built elsewhere.
 
 `npm run build` produces the deployable bundle under `.next/standalone`; `npm start` serves the
-build. `npm run typecheck` runs TypeScript over the app.
+build. `npm run typecheck` runs TypeScript over the app and `npm test` its unit tests.
 
 ## What is here
 
 | Path | Is |
 |---|---|
-| `app/perf/page.tsx` | the one page: open a capture, then Summary, Health, Metadata or Query |
+| `app/perf/page.tsx` | the opening screen; `capture-view.tsx` holds the tabs of an open capture |
 | `app/perf/health-panel.tsx` | the health bar and timelines (UI1) |
 | `app/perf/metadata-panel.tsx` | platform, OS, CPU, build, flags, settings, world, game rules, mods, memory and network (UI1) |
 | `app/perf/summary-panel.tsx` | `horizon-perf summary`'s text, verbatim |
@@ -64,9 +63,8 @@ It opens a fixture through the C ABI and asserts byte-identical replies to the C
 
 ## Privacy and CSP
 
-The page never uploads a capture by itself. `next.config.mjs` sends a CSP whose `connect-src` is
-`'self'` only, so the page cannot send anything to another origin; sharing will be an explicit
-**Share** action against this app's own API (UI7 and U1).
+The page never uploads a capture. `next.config.mjs` sends a CSP whose `connect-src` is `'self'`
+only, so the page cannot send anything to another origin.
 
 ## Deployment
 

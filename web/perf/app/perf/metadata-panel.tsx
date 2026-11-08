@@ -36,7 +36,7 @@ const TABS: [Tab, string][] = [
 ];
 
 function show(value: string | number | boolean | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "Not detected";
+  if (value === null || value === undefined || value === "") return t("meta.notDetected");
   if (typeof value === "boolean") return bool(value, t("common.yes"), t("common.no"));
   return String(value);
 }

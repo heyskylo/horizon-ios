@@ -338,6 +338,48 @@ fn group_divides_the_whole_selection_with_a_row_for_samples_without_context() {
 }
 
 #[test]
+fn group_by_mod_charges_each_sample_to_the_innermost_mod_frame() {
+    use horizon_perf_format::Field;
+    use horizon_perf_format::v1::{Mod, ModKind};
+    let dir = TempDir::new("group-mod");
+    let mut b = Builder::new(50, &[25, 25]);
+    b.func_in("horizon_client::tick", "horizon_client");
+    b.func_in("my_mod::on_tick", "my_mod");
+    b.func_in("horizon_world::helper", "horizon_world");
+    b.func_in("other_mod::run", "other_mod");
+    let root = b.node(None, "horizon_client::tick");
+    let hook = b.node(Some(root), "my_mod::on_tick");
+    let helper = b.node(Some(hook), "horizon_world::helper");
+    let other = b.node(Some(root), "other_mod::run");
+    b.weight(root, 10, W::default());
+    b.weight(hook, 20, W::default());
+    b.weight(helper, 5, W::default());
+    b.weight(other, 15, W::default());
+    let mut fields = b.fields();
+    let Field::Start(start) = &mut fields[0] else {
+        panic!("a capture opens with its start");
+    };
+    start.mods = [("my-mod", "my-mod"), ("other", "other_mod")]
+        .map(|(id, crate_name)| Mod {
+            id: id.into(),
+            kind: ModKind::Native as i32,
+            crate_name: crate_name.into(),
+            ..Default::default()
+        })
+        .to_vec();
+    let file = save(&dir, "mods.hzperf", &fields);
+    // 10 ms samples over 50 ticks: a sample is 0.2 ms/tick; the helper runs under my_mod's hook.
+    let reply = query(&["group", "--by", "mod", &file]);
+    assert_eq!(
+        split_rows(&reply)
+            .iter()
+            .map(|r| (r.key.as_deref(), r.value))
+            .collect::<Vec<_>>(),
+        [(Some("my-mod"), 5.0), (Some("other"), 3.0), (None, 2.0)]
+    );
+}
+
+#[test]
 fn a_time_window_counts_the_blocks_that_start_inside_it() {
     let dir = TempDir::new("window");
     let file = standard(&dir);

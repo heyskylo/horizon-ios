@@ -8,8 +8,11 @@ export declare class HorizonPerfError extends Error {
 }
 
 export interface DiffReply {
-  text: string;
-  reply: unknown;
+  /** False when the two captures cannot be compared; `text` is then absent. */
+  ok?: boolean;
+  text?: string;
+  reply?: unknown;
+  error?: { code: string; message: string };
 }
 
 export interface SummaryRequest {

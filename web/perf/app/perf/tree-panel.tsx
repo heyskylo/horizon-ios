@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { CSSProperties } from "react";
+import { useMemo, useState } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { num } from "@/lib/format";
 import { t } from "@/lib/i18n";
+import { mergeTree } from "@/lib/merge-tree";
 import type { TreeRow } from "@/lib/types";
+import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
 import { Icons } from "./icons";
 import styles from "./page.module.css";
@@ -15,55 +16,42 @@ interface Props {
   capture: LoadedCapture;
 }
 
-const WRAPPERS = [
-  "spans::time",
-  "FnOnce::call_once",
-];
-
-function isWrapper(name: string): boolean {
-  return WRAPPERS.some((w) => name.includes(w));
-}
-
-function filterMerge(rows: TreeRow[]): TreeRow[] {
-  return rows
-    .filter((row) => !isWrapper(row.name))
-    .map((row) => ({ ...row, children: row.children ? filterMerge(row.children) : row.children }));
-}
-
 function Tree({
   rows,
   depth = 0,
+  max,
   collapsed,
+  startCollapsed,
   toggle,
 }: {
   rows: TreeRow[];
   depth?: number;
+  max: number;
   collapsed: Set<string>;
+  startCollapsed: boolean;
   toggle: (id: string) => void;
 }) {
-  const max = rows.reduce((m, row) => Math.max(m, row.total), 0) || 1;
   return (
     <>
       {rows.map((row) => {
         const hasChildren = Boolean(row.children?.length);
-        const isCollapsed = collapsed.has(row.id);
+        const isCollapsed = collapsed.has(row.id) !== startCollapsed;
         return (
-          <div
-            key={row.id}
-            style={{ "--depth": depth, paddingLeft: "calc(var(--depth, 0) * 0.75rem)" } as CSSProperties}
-          >
+          <div key={row.id}>
             <div className={styles.meterRow} title={row.id}>
-              <span className={styles.meterName} title={row.name}>
+              <span className={styles.meterName} title={row.name} style={{ paddingLeft: depth * 14 }}>
                 {hasChildren ? (
                   <button
                     type="button"
+                    className={styles.disclosure}
+                    aria-expanded={!isCollapsed}
+                    aria-label={row.name}
                     onClick={() => toggle(row.id)}
-                    style={{ border: 0, background: "transparent", color: "inherit", cursor: "pointer", marginRight: 4 }}
                   >
                     {isCollapsed ? <Icons.chevronRight /> : <Icons.chevronDown />}
                   </button>
                 ) : (
-                  <span style={{ display: "inline-block", width: 20 }} />
+                  <span className={styles.disclosureSpace} />
                 )}
                 {row.name}
               </span>
@@ -74,7 +62,7 @@ function Tree({
               <span className={styles.meterExtra}>{num(row.pct, 1)}%</span>
             </div>
             {hasChildren && !isCollapsed && row.children ? (
-              <Tree rows={row.children} depth={depth + 1} collapsed={collapsed} toggle={toggle} />
+              <Tree rows={row.children} depth={depth + 1} max={max} collapsed={collapsed} startCollapsed={startCollapsed} toggle={toggle} />
             ) : null}
           </div>
         );
@@ -84,23 +72,10 @@ function Tree({
 }
 
 export function TreePanel({ reader, capture }: Props) {
-  const [rows, setRows] = useState<TreeRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const { rows, error } = useRows<TreeRow>(reader, capture, "tree", { limit: 200 });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [merge, setMerge] = useState(false);
 
-  useEffect(() => {
-    setError(null);
-    const reply = reader.query<TreeRow>(capture.handle, {
-      op: "tree",
-      file: capture.name,
-      filters: { side: capture.side, limit: 200 },
-    });
-    if (!reply.ok) {
-      setError(reply.error?.message ?? t("error.queryFailed"));
-      setRows([]);
-    } else setRows(reply.rows);
-  }, [reader, capture]);
 
   const toggle = (id: string) => {
     setCollapsed((current) => {
@@ -111,17 +86,29 @@ export function TreePanel({ reader, capture }: Props) {
     });
   };
 
-  const visibleRows = merge ? filterMerge(rows) : rows;
+  const visibleRows = useMemo(() => (merge ? mergeTree(rows) : rows), [merge, rows]);
+
+  const treeMax = visibleRows.reduce((m, row) => Math.max(m, row.total), 0) || 1;
 
   if (error) return <p className={styles.error}>{error}</p>;
   if (rows.length === 0) return <p className={styles.empty}>{t("meta.empty")}</p>;
   return (
-    <div className={styles.summary}>
-      <button type="button" className={styles.buttonSmall} onClick={() => setMerge((v) => !v)}>
-        {merge ? t("tree.mergeOn") : t("tree.mergeOff")}
-      </button>
+    <div>
+      <div className={styles.toolbar}>
+        <button
+          type="button"
+          className={styles.buttonSmall}
+          aria-pressed={merge}
+          onClick={() => {
+            setMerge((v) => !v);
+            setCollapsed(new Set());
+          }}
+        >
+          {t("tree.merge")}
+        </button>
+      </div>
       <div className={styles.meterList}>
-        <Tree rows={visibleRows} collapsed={collapsed} toggle={toggle} />
+        <Tree rows={visibleRows} max={treeMax} collapsed={collapsed} startCollapsed={merge} toggle={toggle} />
       </div>
     </div>
   );

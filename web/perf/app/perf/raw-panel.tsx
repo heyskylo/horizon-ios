@@ -10,8 +10,6 @@ import styles from "./page.module.css";
 interface Props {
   reader: HorizonPerf;
   capture: LoadedCapture;
-  /** Starting request shown in the textarea. Switching tabs remounts this panel, so the change takes effect. */
-  initialRequest?: string;
 }
 
 const DEFAULT_REQUEST = `{
@@ -23,8 +21,8 @@ const DEFAULT_REQUEST = `{
  * The raw bridge of the W1 skeleton: a query request as JSON, the wasm's reply as JSON. Every
  * panel's numbers can be checked here against `horizon-perf query --json`.
  */
-export function RawPanel({ reader, capture, initialRequest }: Props) {
-  const [request, setRequest] = useState(initialRequest ?? DEFAULT_REQUEST);
+export function RawPanel({ reader, capture }: Props) {
+  const [request, setRequest] = useState(DEFAULT_REQUEST);
   const [reply, setReply] = useState("");
   const [error, setError] = useState<string | null>(null);
 

@@ -22,8 +22,3 @@ export function t(key: string, vars?: Record<string, string | number>): string {
   }
   return text;
 }
-
-/** `t` for a sentence with values, so call sites read as the sentence does. */
-export function tf(key: string, vars: Record<string, string | number>): string {
-  return t(key, vars);
-}

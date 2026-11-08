@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import styles from "./page.module.css";
 import type { HotRow } from "@/lib/types";
 
 interface Props {
@@ -25,14 +26,14 @@ export function FlameGraph({ rows, width = 600, height = 180 }: Props) {
     const rowHeight = height / Math.max(1, sorted.length);
     for (const row of sorted) {
       const w = (row.total / max) * width;
-      ctx.fillStyle = "rgba(120, 160, 220, 0.7)";
+      ctx.fillStyle = "#6f7384";
       ctx.fillRect(0, y, w, rowHeight - 1);
-      ctx.fillStyle = "#222";
-      ctx.font = "10px sans-serif";
+      ctx.fillStyle = "#ecedf3";
+      ctx.font = '11px "Geist", sans-serif';
       ctx.fillText(row.name, 2, y + rowHeight - 3);
       y += rowHeight;
     }
   }, [rows, width, height]);
 
-  return <canvas ref={ref} width={width} height={height} style={{ border: "1px solid #ccc" }} />;
+  return <canvas ref={ref} width={width} height={height} className={styles.flame} />;
 }

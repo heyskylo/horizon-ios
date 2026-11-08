@@ -49,11 +49,6 @@ export function utc(unixMs: number | null | undefined): string {
   )}:${pad(date.getUTCMinutes())} UTC`;
 }
 
-/** `123.4 KiB/s` from a KiB per second value. */
-export function kib(value: number | null | undefined): string {
-  return withUnit(value, "KiB/s", 1);
-}
-
 export function mib(value: number | null | undefined): string {
   return withUnit(value, "MiB", 1);
 }

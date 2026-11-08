@@ -152,7 +152,7 @@ function Empty({ text }: { text: string }) {
 function Phase({ node, depth, max }: { node: PhaseNode; depth: number; max: number }) {
   const pct = node.pct;
   const extraColor =
-    pct >= 30 ? "var(--bad)" : pct >= 10 ? "var(--warn)" : "var(--muted)";
+    pct >= 30 ? "var(--ink)" : pct >= 10 ? "var(--ink-soft)" : "var(--muted)";
   return (
     <Meter
       name={node.name}

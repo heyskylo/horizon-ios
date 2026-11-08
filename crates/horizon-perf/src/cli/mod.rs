@@ -1,7 +1,5 @@
 mod attach;
 mod diff;
-mod share;
-mod upload;
 mod export;
 pub mod files;
 mod query;
@@ -10,8 +8,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
-#[allow(unused_imports)]
-use ureq;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -56,8 +52,6 @@ usage:
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
   horizon-perf attach  FILE --name NAME --body JSONFILE   adds the JSON file to a finished capture as an attachment
-  horizon-perf share    FILE                                  upload + pin a capture; prints link and delete token
-  horizon-perf upload   FILE                                  1-hour temporary upload; prints link and delete token
   horizon-perf export  [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side client|server] [--thread T] [--select KIND] [--slow] [--dir DIR]
   horizon-perf mcp                                     MCP server on stdio: perf_summary, perf_query, perf_diff, perf_list, perf_follow
 
@@ -207,8 +201,6 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "query" => query::query(rest, env, out),
         "diff" => diff::run(rest, env, out),
         "attach" => attach::run(rest, env, out),
-        "share" => share::run(rest, env, out),
-        "upload" => upload::run(rest, env, out),
         "export" => export::run(rest, env, out),
         "mcp" => {
             if !rest.is_empty() {
@@ -306,35 +298,6 @@ pub fn reports_dir(dir: Option<&str>, env: &Env) -> PathBuf {
     PathBuf::from("reports")
 }
 
-fn is_url(s: &str) -> bool {
-    s.starts_with("http://") || s.starts_with("https://")
-}
-
-/// Downloads a capture served at `url` into a temporary file and returns its path.
-pub(crate) fn fetch_url(url: &str) -> Result<PathBuf, CliError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
-        .user_agent("horizon-perf")
-        .build();
-    let response = agent.get(url).call().map_err(failed)?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(failed)?;
-    let name = format!(
-        "horizon-perf-{}.hzperf",
-        url.chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .take(40)
-            .collect::<String>()
-    );
-    let path = std::env::temp_dir().join(name);
-    std::fs::write(&path, &bytes).map_err(failed)?;
-    Ok(path)
-}
-
 pub(crate) fn resolve(
     file: Option<&str>,
     dir: Option<&str>,
@@ -345,7 +308,6 @@ pub(crate) fn resolve(
         None | Some("latest") => {
             files::latest(&reports_dir(dir, env), finished_only).map_err(CliError::Failed)
         }
-        Some(path) if is_url(path) => fetch_url(path),
         Some(path) => Ok(PathBuf::from(path)),
     }
 }

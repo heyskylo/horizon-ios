@@ -1,6 +1,6 @@
 // The perf app is self-hosted (docs/perf-platform.md §7.1) and moves to playhorizon.dev by copying
-// `app/perf/` and `app/api/perf/` plus these env vars. Nothing here reaches another origin: the
-// page reads a capture in the browser and only ever fetches its own wasm and its own API.
+// `app/perf/`. Nothing here reaches another origin: the page reads a capture in the browser and
+// only ever fetches its own wasm.
 const development = process.env.NODE_ENV !== "production";
 
 const csp = [
@@ -10,7 +10,7 @@ const csp = [
   `script-src 'self' 'wasm-unsafe-eval'${development ? " 'unsafe-inline' 'unsafe-eval'" : " 'unsafe-inline'"}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
-  // §7.1: the page talks to its own origin only. A capture leaves the machine only through Share.
+  // §7.1: the page talks to its own origin only, and a capture never leaves the machine.
   "connect-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",

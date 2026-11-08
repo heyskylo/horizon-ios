@@ -94,8 +94,8 @@ export function sparkline(
 ): { path: string; min: number; max: number } | null {
   const seen = finite(values);
   if (seen.length === 0) return null;
-  const min = Math.min(...seen);
-  const max = Math.max(...seen);
+  const min = seen.reduce((a, b) => Math.min(a, b));
+  const max = seen.reduce((a, b) => Math.max(a, b));
   const span = max - min || 1;
   // A flat series (a constant core count, a TPS pinned at 20) draws through the middle rather than
   // along the bottom edge, where it would read as zero.

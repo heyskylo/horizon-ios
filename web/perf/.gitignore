@@ -6,3 +6,4 @@ tsconfig.tsbuildinfo
 /public/perf/horizon_perf.wasm
 /lib/generated/*
 !/lib/generated/horizon_perf.d.ts
+/public/perf/fonts/

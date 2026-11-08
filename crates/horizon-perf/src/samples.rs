@@ -23,6 +23,7 @@ pub struct Function {
     pub full: String,
     pub file: Option<String>,
     pub line: Option<u32>,
+    pub crate_name: Option<String>,
 }
 
 /// The context of a sample, by name; a chunk of (0, 0) means none was set.
@@ -61,6 +62,9 @@ pub struct Samples<'a> {
     pub func: Vec<u32>,
     pub parent: Vec<u32>,
     pub thread_of: Vec<u32>,
+    /// Per node: the mod that owns it, as an index into `mod_ids`: its own crate's, else its nearest caller's.
+    owner: Vec<Option<u32>>,
+    mod_ids: Vec<String>,
     path: Vec<Fnv>,
     pub contexts: Vec<Context>,
     pub thread_names: Vec<String>,
@@ -120,30 +124,32 @@ impl<'a> Samples<'a> {
         let mut functions: Vec<Function> = Vec::new();
         let mut by_full: HashMap<String, u32> = HashMap::new();
         let mut taken: HashMap<String, String> = HashMap::new();
-        let mut intern = |full: String, file: Option<String>, line: u32| -> u32 {
-            if let Some(&at) = by_full.get(&full) {
-                return at;
-            }
-            let mut key = ids::hashed(&full);
-            let base = key.clone();
-            let mut n = 1;
-            while taken.get(&key).is_some_and(|other| *other != full) {
-                n += 1;
-                key = format!("{base}~{n}");
-            }
-            taken.insert(key.clone(), full.clone());
-            let at = functions.len() as u32;
-            functions.push(Function {
-                id: ids::function(&key),
-                name: names::short(&full),
-                full: full.clone(),
-                file,
-                line: (line > 0).then_some(line),
-            });
-            by_full.insert(full, at);
-            at
-        };
-        let unknown = intern(UNKNOWN.to_string(), None, 0);
+        let mut intern =
+            |full: String, file: Option<String>, line: u32, crate_name: Option<String>| -> u32 {
+                if let Some(&at) = by_full.get(&full) {
+                    return at;
+                }
+                let mut key = ids::hashed(&full);
+                let base = key.clone();
+                let mut n = 1;
+                while taken.get(&key).is_some_and(|other| *other != full) {
+                    n += 1;
+                    key = format!("{base}~{n}");
+                }
+                taken.insert(key.clone(), full.clone());
+                let at = functions.len() as u32;
+                functions.push(Function {
+                    id: ids::function(&key),
+                    name: names::short(&full),
+                    full: full.clone(),
+                    file,
+                    line: (line > 0).then_some(line),
+                    crate_name,
+                });
+                by_full.insert(full, at);
+                at
+            };
+        let unknown = intern(UNKNOWN.to_string(), None, 0, None);
         let mapped: Vec<u32> = rows
             .name
             .iter()
@@ -155,8 +161,28 @@ impl<'a> Samples<'a> {
                     .filter(|&&f| f != 0)
                     .map(|&f| base_name(&text(f)));
                 let line = rows.line.get(i).copied().unwrap_or(0);
-                intern(names::normalize(&text(name)), file, line)
+                let crate_name = rows
+                    .crate_
+                    .get(i)
+                    .filter(|&&c| c != 0)
+                    .map(|&c| text(c).into_owned());
+                intern(names::normalize(&text(name)), file, line, crate_name)
             })
+            .collect();
+
+        let mods = view
+            .capture
+            .start
+            .iter()
+            .find(|s| s.side() == side)
+            .map_or(&[][..], |s| s.mods.as_slice());
+        let native: Vec<_> = mods.iter().filter(|m| !m.crate_name.is_empty()).collect();
+        let mod_ids: Vec<String> = native.iter().map(|m| m.id.clone()).collect();
+        // Cargo names a crate `my-mod`; its symbols say `my_mod`.
+        let owning: HashMap<String, u32> = native
+            .iter()
+            .enumerate()
+            .map(|(at, m)| (m.crate_name.replace('-', "_"), at as u32))
             .collect();
 
         let thread_names: Vec<String> = profile
@@ -172,6 +198,7 @@ impl<'a> Samples<'a> {
             Vec::with_capacity(count),
         );
         let mut path: Vec<Fnv> = Vec::with_capacity(count);
+        let mut owner: Vec<Option<u32>> = Vec::with_capacity(count);
         for i in 0..count {
             let f = mapped
                 .get(nodes.function[i] as usize)
@@ -196,6 +223,11 @@ impl<'a> Samples<'a> {
             hash.write(&functions[f as usize].full);
             hash.write("\n");
             func.push(f);
+            let own = functions[f as usize]
+                .crate_name
+                .as_deref()
+                .and_then(|c| owning.get(c).copied());
+            owner.push(own.or_else(|| up.and_then(|p| owner[p as usize])));
             parent.push(up.unwrap_or(NO_NODE));
             thread_of.push(thread);
             path.push(hash);
@@ -229,6 +261,8 @@ impl<'a> Samples<'a> {
             func,
             parent,
             thread_of,
+            owner,
+            mod_ids,
             path,
             contexts,
             thread_names,
@@ -552,6 +586,10 @@ impl Samples<'_> {
                 Kind::Thread,
                 &Some(self.thread_names[hit.thread as usize].clone()),
             ),
+            SampleBy::Mod => match self.owner[hit.node as usize] {
+                Some(at) => word(self.mod_ids[at as usize].clone()),
+                None => (None, "(none)".to_string()),
+            },
             SampleBy::State => word(hit.state.to_string()),
             SampleBy::Slow => word(
                 if hit.slow {
