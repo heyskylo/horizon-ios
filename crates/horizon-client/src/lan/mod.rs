@@ -85,6 +85,62 @@ pub struct Joined {
     /// The login used up an expectation of a proxy's (`player-expect`) when it
     /// started (`arrivals`).
     pub expected: bool,
+    /// What the client said during its configuration that the game hears once it joined.
+    pub configured: Configured,
+}
+
+/// What a client said during its configuration, kept for the game (`native_packets.rs`): the
+/// plugin channels it registered (`minecraft:register`), in order, and its answers to the
+/// server's resource pack (pack id, `ServerboundResourcePackPacket.Action` id), in order.
+#[derive(Clone, Debug, Default)]
+pub struct Configured {
+    pub channels: Vec<String>,
+    pub pack_answers: Vec<(u128, i32)>,
+}
+
+/// The most plugin channels kept for one client ([`apply_channels`]).
+pub const MAX_CHANNELS: usize = 128;
+/// The longest plugin channel name kept, in bytes.
+pub const MAX_CHANNEL_NAME: usize = 256;
+
+/// Whether a plugin channel message on `channel` registers channels (`minecraft:register`,
+/// true) or unregisters them (`minecraft:unregister`, false), as Bukkit's and Fabric's
+/// clients and proxies send them; None for any other channel. Vanilla reads neither.
+pub fn channel_registration(channel: &str) -> Option<bool> {
+    match channel {
+        "minecraft:register" => Some(true),
+        "minecraft:unregister" => Some(false),
+        _ => None,
+    }
+}
+
+/// Applies a register or unregister message's NUL-separated channel names to `channels`: the
+/// names it added or removed, in the message's order. A name that isn't printable ASCII with a
+/// `:`, is longer than [`MAX_CHANNEL_NAME`], or would take `channels` past [`MAX_CHANNELS`] is
+/// skipped; a name already registered, or not registered, changes nothing.
+pub fn apply_channels(channels: &mut Vec<String>, data: &[u8], register: bool) -> Vec<String> {
+    let mut changed = Vec::new();
+    for name in data.split(|b| *b == 0) {
+        let Ok(name) = std::str::from_utf8(name) else {
+            continue;
+        };
+        if name.len() > MAX_CHANNEL_NAME
+            || !name.contains(':')
+            || !name.bytes().all(|b| b.is_ascii_graphic())
+        {
+            continue;
+        }
+        if register {
+            if channels.len() < MAX_CHANNELS && !channels.iter().any(|c| c == name) {
+                channels.push(name.to_owned());
+                changed.push(name.to_owned());
+            }
+        } else if let Some(at) = channels.iter().position(|c| c == name) {
+            channels.remove(at);
+            changed.push(name.to_owned());
+        }
+    }
+    changed
 }
 /// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
@@ -212,6 +268,10 @@ pub struct NetConfig {
     /// An integrated server's owner profile: the properties the window's own
     /// (memory) connection logs in with.
     pub owner_profile: Option<Arc<OwnerProfile>>,
+    /// `IntegratedServer.getSingleplayerProfile` (`Minecraft.getGameProfile`): the
+    /// integrated server's own player's name and UUID. A memory login whose name matches
+    /// is that profile (the account's UUID); every other login derives the offline one.
+    pub singleplayer_profile: Option<(String, u128)>,
     /// `horizon-clients-only` (Horizon's own server.properties key, off): a
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
@@ -278,6 +338,7 @@ impl NetConfig {
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
+            singleplayer_profile: None,
         }
     }
 }
@@ -395,6 +456,8 @@ pub struct Shared {
     closing: AtomicUsize,
     /// Connections turned away since the last report of them, and when that was.
     turned_away: Mutex<(usize, Option<Instant>)>,
+    /// A stop waits for a proxy to move the players out (`arrivals::StopWait`): no login comes in.
+    shutting_down: AtomicBool,
 }
 impl Shared {
     /// The registries and tags a new connection is sent.
@@ -417,6 +480,9 @@ impl Shared {
         uuid: u128,
         name: &str,
     ) -> Option<horizon_world::nbt::Tag> {
+        if self.shutting_down.load(Ordering::Relaxed) {
+            return Some(translatable("multiplayer.disconnect.server_shutdown", &[]));
+        }
         if let Some(gate) = &self.config.gate
             && let Some(reason) = gate(address, uuid, name)
         {
@@ -442,6 +508,10 @@ impl Shared {
         }
         self.online.lock().unwrap().push((uuid, name.to_owned()));
         None
+    }
+    /// A stop has begun: every login from now on is refused as the server's shutdown.
+    pub fn refuse_logins(&self) {
+        self.shutting_down.store(true, Ordering::Relaxed);
     }
     fn is_online(&self, uuid: u128) -> bool {
         self.online.lock().unwrap().iter().any(|(u, _)| *u == uuid)
@@ -631,6 +701,7 @@ impl Lan {
             next_connection: AtomicU64::new(0),
             closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
+            shutting_down: AtomicBool::new(false),
             random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
             config,
         });
@@ -983,6 +1054,37 @@ pub(super) fn test_loopback() -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn channel_messages_register_and_unregister_each_name_once() {
+        let mut channels = Vec::new();
+        let added = super::apply_channels(
+            &mut channels,
+            b"fabric:registry/sync\0voxy:info\0voxy:info\0nocolon\0bad name:x",
+            true,
+        );
+        assert_eq!(added, ["fabric:registry/sync", "voxy:info"]);
+        assert_eq!(channels, ["fabric:registry/sync", "voxy:info"]);
+        let removed = super::apply_channels(&mut channels, b"voxy:info\0other:one", false);
+        assert_eq!(removed, ["voxy:info"]);
+        assert_eq!(channels, ["fabric:registry/sync"]);
+        let many: Vec<u8> = (0..200)
+            .map(|i| format!("m:c{i}"))
+            .collect::<Vec<_>>()
+            .join("\0")
+            .into_bytes();
+        super::apply_channels(&mut channels, &many, true);
+        assert_eq!(channels.len(), super::MAX_CHANNELS);
+        assert_eq!(
+            super::channel_registration("minecraft:register"),
+            Some(true)
+        );
+        assert_eq!(
+            super::channel_registration("minecraft:unregister"),
+            Some(false)
+        );
+        assert_eq!(super::channel_registration("minecraft:brand"), None);
+    }
+
+    #[test]
     fn a_local_server_accepts_only_the_requested_loopback_address() {
         let lan = super::Lan::start_with(
             std::sync::Arc::new(super::data::SyncData::empty()),
@@ -1049,6 +1151,25 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Once a stop waits for a proxy, no login takes a place, an op's neither.
+    #[test]
+    fn a_server_that_refuses_logins_takes_no_one_in() {
+        let config = NetConfig {
+            announce: false,
+            listen: false,
+            bypasses_limit: Some(Arc::new(|_| true)),
+            ..NetConfig::loopback(0, "Stopping".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Player").is_none());
+        lan.shared.refuse_logins();
+        assert_eq!(
+            lan.shared.try_admit(MEMORY_ADDRESS, 2, "Late"),
+            Some(translatable("multiplayer.disconnect.server_shutdown", &[]))
+        );
+        assert_eq!(lan.shared.online(), 1);
     }
 
     #[test]

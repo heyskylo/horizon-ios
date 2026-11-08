@@ -17,7 +17,8 @@ const PREFIX: &str = "horizon_sky_";
 const PACK_ENTRY: &str = "
 @fragment fn horizon_sky_fs_pack(in: horizon_sky_SkyOut) -> @location(0) vec4<f32> {
     let d = horizon_sky_view_ray(in.ndc);
-    return vec4(sky(SkyInput(d, vec4(horizon_sky_sky_along_ray(d), 1.0))).rgb, 1.0);
+    let color = vec4(horizon_line_in(horizon_sky_sky_along_ray(d)), 1.0);
+    return vec4(horizon_line_out(sky(SkyInput(d, color)).rgb), 1.0);
 }
 ";
 
@@ -29,6 +30,7 @@ pub struct NativeSky {
 /// terrain.wgsl's sky with every name it declares (and `globals`) prefixed.
 fn vanilla_sky() -> String {
     let text = [
+        include_str!("../hdr_light.wgsl"),
         section(TERRAIN, "struct Globals {", "@group(0) @binding(1)"),
         section(TERRAIN, "fn linear_fog(", "fn apply_fog("),
         section(TERRAIN, "struct SkyOut {", "// rendertype_lines"),
@@ -38,10 +40,11 @@ fn vanilla_sky() -> String {
 }
 
 /// The sky shader for the pack's sky stage `source`.
-fn shader_source(source: &str) -> String {
+fn shader_source(source: &str, api: horizon_shader_api::Api) -> String {
     format!(
-        "{source}\n// Horizon's sky (terrain.wgsl)\n{}{PACK_ENTRY}",
-        vanilla_sky()
+        "{source}\n// Horizon's sky (terrain.wgsl)\n{}{}{PACK_ENTRY}",
+        vanilla_sky(),
+        super::native_post::line_helpers(api)
     )
 }
 
@@ -99,7 +102,7 @@ fn build(
     frame: &NativeFrame,
     stage: &CheckedStage,
 ) -> Result<(naga::Module, wgpu::PipelineLayout), String> {
-    let text = shader_source(&stage.source);
+    let text = shader_source(&stage.source, frame.api);
     let module = naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))?;
     let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
@@ -195,7 +198,7 @@ mod tests {
         // A pack may use the renderer's names for its own things.
         let own = "override gain: f32;\nconst PI: f32 = 3.0;\nfn view_ray() -> f32 { return PI; }\n\
             fn sky(input: SkyInput) -> vec4<f32> { return input.color * gain * view_ray(); }\n";
-        let text = shader_source(&stage(own).source);
+        let text = shader_source(&stage(own).source, horizon_shader_api::Api::V0_1);
         let module = naga::front::wgsl::parse_str(&text).unwrap_or_else(|e| {
             panic!("{}", e.emit_to_string(&text));
         });
@@ -252,7 +255,14 @@ mod tests {
                 resource: globals_buffer.as_entire_binding(),
             }],
         });
-        let frame = NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
+        let frame = NativeFrame::new(
+            &device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            horizon_shader_api::Api::V0_1,
+        );
         queue.write_buffer(
             &frame.buffer,
             0,

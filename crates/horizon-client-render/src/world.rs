@@ -78,6 +78,10 @@ pub struct World {
     pub light_edits: Vec<((i32, i32, i32), u32, u32)>,
     /// Saved entities of chunks that just loaded, spawned by the game.
     pub loaded_entities: Vec<((i32, i32), Vec<horizon_world::nbt::Tag>)>,
+    /// Chunks loaded since the level's last pass, their entity sections not
+    /// ready yet (`PersistentEntitySectionManager`'s PENDING), empty ones too:
+    /// the pass ends by readying them (`processPendingLoads`).
+    pub entities_pending: FxHashSet<(i32, i32)>,
     /// Chunks that just came into this level from a worker, and whether each
     /// was generated rather than read from the save: the game tells native mods.
     pub loaded_chunks: Vec<(i32, i32, bool)>,
@@ -89,7 +93,7 @@ pub struct World {
     /// interaction range.
     pub chest_openers: FxHashMap<(i32, i32, i32), (i32, f64)>,
     /// `BaseContainerBlockEntity.name`: custom names of container block entities.
-    pub block_names: FxHashMap<(i32, i32, i32), String>,
+    pub block_names: FxHashMap<(i32, i32, i32), horizon_world::nbt::Tag>,
     /// States (by id) whose writes are recorded in `watched_writes` (sculk
     /// blocks, which need a block entity).
     pub watched: Vec<bool>,
@@ -187,6 +191,14 @@ impl Weather {
         self.rain_level.1 =
             (self.rain_level.1 + if self.raining { 0.01 } else { -0.01 }).clamp(0.0, 1.0);
     }
+    /// The levels at their targets at once (rain 1 while it rains, else 0, and thunder the
+    /// same), both halves, so the frame shows them at any partial tick: a frozen world under
+    /// `HORIZON_STILL`, which would otherwise have to run about a hundred ticks to fade them.
+    pub fn settle_levels(&mut self) {
+        let target = |on: bool| if on { 1.0 } else { 0.0 };
+        self.rain_level = (target(self.raining), target(self.raining));
+        self.thunder_level = (target(self.thundering), target(self.thundering));
+    }
     /// Level.getRainLevel / getThunderLevel (thunder scales with rain).
     pub fn levels(&self, partial: f32) -> (f32, f32) {
         let rain = self.rain_level.0 + (self.rain_level.1 - self.rain_level.0) * partial;
@@ -209,6 +221,7 @@ impl World {
             dirty_light: Default::default(),
             light_edits: Vec::new(),
             loaded_entities: Vec::new(),
+            entities_pending: FxHashSet::default(),
             loaded_chunks: Vec::new(),
             modified: ModifiedChunks::default(),
             attachments: Default::default(),
@@ -565,10 +578,30 @@ impl Default for HealthRules {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirtySections, World};
+    use super::{DirtySections, Weather, World};
     use crate::chunk::{Chunk, MIN_Y, SECTIONS};
     use horizon_world::registry::BlockStateId;
     use std::sync::Arc;
+
+    /// `/weather thunder` then `/weather clear` in a frozen world: the levels sit at their
+    /// targets at every partial tick, where a tick of fading would have moved them 0.01.
+    #[test]
+    fn settled_weather_shows_its_targets_at_any_partial_tick() {
+        let mut weather = Weather {
+            raining: true,
+            thundering: true,
+            rain_level: (0.25, 0.26),
+            ..Weather::default()
+        };
+        weather.settle_levels();
+        for partial in [0.0, 0.37, 1.0] {
+            assert_eq!(weather.levels(partial), (1.0, 1.0), "{partial}");
+        }
+        weather.raining = false;
+        weather.thundering = false;
+        weather.settle_levels();
+        assert_eq!(weather.levels(0.5), (0.0, 0.0));
+    }
 
     /// Every block write marks the same section set the 27-cell loop did, but
     /// only the distinct keys: one in the interior, a neighbour section on a

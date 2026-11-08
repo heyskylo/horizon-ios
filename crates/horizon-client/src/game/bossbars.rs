@@ -13,7 +13,6 @@ use horizon_client::{
     scoreboard_cmd::format_list,
     text::Text,
 };
-use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::{self, BossAction, Clientbound as C};
 use horizon_world::{identifier::Identifier, java_hash_map::JavaHashMap, nbt::Tag};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +25,9 @@ pub(super) struct BossState {
     loaded: bool,
     /// What each viewer was last sent, so a change becomes one packet.
     sent: HashMap<u128, HashMap<u128, Offer>>,
+    /// The bars server mods show single players (`native_boss_bar`): by
+    /// player UUID, each bar's id and bar, in the order they were added.
+    pub(super) native: HashMap<u128, Vec<(u128, horizon_client::mod_api::NativeBossBar)>>,
 }
 
 impl BossState {
@@ -166,7 +168,9 @@ impl Game<'_> {
                 self.bosses.add_bar(&bar, name);
                 if let Some(b) = self.bosses.bars.get_mut(&bar) {
                     // CustomBossEvents.create: Mth.createInsecureUUID(level.random).
-                    b.uuid = insecure_uuid(&mut self.world.random);
+                    b.uuid = horizon_client::lan::playerdata::ints_uuid(
+                        horizon_client::save::insecure_uuid(&mut self.world.random),
+                    );
                 }
                 let shown = self
                     .bosses
@@ -551,6 +555,20 @@ impl Game<'_> {
                 scope: Scope::Global,
             });
         }
+        // Server mods' bars for this player alone (`native_boss_bar`).
+        for (id, bar) in self.bosses.native.get(&viewer.uuid).into_iter().flatten() {
+            out.push(Offer {
+                id: *id,
+                name: horizon_client::lan::data::component_nbt(&bar.name.component()),
+                progress: bar.progress,
+                color: bar.color,
+                overlay: bar.overlay,
+                darken: bar.darken,
+                music: bar.music,
+                fog: bar.fog,
+                scope: Scope::Global,
+            });
+        }
         if viewer.here
             && let Some(progress) = self.dragon_boss_progress(viewer.at, viewer.alive)
         {
@@ -682,12 +700,6 @@ impl Game<'_> {
     }
 }
 
-/// `Mth.createInsecureUUID`.
-fn insecure_uuid(random: &mut impl RandomSource) -> u128 {
-    let most = random.next_long() & -61441 | 16384;
-    let least = random.next_long() & 4_611_686_018_427_387_903 | i64::MIN;
-    ((most as u64 as u128) << 64) | (least as u64 as u128)
-}
 fn translate_tag(key: &str) -> Tag {
     Tag::compound([("translate", Tag::String(key.into()))])
 }

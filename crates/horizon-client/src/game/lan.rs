@@ -262,6 +262,11 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
+    /// The permission node of each native mod's command that has one
+    /// (`NativeCommand::permission`), in registration order.
+    pub native_command_nodes: Vec<(String, String)>,
+    /// The usages behind them, as the mods registered them.
+    pub native_usages: Vec<horizon_client::mod_api::NativeCommand>,
     /// The players a native mod leaves out of the sleep count when they
     /// aren't in bed (`native_sleep_ignored`).
     pub sleep_ignored: std::collections::HashSet<u128>,
@@ -1247,6 +1252,28 @@ fn enforce_guest_game_mode(
 }
 
 impl Game<'_> {
+    /// The level's default point, independently of the acting player's bed or spawnpoint.
+    pub(super) fn world_spawn_position(&self) -> [f64; 3] {
+        self.level
+            .world_spawn
+            .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
+                [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
+            })
+    }
+
+    /// MinecraftServer.setRespawnData: every placed player hears a changed world spawn.
+    pub(super) fn lan_broadcast_world_spawn(&self) {
+        if let Some(host) = &self.lan {
+            for guest in host.hub.guests.iter().filter(|guest| guest.placed) {
+                guest.send(&host.hub.default_spawn(
+                    guest.uuid,
+                    self.world_spawn_position(),
+                    self.level.world_spawn_angle,
+                ));
+            }
+        }
+    }
+
     /// `horizon-ctl lan ...`.
     pub(super) fn lan_control(&mut self, words: &[&str]) -> Result<Option<serde_json::Value>> {
         use serde_json::json;
@@ -1450,6 +1477,8 @@ impl Game<'_> {
             quiet: std::collections::VecDeque::new(),
             far,
             native_commands: None,
+            native_command_nodes: Vec::new(),
+            native_usages: Vec::new(),
             sleep_ignored: Default::default(),
             states: Default::default(),
             states_next_entity: None,
@@ -1750,10 +1779,10 @@ impl Game<'_> {
     /// network player who joined; every statistic goes out on the first
     /// request (`PlayerList.placeNewPlayer`'s `markAllDirty`).
     fn load_guest_records(&mut self, host: &mut LanHost, conn: u32) {
-        let Some(uuid) = host
+        let Some((uuid, name)) = host
             .hub
             .guest(conn)
-            .and_then(|g| self.records_uuid(host, g.uuid))
+            .and_then(|g| Some((self.records_uuid(host, g.uuid)?, g.name.clone())))
         else {
             return;
         };
@@ -1773,8 +1802,13 @@ impl Game<'_> {
             g.advancements = progress;
             g.advancements_loaded = true;
         }
-        let mut stats =
-            super::stats::Stats::read(&super::stats::player_json(&self.world_root, "stats", uuid));
+        // PlayerList.getPlayerStats: locateStatsFile moves an old name-based file first.
+        let mut stats = super::stats::Stats::read(&super::stats::locate_player_json(
+            &self.world_root,
+            "stats",
+            uuid,
+            &name,
+        ));
         stats.mark_all_dirty();
         host.play.entry(conn).or_default().stats = stats;
     }
@@ -1959,6 +1993,8 @@ impl Game<'_> {
             e.on_ground = place.on_ground;
             e.velocity = place.velocity;
             e.needs_sync = m.needs_sync;
+            e.sync_position = m.sync_position;
+            e.stepped = true;
             (e.idle, e.bare) = (idle, bare);
             e.leash = leash;
             if bare {
@@ -2082,12 +2118,16 @@ impl Game<'_> {
                 }
                 HostEvent::Joined(conn) => {
                     // The mods may refuse the login before the player is placed.
-                    if let Some((uuid, name)) =
-                        host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+                    if let Some((uuid, name, permission)) = host
+                        .hub
+                        .guest(conn)
+                        .map(|g| (g.uuid, g.name.clone(), g.permission))
                     {
                         let mut cancel = false;
                         let mut reason = None;
+                        self.native_login_permission = Some((uuid, permission));
                         self.native_player_login(uuid, &name, &mut cancel, &mut reason);
+                        self.native_login_permission = None;
                         if cancel {
                             let reason = match reason {
                                 Some(text) => {
@@ -2101,6 +2141,19 @@ impl Game<'_> {
                             host.hub.kick(conn, reason);
                             continue;
                         }
+                    }
+                    // PlayerList.placeNewPlayer: the name the user cache knew,
+                    // before it learns this one, for a renamed player's join line.
+                    let mut renamed = None;
+                    if self.options.dedicated.is_some()
+                        && let Some((uuid, name)) =
+                            host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+                        && let Some(old) = super::dedicated::cached_user_by_id(uuid)
+                    {
+                        if !old.name.eq_ignore_ascii_case(&name) {
+                            renamed = Some(old.name.clone());
+                        }
+                        host.hub.former_names.insert(uuid, old.name);
                     }
                     self.lan_guest_joined(&mut host, conn, entities, spawn);
                     if self.options.dedicated.is_some()
@@ -2133,6 +2186,15 @@ impl Game<'_> {
                                 "INFO",
                                 &horizon_client::lan::arrivals::held_line(&g.name),
                             );
+                        } else if let Some(old) = renamed {
+                            let line = Text::translate(
+                                "multiplayer.player.joined.renamed",
+                                &[Text::literal(g.name.clone()), Text::literal(old)],
+                            );
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {}", line.plain()),
+                            );
                         } else {
                             super::dedicated::log(
                                 "INFO",
@@ -2158,6 +2220,8 @@ impl Game<'_> {
                     {
                         self.lan = Some(host);
                         self.native_player_logged_in(uuid, &name);
+                        // What the client said in its configuration (native_packets.rs).
+                        self.configuration_heard(uuid, &name);
                         // A hook's command can close the hub.
                         host = self.lan.take()?;
                     }
@@ -2172,6 +2236,11 @@ impl Game<'_> {
                             let conn = guest.conn;
                             let at = host.hub.guests.len();
                             host.hub.guests.push(*guest);
+                            // Bukkit's PlayerQuitEvent: the mods hear them leave while
+                            // they are still here.
+                            if !host.players_told_left {
+                                host = self.tell_mods_logging_out(host, conn)?;
+                            }
                             self.guest_disconnected(&mut host, conn);
                             *guest = host.hub.guests.remove(at);
                         }
@@ -2318,6 +2387,9 @@ impl Game<'_> {
                         host = self.lan.take().expect("the hub is back after the commands");
                     }
                 }
+                HostEvent::Jump { conn, from, yaw } => {
+                    self.guest_jump(&mut host, conn, from, yaw);
+                }
             }
         }
         note_event(&host, previous, &mut timings);
@@ -2343,7 +2415,7 @@ impl Game<'_> {
         // Last tick's tracked entities: enough for place collision and joins
         // before this tick moves anyone.
         let entities = std::mem::take(&mut host.states);
-        let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
+        let spawn = self.world_spawn_position();
         let events = {
             let clock_rate = self.network_clock_rate();
             let mut ctx = TickCtx {
@@ -2351,6 +2423,7 @@ impl Game<'_> {
                 entities: entities.as_slice(),
                 next_entity: &mut self.next_entity,
                 spawn,
+                spawn_angle: self.level.world_spawn_angle,
                 difficulty: i32::from(self.ui.difficulty),
                 difficulty_locked: self.level.difficulty_locked,
                 clock_rate,
@@ -2401,13 +2474,21 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
                 .lan
                 .take()
                 .expect("the hub is back after the menu events");
+        }
+        if !self.native_moves.is_empty() {
+            self.lan = Some(host);
+            horizon_client::spans::time("lan_native_moves", || self.run_native_moves());
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the mods' moves");
         }
         host.states = entities;
         self.level_pass.packets_drained = true;
@@ -2546,6 +2627,7 @@ impl Game<'_> {
         // What the tick sends a guest goes to its connection at the end.
         let holding = lan::Holding::start();
         self.register_native_commands(&mut host);
+        self.resend_native_trees(&mut host);
         // The host's own commands' (and command blocks') players moving
         // to another level, and their broadcastToAdmins lines.
         if !self.level_teleports.is_empty() {
@@ -2588,13 +2670,7 @@ impl Game<'_> {
             let mut states = std::mem::take(&mut host.states);
             if has_guests {
                 self.lan_assign_ids();
-                let guests: Vec<(u32, i32)> = host
-                    .hub
-                    .guests
-                    .iter()
-                    .filter_map(|g| Some((g.vehicle?, g.entity_id)))
-                    .collect();
-                self.lan_riding(&guests, &mut host.hub.riding);
+                self.lan_riding(&host.hub.guests, &mut host.hub.riding);
                 // Idle states are kept only when the players' moves are in:
                 // the clients that could pair are known. The range scale is
                 // the one the tracker gets below.
@@ -2634,8 +2710,10 @@ impl Game<'_> {
                 }
             }
             // ServerEntity.sendChanges clears needsSync once it has looked.
+            // SteppedInterpolationTracker.updateTracking clears syncPosition.
             for m in &mut self.mobs {
                 m.needs_sync = false;
+                m.sync_position = false;
             }
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;
@@ -2671,7 +2749,7 @@ impl Game<'_> {
                 host.hub.entity_event(id, event, at);
             }
             host.hub.far_level(&self.save);
-            let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
+            let spawn = self.world_spawn_position();
             let events = {
                 let clock_rate = self.network_clock_rate();
                 let mut ctx = TickCtx {
@@ -2679,6 +2757,7 @@ impl Game<'_> {
                     entities,
                     next_entity: &mut self.next_entity,
                     spawn,
+                    spawn_angle: self.level.world_spawn_angle,
                     difficulty: i32::from(self.ui.difficulty),
                     difficulty_locked: self.level.difficulty_locked,
                     clock_rate,
@@ -2762,7 +2841,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             self.run_native_menu_events();
             host = self
@@ -2800,6 +2879,7 @@ impl Game<'_> {
         drop(holding);
         self.flush_attachment_sync(&mut host);
         self.flush_native_net(&mut host);
+        self.flush_native_player_fx(&mut host);
         self.flush_far_terrain(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
@@ -2867,6 +2947,27 @@ impl Game<'_> {
             g.food = 20;
             g.dimension = super::Dim::Overworld.id().to_owned();
         }
+        // Spigot's PlayerSpawnLocationEvent: the mods may place them elsewhere.
+        let (mut dimension, mut position, mut rotation) =
+            (g.dimension.clone(), g.position, [g.yaw, g.pitch]);
+        self.native_player_spawn_location(
+            g.uuid,
+            &g.name,
+            &mut dimension,
+            &mut position,
+            &mut rotation,
+        );
+        if dimension != g.dimension && super::Dim::from_id(&dimension).id() == dimension {
+            g.dimension = dimension;
+        }
+        if position != g.position && position.iter().all(|v| v.is_finite()) {
+            g.position = position;
+            g.previous_position = position;
+        }
+        if rotation != [g.yaw, g.pitch] && rotation.iter().all(|v| v.is_finite()) {
+            (g.yaw, g.pitch) = (rotation[0], rotation[1]);
+            g.head_yaw = g.yaw;
+        }
         // A server places each player in their own level (`PlayerList.placeNewPlayer`).
         let back = self.dim;
         let level = super::Dim::from_id(&g.dimension);
@@ -2904,6 +3005,7 @@ impl Game<'_> {
             entities,
             next_entity: &mut self.next_entity,
             spawn,
+            spawn_angle: self.level.world_spawn_angle,
             difficulty: i32::from(self.ui.difficulty),
             difficulty_locked: self.level.difficulty_locked,
             clock_rate,
@@ -3260,13 +3362,7 @@ impl Game<'_> {
                     // then ticks without a player.
                     .map(|chunk| (chunk, 1)),
             )
-            // A portal ticket keeps the area around the exit loaded and
-            // ticking (its entity-ticking chunks and their neighbours).
-            .chain(
-                self.portal_ticket_chunks(self.dim)
-                    .into_iter()
-                    .map(|chunk| (chunk, 1)),
-            )
+            .chain(self.portal_ticket_areas())
             .collect();
     }
 
@@ -3365,6 +3461,7 @@ fn event_kind(event: &HostEvent) -> EventKind {
         HostEvent::Joined(c) => ("join", Some(*c), None),
         HostEvent::Left(g) => ("leave", None, Some(g.name.clone())),
         HostEvent::Packet(c, p) => (p.name(), Some(*c), None),
+        HostEvent::Jump { conn, .. } => ("jump", Some(*conn), None),
         HostEvent::MainHandChanged(c, _) => ("main hand", Some(*c), None),
         HostEvent::LocaleChanged(c, _) => ("locale", Some(*c), None),
         HostEvent::PlayerLoaded(c) => ("loaded", Some(*c), None),
@@ -3549,6 +3646,150 @@ mod tests {
     }
     use horizon_client::mobs::Mob;
     use horizon_protocol::entity_data::{Value, serializer};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn guest_climbable_glide() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest};
+        use horizon_client::motion::MotionWorld;
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res = Box::leak(Box::new(loaded.resources));
+        let mut game = super::Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let render = game.pack.assets.reload(&root).unwrap();
+        game.world =
+            horizon_client::world::World::test_scene(&game.pack.assets, &render, 2).unwrap();
+
+        let sync = Arc::new(horizon_client::lan::data::SyncData::empty());
+        let net = NetConfig {
+            listen: false,
+            ..NetConfig::loopback(0, String::new(), 2)
+        };
+        let lan = horizon_client::lan::Lan::start_with(sync.clone(), net).unwrap();
+        let encoder = horizon_client::lan::chunks::ChunkEncoder::new(
+            [] as [(Arc<str>, bool); 0],
+            &horizon_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+        );
+        let config = horizon_client::lan::hub::HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 10,
+            simulation_distance: 10,
+            dimension: "minecraft:overworld".into(),
+            allow_flight: false,
+            seed: 0,
+            max_players: 20,
+            integrated: true,
+            levels: Default::default(),
+        };
+        let mut hub = horizon_client::lan::hub::Hub::new(lan, sync, encoder, config);
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 1,
+                uuid: 1,
+                name: "Test".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(8),
+                brand: String::new(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:1".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            1,
+            [0.5, 4.0, 0.5],
+            8,
+        );
+        guest.placed = true;
+        guest.dimension = "minecraft:overworld".into();
+        hub.guests.push(guest);
+        let mut host = super::LanHost {
+            hub,
+            players_told_left: false,
+            settings: super::LanSettings {
+                port: 0,
+                guest_commands: false,
+                force_game_mode: false,
+            },
+            play: Default::default(),
+            broken: Default::default(),
+            mob_state: Default::default(),
+            poses: Default::default(),
+            mob_players: Default::default(),
+            owner: None,
+            waypoints: Default::default(),
+            waypoint_dead: Default::default(),
+            border_sent: None,
+            commands: Default::default(),
+            quiet: Default::default(),
+            far: None,
+            native_commands: None,
+            native_command_nodes: Vec::new(),
+            native_usages: Vec::new(),
+            sleep_ignored: Default::default(),
+            states: Default::default(),
+            states_next_entity: None,
+            idle_states: Default::default(),
+        };
+        for (block, expected) in [
+            ("minecraft:ladder", false),
+            ("minecraft:scaffolding", false),
+            ("minecraft:vine", true),
+        ] {
+            let state = game.pack.assets.registry.default_state(block).unwrap();
+            game.world.set(0, 4, 0, state).unwrap();
+            host.hub.guests[0].fall_flying = true;
+            game.as_guest(&mut host, 1, |game| {
+                let player = game.player.as_mut().unwrap();
+                MotionWorld {
+                    entities: &[],
+                    player,
+                    scene: &mut game.world,
+                    assets: &game.pack.assets,
+                    collision_binding: game.collision,
+                    resources: game.motion,
+                    health: &game.health_resources,
+                }
+                .server_travel()
+                .unwrap();
+            })
+            .unwrap();
+            assert_eq!(host.hub.guests[0].fall_flying, expected, "{block}");
+        }
+    }
 
     #[test]
     #[ignore = "requires prepared vanilla resources"]
@@ -3977,6 +4218,268 @@ mod tests {
             [
                 "mainhand", "offhand", "head", "chest", "legs", "feet", "body", "saddle"
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod world_spawn_sync_tests {
+    use super::*;
+    use horizon_client::lan::{Joined, Out, PlayerSender, guest::Guest};
+    use horizon_protocol::packets::play::{self, Clientbound as C};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn host(game: &mut Game<'_>) -> mpsc::Receiver<Out> {
+        game.lan_host(
+            LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                listen: false,
+                announce: false,
+                ..NetConfig::loopback(0, String::new(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 20,
+                integrated: true,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 1,
+                uuid: 1,
+                name: "SpawnTest".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(2),
+                brand: String::new(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:1".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            1,
+            [0.5, 80.0, 0.5],
+            2,
+        );
+        guest.placed = true;
+        guest.dimension = "minecraft:the_nether".into();
+        game.lan.as_mut().unwrap().hub.guests.push(guest);
+        rx
+    }
+
+    fn spawns(rx: &mpsc::Receiver<Out>) -> Vec<play::SetDefaultSpawnPosition> {
+        rx.try_iter()
+            .flat_map(|out| match out {
+                Out::Packet(body) => vec![body],
+                Out::Packets(bodies) => bodies,
+                Out::Disconnect(_) => panic!("unexpected disconnect"),
+            })
+            .filter_map(|body| {
+                let mut r = horizon_protocol::buf::Reader::new(&body);
+                let id = r.varint().unwrap();
+                match C::decode(id, r.rest()).unwrap() {
+                    C::SetDefaultSpawnPosition(p) => Some(p),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn join_and_respawn_contexts_use_world_spawn_not_a_personal_spawn() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.level.world_spawn = Some([100, 140, -20]);
+        game.spawn = Some(horizon_core::geometry::Vec3::new(96.5, 145.0, -31.5));
+        let ctx = game.server_ctx();
+        let block = ctx.spawn.map(|v| v.floor() as i32);
+        println!(
+            "world-spawn\tcontext\tminecraft:overworld\t{}\t{}\t{}",
+            block[0], block[1], block[2]
+        );
+        assert_eq!(ctx.spawn, [100.5, 140.0, -19.5]);
+        game.level.world_spawn_angle = [45.0, -10.0];
+        assert_eq!(game.server_ctx().spawn_angle, [45.0, -10.0]);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn setworldspawn_reaches_guests_in_other_dimensions_and_keeps_compass_overrides() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.level.world_spawn = None;
+        let personal = horizon_core::geometry::Vec3::new(96.5, 145.0, -31.5);
+        game.spawn = Some(personal);
+        for (x, z) in [(6, -2), (-1, 0)] {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(horizon_client::chunk::Chunk::empty(x, z)));
+        }
+        let rx = host(&mut game);
+        // Materializing the effective fallback does not change the packet data.
+        game.as_console(|game| assert!(game.run_command("setworldspawn 0 80 0")));
+        assert!(spawns(&rx).is_empty());
+        game.as_console(|game| assert!(game.run_command("setworldspawn 100 140 -20")));
+        assert_eq!(
+            game.spawn,
+            Some(personal),
+            "a personal respawn point stays personal"
+        );
+        let sent = spawns(&rx);
+        assert_eq!(
+            sent.len(),
+            1,
+            "a placed Nether guest must hear the world spawn change"
+        );
+        assert_eq!(sent[0].pos.dimension, "minecraft:overworld");
+        assert_eq!(sent[0].pos.pos, [100, 140, -20]);
+        println!(
+            "world-spawn\tchanged\t{}\t{}\t{}\t{}",
+            sent[0].pos.dimension, sent[0].pos.pos[0], sent[0].pos.pos[1], sent[0].pos.pos[2]
+        );
+        game.as_console(|game| assert!(game.run_command("setworldspawn 100 140 -20")));
+        assert!(
+            spawns(&rx).is_empty(),
+            "unchanged respawn data is not broadcast again"
+        );
+        let target = play::GlobalPos {
+            dimension: "minecraft:the_end".into(),
+            pos: [9, 70, -4],
+        };
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .compass_targets
+            .insert(1, target.clone());
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].pos.dimension, target.dimension);
+        assert_eq!(sent[0].pos.pos, target.pos);
+        println!(
+            "world-spawn\toverride\t{}\t{}\t{}\t{}",
+            sent[0].pos.dimension, sent[0].pos.pos[0], sent[0].pos.pos[1], sent[0].pos.pos[2]
+        );
+        game.lan.as_mut().unwrap().hub.compass_targets.clear();
+        // Rotation alone is a changed RespawnData, even at the same block.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 45 -10")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].pos.pos, [-7, 90, 12]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, -10.0]);
+        println!(
+            "world-spawn\tangle\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 45 -10")));
+        assert!(spawns(&rx).is_empty());
+        // RespawnData.of wraps yaw and clamps pitch before storing or comparing.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 405 100")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(game.level.world_spawn_angle, [45.0, 90.0]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, 90.0]);
+        println!(
+            "world-spawn\tnormalized\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+        for command in [
+            "setworldspawn -7 90 12 45 90",
+            "setworldspawn -7 90 12 405 100",
+        ] {
+            game.as_console(|game| assert!(game.run_command(command)));
+            assert!(
+                spawns(&rx).is_empty(),
+                "equivalent normalized rotations are unchanged"
+            );
+        }
+        // Clamp raw pitch: wrapping -270 first would incorrectly produce +90.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 405 -270")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(game.level.world_spawn_angle, [45.0, -90.0]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, -90.0]);
+        println!(
+            "world-spawn\tclamped\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn guest_respawn_without_a_known_world_spawn_never_advertises_the_hosts_personal_point() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.level.world_spawn = None;
+        game.level.world_spawn_angle = [45.0, -10.0];
+        let host_personal = horizon_core::geometry::Vec3::new(96.5, 145.0, -31.5);
+        let guest_personal = [5.5, 81.0, 5.5];
+        game.spawn = Some(host_personal);
+        let rx = host(&mut game);
+        let mut host = game.lan.take().unwrap();
+        let guest = &mut host.hub.guests[0];
+        guest.dimension = "minecraft:overworld".into();
+        guest.spawn = Some(guest_personal);
+        guest.health = 0.0;
+        guest.dead = true;
+        guest.loaded = true;
+        game.guest_respawn(&mut host, 1);
+        let guest = &host.hub.guests[0];
+        assert_eq!(
+            guest.position, guest_personal,
+            "the guest's landing stays personal"
+        );
+        assert!(!guest.dead);
+        assert_eq!(game.spawn, Some(host_personal));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 2, "respawn and level info both send world data");
+        for point in &sent {
+            assert_eq!(point.pos.dimension, "minecraft:overworld");
+            assert_eq!(
+                point.pos.pos,
+                [0, 80, 0],
+                "the host's personal point is not world data"
+            );
+            assert_eq!([point.yaw, point.pitch], [45.0, -10.0]);
+        }
+        println!(
+            "world-spawn\trespawn\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
         );
     }
 }

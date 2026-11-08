@@ -53,6 +53,10 @@ impl ModifiedChunks {
     pub fn drain(&mut self) -> impl Iterator<Item = Key> + '_ {
         self.dirty.drain()
     }
+    /// Like `drain`: queue entries of chunks no longer dirty go at the next eager pass.
+    pub fn clear(&mut self) {
+        self.dirty.clear();
+    }
     /// `ChunkMap.scheduleUnload`: forget the cooldown, including clean chunks.
     pub fn unloaded(&mut self, key: &Key) {
         self.next_save.remove(key);

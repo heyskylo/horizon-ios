@@ -65,7 +65,8 @@ The opening, then Play ([clip](docs/opening.webm)):
   modpack goes to the Modpacks page; installed packs show their source and checksum, with Update,
   **Update all** and Remove ([docs/mod-browser.md](../docs/mod-browser.md)).
 - **Modpacks**: import a Java modpack (a Modrinth `.mrpack`, a CurseForge zip, or a Prism,
-  MultiMC or CurseForge instance folder) and see its coverage report: per mod, ported, partial,
+  MultiMC or CurseForge instance folder; the page lists the ones other launchers keep on this
+  computer, each a click away) and see its coverage report: per mod, ported, partial,
   not yet or not needed, with the reason ([docs/modpacks.md](../docs/modpacks.md)). **Port**
   gets the jars of what this computer can port today (content mods with data and assets only)
   the player's own way: copied from a folder they have, or downloaded from the pack's own links
@@ -286,9 +287,10 @@ page `servers.json` (the list), `servers/<name>/` (the servers created there) an
 Long pages, dialogs, the server console and data previews have a visible scrollbar when
 their content overflows. Drag the thumb or click the track to navigate without a mouse wheel.
 
-Pages and Home's landscape fill the window as it resizes. Windows uses a matching title
-bar with native dragging, resizing, Snap,
-minimize, maximize/restore and close; macOS and Linux keep their system title bars.
+Pages and Home's landscape fill the window as it resizes. The title bar is transparent over the
+launcher on every platform: Windows keeps native dragging, resizing, Snap, minimize,
+maximize/restore and close; Linux keeps the same controls in its client-side title bar, while
+macOS keeps its native traffic-light controls.
 
 ## Updates
 

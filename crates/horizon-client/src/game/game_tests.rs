@@ -12,6 +12,7 @@
 //! `all_of`, and removing the entities of a finished test.
 use super::{
     Dim, Game,
+    commands::{Target, execute::Source},
     structure_blocks::template_size,
     test_entities::{aabb_of, inflate},
     test_environments::Activation,
@@ -286,16 +287,22 @@ pub(super) struct RunnerOptions {
     clear_between_batches: bool,
     grid_for_existing: bool,
     grid: Option<Grid>,
+    /// `trackAndStartRunner`'s source is the command's own, not the
+    /// server's (`TestInstanceBlockEntity.runTest`).
+    from_command: bool,
+    summary_source: Option<SummarySource>,
 }
 
 impl RunnerOptions {
-    pub(super) fn new(halt_on_error: bool, grid: Option<Grid>) -> Self {
+    pub(super) fn new(halt_on_error: bool, grid: Option<Grid>, from_command: bool) -> Self {
         Self {
             halt_on_error,
             batch_size: 50,
             clear_between_batches: false,
             grid_for_existing: false,
             grid,
+            from_command,
+            summary_source: None,
         }
     }
 
@@ -308,6 +315,8 @@ impl RunnerOptions {
             clear_between_batches: true,
             grid_for_existing: true,
             grid: Some(grid),
+            from_command: true,
+            summary_source: None,
         }
     }
 }
@@ -423,6 +432,16 @@ struct Runner {
     scheduled: Vec<Info>,
     /// `stopped`: no batch is running.
     stopped: bool,
+    summary_source: Option<SummarySource>,
+    summary_dimensions: Vec<Dim>,
+}
+
+/// The command stack and its output source are different: `execute as`
+/// changes the actor, while the player who issued the command receives it.
+#[derive(Clone, Copy)]
+struct SummarySource {
+    source: Source,
+    recipient: Option<Target>,
 }
 
 /// `StructureGridSpawner.DimensionGridState`.
@@ -481,9 +500,50 @@ impl Grid {
 enum Out {
     /// `sendSuccess(.., broadcast)`, `sendFailure` or `sendSystemMessage` of
     /// the server's command source.
-    Console { text: Text, broadcast: bool },
+    Console {
+        text: Text,
+        broadcast: bool,
+    },
     /// `ReportGameListener.say`: every player gets it.
     Players(Text),
+    Source {
+        context: SummarySource,
+        text: Text,
+        broadcast: bool,
+    },
+    Coordinates(SummarySource, Vec<Dim>),
+}
+
+fn summary_line(context: Option<SummarySource>, text: Text, broadcast: bool) -> Out {
+    match context {
+        Some(context) => Out::Source {
+            context,
+            text,
+            broadcast,
+        },
+        None => Out::Console { text, broadcast },
+    }
+}
+
+/// `ComponentUtils.wrapInSquareBrackets` for the summary's coordinate links.
+/// The locate/pos link helpers have their own existing representation.
+fn summary_coordinates(key: &str, at: [i32; 3], dim: Dim, rotation: [i32; 2], color: u32) -> Text {
+    use horizon_client::text::{ClickEvent, Style};
+    let mut args: Vec<_> = at.into_iter().map(number).collect();
+    args.push(Text::literal(dim.id().split_once(':').unwrap().1));
+    Text::translate("chat.square_brackets", &[Text::translate(key, &args)]).with_style(&Style {
+        click: Some(ClickEvent::SuggestCommand(format!(
+            "/execute in {} run tp @s {} {} {} {} {}",
+            dim.id(),
+            at[0],
+            at[1],
+            at[2],
+            rotation[0],
+            rotation[1]
+        ))),
+        hover: Some(Box::new(Text::translate("chat.coordinates.tooltip", &[]))),
+        ..Style::color(color)
+    })
 }
 
 /// `GameTestTicker.SINGLETON` and the runner it holds, `FailedTestTracker`.
@@ -497,6 +557,9 @@ pub(super) struct GameTests {
     /// `FailedTestTracker.LAST_FAILED_TESTS`.
     pub(super) failed: Vec<String>,
     outbox: Vec<Out>,
+    /// The command that starts the runner is still running: its source takes
+    /// `TestBatchSummaryDisplayer`'s lines then and there.
+    command_start: bool,
     /// `GameTestRunner.currentEnvironment`.
     environment: Option<Activation>,
 }
@@ -521,6 +584,29 @@ impl GameTests {
 }
 
 impl Game<'_> {
+    /// `TestCommand.trackAndStartRunner`: command summaries retain their
+    /// original source. Test-block actions and verify keep their existing path.
+    pub(super) fn track_and_start_command_runner(&mut self, infos: Vec<Info>, grid: Grid) {
+        let mut source = self.command_source.unwrap_or_else(|| self.player_source());
+        let recipient = if self.console_broadcast.is_some() {
+            None
+        } else {
+            self.lan_acting
+                .map(Target::Guest)
+                .or_else(|| self.player.as_ref().map(|_| Target::Player))
+        };
+        if source.entity == Some(Target::Player)
+            && let Some(conn) = self.lan_acting
+        {
+            source.entity = Some(Target::Guest(conn));
+        }
+        let mut options = RunnerOptions::new(false, Some(grid), true);
+        // Block/cart output destinations retain the previous path; they are
+        // not player/console command-response recipients in this slice.
+        options.summary_source = (source.block.is_none() && source.cart.is_none())
+            .then_some(SummarySource { source, recipient });
+        self.track_and_start_batches(batch_infos(infos, 50), options);
+    }
     // ---- GameTestRunner / GameTestTicker ----
 
     /// `GameTestTicker.clear`: a pass in progress halts at its end.
@@ -544,9 +630,13 @@ impl Game<'_> {
         infos: Vec<Info>,
         halt_on_error: bool,
         grid: Option<Grid>,
+        from_command: bool,
     ) {
         let batches = batch_infos(infos, 50);
-        self.track_and_start_batches(batches, RunnerOptions::new(halt_on_error, grid));
+        self.track_and_start_batches(
+            batches,
+            RunnerOptions::new(halt_on_error, grid, from_command),
+        );
     }
 
     /// `TestCommand.trackAndStartRunner` for batches already made.
@@ -575,8 +665,13 @@ impl Game<'_> {
             reports: Vec::new(),
             scheduled: Vec::new(),
             stopped: false,
+            summary_source: options.summary_source,
+            summary_dimensions: Vec::new(),
         });
+        // GameTestRunner.start runs the first batch inside the command.
+        self.game_tests.command_start = options.from_command;
         self.run_batch(0);
+        self.game_tests.command_start = false;
     }
 
     /// `GameTestRunner.runBatch`.
@@ -654,13 +749,20 @@ impl Game<'_> {
             }
             None => log::error!("Missing test environment {environment}"),
         }
-        self.game_tests.outbox.push(Out::Console {
-            text: Text::translate(
-                "commands.test.batch.starting",
-                &[Text::literal(environment), number(batch_number)],
-            ),
-            broadcast: true,
-        });
+        // TestBatchSummaryDisplayer.testBatchStarting: `sendSuccess(.., true)`
+        // to the source that started the runner.
+        let starting = Text::translate(
+            "commands.test.batch.starting",
+            &[Text::literal(environment), number(batch_number)],
+        );
+        if self.game_tests.command_start {
+            self.feedback(starting);
+        } else {
+            self.game_tests.outbox.push(Out::Console {
+                text: starting,
+                broadcast: true,
+            });
+        }
         if let Some(runner) = self.game_tests.runner.as_mut() {
             runner.batch_pending = spawned.len();
             runner.last_batch = spawned.iter().map(|i| (i.dim, i.pos)).collect();
@@ -1258,6 +1360,9 @@ impl Game<'_> {
         if let Some(t) = tracked {
             t.done = true;
             t.failed = !passed;
+            if !runner.summary_dimensions.contains(&info.dim) {
+                runner.summary_dimensions.push(info.dim);
+            }
         }
         let all_done = counted && runner.tracked.iter().all(|t| t.done);
         let total = runner.tracked.len();
@@ -1273,36 +1378,44 @@ impl Game<'_> {
             .count();
         let halt = runner.halt_on_error;
         if all_done {
+            let context = runner.summary_source;
             let out = &mut self.game_tests.outbox;
-            out.push(Out::Console {
-                text: Text::translate("commands.test.summary", &[number(total as i32)])
+            out.push(summary_line(
+                context,
+                Text::translate("commands.test.summary", &[number(total as i32)])
                     .with_color(text::WHITE),
-                broadcast: true,
-            });
+                true,
+            ));
             if failed_required > 0 {
-                out.push(Out::Console {
-                    text: Text::translate(
+                out.push(summary_line(
+                    context,
+                    Text::translate(
                         "commands.test.summary.failed",
                         &[number(failed_required as i32)],
                     )
                     .with_color(text::RED),
-                    broadcast: false,
-                });
+                    false,
+                ));
             } else {
-                out.push(Out::Console {
-                    text: Text::translate("commands.test.summary.all_required_passed", &[])
+                out.push(summary_line(
+                    context,
+                    Text::translate("commands.test.summary.all_required_passed", &[])
                         .with_color(text::GREEN),
-                    broadcast: true,
-                });
+                    true,
+                ));
             }
             if failed_optional > 0 {
-                out.push(Out::Console {
-                    text: Text::translate(
+                out.push(summary_line(
+                    context,
+                    Text::translate(
                         "commands.test.summary.optional_failed",
                         &[number(failed_optional as i32)],
                     ),
-                    broadcast: false,
-                });
+                    false,
+                ));
+            }
+            if let Some(context) = context {
+                out.push(Out::Coordinates(context, runner.summary_dimensions.clone()));
             }
         }
         // FailedTestTracker.rememberFailedTest
@@ -1457,24 +1570,23 @@ impl Game<'_> {
     fn flush_game_test_output(&mut self) {
         for out in std::mem::take(&mut self.game_tests.outbox) {
             match out {
-                Out::Console { text, broadcast } => {
-                    let plain = text.plain();
-                    if self.options.dedicated.is_some() {
-                        super::dedicated::log("INFO", &plain);
-                    } else {
-                        log::info!("{plain}");
+                Out::Console { text, broadcast } => self.test_console_output(text, broadcast),
+                Out::Source {
+                    context,
+                    text,
+                    broadcast,
+                } => {
+                    self.test_source_output(context, text, broadcast);
+                }
+                Out::Coordinates(context, dimensions) => {
+                    if let Some(Target::Guest(conn)) = context.recipient
+                        && self.command_guest(conn).is_none()
+                    {
+                        continue;
                     }
-                    if broadcast {
-                        // CommandSourceStack.broadcastToAdmins as the server.
-                        self.console_broadcast = Some(true);
-                        self.broadcast_to_admins(text);
-                        self.console_broadcast = None;
-                        if let Some(mut host) = self.lan.take() {
-                            self.send_admin_feedback(&mut host, None);
-                            self.lan = Some(host);
-                        }
-                        self.admin_feedback.clear();
-                    }
+                    self.with_source(context.source, |g| {
+                        g.output_test_summary_coordinates(context, &dimensions)
+                    });
                 }
                 Out::Players(text) => {
                     if let Some(host) = self.lan.as_ref() {
@@ -1485,6 +1597,121 @@ impl Game<'_> {
                     }
                 }
             }
+        }
+    }
+
+    fn test_console_output(&mut self, text: Text, broadcast: bool) {
+        let plain = text.plain();
+        if self.options.dedicated.is_some() {
+            super::dedicated::log("INFO", &plain);
+        } else {
+            log::info!("{plain}");
+        }
+        if broadcast {
+            // CommandSourceStack.broadcastToAdmins as the server.
+            self.console_broadcast = Some(true);
+            self.broadcast_to_admins(text);
+            self.console_broadcast = None;
+            if let Some(mut host) = self.lan.take() {
+                self.send_admin_feedback(&mut host, None);
+                self.lan = Some(host);
+            }
+            self.admin_feedback.clear();
+        }
+    }
+
+    /// `TestSummaryDisplayer`: feedback uses the original issuer, without
+    /// executing another command or invoking the command's result callbacks.
+    fn test_source_output(&mut self, context: SummarySource, text: Text, broadcast: bool) {
+        if let Some(recipient) = context.recipient {
+            let delivered = self.for_player(recipient, |g| {
+                g.with_source(context.source, |g| {
+                    if broadcast {
+                        g.feedback(text);
+                    } else {
+                        g.feedback_unbroadcast(text);
+                    }
+                });
+            });
+            if delivered.is_some()
+                && let Some(mut host) = self.lan.take()
+            {
+                let issuer = match recipient {
+                    Target::Guest(conn) => Some(conn),
+                    _ => None,
+                };
+                self.send_admin_feedback(&mut host, issuer);
+                self.lan = Some(host);
+            }
+        } else if !context.source.silent {
+            self.with_source(context.source, |g| {
+                let previous = g.console_broadcast;
+                g.test_console_output(text, broadcast);
+                g.console_broadcast = previous;
+            });
+        }
+    }
+
+    /// `TestCommand.outputPlayerCoordinates` / `outputTestCoordinates` after
+    /// the summary. Surface reads reuse the existing test-position helper,
+    /// including its missing-chunk policy; this is not a new loading policy.
+    fn output_test_summary_coordinates(&mut self, context: SummarySource, dimensions: &[Dim]) {
+        if let Some(Target::Guest(conn)) = context.recipient
+            && self.command_guest(conn).is_none()
+        {
+            return;
+        }
+        let player = context
+            .source
+            .entity
+            .filter(|target| target.is_player())
+            .and_then(|target| {
+                self.target_position(target)
+                    .map(|pos| (pos, self.target_level(target), self.target_rotation(target)))
+            });
+        if player.is_some_and(|(_, dim, _)| {
+            dimensions.len() <= 1
+                && dimensions.contains(&dim)
+                && dimensions.contains(&Dim::Overworld)
+        }) {
+            return;
+        }
+        if let Some((pos, dim, rotation)) = player {
+            self.test_source_output(
+                context,
+                summary_coordinates(
+                    "test.player.coordinates",
+                    pos.map(|v| v.floor() as i32),
+                    dim,
+                    rotation.map(|v| v.floor() as i32),
+                    text::GOLD,
+                ),
+                false,
+            );
+        }
+        let pos = player
+            .map_or(context.source.pos, |(pos, _, _)| pos)
+            .map(|v| v.floor() as i32);
+        for &dim in dimensions {
+            let back = self.enter_command_level(dim);
+            if self.dim != dim {
+                continue;
+            }
+            let y = self.test_position_in_level((pos[0], pos[2])).1;
+            if let Some(back) = back {
+                self.enter_command_level(back);
+            }
+            self.test_source_output(
+                context,
+                summary_coordinates(
+                    "test.run.coordinates",
+                    [pos[0], y, pos[2]],
+                    dim,
+                    [0, 0],
+                    text::YELLOW,
+                ),
+                false,
+            );
         }
     }
 }
@@ -1648,3 +1875,105 @@ mod tests {
         assert_eq!(reports, vec![(1, 1, 1)]);
     }
 }
+
+#[cfg(test)]
+mod completed_test_coordinate_feedback_tests {
+    use super::*;
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_completed_test_retains_player_source_for_coordinate_feedback() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.level.player_uuid = Some([0, 0, 0, 77]);
+        game.level.health = 20.0;
+        let uuid = game.acting_player_uuid();
+        assert_eq!(uuid, [0, 0, 0, 77]);
+        assert_eq!(game.level.health, 20.0);
+        for dimension in [Dim::Overworld, Dim::Nether] {
+            game.enter_command_level(dimension);
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            game.block_ticks
+                .add_empty_chunk(horizon_core::position::BlockPos::new(0, 0, 0).chunk())
+                .unwrap();
+            assert!(game.run_command("forceload add 0 0"));
+            assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+            assert_eq!(
+                &*game.res.facts().get(game.world.block(8, 199, 8)).name,
+                "minecraft:stone"
+            );
+        }
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(8.5, 200.0, 8.5)).unwrap());
+        assert_eq!(game.dim, Dim::Nether);
+        let definition = game.test_def("minecraft:always_pass").unwrap();
+        assert_eq!(definition.dimension, "minecraft:overworld");
+        assert!(!definition.block_based);
+        game.chat_capture = Some(Vec::new());
+        assert!(game.run_command("scoreboard objectives add coords dummy"));
+        assert!(game.run_command("scoreboard players set result coords 99"));
+        assert!(game.run_command("scoreboard players set success coords 99"));
+        assert!(game.run_command("execute store result score result coords store success score success coords run test run minecraft:always_pass"));
+        assert!(game.run_command("execute if score result coords matches 1"));
+        assert!(game.run_command("execute if score success coords matches 1"));
+        assert!(
+            game.game_tests
+                .ticker
+                .iter()
+                .any(|i| i.key == "minecraft:always_pass" && i.dim == Dim::Overworld)
+        );
+        let mut messages = Vec::new();
+        // Real registered run, actual test ticker and completion; no injected finish.
+        for _ in 0..8 {
+            game.enter_command_level(Dim::Overworld);
+            game.tick_game_tests();
+            for out in &game.game_tests.outbox {
+                if let Out::Console { text, .. } = out {
+                    messages.push(text.component());
+                }
+            }
+            game.enter_command_level(Dim::Nether);
+        }
+        let runner = game.game_tests.runner.as_ref().unwrap();
+        assert_eq!(runner.tracked.len(), 1);
+        assert!(runner.tracked.iter().all(|t| t.done && !t.failed));
+        messages.extend(
+            game.chat_capture
+                .take()
+                .unwrap()
+                .iter()
+                .map(Text::component),
+        );
+        let debug: Vec<_> = messages.iter().map(|m| format!("{m:?}")).collect();
+        assert!(
+            debug.iter().any(|m| m.contains("commands.test.summary\"")),
+            "actual summary prerequisite: {debug:?}"
+        );
+        assert!(
+            debug
+                .iter()
+                .any(|m| m.contains("commands.test.summary.all_required_passed")),
+            "actual success prerequisite: {debug:?}"
+        );
+        assert_eq!(game.acting_player_uuid(), uuid);
+        assert_eq!(
+            game.player.as_ref().unwrap().position,
+            Vec3::new(8.5, 200.0, 8.5)
+        );
+        assert_eq!(game.dim, Dim::Nether);
+        assert!(
+            debug.iter().any(|m| m.contains("test.player.coordinates"))
+                && debug.iter().any(|m| m.contains("test.run.coordinates")),
+            "completed real test must retain its player's coordinate feedback: {debug:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "test_summary_context_tests.rs"]
+mod added_test_summary_context_tests;

@@ -284,7 +284,23 @@ fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
     let menus = horizon_client::mod_content::menu_types(mods);
     let set = containers::register_mod_menu_types(menus.iter().map(|m| {
         let results = m.results.iter().map(|&r| usize::from(r)).collect();
-        (m.id.clone(), m.slots.into(), m.data_slots.into(), results)
+        let crafting = m.crafting.map(|c| containers::ModCrafting {
+            grid: c.grid.into(),
+            size: c.size.into(),
+            result: c.result.into(),
+        });
+        let links = m.links.map(|l| containers::ModLinks {
+            from: l.from.into(),
+            count: l.count.into(),
+        });
+        (
+            m.id.clone(),
+            m.slots.into(),
+            m.data_slots.into(),
+            results,
+            crafting,
+            links,
+        )
     }));
     if !set
         && containers::mod_menu_types()
@@ -307,13 +323,17 @@ fn build_lists_mods(built: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether the game playing was built with native mods: the launcher writes their ids into
-/// [`BUILD_INFO`] beside the executable, and a release or Nightly has no such file.
+/// Whether the game playing was built with native mods: horizon-mixins applied bundles to its
+/// source (`HORIZON_MIXIN_MODS`, set by the build script from the record it leaves, as with a mod
+/// author's own build that has no [`BUILD_INFO`]), trait mods are installed, or the launcher wrote
+/// their ids into [`BUILD_INFO`] beside the executable. A release or Nightly has none of them.
 pub(super) fn built_with_native_mods() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
-        .is_some_and(|built| build_lists_mods(&built))
+    option_env!("HORIZON_MIXIN_MODS").is_some_and(|mods| !mods.is_empty())
+        || !crate::mod_api::mods().is_empty()
+        || std::env::current_exe()
+            .ok()
+            .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
+            .is_some_and(|built| build_lists_mods(&built))
 }
 
 /// The native mods the launcher built this game with, `id version, id version`, for the crash
@@ -457,6 +477,7 @@ impl Game<'_> {
         }
         horizon_client::gfx::native_render::set_mods_built_in(
             built_with_mods
+                || built_with_native_mods()
                 || self
                     .settings
                     .mods
@@ -644,6 +665,82 @@ pub(super) fn living_mod_types()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sound_mod_dispatch_changes_real_channels_and_cancellation_short_circuits() {
+        use crate::mod_api::{Flow, Hooks, SoundPlayEvent};
+        use horizon_client::sound_engine::{
+            Attenuation, PlayResult, SoundEngine, SoundInstance, test_backend,
+        };
+        use horizon_client::sound_events::SoundRegistry;
+        use horizon_core::random::LegacyRandom;
+        struct First;
+        impl Hooks for First {
+            fn sound_play(&self, event: &mut SoundPlayEvent<'_>) -> Flow {
+                assert_eq!(event.sound.identifier, "test:beep");
+                event.volume *= 0.5;
+                Flow::Continue
+            }
+        }
+        struct Second;
+        impl Hooks for Second {
+            fn sound_play(&self, event: &mut SoundPlayEvent<'_>) -> Flow {
+                assert_eq!(event.volume, 0.4);
+                event.pitch = 2.0;
+                Flow::Continue
+            }
+        }
+        struct Cancel;
+        impl Hooks for Cancel {
+            fn sound_play(&self, _: &mut SoundPlayEvent<'_>) -> Flow {
+                Flow::Cancel
+            }
+        }
+        struct Never;
+        impl Hooks for Never {
+            fn sound_play(&self, _: &mut SoundPlayEvent<'_>) -> Flow {
+                panic!("dispatch after cancellation")
+            }
+        }
+        static MODS: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(First), Box::new(Second)]);
+        static CANCEL: std::sync::LazyLock<Vec<Box<dyn Hooks>>> =
+            std::sync::LazyLock::new(|| vec![Box::new(Cancel), Box::new(Never)]);
+        let mut registry = SoundRegistry::default();
+        registry.add_file("test", br#"{"beep":{"sounds":["beep"]}}"#, &|_, _| true);
+        let mut engine = SoundEngine::new(registry);
+        engine.listening = true;
+        let mut backend = test_backend::Null::default();
+        let instance = || {
+            SoundInstance::new(
+                "test:beep",
+                4,
+                0.8,
+                1.0,
+                LegacyRandom::new(1),
+                false,
+                0,
+                Attenuation::None,
+                [0.0; 3],
+                true,
+            )
+        };
+        engine.set_test_playback_hook(|sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(&MODS, sound, volume, pitch, cancel)
+        });
+        let (id, result) = engine.play_new(instance(), false, &mut backend);
+        assert_eq!(result, PlayResult::Started);
+        let channel = engine.channel(id).unwrap();
+        assert_eq!(backend.volume[&channel], 0.4);
+        assert_eq!(backend.pitch[&channel], 2.0);
+        let notifications = engine.notifications.len();
+        engine.set_test_playback_hook(|sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(&CANCEL, sound, volume, pitch, cancel)
+        });
+        let (_, result) = engine.play_new(instance(), false, &mut backend);
+        assert_eq!(result, PlayResult::NotStarted);
+        assert_eq!(backend.volume.len(), 1);
+        assert_eq!(engine.notifications.len(), notifications);
+    }
     use super::*;
     use std::io::Write;
 
@@ -882,6 +979,7 @@ mod tests {
             std::sync::LazyLock::new(|| vec![Box::new(Guards)]);
         let installed = install(NativeClientHooks {
             menu_slot_rules: |_, _, _, _, _| {},
+            sound_play: |_, _, _, _| {},
             living_heal: |_, _, _| {},
             player_chat: |_, _, _, _, _| {},
             living_breathe: |_, _, _, _, _| {},
@@ -889,8 +987,12 @@ mod tests {
             living_fall: |_, _, _, _, _| {},
             living_jump: |_, _| {},
             register_goals: |mob| dispatch_register_goals(&MODS, mob),
+            player_pre_login: |_, _, _, _| {},
+            player_profile: |_, _, _| {},
             ingredient: |_, _, _| {},
             ingredient_test: |_, _, _, _| {},
+            log_line: |_, _, _, _| {},
+            handshake: |_, _, _, _, _| {},
         });
         assert!(installed.is_ok());
 

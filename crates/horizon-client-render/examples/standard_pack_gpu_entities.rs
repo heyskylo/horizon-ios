@@ -50,10 +50,14 @@ fn pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
     std::fs::create_dir_all(&shaders).unwrap();
     let vertex = "#version 120\nvarying vec2 uv; void main(){gl_Position=ftransform();uv=gl_MultiTexCoord0.xy;}\n";
     let fragment = "#version 120\nuniform int entityId; uniform int blockEntityId; uniform vec4 entityColor; void main(){gl_FragData[0]=vec4(float(entityId)/255.0,entityColor.a,float(blockEntityId)/255.0,1.0);}\n";
+    // The terrain programs keep the load free of "nothing draws it" notes; this
+    // fixture draws no terrain.
     for program in [
         "gbuffers_entities",
         "gbuffers_block",
         "gbuffers_entities_translucent",
+        "gbuffers_terrain",
+        "gbuffers_water",
     ] {
         std::fs::write(shaders.join(format!("{program}.vsh")), vertex).unwrap();
         std::fs::write(
@@ -126,6 +130,8 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         false,
         false,
         true,
+        false,
+        false,
     ))?;
     renderer.resize(320, 180);
     assert!(
@@ -348,6 +354,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         skybox: false,
         end_sky: false,
         end_sky_sprite: None,
+        boss_world_fog: false,
         environment_fog: None,
         water_fog: [0.0; 3],
         fog: None,
@@ -368,6 +375,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: Default::default(),
         entity_motion: &[],
+        entity_motion_posed: &[],
         entity_spans: &[],
         skin: None,
         glowing: &[],

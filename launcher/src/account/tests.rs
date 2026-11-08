@@ -615,20 +615,20 @@ fn a_no_from_the_services_blocks_at_once() {
     assert!(accounts.has_owner(&store));
     assert_eq!(
         launch(&ep, Some("test-client"), &store, &mut accounts).unwrap_err(),
-        NoOwner
+        NoOwner::default()
     );
     // The answer is kept beside the tokens: offline now, it still says no.
     assert!(!kept(&store).owns && !accounts.has_owner(&store));
     assert_eq!(
         launch(&offline(), Some("test-client"), &store, &mut accounts).unwrap_err(),
-        NoOwner
+        NoOwner::default()
     );
     assert_eq!(
-        NoOwner.to_string(),
+        NoOwner::default().to_string(),
         "Sign in with a Microsoft account that owns Minecraft: Java Edition to play."
     );
     assert_eq!(
-        NoOwner::in_window(),
+        NoOwner::default().in_window(),
         "Sign in with a Microsoft account that owns Minecraft: Java Edition to play. Open Settings and sign in under Account."
     );
 }
@@ -722,10 +722,10 @@ fn the_developer_option_off_is_the_owner_gate() {
     assert_eq!(accounts, Accounts::default());
     let (_, ep) = mock(|m| m.owns_game = false);
     let refused = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false);
-    assert_eq!(refused.unwrap_err(), NoOwner);
+    assert_eq!(refused.unwrap_err(), NoOwner::default());
     let mut accounts = signed_in(&store, &secrets("mc-token", true));
     let refused = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false);
-    assert_eq!(refused.unwrap_err(), NoOwner);
+    assert_eq!(refused.unwrap_err(), NoOwner::default());
 }
 
 #[test]
@@ -1241,7 +1241,7 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
     let mut accounts = signed_in(&store, &secrets("mc-token", false));
     assert_eq!(
         java_player_with(&offline(), Some("test-client"), &store, &mut accounts).unwrap_err(),
-        NoOwner.to_string()
+        NoOwner::default().to_string()
     );
 }
 
@@ -1295,7 +1295,11 @@ fn the_secrets_file_keeps_sign_ins_across_starts() {
     // No temporary file left behind.
     assert_eq!(
         files_beside(&path),
-        ["account-secrets.json", "account-secrets.lock"]
+        [
+            "account-secrets.json",
+            "account-secrets.key",
+            "account-secrets.lock"
+        ]
     );
     // Signing the last account out removes the file.
     accounts.remove(&again, UUID).unwrap();
@@ -1316,7 +1320,7 @@ fn a_broken_secrets_file_is_an_error_that_never_shows_it() {
         "[\"leaked-secret\"]",
     ] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let sealed = super::seal(broken.as_bytes()).unwrap();
+        let sealed = store.seal(broken.as_bytes()).unwrap();
         std::fs::write(&path, &sealed).unwrap();
         let said = store.get("a").unwrap_err();
         assert!(!said.contains("leaked-secret"), "{said}");
@@ -1351,6 +1355,58 @@ fn the_secrets_file_is_never_plain_text() {
         assert!(store.set("c", "four").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), other);
     }
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn the_key_takes_the_install_secret_beside_the_file() {
+    let path = secrets_file("install");
+    let store = FileStore::new(path.clone());
+    store.set("a", "kept-secret").unwrap();
+    let secret = path.with_extension("key");
+    assert_eq!(std::fs::read(&secret).unwrap().len(), 32);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&secret).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "only the player reads it");
+    }
+    // The same file in another install's folder, with a secret of its own: unreadable there.
+    let other = secrets_file("install-other");
+    let elsewhere = FileStore::new(other.clone());
+    elsewhere.set("b", "other-secret").unwrap();
+    std::fs::copy(&path, &other).unwrap();
+    let said = elsewhere.get("a").unwrap_err();
+    assert!(said.contains("Remove it and sign in again"), "{said}");
+    // Without its secret, the file can't be read either: no key is left to work out.
+    std::fs::remove_file(&secret).unwrap();
+    assert!(store.get("a").is_err());
+    assert!(!secret.exists(), "a read never makes a new secret");
+    remove_secrets_dir(&path);
+    remove_secrets_dir(&other);
+}
+
+#[test]
+fn a_file_sealed_under_the_old_key_is_read_and_sealed_again() {
+    use chacha20poly1305::{aead::Aead, KeyInit};
+    let path = secrets_file("format1");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // As launchers before format 2 wrote it.
+    let nonce = [7u8; 12];
+    let sealed = chacha20poly1305::ChaCha20Poly1305::new(&super::file_key_v1())
+        .encrypt(&nonce.into(), &b"{\"a\":\"old-secret\"}"[..])
+        .unwrap();
+    std::fs::write(&path, [b"HZSECv1\n".as_slice(), &nonce, &sealed].concat()).unwrap();
+    let store = FileStore::new(path.clone());
+    assert_eq!(store.get("a").unwrap().as_deref(), Some("old-secret"));
+    // Sealed again at once, under the install's secret, and still read.
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.starts_with(b"HZSECv2\n"));
+    assert!(path.with_extension("key").exists());
+    assert_eq!(
+        FileStore::new(path.clone()).get("a").unwrap().as_deref(),
+        Some("old-secret")
+    );
     remove_secrets_dir(&path);
 }
 
@@ -1412,7 +1468,11 @@ fn processes_sharing_the_secrets_file_lose_nothing() {
     assert_eq!(store.get("signed-out").unwrap(), None);
     assert_eq!(
         files_beside(&path),
-        ["account-secrets.json", "account-secrets.lock"]
+        [
+            "account-secrets.json",
+            "account-secrets.key",
+            "account-secrets.lock"
+        ]
     );
     remove_secrets_dir(&path);
 }
@@ -1797,6 +1857,149 @@ fn a_dismissed_prompt_is_asked_once_a_run() {
     assert_eq!(run.get("B").unwrap(), None);
     assert_eq!(keychain.asked(), 1);
     remove_secrets_dir(&path);
+}
+
+/// A keyring that never answers until the test lets it go: a stuck Secret Service daemon
+/// (#12179).
+struct Silent {
+    hung: Arc<Mutex<()>>,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Silent {
+    fn answer(&self) {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        drop(self.hung.lock().unwrap());
+    }
+}
+
+impl SecretStore for Silent {
+    fn get(&self, _: &str) -> Result<Option<String>, String> {
+        self.answer();
+        Ok(None)
+    }
+    fn set(&self, _: &str, _: &str) -> Result<(), String> {
+        self.answer();
+        Ok(())
+    }
+    fn delete(&self, _: &str) -> Result<(), String> {
+        self.answer();
+        Ok(())
+    }
+    fn persistent(&self) -> bool {
+        true
+    }
+}
+
+/// How long the tests' keyrings get: short, the behaviour is the same as with [`KEYCHAIN_WAIT`].
+const SILENT_WAIT: Duration = Duration::from_millis(300);
+
+#[test]
+fn a_keyring_that_never_answers_ends_play_with_what_is_wrong() {
+    let path = secrets_file("silent");
+    let hung = Arc::new(Mutex::new(()));
+    let held = hung.lock().unwrap();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let keyring = Silent {
+        hung: hung.clone(),
+        asked: asked.clone(),
+    };
+    let store = Arc::new(Layered::new(
+        Box::new(Bounded::new(keyring, SILENT_WAIT)),
+        FileStore::new(path.clone()),
+    ));
+    let mut accounts = signed_in(&MemoryStore::default(), &secrets("mc-token", true));
+    let started = Instant::now();
+    // The window's sign-in check at start-up asks first, and holds the account lock meanwhile.
+    let checking = {
+        let store = store.clone();
+        std::thread::spawn(move || session::status_with_progress(store.as_ref(), UUID, &|_| {}))
+    };
+    while asked.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Then Play, behind it.
+    let (done, played) = std::sync::mpsc::channel();
+    {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(launch(
+                &offline(),
+                Some("test-client"),
+                store.as_ref(),
+                &mut accounts,
+            ));
+        });
+    }
+    let refused = played
+        .recv_timeout(Duration::from_secs(10))
+        .expect("Play waited on the keyring forever")
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let status = checking.join().unwrap();
+    assert_eq!(status.state, session::State::Retry);
+    // Not "sign in with an account that owns Minecraft": the player is signed in.
+    let said = format!("Can't read Notch's sign-in: {KEYCHAIN_AWAY}");
+    assert_eq!(refused.keyring.as_deref(), Some(said.as_str()));
+    assert_eq!(
+        (refused.to_string(), refused.in_window()),
+        (said.clone(), said)
+    );
+    // The next start asks the keyring again, and says it didn't answer.
+    let restarted = Layered::new(
+        Box::new(Bounded::new(
+            Silent {
+                hung: hung.clone(),
+                asked: asked.clone(),
+            },
+            SILENT_WAIT,
+        )),
+        FileStore::new(path.clone()),
+    );
+    let mut accounts = signed_in(&MemoryStore::default(), &secrets("mc-token", true));
+    let refused = launch(&offline(), Some("test-client"), &restarted, &mut accounts).unwrap_err();
+    assert_eq!(
+        refused.keyring,
+        Some(format!(
+            "Can't read Notch's sign-in: {}",
+            keyring_no_answer(SILENT_WAIT)
+        ))
+    );
+    drop(held);
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_keyring_given_up_on_is_not_asked_again_until_it_answers() {
+    let hung = Arc::new(Mutex::new(()));
+    let held = hung.lock().unwrap();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let keyring = Bounded::new(
+        Silent {
+            hung: hung.clone(),
+            asked: asked.clone(),
+        },
+        SILENT_WAIT,
+    );
+    let started = Instant::now();
+    assert_eq!(keyring.get("A"), Err(keyring_no_answer(SILENT_WAIT)));
+    assert!(started.elapsed() >= SILENT_WAIT);
+    // Still stuck: the next calls fail at once, without a second call piling up behind it.
+    let again = Instant::now();
+    assert_eq!(
+        keyring.set("A", "secret-a"),
+        Err(keyring_no_answer(SILENT_WAIT))
+    );
+    assert!(again.elapsed() < SILENT_WAIT);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // It answers at last: it is asked again, and its answers come back.
+    drop(held);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while keyring.delete("A").is_err() {
+        assert!(Instant::now() < deadline, "the late answer never counted");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(keyring.get("A"), Ok(None));
 }
 
 #[test]

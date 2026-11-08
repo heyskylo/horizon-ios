@@ -281,8 +281,20 @@ pub struct State {
 pub fn walk_position(m: &Mob, alpha: f32) -> f32 {
     (m.limb_position - m.limb_speed * (1.0 - alpha)) * if m.is_baby() { 3.0 } else { 1.0 }
 }
+/// `LivingEntityRenderer.extractRenderState`'s `bodyRot` (`solveBodyRot`):
+/// the rider of a living vehicle is drawn from the vehicle's body and its own
+/// head, any other mob from its own body.
+pub fn body_rot(m: &Mob, alpha: f32) -> f32 {
+    match m.extra.vehicle_body.filter(|v| m.extra.mount == Some(v.0)) {
+        Some((_, before, now)) => {
+            let head = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * alpha;
+            super::riders::solve_body_rot(head, before + wrap(now - before) * alpha)
+        }
+        None => m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha,
+    }
+}
 pub fn state(m: &Mob, alpha: f32) -> State {
-    let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
+    let body = body_rot(m, alpha);
     let head = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * alpha;
     let mut swing = m.anim.attack_anim - m.anim.attack_anim_o;
     if swing < 0.0 {

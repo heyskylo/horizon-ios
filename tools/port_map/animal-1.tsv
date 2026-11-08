@@ -2,6 +2,7 @@ AbstractFish.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.r
 AbstractFish.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	FromBucket via read_variant defaults false; tadpole ignores loaded input
 AgeableWaterCreature.handleAirSupply	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	the needs_water branch of base_tick; dolphins override it to nothing and refill air in aquatic.rs
 AgeableWaterCreature.checkSurfaceAgeableWaterCreatureSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::surface_water	
+Animal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Animal fields: modeled InLove and optional LoveCause, removing stale raw when absent; inherited Ageable writer separate; UUID admission gaps retained
 Animal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	InLove through NumericTag.intValue; existing LoveCause UUID loading retained
 Animal.canMate	port	crates/horizon-client/src/mobs/animal_brain.rs::can_mate_with	brain breeding; the Breed goal in goals.rs does the same for goal-driven animals
 Animal.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 18 love hearts
@@ -34,6 +35,8 @@ AllayAi.shouldDepositItemsAtLikedNoteblock	inline	crates/horizon-client/src/mobs
 AllayAi.getLikedPlayerPositionTracker	port	crates/horizon-client/src/game/allays.rs::Game::allay_liked_player	
 Armadillo.shouldSwitchToScaredState	inline	crates/horizon-client/src/mobs/armadillo.rs::ball_up_tick	rolling past its animation length
 Armadillo.onSyncedDataUpdated	port	crates/horizon-client/src/mobs/armadillo.rs::set_state	resets in_state_ticks on a state change
+Armadillo.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	state is written as its ArmadilloState name, always, beside scute_time
+Armadillo.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	state goes through switchToState, idle when the save names none; scute_time keeps the constructor's value when absent
 Armadillo.checkArmadilloSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	
 Armadillo.brushOffScute	port	crates/horizon-client/src/game/creatures.rs::Game::interact_armadillo	brush use; dispenser.rs dispense_brush does the same for a dispenser
 ArmadilloAi.initCoreActivity	inline	crates/horizon-client/src/mobs/armadillo.rs::register	float and panic goals; rolling out is in server_ai_step
@@ -100,7 +103,7 @@ Camel.onPlayerJump	inline	crates/horizon-client/src/mobs/camel.rs::dash	the cool
 Camel.handleStartJump	port	crates/horizon-client/src/mobs/camel.rs::dash	dash sound and dashing flag; no entity_action game event
 Camel.mobInteract	port	crates/horizon-client/src/game/mounts.rs::Game::interact_mount	inventory on sneak, feeding, riding
 Camel.onElasticLeashPull	port	crates/horizon-client/src/mobs/camel.rs::on_elastic_leash_pull	
-Camel.canMate	port	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	gap: no canParent checks for camels (full health, not ridden)
+Camel.canMate	port	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	both sides need AbstractHorse.canParent (not ridden and at full health; a camel is always tame), and only camels pair
 Camel.getBodyAnchorAnimationYOffset	port	crates/horizon-client/src/game/mounts.rs::Game::position_rider	gap: sitting or standing height only, no sit/stand transition interpolation
 Camel.getLeashOffset	port	crates/horizon-client/src/mobs/camel.rs::leash_offset	ticked in #3512; `Camel.getLeashOffset` is cited at crates/horizon-client/src/mobs/camel.rs:187
 Camel.isCamelSitting	port	crates/horizon-client/src/mobs/camel.rs::sitting	
@@ -111,7 +114,7 @@ Camel.getEquipSound	port	crates/horizon-client/src/game/dispenser.rs::equip_soun
 CamelAi.initCoreActivity	inline	crates/horizon-client/src/mobs/camel.rs::register	float and CamelPanic goals
 CamelAi.initIdleActivity	inline	crates/horizon-client/src/mobs/camel.rs::register	breed, tempt, follow parent, stroll, random sitting, look
 CamelAi.CamelPanic.checkExtraStartConditions	port	crates/horizon-client/src/mobs/camel.rs::CamelPanic::can_use	
-CamelAi.RandomSitting.checkExtraStartConditions	port	crates/horizon-client/src/mobs/camel.rs::RandomSitting::can_use	gap: no leash or suffocation (canCamelChangePose) check
+CamelAi.RandomSitting.checkExtraStartConditions	port	crates/horizon-client/src/mobs/camel.rs::RandomSitting::can_use	not in water, 20 s in the pose, not leashed, on ground, no controlling passenger, and room for the other pose (`canCamelChangePose`)
 Chicken.isFlapping	port	crates/horizon-client/src/mobs/farm.rs::chicken_process_flapping	strict flyDist > nextFlap, used by air movement and live Game flap dispatch
 Chicken.onFlap	port	crates/horizon-client/src/mobs/farm.rs::chicken_process_flapping	nextFlap = flyDist + flapSpeed / 2, no sound
 Chicken.registerGoals	port	crates/horizon-client/src/mobs/farm.rs::register	
@@ -124,7 +127,7 @@ Chicken.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_
 Chicken.get	port	crates/horizon-client/src/mobs/finalize.rs::variant_component	gap: chicken/variant only, no chicken/sound_variant
 Chicken.applyImplicitComponents	port	crates/horizon-client/src/entity_nbt.rs::apply_item_components	chicken/variant and chicken/sound_variant from the stack that spawns or buckets it
 Chicken.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs::apply_item_components	the same fn reads both components
-Chicken.positionRider	inline	crates/horizon-client/src/game/passengers.rs::Game::position_riders	every mob rider copies its vehicle's body yaw, not only chicken riders
+Chicken.positionRider	port	crates/horizon-client/src/mobs/riders.rs::takes_vehicle_body	gap: minor: a riding player's own body yaw is not copied (its model is drawn by solveBodyRot); mob riders take the chicken's body yaw
 ChickenVariants	skip:data		chicken variants come from the registry data files
 AbstractCow.registerGoals	port	crates/horizon-client/src/mobs/farm.rs::register	
 AbstractCow.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	the Cow/Mooshroom bucket arm gives milk
@@ -147,3 +150,4 @@ MushroomCow.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs:
 MushroomCow.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	see getOffspringVariant
 MushroomCow.getOffspringVariant	port	crates/horizon-client/src/game/creatures.rs::breed	ticked in #3512; `MushroomCow.getOffspringVariant` is cited at crates/horizon-client/src/game/creatures.rs:2566 (in a comment, so `where` names the enclosing fn)
 Tadpole.fromBucket	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	saved FromBucket is always true
+CamelHusk.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a camel husk inherits Camel's age but never its baby box

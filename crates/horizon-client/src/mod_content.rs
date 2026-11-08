@@ -492,50 +492,11 @@ fn set_nbt_properties(state: &mut Tag, combo: &[(String, String)]) {
 
 // DiscreteVoxelShape.forAllEdges: merge consecutive boundary edges.
 fn shape_edges(shape: &VoxelShape) -> Vec<J> {
-    let sizes = shape.sizes();
-    let mut result = Vec::new();
-    for axis in [2, 0, 1] {
-        let a = (axis + 1) % 3;
-        let b = (axis + 2) % 3;
-        for u in 0..=sizes[a] {
-            for v in 0..=sizes[b] {
-                let mut start = None;
-                for t in 0..=sizes[axis] {
-                    let mut count = 0;
-                    let mut odd = 0;
-                    for du in 0..=1 {
-                        for dv in 0..=1 {
-                            let mut p = [0i32; 3];
-                            p[axis] = t as i32;
-                            p[a] = u as i32 + du - 1;
-                            p[b] = v as i32 + dv - 1;
-                            if shape.is_full(p[0], p[1], p[2]) {
-                                count += 1;
-                                odd ^= du ^ dv;
-                            }
-                        }
-                    }
-                    let edge = count == 1 || count == 3 || (count == 2 && odd == 0);
-                    if edge {
-                        if start.is_none() {
-                            start = Some(t);
-                        }
-                    } else if let Some(first) = start.take() {
-                        let mut from = [0.0; 3];
-                        let mut to = [0.0; 3];
-                        from[a] = shape.coordinates(Axis::ALL[a])[u];
-                        from[b] = shape.coordinates(Axis::ALL[b])[v];
-                        to[a] = from[a];
-                        to[b] = from[b];
-                        from[axis] = shape.coordinates(Axis::ALL[axis])[first];
-                        to[axis] = shape.coordinates(Axis::ALL[axis])[t];
-                        result.push(J::Arr(from.into_iter().chain(to).map(J::f64).collect()));
-                    }
-                }
-            }
-        }
-    }
-    result
+    shape
+        .edges()
+        .into_iter()
+        .map(|edge| J::Arr(edge.into_iter().map(J::f64).collect()))
+        .collect()
 }
 
 fn encode_shape(shape: &VoxelShape) -> Tag {
@@ -638,6 +599,7 @@ struct NewBlock<'a> {
     item: Option<String>,
     shapes: Option<Vec<VoxelShape>>,
     collision_shapes: Option<Vec<VoxelShape>>,
+    context_shapes: BTreeMap<String, Vec<VoxelShape>>,
     default: u32,
     /// The declared state properties' combinations, every property at its
     /// default first (one empty combination when the block declares none):
@@ -668,6 +630,7 @@ struct NewItem {
     crafting_remainder: Option<String>,
     /// `StandingAndWallBlockItem.wallBlock`, when its block declares it.
     wall_block: Option<String>,
+    place_block: Option<String>,
 }
 
 struct Plan<'a> {
@@ -1104,6 +1067,18 @@ impl<'a> Plan<'a> {
                     })
                 };
                 let collision_shapes = decl.collision_shapes.as_ref().map(resolve).transpose()?;
+                let mut context_shapes = BTreeMap::new();
+                for (channel, specs) in [
+                    ("outline", &decl.outline_context_shapes),
+                    ("collision", &decl.collision_context_shapes),
+                ] {
+                    for (kind, spec) in specs {
+                        context_shapes.insert(format!("{channel}_{}", kind.name()), resolve(spec)?);
+                    }
+                }
+                if let Some(spec) = &decl.interaction_shapes {
+                    context_shapes.insert("interaction".into(), resolve(spec)?);
+                }
                 // The lookup from (template state, combination) to the state's row.
                 let mut rows = vec![0; order.len()];
                 for (position, &(state, combo)) in order.iter().enumerate() {
@@ -1129,6 +1104,7 @@ impl<'a> Plan<'a> {
                     item: None,
                     shapes,
                     collision_shapes,
+                    context_shapes,
                     default,
                     combos,
                     order,
@@ -1191,11 +1167,18 @@ impl<'a> Plan<'a> {
                     components: component_patch(&b.decl.id, &b.decl.components)?,
                     crafting_remainder: None,
                     wall_block: b.decl.wall_block.clone(),
+                    place_block: None,
                 });
             }
         }
         for m in &sorted {
             for i in &m.content.items {
+                if let Some(target) = &i.place_block
+                    && !defaults.contains_key(target)
+                    && !blocks.iter().any(|b| &b.decl.id == target)
+                {
+                    return Err(format!("{}: place_block {target:?} is not a block", i.id).into());
+                }
                 items.push(NewItem {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
@@ -1203,6 +1186,7 @@ impl<'a> Plan<'a> {
                     components: component_patch(&i.id, &i.components)?,
                     crafting_remainder: i.crafting_remainder.clone(),
                     wall_block: None,
+                    place_block: i.place_block.clone(),
                 });
             }
         }
@@ -1382,6 +1366,22 @@ impl<'a> Plan<'a> {
             BTreeSet::new()
         };
         for i in &self.items {
+            if !components && let Some(block) = &i.place_block {
+                map.set(
+                    &i.rename.to,
+                    J::Obj(vec![
+                        (
+                            "class".into(),
+                            J::Arr(vec![J::Str("BlockItem".into()), J::Str("Item".into())]),
+                        ),
+                        (
+                            "fields".into(),
+                            J::Obj(vec![("block".into(), J::Str(block.clone()))]),
+                        ),
+                    ]),
+                );
+                continue;
+            }
             let Some(v) = map.get(&i.rename.from) else {
                 continue;
             };
@@ -1688,6 +1688,49 @@ impl<'a> Plan<'a> {
                 }
             }
         }
+        // Variant references live in the same checked per-state table as the defaults.
+        // No runtime content scan, callback, or world-dependent registration is needed.
+        let mut contexts = Vec::new();
+        for block in &self.blocks {
+            if block.context_shapes.is_empty() {
+                continue;
+            }
+            let mut encoded = BTreeMap::new();
+            for offset in 0..block.order.len() {
+                let mut row = Compound::new();
+                row.insert(
+                    "state".into(),
+                    Tag::Int((block.rename.first as usize + offset) as i32),
+                );
+                for (channel, variants) in &block.context_shapes {
+                    let shape = &variants[offset];
+                    let key: Vec<_> = shape
+                        .boxes()
+                        .iter()
+                        .map(|bounds| {
+                            [
+                                bounds.min(Axis::X),
+                                bounds.min(Axis::Y),
+                                bounds.min(Axis::Z),
+                                bounds.max(Axis::X),
+                                bounds.max(Axis::Y),
+                                bounds.max(Axis::Z),
+                            ]
+                            .map(f64::to_bits)
+                        })
+                        .collect();
+                    let id = *encoded.entry(key).or_insert_with(|| {
+                        entries.push(encode_shape(shape));
+                        entries.len() as i32 - 1
+                    });
+                    row.insert(channel.as_str().into(), Tag::Int(id));
+                }
+                contexts.push(Tag::Compound(row));
+            }
+        }
+        if !contexts.is_empty() {
+            root.insert("context_shapes".into(), Tag::List(contexts));
+        }
         let Some(Tag::IntArray(mapping)) = root.get_mut(&JavaString::from("cached_shapes")) else {
             return Err("collision table has no mapping".into());
         };
@@ -1867,11 +1910,14 @@ const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// worldgen loader reads each from (id → the file's text): what structure
 /// mods hold. Biomes, noise and density functions change the terrain and
 /// are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
+const WORLDGEN_BUNDLES: [(&str, &str); 7] = [
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
     ("processor_list", "worldgen/processor_lists.json"),
+    // 26.3 names the folder `feature`; `configured_feature` is the 26.2 name, kept
+    // so older mods still load.
+    ("feature", "worldgen/features.json"),
     ("configured_feature", "worldgen/features.json"),
     ("placed_feature", "worldgen/placed_features.json"),
 ];
@@ -2173,6 +2219,19 @@ impl Overlay<'_> {
         fs::write(path, bytes)?;
         Ok(())
     }
+    /// `write` with a file's own bytes, copied without reading them (a clone on APFS).
+    fn copy(&self, rel: &str, from: &Path) -> Result<()> {
+        let rel = Path::new(rel);
+        if let Some(parent) = rel.parent() {
+            self.dir(parent)?;
+        }
+        let path = self.out.join(rel);
+        if fs::symlink_metadata(&path).is_ok() {
+            fs::remove_file(&path)?;
+        }
+        fs::copy(from, path)?;
+        Ok(())
+    }
 }
 fn out_path(overlay: &Overlay<'_>, rel: &str) -> PathBuf {
     overlay.out.join(rel)
@@ -2471,8 +2530,20 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         let declarations = format!("data/{}/horizon/", m.id);
         let mut reader = m.content.reader()?;
         for file in &m.content.files {
-            let bytes = reader.read(file)?;
             let is_tag = file.starts_with("data/") && file.contains("/tags/");
+            // Most files (textures, models...) only go into the overlay: copied, not read and
+            // written again, they take a fraction of the time (Chipped alone has 10k textures).
+            let plain = !(is_tag && file.ends_with(".json"))
+                && !(file.starts_with("assets/minecraft/atlases/") && file.ends_with(".json"))
+                && !file.starts_with(&declarations)
+                && !biomes::is_modifier(file)
+                && worldgen_entry(file).is_none()
+                && !(file.starts_with("data/") && file.contains("/structure/"));
+            if plain && let Some(from) = reader.path(file)? {
+                overlay.copy(file, &from)?;
+                continue;
+            }
+            let bytes = reader.read(file)?;
             if is_tag && file.ends_with(".json") {
                 let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
                 let Some(J::Arr(values)) = doc.get("values") else {

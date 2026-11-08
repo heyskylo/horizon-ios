@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Compare what vanilla and Horizon do when a block with a block entity goes away.
+"""Compare block removal and player-mined experience with vanilla.
 
 A container, jukebox, lectern, campfire, decorated pot, chiseled bookshelf,
 shelf, shulker box or another block entity holder at the origin holds random
 contents; the case then replaces it with `Level.setBlock` (another block, the
 same block in another state, with or without UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS),
 destroys it with `Level.destroyBlock` (with or without drops), removes it with
-`Level.removeBlock`, or a survival player mines it (`ServerPlayerGameMode.destroyBlock`,
-holding a tool or nothing, #844). Vanilla runs over the headless level of the dispenser oracle
+`Level.removeBlock`, or a player mines it (`ServerPlayerGameMode.destroyBlock`,
+holding a tool or nothing, #844): in survival, where the block's drops, the tool's wear and the
+mined statistic follow, and in creative, where the block itself never drops (a container's
+contents still spill) and no statistic is awarded. Vanilla runs over the headless level of the
+dispenser oracle
 (`VanillaDispenserOracle`, "remove" cases), which replays `LevelChunk.setBlockState`'s
 `BlockEntity.preRemoveSideEffects`; Horizon runs its game glue in a headless game
 (`HORIZON_DISPENSE_FIXTURE`). Both print the block changes, the contents left,
 every item entity (position, motion, stack), level events, sounds, game events
 and the level random. Motions from an item's own unseeded random ("~") are
-compared within their spread.
+compared within their spread. Deterministic ore, spawner and sculk mining cases
+cover XP values and RNG advancement with block drops and Silk Touch on/off.
 """
 import json
 import os
@@ -111,7 +115,7 @@ def other_state(states, rng, name, current):
     return rng.choice(choices) if choices else None
 
 
-def cases(facts, count, seed, only):
+def cases(facts, count, seed, only, creative=True):
     rng = random.Random(seed)
     states = d.States(facts)
     names = list(HOLDERS)
@@ -143,13 +147,47 @@ def cases(facts, count, seed, only):
         elif roll < 0.92:
             op = {'op': 'remove'}
         else:
-            # ServerPlayerGameMode.destroyBlock: a survival player mines it (#844). The tool comes
-            # from the roll, not another draw, so the cases after this one stay the same.
-            op = {'op': 'mine', 'item': TOOLS[int(roll * 1000) % len(TOOLS)]}
+            # ServerPlayerGameMode.destroyBlock: a player mines it (#844), in survival or, every
+            # other mine, in creative, where the block itself never drops and no statistic is
+            # awarded. The tool comes from the roll, not another draw, so the cases after this
+            # one stay the same.
+            item = TOOLS[int(roll * 1000) % len(TOOLS)]
+            if creative and n % 2 == 0:
+                # A sword or mace carries `can_destroy_blocks_in_creative: false`, so a creative
+                # player holding one cannot mine at all (`Item.canDestroyBlock`). That predicate
+                # has its own corpus (test_creative_mining_parity); these cases need a tool that
+                # does remove the block, and the empty hand does too.
+                if item in (plain('iron_sword'), plain('mace')):
+                    item = plain('diamond_pickaxe')
+                op = {'op': 'mine', 'item': item, 'creative': True}
+            else:
+                op = {'op': 'mine', 'item': item}
+                if creative:
+                    op['creative'] = False
         case = {**h.environment(rng), 'mode': 'remove', 'pos': [0, 0, 0], 'cells': cells, 'items': items, 'remove': op}
         case.pop('raining', None)
         case.pop('thundering', None)
         yield case
+
+
+def mining_experience_cases(facts, only):
+    """Actual player mining: sampling precedes Silk Touch and the drops rule."""
+    states = d.States(facts)
+    for name in ('diamond_ore', 'spawner', 'sculk', 'sculk_catalyst'):
+        if only and only not in name:
+            continue
+        for seed in (0, 1, 42, 123456789):
+            for drops in (False, True):
+                for silk in (False, True):
+                    item = 'diamond_hoe' if name.startswith('sculk') else 'diamond_pickaxe'
+                    tool = plain(item)
+                    if silk:
+                        tool = ('{id:"minecraft:%s",count:1,components:'
+                                '{"minecraft:enchantments":{"minecraft:silk_touch":1}}}' % item)
+                    yield {'seed': seed, 'mode': 'remove', 'pos': [0, 0, 0],
+                           'cells': [[0, 0, 0, states.get(name)]], 'items': [],
+                           'rules': {'block_drops': drops},
+                           'remove': {'op': 'mine', 'item': tool}}
 
 
 def describe(case, facts):
@@ -157,11 +195,13 @@ def describe(case, facts):
     op = dict(case['remove'])
     if 'state' in op:
         op['state'] = facts.describe(op['state'])
-    return f'{cells} items={json.dumps(case["items"])} remove={json.dumps(op)} seed={case["seed"]}'
+    return f'{cells} items={json.dumps(case["items"])} remove={json.dumps(op)} seed={case["seed"]} rules={case.get("rules", {})}'
 
 
 def main():
     parser = h.argument_parser(__doc__)
+    parser.add_argument('--survival-only', action='store_true',
+                        help='mine in survival only, as the corpus did before creative mining')
     args = parser.parse_args()
     if args.count == 40000:
         args.count = 4000
@@ -170,7 +210,8 @@ def main():
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'block-removal-parity'
     work.mkdir(parents=True, exist_ok=True)
-    all_cases = list(cases(facts, args.count, args.seed, args.only))
+    all_cases = list(mining_experience_cases(facts, args.only))
+    all_cases.extend(cases(facts, args.count, args.seed, args.only, not args.survival_only))
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)

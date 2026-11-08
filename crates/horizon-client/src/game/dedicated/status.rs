@@ -5,7 +5,7 @@
 //! <json>` edits the lists as vanilla's management protocol does (management.rs).
 //! `player-expect <uuid> [seconds]`, `player-drop <uuid>`, `player-export <uuid> [freeze]`,
 //! `player-release <uuid> ...`, `player-import <uuid> <json>` and `player-confirm <uuid> ...` are a proxy's,
-//! for a player it moves between two servers (transfer.rs).
+//! for a player it moves between two servers, and `transfer-status` the counts it reads first (transfer.rs).
 use super::{ServerState, capture_log};
 use crate::game::Game;
 use serde_json::{Value, json};
@@ -30,7 +30,7 @@ impl ServerState {
         }
     }
     /// Ticks per second over the last few seconds.
-    fn tps(&self) -> f64 {
+    pub(super) fn tps(&self) -> f64 {
         match (self.ticks.front(), self.ticks.back()) {
             (Some(first), Some(last)) if self.ticks.len() > 1 => {
                 (self.ticks.len() - 1) as f64 / last.duration_since(*first).as_secs_f64().max(1e-9)
@@ -44,8 +44,12 @@ impl Game<'_> {
     /// Answers the requests waiting on the control endpoint.
     pub(super) fn poll_server_control(&mut self, state: &mut ServerState) {
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
+            // A `console stop` just before stops this server for the next request too.
+            self.note_stopping(state.lists.lock().unwrap().stop);
             let reply = match request.line.trim().split_once(' ') {
                 _ if request.line.trim() == "server-status" => self.server_status(state),
+                // A proxy reading whether it may send players here (transfer.rs).
+                _ if request.line.trim() == "transfer-status" => self.transfer_status(),
                 Some(("server-events", since)) => {
                     super::events::since(since.trim().parse().unwrap_or(0))
                 }

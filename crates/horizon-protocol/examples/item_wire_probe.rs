@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             c,
                             Component::Raw(_)
                                 | Component::Trim { .. }
+                                | Component::TrimDirect { .. }
                                 | Component::Instrument(_)
                                 | Component::StewEffects(_)
                         )

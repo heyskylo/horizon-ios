@@ -3,7 +3,9 @@
 use super::{Dim, Game};
 use horizon_client::assets::Properties;
 use horizon_client::camera::NearPlane;
-use horizon_client::fog::{FogData, FogInputs, FogType, fog_type, update_rain_fog};
+use horizon_client::fog::{
+    FogData, FogInputs, FogType, fog_type, settle_rain_fog, update_rain_fog,
+};
 use horizon_client::{
     animate_tick::{AnimateContext, animate_tick, campfire_particles, marker_particle_target},
     biome::Biomes,
@@ -337,12 +339,32 @@ impl Game<'_> {
             first_person: self.camera_type.first_person(),
             scoping: self.scoping(),
             game_time_delta: 0.0,
-            equipment: match &self.armor[0] {
-                Some(stack) if &*stack.item == "minecraft:carved_pumpkin" => {
-                    vec!["misc/pumpkinblur".to_owned()]
+            // Each worn stack's own `equippable` camera overlay, in
+            // `EquipmentSlot` order, when it is worn in that slot.
+            equipment: [
+                (self.inventory[self.selected].as_ref(), "mainhand"),
+                (self.armor[3].as_ref(), "feet"),
+                (self.armor[2].as_ref(), "legs"),
+                (self.armor[1].as_ref(), "chest"),
+                (self.armor[0].as_ref(), "head"),
+                (self.offhand.as_ref(), "offhand"),
+            ]
+            .into_iter()
+            .filter_map(|(stack, slot)| {
+                let e = horizon_client::item_sync::equippable(stack?, self.res.items())?;
+                if e.slot != slot {
+                    return None;
                 }
-                _ => Vec::new(),
-            },
+                let overlay = e.camera_overlay?;
+                // `withPath(p -> "textures/" + p + ".png")`: the GUI atlas
+                // names vanilla's textures without the namespace.
+                Some(
+                    overlay
+                        .strip_prefix("minecraft:")
+                        .map_or_else(|| overlay.clone(), str::to_owned),
+                )
+            })
+            .collect(),
             ticks_frozen: p.ticks_frozen,
             percent_frozen: p.percent_frozen(),
             partial,
@@ -390,6 +412,31 @@ impl Game<'_> {
             self.texture_ticks += 1;
         }
     }
+    /// What `AtmosphericFogEnvironment.updateRainFogState` reads at the eye: the rain, the sky
+    /// light and whether the biome has precipitation.
+    fn rain_fog_inputs(&self, eye: [f64; 3]) -> (f32, u8, bool) {
+        let b = [
+            eye[0].floor() as i32,
+            eye[1].floor() as i32,
+            eye[2].floor() as i32,
+        ];
+        let rain = self.view_weather(1.0).0;
+        let biome = self
+            .world
+            .chunks
+            .get(&(b[0] >> 4, b[2] >> 4))
+            .map_or(0, |c| c.biome(b[0], b[1], b[2]));
+        let rains = world_biomes!(self).get(biome).precipitation;
+        (rain, self.world.light(b[0], b[1], b[2]) >> 4, rains)
+    }
+    /// Under `HORIZON_STILL` a frozen client's rain fog sits at its level, as the rain does: it
+    /// eases only in `tick_particles`, which waits for the world.
+    pub(super) fn settle_rain_fog(&mut self) {
+        if let Some(e) = self.eye_position() {
+            let (rain, sky_light, rains) = self.rain_fog_inputs(e);
+            settle_rain_fog(&mut self.fog, rain, sky_light, rains);
+        }
+    }
     pub(super) fn tick_particles(&mut self) {
         let eye = self.eye_position();
         if let Some(e) = eye {
@@ -407,25 +454,8 @@ impl Game<'_> {
             let in_water =
                 fog_type(&self.world, self.res.facts(), e, &self.near_plane()) == FogType::Water;
             self.fog.tick(in_water);
-            let b = [
-                e[0].floor() as i32,
-                e[1].floor() as i32,
-                e[2].floor() as i32,
-            ];
-            let rain = self.view_weather(1.0).0;
-            let biome = self
-                .world
-                .chunks
-                .get(&(b[0] >> 4, b[2] >> 4))
-                .map_or(0, |c| c.biome(b[0], b[1], b[2]));
-            let rains = world_biomes!(self).get(biome).precipitation;
-            update_rain_fog(
-                &mut self.fog,
-                rain,
-                self.world.light(b[0], b[1], b[2]) >> 4,
-                rains,
-                1.0,
-            );
+            let (rain, sky_light, rains) = self.rain_fog_inputs(e);
+            update_rain_fog(&mut self.fog, rain, sky_light, rains, 1.0);
         }
         self.particles.particle_level = self.settings.particles;
         if let Some(e) = eye {

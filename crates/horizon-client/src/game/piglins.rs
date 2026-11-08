@@ -144,7 +144,7 @@ impl Game<'_> {
         if let (true, Some(old)) = (drop_old, old) {
             let mut dropped = ItemStack::new(&old, 1);
             dropped.set_crafting_enchantments(old_enchantments);
-            self.spawn_item(dropped, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(dropped, at, 10);
         }
         true
     }
@@ -307,7 +307,7 @@ impl Game<'_> {
         let m = &mut self.mobs[index];
         // The memory is set again, for the item it holds now.
         m.extra.piglin.seen_admire = 0;
-        m.extra.off_hand = Some(item);
+        horizon_client::mobs::piglin::hold_in_offhand(m, item);
         m.extra.using_item = ADMIRE;
         m.extra.point = None;
         m.nav_stop();

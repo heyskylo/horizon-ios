@@ -102,16 +102,41 @@ fn block_pos(m: &Mob) -> [i32; 3] {
 /// `Shulker.getProgressDeltaAabb` at scale 1: the shell's box from `pos`
 /// (the bottom centre), grown `from`..`to` along `direction`.
 fn progress_aabb(direction: u8, from: f64, to: f64, pos: Vec3) -> Aabb {
+    progress_delta_aabb(1.0, direction, from, to, pos)
+}
+/// `Shulker.getProgressDeltaAabb` for a shell of `size` (`getScale`).
+fn progress_delta_aabb(size: f64, direction: u8, from: f64, to: f64, pos: Vec3) -> Aabb {
     let s = face_step(direction).map(f64::from);
     let (max, min) = (from.max(to), from.min(to));
-    Aabb::new(Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 1.0, 0.5))
-        .expand_towards(Vec3::new(s[0] * max, s[1] * max, s[2] * max))
+    let half = size * 0.5;
+    Aabb::new(Vec3::new(-half, 0.0, -half), Vec3::new(half, size, half))
+        .expand_towards(Vec3::new(
+            s[0] * max * size,
+            s[1] * max * size,
+            s[2] * max * size,
+        ))
         .contract(Vec3::new(
-            -s[0] * (1.0 + min),
-            -s[1] * (1.0 + min),
-            -s[2] * (1.0 + min),
+            -s[0] * (1.0 + min) * size,
+            -s[1] * (1.0 + min) * size,
+            -s[2] * (1.0 + min) * size,
         ))
         .move_by(pos)
+}
+/// Where `ShulkerBullet(level, shulker, ...)` starts: the centre of the
+/// shulker's box (`getBoundingBox().getCenter()`), which `Shulker.makeBoundingBox`
+/// grows toward the open side by the lid's physical peek, so an open shulker
+/// on a floor fires from the top of its block, not its middle. The attack goal
+/// runs before `Shulker.tick` eases the peek, so the box is the one the peek
+/// built last tick, as here.
+pub fn bullet_origin(m: &Mob) -> Vec3 {
+    progress_delta_aabb(
+        f64::from(m.model_scale()),
+        opposite(m.extra.variant3),
+        -1.0,
+        physical_peek(m.anim.v[PEEK]),
+        m.position,
+    )
+    .center()
 }
 /// Block queries shared by attachment and teleport candidates. Entity overlap
 /// is checked separately, using the nearby-entity index from MobWorld.
@@ -130,6 +155,7 @@ impl<'w, 'r> BlockSpace<'w, 'r> {
         };
         CollisionContext::for_entity(
             CollisionEntity {
+                kind: horizon_world::collision_context::EntityContextKind::Living,
                 identity: EntityIdentity(u64::from(m.id)),
                 // A teleport candidate is queried before setPos changes the entity.
                 y: m.position.y,
@@ -270,9 +296,10 @@ fn pack_diff(pos: [i32; 3], to: [i32; 3]) -> i32 {
         | ((to[1] - pos[1] + 8) & 0xFF) << 8
         | (to[2] - pos[2] + 8) & 0xFF
 }
-/// `Shulker.teleportSomewhere`: up to five tries within 8 blocks.
+/// `Shulker.teleportSomewhere`: up to five tries within 8 blocks; never
+/// without AI.
 fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
-    if !m.alive() {
+    if m.no_ai || !m.alive() {
         return false;
     }
     let old = block_pos(m);
@@ -289,6 +316,9 @@ fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         );
         if t[1] <= w.world.bottom_y()
             || !w.facts.is_air(w.world.block(t[0], t[1], t[2]))
+            // WorldBorder.isWithinBounds(BlockPos): the block's corner, no margin.
+            || w.border
+                .is_some_and(|b| !b.is_within_bounds(f64::from(t[0]), f64::from(t[2]), 0.0))
             || !no_collision(m, w, unit.deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6)))
         {
             continue;
@@ -304,6 +334,13 @@ fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         ) {
             continue;
         }
+        // unRide: whoever rides it gets off where it stands, and it gets
+        // off its own vehicle (it lands at the target below).
+        events.push(MobEvent::EjectPassengers {
+            mob: m.id,
+            from: m.position,
+        });
+        super::riders::stop_riding(m, None);
         m.extra.variant3 = face;
         events.push(MobEvent::Sound(
             "entity.shulker.teleport",
@@ -394,18 +431,25 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 fn physical_peek(amount: f32) -> f64 {
     f64::from(0.5 - ((0.5 + amount) * PI).msin() * 0.5)
 }
-/// `Shulker.onPeekAmountChange`: an opening shell pushes out of its way
-/// every entity that can be collided with (except other shulkers).
-fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<MobEvent>) {
+/// `Shulker.onPeekAmountChange`'s push: the step out of the lid's way and the
+/// box the lid swept, while it opens.
+fn peek_push(m: &Mob, old: f32, new: f32) -> Option<([f64; 3], Aabb)> {
     let dir = opposite(m.extra.variant3);
     let s = face_step(dir).map(f64::from);
     let (old_p, new_p) = (physical_peek(old), physical_peek(new));
     let push = new_p - old_p;
     if push <= 0.0 {
-        return;
+        return None;
     }
     let delta = [push * s[0], push * s[1], push * s[2]];
-    let area = progress_aabb(dir, old_p, new_p, m.position);
+    Some((delta, progress_aabb(dir, old_p, new_p, m.position)))
+}
+/// `Shulker.onPeekAmountChange`: an opening shell pushes out of its way
+/// every entity that can be collided with (except other shulkers).
+fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<MobEvent>) {
+    let Some((delta, area)) = peek_push(m, old, new) else {
+        return;
+    };
     if let Some(p) = &w.player
         && p.alive
         && !p.spectator
@@ -426,6 +470,24 @@ fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<Mo
         }
         events.push(MobEvent::Shift {
             target: Who::Mob(seen.id),
+            delta,
+        });
+    }
+}
+/// `Shulker.tick`'s `onPeekAmountChange` on a client that is not the server,
+/// after `client_tick` eased the lid: the client moves its own player, so a
+/// lid opening into `player` (the local player's box, alive and not a
+/// spectator) pushes it out of the way.
+pub fn client_push(m: &Mob, player: Aabb, events: &mut Vec<MobEvent>) {
+    let (old, new) = (m.anim.vo[PEEK], m.anim.v[PEEK]);
+    if new == old {
+        return;
+    }
+    if let Some((delta, area)) = peek_push(m, old, new)
+        && player.intersects(area)
+    {
+        events.push(MobEvent::Shift {
+            target: Who::Player,
             delta,
         });
     }
@@ -527,34 +589,57 @@ pub fn accepts(m: &Mob, source: &Damage) -> bool {
 /// chance to teleport away.
 pub fn after_hurt(m: &mut Mob) {
     if m.health < m.attrs.max_health * 0.5 && m.random.next_int_bound(4).unwrap_or(1) == 0 {
-        // The teleport needs the world: ask for it on the next tick.
+        // The teleport needs the world, which `Mob::damage` has not: whoever
+        // dealt the hurt runs it right after (`hurt_teleport`,
+        // `run_pending_teleports`).
         m.extra.flag = true;
     }
 }
 /// `Shulker.hurtServer` after a shulker bullet's damage: unless the
 /// low-health teleport was drawn instead (`else if`), `hitByShulkerBullet`
-/// runs on the next tick. Whether the shell is open is read here, at hurt
-/// time, so a goal opening it before that tick cannot change the outcome.
+/// runs right after the hurt (`run_pending_teleports`). Whether the shell is
+/// open is read here, at hurt time.
 pub fn hit_by_bullet(m: &mut Mob) {
     if m.species() == Species::Shulker && !m.extra.flag && m.extra.counter != 0 {
         m.extra.flag2 = true;
     }
 }
-/// The deferred teleport of `after_hurt` and `hitByShulkerBullet`.
+/// Whether a hurt left `Shulker.hurtServer` a teleport to make.
+pub fn teleport_pending(m: &Mob) -> bool {
+    m.species() == Species::Shulker && (m.extra.flag || m.extra.flag2)
+}
+/// `Shulker.hurtServer`'s low-health `teleportSomewhere()`, inside the hurt
+/// `after_hurt` drew it for (a hurt within the shulker's own tick).
+pub fn hurt_teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if m.species() == Species::Shulker && m.extra.flag {
+        m.extra.flag = false;
+        teleport(m, w, events);
+    }
+}
+/// The teleport `Shulker.hurtServer` makes inside a hurt: the low-health
+/// `teleportSomewhere()` (`after_hurt`), else a bullet's
+/// `hitByShulkerBullet()` (`hit_by_bullet`).
+pub fn run_pending_teleports(
+    m: &mut Mob,
+    w: &MobWorld,
+    level_random: &mut LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
+    hurt_teleport(m, w, events);
+    if m.extra.flag2 {
+        m.extra.flag2 = false;
+        hit_by_shulker_bullet(m, w, level_random, events);
+    }
+}
+/// What a hurt left that no one ran right after it (a hurt the game layer
+/// does not settle at once).
 pub fn ai_step(
     m: &mut Mob,
     w: &MobWorld,
     level_random: &mut LegacyRandom,
     events: &mut Vec<MobEvent>,
 ) {
-    if m.extra.flag {
-        m.extra.flag = false;
-        teleport(m, w, events);
-    }
-    if m.extra.flag2 {
-        m.extra.flag2 = false;
-        hit_by_shulker_bullet(m, w, level_random, events);
-    }
+    run_pending_teleports(m, w, level_random, events);
 }
 /// `Shulker.hitByShulkerBullet` (only queued by an open shulker): it
 /// teleports, and leaves a new one of its colour behind unless shulkers
@@ -606,11 +691,13 @@ impl ProjectileWorld for Probe<'_, '_> {
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }
-    fn solid(&self, p: [i32; 3]) -> bool {
-        self.w
-            .facts
-            .get(self.w.world.block(p[0], p[1], p[2]))
-            .full_collision
+    fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
+        crate::collisions::projectile_can_stand_on(
+            self.w.world,
+            self.w.collision,
+            horizon_core::position::BlockPos::new(p[0], p[1], p[2]),
+            entity_y,
+        )
     }
 }
 /// `level().getDifficulty() != Difficulty.PEACEFUL`, which the shulker's
@@ -642,6 +729,8 @@ impl Goal for ShulkerAttack {
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         set_peek(m, 0, cx.events);
     }
+    /// `Shulker.ShulkerAttackGoal.tick`: the bullet starts at the centre of
+    /// the shulker's box ([`bullet_origin`]).
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !peaceful_off(m, cx.w) {
             return;
@@ -670,7 +759,7 @@ impl Goal for ShulkerAttack {
         };
         let seed = m.random.next_long() as u64 | 1;
         let bullet =
-            Projectile::shulker_bullet(&probe, block_pos(m), Who::Mob(m.id), who, axis, seed);
+            Projectile::shulker_bullet(&probe, bullet_origin(m), Who::Mob(m.id), who, axis, seed);
         cx.events.push(MobEvent::Projectile(bullet));
         let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
         cx.events.push(MobEvent::Sound(
@@ -790,6 +879,18 @@ mod tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use std::sync::Arc;
+
+    /// `Shulker.setPos`: a piston's push lands on the block centre, the y
+    /// rounded by `floor(y + 0.5)`, not left at the pushed offset.
+    #[test]
+    fn a_pushed_position_snaps_to_the_block_centre() {
+        let mut m = shulker();
+        m.position = Vec3::new(0.5, 4.0, 0.5);
+        client_set_pos(&mut m, 0.5, 3.49, 0.5);
+        assert_eq!(m.position, Vec3::new(0.5, 3.0, 0.5));
+        client_set_pos(&mut m, 2.9, 3.0, -0.2);
+        assert_eq!(m.position, Vec3::new(2.5, 3.0, -0.5));
+    }
 
     /// Shulker.setRawPeekAmount: the lid opening posts CONTAINER_OPEN and shutting
     /// CONTAINER_CLOSE, for the sculk sensors and wardens nearby.

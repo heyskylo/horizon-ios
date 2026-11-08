@@ -108,12 +108,21 @@ impl Game<'_> {
         } else {
             [0.0; 3]
         };
-        let box_shape = self.context_outline(pos, state);
+        let custom = self
+            .collision
+            .cached_shapes()
+            .context_outline_edges(state, self.outline_context_kind());
+        let box_shape = custom
+            .is_none()
+            .then(|| self.context_outline(pos, state))
+            .flatten();
         Some(RimShape {
             origin: pos.map(f64::from),
             offset,
             box_shape,
-            segments: if box_shape.is_some() {
+            segments: if let Some(edges) = custom {
+                edges
+            } else if box_shape.is_some() {
                 cube
             } else {
                 &facts.outline_edges
@@ -153,7 +162,7 @@ impl Game<'_> {
         // as far as their dynamic light reaches.
         if let Some(renderer) = self.renderer.as_ref().filter(|r| r.has_light_colors()) {
             for (source, item) in self.dynamic_light_sources(alpha) {
-                let Some(color) = item.and_then(|i| renderer.light_color(&i)) else {
+                let Some(color) = item.and_then(|i| renderer.light_color(i)) else {
                     continue;
                 };
                 let top = color[0].max(color[1]).max(color[2]);

@@ -113,7 +113,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// tracker's updates (10 to 20 ticks apart) with its own gravity and drag,
 /// and a block stops it there; only the server decides what it hits.
 pub(super) fn remote_projectile_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    if !matches!(p.tick(w).1, Hit::None) {
+    if !matches!(p.tick_remote(w).1, Hit::None) {
         p.velocity = Vec3::ZERO;
     }
 }
@@ -303,6 +303,9 @@ impl Game<'_> {
                 velocity,
                 fuse: 80,
                 on_ground: false,
+                fall_distance: 0.0,
+                stuck: Vec3::ZERO,
+                in_water: false,
                 owner: None,
                 guest: None,
                 power: 4.0,
@@ -361,10 +364,13 @@ impl Game<'_> {
             "minecraft:fishing_bobber" => self.spawn_remote_hook(id, at, velocity, data),
             "minecraft:end_crystal" => {
                 // EndCrystal's constructor starts `time` from the crystal's own
-                // random, so each placed crystal spins from its own phase.
-                let time = horizon_client::mobs::entity_random(id, at)
+                // random, so each placed crystal spins from its own phase. The id is the
+                // server's, given in the order its chunks load, so under `HORIZON_STILL` the
+                // position alone seeds it.
+                let drawn = horizon_client::mobs::entity_random(id, at)
                     .next_int_bound(100_000)
                     .unwrap_or(0);
+                let time = super::dragon::Crystal::start_time(at, drawn, self.clock.still());
                 self.crystals.push(super::dragon::Crystal {
                     id,
                     position: at,
@@ -653,9 +659,10 @@ impl Game<'_> {
         // where it lands for the server to place it and remove it.
         let mut falling = std::mem::take(&mut self.falling);
         for f in &mut falling {
-            if let Ok(FallStep::Landed(_)) = self.fall_step(f, false) {
-                // Block.updateEntityMovementAfterFallOn, then the air drag.
-                f.velocity = Vec3::new(f.velocity.x * 0.98, 0.0, f.velocity.z * 0.98);
+            if let Ok(FallStep::Landed(_)) = self.fall_step(f, false, &[]) {
+                // Block.updateEntityMovementAfterFallOn, then getAirDrag 0.98F.
+                let drag = f64::from(0.98_f32);
+                f.velocity = Vec3::new(f.velocity.x * drag, 0.0, f.velocity.z * drag);
             }
         }
         self.falling = falling;

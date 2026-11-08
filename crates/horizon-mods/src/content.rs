@@ -196,6 +196,27 @@ impl BlockShapes {
     }
 }
 
+/// The querying entity class, captured by the real caller. Empty and position-only
+/// queries have no entity and always use the ordinary shape tables.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ShapeEntityKind {
+    Item,
+    Player,
+    Living,
+    Other,
+}
+impl ShapeEntityKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Item => "item",
+            Self::Player => "player",
+            Self::Living => "living",
+            Self::Other => "other",
+        }
+    }
+}
+
 /// A state property a block declares on its own, beside its template's.
 /// A block's states become the template's states times these values, so a
 /// pipe can have a connection per side without a template that has one.
@@ -236,6 +257,11 @@ struct BlockFile {
     shapes: Option<BlockShapes>,
     collision_shapes: Option<BlockShapes>,
     #[serde(default)]
+    outline_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    #[serde(default)]
+    collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    interaction_shapes: Option<BlockShapes>,
+    #[serde(default)]
     state_properties: BTreeMap<String, StateProperty>,
     #[serde(default)]
     default_state: BTreeMap<String, String>,
@@ -269,6 +295,11 @@ pub struct Block {
     pub properties: BlockProperties,
     pub shapes: Option<BlockShapes>,
     pub collision_shapes: Option<BlockShapes>,
+    /// Independent overrides for actual entity queries; omitted kinds use the defaults.
+    pub outline_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    pub collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    /// Ray-face override; does not replace the outline hit point or create a hit.
+    pub interaction_shapes: Option<BlockShapes>,
     /// State properties of its own, which its template does not have.
     pub state_properties: BTreeMap<String, StateProperty>,
     /// State properties overlaid on the template default.
@@ -333,6 +364,7 @@ struct ItemFile {
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
     crafting_remainder: Option<String>,
+    place_block: Option<String>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -350,6 +382,9 @@ pub struct Item {
     /// What it leaves in the crafting grid (`Item.Properties.craftRemainder`):
     /// a vanilla item or one of the mod's own.
     pub crafting_remainder: Option<String>,
+    /// An ordinary `BlockItem` binding to a vanilla block or this namespace's block.
+    /// Components still come from `template`; placement retains this item's identity.
+    pub place_block: Option<String>,
 }
 
 /// `MobEffectCategory`.
@@ -447,6 +482,57 @@ pub struct MenuType {
     /// slots a player takes from but never puts into, each below `slots`.
     #[serde(default)]
     pub results: Vec<u16>,
+    /// a crafting grid over some of the slots, which crafts as vanilla's
+    /// crafting table does (`CraftingMenu`).
+    #[serde(default)]
+    pub crafting: Option<MenuCrafting>,
+    /// slots that show other containers' slots instead of the block
+    /// entity's, as a crafting station shows the chests beside it; a native
+    /// mod names the containers (`native_menu_links`).
+    #[serde(default)]
+    pub links: Option<MenuLinks>,
+}
+
+/// a mod menu type's linked slots (`links`): `count` slots from `from` on,
+/// which show the slots of the containers a native mod links them to
+/// (`native_menu_links`), in order, rather than the block entity's. The
+/// block entity never holds them; a linked slot with nothing behind it holds
+/// nothing and takes nothing.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuLinks {
+    /// the first linked slot.
+    pub from: u16,
+    /// how many slots, 1 or more.
+    pub count: u16,
+}
+
+impl MenuLinks {
+    fn range(&self) -> std::ops::Range<u32> {
+        u32::from(self.from)..u32::from(self.from) + u32::from(self.count)
+    }
+}
+
+/// a mod menu type's crafting grid (`crafting`): `size`x`size` slots from
+/// `grid` on, row by row, and the slot that shows what they craft
+/// (`ResultSlot`). The block entity holds the grid; the result is the
+/// menu's, never in the block entity.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuCrafting {
+    /// the grid's first slot.
+    pub grid: u16,
+    /// 2 (the inventory's grid) or 3 (a crafting table's); 3 by default.
+    #[serde(default = "MenuCrafting::default_size")]
+    pub size: u16,
+    /// the result slot, outside the grid and not one of `results`.
+    pub result: u16,
+}
+
+impl MenuCrafting {
+    fn default_size() -> u16 {
+        3
+    }
 }
 
 /// the most container or data slots a mod menu type has, as many as a mod
@@ -502,6 +588,22 @@ impl FileReader<'_> {
             return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
         }
         Ok(out)
+    }
+    /// A content file's path on disk, checked as [`read`](Self::read) checks it (the name,
+    /// the size), for a caller that copies it without reading it; `None` in an archive.
+    pub fn path(&self, name: &str) -> Result<Option<std::path::PathBuf>, String> {
+        check_path(name)?;
+        let Self::Dir(root) = self else {
+            return Ok(None);
+        };
+        let path = root.join(name);
+        let len = std::fs::metadata(&path)
+            .map_err(|e| format!("{name}: {e}"))?
+            .len();
+        if len > MAX_FILE {
+            return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
+        }
+        Ok(Some(path))
     }
 }
 
@@ -782,6 +884,9 @@ impl Content {
                 properties: file.properties,
                 shapes: file.shapes,
                 collision_shapes: file.collision_shapes,
+                outline_context_shapes: file.outline_context_shapes,
+                collision_context_shapes: file.collision_context_shapes,
+                interaction_shapes: file.interaction_shapes,
                 state_properties: file.state_properties,
                 default_state: file.default_state,
                 item: file.item,
@@ -812,6 +917,7 @@ impl Content {
                 rarity: file.rarity,
                 components: file.components,
                 crafting_remainder: file.crafting_remainder,
+                place_block: file.place_block,
             };
             check_item(&item).map_err(|e| format!("{name}: {e}"))?;
             if !ids.insert(item.id.clone()) {
@@ -947,6 +1053,50 @@ impl Content {
                     return Err(format!("{name}: result {r} is listed twice"));
                 }
             }
+            if let Some(c) = file.crafting {
+                let end = u32::from(c.grid) + u32::from(c.size) * u32::from(c.size);
+                if !matches!(c.size, 2 | 3) {
+                    return Err(format!("{name}: crafting size is 2 or 3"));
+                }
+                if end > u32::from(file.slots) || c.result >= file.slots {
+                    return Err(format!(
+                        "{name}: the crafting grid and result are slots below {}",
+                        file.slots
+                    ));
+                }
+                if (u32::from(c.grid)..end).contains(&u32::from(c.result)) {
+                    return Err(format!("{name}: the crafting result is in its grid"));
+                }
+                if file
+                    .results
+                    .iter()
+                    .any(|&r| r == c.result || (u32::from(c.grid)..end).contains(&u32::from(r)))
+                {
+                    return Err(format!(
+                        "{name}: results lists a crafting slot (the result is take-only already)"
+                    ));
+                }
+            }
+            if let Some(l) = file.links {
+                let linked = l.range();
+                if l.count == 0 || linked.end > u32::from(file.slots) {
+                    return Err(format!(
+                        "{name}: links are 1 or more slots below {}",
+                        file.slots
+                    ));
+                }
+                if file.results.iter().any(|&r| linked.contains(&u32::from(r))) {
+                    return Err(format!("{name}: results lists a linked slot"));
+                }
+                if let Some(c) = file.crafting {
+                    let end = u32::from(c.grid) + u32::from(c.size) * u32::from(c.size);
+                    if linked.contains(&u32::from(c.result))
+                        || (u32::from(c.grid)..end).any(|s| linked.contains(&s))
+                    {
+                        return Err(format!("{name}: links overlap the crafting slots"));
+                    }
+                }
+            }
             self.menu_types.push(MenuType { id: menu, ..file });
         }
         Ok(())
@@ -991,6 +1141,13 @@ fn check_item(item: &Item) -> Result<(), String> {
     if item.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
         return Err("max_stack_size is 1 to 99".into());
     }
+    if let Some(block) = &item.place_block
+        && (!namespaced_id(block)
+            || block.split_once(':').map(|(ns, _)| ns) != item.id.split_once(':').map(|(ns, _)| ns)
+                && !vanilla_id(block))
+    {
+        return Err("place_block is a vanilla block or a block in this item's namespace".into());
+    }
     check_components(&item.components, &["max_stack_size", "rarity"])
 }
 
@@ -1003,7 +1160,14 @@ fn check_block(file: &Block) -> Result<(), String> {
             file.template
         ));
     }
-    for shapes in file.shapes.iter().chain(file.collision_shapes.iter()) {
+    for shapes in file
+        .shapes
+        .iter()
+        .chain(file.collision_shapes.iter())
+        .chain(file.outline_context_shapes.values())
+        .chain(file.collision_context_shapes.values())
+        .chain(file.interaction_shapes.iter())
+    {
         shapes.check()?;
     }
     for (name, property) in &file.state_properties {
@@ -1301,6 +1465,49 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn place_block_checks_files_and_native_declarations() {
+        for (i, target) in ["ruby:frame", "minecraft:stone"].iter().enumerate() {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            let content = hmod(
+                &format!("place-block-{i}"),
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())],
+            )
+            .unwrap();
+            assert_eq!(content.items[0].place_block.as_deref(), Some(*target));
+        }
+        for (i, target) in ["stone", "other:frame", "ruby:Bad", "ruby:"]
+            .iter()
+            .enumerate()
+        {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            assert!(
+                hmod(
+                    &format!("bad-place-block-{i}"),
+                    MANIFEST_TEXT,
+                    &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())]
+                )
+                .is_err()
+            );
+            let mut content = Content::declared("ruby");
+            assert!(
+                content
+                    .declare(
+                        &[],
+                        &[Item {
+                            id: "ruby:empty_frame".into(),
+                            template: "minecraft:stick".into(),
+                            place_block: Some((*target).into()),
+                            ..Default::default()
+                        }]
+                    )
+                    .is_err()
+            );
+            assert!(content.items.is_empty());
+        }
+    }
+
+    #[test]
     fn blocks_and_items_declared_in_code_pass_the_files_checks() {
         let block = |id: &str| Block {
             id: id.into(),
@@ -1397,6 +1604,9 @@ capabilities = ["registries"]
                 template: "minecraft:iron_block".into(),
                 shapes: None,
                 collision_shapes: None,
+                outline_context_shapes: BTreeMap::new(),
+                collision_context_shapes: BTreeMap::new(),
+                interaction_shapes: None,
                 state_properties: BTreeMap::new(),
                 default_state: BTreeMap::new(),
                 properties: BlockProperties {
@@ -1553,6 +1763,10 @@ capabilities = ["registries"]
                 br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
             ),
             ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
+            (
+                "data/ruby/horizon/menu/station.json",
+                br#"{"slots": 16, "results": [11], "crafting": {"grid": 1, "result": 0}, "links": {"from": 12, "count": 4}}"#,
+            ),
         ];
         let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
         let menus: Vec<_> = content
@@ -1562,7 +1776,29 @@ capabilities = ["registries"]
             .collect();
         assert_eq!(
             menus,
-            [("ruby:bag", 4, 0, vec![]), ("ruby:press", 9, 2, vec![7, 8])]
+            [
+                ("ruby:bag", 4, 0, vec![]),
+                ("ruby:press", 9, 2, vec![7, 8]),
+                ("ruby:station", 16, 0, vec![11])
+            ]
+        );
+        let links: Vec<_> = content.menu_types.iter().map(|m| m.links).collect();
+        assert_eq!(
+            links,
+            [None, None, Some(super::MenuLinks { from: 12, count: 4 })]
+        );
+        let crafting: Vec<_> = content.menu_types.iter().map(|m| m.crafting).collect();
+        assert_eq!(
+            crafting,
+            [
+                None,
+                None,
+                Some(super::MenuCrafting {
+                    grid: 1,
+                    size: 3,
+                    result: 0
+                })
+            ]
         );
         for (case, file, why) in [
             ("menu-empty", r#"{"slots": 0}"#, "slots is 1 to 256"),
@@ -1583,6 +1819,61 @@ capabilities = ["registries"]
                 "result 1 is listed twice",
             ),
             ("menu-key", r#"{"slots": 3, "rows": 1}"#, "unknown field"),
+            (
+                "craft-size",
+                r#"{"slots": 20, "crafting": {"grid": 0, "size": 4, "result": 19}}"#,
+                "crafting size is 2 or 3",
+            ),
+            (
+                "craft-past",
+                r#"{"slots": 9, "crafting": {"grid": 1, "result": 0}}"#,
+                "grid and result are slots below 9",
+            ),
+            (
+                "craft-result-past",
+                r#"{"slots": 9, "crafting": {"grid": 0, "size": 2, "result": 9}}"#,
+                "grid and result are slots below 9",
+            ),
+            (
+                "craft-overlap",
+                r#"{"slots": 10, "crafting": {"grid": 0, "result": 4}}"#,
+                "the crafting result is in its grid",
+            ),
+            (
+                "craft-results",
+                r#"{"slots": 10, "results": [2], "crafting": {"grid": 0, "result": 9}}"#,
+                "results lists a crafting slot",
+            ),
+            (
+                "craft-key",
+                r#"{"slots": 10, "crafting": {"grid": 0, "result": 9, "width": 3}}"#,
+                "unknown field",
+            ),
+            (
+                "links-past",
+                r#"{"slots": 10, "links": {"from": 8, "count": 3}}"#,
+                "links are 1 or more slots below 10",
+            ),
+            (
+                "links-empty",
+                r#"{"slots": 10, "links": {"from": 2, "count": 0}}"#,
+                "links are 1 or more slots below 10",
+            ),
+            (
+                "links-results",
+                r#"{"slots": 10, "results": [5], "links": {"from": 4, "count": 2}}"#,
+                "results lists a linked slot",
+            ),
+            (
+                "links-grid",
+                r#"{"slots": 20, "crafting": {"grid": 1, "result": 0}, "links": {"from": 9, "count": 4}}"#,
+                "links overlap the crafting slots",
+            ),
+            (
+                "links-key",
+                r#"{"slots": 10, "links": {"from": 2, "count": 2, "rows": 1}}"#,
+                "unknown field",
+            ),
             ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),
         ] {
             let files: &[(&str, &[u8])] = &[("data/ruby/horizon/menu/a.json", file.as_bytes())];
@@ -2282,5 +2573,49 @@ capabilities = ["registries"]
         ] {
             assert!(check_path(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod context_shape_tests {
+    use super::*;
+    #[test]
+    fn context_shape_selectors_and_tables_are_validated() {
+        for selector in ["item", "player", "living", "other"] {
+            for channel in ["outline_context_shapes", "collision_context_shapes"] {
+                let text = format!(
+                    r#"{{"template":"minecraft:stone","{channel}":{{"{selector}":{{"default":[]}}}}}}"#
+                );
+                let _: BlockFile = serde_json::from_str(&text).unwrap();
+            }
+        }
+        for selector in ["none", "Item", "minecraft:item", "entity"] {
+            let text = format!(
+                r#"{{"template":"minecraft:stone","collision_context_shapes":{{"{selector}":{{"default":[]}}}}}}"#
+            );
+            assert!(serde_json::from_str::<BlockFile>(&text).is_err());
+        }
+        let mut block = Block {
+            template: "minecraft:stone".into(),
+            ..Default::default()
+        };
+        let bad = BlockShapes {
+            property: String::new(),
+            properties: vec![],
+            values: BTreeMap::new(),
+            default: Some(vec![[1., 0., 0., 0., 1., 1.]]),
+        };
+        block
+            .outline_context_shapes
+            .insert(ShapeEntityKind::Player, bad.clone());
+        assert!(check_block(&block).is_err());
+        block.outline_context_shapes.clear();
+        block
+            .collision_context_shapes
+            .insert(ShapeEntityKind::Item, bad.clone());
+        assert!(check_block(&block).is_err());
+        block.collision_context_shapes.clear();
+        block.interaction_shapes = Some(bad);
+        assert!(check_block(&block).is_err());
     }
 }

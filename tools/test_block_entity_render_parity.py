@@ -7,8 +7,10 @@ extractRenderState and submit, and captures what it submits: model vertices
 after setupAnim and the pose stack (sprite-local UVs, tint, normal, light),
 text calls and items. `examples/probe/block_entity_render_fixture` replays the case
 through Horizon's BlockEntityRenderer. Quads are matched by texture and
-position; colours compare vanilla's tint times the entity shader's
-`minecraft_mix_light` for the vanilla normal with Horizon's baked colour.
+position; colours compare vanilla's tint with Horizon's and world models compare
+their face normal too, since the entity shader (and a shader pack) applies
+`minecraft_mix_light` from it rather than Horizon baking the shade. The loom's
+GUI preview keeps its baked `Lighting.Entry.ITEMS_FLAT` colour.
 
   test_block_entity_render_parity.py [--filter SUBSTRING] [--detail N] [--tolerance EPS]
 """
@@ -63,6 +65,20 @@ def cases():
         for block in signs:
             side = lambda: {'lines': rng.choice(texts), 'color': rng.choice(DYES), 'glowing': rng.random() < 0.4}
             add(block, sign={'front': side(), 'back': side(), 'near': rng.random() < 0.5})
+    styled = [
+        {'text': 'Bold', 'bold': True, 'color': 'gold', 'extra': [{'text': ' plain', 'bold': False}, {'text': ' italic', 'italic': True}]},
+        {'text': 'A B', 'underlined': True, 'strikethrough': True,
+         'extra': [{'text': ' C', 'color': 'blue'}, {'text': ' D', 'italic': True}]},
+        {'text': 'WWW WWW WWW WWW WWW', 'bold': True, 'italic': True},
+        {'text': 'Grüße ΩЖ', 'italic': True, 'underlined': True},
+    ]
+    for block in ['oak_sign[rotation=3]', 'oak_wall_sign[facing=east]',
+                  'oak_hanging_sign[rotation=6,attached=true]', 'oak_wall_hanging_sign[facing=north]']:
+        for glowing, near in [(False, False), (True, False), (True, True)]:
+            add('minecraft:' + block, sign={'front': {'lines': styled, 'color': 'red', 'glowing': glowing},
+                'back': {'lines': [{'text': 'Secret text', 'obfuscated': True, 'bold': True},
+                                   {'text': 'plain'}, {'text': 'RESET', 'bold': False}, ''],
+                         'color': 'black', 'glowing': glowing}, 'near': near})
     patterns = ['minecraft:stripe_bottom', 'minecraft:creeper', 'minecraft:gradient', 'minecraft:flower',
                 'minecraft:border', 'minecraft:skull', 'minecraft:globe', 'minecraft:piglin']
     for color in ['white', 'red', 'light_gray', 'black']:
@@ -173,7 +189,13 @@ def mix(normal, lit=(L0, L1)):
     return min(1.0, (d(lit[0]) + d(lit[1])) * 0.6 + 0.4)
 
 
-def vanilla_quads(submits, lit=(L0, L1)):
+def vanilla_quads(submits, lit=(L0, L1), shaded=False):
+    """Vanilla's model quads as `{texture, v, rgb, alpha, light, overlay, normal}`.
+
+    The world path expects the tint alone and the face normal (the entity shader
+    applies `minecraft_mix_light` from it, as a shader pack does); GUI previews
+    (the loom) expect Horizon's baked `Lighting.Entry.ITEMS_FLAT` colour.
+    """
     quads, other = [], []
     for s in submits:
         custom = s['type'] == 'submitCustomGeometry'
@@ -184,12 +206,14 @@ def vanilla_quads(submits, lit=(L0, L1)):
         for i in range(0, len(verts), 4):
             q = verts[i:i + 4]
             tint = q[0][3] & 0xFFFFFFFF
-            # Custom geometry (beacon beams) is unlit; models get the entity shader's mix light.
-            b = 1.0 if custom else mix(q[0][8:11], lit)
+            # Custom geometry (beacon beams) is unlit; GUI models are baked on
+            # the CPU like Horizon's item renderer.
+            b = mix(q[0][8:11], lit) if (shaded and not custom) else 1.0
             ch = lambda shift: int(((tint >> shift) & 255) * b)
             quads.append({'texture': s['texture'], 'v': [v[:3] + v[4:6] for v in q],
                           'rgb': [ch(16), ch(8), ch(0)], 'alpha': tint >> 24, 'light': q[0][7],
-                          'overlay': q[0][6], 'type': s['renderType'], 'custom': custom})
+                          'overlay': q[0][6], 'type': s['renderType'], 'custom': custom,
+                          'normal': None if custom or shaded else q[0][8:11]})
     return quads, other
 
 
@@ -224,7 +248,9 @@ def pair(vq, rq):
 
 def compare_case(v, r, tol):
     problems = []
-    vq, other = vanilla_quads(v['submits'], FLAT if 'loom' in v['case'] else (L0, L1))
+    shaded = 'loom' in v['case']
+    vq, other = vanilla_quads(
+        v['submits'], FLAT if shaded else (L0, L1), shaded=shaded)
     for s in other:
         if s['type'] == 'submitText':
             continue
@@ -259,22 +285,46 @@ def compare_case(v, r, tol):
         if area(a['v']) > 1e-9 and (any(abs(x - y) > 1 for x, y in zip(a['rgb'], rgb)) or (got >> 24) != a['alpha']):
             problems.append(f'{a["texture"]} colour {a["rgb"]}/{a["alpha"]} != {rgb}/{got >> 24} at {a["v"]}')
             break
+        if a['normal'] is not None and area(a['v']) > 1e-9:
+            normal = [c / 127.0 for c in b['normal'][:3]]
+            if any(abs(x - y) > 0.02 for x, y in zip(a['normal'], normal)) or b['normal'][3] <= 0:
+                problems.append(f'{a["texture"]} normal {a["normal"]} != {normal}/{b["normal"][3]} at {a["v"]}')
+                break
         if a['light'] != light_coords(b['light']):
             problems.append(f'{a["texture"]} light {a["light"]:#x} != {light_coords(b["light"]):#x}')
             break
     vt = [s for s in v['submits'] if s['type'] == 'submitText' and s['text']]
     rt = r.get('texts', [])
-    if len(vt) != len(rt):
-        problems.append(f'{len(vt)} vanilla texts {[t["text"] for t in vt]} vs {len(rt)} Horizon texts {[t["text"] for t in rt]}')
-    for a, b in zip(vt, rt):
-        for k in ('text', 'x', 'y', 'color', 'outline', 'light'):
+    vg = [dict(g, outline=t['outline']) for t in vt for g in t['glyphs']]
+    rg = [dict(g, outline=t['outline']) for t in rt for g in t['glyphs']]
+    if len(vg) != len(rg):
+        problems.append(f'{len(vg)} vanilla text glyphs vs {len(rg)} Horizon text glyphs')
+    for a, b in zip(vg, rg):
+        for k in ('text', 'x', 'y', 'color', 'outline', 'style', 'light', 'matrix'):
             av, bv = a[k], b[k]
-            if k in ('color', 'outline'):
-                av &= 0xFFFFFFFF
-            if (abs(av - bv) > 1e-4) if isinstance(av, float) else av != bv:
-                problems.append(f'text {a["text"]!r} {k} {av!r} != {bv!r}')
-        if any(abs(x - y) > tol * (1 + abs(x)) for x, y in zip(a['matrix'], b['matrix'])):
-            problems.append(f'text {a["text"]!r} matrix {a["matrix"]} != {b["matrix"]}')
+            if k in ('color', 'outline'): av &= 0xFFFFFFFF
+            if k == 'matrix':
+                same = all(abs(x - y) <= tol * (1 + abs(x)) for x, y in zip(av, bv))
+            elif isinstance(av, float):
+                same = abs(av - bv) <= 1e-4
+            else:
+                same = av == bv
+            if not same:
+                problems.append(f'text glyph {a["text"]!r} {k} {av!r} != {bv!r}')
+    # Compare the actual baked quads too, independent of run grouping and
+    # vertex order. Obfuscated glyph choices are intentionally nondeterministic.
+    # Each side is kept separate by its text matrix.
+    for matrix in {tuple(t['matrix']) for t in vt}:
+        va = [t for t in vt if tuple(t['matrix']) == matrix]
+        ra = [t for t in rt if all(abs(x - y) <= tol * (1 + abs(x)) for x, y in zip(matrix, t['matrix']))]
+        if any(any(g['style'][4] for g in t['glyphs']) for t in va): continue
+        # Round only the ordering key: equivalent f32 sums must pair before
+        # comparing their original coordinates at the tolerance below.
+        key = lambda p: tuple(round(n, 4) for n in p[:3]) + (p[3],)
+        a = sorted((tuple(p) for t in va for p in t.get('textVertices', [])), key=key)
+        b = sorted((tuple(p) for t in ra for p in t['textVertices']), key=key)
+        if len(a) != len(b) or any(any(abs(x - y) > 1e-4 for x, y in zip(p[:3], q[:3])) or p[3] != q[3] for p, q in zip(a, b)):
+            problems.append(f'text geometry differs ({len(a)} vanilla vs {len(b)} Horizon vertices)')
     return problems
 
 
@@ -299,7 +349,7 @@ def main():
         if result.returncode:
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
-         *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaBlockEntityRenderOracle'))], 'compile-java')
+         *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaTextDisplayRenderOracle', 'VanillaBlockEntityRenderOracle'))], 'compile-java')
     run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaBlockEntityRenderOracle',
          inputs, build / 'vanilla.jsonl'], 'vanilla')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]

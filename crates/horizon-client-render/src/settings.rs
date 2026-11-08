@@ -338,11 +338,21 @@ impl Settings {
             .map_or(-1, |i| i as i32)
     }
     pub fn load(path: &Path) -> Self {
-        let horizon = path
+        let mut horizon = path
             .parent()
             .map(crate::graphics::Graphics::load)
             .unwrap_or_default();
         crate::mipmap::set_dither_cutouts(horizon.dither_cutout_mips);
+        if let Some(dir) = path.parent() {
+            let (key, _) = crate::shader_pack_list::resolve(
+                &crate::logging::shared_dir(dir).join(crate::shader_pack_list::DIR),
+                &horizon.shader_pack,
+            );
+            if key != horizon.shader_pack {
+                horizon.shader_pack = key;
+                horizon.save(dir);
+            }
+        }
         let controller = path
             .parent()
             .map(crate::gamepad::PadSettings::load)
@@ -380,6 +390,10 @@ impl Settings {
         // Horizon's own key bindings live in horizon-extras.txt, not in options.txt.
         let emote = settings.extras.emote_key.clone();
         settings.keys.set("key.emote", &emote);
+        // `Options.load`: `sharePresence` decides what the friends service posts.
+        crate::social::set_share_presence(crate::social::SharePresence::of(
+            settings.file.int("sharePresence").clamp(0, 2) as u8,
+        ));
         settings.describe_for_crashes();
         // Options.load: the backend asked for at startup, what a restart is measured from.
         Self {
@@ -820,6 +834,7 @@ pub enum Opt {
     /// Horizon's controller settings (`horizon-controller.txt`).
     PadEnabled,
     PadVibration,
+    PadPlayInBackground,
     PadAdaptiveTriggers,
     PadLightbar,
     PadLookSensitivity,
@@ -829,12 +844,16 @@ pub enum Opt {
     PadRepeatInterval,
     PadInvertX,
     PadInvertY,
+    PadCraftOnServers,
     PadToggleSneak,
     PadMoveDeadzone,
     PadLookDeadzone,
     PadTriggerThreshold,
     PadGlyphs,
+    /// A Nintendo pad's face buttons by place or by letter (`PadSettings::nintendo_letters`).
+    PadNintendoButtons,
     PadKeyboard,
+    PadGameplayGuide,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
     ModelPart(usize),
     /// 3D skin layers: the player's outer layer as extruded slabs.

@@ -6,6 +6,7 @@
 use super::Game;
 use horizon_client::lan::{
     entity::{EntityState, Riding, States},
+    guest::Guest,
     hub::Hub,
     playerdata::ints_uuid,
 };
@@ -50,6 +51,8 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
         vertical_collision: false,
         horizontal_collision: false,
         needs_sync: false,
+        sync_position: false,
+        stepped: false,
         idle: false,
         bare: false,
         leash: None,
@@ -157,10 +160,17 @@ impl Game<'_> {
 
     /// Who rides what (`Entity.getPassengers`): the players in their vehicles and
     /// mobs on mobs.
-    pub(super) fn lan_riding(&self, guests: &[(u32, i32)], riding: &mut Riding) {
+    pub(super) fn lan_riding(&self, guests: &[Guest], riding: &mut Riding) {
         riding.clear();
-        // The server's players in their boats and minecarts.
-        for &(vehicle, guest) in guests {
+        // The server's players in their boats and minecarts, in the order they
+        // got in: the first one drives (`getControllingPassenger`), and its
+        // client is the one that moves the vehicle.
+        let mut seated: Vec<(u64, u32, i32)> = guests
+            .iter()
+            .filter_map(|g| Some((g.vehicle_order, g.vehicle?, g.entity_id)))
+            .collect();
+        seated.sort_by_key(|&(order, ..)| order);
+        for (_, vehicle, guest) in seated {
             riding.add(vehicle as i32, guest);
         }
         for m in self.mobs.iter().filter(|m| !m.removed) {
@@ -205,6 +215,10 @@ impl Game<'_> {
             e.leash = self.boat_leash_link(b, &guests);
             e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];
             e.meta = vehicle_meta(b.hurt_time, b.hurt_dir, b.damage);
+            // Entity.DATA_SHARED_FLAGS_ID: FLAG_ONFIRE.
+            if b.fire_ticks > 0 {
+                e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
             // AbstractBoat.DATA_ID_PADDLE_LEFT and DATA_ID_PADDLE_RIGHT.
             // Omitted false values must reset clients that saw a true value,
             // including when the controlling passenger dismounts mid-stroke.
@@ -462,7 +476,7 @@ impl Game<'_> {
     /// The synched data of a text, block or item display kept unsimulated,
     /// from its compound (`Display.readAdditionalSaveData`), with the
     /// defaults to send when a value goes back to one.
-    fn lan_display_data(&self, tag: &Tag, hub: &mut Hub, e: &mut EntityState) {
+    pub(super) fn lan_display_data(&self, tag: &Tag, hub: &mut Hub, e: &mut EntityState) {
         use horizon_client::text_display::{display_data, text_display_data};
         let empty = Tag::Compound(Default::default());
         let (meta, defaults) = match e.kind.as_str() {

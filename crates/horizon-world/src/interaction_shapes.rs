@@ -34,3 +34,26 @@ impl<'r> InteractionShapes<'r> {
             .ok_or_else(|| invalid("missing interaction shape"))
     }
 }
+
+/// `BlockGetter.clipWithInteractionOverride`: retain the outline's point and inside
+/// flag; only an earlier interaction entry changes its face. An interaction cannot
+/// create a target when the outline misses. Both inputs are decomposed local boxes.
+pub fn clip_with_interaction_override<I, J>(
+    outline: I,
+    interaction: J,
+    start: horizon_core::geometry::Vec3,
+    end: horizon_core::geometry::Vec3,
+    block: horizon_core::position::BlockPos,
+) -> Option<horizon_core::geometry::BlockHit>
+where
+    I: Iterator<Item = horizon_core::geometry::Aabb> + Clone,
+    J: Iterator<Item = horizon_core::geometry::Aabb> + Clone,
+{
+    let mut hit = VoxelShape::clip_boxes(outline, start, end, block)?;
+    if let Some(other) = VoxelShape::clip_boxes(interaction, start, end, block)
+        && other.location.distance_squared(start) < hit.location.distance_squared(start)
+    {
+        hit.direction = other.direction;
+    }
+    Some(hit)
+}
