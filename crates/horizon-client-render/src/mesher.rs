@@ -652,7 +652,11 @@ struct Info {
     /// and a full collision shape. The only block leaf culling treats as solid.
     opaque_cube: bool,
     blocks_flow: bool,
+    /// `instanceof IceBlock` (frosted ice too): fluids read it.
     ice: bool,
+    /// Regular ice, the block the Opaque Ice option draws opaque; frosted ice
+    /// keeps its see-through, cracking look.
+    opaque_ice: bool,
     sturdy: u8,
     /// Occlusion face per direction: 0 empty, 1 the full-block singleton, 2 partial.
     face: [u8; 6],
@@ -843,9 +847,8 @@ impl MeshTables {
                     s.full_collision,
                 ),
                 blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
-                // Opaque Ice targets the regular Ice block; Frosted Ice extends IceBlock
-                // but keeps its see-through, cracking look.
-                ice: s.has_class("IceBlock") && !s.has_class("FrostedIceBlock"),
+                ice: s.has_class("IceBlock"),
+                opaque_ice: s.has_class("IceBlock") && !s.has_class("FrostedIceBlock"),
                 sturdy: s.sturdy_full,
                 face,
                 cover,
@@ -1713,7 +1716,7 @@ impl Mesher<'_> {
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
                         // Opaque Ice: faces between two ice blocks are hidden, as they are
                         // between two opaque blocks.
-                        let opaque_ice = self.opaque_ice && state.ice && other.ice;
+                        let opaque_ice = self.opaque_ice && state.opaque_ice && other.opaque_ice;
                         let culled_leaf = match self.leaf_culling {
                             LeafCullingMode::Hollow | LeafCullingMode::Hidden => {
                                 state.leaves
@@ -1962,8 +1965,9 @@ impl Mesher<'_> {
         };
         // Opaque leaves (forceOpaque), leaves a leaf-culling mode proved internal and Opaque
         // Ice draw in the solid layer whatever their sprite.
-        let force_solid =
-            !self.cutout_leaves && state.leaves || interior_leaf || self.opaque_ice && state.ice;
+        let force_solid = !self.cutout_leaves && state.leaves
+            || interior_leaf
+            || self.opaque_ice && state.opaque_ice;
         let own = TileLayer::Layer {
             layer: face.layer as u16,
             translucent: face.translucent,
