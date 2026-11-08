@@ -997,7 +997,10 @@ pub fn detail_lines(
     }
     lines.extend(jukebox_line(stack, info, &display, translate));
     // Trim.addToTooltip.
-    if let Some((material, pattern)) = data.and_then(|d| d.trim.as_ref()) {
+    if let Some((material, pattern)) = data
+        .and_then(|d| d.trim.as_ref())
+        .and_then(crate::item_data::trim::named)
+    {
         let short = |s: &str| s.trim_start_matches("minecraft:").to_owned();
         lines.push(text("item.minecraft.smithing_template.upgrade"));
         lines.push(format!(
