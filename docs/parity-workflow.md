@@ -140,6 +140,20 @@ Vanilla seeds every unseeded random (`RandomSource.create()`: each entity's own,
 
 One draw too many or too few shifts every later value, so read the first field that differs. Not covered: randoms on other threads (worldgen and chunk loading: keep scenarios in loaded chunks), the levels other than the player's, randoms created before the step (the server's, the level's sound seeds) except the level's own, `Level.randValue` (random-tick positions) and other `ThreadLocalRandom` or `Math.random` draws, and anything a tick draws from the level's random before what you read (each tick shuffles the chunks near players with it, even with `spawn_mobs` off).
 
+### Fuzzing scenarios
+
+`tools/parity_fuzz.py` runs small generated scenarios in vanilla and Horizon and reports each divergence once, shrunk, with a reproduction (#12498). A batch of scenarios runs as one command-exec script (`test_command_exec_parity.py --groups-file`). It is a tool to run by hand, not a harness: `parity.py` never selects it.
+
+```sh
+python3 tools/parity_fuzz.py --smoke --binary target/fast/horizon-client.exe   # fixed scenarios that must match (~30 s)
+python3 tools/parity_fuzz.py --replay scenarios.json                               # run these scenarios (a report's, edited)
+```
+
+- **Scenarios.** A scenario is a seed and steps: summon (with NBT), place a block (with NBT), a command, ticks, a dispenser activation, an unload and reload, and reads (`/data get`). Each gets a chunk of its own far from the player (x 4096 and up, y 300, on a stone floor), forceloaded, and syncs both engines' randoms first ("Randoms that repeat"). A reload removes the forced ticket, ticks until both engines saved and dropped the chunk (a guard checks vanilla did), and loads it back: a real save and load through each engine's chunk and entity storage. Summoned entities get fixed UUIDs, so reads find them without selectors.
+- **Comparison.** A `/data get` read is parsed as SNBT and compared field by field, so a difference names its field. Key order is not compared, nor the order of `attributes` (vanilla's own order changes run to run). Other commands compare like the harness (feedback, styles, results). `ALLOWED` in the script lists the differences that are not bugs, each with its reason.
+- **Grouping and shrinking.** Each diverging read is grouped by family, subject type, whether the read came after a reload, and first differing field. Each group's smallest scenario is shrunk (steps and NBT keys dropped, tick counts halved) while that group's divergence stays, trying all edits of a round in one batch. `report.json` in the work directory lists the groups, largest first, each with its seeds, its shrunk scenario as commands, and its differences.
+- **Triage before filing.** A group is a lead, not a bug: read the vanilla source for the field, check it isn't a seed-sync limit (above) or harness noise, and search existing issues first.
+
 ## Reading vanilla
 
 Besides the Vineflower sources in `.local/minecraft/<version>/sources/`, `tools/rea_vanilla.py` queries the shipped bytecode through REA (callers through lambdas, overloads, a second decompiler); see [decompilation status](decompilation-status.md#querying-the-shipped-bytecode-with-rea).
