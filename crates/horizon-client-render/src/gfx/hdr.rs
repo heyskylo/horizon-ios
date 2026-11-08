@@ -85,8 +85,8 @@ struct Targets {
 }
 
 /// The float frame with HUD coverage (`hud_coverage::supported`, docs/design/hdr-linear-light.md
-/// "The HUD and menus"): the default world draws write light directly; marked fallback frames
-/// turn their marks into light after the world and the hand (`resolve`); the tone curve eases it into the peak after the post effects (`tonemap`); the
+/// "The HUD and menus"): the default world draws write light directly; the tone curve eases
+/// it into the peak after the post effects (`tonemap`); the
 /// camera overlays draw on that light; the HUD draws on a target of its own,
 /// the world clipped to white (`keep_world`); and the last pass composites the HUD over the
 /// world's light by its coverage (`fs_hdr_layered`), as the menu blur does before it blurs
@@ -543,6 +543,7 @@ impl Hdr {
 
     /// On the layered frame, after the world and the hand drew and marked it: the marks
     /// become light in the frame (`fs_resolve`).
+    #[cfg(test)]
     pub fn resolve(
         &self,
         encoder: &mut wgpu::CommandEncoder,
