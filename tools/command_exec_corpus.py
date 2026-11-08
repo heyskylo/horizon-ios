@@ -1582,9 +1582,12 @@ def dispensed_spawn_egg_persistence():
     and never calls `Mob.setPersistenceRequired`: the mob saves
     `PersistenceRequired: 0b`, as one from a spawn egg used by hand does. So
     `Mob.checkDespawn` removes the zombie at once, far from every player,
-    while the pig, which is never removed when far away, stays."""
+    while the pig, which is never removed when far away, stays. The elder
+    guardian's and copper golem's constructors require persistence (1b)."""
     x, z, y = 5312, 5120, 300
-    eggs = [(x + 2, 'zombie', False), (x + 6, 'pig', True)]
+    # (dispenser x, mob, saved PersistenceRequired, or None once despawned)
+    eggs = [(x + 2, 'zombie', None), (x + 6, 'pig', 0), (x + 10, 'elder_guardian', 1),
+            (x + 14, 'copper_golem', 1)]
     ops = [*setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
            {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
            *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
@@ -1596,13 +1599,13 @@ def dispensed_spawn_egg_persistence():
 
     def reads():
         out = []
-        for _, kind, stays in eggs:
+        for _, kind, saved in eggs:
             mob = f'@e[type=minecraft:{kind},x={x},y={y - 8},z={z},dx=16,dy=24,dz=16,limit=1]'
-            if stays:
-                out += [cmd(f'/execute if entity {mob}', expect_result=1),
-                        cmd(f'/data get entity {mob} PersistenceRequired', expect_result=0)]
-            else:
+            if saved is None:
                 out.append(cmd(f'/execute unless entity {mob}', expect_result=1))
+            else:
+                out += [cmd(f'/execute if entity {mob}', expect_result=1),
+                        cmd(f'/data get entity {mob} PersistenceRequired', expect_result=saved)]
         return out
 
     ops += reads()
