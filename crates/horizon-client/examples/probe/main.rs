@@ -86,6 +86,7 @@ mod particle_providers_probe;
 mod pick_block_data_fixture;
 mod place_recipe_fixture;
 mod player_sync_fixture;
+mod portal_tickets_fixture;
 mod raid_fixture;
 mod random_tick_sections_probe;
 mod recipe_book_fixture;
@@ -202,6 +203,7 @@ probes! {
     pick_block_data_fixture,
     place_recipe_fixture,
     player_sync_fixture,
+    portal_tickets_fixture,
     raid_fixture,
     random_tick_sections_probe,
     recipe_book_fixture,
