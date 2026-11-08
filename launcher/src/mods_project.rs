@@ -991,6 +991,17 @@ impl Launcher {
         };
         let mut detail = vec![v.published.get(..10).unwrap_or_default().to_string()];
         detail.extend(fitted.fit.clone());
+        let changelog = fitted.changelog.trim();
+        if !changelog.is_empty() {
+            detail.push(
+                changelog
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
         let right = match installed {
             true => caps(tr("Installed")).text_color(t.muted).into_any_element(),
             false => {

@@ -1962,7 +1962,14 @@ pub enum MobEvent {
         ambient: Vec<&'static str>,
         color: u32,
     },
-    /// Melee or ranged damage to another mob.
+    /// Damage that bypasses `EnchantmentHelper.doPostAttackEffects` (roars,
+    /// beams, retaliation and hot-cube contact).
+    DamageMob {
+        target: u32,
+        amount: f32,
+        source: Damage,
+    },
+    /// An attack that runs post-attack effects when the hit lands.
     AttackMob {
         target: u32,
         amount: f32,

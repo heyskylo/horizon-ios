@@ -185,6 +185,7 @@ pub mod compositor;
 pub(crate) mod core_lines;
 pub(crate) mod core_sky;
 mod cull;
+mod dx12_compiler;
 mod end_sky;
 pub mod entity_skin;
 mod flat;
@@ -241,6 +242,7 @@ mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
 pub mod world_primitives;
+mod world_warp;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
 /// its fixed-point UVs (`terrain.wgsl`'s `terrain_uv`).
@@ -1206,6 +1208,8 @@ pub struct Renderer {
     solid_cutout: SolidPipeline,
     translucent: wgpu::RenderPipeline,
     translucent_mark: wgpu::RenderPipeline,
+    /// A native mod's world warp (`world_warp`): nothing made until a mod gives one.
+    world_warps: world_warp::WorldWarps,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
     /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
@@ -1956,11 +1960,14 @@ fn mip_chain(
 /// `allow_nonconformant` offers the adapters wgpu hides for reporting no Vulkan
 /// conformance version: Mesa's hasvk, which drives Ivy Bridge and Haswell,
 /// reports 0.0.0.0 while it works. `open_device` asks for them only on a second
-/// try at a backend that had no adapter at all.
+/// try at a backend that had no adapter at all. On DirectX 12, `dx12_compiler`
+/// compiles the shaders (`gfx/dx12_compiler.rs`), unless `WGPU_DX12_COMPILER`
+/// names another.
 fn instance_descriptor(
     backends: wgpu::Backends,
     window: Option<&Arc<Window>>,
     allow_nonconformant: bool,
+    dx12_compiler: wgpu::Dx12Compiler,
 ) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     if let Some(window) = window {
@@ -1980,6 +1987,7 @@ fn instance_descriptor(
             .flags
             .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     }
+    descriptor.backend_options.dx12.shader_compiler = dx12_compiler;
     let mut descriptor = descriptor.with_env();
     if allow_nonconformant {
         descriptor
@@ -2378,30 +2386,19 @@ async fn open_backend(
     allow_cpu: bool,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
-    let instance = wgpu::Instance::new(instance_descriptor(
-        backends,
-        Some(window),
-        allow_nonconformant,
-    ));
-    let surface = if offscreen {
-        None
-    } else {
-        match instance.create_surface(window.clone()) {
-            Ok(surface) => Some(surface),
-            Err(e) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
-        }
+    let open = |dx12_compiler| {
+        wgpu::Instance::new(instance_descriptor(
+            backends,
+            Some(window),
+            allow_nonconformant,
+            dx12_compiler,
+        ))
     };
-    let adapter = match instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: surface.as_ref(),
-            force_fallback_adapter: false,
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(adapter) => adapter,
-        Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
+    let instance = open(wgpu::Dx12Compiler::Fxc);
+    let (surface, adapter) = match surface_and_adapter(&instance, window, offscreen).await {
+        Ok(found) => found,
+        Err(NoDevice::Failed(e)) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
+        Err(NoDevice::NoAdapter(e)) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
     };
     // NoAdapter, so `open_with_retry` asks again: with the non-conformant
     // adapters shown, wgpu ranks a real GPU (hasvk on Ivy Bridge or Haswell)
@@ -2411,6 +2408,27 @@ async fn open_backend(
             "{name}: only a software adapter ({})",
             adapter.get_info().name
         )));
+    }
+    // An integrated GPU on DirectX 12 compiles with DXC: the same request
+    // again, on an instance that loads the DLL beside the game. Anything that
+    // goes wrong keeps the FXC instance.
+    let forced = dx12_compiler::forced();
+    let dxc = if dx12_compiler::wants_dxc(&adapter.get_info(), forced) {
+        open_dxc(&adapter.get_info(), window, offscreen, open).await
+    } else {
+        None
+    };
+    let dxc_found = dxc.is_some();
+    let (instance, surface, adapter) = dxc.unwrap_or((instance, surface, adapter));
+    if adapter.get_info().backend == wgpu::Backend::Dx12 {
+        crate::crash::set_detail(
+            "DirectX 12 shader compiler",
+            match (forced, dxc_found) {
+                (true, _) => "WGPU_DX12_COMPILER",
+                (false, true) => "DXC",
+                (false, false) => "FXC",
+            },
+        );
     }
     describe_adapter(&adapter);
     let info = adapter.get_info();
@@ -2498,6 +2516,73 @@ async fn open_backend(
         }
         Err(e) => Err(NoDevice::Failed(format!("{name} device: {e}"))),
     }
+}
+/// A surface for `window` (none `offscreen`) and the adapter `open_backend`
+/// asks `instance` for. `Failed` is the surface's error, `NoAdapter` the
+/// request's.
+async fn surface_and_adapter(
+    instance: &wgpu::Instance,
+    window: &Arc<Window>,
+    offscreen: bool,
+) -> std::result::Result<(Option<wgpu::Surface<'static>>, wgpu::Adapter), NoDevice> {
+    let surface = if offscreen {
+        None
+    } else {
+        Some(
+            instance
+                .create_surface(window.clone())
+                .map_err(|e| NoDevice::Failed(e.to_string()))?,
+        )
+    };
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: surface.as_ref(),
+            force_fallback_adapter: false,
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
+    Ok((surface, adapter))
+}
+/// The DirectX 12 instance, surface and adapter with DXC for the integrated
+/// GPU `fxc` (`gfx/dx12_compiler.rs`), `open` making the instance; `None`, with
+/// one line in the log, when the DLL is missing, doesn't load, or the instance
+/// offers another GPU: the FXC instance stays.
+async fn open_dxc(
+    fxc: &wgpu::AdapterInfo,
+    window: &Arc<Window>,
+    offscreen: bool,
+    open: impl FnOnce(wgpu::Dx12Compiler) -> wgpu::Instance,
+) -> Option<(
+    wgpu::Instance,
+    Option<wgpu::Surface<'static>>,
+    wgpu::Adapter,
+)> {
+    let Some(dll) = dx12_compiler::bundled_dll() else {
+        log::info!(
+            "Horizon renderer: no {} beside the game; DirectX 12 compiles shaders with FXC",
+            dx12_compiler::DLL
+        );
+        return None;
+    };
+    let instance = open(dx12_compiler::dxc(&dll));
+    let why = match surface_and_adapter(&instance, window, offscreen).await {
+        Ok((surface, adapter)) if dx12_compiler::same_adapter(fxc, &adapter.get_info()) => {
+            log::info!(
+                "Horizon renderer: DirectX 12 compiles shaders with DXC ({}) on this integrated GPU",
+                dll.display()
+            );
+            return Some((instance, surface, adapter));
+        }
+        Ok((_, adapter)) => format!("it offered another GPU, {}", adapter.get_info().name),
+        Err(NoDevice::Failed(e) | NoDevice::NoAdapter(e)) => e,
+    };
+    log::warn!(
+        "Horizon renderer: DXC from {} didn't load ({why}); DirectX 12 compiles shaders with FXC",
+        dll.display()
+    );
+    None
 }
 /// What to tell a player whose system offers no usable graphics adapter.
 /// Vulkan is loaded at run time (the game links no graphics library), so a
@@ -4756,6 +4841,7 @@ impl Renderer {
             // and cave culling can drop the listed count below MIN_SECTIONS on a normal view:
             // so Metal draws vanilla terrain flat at any count.
             let min_sections = if flat::is_broken_intel_vulkan(&info)
+                || flat::is_adreno_dx12(&info)
                 || info.backend == wgpu::Backend::Metal
                 || std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
             {
@@ -4820,6 +4906,16 @@ impl Renderer {
         // (`follow_packed_layout`).
         let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
         packed::pack_quads(packed_quads);
+        // A native mod's world warp builds its pipelines with these layouts once it is given one.
+        let world_warps = world_warp::WorldWarps::new(world_warp::Kit {
+            terrain: bindings.clone(),
+            pages: flat.as_ref().map(|f| f.draw_layout.clone()),
+            entity: entity_bindings.clone(),
+            static_entity: static_entity_bindings.clone(),
+            format: frame_format,
+            sprite_constants,
+            hdr_output: hdr_output.is_some(),
+        });
         let visbuf = flat
             .as_ref()
             .filter(|_| visbuffer::wanted(&device))
@@ -4970,6 +5066,7 @@ impl Renderer {
             solid_cutout,
             translucent,
             translucent_mark,
+            world_warps,
             flat_on: flat.is_some(),
             packed_quads,
             cull_on: cull.is_some(),
@@ -8441,10 +8538,37 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&crosshair_globals),
         );
+        let pack_terrain = !frame.title
+            && self
+                .pack_post
+                .as_ref()
+                .and_then(|p| p.1.as_ref())
+                .is_some_and(|p| p.has_terrain());
+        // A native mod's world warp (`world_warp`), asked once a frame. While it draws, nothing is
+        // left out by where it was (the frustum, the caves, occlusion, faces turned away): the warp
+        // may bring it into view. Its frames keep to the per-section draws its pipelines are built
+        // for. A shader pack that draws the terrain itself (`pack_terrain`) isn't warped.
+        let warp_on = !frame.title && {
+            let warp = native_render::world_warp();
+            self.world_warps.frame(
+                &self.device,
+                &mut self.uploads,
+                &mut encoder,
+                &warp,
+                frame.camera,
+                // (the frame's partial tick: `weather::Time::new`'s third value)
+                frame.weather_time.values[2],
+                !pack_terrain,
+            )
+        };
         // Frustum culling and camera-relative origins.
         let cull_proj = views.cull().view_proj(pose);
         let view = Frustum {
-            planes: frustum(cull_proj),
+            planes: if warp_on {
+                [Vec4::W; 6]
+            } else {
+                frustum(cull_proj)
+            },
         };
         let camera = frame.camera;
         let camera_section = camera_section(camera, self.layout.min_y());
@@ -8452,7 +8576,7 @@ impl Renderer {
         // (above the screen's top, the far shore, the trees against the sky).
         let mirror_plane = frame
             .water_plane
-            .filter(|_| !frame.title && self.wants_water_plane());
+            .filter(|_| !frame.title && !warp_on && self.wants_water_plane());
         let mirror = mirror_plane.map(|plane| Frustum {
             planes: frustum(mirror_view_projection(
                 cull_proj,
@@ -8462,11 +8586,11 @@ impl Renderer {
         // Solid quads facing away from the eye are left out: the bob moves
         // the eye off `camera`, so it is found from the projection. With the mirror, those
         // facing its eye are kept too: it sits straight below, at this camera-relative y.
-        let eye = projection_center(cull_proj).filter(|_| self.sides_on);
+        let eye = projection_center(cull_proj).filter(|_| self.sides_on && !warp_on);
         let mirror_low = mirror_plane
             .zip(eye)
             .map(|(plane, eye)| 2.0 * (plane - frame.camera.y as f32) - eye.y);
-        let culling = !frame.title && frame.cave_culling;
+        let culling = !frame.title && frame.cave_culling && !warp_on;
         if culling {
             crate::spans::time("occlusion", || {
                 self.start_occlusion(camera, frame.detail_distance)
@@ -8487,12 +8611,6 @@ impl Renderer {
                 native.shadow.as_ref()?;
                 native.frame.shadow_view(frame)
             });
-        let pack_terrain = !frame.title
-            && self
-                .pack_post
-                .as_ref()
-                .and_then(|p| p.1.as_ref())
-                .is_some_and(|p| p.has_terrain());
         // `LevelRenderer.extractSectionDrawGroups`' fade-in time, for the instances.
         let fade_ms = fade_millis(frame.chunk_fade);
         // GPU culling's fading sections, decided at `fades.now`: before the gate, the record
@@ -8526,7 +8644,8 @@ impl Renderer {
             && !pack_terrain
             && shadow_view.is_none()
             && mirror_plane.is_none()
-            && !displaced;
+            && !displaced
+            && !warp_on;
         #[cfg(debug_assertions)]
         if gpu_frame {
             if self.gpu_checks.is_multiple_of(64) {
@@ -8821,6 +8940,7 @@ impl Renderer {
                     && self.multi_draw
                     // Occlusion is found from the camera, not the mirror's eye.
                     && mirror.is_none()
+                    && !warp_on
                     // It tests the CPU's lists, which leave out GPU culling's sections.
                     && !gpu_frame
                     && visible.len() >= c.min_sections
@@ -8834,7 +8954,7 @@ impl Renderer {
         // ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
         // then the rest; phase 2 likewise. A fading list's quads all draw in the
         // cutout pass.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        let split_solid = self.info.backend == wgpu::Backend::Metal && !warp_on;
         let parts = |fading: bool| -> &'static [(u8, Quads)] {
             match (split_solid, fading) {
                 (false, _) => &[(0, Quads::All)],
@@ -9394,6 +9514,7 @@ impl Renderer {
         // path.
         let oit_on = self.improved_transparency
             && !frame.title
+            && !warp_on
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && self.native.is_none()
             && oit::supported(&self.device);
@@ -9807,6 +9928,7 @@ impl Renderer {
                     // They copy the CPU's lists alone (GPU culling is never offered
                     // where vanilla frames draw flat).
                     && !gpu_frame
+                    && !warp_on
                     && !self.draws.is_empty()
                     && (listed >= flat.min_sections
                         || pack_terrain
@@ -10355,16 +10477,25 @@ impl Renderer {
         let material = self
             .native
             .as_ref()
-            .filter(|_| !frame.title)
+            .filter(|_| !frame.title && !warp_on)
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
-        let solid_pipeline = material.map_or(self.solid.get(hdr), |(m, _)| &m.solid);
+        // A world warp's pipelines in place of the terrain's and the entities' (`warp_on`).
+        let warped = self.world_warps.pipelines().filter(|_| warp_on);
+        let warp_group = self.world_warps.group().filter(|_| warp_on);
+        let solid_pipeline = match warped {
+            Some(w) => w.solid.get(hdr),
+            None => material.map_or(self.solid.get(hdr), |(m, _)| &m.solid),
+        };
         // Two solid passes only where a discard costs the GPU its hidden surface
         // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
         // would double the solid draw calls and vertex work for nothing.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
-        let translucent_pipeline = material.map_or(&self.translucent, |(m, _)| &m.translucent);
+        let split_solid = self.info.backend == wgpu::Backend::Metal && !warp_on;
+        let translucent_pipeline = match warped {
+            Some(w) => &w.translucent,
+            None => material.map_or(&self.translucent, |(m, _)| &m.translucent),
+        };
         let pack_flat = material.and_then(|(m, _)| m.flat.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
         // left: it is stored across the pass that ends before the copy.
@@ -10384,6 +10515,7 @@ impl Renderer {
             .filter(|n| {
                 !frame.title
                     && !pack_draws_terrain
+                    && !warp_on
                     && n.material.as_ref().is_some_and(|m| m.writes_surface)
             })
             .map(|n| n.frame.surface_view.clone());
@@ -10686,6 +10818,9 @@ impl Renderer {
                     let pulled = material.is_none() && self.flat.is_some();
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
+                    if let Some(group) = warp_group {
+                        pass.set_bind_group(2, group, &[]);
+                    }
                     match cull {
                         Some(cull) => {
                             // Phase 1 and the boxes against its depth (in
@@ -10817,7 +10952,7 @@ impl Renderer {
             if let Some(n) = self
                 .native
                 .as_ref()
-                .filter(|_| !frame.title && !pack_draws_terrain)
+                .filter(|_| !frame.title && !pack_draws_terrain && !warp_on)
                 && let Some(d) = &n.displacement
                 && let Some(pipeline) = n.material.as_ref().and_then(|m| m.displaced.as_ref())
             {
@@ -10829,8 +10964,17 @@ impl Renderer {
                 drop(pass);
                 pass = plain_pass(&mut encoder);
             }
+            // A world warp's entity pipelines read its group 2.
+            if let Some(group) = warp_group {
+                pass.set_bind_group(2, group, &[]);
+            }
+            let hdr_mark = warped.map_or(&self.hdr_mark_pipeline, |w| &w.hdr_mark);
+            let hdr_entity_mark =
+                warped.map_or(&self.hdr_entity_mark_pipeline, |w| &w.hdr_entity_mark);
             if static_entity_quads > 0 {
-                pass.set_pipeline(&self.static_entity_pipeline);
+                pass.set_pipeline(
+                    warped.map_or(&self.static_entity_pipeline, |w| &w.static_entities),
+                );
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_bind_group(1, &self.static_entity_group, &[]);
                 pass.set_index_buffer(
@@ -10853,18 +10997,18 @@ impl Renderer {
             }
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             if entity_quads > 0 {
-                pass.set_pipeline(&self.entity_pipeline);
+                pass.set_pipeline(warped.map_or(&self.entity_pipeline, |w| &w.entities));
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
                 if light_marks(self.frame_format, self.hdr.is_some()) {
-                    pass.set_pipeline(&self.hdr_entity_mark_pipeline);
+                    pass.set_pipeline(hdr_entity_mark);
                     pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if text_quads > 0 && !oit_on {
-                pass.set_pipeline(&self.text_polygon_offset_pipeline);
+                pass.set_pipeline(warped.map_or(&self.text_polygon_offset_pipeline, |w| &w.text));
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..text_quads * 6, (entity_quads * 4) as i32, 0..1);
@@ -10873,7 +11017,7 @@ impl Renderer {
             // FeatureRenderDispatcher.PreparedFrame.executeTranslucent: the shadows
             // come before the translucent items, which then cover them (#7026).
             if shadow_quads > 0 && !oit_on {
-                pass.set_pipeline(&self.shadow_blob_pipeline);
+                pass.set_pipeline(warped.map_or(&self.shadow_blob_pipeline, |w| &w.entity_shadows));
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
@@ -10888,7 +11032,9 @@ impl Renderer {
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if translucent_item_quads > 0 && !oit_on {
-                pass.set_pipeline(&self.translucent_item_pipeline);
+                pass.set_pipeline(
+                    warped.map_or(&self.translucent_item_pipeline, |w| &w.translucent_items),
+                );
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
@@ -10898,7 +11044,7 @@ impl Renderer {
                 );
                 if light_marks(self.frame_format, self.hdr.is_some()) {
                     // A glowing item in the world (Item sheet quads), as entities are.
-                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.set_pipeline(hdr_mark);
                     pass.draw_indexed(
                         0..translucent_item_quads * 6,
                         ((base_quads - translucent_item_quads) * 4) as i32,
@@ -11295,6 +11441,9 @@ impl Renderer {
                 }
                 None => {
                     pass.set_pipeline(translucent_pipeline);
+                    if let Some(group) = warp_group {
+                        pass.set_bind_group(2, group, &[]);
+                    }
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     self.draw_sections(
@@ -11304,7 +11453,15 @@ impl Renderer {
                         solid_draws,
                         translucent_draws,
                     );
-                    self.mark_translucent_terrain(&mut pass, None, solid_draws, translucent_draws);
+                    // (its HDR mark would fall where the water was before the warp moved it)
+                    if !warp_on {
+                        self.mark_translucent_terrain(
+                            &mut pass,
+                            None,
+                            solid_draws,
+                            translucent_draws,
+                        );
+                    }
                 }
             }
             // LevelRenderer.executeTranslucentAfterTerrain: vanilla's
@@ -11312,7 +11469,10 @@ impl Renderer {
             // the quads write depth, so before it they would hide the glass
             // or water behind them.
             if translucent_particle_quads > 0 && !oit_on {
-                pass.set_pipeline(&self.entity_pipeline);
+                pass.set_pipeline(warped.map_or(&self.entity_pipeline, |w| &w.entities));
+                if let Some(group) = warp_group {
+                    pass.set_bind_group(2, group, &[]);
+                }
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -11323,7 +11483,7 @@ impl Renderer {
                 );
                 if light_marks(self.frame_format, self.hdr.is_some()) {
                     // Fireworks: their sparks are translucent-layer particles.
-                    pass.set_pipeline(&self.hdr_entity_mark_pipeline);
+                    pass.set_pipeline(hdr_entity_mark);
                     pass.draw_indexed(
                         0..translucent_particle_quads * 6,
                         ((base_quads - translucent_item_quads - translucent_particle_quads) * 4)
@@ -13778,7 +13938,7 @@ mod tests {
     #[test]
     fn the_second_try_at_a_backend_shows_nonconformant_adapters() {
         let shown = |allow| {
-            super::instance_descriptor(wgpu::Backends::VULKAN, None, allow)
+            super::instance_descriptor(wgpu::Backends::VULKAN, None, allow, wgpu::Dx12Compiler::Fxc)
                 .flags
                 .contains(wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER)
         };
@@ -13845,6 +14005,14 @@ mod tests {
             } else if name == "oit_clouds.wgsl" {
                 let base = super::entity_shader() + include_str!("oit.wgsl");
                 sources.push((path, base + &text));
+            } else if name == "world_warp_fragment.wgsl" {
+                // A world warp's copy of terrain.wgsl (gfx/world_warp.rs), with the plainest warp.
+                let warp = super::world_warp::IDENTITY;
+                sources.push((path, super::world_warp::terrain_shader(warp).unwrap()));
+            } else if name == "world_warp.wgsl" {
+                // And of entity.wgsl with static_entity.wgsl.
+                let warp = super::world_warp::IDENTITY;
+                sources.push((path, super::world_warp::entity_shader(warp).unwrap()));
             } else {
                 sources.push((path, text));
             }
@@ -14607,7 +14775,7 @@ mod tests {
     #[test]
     fn indirect_draws_are_validated_only_in_debug_builds_and_on_directx_12() {
         let validated = |backends| {
-            super::instance_descriptor(backends, None, false)
+            super::instance_descriptor(backends, None, false, wgpu::Dx12Compiler::Fxc)
                 .flags
                 .contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
         };

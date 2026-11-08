@@ -1718,7 +1718,11 @@ mod tests {
         // AbstractHurtingProjectile.tick: the position is the owner hit's
         // location (the owner's box, at x = 0.4, less the margin), not the free
         // step of (0.5 + 0.1) × 0.95F; the motion is kept for the next tick.
-        assert!(p.position.x > 0.0 && p.position.x <= 0.4, "{:?}", p.position);
+        assert!(
+            p.position.x > 0.0 && p.position.x <= 0.4,
+            "{:?}",
+            p.position
+        );
         assert_eq!((p.position.y, p.position.z), (100.5, 0.5));
         assert!(p.velocity.x > 0.5, "{:?}", p.velocity);
     }
