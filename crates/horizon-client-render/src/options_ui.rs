@@ -4079,7 +4079,9 @@ impl OptionsUi {
             return self.shell_events(s, outputs);
         }
         if Self::shader_page(self.page()).is_some() {
-            let actions = self.shader.click(s, (x, y), size, drag, right, self.shift);
+            let actions = self
+                .shader
+                .click(s, atlas, (x, y), size, drag, right, self.shift);
             return self.shader_events(s, actions);
         }
         if self.page() == Page::PackOptions {
@@ -4929,7 +4931,7 @@ impl OptionsUi {
         }
         if Self::shader_page(self.page()).is_some() {
             let size = (self.size.0.max(480.0), self.size.1.max(240.0));
-            let (actions, handled) = self.shader.key_modifiers(s, key, text, shift, size);
+            let (actions, handled) = self.shader.key_modifiers(s, atlas, key, text, shift, size);
             let mut events = self.shader_events(s, actions);
             // Escape leaves a screen a link opened first, then the shader screen.
             if key == K::Escape && !handled {
