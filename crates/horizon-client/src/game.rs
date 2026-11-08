@@ -2342,6 +2342,8 @@ pub struct PackResources {
     environments: Option<Arc<[Environment; 3]>>,
     /// The packs' Polytone custom particles and block emitters (#11486), when a pack has some.
     polytone_particles: Option<Arc<horizon_client::particles::polytone::Registry>>,
+    /// The packs' Polytone post chains (#11486), when a pack has some.
+    polytone_post: Option<Arc<horizon_client::polytone_post::PolytonePost>>,
 }
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
@@ -2988,6 +2990,8 @@ struct Game<'a> {
     /// `LocalPlayer.postEffects`: the chains the server has the screen run
     /// (`ClientboundPostEffectsPacket`), in order.
     post_effects: Vec<String>,
+    /// The game time (ticks and partial) of the last frame, for `PolyDeltaTime`.
+    polytone_post_ticks: f64,
     /// `GameRenderer.spectatedEntityPostEffect` (`checkEntityPostEffect`).
     spectated_post_effect: Option<&'static str>,
     /// `LocalPlayer.experienceDisplayStartTick`: (last progress, seen a change, tick).
@@ -3016,7 +3020,6 @@ struct Game<'a> {
     fight: dragon::Fight,
     dragon: Option<dragon::Dragon>,
     crystals: Vec<dragon::Crystal>,
-    dragon_fireballs: Vec<dragon::DragonFireball>,
     breath_clouds: Vec<dragon::Breath>,
     dragon_model: Option<horizon_client::mobs::Part>,
     /// Map textures waiting for the next HUD batch to upload them.
@@ -5141,7 +5144,8 @@ impl Game<'_> {
                     f64::from(pos[1]) + f64::from(o[1]) / 16.0,
                     f64::from(pos[2]) + f64::from(o[2]) / 16.0,
                 ],
-                [0.0, 0.1, 0.0],
+                // AbstractCandleBlock.extinguish: ySpeed 0.1F, widened.
+                [0.0, f64::from(0.1_f32), 0.0],
             );
         }
     }
@@ -6230,6 +6234,11 @@ impl Game<'_> {
             // The use still succeeds, but no menu, stat or piglin anger.
             return;
         }
+        // BaseContainerBlockEntity.createMenu: a lock the opener cannot
+        // unlock refuses the menu with vanilla's action bar and sound.
+        if self.refuse_locked_container(key, &name) {
+            return;
+        }
         if &*name == "minecraft:lectern" {
             self.open_lectern(pos);
             return;
@@ -6274,7 +6283,10 @@ impl Game<'_> {
                 );
                 self.container_edge_sound(key, true);
             }
-        } else if &*name == "minecraft:beacon" && self.open_station(pos, &name) {
+        } else if matches!(&*name, "minecraft:beacon" | "minecraft:enchanting_table")
+            && self.open_station(pos, &name)
+        {
+            // Station menus whose block has a block entity, not a container.
             self.world.block_entities.get_or_insert_with(key, || {
                 BlockEntity::for_block(&name).unwrap_or(BlockEntity::Chest(Vec::new()))
             });
@@ -8582,6 +8594,8 @@ impl Game<'_> {
                 | BlockEntity::Skull(_)
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Bell
+                | BlockEntity::Conduit(_)
+                | BlockEntity::EnchantingTable
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
                 | BlockEntity::Brushable(_)
@@ -8646,6 +8660,8 @@ impl Game<'_> {
                 | BlockEntity::Skull(_)
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Bell
+                | BlockEntity::Conduit(_)
+                | BlockEntity::EnchantingTable
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
                 | BlockEntity::Brushable(_)
@@ -8781,6 +8797,8 @@ impl Game<'_> {
                     | BlockEntity::Skull(_)
                     | BlockEntity::DaylightDetector
                     | BlockEntity::Bell
+                    | BlockEntity::Conduit(_)
+                    | BlockEntity::EnchantingTable
                     | BlockEntity::Campfire(_)
                     | BlockEntity::ChiseledBookshelf(_)
                     | BlockEntity::Brushable(_)
@@ -11519,7 +11537,6 @@ impl Game<'_> {
         self.others.clear();
         self.dragon = None;
         self.crystals.clear();
-        self.dragon_fireballs.clear();
         self.breath_clouds.clear();
         self.tridents.clear();
         self.rockets.clear();
@@ -12518,7 +12535,8 @@ impl Game<'_> {
                 if !o.bounds().intersects(area) {
                     continue;
                 }
-                let (id, orb_value, vanilla) = (o.id, o.value, o.can_merge(merge_id as u32, value));
+                let vanilla = o.can_merge(merge_id as u32, value as i32);
+                let (id, orb_value) = (o.id, o.points());
                 if self.orb_merges(id, orb_value, 0, value, vanilla) {
                     target = Some(i);
                     break;
@@ -12583,9 +12601,9 @@ impl Game<'_> {
                 (
                     b.can_merge(a.id, a.value),
                     a.id,
-                    a.value,
+                    a.points(),
                     b.id,
-                    b.value,
+                    b.points(),
                     b.count,
                     b.age,
                 )
@@ -12652,7 +12670,8 @@ impl Game<'_> {
             position: p,
             previous: p,
             velocity,
-            value,
+            // `getExperienceValue` sizes: 1 to 2477.
+            value: value as i32,
             age: 0,
             on_ground: false,
             count: 1,
@@ -12820,7 +12839,7 @@ impl Game<'_> {
                     // ExperienceOrb.playerTouch: one orb every 2 ticks; a
                     // merged orb gives its value once per count.
                     self.xp_delay = 2;
-                    gained += o.value;
+                    gained += o.points();
                     taken.push(o.clone());
                     o.count -= 1;
                     return o.count > 0;
@@ -14382,7 +14401,11 @@ impl Game<'_> {
         }
         let (rain, thunder) = self.view_weather(alpha as f32);
         // What the packs' attribute expressions read (only a pack's stack has any).
-        if self.pack.environments.is_some() || self.pack.polytone_particles.is_some() {
+        let mut polytone_frame = None;
+        if self.pack.environments.is_some()
+            || self.pack.polytone_particles.is_some()
+            || self.pack.polytone_post.is_some()
+        {
             let light = self.world.light(block[0], block[1], block[2]);
             let frame = horizon_client::environment::Frame {
                 rain,
@@ -14422,6 +14445,7 @@ impl Game<'_> {
             {
                 f.clone_from(&frame);
             }
+            polytone_frame = Some(frame.clone());
             environment.set_frame(frame);
         }
         let mut sky = environment.sample(&horizon_client::environment::Sample {
@@ -14648,7 +14672,36 @@ impl Game<'_> {
         pr.lap("pr_hud");
         self.locator_camera =
             (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
-        let requested_post_effects = self.requested_post_effects();
+        let mut requested_post_effects = self.requested_post_effects();
+        // The packs' Polytone post chains, after vanilla's (#11486).
+        let game_ticks = self.world.game_time as f64 + alpha;
+        let delta_ticks = (game_ticks - self.polytone_post_ticks).clamp(0.0, 20.0) as f32;
+        self.polytone_post_ticks = game_ticks;
+        let polytone_extras = match (&self.pack.polytone_post, &polytone_frame) {
+            (Some(post), Some(frame)) => {
+                let view = bob * spin * horizon_client::camera::view_matrix(yaw, pitch);
+                let globals = horizon_client::polytone_post::PolyGlobals {
+                    // 26.3's reverse-Z projection, as the world's (and its depth) is.
+                    projection: glam::Mat4::perspective_rh(
+                        fov_degrees.to_radians(),
+                        size[0] as f32 / size[1].max(1) as f32,
+                        depth_far,
+                        0.05,
+                    ),
+                    model_view: view,
+                    sun_angle: sky.sun_angle.to_radians() - std::f32::consts::FRAC_PI_2,
+                    day_time: self.view_day_time().rem_euclid(24000) as f32,
+                    delta_time: delta_ticks,
+                    player: self.player.as_ref().map_or(camera.to_array(), |p| {
+                        [p.position.x, p.position.y, p.position.z]
+                    }),
+                };
+                let (effects, extras) = post.frame(frame, &globals);
+                requested_post_effects.extend(effects);
+                Some(extras)
+            }
+            _ => None,
+        };
         self.view_frustum = self
             .renderer
             .as_ref()
@@ -14923,6 +14976,7 @@ impl Game<'_> {
             post_effects: horizon_client::post_chain::Request {
                 effects: &requested_post_effects,
                 root: &self.options.resources,
+                extras: polytone_extras.as_ref(),
                 menu_blur_radius: self.settings.menu_blur as f32,
                 // GlobalSettingsUniform.update.
                 globals: horizon_client::post_chain::Globals {
@@ -15475,6 +15529,18 @@ impl Game<'_> {
         {
             title.drop_file(path.clone());
         }
+        // GLFW never hands a field the keys an input method consumes: while a
+        // composition is open, and the Enter or Escape that ends it (winit on
+        // Windows still sends that one right after `Ime::Commit`).
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && key_event.state == ElementState::Pressed
+            && self.text_field_focused()
+            && horizon_client::preedit::should_suppress_key()
+        {
+            return;
+        }
         // A character that comes with no key (Windows' Alt codes, `Alt` + digits on the numeric
         // keypad: a `WM_CHAR` after the Alt is released) reaches winit as a key event with no
         // physical key. GLFW's char callback types it in the focused text field (`charTyped`),
@@ -15825,6 +15891,7 @@ impl Game<'_> {
                     {
                         return Ok(());
                     }
+                    self.agent_cancel("the game window was closed; the game saves and exits");
                     self.begin_closing_save(true)?;
                 }
                 // Input method composition: the committed text types like a key's text.
@@ -17457,6 +17524,7 @@ impl<'a> Game<'a> {
             native_camera_frame: None,
             posed_rotation: None,
             post_effects: Vec::new(),
+            polytone_post_ticks: 0.0,
             spectated_post_effect: None,
             experience_display: Default::default(),
             boats: Default::default(),
@@ -17474,7 +17542,6 @@ impl<'a> Game<'a> {
             fight: dragon::Fight::default(),
             dragon: None,
             crystals: Vec::new(),
-            dragon_fireballs: Vec::new(),
             breath_clouds: Vec::new(),
             dragon_model: prepared.dragon_model,
             map_patches: Vec::new(),
@@ -18347,6 +18414,10 @@ pub fn run_with() -> Result<()> {
     mods::register_standalone_models();
     mods::register_layer_definitions();
     let mut early_settings = Settings::load(&Game::options_path());
+    // The player's Polytone pack options (#11486), before any pack is read.
+    horizon_client::packs::set_polytone_choices(horizon_client::packs::load_polytone_choices(
+        &horizon_client::packs::polytone_choices_file(),
+    ));
     // Minecraft.<init>: read the last start's flag, then mark this one as not
     // finished until onGameLoadFinished. A dedicated server has no options.txt.
     if options.execution_role.is_client() {
@@ -19068,9 +19139,15 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
+mod dragon_fireball_motion_tests;
+#[cfg(test)]
 mod golem_defense_tests;
 #[cfg(test)]
+mod hoglin_repeat_attack_tests;
+#[cfg(test)]
 mod inline_feature_parse_tests;
+#[cfg(test)]
+mod inline_loot_reference_tests;
 #[cfg(test)]
 mod interaction_data_tests;
 #[cfg(test)]
@@ -19085,6 +19162,8 @@ mod mannequin_save_tests;
 mod mob_landing_support_tests;
 #[cfg(test)]
 mod orb_data_tests;
+#[cfg(test)]
+mod orb_score_store_tests;
 #[cfg(test)]
 mod stand_break_loot_tests;
 #[cfg(test)]
@@ -19476,3 +19555,6 @@ mod player_save_projection_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod entity_die_tests;
