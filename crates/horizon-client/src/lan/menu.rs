@@ -60,6 +60,26 @@ pub struct Menu {
     /// A content mod's menu type: its data slot count. Its clicks run on the
     /// vanilla menu engine (`menu::Kind::Mod`), not here.
     pub mod_type: Option<&'static crate::containers::ModMenuType>,
+    /// A mod menu type's crafting result as the guest is shown it: the block
+    /// entity holds the grid, never what it crafts. None until the game made it.
+    pub craft: Option<ModCraft>,
+}
+
+/// What a mod menu type's crafting grid makes (`ResultContainer`), and the
+/// grid it was made from, so the game makes it again only when the grid
+/// changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModCraft {
+    pub grid: Vec<Option<ItemStack>>,
+    pub result: Option<ItemStack>,
+}
+
+impl Menu {
+    /// The container slot of a mod menu type's crafting result, and what it shows.
+    fn craft_result(&self) -> Option<(usize, Option<ItemStack>)> {
+        let c = self.mod_type?.crafting?;
+        Some((c.result, self.craft.as_ref().and_then(|c| c.result.clone())))
+    }
 }
 
 /// What a guest did with a native mod's menu (`Slots::Native`), for the game
@@ -261,6 +281,11 @@ impl Slots {
         if self == Slots::Native {
             return guest.native_menu.get(n).cloned().flatten();
         }
+        if let Some((slot, result)) = guest.menu.as_ref().and_then(Menu::craft_result)
+            && slot == n
+        {
+            return result;
+        }
         for k in self.halves() {
             let slots = shown(world, k)?;
             if n < slots.len() {
@@ -281,6 +306,11 @@ impl Slots {
         let mut items = Vec::new();
         for k in self.halves() {
             items.extend_from_slice(shown(world, k)?);
+        }
+        if let Some((slot, result)) = guest.menu.as_ref().and_then(Menu::craft_result)
+            && let Some(item) = items.get_mut(slot)
+        {
+            *item = result;
         }
         Some(items)
     }
@@ -303,6 +333,13 @@ impl Slots {
                 }
             }
             return;
+        }
+        let mut items = items;
+        // A crafting result is the menu's: the block entity never holds it.
+        if let Some((slot, _)) = guest.menu.as_ref().and_then(Menu::craft_result)
+            && let Some(item) = items.get_mut(slot)
+        {
+            *item = None;
         }
         let mut rest = items.into_iter();
         for k in self.halves() {
@@ -1222,6 +1259,81 @@ mod tests {
         click(&mut view, &mut drag, 0, 0, input::PICKUP, &rules);
         assert_eq!(view.guest.carried, None);
         assert_eq!(contents(&view.get(0)), [("minecraft:stone".into(), 5)]);
+    }
+
+    /// A mod menu type's crafting result is the menu's: the guest is shown
+    /// what the game made, never what the block entity holds there, and a
+    /// write leaves the block entity's slot empty.
+    #[test]
+    fn a_mod_crafting_result_is_shown_from_the_menu() {
+        use crate::containers::{ModBlockEntityFields, ModContainer, ModCrafting, ModMenuType};
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let container = ModContainer {
+            slots: 5,
+            ..Default::default()
+        };
+        world
+            .block_entities
+            .set_mod_containers([(0, Arc::new(container))].into_iter().collect());
+        let k = (0, 64, 0);
+        let mut items = vec![None; 5];
+        items[1] = Some(ItemStack::new("minecraft:oak_log", 1));
+        world.block_entities.insert(
+            k,
+            BlockEntity::Mod(Box::new(
+                ModBlockEntityFields {
+                    id: "test:station".into(),
+                    items,
+                    ..Default::default()
+                }
+                .into(),
+            )),
+        );
+        let t: &'static ModMenuType = Box::leak(Box::new(ModMenuType {
+            id: "test:station",
+            slots: 5,
+            data_slots: 0,
+            results: vec![],
+            crafting: Some(ModCrafting {
+                grid: 1,
+                size: 2,
+                result: 0,
+            }),
+        }));
+        let planks = Some(ItemStack::new("minecraft:oak_planks", 4));
+        let mut g = guest();
+        let slots = Slots::Block(k);
+        g.menu = Some(Menu {
+            window: 1,
+            kind: 0,
+            pos: Some(k),
+            slots,
+            size: 5,
+            state: 0,
+            sent: Vec::new(),
+            drag: None,
+            sent_data: Vec::new(),
+            hidden: Vec::new(),
+            mod_type: Some(t),
+            craft: None,
+        });
+        // Nothing made yet: nothing shown.
+        assert_eq!(slots.get(&world, &g, 0), None);
+        if let Some(m) = g.menu.as_mut() {
+            m.craft = Some(ModCraft {
+                grid: Vec::new(),
+                result: planks.clone(),
+            });
+        }
+        assert_eq!(slots.get(&world, &g, 0), planks);
+        let read = slots.read(&world, &g).unwrap();
+        assert_eq!((&read[0], read[1].is_some()), (&planks, true));
+        slots.write(&mut world, &mut g, read);
+        let Some(BlockEntity::Mod(m)) = world.block_entities.get(&k) else {
+            panic!("not a mod's");
+        };
+        assert_eq!(m.items[0], None);
+        assert!(m.items[1].is_some());
     }
 
     /// A mod container saved with more items than its menu has slots: the

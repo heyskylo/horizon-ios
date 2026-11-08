@@ -287,7 +287,7 @@ impl Game<'_> {
             log::warn!("mob {mob} attacking {target}: {e}");
         }
         if let Some(conn) = guest {
-            self.lan_guest_mob_events(to_guest.into_iter().map(|e| (conn, e)).collect());
+            self.lan_guest_mob_events(to_guest.into_iter().map(|e| (conn, mob, e)).collect());
         }
         true
     }
