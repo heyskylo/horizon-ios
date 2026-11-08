@@ -4999,12 +4999,23 @@ fn roots_unused_for_a_day_are_removed() {
     let current = root("00000000000000aa", 3 * 86400);
     let recent = root("00000000000000bb", 60);
     let stale = root("00000000000000cc", 2 * 86400);
+    // Built two days ago but reused a minute ago: its `.used` beside it keeps it (#12403).
+    let reused = root("00000000000000dd", 2 * 86400);
+    fs::write(used_path(&reused), b"").unwrap();
+    fs::write(used_path(&stale), b"").unwrap();
+    let file = fs::File::options()
+        .write(true)
+        .open(used_path(&stale))
+        .unwrap();
+    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400))
+        .unwrap();
+    drop(file);
     // Not a root's name: never touched while the folder has no root of the old layout.
     let other = roots.join("notes");
     fs::create_dir_all(&other).unwrap();
     prune_roots(&roots, &current, KEEP_ROOTS);
-    assert!(current.exists() && recent.exists() && other.exists());
-    assert!(!stale.exists());
+    assert!(current.exists() && recent.exists() && other.exists() && reused.exists());
+    assert!(!stale.exists() && !used_path(&stale).exists());
     // An older game's single root, built straight in the folder, goes.
     fs::write(roots.join(STAMP), b"old").unwrap();
     fs::create_dir_all(roots.join("assets/minecraft")).unwrap();

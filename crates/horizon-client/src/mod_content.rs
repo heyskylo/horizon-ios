@@ -2831,8 +2831,9 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
-        // Used again: kept another day.
-        let _ = fs::write(out.join(STAMP), &stamp);
+        // Used again: kept another day. Marked beside the root, not in it: the pack overlay
+        // laid over the root reads its files, and a rewritten one would rebuild it (#12403).
+        let _ = fs::write(used_path(&out), b"");
         return Ok(out);
     }
     for warning in build(base, mods, &out)? {
@@ -2847,6 +2848,10 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
 const ROOT_NAME: usize = 16;
 /// How long a root no start or switch used is kept.
 const KEEP_ROOTS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// The file beside `root` whose time is its last reuse (`<root>.used`).
+fn used_path(root: &Path) -> PathBuf {
+    root.with_extension("used")
+}
 
 /// Removes from `roots` the roots other than `current` whose stamp is older
 /// than `keep`, and what an older game left there (one root built straight in
@@ -2870,11 +2875,18 @@ fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit())
             && path.is_dir();
-        let stale = match is_root {
-            true => fs::metadata(path.join(STAMP))
+        let age = |file: PathBuf| {
+            fs::metadata(file)
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.elapsed().ok())
+        };
+        let stale = match is_root {
+            // Its build (the stamp) or its last reuse, whichever is newer.
+            true => [age(path.join(STAMP)), age(used_path(&path))]
+                .into_iter()
+                .flatten()
+                .min()
                 .is_none_or(|age| age > keep),
             // The old single root's files and folders.
             false => old_layout,
@@ -2883,7 +2895,9 @@ fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
             continue;
         }
         let removed = match path.is_dir() {
-            true => fs::remove_dir_all(&path),
+            true => fs::remove_dir_all(&path).inspect(|_| {
+                let _ = fs::remove_file(used_path(&path));
+            }),
             false => fs::remove_file(&path),
         };
         if let Err(e) = removed {
