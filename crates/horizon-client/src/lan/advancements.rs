@@ -378,6 +378,11 @@ impl ServerAdvancements {
         id: &str,
         sync: &SyncData,
     ) -> Option<horizon_protocol::packets::recipes::RecipeDisplay> {
+        // A recipe with several displays has no ghost here (PlaceRecipe is
+        // not this change's): only a single-display recipe's entry is used.
+        if self.displays.display_ids(id).len() != 1 {
+            return None;
+        }
         let bytes = self.book_entries(id, sync, 0).into_iter().next()?;
         let mut r = horizon_protocol::buf::Reader::new(&bytes);
         horizon_protocol::packets::recipes::RecipeBookEntry::read(&mut r)
@@ -389,10 +394,6 @@ impl ServerAdvancements {
     /// highlighted, and with a notification unless the recipe turns it off.
     fn book_entries(&self, id: &str, sync: &SyncData, flags: i8) -> Vec<Vec<u8>> {
         let ids = self.displays.display_ids(id);
-        if ids.len() != 1 {
-            // Special recipes have no display; transmutations aren't unlocked on joining.
-            return Vec::new();
-        }
         let Some(r) = self
             .recipes
             .get(id)
@@ -401,6 +402,15 @@ impl ServerAdvancements {
             return Vec::new();
         };
         let r = &r;
+        if r["type"].as_str() == Some("minecraft:crafting_transmute") {
+            return self
+                .transmute_entries(r, ids, sync, flags)
+                .unwrap_or_default();
+        }
+        if ids.len() != 1 {
+            // Special recipes have no display.
+            return Vec::new();
+        }
         let kind = r["type"].as_str().unwrap_or("");
         let item = |n: &str| sync.id("minecraft:item", n);
         let slot = |n: &str| sync.id("minecraft:slot_display", n).unwrap_or(0);
@@ -495,7 +505,22 @@ impl ServerAdvancements {
             }
             _ => return Vec::new(),
         };
-        // The group, the recipe book category and the placement's ingredients.
+        self.entry_tail(&mut w, r, sync, category, &placed, flags);
+        vec![w.data]
+    }
+
+    /// An entry's end: the group, the recipe book category, the placement's
+    /// ingredients and the flags.
+    fn entry_tail(
+        &self,
+        w: &mut Writer,
+        r: &Value,
+        sync: &SyncData,
+        category: &str,
+        placed: &[&Value],
+        flags: i8,
+    ) {
+        let item = |n: &str| sync.id("minecraft:item", n);
         match r["group"].as_str().and_then(|g| self.groups.get(g)) {
             Some(g) => w.varint(g + 1),
             None => w.varint(0),
@@ -508,12 +533,113 @@ impl ServerAdvancements {
         w.bool(true);
         w.varint(placed.len() as i32);
         for v in placed {
-            holder_set(&mut w, v, &item);
+            holder_set(w, v, &item);
         }
         // The notification only where the recipe shows one.
         let notify = r["show_notification"].as_bool().unwrap_or(true);
         w.i8(if notify { flags } else { flags & !1 });
-        vec![w.data]
+    }
+
+    /// `TransmuteRecipe.display`: one `ShapelessCraftingRecipeDisplay` per
+    /// material count from the recipe's minimum to its maximum, the input
+    /// then that many materials, its `resultDisplay`, the crafting table; the
+    /// placement (`placementInfo`) is the input and the most materials. All
+    /// or nothing: a form this cannot write, or a count that is not the
+    /// recipe's display ids, gives no entry at all.
+    fn transmute_entries(
+        &self,
+        r: &Value,
+        ids: std::ops::Range<i32>,
+        sync: &SyncData,
+        flags: i8,
+    ) -> Option<Vec<Vec<u8>>> {
+        let (min, max) = crate::crafting::transmute_material_bounds(r.get("material_count"));
+        if (max + 1).checked_sub(min)? != ids.len() {
+            return None;
+        }
+        let item = |n: &str| sync.id("minecraft:item", n);
+        let slot = |n: &str| sync.id("minecraft:slot_display", n);
+        let (input, material) = (&r["input"], &r["material"]);
+        let holder = |v: &Value| matches!(v, Value::String(_));
+        if !holder(input) || !holder(material) {
+            return None;
+        }
+        // TransmuteResult: an item (or none: the input's own items), a count
+        // (1) and components, which this does not write.
+        let result = &r["result"];
+        if result
+            .get("components")
+            .is_some_and(|c| !c.as_object().is_some_and(|o| o.is_empty()))
+        {
+            return None;
+        }
+        let base = result["count"].as_i64().unwrap_or(1) as i32;
+        let add = r["add_material_count_to_result"].as_bool().unwrap_or(false);
+        let result_items: Vec<i32> = match result["id"].as_str() {
+            Some(id) => vec![item(id)?],
+            // Composite over the input's items, in the order clients get the tag.
+            None => match input.as_str()? {
+                tag if tag.starts_with('#') => {
+                    let name = &tag[1..];
+                    sync.tags
+                        .registries
+                        .iter()
+                        .find(|t| t.registry == "minecraft:item")?
+                        .tags
+                        .iter()
+                        .find(|t| t.name == name)?
+                        .ids
+                        .clone()
+                }
+                one => vec![item(one)?],
+            },
+        };
+        let (shapeless, tag, empty_stack) = (
+            sync.id("minecraft:recipe_display", "minecraft:crafting_shapeless")?,
+            slot("minecraft:tag")?,
+            slot("minecraft:item_stack")?,
+        );
+        let (composite, item_slot) = (slot("minecraft:composite")?, slot("minecraft:item")?);
+        let table = item("minecraft:crafting_table")?;
+        let category = crafting_category(r["category"].as_str().unwrap_or("")).name();
+        let placed: Vec<&Value> = std::iter::once(input)
+            .chain(std::iter::repeat_n(material, max))
+            .collect();
+        let mut entries = Vec::with_capacity(ids.len());
+        for (n, id) in (min..=max).zip(ids) {
+            let mut w = Writer::new();
+            w.varint(id);
+            w.varint(shapeless);
+            w.varint(n as i32 + 1);
+            for v in std::iter::once(input).chain(std::iter::repeat_n(material, n)) {
+                w.varint(tag);
+                holder_set(&mut w, v, &item);
+            }
+            // computeResultSize: the materials added to the count, or not.
+            let count = if add { n as i32 + base } else { base };
+            let stack = |w: &mut Writer, id: i32| {
+                w.varint(empty_stack);
+                w.varint(id);
+                w.varint(count);
+                w.varint(0);
+                w.varint(0);
+            };
+            match result["id"].as_str() {
+                Some(_) => stack(&mut w, result_items[0]),
+                None => {
+                    w.varint(composite);
+                    w.varint(result_items.len() as i32);
+                    for &id in &result_items {
+                        stack(&mut w, id);
+                    }
+                }
+            }
+            w.varint(item_slot);
+            w.varint(table);
+            self.entry_tail(&mut w, r, sync, category, &placed, flags);
+            entries.push(w.data);
+        }
+        Some(entries)
     }
 }
 

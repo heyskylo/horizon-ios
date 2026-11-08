@@ -193,3 +193,39 @@ fn a_recipe_with_eight_displays_sends_eight_entries() {
     distinct.dedup();
     assert_eq!(distinct.len(), 8);
 }
+
+// Added after the baseline (the authorized adapter): a recipe with several
+// displays still has no ghost (PlaceRecipe is unchanged), and an ordinary
+// recipe's ghost is still sent.
+fn ghosts(rx: &mpsc::Receiver<horizon_client::lan::Out>) -> usize {
+    use horizon_protocol::packets::play::Clientbound as C;
+    let mut n = 0;
+    for out in rx.try_iter() {
+        let bodies = match out {
+            horizon_client::lan::Out::Packet(body) => vec![body],
+            horizon_client::lan::Out::Packets(bodies) => bodies,
+            horizon_client::lan::Out::Disconnect(_) => panic!("unexpected disconnect"),
+        };
+        for body in bodies {
+            let mut reader = horizon_protocol::buf::Reader::new(&body);
+            let id = reader.varint().unwrap();
+            if let Ok(C::PlaceGhostRecipe(_)) = C::decode(id, reader.rest()) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_a_multi_display_recipe_still_has_no_ghost() {
+    let (mut game, rx) = game();
+    let _ = ghosts(&rx);
+    let hub = &mut game.lan.as_mut().unwrap().hub;
+    hub.send_ghost_recipe(2, 0, "minecraft:map_cloning");
+    assert_eq!(ghosts(&rx), 0, "no ghost for eight displays");
+    let hub = &mut game.lan.as_mut().unwrap().hub;
+    hub.send_ghost_recipe(2, 0, "minecraft:crafting_table");
+    assert_eq!(ghosts(&rx), 1, "the ordinary recipe's ghost");
+}
