@@ -440,6 +440,20 @@ impl AnvilResult {
 
 // ---------------------------------------------------------------- grindstone
 
+/// `ItemStack.getMaxStackSize`: the stack's `MAX_STACK_SIZE` component (a
+/// removed one is vanilla's default of 1), else the item's default.
+fn max_stack_size(items: &Items, stack: &ItemStack) -> u32 {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:max_stack_size").is_some()) {
+        return 1;
+    }
+    if let Some(tag) = data.and_then(|d| d.other("minecraft:max_stack_size")) {
+        return component_int(tag)
+            .filter(|v| *v >= 1)
+            .map_or(1, |v| v as u32);
+    }
+    items.get(&stack.item).map_or(64, |i| i.max_stack)
+}
 /// `GrindstoneMenu` slot filter: damageable or enchanted.
 pub fn grindstone_accepts(items: &Items, stack: &ItemStack) -> bool {
     is_damageable(items, stack) || stack.has_any_enchantments()
@@ -488,7 +502,7 @@ pub fn grindstone_result(
                 + durability * 5 / 100;
             let mut count = 1;
             if !is_damageable(items, a) {
-                let stack_max = items.get(&a.item).map_or(64, |i| i.max_stack);
+                let stack_max = max_stack_size(items, a);
                 if stack_max < 2 || a != b {
                     return None;
                 }
@@ -990,6 +1004,7 @@ fn apply_trim(
 mod tests {
     use super::*;
     use crate::enchant::tests::{sample, sample_items};
+    use horizon_world::nbt::Tag;
 
     fn sword(ench: &[(&str, u32)]) -> ItemStack {
         let mut s = ItemStack::new("minecraft:diamond_sword", 1);
@@ -1014,6 +1029,41 @@ mod tests {
             Some(horizon_world::nbt::Tag::Int(max)),
         );
         s
+    }
+
+    /// Grindstone: `mergeItems` asks `ItemStack.getMaxStackSize` before the
+    /// two-slot count, so a patched limit of one refuses the merge.
+    #[test]
+    fn grindstone_merge_reads_the_stacks_max_stack_size() {
+        let e = sample();
+        let items = sample_items();
+        let enchanted_book = |limit: Option<Tag>| {
+            let mut book = ItemStack::new("minecraft:book", 1);
+            book.enchant("minecraft:sharpness", 1);
+            match limit {
+                Some(value) => book
+                    .data_mut()
+                    .set_other("minecraft:max_stack_size", Some(value)),
+                None => {
+                    book.data_mut().set_other(
+                        "!minecraft:max_stack_size",
+                        Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+                    );
+                }
+            }
+            book
+        };
+        let one = enchanted_book(Some(Tag::Int(1)));
+        assert!(grindstone_result(&e, &items, Some(&one), Some(&one)).is_none());
+        // A removed component is vanilla's default of one, not the item's 64.
+        let removed = enchanted_book(None);
+        assert!(grindstone_result(&e, &items, Some(&removed), Some(&removed)).is_none());
+        // Two plain books still combine to a count of two.
+        let mut book = ItemStack::new("minecraft:book", 1);
+        book.enchant("minecraft:sharpness", 1);
+        let out = grindstone_result(&e, &items, Some(&book), Some(&book)).unwrap();
+        assert_eq!(out.count, 2);
+        assert!(!out.has_any_enchantments());
     }
 
     /// Grindstone: the larger MAX_DAMAGE is written and the damage follows it.
