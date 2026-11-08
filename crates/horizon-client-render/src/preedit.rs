@@ -13,7 +13,10 @@ use crate::{
     text::{Style, Text},
     ui::nine_slice,
 };
-use std::{sync::Mutex, time::Instant};
+use std::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 /// `PreeditEvent`: the composition, its caret and the blocks of text the
 /// input method set apart (the one being converted is `focused_block`).
@@ -122,16 +125,23 @@ struct Caret {
     input_height: f32,
 }
 
+/// Grace window used to swallow a trailing `KeyboardInput` (such as `Enter` or
+/// `Escape`) emitted by the OS/windowing backend in the same key press right
+/// after `Ime::Preedit("", None)` or `Ime::Commit(...)` finishes composition.
+const POST_COMPOSITION_KEY_GRACE: Duration = Duration::from_millis(50);
+
 #[derive(Default)]
 struct State {
     /// `KeyboardHandler.lastPreeditEvent`, with when the overlay was created.
     preedit: Option<(PreeditEvent, Instant)>,
+    last_ended: Option<Instant>,
     caret: Option<Caret>,
     area: Option<[f32; 4]>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     preedit: None,
+    last_ended: None,
     caret: None,
     area: None,
 });
@@ -141,15 +151,53 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 }
 
 /// `KeyboardHandler.textEditing`: the input method's composition changed
-/// (`None`: it ended). A new `IMEPreeditOverlay` restarts the caret blink.
+/// (`None` or an empty string: it ended). A new `IMEPreeditOverlay` restarts
+/// the caret blink.
 pub fn set_preedit(event: Option<PreeditEvent>) {
     let mut s = state();
-    s.preedit = event.map(|e| (e, Instant::now()));
+    let now = Instant::now();
+    let event = event.filter(|e| !e.full_text.is_empty());
+    if s.preedit.is_some() && event.is_none() {
+        s.last_ended = Some(now);
+    }
+    s.preedit = event.map(|e| (e, now));
+}
+
+/// Record that an IME commit just occurred, clearing any active preedit and
+/// arming the post-composition key suppression window.
+pub fn mark_committed() {
+    let mut s = state();
+    s.preedit = None;
+    s.last_ended = Some(Instant::now());
+}
+
+/// Clear both active preedit and any pending post-composition suppression window
+/// (used when the text field itself loses focus or IME is disabled).
+pub fn reset() {
+    let mut s = state();
+    s.preedit = None;
+    s.last_ended = None;
 }
 
 /// Whether text is being composed.
 pub fn composing() -> bool {
     state().preedit.is_some()
+}
+
+/// Returns `true` if a physical key press should be suppressed because IME
+/// composition is currently active or just finished in the same key press event
+/// sequence (consuming the post-composition grace token on first match).
+pub fn should_suppress_key() -> bool {
+    let mut s = state();
+    if s.preedit.is_some() {
+        return true;
+    }
+    if let Some(ended) = s.last_ended.take()
+        && ended.elapsed() <= POST_COMPOSITION_KEY_GRACE
+    {
+        return true;
+    }
+    false
 }
 
 /// What the focused field's `extractRenderState` ends with: its caret is at
@@ -300,5 +348,49 @@ mod tests {
                 .chars()
                 .all(|(_, s)| s.underlined == Some(true))
         );
+    }
+
+    #[test]
+    fn set_and_clear_preedit() {
+        reset();
+        set_preedit(PreeditEvent::from_winit("nihongo", Some((0, 7))));
+        assert!(composing());
+        set_preedit(None);
+        assert!(!composing());
+        reset();
+    }
+
+    #[test]
+    fn empty_preedit_clears_composing_and_suppresses_trailing_enter_once() {
+        reset();
+        set_preedit(PreeditEvent::from_winit("こんにちは", Some((0, 15))));
+        assert!(composing());
+        assert!(should_suppress_key());
+
+        // OS sends Ime::Preedit("", None) when user presses Enter to confirm conversion.
+        set_preedit(Some(PreeditEvent {
+            full_text: String::new(),
+            caret_position: 0,
+            blocks: Vec::new(),
+            focused_block: 0,
+        }));
+        assert!(!composing());
+
+        // The first trailing KeyboardInput(Enter) in the same key press is suppressed,
+        // while a subsequent Enter press is allowed through to submit chat.
+        assert!(should_suppress_key());
+        assert!(!should_suppress_key());
+        reset();
+    }
+
+    #[test]
+    fn mark_committed_suppresses_single_trailing_key() {
+        reset();
+        set_preedit(PreeditEvent::from_winit("漢字", Some((0, 6))));
+        mark_committed();
+        assert!(!composing());
+        assert!(should_suppress_key());
+        assert!(!should_suppress_key());
+        reset();
     }
 }
