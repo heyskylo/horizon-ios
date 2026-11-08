@@ -1679,7 +1679,8 @@ impl Game<'_> {
     /// it no longer counts among the openers of the lid, and the lid's close
     /// sound is played for everyone around (`ChestBlockEntity.onClose`, a
     /// `playSound` with no player), the guest included, once the last opener
-    /// has left.
+    /// has left. `ContainerOpenersCounter.decrementOpeners` then posts
+    /// CONTAINER_CLOSE with that closing guest's context.
     pub(super) fn guest_container_closed(&mut self, host: &mut LanHost, conn: u32) {
         if let Some(g) = host.hub.guest(conn)
             && let Some(pos) = g.menu.as_ref().and_then(|m| m.pos)
@@ -1687,6 +1688,19 @@ impl Game<'_> {
             && self.container_openers_changed(pos, false)
         {
             self.container_edge_sound(pos, false);
+            let post = |game: &mut Self| {
+                game.post_block_game_event(
+                    "minecraft:container_close",
+                    [pos.0, pos.1, pos.2],
+                    Some(horizon_client::mobs::Who::Player),
+                    None,
+                );
+            };
+            if self.lan_acting == Some(conn) {
+                post(self);
+            } else {
+                self.as_guest(host, conn, post);
+            }
         }
     }
 
@@ -6972,5 +6986,269 @@ mod unloaded_chunk_tests {
             body,
             |_, _| true
         ));
+    }
+}
+
+#[cfg(test)]
+mod guest_close_listener_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{
+        chunk::Chunk,
+        containers::BlockEntity,
+        lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
+        sculk::Info,
+    };
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::configuration::ClientInformation;
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn selected(game: &Game<'_>) -> Option<Info> {
+        let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get(&(9, 100, 4)) else {
+            panic!("actual command-created sensor must exist");
+        };
+        sensor.vibration.selector.current.map(|(info, _)| info)
+    }
+    fn reset_listener(game: &mut Game<'_>) {
+        assert!(game.run_command("setblock 9 100 4 air strict"));
+        assert!(game.run_command("setblock 9 100 4 sculk_sensor strict"));
+        game.sculk_prepare();
+        game.sculk_sync_index();
+        assert!(selected(game).is_none());
+    }
+    fn open(game: &mut Game<'_>, host: &mut LanHost, conn: u32, sequence: i32) -> i32 {
+        game.lan_guest_packet(
+            host,
+            conn,
+            S::UseItemOn(play::UseItemOn {
+                hand: 0,
+                pos: [6, 100, 4],
+                face: 1,
+                cursor: [0.5, 1.0, 0.5],
+                inside: false,
+                world_border: false,
+                sequence,
+            }),
+        );
+        let guest = host.hub.guest(conn).unwrap();
+        assert!(guest.ack_up_to.get() >= sequence);
+        assert_eq!(guest.health, 20.0);
+        assert_eq!(guest.position, [4.5, 100.0, 4.5]);
+        let menu = guest
+            .menu
+            .as_ref()
+            .expect("actual packet must open the chest menu");
+        assert_eq!(menu.pos, Some((6, 100, 4)));
+        assert_eq!(menu.size, 27);
+        menu.window
+    }
+    fn close(game: &mut Game<'_>, host: &mut LanHost, conn: u32, window: i32) {
+        game.lan_guest_packet(
+            host,
+            conn,
+            S::ContainerClose(play::ContainerClose { container: window }),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn ordinary_guest_final_close_posts_to_actual_listener() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.run_command("fill 0 99 0 15 99 15 stone"));
+        assert!(game.run_command("setblock 6 100 4 chest"));
+        assert!(game.run_command("setblock 9 100 4 sculk_sensor strict"));
+        game.sculk_prepare();
+        game.sculk_sync_index();
+        assert!(selected(&game).is_none());
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "guest-close-test".into(), 4)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 4,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut host = game.lan.take().unwrap();
+        let mut receivers = Vec::new();
+        for conn in 1..=3 {
+            let (tx, rx) = mpsc::channel();
+            receivers.push(rx);
+            let mut guest = Guest::new(
+                Joined {
+                    conn,
+                    uuid: u128::from(conn) + 11200,
+                    name: format!("CloseGuest{conn}"),
+                    properties: Vec::new(),
+                    info: ClientInformation::new(2),
+                    brand: "test".into(),
+                    sender: PlayerSender::new(tx, Arc::default()),
+                    latency: Arc::new(AtomicI32::new(0)),
+                    address: "127.0.0.1:25565".parse().unwrap(),
+                    expected: false,
+                    configured: Default::default(),
+                },
+                conn as i32 + 100,
+                [4.5, 100.0, 4.5],
+                2,
+            );
+            guest.dimension = "minecraft:overworld".into();
+            guest.placed = true;
+            guest.loaded = true;
+            guest.game_mode = if conn == 3 { 3 } else { 0 };
+            guest.on_ground = true;
+            assert_eq!(guest.health, 20.0);
+            host.hub.guests.push(guest);
+        }
+        let clock = game.world.game_time;
+        let mut missing = Vec::new();
+        let window = open(&mut game, &mut host, 1, 1);
+        assert_eq!(game.lid_openers.get(&(6, 100, 4)), Some(&1));
+        assert_eq!(selected(&game).unwrap().event, "minecraft:container_open");
+        reset_listener(&mut game);
+        close(&mut game, &mut host, 1, window + 20);
+        assert_eq!(
+            host.hub.guest(1).unwrap().menu.as_ref().unwrap().window,
+            window
+        );
+        assert_eq!(game.lid_openers.get(&(6, 100, 4)), Some(&1));
+        assert!(selected(&game).is_none());
+        close(&mut game, &mut host, 1, window);
+        assert!(host.hub.guest(1).unwrap().menu.is_none());
+        assert!(!game.lid_openers.contains_key(&(6, 100, 4)));
+        match selected(&game) {
+            Some(info) => {
+                assert_eq!(info.event, "minecraft:container_close");
+                assert_eq!(info.pos, [6.5, 100.5, 4.5]);
+            }
+            None => missing.push("single final close"),
+        }
+        reset_listener(&mut game);
+        let first = open(&mut game, &mut host, 1, 2);
+        assert_eq!(selected(&game).unwrap().event, "minecraft:container_open");
+        reset_listener(&mut game);
+        let last = open(&mut game, &mut host, 2, 1);
+        assert_eq!(game.lid_openers.get(&(6, 100, 4)), Some(&2));
+        assert!(selected(&game).is_none());
+        close(&mut game, &mut host, 1, first);
+        assert!(host.hub.guest(2).unwrap().menu.is_some());
+        assert_eq!(game.lid_openers.get(&(6, 100, 4)), Some(&1));
+        assert!(selected(&game).is_none());
+        close(&mut game, &mut host, 2, last);
+        assert!(!game.lid_openers.contains_key(&(6, 100, 4)));
+        match selected(&game) {
+            Some(info) => {
+                assert_eq!(info.event, "minecraft:container_close");
+                assert_eq!(info.pos, [6.5, 100.5, 4.5]);
+            }
+            None => missing.push("shared final close"),
+        }
+        reset_listener(&mut game);
+        let spectator = open(&mut game, &mut host, 3, 1);
+        assert!(!game.lid_openers.contains_key(&(6, 100, 4)));
+        assert!(selected(&game).is_none());
+        close(&mut game, &mut host, 3, spectator);
+        assert!(host.hub.guest(3).unwrap().menu.is_none());
+        assert!(selected(&game).is_none());
+        assert!(game.run_command("setblock 6 100 4 air strict"));
+        assert!(
+            game.run_command("summon oak_chest_boat 6.5 100 4.5 {UUID:[I;112,0,0,9],NoGravity:1b}")
+        );
+        let boat = game.boats.last().unwrap().id;
+        // Chest boats open for a sneaking guest; a plain empty-hand click boards.
+        host.hub
+            .guests
+            .iter_mut()
+            .find(|g| g.conn == 1)
+            .unwrap()
+            .sneaking = true;
+        game.lan_guest_packet(
+            &mut host,
+            1,
+            S::Interact(play::Interact {
+                id: boat as i32,
+                hand: 0,
+                location: [0.0; 3],
+                secondary: true,
+            }),
+        );
+        let vehicle_window = host
+            .hub
+            .guest(1)
+            .unwrap()
+            .menu
+            .as_ref()
+            .expect("actual vehicle interaction must open menu")
+            .window;
+        reset_listener(&mut game);
+        close(&mut game, &mut host, 1, vehicle_window);
+        assert!(host.hub.guest(1).unwrap().menu.is_none());
+        assert_eq!(selected(&game).unwrap().event, "minecraft:container_close");
+        assert_eq!(selected(&game).unwrap().pos, [6.5, 100.0, 4.5]);
+        for guest in &host.hub.guests {
+            assert_eq!(guest.uuid, u128::from(guest.conn) + 11200);
+            assert_eq!(guest.health, 20.0);
+            assert_eq!(guest.position, [4.5, 100.0, 4.5]);
+        }
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            missing.is_empty(),
+            "actual ordinary guest final close must be heard: {missing:?}"
+        );
+        drop(receivers);
     }
 }

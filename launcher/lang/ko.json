@@ -1257,5 +1257,8 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon은 데이터 팩의 함수, 함수 태그, 조건, 아이템 수정자, 제작법, 전리품 표, 발전 과제, 주민 거래, 피해 유형, 대부분의 태그와 월드 생성 대부분(생물 군계, 특징, 구조물, 차원)을 실행합니다. 월드 프리셋 같은 다른 파일은 아직 읽지 않습니다.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title}은(는) 아직 Horizon에서 아무것도 바꾸지 않습니다. Horizon이 {files}을(를) 아직 읽지 않습니다.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: 플레이 중인 Horizon용 버전 {version}을(를) 사용합니다",
-  "Recommended": "추천"
+  "Recommended": "추천",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "이전 버전 {version}은(는) 플레이 중인 Horizon에서 빌드됩니다: 설치하면 이 버전을 고릅니다",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: 버전 {version} 빌드 실패, {older} 시도 중",
+  "Use recommended (kept at {version})": "추천 버전 사용 ({version}에 고정됨)"
 }
