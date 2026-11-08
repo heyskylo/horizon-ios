@@ -4868,7 +4868,10 @@ impl ParticleEngine {
                 (pos.as_vec3(), p.quad_size(partial))
             });
             let rotation = if p.orientation != polytone_gpu::Orientation::Camera {
-                let velocity = FVec3::new(
+                // A custom particle's `movement_aligned` quad has its texture's top against
+                // its motion (measured in Java: a light ray rising toward the noon sun hangs
+                // below the leaves it starts at); a GPU particle's has it along its motion.
+                let velocity = -FVec3::new(
                     p.velocity[0] as f32,
                     p.velocity[1] as f32,
                     p.velocity[2] as f32,

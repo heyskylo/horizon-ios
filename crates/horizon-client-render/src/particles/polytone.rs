@@ -1555,6 +1555,59 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// Measured in Java: a custom particle's `movement_aligned` quad has its texture's top
+    /// against its motion, so the freepack's light rays, rising toward the noon sun, hang
+    /// below the leaves they start at instead of over them.
+    #[test]
+    fn a_rising_movement_aligned_particle_hangs_its_texture_below() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/spark.json",
+                serde_json::json!({"has_physics": false, "rotation_mode": "movement_aligned",
+                    "initializer": {"lifetime": "100", "size": "1"}}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [{"particle": "test:spark", "chance": "1", "dy": "0.01"}]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        let rect = crate::hud::Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        engine.rects = vec![Some(rect); 13];
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        engine.tick(&level);
+        let p = engine.particles.last().unwrap();
+        // The camera 5 blocks south, at the particle's height.
+        let camera = DVec3::new(p.position[0], p.position[1], p.position[2] + 5.0);
+        let mut out = Vec::new();
+        engine.render(camera, 0.0, 0.0, 0.0, &|_| 0xF0, &mut out);
+        assert_eq!(out.len(), 4);
+        for v in &out {
+            // The texture's top row (v 0) under the centre, its bottom row over it.
+            if v.uv[1] == 0.0 {
+                assert!(v.pos[1] < 0.0, "top row at {:?}", v.pos);
+            } else {
+                assert!(v.pos[1] > 0.0, "bottom row at {:?}", v.pos);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn a_gpu_particle_is_a_record_drawn_until_its_life_ends() {
         let blocks = blocks();
