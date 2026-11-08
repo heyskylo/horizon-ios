@@ -27,8 +27,8 @@ Projectile.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs
 Projectile.restoreFrom	missing		no projectile `restoreFrom`: the owner is not carried over a dimension change
 Projectile.isOutsideOwnerCollisionRange	inline	crates/horizon-client/src/projectiles.rs::Projectile::tick	gap: minor: left_owner tests the owner's box inflated 1.0 at the position only; vanilla sweeps along the motion and checks the owner's passengers too
 Projectile.getMovementToShoot	port	crates/horizon-client/src/projectiles.rs::Projectile::shoot	direction plus triangle spread 0.0172275 times uncertainty, scaled by power
-Projectile.onAboveBubbleColumn	port	crates/horizon-client/src/arrows.rs::Ticker::bubble_column	gap: minor: arrows only; thrown ender pearls get their push in creatures.rs tick_projectiles and other projectiles get none
-Projectile.onInsideBubbleColumn	port	crates/horizon-client/src/arrows.rs::Ticker::bubble_column	gap: minor: arrows only; thrown ender pearls get their push in creatures.rs tick_projectiles and other projectiles get none
+Projectile.onAboveBubbleColumn	port	crates/horizon-client/src/projectiles.rs::Projectile::bubble_column_push	unclamped 0.1 up (0.03 down over magma) at the top of a column; arrows in arrows.rs::Ticker::bubble_column
+Projectile.onInsideBubbleColumn	port	crates/horizon-client/src/projectiles.rs::Projectile::bubble_column_push	unclamped 0.06 up (0.03 down) inside a column; arrows in arrows.rs::Ticker::bubble_column
 Projectile.canBreakBlockInAdventureMode	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_breaks_block	gap: minor: the shooter's gamemode and kind decide it; a stack's `can_break` predicate is not consulted
 Projectile.spawnProjectileFromRotation	port	crates/horizon-client/src/projectiles.rs::Projectile::shoot_from_rotation	gap: minor: the aim and inherited velocity only; the add-to-world step is the caller's
 Projectile.spawnProjectile	inline	crates/horizon-client/src/game/creatures.rs::Game::throw_item	each shooter adds its own projectile (throw_item, shoot_crossbow, shoot_projectile_item, the bow in game.rs); throw_item is the player throw path
@@ -50,7 +50,7 @@ ShulkerBullet.onHitBlock	port	crates/horizon-client/src/game/creatures.rs::Game:
 ShulkerBullet.destroy	inline	crates/horizon-client/src/game/creatures.rs::Game::tick_projectiles	the bullet is dropped from the flight list on any hit; the game event is not sent
 ShulkerBullet.hurtServer	port	crates/horizon-client/src/game/deflect.rs::Game::hit_shulker_bullet	
 ThrowableProjectile.applyInertia	port	crates/horizon-client/src/projectiles.rs::Projectile::tick	default arm: gravity, then drag 0.8 in water and 0.99 in air; gap: minor: no bubble particles in water
-ThrowableProjectile.handleFirstTickBubbleColumn	missing		a thrown item spawned inside a bubble column is not pushed on its first tick: `game/creatures.rs` has bubble-column particles and the pearl's own column hooks, nothing for a throwable's first tick
+ThrowableProjectile.handleFirstTickBubbleColumn	port	crates/horizon-client/src/projectiles.rs::Projectile::first_tick_bubble_columns	every bubble column block in the box pushes a throwable on its first tick, before gravity
 AbstractArrow.<init>	port	crates/horizon-client/src/arrows.rs::ArrowState::new	arrow defaults: pickup, pickup item, shake, pierce; the owner and drawn ammo come from set_owner and set_item
 AbstractArrow.defineSynchedData	skip:java		flags, pierce level and in-ground sync fields; Horizon keeps them on ArrowState and Projectile
 AbstractArrow.lerpMotion	skip:other		client interpolation of a server motion packet; Horizon's remote arrows take the server position each update
