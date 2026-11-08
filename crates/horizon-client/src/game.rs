@@ -15564,15 +15564,30 @@ impl Game<'_> {
                     // keyboard's focus made up is not the mouse: it fires
                     // nothing.
                     if !self.pad_synthetic_input()
-                        && let Some(screen) = self.screen_view_now()
+                        && let Some((id, mouse)) = self.screen_view_now().map(|s| (s.id, s.mouse))
                     {
-                        let mut canceled = false;
-                        self.native_screen_mouse_scrolled_pre(
-                            &screen,
+                        let (scroll, modifiers) = (
                             [scaled(raw_x), scaled(raw_y)],
                             glfw_modifiers(self.modifiers),
+                        );
+                        let mut canceled = false;
+                        // v2 lends the game mutably, then v1 hears the
+                        // screen as v2 left it (gone, if v2 closed it).
+                        self.native_screen_mouse_scrolled_pre_v2(
+                            id,
+                            mouse,
+                            scroll,
+                            modifiers,
                             &mut canceled,
                         );
+                        if !canceled && let Some(screen) = self.screen_view_now() {
+                            self.native_screen_mouse_scrolled_pre(
+                                &screen,
+                                scroll,
+                                modifiers,
+                                &mut canceled,
+                            );
+                        }
                         if canceled {
                             return Ok(());
                         }
