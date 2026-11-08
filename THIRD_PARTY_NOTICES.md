@@ -1,5 +1,36 @@
 # Third-party notices
 
+## Code removed for its license
+
+Horizon once shipped three pieces of code under MIT that came from projects whose licenses don't allow that. All
+three are gone from main. They are listed here for anyone who holds an older commit, tag or release: in those
+versions, that code is not covered by Horizon's MIT license. It stays under its authors' copyright and its original
+license.
+
+- **Shader packs written from Iris's source.** `crates/horizon-shaderpack` and the render stages that used it were
+  written from the source of [Iris](https://github.com/IrisShaders/Iris) (LGPL-3.0, copyright the Iris contributors).
+  They were added from 15 October 2026 (`b22583d057`), shipped in the game releases `v2026.10.16.02` to `v0.2.46`,
+  and were removed on 24 October 2026 ([#1561](https://github.com/horizon-rust/horizon/pull/1561)) after a developer
+  of Iris showed us. Shader packs came back in `crates/horizon-shaders`, first written from a description of the
+  pack format.
+- **Math functions translated from OpenJDK.** In `crates/horizon-core/src/jmath.rs`, `fdlibm::{log, log10, cbrt,
+  hypot}` were translated from OpenJDK's `java/lang/FdLibm.java` and `round_f32` from its `java/lang/Math.java`
+  (GPL-2.0 with the Classpath Exception), and `aarch64::{sin, cos}` from HotSpot's `macroAssembler_aarch64_trig.cpp`
+  (GPL-2.0); copyright Oracle and/or its affiliates, and Cavium for that file. The `fdlibm` and `aarch64` functions
+  were added on 13 October 2026 (`558d140fca`, first released in `v2026.10.13`). `round_f32` was added on 14 October
+  2026 as `java_round` in `crates/horizon-client/src/mipmap.rs` (`95db0fce9d`) and moved into `jmath.rs` on 3
+  November ([#7770](https://github.com/horizon-rust/horizon/pull/7770)). All of them were replaced in
+  [#11944](https://github.com/horizon-rust/horizon/pull/11944) by code written without OpenJDK's sources, from Sun's
+  fdlibm C sources, the Java SE API documentation and a description of the behaviour, and checked against a JVM
+  ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
+- **Java's `HashMap` translated from OpenJDK.** `crates/horizon-world/src/java_hash_map.rs`, which reproduces the
+  iteration order of `java.util.HashMap`, was translated from OpenJDK's `java/util/HashMap.java` (GPL-2.0 with the
+  Classpath Exception; copyright Oracle and/or its affiliates). It was added on 7 October 2026 (`118e93ea51` and
+  `194db0dbb4`, first released in `v2026.10.12`). It was replaced in
+  [#12043](https://github.com/horizon-rust/horizon/pull/12043) by code written without OpenJDK's sources, from a
+  description of the behaviour, the Java SE API documentation and the textbook red-black tree, and checked against a
+  JVM ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
+
 ## Catnip / Ponder
 
 `crates/horizon-client-render/src/fluid_render.rs` translates the still-fluid face tiling and
@@ -15,8 +46,11 @@ original classes, game shaders, textures or prepared resources are distributed h
 `third_party/wgpu-hal` is [wgpu-hal](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs
 developers, with upstream fixes applied
 ([gfx-rs/wgpu#10124](https://github.com/gfx-rs/wgpu/pull/10124),
-[gfx-rs/wgpu#10714](https://github.com/gfx-rs/wgpu/pull/10714)). It is licensed under MIT or
-Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
+[gfx-rs/wgpu#10714](https://github.com/gfx-rs/wgpu/pull/10714)). Its GL backend also reports
+the context's sampled textures and samplers per shader stage (usually 32 on desktop GL,
+where WebGL2's minimum 16 was reported before), so a pipeline layout the driver accepts is
+not refused. It is licensed under MIT or Apache-2.0; both licenses are in that folder
+(`LICENSE.MIT`, `LICENSE.APACHE`).
 
 ## naga
 
@@ -225,7 +259,9 @@ THE SOFTWARE.
 
 ## Just Enough Items
 
-The Recipes settings icon is from [Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems) by mezz and contributors. It is distributed under the MIT license in `crates/horizon-client-render/src/jei_recipes/LICENSE.txt`.
+The Recipes GUI sprites and settings icon under `crates/horizon-client-render/src/jei_recipes` are from
+[Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems/tree/0371fa6fafa14635a356019e4604f5580b26a34f)
+by mezz and contributors, under the MIT license in that directory (`LICENSE.txt`).
 
 ## Flywheel native model directional shading
 
@@ -254,3 +290,30 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## fdlibm
+
+`crates/horizon-core/src/jmath/fdlibm.rs` and the `fdlibm_asin`, `fdlibm_atan` and
+`fdlibm_atan2` functions in `crates/horizon-core/src/geometry/trig.rs` are Rust ports of
+[fdlibm](https://www.netlib.org/fdlibm/) 5.3, Sun's freely distributable math library, whose
+results the Java SE API specifies for `StrictMath`. `fdlibm.rs` ports `e_log.c`, `e_log10.c`,
+`s_cbrt.c` and `e_hypot.c`, and, with fused multiply-adds, `s_sin.c`, `s_cos.c`, `k_sin.c`,
+`k_cos.c` and `e_rem_pio2.c`; `trig.rs` ports `e_asin.c`, `s_atan.c` and `e_atan2.c`. This
+notice also heads both files:
+
+```
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunSoft, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+```
+
+## Starling
+
+`crates/horizon-client-render/src/touch/layout.rs` is adapted from the touch layout of
+[Starling](https://github.com/starling-client/starling), an Android port of Horizon, at commit
+[150a414b09a1](https://github.com/starling-client/starling/tree/150a414b09a18c900489d9462a7fc035dae744b7)
+(`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
+Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).

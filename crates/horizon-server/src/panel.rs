@@ -6,7 +6,7 @@
 //!   opening it swaps the code for an `HttpOnly; SameSite=Strict` session cookie. Anyone who can read the
 //!   server folder's token can make a link, and no one else can. Sessions end when the supervisor does.
 //! - **Rebinding and CSRF.** The `Host` header must name the panel's own address (`localhost` too on
-//!   loopback, a MagicDNS name on a tailnet). Every POST needs the `X-Horizon: 1` header, which a page from
+//!   loopback, a MagicDNS name on a tailnet, any IP address when bound to every interface). Every POST needs the `X-Horizon: 1` header, which a page from
 //!   another site can't send without the browser asking first.
 //! - **The page** loads nothing from elsewhere (a strict Content-Security-Policy) and can't be framed.
 
@@ -16,7 +16,7 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
-    net::{SocketAddr, TcpListener},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -93,7 +93,7 @@ impl Auth {
         self.codes.retain(|(_, at)| at.elapsed() < LINK_LIFE);
         let code = api::random_token();
         self.codes.push((code.clone(), Instant::now()));
-        Some(format!("http://{address}/login?code={code}"))
+        Some(format!("http://{}/login?code={code}", reachable(address)))
     }
 
     /// Swaps a login code for a new session.
@@ -140,6 +140,35 @@ impl Auth {
     }
 }
 
+/// An address a browser can open for `address`: itself, or for every interface (`0.0.0.0`, `::`) this computer's
+/// address on its network (the source of its default route), and loopback when it has none.
+fn reachable(address: SocketAddr) -> SocketAddr {
+    if !address.ip().is_unspecified() {
+        return address;
+    }
+    let (any, probe, loopback): (IpAddr, SocketAddr, IpAddr) = if address.is_ipv4() {
+        (
+            Ipv4Addr::UNSPECIFIED.into(),
+            (Ipv4Addr::new(192, 0, 2, 1), 9).into(),
+            Ipv4Addr::LOCALHOST.into(),
+        )
+    } else {
+        (
+            Ipv6Addr::UNSPECIFIED.into(),
+            (Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 9).into(),
+            Ipv6Addr::LOCALHOST.into(),
+        )
+    };
+    // Connecting a UDP socket only picks the route; it sends nothing.
+    let ip = UdpSocket::bind((any, 0))
+        .and_then(|socket| socket.connect(probe).and_then(|()| socket.local_addr()))
+        .map(|local| local.ip())
+        .ok()
+        .filter(|ip| !ip.is_unspecified())
+        .unwrap_or(loopback);
+    SocketAddr::new(ip, address.port())
+}
+
 fn page_error(status: u16, message: &str) -> Response {
     let body = format!(
         "<!doctype html><meta charset=utf-8><title>Horizon server</title>\
@@ -153,7 +182,8 @@ fn page_error(status: u16, message: &str) -> Response {
 }
 
 /// The `Host` header names the panel (or the control API) itself: its address, `localhost` on loopback, or a tailnet name
-/// (a MagicDNS short name or `*.ts.net`, with or without the port when `tailscale serve` passes it on).
+/// (a MagicDNS short name or `*.ts.net`, with or without the port when `tailscale serve` passes it on). Bound to every
+/// interface (`0.0.0.0` or `::`), any IP address with the bind's port names it too: a rebound DNS name is never an IP.
 pub fn host_allowed(host: &str, address: SocketAddr) -> bool {
     if host == address.to_string() {
         return true;
@@ -163,7 +193,14 @@ pub fn host_allowed(host: &str, address: SocketAddr) -> bool {
         _ => (host, None),
     };
     let same_port = port == Some(&address.port().to_string());
-    if address.ip().is_loopback() && name.eq_ignore_ascii_case("localhost") && same_port {
+    let any_interface = address.ip().is_unspecified();
+    if (address.ip().is_loopback() || any_interface)
+        && name.eq_ignore_ascii_case("localhost")
+        && same_port
+    {
+        return true;
+    }
+    if any_interface && same_port && host.parse::<SocketAddr>().is_ok() {
         return true;
     }
     let tailnet_name = name.to_ascii_lowercase().ends_with(".ts.net")
@@ -279,6 +316,41 @@ mod tests {
         let v6: SocketAddr = "[::1]:8130".parse().unwrap();
         assert!(host_allowed("[::1]:8130", v6));
         assert!(!host_allowed("[::2]:8130", v6));
+        // Bound to every interface (#12039): any IP address on the bind's port, never a DNS name.
+        let lan: SocketAddr = "0.0.0.0:8130".parse().unwrap();
+        assert!(host_allowed("192.168.1.20:8130", lan));
+        assert!(host_allowed("127.0.0.1:8130", lan));
+        assert!(host_allowed("localhost:8130", lan));
+        assert!(!host_allowed("192.168.1.20:8131", lan));
+        assert!(!host_allowed("192.168.1.20", lan));
+        assert!(!host_allowed("evil.example:8130", lan));
+        assert!(!host_allowed("192.168.1.20.nip.io:8130", lan));
+        let lan6: SocketAddr = "[::]:8130".parse().unwrap();
+        assert!(host_allowed("[fd00::20]:8130", lan6));
+        assert!(host_allowed("192.168.1.20:8130", lan6));
+        assert!(!host_allowed("[fd00::20]:8131", lan6));
+        assert!(!host_allowed("evil.example:8130", lan6));
+    }
+
+    #[test]
+    fn login_links_name_an_address_a_browser_can_open() {
+        let tailnet: SocketAddr = "100.100.1.2:8130".parse().unwrap();
+        assert_eq!(reachable(tailnet), tailnet);
+        for bind in ["0.0.0.0:8130", "[::]:8130"] {
+            let bind: SocketAddr = bind.parse().unwrap();
+            let link = reachable(bind);
+            assert!(!link.ip().is_unspecified(), "{link}");
+            assert_eq!(link.port(), 8130);
+            assert_eq!(link.is_ipv4(), bind.is_ipv4());
+            // The link it prints passes the panel's own Host check.
+            assert!(host_allowed(&link.to_string(), bind), "{link}");
+        }
+        let mut auth = Auth {
+            address: Some("0.0.0.0:8130".parse().unwrap()),
+            ..Auth::default()
+        };
+        let url = auth.login_link().unwrap();
+        assert!(!url.starts_with("http://0.0.0.0:"), "{url}");
     }
 
     /// One raw request to the panel; the status line, the headers and the body.

@@ -20,10 +20,10 @@ again restores vanilla's behaviour completely.
 | Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
 | The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
 | Cosmetics (show mine, show others'), off with their flag | `extras.rs`, `crates/horizon-client/src/game/cosmetics.rs` ([cosmetics.md](cosmetics.md)) |
-| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles change the picture, so they are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
+| The settings page | `extras_ui.rs` (`Page::Extras`, on `settings_shell.rs`): **Options → Horizon Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles change the picture, so they are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
 
-The settings are grouped by extra, under a header each, two buttons to a row as
-vanilla's options lists are, and each says what it does in its tooltip. An
+The settings are grouped by extra, under a header each, one to a row, and the strip
+under the list says what the row in focus or under the pointer does. An
 extra's own settings (its key, corner, size...) are greyed out while its switch
 is off (`Item::parent`).
 
@@ -189,7 +189,7 @@ and the container screen tests are unchanged).
 
 ### Scroll wheel changes settings (`wheelCyclesListSettings`, default off)
 - Off, as in vanilla, the wheel scrolls the list under the cursor, on every settings page, Video's
-  included (`AbstractScrollArea.mouseScrolled`, `OptionsUi::wheel`, `GraphicsUi::wheel`). Scrolling
+  included (`AbstractScrollArea.mouseScrolled`, `OptionsUi::wheel`, `GraphicsScreen::wheel_step`). Scrolling
   through a long page can't change an option that passes under the cursor (#5455, #9633). A cycle
   button outside a list, such as a world's Difficulty, still steps
   (`CycleButton.mouseScrolled`).

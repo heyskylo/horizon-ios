@@ -462,7 +462,7 @@ fn read_meta(source: &Source) -> Option<serde_json::Value> {
 /// The first JSON value of a `pack.mcmeta`: what follows it is ignored, as some packs sign the
 /// file with a comment after the closing brace. Gson reads past a UTF-8 byte order mark;
 /// serde_json rejects it.
-fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
+pub(crate) fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
     serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
         .into_iter()
         .next()?
@@ -837,24 +837,55 @@ fn build_overlay_uncached(
         dependencies,
         &mut extract,
     )?;
+    // What the zips may unpack to, all threads together: a server's pack is a download the
+    // player only accepts, and a gigabyte of zeros deflates to a megabyte, so without it a pack
+    // at the download limit wrote hundreds of gigabytes here. Vanilla never unpacks a pack.
+    let budget = std::sync::atomic::AtomicU64::new(unpack_budget(packs));
     // Inflating and writing a big pack's files one by one was most of a cold build; its
     // folders all exist by now.
-    crate::par::par_map(&extract, |(owner, inner, target)| {
+    let extracted: io::Result<()> = crate::par::par_map(&extract, |(owner, inner, target)| {
         let Some(Some(z)) = zips.get(*owner) else {
             return Ok(());
         };
-        // One unreadable entry costs that file, not the pack: an error here
-        // failed the build and the reload dropped every server pack in the stack.
-        match z.read(inner) {
-            Ok(bytes) => fs::write(target, bytes),
+        let copied = fs::File::create(target).and_then(|file| {
+            let mut file = io::BufWriter::new(file);
+            z.copy_to(inner, &mut file, &budget)?;
+            io::Write::flush(&mut file)
+        });
+        match copied {
+            Ok(()) => Ok(()),
+            // Past the budget the build fails, and the reload drops the server packs.
+            Err(e) if e.kind() == io::ErrorKind::FileTooLarge => Err(e),
+            // One unreadable entry costs that file, not the pack: an error here
+            // failed the build and the reload dropped every server pack in the stack.
             Err(e) => {
                 log::warn!("Horizon: skipping unreadable pack entry {inner}: {e}");
+                let _ = fs::remove_file(target);
                 Ok(())
             }
         }
     })
     .into_iter()
-    .collect()
+    .collect();
+    if extracted.is_err() {
+        // What was unpacked before the budget ran out goes too, not only the marker.
+        let _ = fs::remove_dir_all(out);
+    }
+    extracted
+}
+/// The most the zip packs in `packs` may unpack to in one overlay: 16 times their size on disk
+/// (real packs are mostly PNGs and JSON, a few times smaller zipped at most), at least 64 MiB
+/// for a small pack of text, and never past 8 GiB.
+fn unpack_budget(packs: &[Pack]) -> u64 {
+    packs
+        .iter()
+        .filter_map(|p| match &p.source {
+            Source::Zip(z) => fs::metadata(z).ok().map(|m| m.len()),
+            Source::Dir(_) => None,
+        })
+        .sum::<u64>()
+        .saturating_mul(16)
+        .clamp(64 << 20, 8 << 30)
 }
 /// Files vanilla loads from every pack in turn (`getResourceStack`) rather
 /// than from the top pack only.
@@ -1000,7 +1031,10 @@ pub fn resource_root(vanilla: &Path, packs: &[Pack], cache: &Path) -> io::Result
         (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
     });
     let out = cache.join(format!("{hash:016x}"));
+    cache::hold(&out)?;
     build_overlay(vanilla, packs, &out)?;
+    // Old selections' overlays would otherwise stay for good, each a whole unpacked copy.
+    cache::prune(cache);
     Ok(out)
 }
 
@@ -1734,6 +1768,77 @@ mod tests {
         walk(&out.join("assets"), &out, &mut built);
         assert_eq!(built, expected);
         let _ = fs::remove_dir_all(base);
+    }
+    #[test]
+    fn a_pack_that_unpacks_past_its_budget_fails_and_leaves_nothing() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("horizon-pack-bomb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let vanilla = base.join("vanilla");
+        fs::create_dir_all(vanilla.join("assets/minecraft/textures/block")).unwrap();
+        fs::write(
+            vanilla.join("assets/minecraft/textures/block/stone.png"),
+            b"vanilla",
+        )
+        .unwrap();
+        fs::create_dir_all(base.join("packs")).unwrap();
+        let pack = |name: &str, files: &[(&str, usize)]| {
+            let path = base.join("packs").join(name);
+            let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+            let deflated = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file("pack.mcmeta", deflated).unwrap();
+            zip.write_all(br#"{"pack":{"description":"d","pack_format":97}}"#)
+                .unwrap();
+            let zeros = vec![0u8; 1 << 20];
+            for (file, mib) in files {
+                zip.start_file(*file, deflated).unwrap();
+                for _ in 0..*mib {
+                    zip.write_all(&zeros).unwrap();
+                }
+            }
+            zip.finish().unwrap();
+            fs::metadata(&path).unwrap().len()
+        };
+        // Four 24 MiB files of zeros: well under the per-file limit, 96 MiB in all from a zip of
+        // a few hundred KiB, past the 64 MiB a small pack may unpack to.
+        let size = pack(
+            "bomb.zip",
+            &[
+                ("assets/minecraft/textures/block/a.png", 24),
+                ("assets/minecraft/textures/block/b.png", 24),
+                ("assets/minecraft/textures/block/c.png", 24),
+                ("assets/minecraft/textures/block/d.png", 24),
+            ],
+        );
+        assert!(size < 1 << 20, "the bomb is small: {size} bytes");
+        let packs = discover(&vanilla, &base.join("packs"));
+        assert_eq!(packs.len(), 1);
+        let out = base.join("overlay");
+        let error = build_overlay(&vanilla, &packs, &out).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge, "{error}");
+        assert!(
+            !out.exists(),
+            "what was unpacked before the budget ran out stays"
+        );
+        // The same files within the budget unpack whole.
+        fs::remove_file(base.join("packs/bomb.zip")).unwrap();
+        pack(
+            "fine.zip",
+            &[
+                ("assets/minecraft/textures/block/a.png", 24),
+                ("assets/minecraft/textures/block/b.png", 24),
+            ],
+        );
+        let packs = discover(&vanilla, &base.join("packs"));
+        build_overlay(&vanilla, &packs, &out).unwrap();
+        assert_eq!(
+            fs::metadata(out.join("assets/minecraft/textures/block/b.png"))
+                .unwrap()
+                .len(),
+            24 << 20
+        );
+        let _ = fs::remove_dir_all(&base);
     }
     #[test]
     fn zip_entries_never_leave_the_overlay() {

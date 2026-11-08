@@ -40,6 +40,9 @@ pub use crate::game::{
     NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
     NativeStructureTemplate, NativeWorldDraw,
 };
+pub use crate::gamerules::Value as GameRuleValue;
+/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API @API:world_hold@.
+pub use crate::gfx::WorldHold;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,
@@ -89,6 +92,7 @@ pub use horizon_world::{
     attachments::{
         AttachmentCodec, AttachmentError, AttachmentHost, AttachmentType, Attachments, Holder,
     },
+    block_state_properties::BlockProperties,
     fluid::{FluidKind, FluidState},
     level::{BlockId, Dimension as LevelDimension, PlacementContext},
     loot::{LootStack, NativeLootContext},
@@ -525,6 +529,23 @@ pub struct NativeMobCost {
     pub nanos: u64,
     /// The mob ticks timed.
     pub mob_ticks: u64,
+}
+
+/// Where a fishing bobber outside water floats and fishes, as a mod's
+/// `native_fishing_medium` answers it: lava, the void under an island, a
+/// cloud. Below `surface` the bobber floats and fishes as in still water,
+/// above it it falls as anywhere else. API @API:fishing_medium@.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeFishingMedium {
+    /// The height the bobber floats at (world Y), as water's surface is.
+    pub surface: f64,
+    /// The loot table a catch from here rolls (`mymod:gameplay/lava_fishing`);
+    /// None rolls vanilla's `minecraft:gameplay/fishing`.
+    pub loot_table: Option<String>,
+    /// The ticks a fish takes to come, drawn from `min..=max` when the bobber
+    /// starts waiting, less the rod's Lure as in water (vanilla draws 100 to
+    /// 600). None keeps vanilla's draw.
+    pub lure_ticks: Option<(i32, i32)>,
 }
 
 /// A player on the server, as a server hook sees them.
@@ -975,6 +996,8 @@ mod generated_host {
     include!(concat!(env!("OUT_DIR"), "/mod_api_generated_host.rs"));
 }
 pub use generated_host::Host;
+
+pub use crate::game::native_client_services::HudMode;
 
 /// Result of accessing or decoding an attachment.
 pub type AttachmentResult<T> = std::result::Result<T, AttachmentError>;
