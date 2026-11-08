@@ -289,12 +289,17 @@ fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
             size: c.size.into(),
             result: c.result.into(),
         });
+        let links = m.links.map(|l| containers::ModLinks {
+            from: l.from.into(),
+            count: l.count.into(),
+        });
         (
             m.id.clone(),
             m.slots.into(),
             m.data_slots.into(),
             results,
             crafting,
+            links,
         )
     }));
     if !set

@@ -486,6 +486,31 @@ pub struct MenuType {
     /// crafting table does (`CraftingMenu`).
     #[serde(default)]
     pub crafting: Option<MenuCrafting>,
+    /// slots that show other containers' slots instead of the block
+    /// entity's, as a crafting station shows the chests beside it; a native
+    /// mod names the containers (`native_menu_links`).
+    #[serde(default)]
+    pub links: Option<MenuLinks>,
+}
+
+/// a mod menu type's linked slots (`links`): `count` slots from `from` on,
+/// which show the slots of the containers a native mod links them to
+/// (`native_menu_links`), in order, rather than the block entity's. The
+/// block entity never holds them; a linked slot with nothing behind it holds
+/// nothing and takes nothing.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuLinks {
+    /// the first linked slot.
+    pub from: u16,
+    /// how many slots, 1 or more.
+    pub count: u16,
+}
+
+impl MenuLinks {
+    fn range(&self) -> std::ops::Range<u32> {
+        u32::from(self.from)..u32::from(self.from) + u32::from(self.count)
+    }
 }
 
 /// a mod menu type's crafting grid (`crafting`): `size`x`size` slots from
@@ -1034,6 +1059,26 @@ impl Content {
                     return Err(format!(
                         "{name}: results lists a crafting slot (the result is take-only already)"
                     ));
+                }
+            }
+            if let Some(l) = file.links {
+                let linked = l.range();
+                if l.count == 0 || linked.end > u32::from(file.slots) {
+                    return Err(format!(
+                        "{name}: links are 1 or more slots below {}",
+                        file.slots
+                    ));
+                }
+                if file.results.iter().any(|&r| linked.contains(&u32::from(r))) {
+                    return Err(format!("{name}: results lists a linked slot"));
+                }
+                if let Some(c) = file.crafting {
+                    let end = u32::from(c.grid) + u32::from(c.size) * u32::from(c.size);
+                    if linked.contains(&u32::from(c.result))
+                        || (u32::from(c.grid)..end).any(|s| linked.contains(&s))
+                    {
+                        return Err(format!("{name}: links overlap the crafting slots"));
+                    }
                 }
             }
             self.menu_types.push(MenuType { id: menu, ..file });
@@ -1704,7 +1749,7 @@ capabilities = ["registries"]
             ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
             (
                 "data/ruby/horizon/menu/station.json",
-                br#"{"slots": 12, "results": [11], "crafting": {"grid": 1, "result": 0}}"#,
+                br#"{"slots": 16, "results": [11], "crafting": {"grid": 1, "result": 0}, "links": {"from": 12, "count": 4}}"#,
             ),
         ];
         let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
@@ -1718,8 +1763,13 @@ capabilities = ["registries"]
             [
                 ("ruby:bag", 4, 0, vec![]),
                 ("ruby:press", 9, 2, vec![7, 8]),
-                ("ruby:station", 12, 0, vec![11])
+                ("ruby:station", 16, 0, vec![11])
             ]
+        );
+        let links: Vec<_> = content.menu_types.iter().map(|m| m.links).collect();
+        assert_eq!(
+            links,
+            [None, None, Some(super::MenuLinks { from: 12, count: 4 })]
         );
         let crafting: Vec<_> = content.menu_types.iter().map(|m| m.crafting).collect();
         assert_eq!(
@@ -1781,6 +1831,31 @@ capabilities = ["registries"]
             (
                 "craft-key",
                 r#"{"slots": 10, "crafting": {"grid": 0, "result": 9, "width": 3}}"#,
+                "unknown field",
+            ),
+            (
+                "links-past",
+                r#"{"slots": 10, "links": {"from": 8, "count": 3}}"#,
+                "links are 1 or more slots below 10",
+            ),
+            (
+                "links-empty",
+                r#"{"slots": 10, "links": {"from": 2, "count": 0}}"#,
+                "links are 1 or more slots below 10",
+            ),
+            (
+                "links-results",
+                r#"{"slots": 10, "results": [5], "links": {"from": 4, "count": 2}}"#,
+                "results lists a linked slot",
+            ),
+            (
+                "links-grid",
+                r#"{"slots": 20, "crafting": {"grid": 1, "result": 0}, "links": {"from": 9, "count": 4}}"#,
+                "links overlap the crafting slots",
+            ),
+            (
+                "links-key",
+                r#"{"slots": 10, "links": {"from": 2, "count": 2, "rows": 1}}"#,
                 "unknown field",
             ),
             ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),

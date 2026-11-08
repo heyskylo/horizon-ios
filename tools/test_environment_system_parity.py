@@ -44,7 +44,10 @@ def cases(build):
     for path in sorted((data_root / 'dimension_type').glob('*.json')):
         data['dimension:' + path.stem] = json.loads(path.read_text()).get('attributes', {})
     data.update(SYNTHETIC)
-    biomes = [k for k in data if not k.startswith('dimension:')]
+    # The overworld's timelines, in the order its tag lists them (#universal has none).
+    for name in ('day', 'moon', 'early_game'):
+        data['timeline:' + name] = json.loads((data_root / f'timeline/{name}.json').read_text())
+    biomes = [k for k in data if not k.startswith(('dimension:', 'timeline:'))]
     dimensions = [k for k in data if k.startswith('dimension:')]
     rng = random.Random(11486)
     lines = [json.dumps(data, separators=(',', ':'))]
@@ -58,6 +61,9 @@ def cases(build):
             'position': [rng.uniform(-1000, 1000), rng.uniform(-64, 320), rng.uniform(-1000, 1000)],
             'blend': rng.random() < 0.8,
             'weather': rng.random() < 0.75,
+            'timelines': rng.random() < 0.7,
+            'ticks': rng.choice([0, 1, 6000, 12_000, 13_000, 18_000, 23_999, 24_000, 191_999]) if rng.random() < 0.3
+            else rng.randrange(-10 ** 7, 10 ** 9),
             'rain': f32(rain),
             'thunder': f32(thunder),
         }, separators=(',', ':')))
@@ -69,7 +75,8 @@ def cases(build):
 if __name__ == '__main__':
     harness.differential(
         'environment-system-parity', 'VanillaEnvironmentSystemOracle', 'environment_system_fixture', cases,
-        'EnvironmentAttributeSystem (constant, biome and weather layers, bakeLayerSampler, sanitize), '
+        'EnvironmentAttributeSystem (constant, biome, timeline and weather layers, bakeLayerSampler, sanitize), '
         'WeatherAttributes, SpatialAttributeInterpolator and GaussianSampler',
         sources=[lab.ROOT / 'crates/horizon-world/src/environment_attributes.rs',
-                 lab.ROOT / 'crates/horizon-world/src/environment_system.rs'])
+                 lab.ROOT / 'crates/horizon-world/src/environment_system.rs',
+                 lab.ROOT / 'crates/horizon-world/src/environment_timeline.rs'])
