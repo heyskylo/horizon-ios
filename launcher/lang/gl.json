@@ -1251,5 +1251,9 @@
   "Buy": "Mercar",
   "Gift": "Agasallar",
   "Found on this computer": "Atopados neste ordenador",
-  "Looks": "Estilos"
+  "Looks": "Estilos",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "O chaveiro do sistema non respondeu en {seconds} segundos. Comproba que está en funcionamento e desbloqueado e despois reinicia o lanzador.",
+  "Can't read {name}'s sign-in: {why}": "Non se pode ler o inicio de sesión de {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

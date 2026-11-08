@@ -1251,5 +1251,9 @@
   "Buy": "Acheter",
   "Gift": "Offrir",
   "Found on this computer": "Trouvés sur cet ordinateur",
-  "Looks": "Tenues"
+  "Looks": "Tenues",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Le trousseau de votre système n'a pas répondu en {seconds} secondes. Vérifiez qu'il fonctionne et qu'il est déverrouillé, puis redémarrez le launcher.",
+  "Can't read {name}'s sign-in: {why}": "Impossible de lire la connexion de {name} : {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon exécute les fonctions, les étiquettes de fonctions, les prédicats, les modificateurs d'objets, les recettes, les tables de butin, les progrès, les échanges de villageois, les types de dégâts, la plupart des étiquettes et la plupart de la génération du monde (biomes, caractéristiques, structures, dimensions) d'un pack de données. Les autres fichiers, comme les préréglages de monde, ne sont pas encore lus.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} ne changerait encore rien dans Horizon : Horizon ne lit pas encore ses {files}."
 }

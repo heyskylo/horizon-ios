@@ -15,9 +15,10 @@ The input is a zip or a folder; nothing is downloaded, and the pack stays on
 your machine (packs are often All Rights Reserved: do not commit or share an
 upgraded copy).
 
-Horizon does not apply a data pack's world generation yet (see
-[the mod browser](mod-browser.md)); the upgraded pack loads in vanilla 26.3,
-and the checks below run it there.
+Horizon applies most of a data pack's world generation (biomes, features,
+structures, dimensions; not world presets), so the upgraded pack can also be
+tried in Horizon (see [the mod browser](mod-browser.md)). The checks below run
+it in vanilla 26.3.
 
 A modpack's mod jars that are only a data pack go through the same upgrade when the launcher
 ports the pack, into the packs every new world of its profile starts with

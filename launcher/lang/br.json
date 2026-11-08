@@ -1251,5 +1251,9 @@
   "Buy": "Prenañ",
   "Gift": "Reiñ e profad",
   "Found on this computer": "Kavet war an urzhiataer-mañ",
-  "Looks": "Neuzioù"
+  "Looks": "Neuzioù",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "N'eo ket bet respontet gant alc'hwezaoueg ho reizhiad e-pad {seconds} eilenn. Gwiriit emañ o vont en-dro ha dibrennet, ha neuze adloc'hit al loc'her.",
+  "Can't read {name}'s sign-in: {why}": "N'haller ket lenn kennask {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }
