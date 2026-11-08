@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn mannequin_compound_orders_pose_before_immovable_in_shared_bucket() {
         let tag = parse_snbt(
-            r#"{AbsorptionAmount:0.0f,Air:300s,Brain:{memories:{}},DeathTime:0s,FallFlying:0b,Fire:0s,Health:20.0f,HurtTime:0s,Invulnerable:0b,Motion:[0.0d,0.0d,0.0d],NoGravity:1b,OnGround:0b,PortalCooldown:0,Pos:[2.5d,100.0d,2.5d],Rotation:[0.0f,0.0f],Tags:["m1"],UUID:[I;369,0,0,1],attributes:[],current_impulse_context_reset_grace_time:0,description:{text:"Guard"},hide_description:1b,immovable:1b,main_hand:"left",pose:"crouching",profile:{name:"alex"}}"#,
+            r#"{AbsorptionAmount:0.0f,Air:300s,Brain:{memories:{}},DeathTime:0s,FallFlying:0b,Fire:0s,Health:20.0f,HurtTime:0s,Invulnerable:0b,Motion:[0.0d,0.0d,0.0d],OnGround:0b,PortalCooldown:0,Pos:[2.5d,100.0d,2.5d],Rotation:[0.0f,0.0f],UUID:[I;369,0,0,1],attributes:[],current_impulse_context_reset_grace_time:0,description:{text:"Guard"},hide_description:1b,immovable:1b,pose:"crouching",profile:{name:"alex"}}"#,
         )
         .unwrap()
         .0;
