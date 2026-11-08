@@ -17,6 +17,7 @@ use horizon_client::{
     keymapping::SNEAK,
     pad_glyph::{Glyph, Glyphs},
 };
+use horizon_client_input::radial;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use winit::event::MouseButton;
@@ -26,7 +27,8 @@ pub(super) const HELP: &[&str] = &[
     "pad BUTTON down|up|tap         a virtual controller button (south east west north lb rb lt rt select start ls rs up down left right)",
     "pad stick left|right X Y       tilt a virtual stick (-1..1, up positive); 0 0 centres it",
     "pad trigger left|right VALUE   pull a virtual trigger (0..1)",
-    "pad release                    centre and release the virtual controller",
+    "pad release                    centre and release the virtual controller (as an unplug: the radial menu cancels)",
+    "pad focus true|false           the window gains or loses the focus, as a window focus event does",
     "pad status                     connected controllers, the active one and its state",
     "pad connection connected [FAMILY]|disconnected   as if a controller (PlayStation unless FAMILY) came or went at this game's own reader",
     "pad family xbox|playstation|nintendo|auto   the pad playing is that family's (its glyphs; a Nintendo one's letters)",
@@ -86,6 +88,31 @@ pub(super) struct Pads {
     connections: Vec<Connection>,
     /// The cursor the pad drives in menus.
     pub(super) menu: super::pad_menu::MenuCursor,
+    /// The radial menu while its opener is held, and the page it stays on.
+    pub(super) radial: radial::RadialMenu,
+    /// What the radial menu ran, for `pad status`.
+    radial_runs: RadialRuns,
+    /// The moments the radial menu's overlay moves from (`radial_overlay::Look`).
+    pub(super) radial_look: horizon_client_render::radial_overlay::Look,
+    /// The player's skin for the overlay's Emote face, read as it opens.
+    radial_face: Option<String>,
+    /// The D-pad's quiet after the menu closed on a D-pad opener.
+    radial_settle: radial::DpadSettle,
+    /// The narrator said the page shown, and the slot selected.
+    radial_page_said: bool,
+    radial_said: radial::Settle<(usize, usize)>,
+    /// A page turn's second tick, when the pages went round an end.
+    radial_rumble_due: Option<(Instant, Rumble)>,
+    /// The furthest each stick leant (left, right) between the last two polls, from the pad's
+    /// own events: a flick out and back between two frames still reaches the radial menu.
+    peaks: [[f32; 2]; 2],
+    /// With Either selecting: the stick that last leant past its select tilt (0 left, 1 right),
+    /// and whether each was past it at the last poll.
+    radial_either: Option<usize>,
+    radial_over: [bool; 2],
+    /// While the radial menu is open with Either: each stick has been at rest since the open, so
+    /// it may take over. A thumb still on the walking stick can't commit for the other.
+    radial_rested: [bool; 2],
     /// The last vibration asked for, for `pad status`.
     last_rumble: Option<(&'static str, gamepad::Pulse)>,
     /// The drop button, while it is held in play.
@@ -116,7 +143,30 @@ mod guide;
 mod hardware;
 #[cfg(test)]
 mod parity_tests;
+mod radial_play;
 pub(super) use hardware::{PadId, PadRouter};
+
+/// How many of the radial menu's last actions `pad status` lists.
+const RADIAL_RUNS_KEPT: usize = 16;
+
+/// What the radial menu ran: how many actions in all, and the last few, last one last.
+#[derive(Default)]
+struct RadialRuns {
+    count: u64,
+    last: std::collections::VecDeque<&'static str>,
+}
+impl RadialRuns {
+    fn push(&mut self, action: &'static str) {
+        self.count += 1;
+        if self.last.len() == RADIAL_RUNS_KEPT {
+            self.last.pop_front();
+        }
+        self.last.push_back(action);
+    }
+}
+
+/// The volume of a UI button's click (`AbstractButton.playDownSound`).
+const UI_CLICK_VOLUME: f32 = 0.25;
 
 /// How long the death screen's confirm ignores cancelling (`ConfirmScreen`).
 const DEATH_CONFIRM_WAIT: Duration = Duration::from_secs(1);
@@ -185,6 +235,9 @@ mod hardware {
         pub(in crate::game) fn state(&self, _: PadId) -> PadState {
             PadState::default()
         }
+        pub(in crate::game) fn peaks(&self, _: PadId) -> [[f32; 2]; 2] {
+            [[0.0; 2]; 2]
+        }
         pub(in crate::game) fn name(&self, _: PadId) -> String {
             String::new()
         }
@@ -225,10 +278,18 @@ impl Pads {
     }
     /// Splitscreen: this player's pad state, from `source`. Another pad, or
     /// none: the old one's A going away isn't a release.
-    pub(super) fn feed_from(&mut self, source: Option<PadId>, state: PadState) {
+    /// `peaks`: the furthest its sticks leant since the last feed (`Pads::peaks`).
+    pub(super) fn feed_from(
+        &mut self,
+        source: Option<PadId>,
+        state: PadState,
+        peaks: [[f32; 2]; 2],
+    ) {
+        self.peaks = peaks;
         if self.feed_source != source {
             self.feed_source = source;
             self.menu.armed = None;
+            self.radial.cancel();
             self.menu.stop_craft();
         }
         self.feed = Some(state);
@@ -246,19 +307,25 @@ impl Pads {
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
         self.menu.armed = None;
+        self.radial.cancel();
         self.menu.stop_craft();
         self.injected = PadState::default();
     }
 
-    /// Include releases delayed until the next simulation tick.
-    pub(super) fn holds_action(&self, settings: &gamepad::PadSettings, action: &str) -> bool {
-        settings.binding(action).is_some_and(|button| {
-            self.edges.is_held(button) || self.late_releases.contains(&button)
+    /// Whether a held button's press went to `action`, including releases delayed until the next
+    /// simulation tick. What the press reached, not what the button is bound to now: a press the
+    /// radial menu swallowed holds nothing, while a sneak held since before the menu opened is
+    /// still held through it.
+    pub(super) fn holds_action(&self, action: &str) -> bool {
+        Button::ALL.into_iter().any(|button| {
+            self.actions[button as usize].contains(&action)
+                && (self.edges.is_held(button) || self.late_releases.contains(&button))
         })
     }
 
     /// A new player entity took over (spawn, respawn, a server joined, a
     /// dimension change): its health is not compared with the old one's.
+    /// The radial menu closes with it, in `Game::pad_player_replaced`.
     pub(super) fn player_replaced(&mut self) {
         self.health.forget();
     }
@@ -311,6 +378,10 @@ impl Game<'_> {
         if !self.settings.controller.enabled {
             self.pad_output_off();
             self.pad_cancel_inputs(event_loop);
+            // The radial menu closed with the pad: its overlay fades out, as for a cancel.
+            self.pad
+                .radial_look
+                .observe(None, std::time::Instant::now());
             self.pad.state = PadState::default();
             self.pad.in_use = false;
             // The keyboard's menu focus follows its widget all the same.
@@ -359,6 +430,7 @@ impl Game<'_> {
             }
             if self.pad.blocked_sticks[i] || !self.pad_focused() {
                 *stick = [0.0; 2];
+                self.pad.peaks[i] = [0.0; 2];
             }
         }
         for button in std::mem::take(&mut self.pad.taps) {
@@ -372,6 +444,7 @@ impl Game<'_> {
             self.pad.keyboard_took_over = false;
         }
         self.pad.state = state;
+        self.pad_radial_frame();
         self.pad_drop_frame();
         self.pad_output_frame();
         // Damage from any source, here or on a server; nothing counts on
@@ -385,14 +458,24 @@ impl Game<'_> {
             self.pad_rumble(Rumble::Hurt(damage));
         }
         let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
+        let mut due = Vec::new();
         for button in std::mem::take(&mut self.pad.late_releases) {
             if !ticking || self.pad.pressed_at[button as usize] != Some(self.ticks) {
-                self.pad_button_logged(event_loop, button, false);
+                due.push(button);
             } else {
                 self.pad.late_releases.push(button);
             }
         }
-        for (button, down) in edges {
+        // The steps, in order: a press in the same poll as the opener's release, held back or
+        // not, gets there first, so B still cancels.
+        for step in radial_play::poll_order(due, edges, self.pad_radial_captures()) {
+            let (button, down) = match step {
+                radial_play::PollStep::Late(button) => {
+                    self.pad_button_logged(event_loop, button, false);
+                    continue;
+                }
+                radial_play::PollStep::Edge(button, down) => (button, down),
+            };
             self.pad_edge(event_loop, button, down);
             let context = self.pad_context();
             if let Some(old) = self.pad.context.filter(|old| *old != context) {
@@ -425,10 +508,12 @@ impl Game<'_> {
 
     /// End held actions and captures before another context receives input.
     fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
-        // Before the releases below: a cancelled press must not click, nor a cancelled trigger
-        // change the recipe book's category as it comes up.
+        // Before the releases below: a cancelled press must not click, a cancelled trigger
+        // change the recipe book's category as it comes up, nor a cancelled radial menu
+        // commit when its opener comes up.
         self.pad.menu.armed = None;
         self.pad.menu.trigger = None;
+        self.pad.radial.cancel();
         self.direct_craft_stop();
         let held_sticks = [
             gamepad::radial(self.pad.state.left, self.settings.controller.move_deadzone)
@@ -496,7 +581,19 @@ impl Game<'_> {
         if down && !self.pad_focused() {
             return Ok(());
         }
+        if !down {
+            self.pad_radial_button_up(button);
+        }
+        // While the radial menu is open its presses are its own, but for the triggers'.
+        if down && self.pad_radial_captures() && self.pad_radial_button(button)? {
+            return Ok(());
+        }
         let playing = !self.pad_in_menu();
+        // A thumb rolling off a D-pad opener: its press, and so its release, reach nothing.
+        if down && playing && self.pad_radial_settling(button) {
+            self.pad.actions[button as usize].clear();
+            return Ok(());
+        }
         if down && playing && !self.captured && self.focused {
             // Like a click into the window: take the pointer.
             self.capture(true);
@@ -512,7 +609,16 @@ impl Game<'_> {
         // Releases always reach the mappings, so nothing stays held when a
         // screen opened in between.
         let actions = if down {
-            let actions = self.settings.controller.actions_of(button);
+            let mut actions = self.settings.controller.actions_of(button);
+            // An opener sharing its button (marked in the binds list) has it to
+            // itself wherever it can open, and gives it up elsewhere.
+            if actions.contains(&gamepad::RADIAL) {
+                if self.pad_radial_can_open() {
+                    actions = vec![gamepad::RADIAL];
+                } else {
+                    actions.retain(|action| *action != gamepad::RADIAL);
+                }
+            }
             self.pad.actions[button as usize] = actions.clone();
             actions
         } else {
@@ -532,6 +638,14 @@ impl Game<'_> {
             return Ok(());
         };
         match route {
+            Route::Radial => {
+                if down {
+                    self.pad_radial_open();
+                    Ok(())
+                } else {
+                    self.pad_radial_release()
+                }
+            }
             Route::HotbarStep { next } => {
                 if down {
                     self.hotbar_step(next);
@@ -583,6 +697,13 @@ impl Game<'_> {
                 }
                 Ok(())
             }
+            // KeyboardHandler: F3 alone, let go, shows or hides the debug screen.
+            Route::DebugOverlay => {
+                if down {
+                    self.debug = !self.debug;
+                }
+                Ok(())
+            }
             Route::Held => Ok(()),
             Route::Mouse(button) => {
                 let playing = self.title.is_none() && self.screen == Screen::Playing;
@@ -613,7 +734,7 @@ impl Game<'_> {
 
     /// Each poll: a held drop button, as a held Q's key repeats reach the mapping.
     fn pad_drop_frame(&mut self) {
-        if self.pad_in_menu() || self.screen_over_playing() {
+        if self.pad_in_menu() || self.screen_over_playing() || self.pad_radial_captures() {
             return;
         }
         let interval = Duration::from_secs_f32(self.settings.controller.repeat_interval);
@@ -668,7 +789,11 @@ impl Game<'_> {
     /// The left stick as the move vector, while playing.
     pub(super) fn pad_move(&self) -> Option<[f32; 2]> {
         let settings = &self.settings.controller;
-        if !settings.enabled || self.pad_in_menu() || !self.pad_focused() {
+        if !settings.enabled
+            || self.pad_in_menu()
+            || !self.pad_focused()
+            || (self.pad_radial_captures() && self.pad_radial_selects(0))
+        {
             return None;
         }
         gamepad::move_vector(self.pad.state.left, settings.move_deadzone)
@@ -697,7 +822,12 @@ impl Game<'_> {
     /// The right stick turns the view, once per frame (`Entity.turn`).
     pub(super) fn pad_look(&mut self, seconds: f32) {
         let settings = &self.settings.controller;
-        if !settings.enabled || self.pad_in_menu() || self.player.is_none() || !self.pad_focused() {
+        if !settings.enabled
+            || self.pad_in_menu()
+            || self.player.is_none()
+            || !self.pad_focused()
+            || (self.pad_radial_captures() && self.pad_radial_selects(1))
+        {
             return;
         }
         // A long frame (a hitch) must not spin the view.
@@ -801,6 +931,7 @@ impl Game<'_> {
                         json!({ "title": title, "body": body })
                     }),
                     "menu": self.pad_menu_status(),
+                    "radial": self.pad_radial_status(),
                     "guide": self.pad_guide_status(),
                     "held": held,
                     "left": s.left,
@@ -838,6 +969,7 @@ impl Game<'_> {
             }
             "release" => {
                 self.pad.menu.armed = None;
+                self.pad.radial.cancel();
                 self.direct_craft_stop();
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();

@@ -339,11 +339,14 @@ pub enum Route {
     HotbarStep {
         next: bool,
     },
+    Radial,
     /// Held, or flipped when the pad's toggle sneak is on.
     Sneak,
     Screenshot,
     SmoothCamera,
     Fullscreen,
+    /// F3's debug screen, shown or hidden as F3 alone does.
+    DebugOverlay,
     /// Does nothing by itself: what reads it asks whether the button is held
     /// (`Minecraft.handleKeybinds`' toolbar keys, held with a hotbar key).
     Held,
@@ -356,12 +359,12 @@ pub fn route(action: &str) -> Option<Route> {
     match action {
         HOTBAR_PREVIOUS => Some(Route::HotbarStep { next: false }),
         HOTBAR_NEXT => Some(Route::HotbarStep { next: true }),
-        // Nothing in play reads the opener yet.
-        RADIAL => Some(Route::Held),
+        RADIAL => Some(Route::Radial),
         "key.sneak" => Some(Route::Sneak),
         "key.screenshot" => Some(Route::Screenshot),
         "key.smoothCamera" => Some(Route::SmoothCamera),
         "key.fullscreen" => Some(Route::Fullscreen),
+        "key.debug.overlay" => Some(Route::DebugOverlay),
         "key.saveToolbarActivator" | "key.loadToolbarActivator" => Some(Route::Held),
         _ => {
             let default = crate::keybinds::KeyBinds::default_of(action);

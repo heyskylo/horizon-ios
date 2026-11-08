@@ -1430,6 +1430,11 @@ impl Repro {
         self.recording.is_some()
     }
 
+    /// Whether a replay runs or waits for its world.
+    pub(super) fn replaying(&self) -> bool {
+        self.replay.is_some() || self.pending_replay.is_some()
+    }
+
     /// The AI Agent page's line while a recording or replay runs.
     pub(super) fn agent_line(&self, inputs: u64) -> Option<String> {
         if let Some(rec) = &self.recording {

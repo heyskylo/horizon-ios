@@ -101,7 +101,7 @@ impl Game<'_> {
             };
             // A controller's stick click acts as the key without setting the modifier: it is held
             // while the pad holds it (or its release waits for a tick), not when the keyboard says.
-            let pad = self.pad.holds_action(&self.settings.controller, mapping);
+            let pad = self.pad.holds_action(mapping);
             if !held && !pad {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
@@ -114,9 +114,7 @@ impl Game<'_> {
             // A pad's toggle-sneak isn't holding it: it has no release that would end it.
             Source::Keyboard => {
                 !(slot == SNEAK && self.settings.controller.toggle_sneak)
-                    && self
-                        .pad
-                        .holds_action(&self.settings.controller, ["key.sneak", "key.sprint"][slot])
+                    && self.pad.holds_action(["key.sneak", "key.sprint"][slot])
             }
             Source::Pad => self.physical_keys.iter().any(|physical| {
                 self.settings
@@ -352,9 +350,7 @@ impl Game<'_> {
             _ => return false,
         };
         match source {
-            Source::Keyboard | Source::Agent => {
-                self.pad.holds_action(&self.settings.controller, mapping)
-            }
+            Source::Keyboard | Source::Agent => self.pad.holds_action(mapping),
             Source::Pad => {
                 let keys = &self.settings.keys;
                 self.physical_buttons

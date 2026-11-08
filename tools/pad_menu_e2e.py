@@ -860,6 +860,9 @@ def tabs_world(args, name):
         time.sleep(1)
         game.ctl('key', 'escape', 'tap')
         time.sleep(1)
+        # Social opens only on a server: this world, open to the network.
+        game.ctl('command', 'publish')
+        time.sleep(1)
         game.ctl('key', 'p', 'tap')
         steps('Player Social', 3)
     finally:
@@ -2361,6 +2364,9 @@ def osk_social(args, name):
     game = Game(args, name, world=True)
     check = Check()
     try:
+        # Social opens only on a server: this world, open to the network.
+        game.ctl('command', 'publish')
+        time.sleep(1)
         game.ctl('key', 'p', 'tap')
         time.sleep(1)
         game.wait_targets()

@@ -9,7 +9,7 @@ impl Game<'_> {
     pub(super) fn mapped_key_down(&self, mapping: &str) -> bool {
         keybinds::key_code(self.settings.keys.get(mapping))
             .is_some_and(|k| self.physical_keys.contains(&k))
-            || self.pad.holds_action(&self.settings.controller, mapping)
+            || self.pad.holds_action(mapping)
     }
 
     /// `CreativeModeInventoryScreen.selectTab` on the HOTBAR tab: each saved

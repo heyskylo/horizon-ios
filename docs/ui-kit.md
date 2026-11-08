@@ -228,10 +228,16 @@ in one priority order:
 |---|---|
 | `Keyboard` | the on-screen keyboard is up |
 | `Prompt` | a prompt is over the world (a server dialog, the code of conduct, a link, command or resource pack prompt) |
+| `Radial` | the radial menu is held open |
 
 Code that routes the pad's presses and sticks, and HUD pieces that give way (the crosshair, the
-controller guide), ask `pad_keyboard_captures()` rather than the overlays themselves. A new overlay that takes the pad adds its variant here, in its place in the
+controller guide), ask `pad_radial_captures()` or `pad_keyboard_captures()` rather than the
+overlays themselves. A new overlay that takes the pad adds its variant here, in its place in the
 order. Screens are not overlays: `pad_in_menu` says when one has the pad.
+
+One change came with it: a prompt that arrives while the radial menu is open owns the pad from that
+poll, so a B in the same poll answers the prompt instead of cancelling the menu (which the prompt
+closes anyway). Before, the menu took that B.
 
 ## Glyphs
 

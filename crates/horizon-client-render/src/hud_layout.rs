@@ -131,6 +131,23 @@ pub enum GuiDraw {
 
 pub const WHITE: u32 = 0xFFFF_FFFF;
 
+/// The highest top, in GUI px, of the draws that sit on the view (`None` for none): where a row
+/// of the HUD begins.
+pub fn draws_top(draws: &[GuiDraw]) -> Option<i32> {
+    draws
+        .iter()
+        .filter_map(|d| match *d {
+            GuiDraw::Sprite { y, .. }
+            | GuiDraw::AtlasSprite { y, .. }
+            | GuiDraw::Blit { y, .. }
+            | GuiDraw::Text { y, .. }
+            | GuiDraw::Item { y, .. } => Some(y),
+            GuiDraw::Fill { y0, .. } => Some(y0),
+            GuiDraw::Push(_) | GuiDraw::Pop => None,
+        })
+        .min()
+}
+
 fn sprite(sprite: &'static str, x: i32, y: i32, w: i32, h: i32) -> GuiDraw {
     GuiDraw::Sprite {
         sprite: Cow::Borrowed(sprite),

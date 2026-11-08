@@ -801,7 +801,10 @@ impl Game<'_> {
             && self.ui.options.controller_open()
             && let Some(action) = self.ui.options.selected_pad_action.take()
         {
-            if button != Button::Start {
+            // Start cancels, and so does a button the action can't take (the radial menu's
+            // opener under the selecting thumb or on B, `gamepad::opener_refused`): the binding
+            // stays.
+            if button != Button::Start && self.settings.controller.can_bind(action, button) {
                 self.settings.controller.bind(action, Some(button));
             }
             return self.handle_option_events(vec![Event::Changed]);
@@ -2230,8 +2233,10 @@ impl Game<'_> {
             return;
         }
         let takeover = match event {
+            // Not while the pad holds the radial menu open: as for raw mouse motion in play
+            // (`device_event`), a cursor that moved is a bumped mouse.
             WindowEvent::CursorMoved { position, .. } => {
-                self.pad.menu.real_pointer != Some(*position)
+                self.pad.menu.real_pointer != Some(*position) && !self.pad_radial_captures()
             }
             WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
             WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,

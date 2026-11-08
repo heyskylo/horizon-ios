@@ -179,7 +179,16 @@ impl Game<'_> {
                 // an active use in the same tick.
                 self.release_use_for_keybind_screen();
             }
-            // key.socialInteractions.
+            // key.socialInteractions (Gui.handleKeybinds): only on a server; in single player
+            // the action bar says so, and the narrator.
+            KeyCode::KeyP if self.screen == Screen::Playing && !self.is_multiplayer_server() => {
+                let message = horizon_client::text::Text::translate(
+                    "multiplayer.socialInteractions.not_available",
+                    &[],
+                );
+                self.titles.set_overlay(message.clone(), false);
+                self.say_system_now(&message);
+            }
             KeyCode::KeyP if self.screen == Screen::Playing => {
                 self.open_social(false);
                 self.release_use_for_keybind_screen();

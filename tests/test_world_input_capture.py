@@ -400,33 +400,40 @@ mod input_trace {
     pub enum InputOrigin { User }
     pub enum TraceKind { Motion { x: f64, y: f64 } }
 }
+struct Radial(bool);
+impl Radial { fn is_open(&self) -> bool { self.0 } }
+struct Pad { radial: Radial }
 struct Game {
     pending_save: Option<()>, captured: bool, focused: bool, keyboard_mouse: bool, split_window: bool,
-    options: Options, screen: Screen, mouse: MouseLook, last_input: Instant,
+    options: Options, screen: Screen, mouse: MouseLook, last_input: Instant, pad: Pad,
 }
 impl Game {
     // The input trace records the motion; it does not change the turn.
     fn note_input(&mut self, _: input_trace::InputOrigin, _: input_trace::TraceKind) {}
     // Handing input back from the controller does not change the turn either.
     fn pad_yield_input(&mut self, _: &ActiveEventLoop) {}
+    // `game/pad_capture.rs`: the radial menu owns the pad while it is open.
+    fn pad_radial_captures(&self) -> bool { self.pad.radial.is_open() }
 METHOD
 }
 fn main() {
-    // (offscreen renderer, compositor, keyboard/mouse owner, active, gameplay, saving).
-    for (offscreen, split, owner, active, playing, saving, turns) in [
-        (false, false, true, true, true, false, true),
-        (true, true, true, true, true, false, true),
-        (true, true, false, true, true, false, false),
-        (true, false, true, true, true, false, false),
-        (true, true, true, false, true, false, false),
-        (true, true, true, true, false, false, false),
-        (true, true, true, true, true, true, false),
+    // (offscreen renderer, compositor, keyboard/mouse owner, active, gameplay, saving, the pad's
+    // radial menu open).
+    for (offscreen, split, owner, active, playing, saving, radial, turns) in [
+        (false, false, true, true, true, false, false, true),
+        (true, true, true, true, true, false, false, true),
+        (true, true, false, true, true, false, false, false),
+        (true, false, true, true, true, false, false, false),
+        (true, true, true, false, true, false, false, false),
+        (true, true, true, true, false, false, false, false),
+        (true, true, true, true, true, true, false, false),
+        (false, false, true, true, true, false, true, false),
     ] {
         let mut game = Game {
             pending_save: saving.then_some(()), captured: true, focused: active,
             keyboard_mouse: owner, split_window: split, options: Options { offscreen },
             screen: if playing { Screen::Playing } else { Screen::Paused },
-            mouse: MouseLook::default(), last_input: Instant::now(),
+            mouse: MouseLook::default(), last_input: Instant::now(), pad: Pad { radial: Radial(radial) },
         };
         game.device_event(&ActiveEventLoop, DeviceId, DeviceEvent::MouseMotion { delta: (0.0, 0.0) });
         game.device_event(&ActiveEventLoop, DeviceId, DeviceEvent::MouseMotion { delta: (20.0, -10.0) });
@@ -436,7 +443,7 @@ fn main() {
         rotation.turn(x, y);
         let want = if turns { (3.0, -1.5) } else { (0.0, 0.0) };
         assert!((rotation.y_rot - want.0).abs() < 0.00001 && (rotation.x_rot - want.1).abs() < 0.00001,
-            "rotation=({}, {}), offscreen={offscreen}, split={split}, owner={owner}, active={active}, playing={playing}, saving={saving}", rotation.y_rot, rotation.x_rot);
+            "rotation=({}, {}), offscreen={offscreen}, split={split}, owner={owner}, active={active}, playing={playing}, saving={saving}, radial={radial}", rotation.y_rot, rotation.x_rot);
     }
 }
 '''

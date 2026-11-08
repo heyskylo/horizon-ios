@@ -3716,6 +3716,8 @@ impl Game<'_> {
                 }
                 self.using = None;
                 self.end_mod_use();
+                // A new LocalPlayer: nothing the old one's controller had open runs on it.
+                self.pad_player_replaced();
                 // After a death (no KEEP_ENTITY_DATA) the new LocalPlayer
                 // rides nothing: the server pairs a vehicle again with its
                 // passengers. A dimension change keeps the vehicle it travels in.
@@ -6466,7 +6468,7 @@ impl Game<'_> {
                 player.spectator = self.spectator();
                 player.velocity = delta;
                 self.player = Some(player);
-                self.pad.player_replaced();
+                self.pad_player_replaced();
                 self.sway = Default::default();
                 self.eye = 1.62;
                 self.previous_eye = 1.62;
