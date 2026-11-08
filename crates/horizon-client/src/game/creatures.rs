@@ -29,7 +29,6 @@ use horizon_client::{
     mod_api::NativeLootDrops,
     particles::{ParticleOptions, ParticleType},
     projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld, clip_including_border},
-    text::Text,
 };
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, traverse_blocks, trig::Mth},
@@ -2272,7 +2271,7 @@ impl Game<'_> {
         } else {
             String::new()
         };
-        let (id, kind) = (p.id, p.kind.id());
+        let (id, kind) = (p.id, p.entity_type());
         if let Some(a) = p.arrow.as_mut()
             && !p.stuck
         {
@@ -2966,6 +2965,21 @@ impl Game<'_> {
                 MobEvent::SetTarget { mob, target } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
                         m.ai.target = Some(target);
+                    }
+                }
+                MobEvent::HoglinAttackTarget { mob, target } => {
+                    let places: Vec<(u32, horizon_core::geometry::Vec3)> = self
+                        .mobs
+                        .iter()
+                        .filter(|m| m.alive())
+                        .map(|m| (m.id, m.position))
+                        .collect();
+                    let position = |who: Who| match who {
+                        Who::Mob(id) => places.iter().find(|(i, _)| *i == id).map(|(_, p)| *p),
+                        Who::Player => None,
+                    };
+                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+                        horizon_client::mobs::piglin::receive_attack_target(m, target, position);
                     }
                 }
                 MobEvent::HuntHoglin { mob, target, ticks } => {
@@ -4192,29 +4206,22 @@ impl Game<'_> {
         let events_before = self.player.as_ref().map_or(0, |p| p.events.len());
         let mut resolved_damage = None;
         let damage_outcome = if let Some(id) = self.health_resources.damage.id(damage_type) {
-            if self
+            // Every source that reaches the armor boundary wears it first:
+            // `getDamageAfterArmorAbsorb` calls `hurtArmor` before it reads
+            // the armor value, so a piece that breaks on this hit takes no
+            // part in the reduction of the hit that broke it (#11696). The
+            // hit's own advancement keeps the helmet phase's reported amount.
+            let damages_helmet = self
                 .health_resources
                 .damage
-                .in_tag(id, "minecraft:damages_helmet")
-            {
-                self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
-                    .map(|(outcome, actual)| {
+                .in_tag(id, "minecraft:damages_helmet");
+            self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
+                .map(|(outcome, actual)| {
+                    if damages_helmet {
                         resolved_damage = Some(actual);
-                        outcome
-                    })
-            } else if let Some(player) = self.player.as_mut() {
-                player.hurt_caused_by(
-                    &self.health_resources,
-                    self.world.health_rules,
-                    id,
-                    amount,
-                    blocking,
-                    living_cause,
-                    causing,
-                )
-            } else {
-                Ok(Default::default())
-            }
+                    }
+                    outcome
+                })
         } else {
             Ok(Default::default())
         };
@@ -4374,15 +4381,8 @@ impl Game<'_> {
     pub(super) fn hurt_player_by(&mut self, damage_type: &str, amount: f32) {
         let mut canceled = false;
         if !self.creative
-            && let Some(player) = self.player.as_mut()
             && let Some(id) = self.health_resources.damage.id(damage_type)
-            && let Ok(o) = player.hurt_blocking(
-                &self.health_resources,
-                self.world.health_rules,
-                id,
-                amount,
-                None,
-            )
+            && let Ok((o, _)) = self.hurt_player_equipment(id, amount, None, false, 0)
         {
             canceled = o.canceled;
         }
@@ -4459,6 +4459,7 @@ impl Game<'_> {
             return self.flush_wind_bursts();
         }
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
+        let ticking = self.entity_ticking_area();
         let mut hits = Vec::new();
         let mut deflections: Vec<u32> = Vec::new();
         let mut arrow_events = Vec::new();
@@ -4525,7 +4526,21 @@ impl Game<'_> {
                     .map(|g| g.conn)
                     .collect()
             });
+            // `EntityTickList.forEach`: a projectile that joined during this
+            // tick's entity pass (a mob's shot) first ticks on the next one; a
+            // player's or a dispenser's, which join before the pass, tick now.
+            let through = self.ticked_entities_through;
             for i in 0..projectiles.len() {
+                if projectiles[i].id > through {
+                    continue;
+                }
+                // ServerLevel.tick: losing an entity-ticking ticket must not
+                // advance projectile flags or motion while its chunk unloads.
+                let at = projectiles[i].position;
+                if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                    projectiles[i].previous = at;
+                    continue;
+                }
                 // A ghast's fireball or a wind charge is pickable, so a pearl, an
                 // arrow or a trident can strike it (`Projectile.isPickable`,
                 // `Projectile.onHit`).
@@ -4757,6 +4772,7 @@ impl Game<'_> {
             self.projectile_shoot_event(owner, guest, at);
         }
         self.smoke_trails(trails);
+        self.dragon_breath_trails();
         for pos in bubble_tops {
             self.bubble_column_particles(pos);
         }
@@ -5196,15 +5212,7 @@ impl Game<'_> {
             self.native_target_hit(self.dim.id(), pos, strength);
             if p.owner == Some(Who::Player) && (p.guest.is_none() || p.guest == self.lan_acting) {
                 self.award_custom_stat("target_hit", 1);
-                let kind = if p
-                    .arrow
-                    .as_ref()
-                    .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow")
-                {
-                    "minecraft:spectral_arrow"
-                } else {
-                    p.kind.id()
-                };
+                let kind = p.entity_type();
                 let projectile = horizon_client::advancements::EntityView {
                     kind: kind.to_owned(),
                     position: [p.position.x, p.position.y, p.position.z],
@@ -5245,21 +5253,7 @@ impl Game<'_> {
         self.combat.projectile_direct = match hit {
             Hit::Entity {
                 who: Who::Player, ..
-            } => {
-                let spectral = p
-                    .arrow
-                    .as_ref()
-                    .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow");
-                let id = if spectral {
-                    "minecraft:spectral_arrow"
-                } else {
-                    p.kind.id()
-                };
-                Some(Text::translate(
-                    &format!("entity.{}", id.replace(':', ".")),
-                    &[],
-                ))
-            }
+            } => Some(self.target_name(super::commands::Target::Projectile(p.id))),
             _ => None,
         };
         let at = match hit {
@@ -5293,7 +5287,10 @@ impl Game<'_> {
             who: Who::Mob(id), ..
         } = hit
             && id >= super::dragon::SPECIAL
-            && !matches!(p.kind, ProjectileKind::WitherSkull { .. })
+            && !matches!(
+                p.kind,
+                ProjectileKind::WitherSkull { .. } | ProjectileKind::DragonFireball
+            )
         {
             let by_player = p.owner == Some(Who::Player);
             if p.arrow.is_some() {
@@ -6061,6 +6058,9 @@ impl Game<'_> {
                     }
                 }
             },
+            // DragonFireball.onHit (its own owner's hit never gets here): the
+            // dragon's breath where it burst.
+            (ProjectileKind::DragonFireball, _) => self.dragon_fireball_on_hit(at),
             (ProjectileKind::WitherSkull { .. }, hit) => {
                 let who = match hit {
                     Hit::Entity { who, .. } => Some(who),
@@ -9510,7 +9510,7 @@ mod breeding_orb_tests {
             game.breeding_orb(7, [8.5, 64.0, 8.5]);
             assert_eq!(game.orbs.len(), orbs + 1, "a fresh orb, not merged");
             assert_eq!(
-                game.orbs.last().map(|o| (o.value, o.count)),
+                game.orbs.last().map(|o| (o.points(), o.count)),
                 Some((roll, 1))
             );
             values.insert(roll);

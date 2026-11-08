@@ -32,8 +32,7 @@ except ImportError:
     import lab
 
 # Classes whose decompiled source a generator parses: (side, class).
-SOURCES = [("client", "net/minecraft/world/entity/EntityTypes"),
-           ("server", "net/minecraft/util/datafix/fixes/BlockStateData")]
+SOURCES = [("client", "net/minecraft/world/entity/EntityTypes")]
 PARITY = "mods/horizon/src/test/java/dev/horizonlab/parity"
 
 
@@ -260,9 +259,6 @@ GENERATORS = [
     ("entity_tracking", ["crates/horizon-client/src/lan/tracking.rs"],
      lambda root, version, store, build: [python(), "tools/generate_entity_tracking.py", "--sources",
                                           store / "sources" / "client"]),
-    ("block_state_data", ["crates/horizon-world/src/datafix/block_state_data.txt"],
-     lambda root, version, store, build: [python(), "tools/gen_block_state_data.py",
-                                          store / "sources/server" / f"{SOURCES[1][1]}.java"]),
     ("lan_command_order", ["crates/horizon-client/src/lan/command_order.rs"],
      lambda root, version, store, build: [python(), "tools/generate_lan_command_order.py"]),
     ("command_suggestions", ["crates/horizon-client/src/lan/command_suggestions.rs"], gen_suggestions),

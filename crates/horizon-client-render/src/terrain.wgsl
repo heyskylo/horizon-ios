@@ -151,31 +151,23 @@ fn rotated_grid(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>,
     let dv_len = length(dv);
     let effective = sqrt(min(du_len, dv_len) * max(du_len, dv_len));
     let exact = max(0.0, log2(effective / min_pixel));
-    let low = floor(exact);
-    let mip_blend = fract(exact);
     // From this level on the sprite is a single texel (0: the views stop before one is), and
     // the sampler clamps any level past it to it: there every tap reads the same value, so
     // one tap gives the four's mean. Distant tiles sit there.
     let single = globals.filtering.z;
-    if single > 0.0 && low >= single {
-        return sprite_level(uv, layer, low);
+    if single > 0.0 && floor(exact) >= single {
+        return sprite_level(uv, layer, floor(exact));
     }
-    let high_single = single > 0.0 && low + 1.0 >= single;
+    // sampleRGSS takes each of the four taps at the two mip levels around `exact` and mixes them
+    // by fract(exact). The sprite sampler's mip filter is linear, so a tap at the fractional
+    // level is that mix: four texture instructions where the shader mix took eight.
     var offsets = array<vec2<f32>, 4>(
         vec2(0.125, 0.375), vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125));
-    var sum_low = vec4(0.0);
-    var sum_high = vec4(0.0);
+    var sum = vec4(0.0);
     for (var i = 0; i < 4; i++) {
-        let p = uv + offsets[i] * pixel;
-        sum_low += sprite_level(p, layer, low);
-        if !high_single {
-            sum_high += sprite_level(p, layer, low + 1.0);
-        }
+        sum += sprite_level(uv + offsets[i] * pixel, layer, exact);
     }
-    if high_single {
-        sum_high = 4.0 * sprite_level(uv, layer, low + 1.0);
-    }
-    return mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
+    return sum * 0.25;
 }
 // Distant terrain tiles (lod/mesh.rs) count their UVs in blocks past 1: each block takes the
 // sprite again, as separate faces would under the clamped sampler. Sprite UVs in [0, 1] stay.
