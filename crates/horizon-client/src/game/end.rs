@@ -263,7 +263,6 @@ impl EndState {
     }
 }
 
-/// The EyeOfEnder entity.
 /// An eye of ender from `/summon` or a saved chunk. `signalTo` never ran for
 /// it, so it has no target and `surviveAfterDeath` stays false.
 #[derive(Clone, Copy, Debug)]
@@ -334,6 +333,7 @@ impl Game<'_> {
     }
 }
 
+/// The EyeOfEnder entity.
 struct EyeOfEnder {
     /// Its entity id once a server's clients track it (0 until then).
     id: u32,
