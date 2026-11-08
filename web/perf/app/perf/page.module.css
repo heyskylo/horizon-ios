@@ -898,6 +898,92 @@
   text-align: right;
 }
 
+/* Benchmark */
+
+.benchReport {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px;
+  min-width: 0;
+}
+
+.benchHeading {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.tableScroll {
+  margin-top: 8px;
+  overflow-x: auto;
+}
+
+.benchTable {
+  min-width: 760px;
+}
+
+.benchMetrics {
+  min-width: 560px;
+}
+
+.benchTable th,
+.benchTable td,
+.benchMetrics th,
+.benchMetrics td {
+  white-space: nowrap;
+}
+
+.benchTable th:nth-child(2) {
+  text-align: left;
+}
+
+.table td.benchPhase {
+  max-width: 280px;
+  overflow: hidden;
+  color: var(--ink);
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.benchTrack {
+  position: relative;
+  display: block;
+  min-width: 96px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--rule);
+}
+
+.benchTail,
+.benchTypical {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+}
+
+.benchTail {
+  background: var(--bar);
+  opacity: 0.45;
+}
+
+.benchTypical {
+  background: var(--ink-soft);
+  transition: background 120ms ease;
+}
+
+.table tbody tr:hover .benchTypical {
+  background: var(--accent);
+}
+
+.table td.benchVerdict[data-tone="good"] {
+  color: var(--success);
+}
+
+.table td.benchVerdict[data-tone="bad"] {
+  color: var(--danger);
+}
+
 /* Text panes */
 
 .pre,

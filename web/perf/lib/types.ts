@@ -253,6 +253,75 @@ export interface QueryRequest {
   filters?: Record<string, unknown>;
 }
 
+/** A benchmark metric over a run's repeats. */
+export interface BenchMetric {
+  n: number;
+  mean: number;
+  stdev: number | null;
+  min: number;
+  max: number;
+  ci95: number | null;
+}
+
+/** One measured phase of one repeat. */
+export interface BenchFrames {
+  phase: string;
+  repeat: number;
+  frames: number;
+  seconds: number;
+  avg_fps: number;
+  low_1pct_fps: number;
+  low_01pct_fps: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  p999_ms: number;
+  max_ms: number;
+  cpu_p50_ms?: number | null;
+  gpu_p50_ms?: number | null;
+  histogram: number[];
+}
+
+export type BenchVerdict = "too_few_pairs" | "within_noise" | "negligible" | "slower" | "faster";
+
+/** B against A over paired blocks; lower milliseconds are better. */
+export interface BenchPaired {
+  pairs: number;
+  a: number;
+  b: number;
+  diff: number;
+  diff_pct: number | null;
+  ci95: [number, number] | null;
+  confidence: number | null;
+  noise: number | null;
+  verdict: BenchVerdict;
+}
+
+export interface BenchAb {
+  switch: string;
+  a: string;
+  b: string;
+  pairs: number;
+  block_s: number;
+  warmup_s: number;
+  first_block_outside_range: boolean;
+  result: Record<string, BenchPaired>;
+}
+
+/** A benchmark report a capture embeds, as the report holds it. */
+export interface BenchRow {
+  id: string;
+  side: Side;
+  format: string;
+  corpus_id: string | null;
+  scenario: string | null;
+  app_version: string | null;
+  created: string | null;
+  metrics: Record<string, BenchMetric>;
+  frames: BenchFrames[];
+  ab: BenchAb | null;
+}
+
 /** One row of a comparison: A is the first capture, B the second. */
 export interface DiffRow {
   id: string;

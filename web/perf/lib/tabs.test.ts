@@ -18,6 +18,12 @@ test("a side only offers the tabs whose query has rows", () => {
   ]);
 });
 
+test("a capture without a benchmark report has no Bench tab, and one with a report has it before Marks", () => {
+  assert.ok(!tabsFor(answering("marks"), false).includes("bench"));
+  const tabs = tabsFor(answering("bench", "marks"), false);
+  assert.equal(tabs.indexOf("bench") + 1, tabs.indexOf("marks"));
+});
+
 test("a server capture has no GPU tab when the gpu query has no rows", () => {
   assert.ok(!tabsFor(answering("hot"), false).includes("gpu"));
 });
