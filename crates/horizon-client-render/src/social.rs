@@ -804,6 +804,13 @@ mod tests {
         );
         assert!(data.incoming.is_empty());
         assert_eq!(data.outgoing[0].name, "Steve");
+        // The service's answer to an account with no friends, as the live check
+        // captured it: the three lists plus an `empty` flag the parser ignores.
+        let empty = parse_friends(
+            r#"{"empty":true,"friends":[],"incomingRequests":[],"outgoingRequests":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(empty, FriendData::default());
     }
 
     #[test]
