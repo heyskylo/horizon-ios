@@ -52,6 +52,7 @@ fn thunder_mob_spawn_setup(m: &horizon_client::mobs::Mob) -> SpawnSetup {
         baby: m.is_baby(),
         yaw: m.yaw,
         persistent: true,
+        skip_finalize: true,
         ..Default::default()
     }
 }
@@ -118,7 +119,7 @@ impl Game<'_> {
             if trap {
                 let at = [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])];
                 // ServerLevel.tickChunk: a trap horse waits for a player.
-                if let Some(id) = self.spawn_mob("minecraft:skeleton_horse", at, false)
+                if let Some(id) = self.spawn_mob_raw("minecraft:skeleton_horse", at, false)
                     && let Some(h) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     h.extra.trap = true;
@@ -618,7 +619,12 @@ impl Game<'_> {
                     events.push(MobEvent::SpawnKind {
                         kind: "minecraft:witch".into(),
                         at,
-                        setup: setup(m),
+                        // Villager.thunderHit: the witch's convertTo runs
+                        // finalizeSpawn(CONVERSION); the zombified piglin's does not.
+                        setup: SpawnSetup {
+                            skip_finalize: false,
+                            ..setup(m)
+                        },
                     });
                     continue;
                 }

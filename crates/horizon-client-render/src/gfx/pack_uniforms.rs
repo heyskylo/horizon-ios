@@ -2218,22 +2218,33 @@ pub(super) mod initial_history_tests {
         let hud = HudBatch::new([800, 450]);
         let f = frame(&hud);
         let mut u = FrameUniforms::default();
-        // The next frame comes `seconds` after the last (and a few microseconds of the test).
-        let after = |u: &mut FrameUniforms, seconds: f32| {
-            u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs_f32(seconds));
+        // A scripted clock: the next frame comes exactly `seconds` after the last, however long
+        // the test itself takes (a wall-clock gap of a millisecond moved centerDepthSmooth by
+        // more than the tolerance on a busy CI runner).
+        let mut counter = 1;
+        let mut elapsed = 0.0;
+        let mut after = |input: &mut PackInputs, seconds: f32| {
+            counter += 1;
+            elapsed += seconds;
+            input.frame_timing = Some(FrameTiming {
+                counter,
+                elapsed,
+                delta: seconds,
+            });
         };
         let mut input = PackInputs {
             eye_light: [0, 15],
+            frame_timing: Some(FrameTiming::nth(1, 0.0)),
             ..Default::default()
         };
         u.center_depth_raw = Some(1.0);
         u.update(&f, &input, [800, 450]);
         input.eye_light = [0, 0];
         u.center_depth_raw = Some(0.0);
-        after(&mut u, 0.1);
+        after(&mut input, 0.1);
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "centerDepthSmooth")[0] - 0.5).abs() < 1e-3);
-        after(&mut u, 0.6);
+        after(&mut input, 0.6);
         u.update(&f, &input, [800, 450]);
         // 240 falling toward 0 for 0.7 s: 147.8, read as 147.
         match u.values[index("eyeBrightnessSmooth").unwrap()] {
@@ -2241,11 +2252,11 @@ pub(super) mod initial_history_tests {
             _ => panic!("integer uniform expected"),
         }
         input.rain = 1.0;
-        after(&mut u, 60.0);
+        after(&mut input, 60.0);
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "wetness")[0] - 0.5).abs() < 1e-3);
         input.rain = 0.0;
-        after(&mut u, 20.0);
+        after(&mut input, 20.0);
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
     }

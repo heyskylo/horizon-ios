@@ -554,14 +554,22 @@ mod tests {
         });
         let view = target.create_view(&Default::default());
         // Independent scalar expectation: a sky mark of 206/255 gives this gamma gain.
-        let gain = (1.0f32 + 3.0 * (1.0 - 206.0 / 255.0) / 0.24).powf(1.0 / 2.2);
-        for (mode_index, mode, debug) in MODES
+        let hdr_gain = (1.0f32 + 3.0 * (1.0 - 206.0 / 255.0) / 0.24).powf(1.0 / 2.2);
+        for (mode_index, mode, debug, written) in MODES
             .iter()
             .copied()
             .enumerate()
-            .map(|(i, m)| (i, m, false))
-            .chain([(5, Blend::Screen, true)])
+            .map(|(i, m)| (i, m, false, true))
+            .chain([(5, Blend::Screen, true, true)])
+            .chain(
+                MODES
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(i, m)| (i, m, false, false)),
+            )
         {
+            let gain = if written { hdr_gain } else { 1.0 };
             let uniform = Uniform {
                 clip_from_sky: Mat4::IDENTITY.to_cols_array_2d(),
                 brightness: 0.7,
@@ -569,7 +577,7 @@ mod tests {
                 pad: [0; 2],
                 hdr_settings: [5.0, 4.0, 1.0, f32::from(u8::from(debug))],
                 hdr_shares: [0.2, 0.5, 0.6, 1.0],
-                hdr_light: [0.8, 0.8, 1.0, 1.0],
+                hdr_light: [0.8, 0.8, 1.0, f32::from(u8::from(written))],
             };
             let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
@@ -704,6 +712,12 @@ mod tests {
             let data = readback.get_mapped_range(..).unwrap();
             let got = half::f16::from_le_bytes([data[0], data[1]]).to_f32();
             let (d, t, k) = (2.0, 0.8, 128.0 / 255.0 * 0.7);
+            let alpha = half::f16::from_le_bytes([data[6], data[7]]).to_f32();
+            let coverage = if mode == Blend::Alpha { k } else { 1.0 };
+            assert!(
+                (alpha - coverage).abs() < 0.001,
+                "{mode:?}: alpha {alpha}, expected {coverage}"
+            );
             let expected = if debug {
                 let grey = (0.2126f32 * 0.8f32.powf(2.2)
                     + 0.7152 * 0.4f32.powf(2.2)
@@ -728,6 +742,8 @@ mod tests {
                 "{mode:?} debug {debug}: {got} expected {expected}"
             );
         }
-        eprintln!("HDR custom sky GPU ran all nine modes and debug Screen over above-white light");
+        eprintln!(
+            "HDR custom sky GPU ran all nine modes with and without gain, plus debug Screen, checking RGB and coverage"
+        );
     }
 }

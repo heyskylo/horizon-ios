@@ -309,3 +309,11 @@ Permission to use, copy, modify, and distribute this
 software is freely granted, provided that this notice
 is preserved.
 ```
+
+## Starling
+
+`crates/horizon-client-render/src/touch/layout.rs` is adapted from the touch layout of
+[Starling](https://github.com/starling-client/starling), an Android port of Horizon, at commit
+[150a414b09a1](https://github.com/starling-client/starling/tree/150a414b09a18c900489d9462a7fc035dae744b7)
+(`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
+Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).

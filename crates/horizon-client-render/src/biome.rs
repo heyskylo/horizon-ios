@@ -393,6 +393,17 @@ impl Biomes {
     pub fn get(&self, id: u16) -> &BiomeInfo {
         &self.list[usize::from(id).min(self.list.len() - 1)]
     }
+    /// The name of biome `id`, plains (as for an unknown name) when the id is
+    /// past this table: a column a server sent under its earlier, longer
+    /// registry (a proxy's previous server) keeps its ids until the next
+    /// login replaces it. `get` clamps such an id to the last entry instead,
+    /// so for that stale column the colours and this name can come from
+    /// different biomes until the login.
+    pub fn name(&self, id: u16) -> &str {
+        self.list
+            .get(usize::from(id))
+            .map_or("minecraft:plains", |b| b.name.as_str())
+    }
     pub fn grass(&self, id: u16, x: f64, z: f64) -> u32 {
         let b = self.get(id);
         match b.modifier {
@@ -623,6 +634,21 @@ mod pack_tests {
         assert!(!other.contains("minecraft:molten_peaks"));
         assert_eq!(other.get(2).water, 0x3F76E4);
         assert!(!other.has_packs());
+    }
+
+    /// A column keeps the ids of the table it was decoded with. When a
+    /// proxy's next server lacks a biome the last one added, that id is past
+    /// the next table, and it names plains instead of indexing past the end
+    /// (#12148: "the len is 67 but the index is 67").
+    #[test]
+    fn an_id_past_the_table_names_plains() {
+        let next = builtin(&["minecraft:meadow", "minecraft:plains", "minecraft:river"]);
+        let last = next.with_packs([("limbo:void", &json!({}))]);
+        let stale = last.id("limbo:void");
+        assert_eq!((stale, last.name(stale)), (3, "limbo:void"));
+        assert_eq!(next.name(stale), "minecraft:plains");
+        assert_eq!(next.name(u16::MAX), "minecraft:plains");
+        assert_eq!(next.name(2), "minecraft:river");
     }
 }
 

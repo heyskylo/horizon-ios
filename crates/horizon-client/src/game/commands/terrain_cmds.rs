@@ -235,7 +235,7 @@ impl Game<'_> {
                         continue;
                     };
                     let current = chunk.biome(x, y, z);
-                    let current_name = &world_biomes!(self).list[usize::from(current)].name;
+                    let current_name = world_biomes!(self).name(current);
                     if let Some(f) = &filter
                         && !self.biome_matches(f, current_name)
                     {
@@ -615,11 +615,25 @@ impl Game<'_> {
                         &[&self.target_name(t).plain()],
                     ));
                 }
-                let by_player = matches!(
-                    self.command_source.map(|s| s.entity),
-                    None | Some(Some(Target::Player))
-                );
-                let held = self.slot_get(&super::items::Slot::Inv(self.selected));
+                // LootCommand.dropKillLoot: the source's entity is the killer.
+                // A connected player is the last damage player, and its own
+                // stack counts; it is in place only to read that stack.
+                let guest = match self.command_source.map(|s| s.entity) {
+                    Some(Some(Target::Guest(conn))) => self.for_player(Target::Guest(conn), |g| {
+                        g.slot_get(&super::items::Slot::Inv(g.selected))
+                    }),
+                    _ => None,
+                };
+                let (by_player, held) = match guest {
+                    Some(held) => (true, held),
+                    None => (
+                        matches!(
+                            self.command_source.map(|s| s.entity),
+                            None | Some(Some(Target::Player))
+                        ),
+                        self.slot_get(&super::items::Slot::Inv(self.selected)),
+                    ),
+                };
                 // LootCommand.dropKillLoot's THIS_ENTITY is the selected live mob.
                 let target = match t {
                     Target::Mob(id) => self

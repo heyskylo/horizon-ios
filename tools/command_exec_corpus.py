@@ -5093,6 +5093,22 @@ def zombie_nautilus_ignored_age():
 
 
 
+def boat_passenger_tree_cases(original_full=False):
+    try:
+        from .boat_passenger_tree_corpus import cases
+    except ImportError:
+        from boat_passenger_tree_corpus import cases
+    return cases(cmd, original_full)
+
+
+def effective_component_presence_cases():
+    try:
+        from .effective_component_presence_corpus import cases
+    except ImportError:
+        from effective_component_presence_corpus import cases
+    return cases(cmd)
+
+
 def jukebox_saved_clock_cases():
     try:
         from .jukebox_saved_clock_corpus import cases
@@ -5889,6 +5905,98 @@ def piston_push_ground():
     return ops
 
 
+def piston_tnt_effects():
+    """#12023: `Entity.move(MoverType.PISTON)` uses up primed TNT's pending
+    stuck multiplier without scaling the push, adds to its fall and resets it
+    on landing, and applies the block speed factor (soul sand); then
+    `moveEntityByPiston` runs `applyEffectsFromBlocks`, so powder snow it is
+    pushed into makes it stuck before its next move and slime under it slows
+    it. After a fall over 2.5, powder snow stops the push. The TNT ticks before
+    the piston moves it (#9337). Positions are read to a tenth: the float box
+    (#12020) moves a stopped push by 1e-8."""
+    sel = '@e[type=minecraft:tnt,tag=piston_tnt,limit=1]'
+    east = ('/setblock 30 210 31 piston[facing=east]',)
+    down = ('/setblock 32 212 31 piston[facing=down]',)
+    ops = []
+    # blocks, summon x and y, TNT fields, power
+    for blocks, at, fields, power in (
+            (east + ('/setblock 32 210 31 powder_snow',), '31.5 210',
+             'Motion:[0.0d,0.1d,0.0d]', '/setblock 30 211 31'),
+            (east + ('/setblock 32 210 31 powder_snow',), '31.5 210',
+             'fall_distance:3.0d', '/setblock 30 211 31'),
+            (east + ('/fill 30 209 31 34 209 31 soul_sand',), '31.5 210',
+             'Motion:[0.0d,0.0d,0.05d]', '/setblock 30 211 31'),
+            (down + ('/setblock 32 210 31 stone',), '32.5 211',
+             'fall_distance:3.0d', '/setblock 32 213 31'),
+            (down + ('/setblock 32 210 31 slime_block',), '32.5 211',
+             'fall_distance:3.0d,Motion:[0.0d,0.0d,0.05d]', '/setblock 32 213 31'),
+            # Two pistons push it in one tick: the second finds the tick's
+            # 0.51 spent, but `moveEntityByPiston` still runs the slime's stepOn.
+            (down + ('/setblock 33 212 31 piston[facing=down]', '/fill 32 210 31 33 210 31 slime_block'),
+             '33.0 211', 'Motion:[0.0d,0.0d,0.05d]', '/fill 32 213 31 33 213 31'),
+            # Onto slime beside a rising bubble column: `stepOn` slows it before
+            # the column lifts it (`applyEffectsFromBlocks` order).
+            (down + ('/setblock 32 210 31 slime_block', '/setblock 33 210 31 soul_sand',
+                     '/setblock 33 211 31 bubble_column[drag=false]'),
+             '32.6 211', 'Motion:[0.0d,0.0d,0.05d]', '/setblock 32 213 31')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air', *blocks,
+                     f'/summon minecraft:tnt {at} 31.5 '
+                     f'{{fuse:200s,NoGravity:1b,{fields},Tags:["piston_tnt"]}}')
+        for tick in range(5):
+            if tick == 1:
+                ops += setup(f'{power} redstone_block')
+            ops.append({'op': 'tick', 'n': 1})
+            for path in ('Pos[0] 10', 'Pos[1] 10', 'Motion', 'fall_distance'):
+                ops.append(cmd(f'/data get entity {sel} {path}'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
+def primed_tnt_fall():
+    """#12021: primed TNT is an `Entity`: `checkFallDamage` adds each step down,
+    narrowed to a float, to its double `fall_distance`, which it saves and
+    `/data` reads and writes. `PowderSnowBlock` holds it on a top 0.9 high
+    once that is over 2.5 (`getCollisionShape`), and otherwise makes it stuck
+    (`entityInside` -> `makeStuckInBlock`, 0.9F/1.5/0.9F), so it sinks; a
+    cobweb makes it stuck the same way (0.25/0.05F/0.25)."""
+    sel = '@e[type=minecraft:tnt,tag=tnt_fall,limit=1]'
+    ops = []
+
+    def track(ticks):
+        out = []
+        for _ in range(ticks):
+            out.append({'op': 'tick', 'n': 1})
+            for path in ('Pos', 'Motion', 'fall_distance'):
+                out.append(cmd(f'/data get entity {sel} {path}'))
+        return out
+
+    # block at 32 210 32, summon y, fields, ticks recorded
+    for block, y, fields, ticks in (
+            ('air', 216, 'Motion:[0.0d,-1.0d,0.0d]', 3),
+            ('stone', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 2),
+            ('powder_snow', 216, 'Motion:[0.0d,-1.0d,0.0d]', 8),
+            ('powder_snow', 210.75, 'Motion:[0.0d,0.0d,0.0d]', 4),
+            # It passes a fall of 2.5 just above the snow: its 0.9-high top
+            # only counts once the TNT reaches it.
+            ('powder_snow', 213.86, 'Motion:[0.0d,0.0d,0.0d]', 14),
+            ('powder_snow', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 4),
+            ('cobweb', 212, 'Motion:[0.0d,-0.5d,0.0d]', 5)):
+        ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                     '/fill 30 209 30 34 209 34 stone', f'/setblock 32 210 32 {block}',
+                     f'/summon minecraft:tnt 32.5 {y} 32.5 {{fuse:200s,{fields},Tags:["tnt_fall"]}}')
+        ops += track(ticks)
+    # /data writes the field the next fall adds to.
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                 '/fill 30 209 30 34 209 34 stone',
+                 '/summon minecraft:tnt 32.5 216 32.5 {fuse:200s,NoGravity:1b,Tags:["tnt_fall"]}')
+    ops.append(cmd(f'/data modify entity {sel} fall_distance set value 2.25d'))
+    ops.append(cmd(f'/data get entity {sel} fall_distance'))
+    ops.append(cmd(f'/data merge entity {sel} {{NoGravity:0b,Motion:[0.0d,-0.5d,0.0d]}}'))
+    ops += track(2)
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air')
+    return ops
+
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -6199,9 +6307,13 @@ ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
 ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
 ISOLATED_FUNCTION_FEEDBACK = frozenset({'fork function feedback'})
+ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
+ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 # Its sync turns on fixed seeds for the whole script: the groups after it would draw from them (tools/test_seed_sync_parity.py).
 ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC
+ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
+ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE
 
 
 def groups():
@@ -6309,6 +6421,8 @@ def groups():
         ('named smoke predicates', named_smoke_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
+        ('boat passenger tree', boat_passenger_tree_cases()),
+        ('effective component presence', effective_component_presence_cases()),
         ('jukebox saved clock', jukebox_saved_clock_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
@@ -6355,9 +6469,11 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('primed tnt fall', primed_tnt_fall()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
+        ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
         ('mob riding', mob_riding()),
