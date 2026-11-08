@@ -66,6 +66,11 @@ fn reload_loot_case(
         ("LootTableSeed", Tag::Long(seed)),
         ("CustomName", string("{\"text\":\"Keep me\"}")),
     ]);
+    // A loaded chest adopts its external name before the loot transition.
+    let custom_name = source
+        .get("CustomName")
+        .and_then(crate::block_entity_nbt::component)
+        .expect("fixture's admitted external name");
     let mut extras = ChunkExtras {
         block_entity_sources: vec![(pos, source)],
         rolled_loot: vec![RolledLoot {
@@ -89,6 +94,7 @@ fn reload_loot_case(
     chunk
         .block_entities
         .push((pos, crate::containers::BlockEntity::Chest(slots)));
+    chunk.block_names.push((pos, custom_name));
     chunk.saved = Some(Arc::new(extras));
     let encoded = encode(&chunk, registry, biomes);
     let bytes = nbt::write_named(&encoded, Limits::default()).unwrap();
