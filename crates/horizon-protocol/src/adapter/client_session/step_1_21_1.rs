@@ -1,5 +1,6 @@
 //! 1.21.2's packets in 1.21.1's layout for a 1.21.1 client (and 1.21): the mirror of `translate`'s `mod v1_21_1`
-//! (1.21.1 to 1.21.2). Clientbound only, for now: the serverbound packets 1.21.2 changed are not written yet.
+//! (1.21.1 to 1.21.2). Serverbound: movement, player_input and client_information; the other serverbound
+//! packets 1.21.2 changed are not written yet.
 //!
 //! Done here, packet by packet:
 //! - The window id of container_close, container_set_content, container_set_data and mount_screen_open is a
@@ -294,6 +295,16 @@ fn explode(payload: &[u8]) -> Result<Vec<u8>> {
 /// Its steering (player_input: sideways and forward floats, a flags byte) becomes 1.21.2's key flags.
 pub(super) fn serverbound(state: State, id: i32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
     use packet_ids::play::serverbound as sb;
+    // ClientInformation gained its particle status in 1.21.2: a 1.21.1 client's ends before it.
+    if (state, id)
+        == (
+            State::Configuration,
+            packet_ids::configuration::serverbound::CLIENT_INFORMATION,
+        )
+        || (state, id) == (State::Play, sb::CLIENT_INFORMATION)
+    {
+        return client_information(payload).map(Some);
+    }
     if state != State::Play {
         return Ok(None);
     }
@@ -312,6 +323,23 @@ pub(super) fn serverbound(state: State, id: i32, payload: &[u8]) -> Result<Optio
         sb::PLAYER_INPUT => player_input(payload).map(Some),
         _ => Ok(None),
     }
+}
+
+/// 1.21.1's client information with 1.21.2's particle status after it: all particles
+/// (ParticleStatus.ALL, the default the client had no option for).
+fn client_information(payload: &[u8]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(payload);
+    let mut w = Writer::new();
+    w.string(&r.string(16)?);
+    w.i8(r.i8()?);
+    w.varint(r.varint()?);
+    w.bool(r.bool()?);
+    w.u8(r.u8()?);
+    w.varint(r.varint()?);
+    w.bool(r.bool()?);
+    w.bool(r.bool()?);
+    w.varint(0);
+    Ok(w.data)
 }
 
 /// 1.21.1's steering as 1.21.2's key flags: the sign of forward (0x01 forward, 0x02 backward) and of sideways
@@ -373,6 +401,37 @@ mod tests {
     //! Each change written here is read back with `translate`'s 1.21.1 reader: 1.21.1's layout, 1.21.2's and back.
     use super::*;
     use crate::adapter::{ServerVersion, session::Session, translate};
+
+    /// A 1.21.1 client's information (no particle status) reads as 1.21.2's with all particles.
+    #[test]
+    fn client_information_gains_the_particle_status() {
+        use crate::packets::configuration::ClientInformation;
+        let mut older = Writer::new();
+        older.string("fr_ch");
+        older.i8(12);
+        older.varint(1);
+        older.bool(true);
+        older.u8(0x7f);
+        older.varint(0);
+        older.bool(false);
+        older.bool(true);
+        for state in [State::Configuration, State::Play] {
+            let id = if state == State::Play {
+                packet_ids::play::serverbound::CLIENT_INFORMATION
+            } else {
+                packet_ids::configuration::serverbound::CLIENT_INFORMATION
+            };
+            let up = serverbound(state, id, &older.data).unwrap().unwrap();
+            let p = ClientInformation::read(&mut Reader::new(&up)).unwrap();
+            assert_eq!(
+                (p.language.as_str(), p.view_distance, p.chat_visibility),
+                ("fr_ch", 12, 1)
+            );
+            assert_eq!((p.model_customisation, p.main_hand), (0x7f, 0));
+            assert!(p.chat_colors && !p.text_filtering && p.allows_listing);
+            assert_eq!(p.particle_status, 0);
+        }
+    }
 
     /// Through the reader and back: `payload` (1.21.1's) must come out as it went in.
     fn round_trip(id: i32, payload: &[u8]) {
