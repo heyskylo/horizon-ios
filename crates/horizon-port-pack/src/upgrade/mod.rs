@@ -664,6 +664,57 @@ mod tests {
     }
 
     #[test]
+    fn biome_effects_of_1_21_1_become_attributes_and_carvers_a_list() {
+        // A 1.21.1 biome: the air carvers by step, and sky, fog, music and
+        // sounds among its effects, colours as integers.
+        let (v, r) = up(
+            "data/x/worldgen/biome/b.json",
+            json!({"temperature": 0.7, "downfall": 0.8, "has_precipitation": true,
+                "carvers": {"air": ["minecraft:cave", "minecraft:canyon"]},
+                "effects": {"sky_color": 7972607, "fog_color": 12638463, "water_color": 9614049,
+                    "water_fog_color": 329011, "grass_color": 10400481, "foliage_color": 8177813,
+                    "grass_color_modifier": "dark_forest",
+                    "mood_sound": {"block_search_extent": 8, "offset": 2.0,
+                        "sound": "minecraft:ambient.cave", "tick_delay": 6000},
+                    "ambient_sound": "minecraft:ambient.crimson_forest.loop",
+                    "additions_sound": {"sound": "minecraft:ambient.crimson_forest.additions",
+                        "tick_chance": 0.0111},
+                    "particle": {"options": {"type": "minecraft:white_ash"}, "probability": 0.1},
+                    "music": {"sound": "minecraft:music.overworld.forest", "min_delay": 12000,
+                        "max_delay": 24000, "replace_current_music": false}},
+                "features": []}),
+        );
+        assert_eq!(v["carvers"], json!(["minecraft:cave", "minecraft:canyon"]));
+        assert_eq!(
+            v["effects"],
+            json!({"water_color": "#92b2e1", "grass_color": "#9eb2e1", "foliage_color": "#7cc895",
+                "grass_color_modifier": "dark_forest"})
+        );
+        let a = &v["attributes"];
+        assert_eq!(a["minecraft:visual/sky_color"], json!("#79a6ff"));
+        assert_eq!(a["minecraft:visual/fog_color"], json!("#c0d8ff"));
+        assert_eq!(a["minecraft:visual/water_fog_color"], json!("#050533"));
+        assert_eq!(
+            a["minecraft:audio/background_music"],
+            json!({"default": {"sound": "minecraft:music.overworld.forest", "min_delay": 12000,
+                "max_delay": 24000}})
+        );
+        assert_eq!(
+            a["minecraft:audio/ambient_sounds"],
+            json!({"mood": {"block_search_extent": 8, "offset": 2.0,
+                    "sound": "minecraft:ambient.cave", "tick_delay": 6000},
+                "loop": "minecraft:ambient.crimson_forest.loop",
+                "additions": {"sound": "minecraft:ambient.crimson_forest.additions", "tick_chance": 0.0111}})
+        );
+        assert_eq!(
+            a["minecraft:visual/ambient_particles"],
+            json!({"modifier": "append", "argument": [{"particle": {"type": "minecraft:white_ash"},
+                "probability": 0.1}]})
+        );
+        assert!(r.lossy.is_empty(), "{:?}", r.lossy);
+    }
+
+    #[test]
     fn biome_spawns_become_attributes() {
         let (v, _) = up(
             "data/x/worldgen/biome/b.json",
