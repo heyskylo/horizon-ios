@@ -2498,8 +2498,13 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
 pub fn takes_food(m: &Mob) -> bool {
     // `Turtle.canFallInLove` is `super.canFallInLove() && !this.hasEgg()`: a
     // turtle that already carries an egg refuses its food instead of breeding.
-    let breedable =
-        m.extra.in_love <= 0 && !(m.species() == Species::Turtle && super::turtle::has_egg(m));
+    // `Hoglin.canFallInLove` is `!HoglinAi.isPacified(this) && super.canFallInLove()`:
+    // a warped fungus nearby pacifies the adult, and it refuses the fungus in
+    // the player's hand. The baby branch below asks `canAgeUp`, not
+    // `canFallInLove`, so a pacified baby still grows.
+    let breedable = m.extra.in_love <= 0
+        && !(m.species() == Species::Turtle && super::turtle::has_egg(m))
+        && !(m.species() == Species::Hoglin && super::piglin::is_pacified(m));
     (m.extra.age == 0 && breedable) || (m.extra.age < 0 && !m.extra.age_locked)
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
