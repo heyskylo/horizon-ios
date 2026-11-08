@@ -252,6 +252,10 @@ impl Game<'_> {
         );
         // An id from the entity counter at once, so a command can name it.
         self.next_entity += 1;
+        // Entity: the UUID is the first two draws of the TNT's own random.
+        let uuid =
+            horizon_client::save::insecure_uuid(&mut horizon_client::random_source::entity());
+        self.persist.uuids.insert(self.next_entity, uuid);
         self.tnts.push(PrimedTnt {
             rotation: [0.0, 0.0],
             join: Default::default(),

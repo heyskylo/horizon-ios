@@ -7303,6 +7303,12 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
+        // Shulker.onPeekAmountChange: the box of this client's own player, which
+        // an opening lid pushes (EntitySelector.NO_SPECTATORS).
+        let shulker_pushes = self
+            .player_view()
+            .filter(|p| p.alive && !p.spectator)
+            .map(|p| p.bounds);
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -7523,6 +7529,13 @@ impl Game<'_> {
                 horizon_client::mobs::Species::Panda => {
                     horizon_client::mobs::panda::client_tick(m, thundering);
                 }
+                // Shulker.tick's onPeekAmountChange: the lid moves this
+                // client's player, whose movement is its own.
+                horizon_client::mobs::Species::Shulker => {
+                    if let Some(player) = shulker_pushes {
+                        horizon_client::mobs::shulker::client_push(m, player, &mut mob_fx);
+                    }
+                }
                 _ => {}
             }
         }
@@ -7601,7 +7614,7 @@ impl Game<'_> {
             items.retain_mut(|item| {
                 // The server decides entity collisions. This copy predicts block movement.
                 let (_, discarded) =
-                    self.tick_item_with_block_contacts(item, false, &[], true, &mut |splash| {
+                    self.tick_item_with_block_contacts(item, None, &[], true, &mut |splash| {
                         entered.push(splash);
                     });
                 !discarded

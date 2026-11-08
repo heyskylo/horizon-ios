@@ -49,6 +49,7 @@ mod entity_sound_packet_fixture;
 mod environment_attribute_modifier_fixture;
 mod environment_fixture;
 mod environment_system_fixture;
+mod environment_timeline_fixture;
 mod falling_block_fixture;
 mod finalize_spawn_fixture;
 mod fire_starter_sound_probe;
@@ -165,6 +166,7 @@ probes! {
     environment_attribute_modifier_fixture,
     environment_fixture,
     environment_system_fixture,
+    environment_timeline_fixture,
     finalize_spawn_fixture,
     fire_starter_sound_probe,
     zombie_cure_sound_probe,
