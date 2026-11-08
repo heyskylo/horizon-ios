@@ -142,6 +142,10 @@ pub struct Session {
     /// `--api LINE`: the protocol line this run speaks; a game on another line is refused.
     pub api: Option<String>,
     client: Option<Client>,
+    /// `mcp --paced`: the world stands still between tool calls (`mcp::Session::call`).
+    pub paced: bool,
+    /// The pause menu `--paced` opened, which the next action closes.
+    pub(crate) held: bool,
 }
 
 impl Session {
@@ -152,6 +156,8 @@ impl Session {
             home: horizon_client::logging::game_home(),
             api: None,
             client: None,
+            paced: false,
+            held: false,
         }
     }
     /// A failure while No AI is on: every command refuses (help aside).
@@ -563,13 +569,16 @@ fn main() -> ExitCode {
             eprintln!("horizon-ctl mcp: {}", horizon_core::no_ai::REFUSAL);
             DENIED
         }
-        Some("mcp") => match mcp::serve(&mut session) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("horizon-ctl mcp: {e}");
-                UNREACHABLE
+        Some("mcp") => {
+            session.paced = args[1..].iter().any(|a| a == "--paced");
+            match mcp::serve(&mut session) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("horizon-ctl mcp: {e}");
+                    UNREACHABLE
+                }
             }
-        },
+        }
         // The original form: stdin, keep going after errors.
         Some("-") => script(&mut session, std::io::stdin().lock(), true, pretty),
         Some("script") => {
