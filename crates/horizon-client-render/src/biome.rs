@@ -396,7 +396,9 @@ impl Biomes {
     /// The name of biome `id`, plains (as for an unknown name) when the id is
     /// past this table: a column a server sent under its earlier, longer
     /// registry (a proxy's previous server) keeps its ids until the next
-    /// login replaces it.
+    /// login replaces it. `get` clamps such an id to the last entry instead,
+    /// so for that stale column the colours and this name can come from
+    /// different biomes until the login.
     pub fn name(&self, id: u16) -> &str {
         self.list
             .get(usize::from(id))
