@@ -18321,16 +18321,14 @@ pub fn run_with() -> Result<()> {
         #[cfg(feature = "heartbeat")]
         horizon_client::heartbeat::start();
         let player_dir = horizon_client::logging::player_dir();
-        // horizon-extras: the official and partner servers are Horizon's (docs/forking.md).
+        // horizon-extras: the official server is Horizon's (docs/forking.md).
         if cfg!(feature = "horizon-extras")
             && let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir)
         {
             log::warn!("could not add the official server to servers.dat: {e}");
         }
-        if cfg!(feature = "horizon-extras")
-            && let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir)
-        {
-            log::warn!("could not add the partner servers to servers.dat: {e}");
+        if let Err(e) = horizon_client::multiplayer::withdraw_partner_servers(&player_dir) {
+            log::warn!("could not take the withdrawn partner server out of servers.dat: {e}");
         }
     }
     mods::register_components(&vanilla_root)?;

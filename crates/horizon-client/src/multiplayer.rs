@@ -416,53 +416,33 @@ pub fn add_official_server(game_dir: &Path) -> std::io::Result<()> {
     std::fs::write(marker, format!("{address}\n"))
 }
 
-/// Servers Horizon partners with, offered once below the official server: a name (with the
-/// players it is for) and an address like any entry.
-pub const PARTNER_SERVERS: &[(&str, &str)] =
-    &[("Afri-Network (South Africa)", "afri-network.co.za")];
-/// Beside servers.dat: the partner addresses already offered, one per line, so a player who
-/// deletes one never gets it back.
+/// Afri-Network, which the game added once below the official server (#9299) until the
+/// partnership ended: the name and address the game gave its entry.
+const WITHDRAWN_PARTNER: (&str, &str) = ("Afri-Network (South Africa)", "afri-network.co.za");
+/// Beside servers.dat: the partner addresses the game offered, one per line (#9299).
 const PARTNER_MARKER: &str = "horizon_partner_servers.txt";
 
-/// Adds each partner server not offered before to the list in `game_dir`, just below the
-/// official server (last when the list doesn't have it), unless the list has its address.
-pub fn add_partner_servers(game_dir: &Path) -> std::io::Result<()> {
+/// Takes the withdrawn partner server back out of the list in `game_dir`, once, where the game
+/// added it: the marker says it was offered and the entry still has the name the game gave it
+/// (an entry the player made or renamed keeps its place). Then the marker goes.
+pub fn withdraw_partner_servers(game_dir: &Path) -> std::io::Result<()> {
     let marker = game_dir.join(PARTNER_MARKER);
     let offered = match std::fs::read_to_string(&marker) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        // Can't tell what was offered: offer nothing rather than twice.
-        Err(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
     };
-    let was_offered = |a: &str| offered.lines().any(|l| address_key(l) == address_key(a));
-    let new: Vec<_> = PARTNER_SERVERS
-        .iter()
-        .filter(|(_, a)| !was_offered(a))
-        .collect();
-    if new.is_empty() {
-        return Ok(());
+    let (name, address) = WITHDRAWN_PARTNER;
+    if offered
+        .lines()
+        .any(|l| address_key(l) == address_key(address))
+    {
+        let _guard = SAVING.lock();
+        servers::remove_where(&game_dir.join("servers.dat"), |n, ip| {
+            n == name && address_key(ip) == address_key(address)
+        })?;
     }
-    let file = game_dir.join("servers.dat");
-    let _guard = SAVING.lock();
-    // Each new partner goes below the one before it, the first below the official server.
-    let mut anchor = address_key(OFFICIAL_SERVER.1);
-    for (name, address) in &new {
-        if !servers::load(&file)
-            .iter()
-            .any(|s| address_key(&s.ip) == address_key(address))
-        {
-            servers::insert_after(&file, &ServerEntry::new(name, address), |ip| {
-                address_key(ip) == anchor
-            })?;
-            anchor = address_key(address);
-        }
-    }
-    let mut text = offered;
-    for (_, address) in &new {
-        text.push_str(address);
-        text.push('\n');
-    }
-    std::fs::write(marker, text)
+    std::fs::remove_file(marker)
 }
 
 /// Points the entries for an earlier official address at `address`, each
@@ -2611,49 +2591,44 @@ mod tests {
     }
 
     #[test]
-    fn partner_servers_are_offered_once_below_the_official_server() {
+    fn the_withdrawn_partner_server_leaves_lists_the_game_put_it_in_once() {
         let dir = std::env::temp_dir().join(format!("horizon-mp-partner-{}", std::process::id()));
         let official = OFFICIAL_SERVER.1;
-        let (name, partner) = PARTNER_SERVERS[0];
         let file = dir.join("servers.dat");
+        let marker = dir.join(PARTNER_MARKER);
         let ips = || -> Vec<String> { servers::load(&file).into_iter().map(|s| s.ip).collect() };
-        let fresh = |list: &[ServerEntry]| {
+        let fresh = |list: &[ServerEntry], offered: bool| {
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            if !list.is_empty() {
-                servers::save(&file, list).unwrap();
+            servers::save(&file, list).unwrap();
+            if offered {
+                std::fs::write(&marker, "afri-network.co.za\n").unwrap();
             }
         };
-        // A first start: the official server on top, the partner just below it.
-        fresh(&[ServerEntry::new("Mine", "127.0.0.1:2")]);
-        add_official_server(&dir).unwrap();
-        add_partner_servers(&dir).unwrap();
-        assert_eq!(ips(), [official, partner, "127.0.0.1:2"]);
-        assert_eq!(servers::load(&file)[1].name, name);
-        // Once only.
-        add_partner_servers(&dir).unwrap();
-        assert_eq!(ips(), [official, partner, "127.0.0.1:2"]);
-        // A player who already had the official server moved it down: the partner follows it.
-        fresh(&[
-            ServerEntry::new("Mine", "127.0.0.1:2"),
-            ServerEntry::new("SMP", official),
-            ServerEntry::new("Last", "example.org"),
-        ]);
-        add_partner_servers(&dir).unwrap();
-        assert_eq!(ips(), ["127.0.0.1:2", official, partner, "example.org"]);
-        // No official server: last. Already listed in another spelling: not duplicated.
-        fresh(&[ServerEntry::new("Mine", "127.0.0.1:2")]);
-        add_partner_servers(&dir).unwrap();
-        assert_eq!(ips(), ["127.0.0.1:2", partner]);
-        fresh(&[ServerEntry::new("ZA", "Afri-Network.co.za:25565")]);
-        add_partner_servers(&dir).unwrap();
+        let added = ServerEntry::new("Afri-Network (South Africa)", "afri-network.co.za");
+        // The game added it: it goes, the rest stays in order, and only once.
+        fresh(
+            &[
+                ServerEntry::new("Horizon Official", official),
+                added.clone(),
+                ServerEntry::new("Mine", "127.0.0.1:2"),
+            ],
+            true,
+        );
+        withdraw_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), [official, "127.0.0.1:2"]);
+        assert!(!marker.exists());
+        servers::save(&file, &[added.clone()]).unwrap();
+        withdraw_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), ["afri-network.co.za"]);
+        // The player's own entry for that address (their name) stays.
+        fresh(&[ServerEntry::new("ZA", "Afri-Network.co.za:25565")], true);
+        withdraw_partner_servers(&dir).unwrap();
         assert_eq!(ips(), ["Afri-Network.co.za:25565"]);
-        // Deleted by the player: never back.
-        fresh(&[]);
-        add_partner_servers(&dir).unwrap();
-        servers::save(&file, &[]).unwrap();
-        add_partner_servers(&dir).unwrap();
-        assert!(ips().is_empty());
+        // Never offered (no marker): nothing changes.
+        fresh(&[added], false);
+        withdraw_partner_servers(&dir).unwrap();
+        assert_eq!(ips(), ["afri-network.co.za"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
