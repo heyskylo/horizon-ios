@@ -17,6 +17,8 @@ The kit grows a piece at a time, each with something on screen that needs it:
 | `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
 | `hud_kit::plate` | `Plate`: the box behind a notice's text, or a guide row's backing |
 | `hud_kit::shapes` | triangles, fans, arcs, discs and radial gradients for `HudBatch`; `alpha_since`, `translate_since` |
+| `hud_kit::motion` | `Clock` and `Tween`: quiet motion as pure functions of the frame's time |
+| `hud_kit::icon` | `Icon`: a sprite, an item, a glyph or the player's face, through an `IconPainter` |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
 | `hud_kit::fit` | `ellipsize`, `wrap`, `chord` and `fit_in_circle`: text cut or wrapped to the room it has |
 | `hud_kit::hint` | `HintRow`: glyphs and what they do, "(A) Jump", measured, fitted and drawn one way |
@@ -117,6 +119,47 @@ batch.fill_arc(atlas, centre, [40.0, 70.0], [-FRAC_PI_8, FRAC_PI_8], accent);
 Tests (`hud_kit/shapes.rs`): areas against the true circle's, arcs inside their band and span,
 segment counts, a clip that keeps half a disc and its blend run, gradient stops, and that
 `alpha_since` and `translate_since` touch only what came after the mark.
+
+## Motion
+
+`hud_kit::motion` is quiet motion for overlays. It holds no state: the overlay keeps the moments
+things happened and asks where a tween is now.
+
+- `Clock { now, still }` is built once a frame by the game (`Game::hud_clock`). `still` is set
+  while the game is paused, frame-stepped (`HORIZON_STILL`, a screenshot sequence) or a repro
+  recording or replay runs. A still clock shows every tween at its end, so recordings and
+  screenshots are the same every run.
+- `Tween::new(duration, motion)` takes a curve from the design system (`horizon_theme::QUICK` for
+  fades, `MOVE` for things that travel), and `Tween::of(motion)` its duration too. `progress`
+  is 0 to 1, eased; `linear`, `done` and `lerp` are there too.
+- The helpers are `fade` and `fade_out` (an alpha), `scale_in(from)`, `slide(distance)` (an offset
+  back to 0), `flash` (1 falling evenly to 0) and `turn(from, to)` (an angle the short way round).
+
+```rust
+let clock = motion::Clock::new(now, still);
+let open = Tween::new(Duration::from_millis(90), horizon_theme::QUICK);
+let alpha = motion::fade(open, clock, opened_at);
+let scale = motion::scale_in(open, clock, opened_at, 0.94);
+```
+
+Motion never decides what input does: the radial dial selects from the stick, whatever its
+sector is drawing.
+
+## Icons
+
+`hud_kit::icon::Icon` is a small picture filling a square (`[x, y, size]`, 16 or 32 GUI px):
+
+| `Icon` | Drawn by |
+|---|---|
+| `Sprite("statistics/item_dropped")` | the kit, from the atlas's `gui/sprites/`; proportions kept, centred |
+| `Item("minecraft:chest")` | the game's `IconPainter::item` (`game/item_draw.rs`): the item's model, scaled from 16 |
+| `Glyph(glyph)` | the kit, `pad_glyph::draw`, centred |
+| `PlayerFace` | the game's `IconPainter::face`: the player's skin face with its hat |
+
+`icon::draw(batch, atlas, painter, icon, area, alpha)` says whether anything was drawn. The render
+crate never reaches gameplay, so items and the face go through the painter the game passes in;
+tests and sprite-only screens pass `NoItems`. Every picture comes from the player's own resources,
+none is bundled, and a sprite the atlas lacks draws nothing.
 
 ## Glyphs
 
