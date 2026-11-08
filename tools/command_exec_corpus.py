@@ -5706,15 +5706,15 @@ def piston_entity_tick_order():
 
 
 def piston_push_ground():
-    """#12029: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
-    on the server, so a push sets an item's or primed TNT's OnGround to whether
+    """#12029, #12100: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
+    on the server, so a push sets an item's, primed TNT's or experience orb's OnGround to whether
     its downward part was blocked: a sideways push off the stone it rests on
     clears it, and so does a free push down. The entity ticks before the piston
     moves it (#9337), so the reading after each tick is the push's. Only
     OnGround is compared: the float air drags (#11794) shift Motion."""
     ops = []
     for kind, fields in (('item', 'Item:{id:"minecraft:diamond",count:1},PickupDelay:32767s'),
-                         ('tnt', 'fuse:200s')):
+                         ('tnt', 'fuse:200s'), ('experience_orb', 'Value:1s')):
         selector = f'@e[type=minecraft:{kind},tag=piston_ground,limit=1]'
         for case in ('sideways', 'down'):
             ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
