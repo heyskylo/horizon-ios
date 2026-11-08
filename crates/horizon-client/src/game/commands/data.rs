@@ -154,7 +154,9 @@ impl Game<'_> {
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
                 let c = self.carts.iter().find(|c| c.id == id)?;
-                c.to_nbt(uuid, self.persist.raw.get(&id))
+                let mut tag = c.to_nbt(uuid, self.persist.raw.get(&id));
+                self.put_mob_passengers(&mut tag, id);
+                tag
             }
             Target::Fangs(id) => {
                 let uuid = self.uuid_for(id);

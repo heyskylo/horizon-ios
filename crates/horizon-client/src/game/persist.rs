@@ -24,6 +24,12 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Clone, Debug)]
+pub(super) enum PassengerSlot {
+    Live(u32),
+    Saved(Tag),
+}
+
 /// What Horizon remembers about loaded entities to save them faithfully.
 #[derive(Default)]
 pub struct EntityMemory {
@@ -32,6 +38,8 @@ pub struct EntityMemory {
     pub(super) uuids: HashMap<u32, [i32; 4]>,
     /// The compound each mob or item entity was loaded with.
     pub(super) raw: HashMap<u32, Tag>,
+    /// Passengers that ride a vehicle, in load order: live entity IDs or unspawned tags.
+    pub(super) passenger_slots: HashMap<u32, Vec<PassengerSlot>>,
     /// Entities of types Horizon does not simulate, kept per chunk and
     /// written back unchanged.
     unknown: HashMap<(i32, i32), Vec<Tag>>,
@@ -781,8 +789,15 @@ impl Game<'_> {
     /// `PrimedTnt.readAdditionalSaveData`: its numeric short fuse (80 when absent) and motion.
     // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
     pub(super) fn load_tnt(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
+        if uuid.is_some_and(|u| self.target_with_uuid(u).is_some()) {
+            return;
+        }
         let mut tag = tag;
-        let riders = self.take_mob_passengers(&mut tag);
+        let passengers = if let Tag::Compound(c) = &mut tag {
+            c.remove(&"Passengers".into())
+        } else {
+            None
+        };
         if let Some(position) = entity_nbt::position(&tag) {
             self.next_entity += 1;
             let id = self.next_entity;
@@ -817,17 +832,24 @@ impl Game<'_> {
             });
             // `Entity.load`: the `PortalCooldown` of one that just came through.
             self.remember(id, uuid, tag);
-            for rider in riders {
-                self.load_mob(rider, Some(id));
+            if let Some(passengers) = passengers {
+                self.load_passengers(id, passengers);
             }
         }
     }
 
     /// A saved boat.
     pub(super) fn load_boat(&mut self, tag: Tag, uuid: Option<[i32; 4]>, k: &str) {
+        if uuid.is_some_and(|u| self.target_with_uuid(u).is_some()) {
+            return;
+        }
         if let Some((position, velocity, yaw)) = entity_nbt::boat_from_nbt(&tag) {
             let mut tag = tag;
-            let riders = self.take_mob_passengers(&mut tag);
+            let passengers = if let Tag::Compound(c) = &mut tag {
+                c.remove(&"Passengers".into())
+            } else {
+                None
+            };
             self.next_entity += 1;
             let id = self.next_entity;
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
@@ -845,17 +867,24 @@ impl Game<'_> {
             b.leash_pending = horizon_client::mobs::leash::pending_from_nbt(tag.get("leash"));
             self.remember(id, uuid, tag);
             self.boats.push(b);
-            for rider in riders {
-                self.load_mob(rider, Some(id));
+            if let Some(passengers) = passengers {
+                self.load_passengers(id, passengers);
             }
         }
     }
 
     /// A saved minecart.
     pub(super) fn load_cart(&mut self, tag: Tag, uuid: Option<[i32; 4]>, k: &str) {
+        if uuid.is_some_and(|u| self.target_with_uuid(u).is_some()) {
+            return;
+        }
         let kind = super::minecarts::CartKind::from_id(k).unwrap();
         let mut tag = tag;
-        let riders = self.take_mob_passengers(&mut tag);
+        let passengers = if let Tag::Compound(c) = &mut tag {
+            c.remove(&"Passengers".into())
+        } else {
+            None
+        };
         let id = self.next_entity + 1;
         if let Some(mut c) = super::minecarts::Minecart::from_nbt(&tag, id, kind) {
             super::minecarts::forget_unreadable_display(&mut c, |t| {
@@ -865,8 +894,8 @@ impl Game<'_> {
             self.next_entity = id;
             self.remember(id, uuid, tag);
             self.carts.push(c);
-            for rider in riders {
-                self.load_mob(rider, Some(id));
+            if let Some(passengers) = passengers {
+                self.load_passengers(id, passengers);
             }
         }
     }
@@ -975,6 +1004,9 @@ impl Game<'_> {
         if let Some(id) = uuid.and_then(|u| self.restored_vehicle(u)) {
             return Some(id);
         }
+        if uuid.is_some_and(|u| self.target_with_uuid(u).is_some()) {
+            return None;
+        }
         self.next_entity += 1;
         // Structure mobs that generation left to finish: saves from before
         // they were finalized at placement, or a placement that could not.
@@ -984,7 +1016,11 @@ impl Game<'_> {
         if let Tag::Compound(c) = &mut tag {
             finalize = c.remove(&"horizon:finalize".into()).is_some();
         }
-        let riders = self.take_mob_passengers(&mut tag);
+        let passengers = if let Tag::Compound(c) = &mut tag {
+            c.remove(&"Passengers".into())
+        } else {
+            None
+        };
         let mut m = entity_nbt::mob_from_nbt(
             &tag,
             self.res.mob_types(),
@@ -1034,44 +1070,47 @@ impl Game<'_> {
             self.enchant_spawn_equipment(id);
             self.halloween_spawn_head(id);
         }
-        for rider in riders {
-            if let Some(r) = self.load_mob(rider, Some(id))
-                && let Some(v) = self.mobs.iter_mut().find(|m| m.id == id)
-            {
-                v.extra.rider.get_or_insert(r);
-            }
+        if let Some(passengers) = passengers {
+            self.load_passengers(id, passengers);
         }
         Some(id)
     }
-    /// The mobs under an entity's `Passengers`, taken out of it; the
-    /// passengers Horizon doesn't simulate stay. An entry no entity loads
-    /// from goes (`EntityType.loadPassengersRecursive` mounts only a loaded
-    /// one): not a compound, or no registered type (`EntityType.by`).
-    fn take_mob_passengers(&mut self, tag: &mut Tag) -> Vec<Tag> {
+    /// `ServerLevel.tryAddFreshEntityWithPassengers` /
+    /// `PersistentEntitySectionManager.addEntity`:
+    /// duplicate UUIDs inside the new tree fail `addEntityUuid` and are skipped
+    /// from joining the level / tracking / ticking, but remain as passengers
+    /// under the vehicle and save under its `Passengers`.
+    fn load_passengers(&mut self, vehicle_id: u32, passengers: Tag) {
+        let Tag::List(list) = passengers else { return };
         self.load_entity_types();
-        // Without the registry nothing can be told apart: keep every entry.
         let registry = self.entity_types_loaded();
-        let mut riders = Vec::new();
-        if let Tag::Compound(c) = tag
-            && let Some(Tag::List(list)) = c.remove(&"Passengers".into())
-        {
-            let mut unknown = Vec::new();
-            for p in list {
+        let mut slots = Vec::new();
+        for p in list {
+            if self.loads_as_rider(&p) {
+                let uuid = entity_nbt::uuid(&p);
+                if uuid.is_some_and(|u| self.target_with_uuid(u).is_some()) {
+                    slots.push(PassengerSlot::Saved(p));
+                } else if let Some(rider_id) = self.load_mob(p.clone(), Some(vehicle_id)) {
+                    if let Some(v) = self.mobs.iter_mut().find(|m| m.id == vehicle_id) {
+                        v.extra.rider.get_or_insert(rider_id);
+                    }
+                    slots.push(PassengerSlot::Live(rider_id));
+                } else {
+                    slots.push(PassengerSlot::Saved(p));
+                }
+            } else {
                 let loads = matches!(p, Tag::Compound(_))
                     && entity_nbt::kind(&p).is_some_and(|k| self.entity_type_exists(&k));
-                if self.loads_as_rider(&p) {
-                    riders.push(p);
-                } else if loads || !registry {
-                    unknown.push(p);
+                if loads || !registry {
+                    slots.push(PassengerSlot::Saved(p));
                 }
             }
-            if !unknown.is_empty() {
-                c.insert("Passengers".into(), Tag::List(unknown));
-            }
         }
-        riders
+        if !slots.is_empty() {
+            self.persist.passenger_slots.insert(vehicle_id, slots);
+        }
     }
-    /// A passenger `take_mob_passengers` takes to load as a mob rider.
+    /// A passenger `load_passengers` takes to load as a mob rider.
     fn loads_as_rider(&self, passenger: &Tag) -> bool {
         entity_nbt::kind(passenger).is_some_and(|k| self.res.mob_types().contains_key(&k))
     }
@@ -1099,11 +1138,34 @@ impl Game<'_> {
     /// `Passengers`, after the passengers it kept from loading. Discarded
     /// passengers cannot save even before their list entry is swept.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
-        let mut riders: Vec<usize> = (0..self.mobs.len())
+        let mut riders: Vec<Tag> = Vec::new();
+        let mut live_seen = HashSet::new();
+
+        let slots = self.persist.passenger_slots.get(&id).cloned();
+        if let Some(slots) = slots {
+            for slot in slots {
+                match slot {
+                    PassengerSlot::Live(rider_id) => {
+                        if let Some(pos) = self.mobs.iter().position(|m| {
+                            m.id == rider_id && m.extra.mount == Some(id) && m.alive() && !m.removed
+                        }) {
+                            live_seen.insert(rider_id);
+                            riders.push(self.mob_tree_nbt(pos));
+                        }
+                    }
+                    PassengerSlot::Saved(saved_tag) => {
+                        riders.push(saved_tag.clone());
+                    }
+                }
+            }
+        }
+
+        let mut extra_riders: Vec<usize> = (0..self.mobs.len())
             .filter(|&j| {
                 self.mobs[j].extra.mount == Some(id)
                     && self.mobs[j].alive()
                     && !self.mobs[j].removed
+                    && !live_seen.contains(&self.mobs[j].id)
             })
             .collect();
         if let Some(driver) = self
@@ -1111,13 +1173,19 @@ impl Game<'_> {
             .iter()
             .find(|m| m.id == id)
             .and_then(|m| m.extra.rider)
-            && let Some(pos) = riders.iter().position(|&j| self.mobs[j].id == driver)
+            && let Some(pos) = extra_riders.iter().position(|&j| self.mobs[j].id == driver)
             && pos != 0
         {
-            let d = riders.remove(pos);
-            riders.insert(0, d);
+            let d = extra_riders.remove(pos);
+            extra_riders.insert(0, d);
         }
-        let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
+        for j in extra_riders {
+            riders.push(self.mob_tree_nbt(j));
+        }
+
+        if let Tag::Compound(c) = tag {
+            c.remove(&"Passengers".into());
+        }
         add_passengers(tag, riders);
     }
     /// An entity of a type Horizon does not simulate, kept as its compound.
@@ -1958,6 +2026,9 @@ impl Game<'_> {
         }
         self.persist.uuids.retain(|id, _| alive.contains(id));
         self.persist.raw.retain(|id, _| alive.contains(id));
+        self.persist
+            .passenger_slots
+            .retain(|id, _| alive.contains(id));
     }
     /// A loaded projectile's `Owner`: a connected guest, else a mob by UUID.
     fn claim_owner(&self, p: &mut horizon_client::projectiles::Projectile) {
@@ -4942,13 +5013,11 @@ mod summon_uuid_conflict_tests {
         });
     }
 
-    /// Known unfixed (#11807 is a partial repair): vanilla adds a tree's
-    /// members in order and skips one whose UUID an earlier member took; that
-    /// one still rides its vehicle and saves under its Passengers. Horizon has
-    /// no passenger outside the level, and admits each duplicate. Expected to
-    /// fail until that exists; run explicitly, never counted as a pass.
+    /// `ServerLevel.tryAddFreshEntityWithPassengers` / `PersistentEntitySectionManager.addEntity`:
+    /// vanilla adds a tree's members in order and skips one whose UUID an earlier member took;
+    /// that one still rides its vehicle and saves under its Passengers (#11807).
     #[test]
-    #[ignore = "known unfixed: duplicate UUIDs inside a summoned tree still join (#11807); expected to fail"]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
     fn summon_skips_a_uuid_taken_earlier_in_the_same_tree() {
         with_game(|game, _| {
             let mut failures = Vec::new();

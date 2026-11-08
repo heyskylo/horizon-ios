@@ -170,8 +170,8 @@ def main():
     parser.add_argument('--mob-inventory-merge-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument('--summon-passengers-fixture', action='store_true', help='summon trees with Passengers entries vanilla cannot load')
     parser.add_argument('--summon-passengers-raw-diagnostic', action='store_true', help='add each parent\'s whole entity data')
-    parser.add_argument('--summon-uuid-fixture', action='store_true', help='summon trees whose UUIDs a live entity holds')
-    parser.add_argument('--summon-uuid-internal-diagnostic', action='store_true', help='add the trees with duplicate UUIDs inside them (known gap)')
+    parser.add_argument('--summon-uuid-fixture', action='store_true', help='summon trees whose UUIDs conflict with live entities or within the tree')
+    parser.add_argument('--summon-uuid-internal-diagnostic', action='store_true', help='add the trees with duplicate UUIDs inside them (#11807)')
     parser.add_argument('--summon-uuid-raw-diagnostic', action='store_true', help='add each member\'s whole entity data')
     parser.add_argument('--mob-absorption-max-fixture', action='store_true', help='a mob\'s max_absorption with Absorption added, upgraded, cleared and run out')
     parser.add_argument('--mob-absorption-max-ops-fixture', action='store_true', help='the Absorption modifier among other max_absorption operations and the range clamp')
@@ -443,7 +443,7 @@ def main():
         groups = [('setup', corpus_module.group_setup()), ('summon invalid passengers', summon_passengers(args.summon_passengers_raw_diagnostic))]
     if args.summon_uuid_fixture:
         from summon_uuid_corpus import summon_uuid
-        groups = [('setup', corpus_module.group_setup()), ('summon UUID conflicts', summon_uuid(args.summon_uuid_raw_diagnostic, args.summon_uuid_internal_diagnostic))]
+        groups = [('setup', corpus_module.group_setup()), ('summon UUID conflicts', summon_uuid(args.summon_uuid_raw_diagnostic, True))]
     if args.mob_absorption_max_fixture:
         from mob_absorption_max_corpus import mob_absorption_max
         groups = [('setup', corpus_module.group_setup()), ('mob absorption maximum', mob_absorption_max(args.mob_absorption_max_raw_diagnostic))]
