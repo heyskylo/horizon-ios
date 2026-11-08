@@ -4459,6 +4459,7 @@ impl Game<'_> {
             return self.flush_wind_bursts();
         }
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
+        let ticking = self.entity_ticking_area();
         let mut hits = Vec::new();
         let mut deflections: Vec<u32> = Vec::new();
         let mut arrow_events = Vec::new();
@@ -4526,6 +4527,13 @@ impl Game<'_> {
                     .collect()
             });
             for i in 0..projectiles.len() {
+                // ServerLevel.tick: losing an entity-ticking ticket must not
+                // advance projectile flags or motion while its chunk unloads.
+                let at = projectiles[i].position;
+                if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                    projectiles[i].previous = at;
+                    continue;
+                }
                 // A ghast's fireball or a wind charge is pickable, so a pearl, an
                 // arrow or a trident can strike it (`Projectile.isPickable`,
                 // `Projectile.onHit`).

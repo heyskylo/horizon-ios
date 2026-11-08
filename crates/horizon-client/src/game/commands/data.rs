@@ -602,6 +602,16 @@ impl Game<'_> {
                 }
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
+            Target::Trident(id) => {
+                let loaded = entity_nbt::trident_from_nbt(&tag).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                self.tridents
+                    .iter_mut()
+                    .find(|trident| trident.id == id)
+                    .ok_or_else(stale)?
+                    .load_nbt(loaded);
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
                 let i = self
@@ -654,6 +664,7 @@ impl Game<'_> {
         | Target::Tnt(id)
         | Target::Orb(id)
         | Target::Cushion(id)
+        | Target::Trident(id)
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
