@@ -1958,12 +1958,17 @@ impl Launcher {
         });
     }
 
-    fn load_profile_heads(&mut self) {
-        let resources = self
-            .selected()
+    /// The prepared game files of the selected version (else the first installed): where the
+    /// default skins are.
+    fn game_resources(&self) -> std::path::PathBuf {
+        self.selected()
             .or_else(|| self.installed.first())
             .map(|tag| backend::resources(tag))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn load_profile_heads(&mut self) {
+        let resources = self.game_resources();
         // Offline names wear their own skin's face, or the default skin of their offline UUID.
         let offline: Vec<String> = self
             .players()

@@ -129,6 +129,15 @@ fn a_set_partly_owned_costs_its_share_of_what_is_not_owned() {
     assert_eq!((got[0].dropped, total), (Some(Dropped::Owned), 0));
 }
 
+#[test]
+fn a_set_is_owned_only_with_every_item() {
+    let c = catalogue();
+    assert!(!super::owns("hearth", &c, &owns(&["scarf"])));
+    assert!(super::owns("hearth", &c, &owns(&["scarf", "lantern"])));
+    assert!(super::owns("moth", &c, &owns(&["moth"])));
+    assert!(!super::owns("moth", &c, &owns(&["hearth"])));
+}
+
 fn lines_total(ids: &[&str], owned: &[&str], currency: &str) -> u32 {
     lines(&basket(ids), &catalogue(), &owns(owned), currency).1
 }
