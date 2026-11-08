@@ -1390,12 +1390,14 @@ pub fn mob_to_nbt(
         // Zombie and Skeleton.addAdditionalSaveData (a husk keeps Zombie's):
         // `ConversionTracker`'s conversion and affliction times, -1 when it is
         // not converting or not afflicted.
+        // The tracker ticks for these, so the live counters win over the loaded
+        // values: one that left the water or the snow saves -1.
         "minecraft:zombie" | "minecraft:husk" => {
             for (key, value) in [
                 ("DrownedConversionTime", conversion_time(m)),
                 ("InWaterTime", m.extra.counter),
             ] {
-                map.entry(key.into()).or_insert(Tag::Int(value));
+                map.insert(key.into(), Tag::Int(value));
             }
         }
         "minecraft:skeleton" => {
@@ -1403,7 +1405,7 @@ pub fn mob_to_nbt(
                 ("StrayConversionTime", conversion_time(m)),
                 ("FreezingTime", m.extra.counter),
             ] {
-                map.entry(key.into()).or_insert(Tag::Int(value));
+                map.insert(key.into(), Tag::Int(value));
             }
         }
         // Drowned.convertsInWater is false, so its tracker never ticks: vanilla
@@ -7625,6 +7627,24 @@ mod sheep_nbt_tests {
             let (_, tag) = round_trip(&new(kind));
             assert_eq!(number(tag.get("DrownedConversionTime")), Some(-1), "{kind}");
             assert_eq!(number(tag.get("InWaterTime")), Some(-1), "{kind}");
+        }
+        // A ticking one that left the snow or the water saves -1 over the times
+        // it was loaded with (ConversionTracker.tick: setConverting(false)).
+        for (kind, conversion, affliction) in [
+            ("minecraft:skeleton", "StrayConversionTime", "FreezingTime"),
+            ("minecraft:zombie", "DrownedConversionTime", "InWaterTime"),
+        ] {
+            let loaded = Tag::compound([
+                ("id", string(kind)),
+                ("Pos", doubles(&[0.5, 64.0, 0.5])),
+                (conversion, Tag::Int(200)),
+                (affliction, Tag::Int(5)),
+            ]);
+            let mut m = new(kind);
+            (m.extra.counter, m.extra.counter2) = (-1, 0);
+            let tag = mob_to_nbt(&m, [1, 2, 3, 4], Some(&loaded), Some(&registry), |_| None);
+            assert_eq!(number(tag.get(conversion)), Some(-1), "{kind}");
+            assert_eq!(number(tag.get(affliction)), Some(-1), "{kind}");
         }
         // A saved conversion time starts one: `startConversion`.
         let saved = Tag::compound([

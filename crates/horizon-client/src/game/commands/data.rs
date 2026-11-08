@@ -398,6 +398,9 @@ impl Game<'_> {
                     // previous-hit amount is not read from saved NBT (its hurt
                     // immunity is, as `invulnerable_time`).
                     slot.last_hurt = old.last_hurt;
+                    // Entity.isInPowderSnow isn't saved data either: a skeleton in
+                    // powder snow stays afflicted through a merge.
+                    slot.in_powder_snow = old.in_powder_snow;
                     // Entity.load updates saved data on the existing entity;
                     // lastTradedPlayer is transient and survives a live NoAI edit.
                     if slot.species() == horizon_client::mobs::Species::Villager {
@@ -1599,6 +1602,7 @@ mod wolf_live_anger_tests {
             game.mobs[i].invulnerable = 17;
             game.mobs[i].last_hurt = 2.0;
             game.mobs[i].age = 6;
+            game.mobs[i].in_powder_snow = true;
             for end in [12_395, 12_395, 12_420, -1] {
                 let mut tag = game.mob_tree_nbt(i);
                 let Tag::Compound(fields) = &mut tag else {
@@ -1624,6 +1628,7 @@ mod wolf_live_anger_tests {
                     ),
                     (17, 2.0, 6)
                 );
+                assert!(game.mobs[i].in_powder_snow, "{kind} end={end}");
             }
         }
     }
