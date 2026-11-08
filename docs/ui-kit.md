@@ -87,3 +87,24 @@ row, the selected one white. `tabs::draw(batch, atlas, &strip)` paints it.
 - When the pips don't all fit across the area, the ones shown are a window round the selected
   page's, so they never leave the row's width.
 - It only lays out and paints: what a click or a bumper does is the screen's.
+
+### Shaders' screens
+
+Shaders' page list (`shader_ui`) has the pack list, a line naming the picked pack, then the pack's
+screens near its main one. In a short view the column has room for only a few of them (four at
+427x240 GUI px: an 854x480 window at GUI scale 2, or 720p at its automatic scale), and the rest
+used to be left out with nothing to say so. Now, when they don't all fit, they collapse into one
+`tabs::collapsed` row. When they fit, the list is as it was.
+
+- Left of the name opens the screen before, the name the one shown, right of it the screen after.
+  While searching, before and after are the nearest screens with matches.
+- Each part is a `Tab` target for a controller (the name lit while its screen is open), so RB and
+  LB step through every screen, and past the last RB goes back to the pack list. The arrows are
+  recorded as vanilla's Previous Page and Next Page for the widget tree and the narrator.
+- The open screen's row has the list's open look (plate and accent bar), and the focus ring goes
+  round the whole row.
+
+Tests: `hud_kit::tabs` (centring, cutting, dimmed ends, the pip window), `shader_ui` (a short view
+leaves no screen out and a tall one keeps the list, the arrows walk every screen, search skips
+screens without matches, the parts are `Tab` targets), and `tools/pad_menu_e2e.py --only
+shader_screens` (RB through every screen of a twelve-screen pack in a real game).
