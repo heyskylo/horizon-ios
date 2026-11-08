@@ -270,12 +270,12 @@ impl Config {
     /// of [`VERTEX_IGNORED`] only with it); `others`: whether every other setting does.
     fn read_stage(&mut self, pp: &Preprocessed, formats: bool, shadow: bool, others: bool) {
         let line = |at: usize| pp.locate(code_line(&pp.code, at));
-        for (at, ty, name, value) in constants(&pp.code) {
+        for (at, ty, name, value) in constants(&pp.code, false) {
             let place = line(at);
             self.constant(&place, ty, name, value, [formats, shadow, others]);
         }
         for (origin, comment) in &pp.comments {
-            for (at, ty, name, value) in constants(comment) {
+            for (at, ty, name, value) in constants(comment, true) {
                 let file = pp
                     .files
                     .get(origin.file as usize)
@@ -487,7 +487,9 @@ pub fn draw_buffers(pp: &Preprocessed) -> Option<Vec<u32>> {
 }
 
 /// `const <type> <name> = <value>;` anywhere in `text`: (byte offset, type, name, value).
-fn constants(text: &str) -> Vec<(usize, &str, &str, &str)> {
+/// `lines`: a declaration also ends at the end of its line, as in a comment, where packs list
+/// settings with no `;` (`const vec4 colortex6ClearColor = vec4(0.0, 0.0, 0.0, 1.0)`).
+fn constants(text: &str, lines: bool) -> Vec<(usize, &str, &str, &str)> {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(found) = text[from..].find("const") {
@@ -498,7 +500,12 @@ fn constants(text: &str) -> Vec<(usize, &str, &str, &str)> {
             continue;
         }
         let rest = &text[from..];
-        let Some(end) = rest.find(';') else { break };
+        let end = if lines {
+            rest.find([';', '\n']).unwrap_or(rest.len())
+        } else {
+            let Some(end) = rest.find(';') else { break };
+            end
+        };
         let decl = &rest[..end];
         let Some((left, value)) = decl.split_once('=') else {
             continue;
@@ -742,5 +749,23 @@ mod tests {
                 false, false, true, true, false, false, true, true, true, true, true
             ]
         );
+    }
+
+    #[test]
+    fn a_setting_in_a_comment_may_end_at_its_line() {
+        let pp = stage(
+            "/*\nconst vec4 colortex6ClearColor = vec4(0.0, 0.0, 0.0, 1.0)\n\
+             const vec4 colortex7ClearColor = vec4(0.5)\n\nconst bool colortex7Clear = false\n*/\n\
+             const vec4 colortex8ClearColor =\n    vec4(0.25, 0.0, 0.0, 1.0);\n",
+        );
+        let mut config = Config::default();
+        config.read(&pp);
+        assert!(config.notes.is_empty(), "{:?}", config.notes);
+        let b = &config.buffers;
+        assert_eq!(b[6].clear_color, Some([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(b[7].clear_color, Some([0.5; 4]));
+        assert!(!b[7].clear);
+        // Live code still reads up to the `;`.
+        assert_eq!(b[8].clear_color, Some([0.25, 0.0, 0.0, 1.0]));
     }
 }
