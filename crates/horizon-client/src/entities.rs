@@ -1342,7 +1342,9 @@ pub struct ExperienceOrb {
     pub position: Vec3,
     pub previous: Vec3,
     pub velocity: Vec3,
-    pub value: u32,
+    /// `ExperienceOrb.DATA_VALUE`: an int that a save or command can leave at
+    /// 0 or below, which a pickup turns into no experience.
+    pub value: i32,
     pub age: u32,
     pub on_ground: bool,
     /// `ExperienceOrb.count`: orbs merged into this one; each pickup gives
@@ -1416,8 +1418,13 @@ impl ExperienceOrb {
     }
     /// `ExperienceOrb.canMerge(orb, id, value)` for an orb that is not removed:
     /// the same value and ids a multiple of 40 apart.
-    pub fn can_merge(&self, id: u32, value: u32) -> bool {
+    pub fn can_merge(&self, id: u32, value: i32) -> bool {
         self.value == value && (self.id as i32).wrapping_sub(id as i32) % 40 == 0
+    }
+    /// The experience one pickup gives: `playerTouch` gives only a positive
+    /// remainder, so an orb of value 0 or below gives none. Mods see this too.
+    pub fn points(&self) -> u32 {
+        self.value.max(0) as u32
     }
     /// ExperienceOrb.getExperienceValue: the largest orb size not above `value`.
     pub fn split(value: u32) -> u32 {
