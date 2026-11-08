@@ -1045,6 +1045,8 @@ fn guests_see_each_other_and_the_world_entities() {
         vertical_collision: false,
         horizontal_collision: false,
         needs_sync: false,
+        sync_position: false,
+        stepped: false,
         idle: false,
         bare: false,
         leash: None,
@@ -1770,9 +1772,22 @@ struct Numbered {
     c: Connection,
     version: ServerVersion,
     state: horizon_protocol::State,
+    /// Reads and writes packets in the version's own layout (Horizon's adapter for older servers), not
+    /// only its ids.
+    session: Option<horizon_protocol::adapter::session::Session>,
 }
 impl Numbered {
     fn send(&mut self, body: Vec<u8>) -> Result<(), String> {
+        if let Some(session) = &self.session {
+            let e = |e: horizon_protocol::Error| e.to_string();
+            if let Some(body) = session.serverbound(&body).map_err(e)? {
+                self.c.send(&body).map_err(e)?;
+            }
+            for body in session.take_outgoing() {
+                self.c.send(&body).map_err(e)?;
+            }
+            return Ok(());
+        }
         let body = self
             .version
             .serverbound_body(self.state, &body)
@@ -1789,6 +1804,18 @@ impl Numbered {
     }
     /// The next packet with its pinned id (the version's own id read off the wire).
     fn recv(&mut self) -> Result<(i32, Vec<u8>), String> {
+        if let Some(session) = &self.session {
+            let e = |e: horizon_protocol::Error| e.to_string();
+            loop {
+                if let Some(p) = session.next_incoming() {
+                    return Ok(p);
+                }
+                let (id, payload) = self.c.recv().map_err(e)?;
+                if let Some(p) = session.clientbound(id, payload).map_err(e)? {
+                    return Ok(p);
+                }
+            }
+        }
         let (id, payload) = self.c.recv().map_err(|e| e.to_string())?;
         let pinned = self
             .version
@@ -1804,6 +1831,16 @@ fn join_as(
     version: ServerVersion,
     port: u16,
     name: &str,
+) -> Result<Result<(Numbered, Vec<i32>), String>, String> {
+    join_with(version, port, name, false)
+}
+
+/// [`join_as`], the packets read and written in `version`'s layout when `layouts`.
+fn join_with(
+    version: ServerVersion,
+    port: u16,
+    name: &str,
+    layouts: bool,
 ) -> Result<Result<(Numbered, Vec<i32>), String>, String> {
     use horizon_protocol::State;
     let e = |e: horizon_protocol::Error| e.to_string();
@@ -1824,6 +1861,7 @@ fn join_as(
         c,
         version,
         state: State::Login,
+        session: layouts.then(|| horizon_protocol::adapter::session::Session::new(version)),
     };
     bot.send(hello(handshake::LOGIN))?;
     bot.send(
@@ -2206,4 +2244,56 @@ fn a_26_2_clients_walk_dig_swing_and_teleport_confirmations_read_as_26_3s() {
         .filter(|p| matches!(p, S::Punch(_)))
         .count();
     assert_eq!(punches, 1);
+}
+
+/// A client of each older release the adapter knows (26.1 down to 1.20.5) gets past configuration and is sent chunks without being
+/// disconnected, on a server that accepts older clients.
+#[test]
+fn older_clients_of_each_release_join_and_are_sent_chunks() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    for version in [
+        ServerVersion::V26_1,
+        ServerVersion::V1_21_11,
+        ServerVersion::V1_21_10,
+        ServerVersion::V1_21_8,
+        ServerVersion::V1_21_6,
+        ServerVersion::V1_21_5,
+        ServerVersion::V1_21_4,
+        ServerVersion::V1_21_3,
+        ServerVersion::V1_21_1,
+        ServerVersion::V1_20_6,
+    ] {
+        let net = NetConfig {
+            accept_older_clients: true,
+            older_clients_play: true,
+            ..NetConfig::loopback(0, "Test - World".into(), 8)
+        };
+        let mut s = server_with(&resources, net);
+        let port = s.hub.lan.port;
+        let chunks = run(&mut s, move || {
+            let (mut bot, _) = join_with(version, port, "Old", true)
+                .map_err(|e| format!("{}: join: {e}", version.name()))?
+                .map_err(|r| format!("refused: {r}"))?;
+            let mut chunks = 0;
+            let mut last = -1;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline && chunks < 9 {
+                let (id, _) = bot
+                    .recv()
+                    .map_err(|e| format!("{} after packet {last}: {e}", version.name()))?;
+                last = id;
+                use horizon_protocol::ids::play::clientbound as cb;
+                if id == cb::DISCONNECT {
+                    return Err("disconnected".into());
+                }
+                if id == cb::LEVEL_CHUNK_WITH_LIGHT {
+                    chunks += 1;
+                }
+            }
+            Ok(chunks)
+        });
+        assert!(chunks > 0, "{}: no chunks", version.name());
+    }
 }

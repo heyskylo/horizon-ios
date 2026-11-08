@@ -1152,7 +1152,7 @@ impl Menu {
     fn anvil_result(&mut self, env: &Env) {
         let hover = self.containers[MAIN][0]
             .as_ref()
-            .map(|i| crate::stations::hover_name(&|id| env.names.display_item(id), i))
+            .map(|i| crate::stations::hover_name(env.names, i))
             .unwrap_or_default();
         let out = crate::stations::anvil_result(
             env.enchantments,
@@ -1425,10 +1425,7 @@ impl Menu {
                         .is_some_and(|m| m.contains(&*stack.item))
             }
             Role::Ingredient => env.brewing.is_reagent(stack),
-            Role::BrewFuel => env
-                .items
-                .get(&stack.item)
-                .is_some_and(|i| i.brewing_fuel.is_some()),
+            Role::BrewFuel => crate::brewing::brewing_fuel(env.items, stack).is_some(),
             Role::LoomBanner => Self::is_banner(stack),
             Role::LoomDye => env.banners.loom_dye(env.items, stack).is_some(),
             Role::LoomPattern => env.banners.is_pattern_item(env.items, stack),
@@ -2281,11 +2278,7 @@ impl Menu {
                     if !self.move_to(env, &mut stack, 5, 41, true) {
                         return None;
                     }
-                } else if env
-                    .items
-                    .get(&clicked.item)
-                    .is_some_and(|i| i.brewing_fuel.is_some())
-                {
+                } else if crate::brewing::brewing_fuel(env.items, &clicked).is_some() {
                     let moved = self.move_to(env, &mut stack, 4, 5, false);
                     if moved
                         || (env.brewing.is_reagent(&stack)
@@ -3439,6 +3432,45 @@ pub(crate) mod tests {
         let mut menu = Menu::new(kind);
         menu.creative = true;
         test(&env, &mut menu);
+    }
+
+    /// `BrewingStandMenu.FuelSlot` and `quickMoveStack` use the same component.
+    #[test]
+    fn brewing_fuel_slot_and_quick_move_use_stack_components() {
+        let items = Items::for_tests(Default::default());
+        let root = std::path::Path::new("");
+        let recipes = Recipes::empty();
+        let brewing = Brewing::load(root, &items, &PackOverlay::NONE);
+        let banners = Banners::default();
+        let station_recipes = crate::stations::StationRecipes::default();
+        let enchantments = crate::enchant::Enchantments::default();
+        let names = crate::creative::Names::default();
+        let env = Env {
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: false,
+            known_recipes: None,
+        };
+        let mut fuel = ItemStack::new("minecraft:stone", 2);
+        fuel.data_mut().set_loot_component(
+            "minecraft:brewing_fuel",
+            &serde_json::json!({"uses": 7, "speed_multiplier": 2.5}),
+        );
+        let mut menu = Menu::new(Kind::Brewing);
+        assert!(menu.may_place(&env, 4, &fuel));
+        menu.set_slot(&env, 5, Some(fuel));
+        assert_eq!(menu.quick_move_landing(&env, 5), vec![4]);
+        let ordinary = ItemStack::new("minecraft:stone", 2);
+        assert!(!menu.may_place(&env, 4, &ordinary));
+        menu.set_slot(&env, 5, Some(ordinary));
+        assert!(!menu.quick_move_landing(&env, 5).contains(&4));
     }
 
     /// MerchantResultSlot's removal tally and quick-craft check reset before onTake.

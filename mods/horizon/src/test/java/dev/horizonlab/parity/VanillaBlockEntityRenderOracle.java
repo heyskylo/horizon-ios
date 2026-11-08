@@ -29,6 +29,8 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.ComponentSerialization;
+import com.mojang.serialization.JsonOps;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.util.FormattedCharSequence;
@@ -55,6 +57,7 @@ import org.joml.Quaternionf;
  */
 public final class VanillaBlockEntityRenderOracle {
     private static final Map<TextureAtlasSprite, SpriteId> SPRITES = new IdentityHashMap<>();
+    private static Font font;
     private static Object unsafe;
     private static Method allocate;
 
@@ -179,6 +182,11 @@ public final class VanillaBlockEntityRenderOracle {
                         submit.addProperty("color", (int) args[7]);
                         submit.addProperty("background", (int) args[8]);
                         submit.addProperty("outline", (int) args[9]);
+                        var sequence = (FormattedCharSequence) args[3];
+                        submit.add("glyphs", glyphs(sequence, (float) args[1], (float) args[2], (int) args[7], (int) args[6], pose.last().pose()));
+                        boolean[] obfuscated = {false};
+                        sequence.accept((index, style, c) -> { obfuscated[0] |= style.isObfuscated(); return true; });
+                        if (!obfuscated[0]) submit.add("textVertices", textVertices(sequence, (float) args[1], (float) args[2], (int) args[7] | 0xff000000, (int) args[9] == 0 ? 0 : (int) args[9] | 0xff000000, (int) args[6]));
                     }
                     case "submitCustomGeometry" -> {
                         var pose = (PoseStack) args[0];
@@ -270,6 +278,48 @@ public final class VanillaBlockEntityRenderOracle {
         throw new NoSuchFieldException(name + " on " + type);
     }
 
+    static JsonArray glyphs(FormattedCharSequence sequence, float x, float y, int color, int light, Matrix4f matrix) {
+        var result = new JsonArray();
+        float[] pen = {x};
+        sequence.accept((index, style, c) -> {
+            var glyph = new JsonObject();
+            glyph.addProperty("text", new String(Character.toChars(c)));
+            glyph.addProperty("x", pen[0]); glyph.addProperty("y", y);
+            glyph.addProperty("color", 0xff000000 | (style.getColor() == null ? color : style.getColor().getValue()));
+            glyph.addProperty("light", light); glyph.add("matrix", matrix(matrix));
+            var flags = new JsonArray();
+            for (boolean b : new boolean[] {style.isBold(), style.isItalic(), style.isUnderlined(), style.isStrikethrough(), style.isObfuscated()}) flags.add(b);
+            glyph.add("style", flags); result.add(glyph);
+            pen[0] += font.getSplitter().stringWidth(FormattedCharSequence.codepoint(c, style));
+            return true;
+        });
+        return result;
+    }
+
+    static JsonArray textVertices(FormattedCharSequence sequence, float x, float y, int color, int outline, int light) {
+        var verts = new ArrayList<float[]>();
+        var consumer = recorder(verts);
+        var pose = new Matrix4f();
+        var visitor = new Font.GlyphVisitor() {
+            @Override public void acceptRenderable(net.minecraft.client.gui.font.TextRenderable renderable) {
+                renderable.render(pose, consumer, light, false);
+            }
+        };
+        if (outline != 0) {
+            font.prepare8xTextOutline(sequence, x, y, outline).visit(visitor);
+            pose.translate(0, 0, 0.05F); // Horizon's POLYGON_OFFSET substitute.
+        }
+        font.prepareText(sequence, x, y, color, false, false, 0).visit(visitor);
+        var result = new JsonArray();
+        for (float[] v : verts) {
+            var point = new JsonArray();
+            point.add(v[0]); point.add(v[1]); point.add(v[2]);
+            point.add(Integer.toUnsignedLong(Float.floatToRawIntBits(v[3])));
+            result.add(point);
+        }
+        return result;
+    }
+
     static DyeColor dye(String name) {
         return DyeColor.byName(name, DyeColor.BLACK);
     }
@@ -277,7 +327,8 @@ public final class VanillaBlockEntityRenderOracle {
     static SignText signText(JsonObject side) {
         var lines = side.getAsJsonArray("lines");
         var messages = new ArrayList<Component>();
-        for (int i = 0; i < 4; i++) messages.add(Component.literal(i < lines.size() ? lines.get(i).getAsString() : ""));
+        for (int i = 0; i < 4; i++) messages.add(i < lines.size()
+            ? ComponentSerialization.CODEC.parse(JsonOps.INSTANCE, lines.get(i)).getOrThrow() : Component.empty());
         return new SignText(messages, messages, dye(side.get("color").getAsString()), side.get("glowing").getAsBoolean());
     }
 
@@ -390,7 +441,9 @@ public final class VanillaBlockEntityRenderOracle {
         unsafeField.setAccessible(true);
         unsafe = unsafeField.get(null);
         allocate = unsafe.getClass().getMethod("allocateInstance", Class.class);
-        Font font = ParityFont.create(ParityFont.resources());
+        var resources = ParityFont.resources();
+        font = VanillaTextDisplayRenderOracle.font(resources);
+        net.minecraft.locale.Language.inject(net.minecraft.client.resources.language.ClientLanguage.loadFrom(resources, List.of("en_us"), false));
         var models = new EntityModelSet(LayerDefinitions.createRoots());
         SpriteGetter sprites = id -> {
             try {

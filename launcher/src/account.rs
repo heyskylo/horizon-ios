@@ -655,6 +655,122 @@ impl SecretStore for MemoryStore {
     }
 }
 
+/// How long a call to the system keyring may take before the launcher gives up on it (#12179). An
+/// unlock prompt the player is typing a password into counts as an answer still coming, so this is
+/// longer than a working keyring ever takes, short enough that Play says what is wrong.
+pub const KEYCHAIN_WAIT: Duration = Duration::from_secs(20);
+
+/// What the launcher says when the system keyring didn't answer within `wait`.
+pub fn keyring_no_answer(wait: Duration) -> String {
+    crate::i18n::trf(
+        "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.",
+        &[("seconds", &wait.as_secs().max(1).to_string())],
+    )
+}
+
+/// One call to a [`Bounded`] keyring: its answer, or that the caller gave up on it.
+struct Call<T> {
+    answer: Option<T>,
+    gave_up: bool,
+}
+
+/// A keyring whose calls give up after `wait` (#12179): a Secret Service that never answers (a
+/// stuck KWallet or GNOME Keyring daemon) otherwise holds the account lock forever, and Play stays
+/// on "Starting…" with nothing said. Each call runs on a thread of its own; one given up on keeps
+/// running there, and while it does, later calls fail at once instead of piling up behind it.
+pub struct Bounded {
+    keyring: std::sync::Arc<dyn SecretStore>,
+    wait: Duration,
+    /// Calls given up on that haven't come back yet.
+    stuck: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Bounded {
+    pub fn new(keyring: impl SecretStore + 'static, wait: Duration) -> Self {
+        Self {
+            keyring: std::sync::Arc::new(keyring),
+            wait,
+            stuck: Default::default(),
+        }
+    }
+
+    fn call<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&dyn SecretStore) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let no_answer = || {
+            let said = keyring_no_answer(self.wait);
+            eprintln!("Horizon: {said}");
+            Err(said)
+        };
+        if self.stuck.load(SeqCst) > 0 {
+            return no_answer();
+        }
+        let call = std::sync::Arc::new((
+            Mutex::new(Call::<Result<T, String>> {
+                answer: None,
+                gave_up: false,
+            }),
+            std::sync::Condvar::new(),
+        ));
+        let (keyring, stuck, theirs) = (self.keyring.clone(), self.stuck.clone(), call.clone());
+        let spawned = std::thread::Builder::new()
+            .name("keyring".into())
+            .spawn(move || {
+                let answer = f(keyring.as_ref());
+                let (slot, done) = &*theirs;
+                let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.gave_up {
+                    stuck.fetch_sub(1, SeqCst);
+                } else {
+                    slot.answer = Some(answer);
+                    done.notify_one();
+                }
+            });
+        if let Err(e) = spawned {
+            return Err(e.to_string());
+        }
+        let (slot, done) = &*call;
+        let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut slot, _) = done
+            .wait_timeout_while(slot, self.wait, |call| call.answer.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(answer) = slot.answer.take() {
+            return answer;
+        }
+        // Under the call's lock: the thread, when it ends, sees this and counts itself back.
+        slot.gave_up = true;
+        self.stuck.fetch_add(1, SeqCst);
+        drop(slot);
+        no_answer()
+    }
+}
+
+impl SecretStore for Bounded {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        let key = key.to_string();
+        self.call(move |keyring| keyring.get(&key))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        let (key, secret) = (key.to_string(), secret.to_string());
+        self.call(move |keyring| keyring.set(&key, &secret))
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        let key = key.to_string();
+        self.call(move |keyring| keyring.delete(&key))
+    }
+    fn persistent(&self) -> bool {
+        self.keyring.persistent()
+    }
+    fn lock_file(&self) -> Option<PathBuf> {
+        self.keyring.lock_file()
+    }
+    fn operations(&self) -> &Mutex<()> {
+        self.keyring.operations()
+    }
+}
+
 /// The secrets file in the launcher's data folder, when no keychain answers (#5095): many Linux
 /// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
 /// to secret, encrypted with a key of this computer's ([`seal`]), readable and writable by the
@@ -711,22 +827,30 @@ impl FileStore {
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
         match std::fs::read(&self.path) {
             // Only where the file breaks: serde's own message can quote what the file holds.
-            Ok(bytes) => serde_json::from_slice(&unseal(&bytes).ok_or_else(|| {
-                format!(
-                    "{} can't be read on this computer: it was written on another one, or changed. \
-                     Remove it and sign in again.",
-                    self.path.display()
-                )
-            })?)
-            .map_err(|e| {
-                format!(
-                    "{} can't be read ({:?} error at line {}, column {}).",
-                    self.path.display(),
-                    e.classify(),
-                    e.line(),
-                    e.column()
-                )
-            }),
+            Ok(bytes) => {
+                let (json, old) = self.unseal(&bytes)?.ok_or_else(|| {
+                    format!(
+                        "{} can't be read on this computer: it was written on another one, or changed. \
+                         Remove it and sign in again.",
+                        self.path.display()
+                    )
+                })?;
+                let secrets = serde_json::from_slice(&json).map_err(|e| {
+                    format!(
+                        "{} can't be read ({:?} error at line {}, column {}).",
+                        self.path.display(),
+                        e.classify(),
+                        e.line(),
+                        e.column()
+                    )
+                })?;
+                // Sealed under the old key: sealed again under this install's. Every read runs
+                // under the lock; a write that fails leaves the old file, read again next time.
+                if old {
+                    let _ = self.write(&secrets);
+                }
+                Ok(secrets)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
             Err(e) => Err(self.shown(e)),
         }
@@ -747,7 +871,7 @@ impl FileStore {
             .path
             .with_extension(format!("json.{}.{n}.tmp", std::process::id()));
         let json = serde_json::to_vec(secrets).map_err(|e| e.to_string())?;
-        let sealed = seal(&json)?;
+        let sealed = self.seal(&json)?;
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -804,50 +928,124 @@ impl FileStore {
             Ok(secrets.contains_key(key))
         })
     }
+
+    /// The install's own secret beside the file (`account-secrets.key`): 32 random bytes, readable
+    /// and writable by the player only, made at the first write when `make`. `None` when it isn't
+    /// there and not made.
+    fn install_secret(&self, make: bool) -> Result<Option<[u8; 32]>, String> {
+        let path = self.path.with_extension("key");
+        match std::fs::read(&path) {
+            Ok(bytes) => <[u8; 32]>::try_from(bytes).map(Some).map_err(|_| {
+                format!(
+                    "{} is damaged. Remove it and {} and sign in again.",
+                    path.display(),
+                    self.path.display()
+                )
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && make => {
+                let mut secret = [0u8; 32];
+                getrandom::fill(&mut secret).map_err(|e| e.to_string())?;
+                // Whole or not at all, as the secrets file: a temporary file, then a rename.
+                let tmp = path.with_extension(format!("key.{}.tmp", std::process::id()));
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                let written = options.open(&tmp).and_then(|mut file| {
+                    std::io::Write::write_all(&mut file, &secret)?;
+                    file.sync_all()
+                });
+                if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &path)) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(format!("{}: {e}", path.display()));
+                }
+                Ok(Some(secret))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// `json` sealed for the file ([`SEALED`]), under [`file_key`] with this install's secret.
+    fn seal(&self, json: &[u8]) -> Result<Vec<u8>, String> {
+        use chacha20poly1305::{aead::Aead, KeyInit};
+        let key = file_key(&self.install_secret(true)?.expect("made"));
+        let mut nonce = [0u8; 12];
+        getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+        let sealed = chacha20poly1305::ChaCha20Poly1305::new(&key)
+            .encrypt(&nonce.into(), json)
+            .map_err(|_| "the secrets couldn't be sealed".to_string())?;
+        Ok([SEALED, &nonce, &sealed].concat())
+    }
+
+    /// What [`Self::seal`] sealed, and whether it was sealed in format 1 ([`SEALED_V1`]), to seal
+    /// again; `None` for a file in another format, changed, sealed on another computer or by
+    /// another install, or whose install secret is gone.
+    fn unseal(&self, bytes: &[u8]) -> Result<Option<(Vec<u8>, bool)>, String> {
+        use chacha20poly1305::{aead::Aead, KeyInit};
+        let (key, old, rest) = if let Some(rest) = bytes.strip_prefix(SEALED) {
+            let Some(secret) = self.install_secret(false)? else {
+                return Ok(None);
+            };
+            (file_key(&secret), false, rest)
+        } else if let Some(rest) = bytes.strip_prefix(SEALED_V1) {
+            (file_key_v1(), true, rest)
+        } else {
+            return Ok(None);
+        };
+        let Some((nonce, sealed)) = rest.split_at_checked(12) else {
+            return Ok(None);
+        };
+        let nonce: [u8; 12] = nonce.try_into().expect("12 bytes");
+        Ok(chacha20poly1305::ChaCha20Poly1305::new(&key)
+            .decrypt(&nonce.into(), sealed)
+            .ok()
+            .map(|json| (json, old)))
+    }
 }
 
-/// The secrets file's first bytes: format 1, the JSON sealed with ChaCha20-Poly1305 under
+/// The secrets file's first bytes: format 2, the JSON sealed with ChaCha20-Poly1305 under
 /// [`file_key`], then a random 12-byte nonce and the ciphertext with its tag.
-const SEALED: &[u8] = b"HZSECv1\n";
+const SEALED: &[u8] = b"HZSECv2\n";
 
-/// The secrets file's key: this computer's identity (`/etc/machine-id` on Linux, `/etc/hostid` on
-/// FreeBSD) hashed with a constant of the launcher's. The tokens are never on disk in plain text,
-/// and a copy of the file taken off the computer (a backup, a synced home folder) can't be read
-/// elsewhere. On the computer itself, the file's mode (0600) is what keeps other users out.
-fn file_key() -> chacha20poly1305::Key {
-    use sha2::Digest;
-    let mut hash = sha2::Sha256::new();
-    hash.update(b"horizon-launcher account-secrets v1");
-    if let Some(id) = ["/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/hostid"]
+/// Format 1, sealed under [`file_key_v1`]: still read, and sealed again in format 2 at once.
+const SEALED_V1: &[u8] = b"HZSECv1\n";
+
+/// This computer's identity: `/etc/machine-id` on Linux, `/etc/hostid` on FreeBSD.
+fn machine_id() -> Option<Vec<u8>> {
+    ["/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/hostid"]
         .iter()
         .find_map(|path| std::fs::read(path).ok())
-    {
-        hash.update(id.trim_ascii());
-    }
+        .map(|id| id.trim_ascii().to_vec())
+}
+
+/// The secrets file's key: a constant of the launcher's, this computer's identity and the install's
+/// own random secret (`account-secrets.key`, 0600). The tokens are never on disk in plain text,
+/// and the key is never something every local user can work out (the machine id is readable by
+/// all, and some systems have none): it takes the install secret, which only the player can read.
+/// The file's mode (0600) is still what keeps other users out; the secret means a copy of the file
+/// alone, or one left readable by others while the secret wasn't, can't be read either.
+fn file_key(install_secret: &[u8; 32]) -> chacha20poly1305::Key {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"horizon-launcher account-secrets v2");
+    let id = machine_id().unwrap_or_default();
+    hash.update((id.len() as u64).to_le_bytes());
+    hash.update(&id);
+    hash.update(install_secret);
     hash.finalize()
 }
 
-/// `json` sealed for the secrets file ([`SEALED`]).
-fn seal(json: &[u8]) -> Result<Vec<u8>, String> {
-    use chacha20poly1305::{aead::Aead, KeyInit};
-    let mut nonce = [0u8; 12];
-    getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
-    let sealed = chacha20poly1305::ChaCha20Poly1305::new(&file_key())
-        .encrypt(&nonce.into(), json)
-        .map_err(|_| "the secrets couldn't be sealed".to_string())?;
-    Ok([SEALED, &nonce, &sealed].concat())
-}
-
-/// What [`seal`] sealed, or `None` for a file in another format, changed, or sealed on another
-/// computer.
-fn unseal(bytes: &[u8]) -> Option<Vec<u8>> {
-    use chacha20poly1305::{aead::Aead, KeyInit};
-    let rest = bytes.strip_prefix(SEALED)?;
-    let (nonce, sealed) = rest.split_at_checked(12)?;
-    let nonce: [u8; 12] = nonce.try_into().ok()?;
-    chacha20poly1305::ChaCha20Poly1305::new(&file_key())
-        .decrypt(&nonce.into(), sealed)
-        .ok()
+/// Format 1's key, only to read a file sealed before format 2: the constant and the machine id,
+/// which anyone on the computer can read (the bare constant where there is none).
+fn file_key_v1() -> chacha20poly1305::Key {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"horizon-launcher account-secrets v1");
+    if let Some(id) = machine_id() {
+        hash.update(id);
+    }
+    hash.finalize()
 }
 
 /// A file entry for an account signed out while the keychain was away: the keychain's copy, if any,
@@ -1428,7 +1626,8 @@ fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
         if std::env::var_os("HORIZON_NO_KEYCHAIN").is_some() {
             return Err("HORIZON_NO_KEYCHAIN is set.".into());
         }
-        SystemStore.get("probe").map(|_| Box::new(SystemStore) as _)
+        let keychain = Bounded::new(SystemStore, KEYCHAIN_WAIT);
+        keychain.get("probe").map(|_| Box::new(keychain) as _)
     }
     #[cfg(not(all(
         not(test),
@@ -1452,7 +1651,10 @@ pub fn store() -> &'static dyn SecretStore {
         .get_or_init(|| {
             #[cfg(all(not(test), any(target_os = "linux", target_os = "freebsd")))]
             if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() {
-                return Box::new(Layered::new(Box::new(SystemStore), FileStore::launcher()));
+                return Box::new(Layered::new(
+                    Box::new(Bounded::new(SystemStore, KEYCHAIN_WAIT)),
+                    FileStore::launcher(),
+                ));
             }
             keychain_or_why().unwrap_or_else(|why| {
                 let _ = NO_KEYCHAIN_WHY.set(why);
@@ -1734,18 +1936,28 @@ impl Accounts {
 }
 
 /// No account in the launcher owns Minecraft: Java Edition: the game must not start.
-#[derive(Debug, PartialEq)]
-pub struct NoOwner;
+#[derive(Debug, Default, PartialEq)]
+pub struct NoOwner {
+    /// Why a sign-in couldn't be read, when the keyring didn't give it (#12179): what is said
+    /// instead of the refusal, which would tell a signed-in player to sign in.
+    pub keyring: Option<String>,
+}
 impl std::fmt::Display for NoOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{NEEDS_OWNER}.")
+        match &self.keyring {
+            Some(why) => write!(f, "{why}"),
+            None => write!(f, "{NEEDS_OWNER}."),
+        }
     }
 }
 
 impl NoOwner {
     /// The same refusal for the window, which has Settings rather than a command to name.
-    pub fn in_window() -> String {
+    pub fn in_window(&self) -> String {
         use crate::i18n::tr;
+        if let Some(why) = &self.keyring {
+            return why.clone();
+        }
         format!(
             "{}. {}",
             tr(NEEDS_OWNER),
@@ -1794,13 +2006,31 @@ pub fn launch(
     order.sort_by_key(|a| Some(&a.uuid) != selected.as_ref());
     let mut pass = Launch::default();
     let mut owned = false;
+    let mut unreadable = None;
     for account in order {
         if owned {
             break;
         }
         let plays = Some(&account.uuid) == selected.as_ref();
         let operation = session::lock(store);
-        let Some(secrets) = secrets_in(store, &account.uuid) else {
+        let read = match store.get(&account.uuid) {
+            Ok(text) => text.and_then(|s| serde_json::from_str::<Secrets>(&s).ok()),
+            Err(why) => {
+                // Not "signed out": the keyring didn't say (#12179). With no owner, the refusal
+                // says this instead.
+                let said = crate::i18n::trf(
+                    "Can't read {name}'s sign-in: {why}",
+                    &[("name", &account.name), ("why", &why)],
+                );
+                eprintln!("Horizon: {said}");
+                if plays {
+                    pass.offline = Some(said.clone());
+                }
+                unreadable = Some(said);
+                continue;
+            }
+        };
+        let Some(secrets) = read else {
             if plays {
                 pass.offline = Some(format!(
                     "{} is no longer signed in on this computer. Sign in again.",
@@ -1851,7 +2081,9 @@ pub fn launch(
     if owned {
         Ok(pass)
     } else {
-        Err(NoOwner)
+        Err(NoOwner {
+            keyring: unreadable,
+        })
     }
 }
 
@@ -1867,7 +2099,7 @@ pub fn launch_for_game(
     offline_without_owner: bool,
 ) -> Result<Launch, NoOwner> {
     match launch(ep, client_id, store, accounts) {
-        Err(NoOwner) if offline_without_owner => Ok(Launch::default()),
+        Err(NoOwner { .. }) if offline_without_owner => Ok(Launch::default()),
         pass => pass,
     }
 }
@@ -2374,7 +2606,7 @@ fn java_player_with(
         .session
         .or(pass.owner)
         .or_else(kept)
-        .ok_or_else(|| NoOwner.to_string())?;
+        .ok_or_else(|| NoOwner::default().to_string())?;
     Ok(crate::java_launch::Player {
         name: account.name,
         uuid: account.uuid,

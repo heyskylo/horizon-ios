@@ -65,7 +65,6 @@ pub(super) trait Entity: EntityRules {
     fn velocity(&self) -> Vec3;
     fn velocity_mut(&mut self) -> &mut Vec3;
     /// `Entity.getYRot` and `getXRot`: yaw, pitch.
-    #[allow(dead_code)] // read by the entity-interface slices that follow
     fn rotation(&self) -> [f32; 2];
     /// The rotation part of `Entity.teleportSetPosition`: `setYRot`, `setXRot`
     /// (clamped to -90..90), then `setOldRot`.
@@ -272,6 +271,10 @@ pub(super) trait Entity: EntityRules {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    /// `setOnGroundWithMovement` at the end of a piston's or shulker lid's
+    /// `Entity.move`, for the kinds that keep the flag: on a server it runs
+    /// for every push, sideways ones and those the collision turned away included.
+    fn set_piston_on_ground(&mut self, _on_ground: bool) {}
     /// `PistonMovingBlockEntity.causeBounce`: a slime block sets the velocity
     /// along the movement axis.
     fn piston_slime_bounce(&mut self, movement: Direction) {
@@ -690,7 +693,7 @@ macro_rules! define_entity_handles {
             /// cursor per list. Static dispatch and nothing allocated. Checked:
             /// a list out of join order, or an entity that never joined, stops
             /// the walk with the entity at fault.
-            #[allow(dead_code)] // read by the tick order slices that follow
+            #[allow(dead_code, reason = "the tick order work that reads this has not landed yet")]
             pub(super) fn walk_in_join_order(
                 self,
                 visit: impl FnMut(EntityHandle, JoinSeq),
@@ -758,7 +761,10 @@ pub(crate) use define_entity_handles;
 
 /// Why [`EntityLists::walk_in_join_order`] stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // read by the tick order slices that follow
+#[allow(
+    dead_code,
+    reason = "the tick order work that reads this has not landed yet"
+)]
 pub(super) enum JoinOrderError {
     /// Never put in its list through the list's own `push`, so it has no
     /// join number.
@@ -772,7 +778,10 @@ pub(super) enum JoinOrderError {
 /// lengths, `seq(list, i)` the join number of entity `i` of a list, `handle`
 /// names it. Each step takes the lowest next number among the `N` cursors
 /// (a stack array; no allocation).
-#[allow(dead_code)] // read by the tick order slices that follow
+#[allow(
+    dead_code,
+    reason = "the tick order work that reads this has not landed yet"
+)]
 fn merge_in_join_order<const N: usize>(
     lens: [usize; N],
     seq: impl Fn(usize, usize) -> JoinSeq,
@@ -1180,12 +1189,8 @@ impl Entity for ItemEntity {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
-    fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        // Entity.move(MoverType.PISTON): onGround only if the push was down.
-        if movement.y != 0.0 {
-            self.on_ground = movement.y < 0.0;
-        }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         ItemEntity::piston_slime_bounce(self, movement);
@@ -1247,11 +1252,8 @@ impl Entity for ExperienceOrb {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
-    fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        if movement.y != 0.0 {
-            self.on_ground = movement.y < 0.0;
-        }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
@@ -1485,6 +1487,11 @@ impl Entity for ArmorStand {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
+    /// A living entity's own flag too: keeping the old support flag would run
+    /// Frost Walker while the stand is moving over open water.
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn is_living(&self) -> bool {
         true
     }
@@ -1571,6 +1578,9 @@ impl Entity for PrimedTnt {
     }
     fn on_ground(&self) -> bool {
         self.on_ground
+    }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);

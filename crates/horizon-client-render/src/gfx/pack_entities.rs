@@ -30,7 +30,7 @@ pub fn buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
 /// What `gbuffers_entities` and `gbuffers_block` read from an entity vertex: camera-relative
 /// position, the shared atlas's UV, colour, light (block, sky in 16ths) and the world-oriented
 /// normal. The quad's corners, read from the same vertices at set 1, give the face normal where
-/// the vertex has none (block entities) and `at_tangent` along the texture's u, as for terrain.
+/// the vertex has none (custom geometry) and `at_tangent` along the texture's u, as for terrain.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
     let words = std::mem::size_of::<Vertex>() / 4;
     let mut declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
@@ -107,6 +107,10 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             "at_velocity",
             "hz_velocity(gbufferModelView, gbufferPreviousModelView)",
         ),
+        // Horizon's own, as for terrain: the HDR tier of a light-giving item, particle or glowing
+        // text (`mesher::hdr_tier`, the overlay's high bits), 0 for none, 1 to 4 for low to very
+        // bright.
+        ("horizonTier", "float((hz_v_overlay >> 16u) & 255u)"),
     ];
     horizon_shaders::GbuffersInputs {
         declarations,
@@ -123,6 +127,8 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         }),
         item_id_declared: false,
         far_depth: false,
+        // Entities, items and block entities read the shared atlas: its own maps (paged_maps.rs).
+        paged_maps: true,
     }
 }
 
@@ -186,6 +192,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
         alpha_test: None,
         item_id_declared: false,
         far_depth: false,
+        paged_maps: false,
     }
 }
 
@@ -463,11 +470,11 @@ impl PackEntities {
             // model in the same block-entity run. Do not corrupt either UV space.
             let whole: &[Vertex] = if whole
                 .chunks(4)
-                .any(|q| q[0].layer & 0xffff == super::FLUID_OVERLAY)
+                .any(|q| super::is_native_terrain(q[0].layer))
             {
                 without_fluids.clear();
                 for quad in whole.chunks(4) {
-                    if quad[0].layer & 0xffff == super::FLUID_OVERLAY {
+                    if super::is_native_terrain(quad[0].layer) {
                         if !span.hidden {
                             rest.extend_from_slice(quad);
                         }
@@ -1172,63 +1179,70 @@ mod gpu_span_tests {
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let layout = super::super::pack_draw::DrawUniforms::new(&device);
         let mut geometry = PackEntities::new(&device, &layout.layout);
-        let mut mixed = vec![
-            Vertex {
-                layer: 0,
-                ..bytemuck::Zeroable::zeroed()
-            };
-            8
-        ];
-        for v in &mut mixed[4..] {
-            v.layer = super::super::FLUID_OVERLAY;
-            v.uv = [0.25, 0.75];
-            v.glint_uv = [17.0, 0.0];
-        }
-        let mut rest = Vec::new();
-        for hidden in [false, true] {
-            geometry.prepare(
-                &device,
-                &queue,
-                &layout.layout,
-                &mixed,
-                &[EntitySpan {
-                    start: 0,
-                    id: 77,
-                    stage: render_stage("BLOCK_ENTITIES"),
-                    hidden,
-                    ..Default::default()
-                }],
-                [true; PROGRAMS],
-                ([0.; 4], [1; 2]),
-                Casters {
-                    blocks: true,
-                    ..Default::default()
-                },
-                &mut rest,
-                None,
-                (&[], &[]),
-            );
-            assert_eq!(
-                geometry.scratch.len(),
-                4,
-                "the model still uses the shader pack"
-            );
-            assert_eq!(geometry.draws.len(), 1);
-            assert_eq!(
-                (geometry.draws[0].pack, geometry.draws[0].shadow),
-                (!hidden, true)
-            );
-            if hidden {
-                assert!(
-                    rest.is_empty(),
-                    "hidden native fluid must not leak into the visible pass"
+        for overlay in [
+            super::super::FLUID_OVERLAY,
+            super::super::TERRAIN_MODEL_SOLID_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY,
+        ] {
+            let mut mixed = vec![
+                Vertex {
+                    layer: 0,
+                    ..bytemuck::Zeroable::zeroed()
+                };
+                8
+            ];
+            for v in &mut mixed[4..] {
+                v.layer = overlay | 279 << 16;
+                v.uv = [0.25, 0.75];
+                v.glint_uv = [17.0, 0.0];
+            }
+            let mut rest = Vec::new();
+            for hidden in [false, true] {
+                geometry.prepare(
+                    &device,
+                    &queue,
+                    &layout.layout,
+                    &mixed,
+                    &[EntitySpan {
+                        start: 0,
+                        id: 77,
+                        stage: render_stage("BLOCK_ENTITIES"),
+                        hidden,
+                        ..Default::default()
+                    }],
+                    [true; PROGRAMS],
+                    ([0.; 4], [1; 2]),
+                    Casters {
+                        blocks: true,
+                        ..Default::default()
+                    },
+                    &mut rest,
+                    None,
+                    (&[], &[]),
                 );
-            } else {
                 assert_eq!(
-                    bytemuck::cast_slice::<_, u8>(&rest),
-                    bytemuck::cast_slice::<_, u8>(&mixed[4..]),
-                    "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    geometry.scratch.len(),
+                    4,
+                    "the model still uses the shader pack"
                 );
+                assert_eq!(geometry.draws.len(), 1);
+                assert_eq!(
+                    (geometry.draws[0].pack, geometry.draws[0].shadow),
+                    (!hidden, true)
+                );
+                if hidden {
+                    assert!(
+                        rest.is_empty(),
+                        "hidden native fluid must not leak into the visible pass"
+                    );
+                } else {
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&rest),
+                        bytemuck::cast_slice::<_, u8>(&mixed[4..]),
+                        "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    );
+                }
             }
         }
     }
@@ -1617,6 +1631,47 @@ mod velocity_translate_tests {
                 who == "entities",
                 "{who}: previous view in the block"
             );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tier_translate_tests {
+    /// A pack's entity and hand programs may read `horizonTier`, the overlay's HDR tier.
+    #[test]
+    fn a_pack_reading_horizon_tier_translates_for_entities_and_the_hand() {
+        let dir = std::env::temp_dir().join(format!("hz-entity-tier-{}", std::process::id()));
+        let shaders = dir.join("shaders");
+        std::fs::create_dir_all(&shaders).unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.vsh"),
+            "#version 120\nattribute float horizonTier;\nvarying float t;\n\
+             void main() {\n    gl_Position = ftransform();\n    t = horizonTier;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.fsh"),
+            "#version 120\nvarying float t;\nvoid main() {\n    gl_FragData[0] = vec4(t);\n}\n",
+        )
+        .unwrap();
+        let pack = horizon_shaders::Pack::open(&dir).unwrap();
+        let m = horizon_shaders::Macros::standard();
+        let vsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.vsh", &m);
+        let fsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.fsh", &m);
+        for (who, inputs) in [
+            ("entities", super::inputs()),
+            ("hand", super::super::pack_hand::inputs()),
+        ] {
+            let attribute = inputs.attributes.iter().find(|(n, _)| n == "horizonTier");
+            assert!(attribute.is_some(), "{who}");
+            horizon_shaders::translate_gbuffers(
+                &vsh,
+                &fsh,
+                horizon_shaders::Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{who}: {e:?}"));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

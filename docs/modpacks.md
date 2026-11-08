@@ -333,6 +333,26 @@ cargo run -p horizon-port-pack -- events ~/.horizon/ports/pack/jars   # NeoForge
 cargo run -p horizon-port-pack -- port ~/Downloads/pack.zip ~/.horizon/ports/pack [--from <folder>] [--resources <root>]
 ```
 
+### Data packs in mod jars
+
+Some mods are a data pack in a jar: no classes, a `pack.mcmeta` and a `data/` folder (the skyblock
+packs of Skyblock Plus are). A content mod may not hold `data/minecraft`, so the carry would drop
+what they are for, such as a void world's noise settings. For a 26.2 or 26.3 pack, `port` makes
+them data packs instead: upgraded to 26.3 (`docs/datapack-upgrade.md`; a 26.3 one is copied as
+it is) into `<work>/home/new-world-datapacks/<mod>/`, with what happened in `<work>/datapacks.json`.
+A content mod an earlier port carried from the same jar is removed, and so is a pack in that folder
+whose jar is no longer a data-only one of the pack: `port` owns the folder.
+
+`home/` is the profile's game folder. The game copies its `new-world-datapacks/` into each world it
+creates there: Create New World shows them selected in its Data Packs screen, and a world made
+without that screen (`--world`, the control socket) gets them all. Worlds made before keep what
+they have. Without the folder nothing changes.
+
+Before its jar is read, a mod whose Modrinth project also ships as a data pack (`datapack` among
+the project's loaders) counts as data tier, so `fetch` gets its jar; the jar then decides. The
+report lists these jars as partial: nothing compares them with the Java pack yet, and their
+`assets/` (an advancement font, say) are not loaded.
+
 ### Resource packs from an imported modpack
 
 Import stages embedded resource packs in `<work>/resourcepacks/`: `.mrpack` common overrides and client
@@ -377,16 +397,23 @@ events a mod listens to and the capabilities it uses. A listener is an `@Subscri
 parameter, or a method reference or lambda that takes one event
 (`NeoForge.EVENT_BUS.addListener(this::onTick)`). It looks each name up in the hook catalog's
 `neoforge` names ([native-hooks-neoforge.md](native-hooks-neoforge.md)). Over a folder of jars it
-ranks the names by how many mods use them. Each name gets one of four answers:
+ranks the names by how many mods use them. Each name gets one of five answers:
 
 - a hook;
 - another phase's hook (`player_tick` for `PlayerTickEvent.Pre`);
 - a hook whose label says why it isn't quite the counterpart;
+- data: the event is gone because vanilla made what it built into data, and the answer names the
+  registries a port writes instead;
 - none.
 
 Names NeoForge changed after 1.21.1 (`Capabilities.ItemHandler`, `Capabilities.EnergyStorage`,
-`AddReloadListenerEvent`) are looked up under their new ones. The report reads names only, never
-code: it says where a port starts, for a human to check.
+`AddReloadListenerEvent`) are looked up under their new ones. `VillagerTradesEvent` and
+`WandererTradesEvent` are data: 26.1 made villager trades the `trade_set` and `villager_trade`
+registries (NeoForge's 26.1 primer), and 26.3's NeoForge has neither event. A port writes each
+trade as a `villager_trade` file and adds it to the tag a set reads (`armorer/level_1`'s set takes
+`#minecraft:armorer/level_1`). Tags merge, so several mods can add to one level. The files come from
+the mod's own data or from `data_pack_files`. The report reads names only, never code: it says
+where a port starts, for a human to check.
 
 On ATM10's 498 jars (2026-11-05, 8 s), 416 of 497 mods listen to events or use capabilities: 6,616
 uses of 326 names. Main's catalog had a hook for 23% of those uses, and 43% once #9924 labelled 32
