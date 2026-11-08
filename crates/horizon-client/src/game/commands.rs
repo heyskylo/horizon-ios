@@ -3842,9 +3842,16 @@ impl Game<'_> {
             Some(Arg::Coords(c)) => c.rotation(self.source_rotation()),
             _ => [0.0, 0.0],
         };
+        // SetWorldSpawnCommand uses RespawnData.of before storing or comparing.
+        let rot = [wrap_degrees(rot[0]), rot[1].clamp(-90.0, 90.0)];
         // LevelData.setRespawnData: the world's spawn (level.dat `spawn`).
+        let previous_point = self.world_spawn_position().map(|v| v.floor() as i32);
         let old = self.level.world_spawn.replace(pos);
+        let old_angle = self.level.world_spawn_angle;
         self.level.world_spawn_angle = rot;
+        if previous_point != pos || old_angle.map(f32::to_bits) != rot.map(f32::to_bits) {
+            self.lan_broadcast_world_spawn();
+        }
         self.native_spawn_change(pos, rot);
         // A player whose fallback is the world spawn (no spawnpoint of its
         // own; a bed or an anchor that is gone falls back to it) respawns at
