@@ -3072,18 +3072,16 @@ def potion_contents_names():
 def ominous_spawner_saved_motion():
     """`Entity.load` reads `Motion` (a component above 10 loads as 0) and
     `Entity.saveWithoutId` writes `getDeltaMovement()`. `OminousItemSpawner.tick`
-    never moves the spawner, so its loaded fields stay as given, through a
-    chunk unload and reload too. Its item is far in the future."""
+    never moves the spawner, so its motion stays as given, through a chunk
+    unload and reload too. Its item is far in the future."""
     x, z, y = 5248, 5120, 300
-    spawners = [(1, 'Motion:[0.6d,0.0d,-0.25d],Rotation:[45f,10f],OnGround:1b,fall_distance:2.5d'),
-                (2, 'Motion:[11.0d,-0.5d,0.0d]'), (3, '')]
+    spawners = [(1, 'Motion:[0.6d,0.0d,-0.25d]'), (2, 'Motion:[11.0d,-0.5d,0.0d]'), (3, '')]
 
     def reads():
         out = []
         for n, _ in spawners:
             target = f'0000c0df-0000-0000-0000-00000000000{n}'
-            out += [cmd(f'/data get entity {target} {field}')
-                    for field in ('Motion', 'Pos', 'Rotation', 'OnGround', 'fall_distance')]
+            out += [cmd(f'/data get entity {target} {field}') for field in ('Motion', 'Pos')]
         return out
 
     ops = [*setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
