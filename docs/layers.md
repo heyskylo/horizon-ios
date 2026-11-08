@@ -113,7 +113,8 @@ crate its layer. It fails when:
 
 - a crate has no layer;
 - a dependency goes up a layer and `allowed` doesn't list it;
-- a pull request adds an entry to `allowed` between two crates that already had layers;
+- a pull request adds an entry to `allowed` for a crate that already had a layer (a crate newly split out of another
+  may carry the old crate's exceptions);
 - shipped code depends on a tool.
 
 Each failure names the section of this page that applies. An `allowed` entry that has no dependency left is only

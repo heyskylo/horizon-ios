@@ -5,7 +5,7 @@ engine < platform < horizon; `tool` crates (dev tools) may use anything and noth
 tools/layers.json gives every crate its layer and lists today's exceptions in `allowed`. The check fails on:
 - a workspace crate with no layer;
 - a normal, build or optional dependency on a higher layer that `allowed` doesn't list;
-- with --base, an `allowed` entry the branch added between two crates that both had a layer on the base;
+- with --base, an `allowed` entry the branch added from a crate that already had a layer on the base;
 - a shipped crate depending on a tool.
 An `allowed` entry with no dependency left is reported, not failed. Dev-dependencies are not checked.
 
@@ -104,7 +104,9 @@ def check(config, graph, base=None):
         base_layers = base.get("crates", {})
         for edge in sorted(allowed - set(base.get("allowed", []))):
             crate, dep = edge.split(" -> ")
-            if crate in base_layers and dep in base_layers:
+            # A crate new since the base (split out of another, or renamed) may carry its old crate's exceptions;
+            # a new dependency target excuses nothing.
+            if crate in base_layers:
                 problems.append(f"{edge}: added to 'allowed' in {CONFIG_PATH}. The exceptions only shrink; "
                                 f"see {DOC}{SECTION.get(layers.get(crate), '')}")
     notes = [f"{edge}: no longer a dependency; you can remove it from 'allowed' in {CONFIG_PATH}"
