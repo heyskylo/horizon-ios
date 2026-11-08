@@ -109,6 +109,35 @@ fn glider_and_slot(
     (glider, slot)
 }
 
+/// The `consumable` and `blocks_attacks` the server's patch adds to `stack`,
+/// components this client otherwise reads past (a server's sword made to
+/// block, `diamond_sword[blocks_attacks={},consumable={...}]`): the added
+/// consumable's `Consumable.consumeTicks` (`consumeSeconds * 20`), and
+/// whether `blocks_attacks` is added.
+pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
+    let Some((added, _)) = stack
+        .data()
+        .and_then(|d| d.wire.patch())
+        .and_then(|p| horizon_protocol::item::WirePatch::decode(p).ok())
+    else {
+        return (None, false);
+    };
+    let mut out = (None, false);
+    for (kind, c) in &added {
+        match (*kind, c) {
+            (component::CONSUMABLE, Component::Raw(bytes)) => {
+                out.0 = Reader::new(bytes)
+                    .f32()
+                    .ok()
+                    .map(|seconds| (seconds * 20.0) as i32);
+            }
+            (component::BLOCKS_ATTACKS, _) => out.1 = true,
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
