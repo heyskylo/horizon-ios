@@ -113,7 +113,7 @@ mod hooks;
 mod interact;
 pub mod pistons;
 mod place;
-mod portal;
+pub mod portal;
 pub mod portal_travel;
 mod query;
 pub(crate) use query::data_2d;
@@ -353,6 +353,11 @@ pub enum Spread {
 
 /// The world as seen by block behaviour. Implemented by the game and tests.
 pub trait LevelAccess {
+    /// `WorldBorder.isWithinBounds(BlockPos)` for block movement.
+    fn within_world_border(&self, _pos: BlockPos) -> bool {
+        true
+    }
+
     /// Whether a hopper may pick up this dropped item stack. The default allows.
     fn allow_hopper_pickup_item(&self, _pos: BlockPos, _item: &str, _count: u32) -> bool {
         true
@@ -675,16 +680,16 @@ pub trait LevelAccess {
     fn item_frame_analog_output(&self, _pos: BlockPos, _facing: Direction) -> Option<i32> {
         None
     }
+    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
+    /// the container at `pos`: someone has it open (a double chest's menu
+    /// counts for both halves; a copper golem's open chest too).
+    fn container_open(&self, _pos: BlockPos) -> bool {
+        false
+    }
     /// `ContainerOpenersCounter.recheckOpenCount` for the chest or ender chest
     /// block entity at `pos`: recounts its openers and returns the previous
     /// and new counts (the caller plays open/close effects when they change),
     /// or None when there is no such block entity.
-    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
-    /// the container at `pos`: someone has it open (a double chest's menu
-    /// counts for both halves).
-    fn container_open(&self, _pos: BlockPos) -> bool {
-        false
-    }
     fn recheck_container_openers(&mut self, _pos: BlockPos) -> Option<(i32, i32)> {
         None
     }
@@ -775,6 +780,15 @@ pub trait LevelAccess {
     ) -> u8 {
         0
     }
+    /// Ensure a new block's optional entity after its onPlace completed, as
+    /// LevelChunk.setBlockState does. The actual state is supplied; an existing
+    /// valid same-block instance must survive. Defaults to no additional factory.
+    fn ensure_block_entity(&mut self, _pos: BlockPos, _state: BlockStateId) {}
+    /// EntityBlock class identity, independent of whether this particular
+    /// state's factory creates an instance (e.g. an empty machine cage).
+    fn has_native_block_entity(&self, _state: BlockStateId) -> bool {
+        false
+    }
     /// Whether a block entity a mod made lives at `pos` (`native_block_entity`),
     /// whatever its block's template: it is removed with its block and no piston
     /// moves it, as for a template that has one.
@@ -791,6 +805,9 @@ pub trait LevelAccess {
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown
     /// tree placed gets its bees. Levels without block entities drop it.
     fn load_block_entity(&mut self, _pos: BlockPos, _nbt: crate::nbt::Compound) {}
+    /// A live dungeon's already selected spawner data. Optional and
+    /// creation-only: an owning level must preserve every existing entry.
+    fn create_feature_spawner(&mut self, _pos: BlockPos, _nbt: crate::nbt::Compound) {}
     /// Biome identifier at `pos` (`minecraft:plains`), for features placed by
     /// block behaviour (bone meal flowers). None when unknown.
     fn biome_name(&self, _pos: BlockPos) -> Option<&str> {
@@ -1058,6 +1075,37 @@ impl Behaviours {
         forward: horizon_core::geometry::Direction,
     ) -> bool {
         self.sim(level, ticks).fire_can_be_placed_at(pos, forward)
+    }
+    /// `PortalShape.findAnyShape`: the frame rectangle around `pos` on one
+    /// axis, valid or not.
+    pub fn portal_shape<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        x_axis: bool,
+    ) -> portal::PortalShape {
+        self.sim(level, ticks).find_portal_shape(pos, x_axis)
+    }
+    /// `PortalShape.findEmptyPortalShape`: a valid frame with no portal block,
+    /// trying the preferred axis first.
+    pub fn empty_portal_shape<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        x_axis: bool,
+    ) -> Option<portal::PortalShape> {
+        self.sim(level, ticks).find_empty_portal_shape(pos, x_axis)
+    }
+    /// `PortalShape.createPortalBlocks`: fill the frame with portal blocks.
+    pub fn create_portal_blocks<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        shape: &portal::PortalShape,
+    ) {
+        self.sim(level, ticks).create_portal_blocks(shape);
     }
     /// `BlockState.canSurvive(level, pos)`.
     pub fn can_survive<L: LevelAccess + ?Sized>(

@@ -199,18 +199,45 @@ fn corrupt_allocations_are_dropped_and_bad_payloads_fail() {
     assert_eq!(RegionFile::open(dir.region()).unwrap().chunks().count(), 0);
     fs::write(dir.region(), [0, 0, 2, 1]).unwrap();
     assert_eq!(RegionFile::open(dir.region()).unwrap().chunks().count(), 0);
-    for (len, codec) in [
-        (0, 3),
-        (4093, 3),
-        (u32::MAX, 3),
-        (1, 127),
-        (2, 131),
-        (1, 131),
-    ] {
+    for (len, codec) in [(0, 3), (4093, 3), (u32::MAX, 3), (1, 127)] {
         malformed_region(&dir.region(), 513, 0, len, codec);
         let mut reader = RegionFile::open(dir.region()).unwrap();
         assert!(reader.read(ChunkPos::new(-32, 0)).is_err());
     }
+}
+
+/// `getChunkDataInputStream`: the external branch never reads the stub's length
+/// — `streamLength != 0` only logs "Chunk has both internal and external
+/// streams" — and `createExternalChunkInputStream` answers `null` when the
+/// `.mcc` is not a regular file, so that chunk is absent, not damaged.
+#[test]
+fn an_external_stub_reads_its_mcc_whatever_its_length_says() {
+    let dir = Directory::new();
+    let pos = ChunkPos::new(-32, 0);
+    let external = dir.0.join("c.-32.0.mcc");
+    let payload = vec![7; 4000];
+    fs::write(&external, &payload).unwrap();
+    // Slot 0 points at sector 2 and the stub declares 2 bytes of which one at
+    // most is inline: the data comes from the `.mcc` either way.
+    malformed_region(&dir.region(), 0x0000_0201, 0, 2, 3 | 128);
+    let mut reader = RegionFile::open(dir.region()).unwrap();
+    let record = reader.read(pos).unwrap().unwrap();
+    assert_eq!(record.compression, Compression::None);
+    assert_eq!(record.compressed, payload);
+    assert_eq!(record.timestamp, 0);
+    fs::remove_file(&external).unwrap();
+    assert!(reader.read(pos).unwrap().is_none());
+}
+
+/// `getChunkDataInputStream` answers `null` for a stub whose `.mcc` is not a
+/// regular file, so the chunk is absent rather than damaged.
+#[test]
+fn a_stub_without_its_mcc_is_an_absent_chunk() {
+    let dir = Directory::new();
+    let pos = ChunkPos::new(-32, 0);
+    malformed_region(&dir.region(), 0x0000_0201, 0, 1, 3 | 128);
+    let mut reader = RegionFile::open(dir.region()).unwrap();
+    assert!(reader.read(pos).unwrap().is_none());
 }
 
 #[test]
