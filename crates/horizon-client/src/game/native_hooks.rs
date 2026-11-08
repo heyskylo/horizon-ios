@@ -3888,6 +3888,35 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// `native_screen_mouse_dragged_pre` with the game lent mutably, so a
+    /// mod can act on the drag where it happens (click the slot it entered,
+    /// as Mouse Tweaks-style mods do), where v1 can only read and cancel.
+    /// The view can't be lent with the game: `screen` is its `id` and
+    /// `mouse` its pointer in GUI pixels; read the rest from the game.
+    /// `button`, `delta` and `modifiers` are v1's. Heard at the same point,
+    /// just before v1, for the same drags; set `canceled` and no screen drag
+    /// handler runs and v1 hears nothing of this move. v1 keeps its
+    /// signature and firing point. @API:screen_mouse_input_v2@.
+    pub(super) fn native_screen_mouse_dragged_pre_v2(
+        &mut self,
+        screen: &str,
+        mouse: [f32; 2],
+        button: i32,
+        delta: [f32; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_mouse_dragged_pre_v2(
+            self,
+            mod_api::mods(),
+            screen,
+            mouse,
+            button,
+            delta,
+            modifiers,
+            canceled,
+        );
+    }
     /// The wheel turned over the open screen (`ScreenEvent.MouseScrolled.Pre`,
     /// vanilla's `Screen.mouseScrolled`): `screen` is the screen it is,
     /// `screen.mouse` where the pointer is (so there is no position of its
@@ -3924,6 +3953,33 @@ impl Game<'_> {
             self,
             mod_api::mods(),
             screen,
+            scroll,
+            modifiers,
+            canceled,
+        );
+    }
+    /// `native_screen_mouse_scrolled_pre` with the game lent mutably, so a
+    /// mod can act on the wheel where it turns (move items between slots,
+    /// one per notch), where v1 can only read and cancel. The view can't be
+    /// lent with the game: `screen` is its `id` and `mouse` its pointer in
+    /// GUI pixels; read the rest from the game. `scroll` and `modifiers` are
+    /// v1's. Heard at the same point, just before v1, for the same wheel
+    /// turns; set `canceled` and nothing the screen would scroll moves (the
+    /// bundle under the pointer included) and v1 hears nothing of this turn.
+    /// v1 keeps its signature and firing point. @API:screen_mouse_input_v2@.
+    pub(super) fn native_screen_mouse_scrolled_pre_v2(
+        &mut self,
+        screen: &str,
+        mouse: [f32; 2],
+        scroll: [f64; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_mouse_scrolled_pre_v2(
+            self,
+            mod_api::mods(),
+            screen,
+            mouse,
             scroll,
             modifiers,
             canceled,
@@ -4101,7 +4157,7 @@ impl Game<'_> {
         // left down, right down, left up sends no drag while right is still held.
         self.drag_button = pressed.then_some(button);
     }
-    pub(super) fn screen_mouse_dragged(&self, previous: (f32, f32)) -> bool {
+    pub(super) fn screen_mouse_dragged(&mut self, previous: (f32, f32)) -> bool {
         if self.pad_synthetic_input() || self.cursor == previous {
             return false;
         }
@@ -4111,17 +4167,24 @@ impl Game<'_> {
         else {
             return false;
         };
+        let Some((id, mouse)) = self.screen_view_now().map(|s| (s.id, s.mouse)) else {
+            return false;
+        };
+        let (button, modifiers) = (
+            super::glfw_button(button),
+            super::glfw_modifiers(self.modifiers),
+        );
+        let delta = [self.cursor.0 - previous.0, self.cursor.1 - previous.1];
+        let mut canceled = false;
+        self.native_screen_mouse_dragged_pre_v2(id, mouse, button, delta, modifiers, &mut canceled);
+        if canceled {
+            return true;
+        }
+        // v2 may have changed or closed the screen: v1 hears it as it is now.
         let Some(screen) = self.screen_view_now() else {
             return false;
         };
-        let mut canceled = false;
-        self.native_screen_mouse_dragged_pre(
-            &screen,
-            super::glfw_button(button),
-            [self.cursor.0 - previous.0, self.cursor.1 - previous.1],
-            super::glfw_modifiers(self.modifiers),
-            &mut canceled,
-        );
+        self.native_screen_mouse_dragged_pre(&screen, button, delta, modifiers, &mut canceled);
         canceled
     }
     /// A screen the native mods' input hooks are for is open: the window has a
