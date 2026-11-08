@@ -2618,7 +2618,7 @@ mod tests {
         withdraw_partner_servers(&dir).unwrap();
         assert_eq!(ips(), [official, "127.0.0.1:2"]);
         assert!(!marker.exists());
-        servers::save(&file, &[added.clone()]).unwrap();
+        servers::save(&file, std::slice::from_ref(&added)).unwrap();
         withdraw_partner_servers(&dir).unwrap();
         assert_eq!(ips(), ["afri-network.co.za"]);
         // The player's own entry for that address (their name) stays.
