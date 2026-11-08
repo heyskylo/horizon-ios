@@ -787,7 +787,6 @@ pub fn mob_to_nbt(
     );
     for (key, value) in [
         ("AbsorptionAmount", Tag::Float(0)),
-        ("current_impulse_context_reset_grace_time", Tag::Int(0)),
         (
             "Brain",
             Tag::compound([("memories", Tag::Compound(Compound::new()))]),
@@ -795,6 +794,10 @@ pub fn mob_to_nbt(
     ] {
         map.entry(key.into()).or_insert(value);
     }
+    map.insert(
+        "current_impulse_context_reset_grace_time".into(),
+        Tag::Int(m.impulse_grace_time),
+    );
     // What the mob's class saves: a content mod's living type saves as its
     // template does (the `id` written above stays its own).
     let id = m.kind.class_id();
@@ -2092,6 +2095,8 @@ pub fn mob_from_nbt(
         m.extra.set_main_hand(None);
     }
     m.death_time = number(tag.get("DeathTime")).unwrap_or(0) as i32;
+    m.impulse_grace_time =
+        number(tag.get("current_impulse_context_reset_grace_time")).unwrap_or(0) as i32;
     // Mob.readAdditionalSaveData overrides what the constructor set (copper
     // golems and elder guardians start persistent).
     m.persistent = flag(tag, "PersistenceRequired");
@@ -2636,6 +2641,9 @@ pub fn mob_from_nbt(
         );
         if let Some(t) = number(tag.get("scute_time")) {
             m.extra.egg_time = t as i32;
+        } else {
+            // Armadillo(): scuteTime = pickNextScuteDropTime().
+            m.extra.egg_time = crate::mobs::ai::next_scute_time(&mut m);
         }
     }
     if m.species() == crate::mobs::Species::Ravager {
@@ -2790,10 +2798,6 @@ pub fn mob_from_nbt(
     // A mob saved mid-death finishes dying; one saved dead is dropped.
     if m.health <= 0.0 && m.death_time == 0 {
         return None;
-    }
-    // DeathTime only counts while dead.
-    if m.health > 0.0 {
-        m.death_time = 0;
     }
     Some(m)
 }

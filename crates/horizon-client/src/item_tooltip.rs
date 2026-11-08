@@ -1894,6 +1894,38 @@ mod tests {
     }
 
     #[test]
+    fn test_russian_wooden_sword_modifiers() {
+        let lang = |k: &str| {
+            Some(
+                match k {
+                    "attribute.modifier.equals.0" => "%2$s: %1$s",
+                    "attribute.modifier.plus.0" => "%2$s: +%1$s",
+                    "attribute.modifier.take.0" => "%2$s: -%1$s",
+                    "attribute.modifier.equals.2" => "%2$s: %1$s%%",
+                    "attribute.modifier.plus.2" => "%2$s: +%1$s%%",
+                    "attribute.modifier.take.2" => "%2$s: -%1$s%%",
+                    "attribute.name.attack_damage" => "Урон при атаке",
+                    "attribute.name.attack_speed" => "Скорость атаки",
+                    "attribute.name.movement_speed" => "Скорость",
+                    _ => return None,
+                }
+                .to_owned(),
+            )
+        };
+        assert_eq!(
+            modifier_line(&lang, "attack_damage", 4.0, 0, true).as_deref(),
+            Some("Урон при атаке: 4")
+        );
+        assert_eq!(
+            modifier_line(&lang, "attack_speed", 1.6, 0, true).as_deref(),
+            Some("Скорость атаки: 1.6")
+        );
+        assert_eq!(
+            modifier_line(&lang, "movement_speed", -0.6, 2, false).as_deref(),
+            Some("Скорость: -60%")
+        );
+    }
+    #[test]
     fn modifier_lines_support_positional_format() {
         let lang = |k: &str| {
             Some(
