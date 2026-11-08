@@ -366,7 +366,9 @@ in an MCP client as a stdio server with the command `horizon-ctl` and the
 argument `mcp` (`--socket PATH` before `mcp` to pick a socket).
 
 **Transport.** On Linux and macOS the endpoint is a Unix socket:
-`$HORIZON_CONTROL`, else `$XDG_RUNTIME_DIR/horizon-control.sock`, or
+`$HORIZON_CONTROL`, else `$XDG_RUNTIME_DIR/horizon-control.sock` (without a runtime
+directory and with a temporary directory every user shares, as `/tmp`,
+`horizon-<uid>/horizon-control.sock` in it, a folder only that user may open), or
 `--control-socket PATH` (`horizon-ctl --socket PATH`). Windows has no Unix
 sockets: there the game listens on a random `127.0.0.1` port and writes
 `{"transport":"tcp","port":N,"token":"..."}` to the endpoint path

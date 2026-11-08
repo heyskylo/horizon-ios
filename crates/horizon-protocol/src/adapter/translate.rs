@@ -557,8 +557,30 @@ pub fn serverbound(
             };
             renumbered(id, payload)
         }
+        // 26.3 ends sign_update with the side (a VarInt); every older release reads it as a boolean right
+        // after the position, before the four lines.
+        (State::Play, sb::SIGN_UPDATE) => renumbered(id, sign_update(payload)?),
         _ => renumbered(id, payload.to_vec()),
     }
+}
+
+/// A sign_update payload as the older releases read it: position, side, four lines. 26.3 sends the side after
+/// the lines as a VarInt, which for 0 and 1 is one byte equal to the boolean.
+fn sign_update(payload: &[u8]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(payload);
+    let pos = r.i64()?;
+    let mut lines = Vec::with_capacity(4);
+    for _ in 0..4 {
+        lines.push(r.string(384)?);
+    }
+    let front = r.varint()? == 1;
+    let mut w = Writer::new();
+    w.i64(pos);
+    w.bool(front);
+    for line in &lines {
+        w.string(line);
+    }
+    Ok(w.data)
 }
 
 /// 26.2's serverbound `swing` (play), which 26.3 replaced with `punch`.
@@ -3058,5 +3080,31 @@ pub(super) mod tests_support {
     }
     pub fn advancements_26_2(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
         advancements(ids, payload)
+    }
+}
+
+#[cfg(test)]
+mod sign_update_tests {
+    use super::*;
+
+    #[test]
+    fn an_older_server_reads_the_side_before_the_lines() {
+        let mut w = Writer::new();
+        w.i64(0x0102_0304_0506_0708);
+        for line in ["Hi", "", "x", ""] {
+            w.string(line);
+        }
+        w.varint(1); // the front
+        let out = sign_update(&w.data).unwrap();
+        let mut expected = Writer::new();
+        expected.i64(0x0102_0304_0506_0708);
+        expected.bool(true);
+        for line in ["Hi", "", "x", ""] {
+            expected.string(line);
+        }
+        assert_eq!(out, expected.data);
+        w.data.pop();
+        w.varint(0); // the back
+        assert_eq!(sign_update(&w.data).unwrap()[8], 0);
     }
 }

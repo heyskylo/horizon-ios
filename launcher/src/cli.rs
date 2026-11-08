@@ -3659,7 +3659,12 @@ fn modpack(action: ModpackCmd, as_json: bool) -> Result<(), String> {
                 p.summary(),
                 counts.join(", ")
             );
-            println!("  {} portable, {} carried over", p.portable, p.mods.len());
+            println!(
+                "  {} portable, {} carried over, {} data packs for new worlds",
+                p.portable,
+                p.mods.len(),
+                p.datapacks
+            );
             if let Some(jars) = p.jars() {
                 println!("  {jars}");
             }
