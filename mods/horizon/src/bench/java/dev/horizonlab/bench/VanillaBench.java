@@ -45,7 +45,7 @@ import net.minecraft.world.phys.Vec3;
 public final class VanillaBench implements ClientModInitializer {
     private static VanillaBench bench;
 
-    private enum Phase { TITLE, WORLD, TELEPORT, LOAD, SETTLE, FLY, DONE }
+    private enum Phase { TITLE, WORLD, TELEPORT, LOAD, SETTLE, FLY, REDSTONE, DONE }
 
     private final JsonObject script;
     private final Path out;
@@ -63,6 +63,9 @@ public final class VanillaBench implements ClientModInitializer {
     /** Client tick durations (Minecraft.tick) while flying, in milliseconds. */
     private final List<Float> ticks = new ArrayList<>();
     private long tickStart;
+    /** tools/redstone_diff.py: the machine being stepped, and its index in the script's "redstone" list. */
+    private RedstoneDiff diff;
+    private int machine;
 
     /** Fabric's entrypoint instance; the benchmark itself is the static one. */
     public VanillaBench() {
@@ -181,6 +184,11 @@ public final class VanillaBench implements ClientModInitializer {
                     if (s.has("setup")) {
                         for (var line : s.getAsJsonArray("setup")) mc.player.connection.sendCommand(line.getAsString());
                     }
+                    if (script.has("redstone")) {
+                        machine = 0;
+                        enter(Phase.REDSTONE, now);
+                        return;
+                    }
                     enter(Phase.SETTLE, now);
                 }
             }
@@ -218,6 +226,20 @@ public final class VanillaBench implements ClientModInitializer {
                         }
                     }
                     next(mc, now);
+                }
+            }
+            case REDSTONE -> {
+                place(mc, scenes.get(scene), 0);
+                var machines = script.getAsJsonArray("redstone");
+                if (diff == null) {
+                    diff = new RedstoneDiff(machines.get(machine).getAsJsonObject());
+                    RedstoneDiff.begin(diff);
+                }
+                if (diff.drive(mc)) {
+                    event("redstone", diff.result());
+                    RedstoneDiff.end();
+                    diff = null;
+                    if (++machine >= machines.size()) finish(mc);
                 }
             }
             case DONE -> { }
