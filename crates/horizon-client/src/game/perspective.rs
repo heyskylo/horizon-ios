@@ -292,10 +292,21 @@ impl Game<'_> {
     /// front of) it, pulled in where visual shapes are in the way. Returns the
     /// position, yaw and pitch to render from.
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
+        if self.studio_freecam.active {
+            return Some((
+                self.studio_freecam.position,
+                self.studio_freecam.yaw,
+                self.studio_freecam.pitch,
+            ));
+        }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
-        let (entity, descending) = match self.camera_mob() {
-            Some(m) => (super::remote_camera::mob_camera_entity(m), false),
+        let (entity, descending, entity_kind) = match self.camera_mob() {
+            Some(m) => (
+                super::remote_camera::mob_camera_entity(m),
+                false,
+                horizon_world::collision_context::EntityContextKind::Living,
+            ),
             None => {
                 let mut entity = self.player_camera_entity()?;
                 if let Some(position) = self.remote_minecart_rider_position(partial) {
@@ -304,7 +315,11 @@ impl Game<'_> {
                     entity.position = position;
                     entity.previous = position;
                 }
-                (entity, self.player.as_ref()?.shift_key_down)
+                (
+                    entity,
+                    self.player.as_ref()?.shift_key_down,
+                    horizon_world::collision_context::EntityContextKind::Player,
+                )
             }
         };
         let mut view = self.view;
@@ -318,6 +333,7 @@ impl Game<'_> {
         let context = CollisionContext::for_entity(
             CollisionEntity {
                 identity: EntityIdentity(0),
+                kind: entity_kind,
                 y: entity.position[1],
                 descending,
                 main_hand: Some(CollisionItem::EMPTY),
@@ -638,6 +654,11 @@ impl Game<'_> {
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
+        if self.studio_freecam.active {
+            self.studio_freecam
+                .turn((xo * 0.15) as f32, (yo * 0.15) as f32);
+            return;
+        }
         let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
         let rotation = turn_rotation(self.yaw, self.pitch, pitch_o, xo, yo);
         // The held lead's old look (`LocalPlayer.getRopeHoldPosition`'s
@@ -687,7 +708,7 @@ impl Game<'_> {
     /// `LevelExtractor`'s skip of the camera entity: the player's own body
     /// is drawn unless the camera is in first person, or while it sleeps.
     pub(super) fn own_body_in_view(&self) -> bool {
-        !self.camera_type.first_person() || self.sleeping.is_some()
+        !self.camera_type.first_person() || self.sleeping.is_some() || self.studio_freecam.active
     }
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).
@@ -790,7 +811,7 @@ impl Game<'_> {
                 packed,
                 out,
             );
-            if horizon_cosmetics::enabled() {
+            if super::cosmetics::enabled() {
                 let base = horizon_client::mobs::render::base_transform(m, alpha as f32, camera);
                 self.cosmetics_geometry(
                     m,
@@ -916,7 +937,7 @@ impl Game<'_> {
             240 | 240 << 8,
             &mut verts,
         );
-        if horizon_cosmetics::enabled() {
+        if super::cosmetics::enabled() {
             let base = horizon_client::mobs::render::base_transform(&m, 1.0, camera);
             self.cosmetics_geometry(&m, true, base, None, 1.0, 240 | 240 << 8, false, &mut verts);
         }

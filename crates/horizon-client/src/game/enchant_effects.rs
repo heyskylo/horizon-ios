@@ -12,6 +12,7 @@ use horizon_client::{
     items::ItemStack,
     mobs::Who,
     projectiles::Projectile,
+    random_source,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::{fluid::FluidKind, level::LevelAccess, registry::BlockStateId};
@@ -622,7 +623,7 @@ impl Game<'_> {
             Some("damage_entity") => {
                 let min = level_value(&effect["min_damage"], level);
                 let max = level_value(&effect["max_damage"], level);
-                let damage = super::dispenser::entity_random().next_float() * (max - min) + min;
+                let damage = random_source::entity().next_float() * (max - min) + min;
                 let Some(m) = self.mobs.iter().find(|m| m.id == wearer) else {
                     return;
                 };
