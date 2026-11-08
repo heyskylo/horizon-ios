@@ -80,6 +80,13 @@ pub fn is_equine(s: Species) -> bool {
             | Species::TraderLlama
     )
 }
+/// `AbstractChestedHorse`: donkeys, mules and llamas.
+pub fn is_chested(s: Species) -> bool {
+    matches!(
+        s,
+        Species::Donkey | Species::Mule | Species::Llama | Species::TraderLlama
+    )
+}
 /// `Entity.canSprint`: false everywhere but the camel (`Camel.canSprint`). A
 /// rider's `LocalPlayer.isSprintingPossible` asks its vehicle.
 pub fn can_sprint(s: Species) -> bool {
@@ -250,6 +257,12 @@ pub fn finalize(m: &mut Mob) {
     }
     if let Some(speed) = speed {
         set_base(m, Attr::MovementSpeed, speed);
+    }
+    if matches!(
+        species,
+        Species::Horse | Species::SkeletonHorse | Species::ZombieHorse
+    ) {
+        set_base(m, Attr::JumpStrength, m.extra.vector[0]);
     }
     m.health = m.attrs.max_health;
 }
