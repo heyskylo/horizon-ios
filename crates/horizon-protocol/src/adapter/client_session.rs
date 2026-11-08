@@ -12,6 +12,7 @@
 //! server read itself: `login_acknowledged` and `login_finished` move each direction to configuration,
 //! `finish_configuration` to play, and `configuration_acknowledged` / `start_configuration` back.
 use std::{
+    cell::Cell,
     collections::{HashMap, VecDeque},
     sync::{
         Mutex,
@@ -78,6 +79,8 @@ pub struct ClientSession {
     /// The entities the client was sent, by network id: their pinned type and UUID, for the older
     /// releases' entity data and 26.1's spectating by UUID.
     entities: Mutex<HashMap<i32, (i32, u128)>>,
+    /// The hotbar slot the client holds (0..=8), for the swap a 1.21.3 client's `pick_item` becomes.
+    held: AtomicU8,
 }
 
 /// A position, yaw and pitch.
@@ -127,6 +130,34 @@ impl Teleport {
     }
 }
 
+thread_local! {
+    /// The client's ids while [`ClientSession::older_layout_down`] runs: its steps re-read payloads already in them.
+    static CLIENT_IDS: Cell<Option<&'static Ids>> = const { Cell::new(None) };
+}
+
+/// Restores the previous client ids when dropped.
+struct ClientIds(Option<&'static Ids>);
+impl Drop for ClientIds {
+    fn drop(&mut self) {
+        CLIENT_IDS.set(self.0);
+    }
+}
+
+/// Runs `read` on a payload the renumbering already wrote in the client's ids, reading them as the pinned ones
+/// (a particle's data, say, is chosen by its pinned id).
+pub(super) fn read_in_client_ids<T>(read: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _guard = CLIENT_IDS.get().map(|ids| ids::renumbering(ids, Way::Up));
+    read()
+}
+
+/// Runs `write`, writing pinned ids as the client's again (the other half of [`read_in_client_ids`]).
+pub(super) fn write_in_client_ids(write: impl FnOnce(&mut Writer)) -> Vec<u8> {
+    let _guard = CLIENT_IDS.get().map(|ids| ids::renumbering(ids, Way::Down));
+    let mut w = Writer::new();
+    write(&mut w);
+    w.data
+}
+
 impl ClientSession {
     /// A client whose login handshake stated `version`'s protocol: both directions are in login.
     pub fn new(version: ServerVersion) -> Self {
@@ -137,8 +168,46 @@ impl ClientSession {
             place: Mutex::new(Place::default()),
             teleports: Mutex::new(VecDeque::new()),
             entities: Mutex::new(HashMap::new()),
+            held: AtomicU8::new(0),
         }
     }
+    fn hold(&self, slot: i32) {
+        if let Ok(slot @ 0..=8) = u8::try_from(slot) {
+            self.held.store(slot, Ordering::Release);
+        }
+    }
+
+    /// A 1.21.3 (or older) client's `pick_item`: it found the picked block's item at `slot` of its inventory and
+    /// asks for it in its hand. 26.3 has no such packet (its client names the block or entity instead), so it
+    /// becomes the swap of that slot with the held hotbar slot, a `container_click` on the inventory. Its state id
+    /// is 0: the server applies the click and sends the inventory's full state back.
+    fn pick_item(&self, payload: &[u8]) -> Result<Option<(i32, Vec<u8>)>> {
+        let slot = Reader::new(payload).varint()?;
+        // Inventory index to the inventory menu's slot: the hotbar (0..=8) is 36..=44, the rest 9..=35 alike.
+        let slot = match slot {
+            0..=8 => slot + 36,
+            9..=35 => slot,
+            _ => return Ok(None),
+        };
+        let held = self.held.load(Ordering::Acquire);
+        if slot == 36 + i32::from(held) {
+            return Ok(None);
+        }
+        let click = play::Serverbound::ContainerClick(play::ContainerClick {
+            container: 0,
+            state: 0,
+            slot: slot as i16,
+            button: held as i8,
+            input: 2,
+            changed: Vec::new(),
+            carried: None,
+        });
+        Ok(Some((
+            packet_ids::play::serverbound::CONTAINER_CLICK,
+            strip_id(click.encode()),
+        )))
+    }
+
     pub fn reading(&self) -> State {
         from_u8(self.reading.load(Ordering::Acquire))
     }
@@ -154,6 +223,9 @@ impl ClientSession {
         if state == State::Play && id == swing_id(self.version) {
             let hand = Reader::new(&payload).varint()?;
             return Ok((hand == 0).then_some((packet_ids::play::serverbound::PUNCH, Vec::new())));
+        }
+        if state == State::Play && Some(id) == old_pick_item_id(self.version) {
+            return self.pick_item(&payload);
         }
         let Some(pinned) = self.version.serverbound_id_up(state, id) else {
             return Ok(None);
@@ -182,6 +254,10 @@ impl ClientSession {
                 w.varint(if action == 0 { 0 } else { action + 1 });
                 w.bytes(r.rest());
                 w.data
+            }
+            (State::Play, sb::SET_CARRIED_ITEM) => {
+                self.hold(i32::from(Reader::new(&payload).i16()?));
+                payload
             }
             (State::Play, sb::MOVE_PLAYER_POS | sb::MOVE_PLAYER_POS_ROT | sb::MOVE_PLAYER_ROT) => {
                 self.moved(pinned, &payload)?;
@@ -249,6 +325,9 @@ impl ClientSession {
         }
         if (state, id) == (State::Play, packet_ids::play::clientbound::PLAYER_POSITION) {
             self.teleporting(payload)?;
+        }
+        if (state, id) == (State::Play, packet_ids::play::clientbound::SET_HELD_SLOT) {
+            self.hold(Reader::new(payload).varint()?);
         }
         let tracked;
         let payload = match self.track_entities(state, id, payload)? {
@@ -343,6 +422,7 @@ impl ClientSession {
         mut payload: Vec<u8>,
     ) -> Result<Option<Vec<u8>>> {
         let v = self.version;
+        let _client_ids = ClientIds(CLIENT_IDS.replace(v.ids()));
         // 1.21.2 reworked the recipe book (recipe displays, no ids a 1.21.1 client knows): a 1.21.1 client gets no
         // recipe book, so its update_recipes and place_ghost_recipe are not sent. Its recipe_book_add, _remove and
         // _settings have no 1.21.1 id at all (the id tables drop them).
@@ -367,6 +447,12 @@ impl ClientSession {
         {
             return Ok(None);
         }
+        // 26.3's explode carries the radius right after the centre; 1.21.8 dropped it, so it is kept here for
+        // 1.21.1's strength (written at the same place, after the centre).
+        let explode_radius = (v.at_most(ServerVersion::V1_21_1)
+            && (state, id) == (State::Play, packet_ids::play::clientbound::EXPLODE))
+            .then(|| payload.get(24..28).map(|b| [b[0], b[1], b[2], b[3]]))
+            .flatten();
         type Step = fn(State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
         let steps: [(ServerVersion, Step); 4] = [
             (ServerVersion::V26_1, step_26_1::clientbound),
@@ -406,6 +492,11 @@ impl ClientSession {
             && let Some(next) = step_1_21_1::clientbound(state, id, &payload)?
         {
             payload = next;
+        }
+        if let Some(radius) = explode_radius
+            && let Some(strength) = payload.get_mut(24..28)
+        {
+            strength.copy_from_slice(&radius);
         }
         // 1.20.6 is the oldest release: its packets are brought down after every step above.
         if v.at_most(ServerVersion::V1_20_6)
@@ -581,6 +672,17 @@ enum Sent {
     Dropped,
 }
 
+/// The id of `pick_item` (1.21.3 and older) for a client of `version`, from each release's packets report.
+fn old_pick_item_id(version: ServerVersion) -> Option<i32> {
+    if version.at_most(ServerVersion::V1_21_1) {
+        Some(32)
+    } else if version.at_most(ServerVersion::V1_21_3) {
+        Some(34)
+    } else {
+        None
+    }
+}
+
 fn strip_id(body: Vec<u8>) -> Vec<u8> {
     let mut r = Reader::new(&body);
     match r.varint() {
@@ -639,6 +741,8 @@ fn down(ids: &'static Ids, state: State, id: i32, payload: &[u8]) -> Result<Sent
         | cb::LEVEL_EVENT
         | cb::BLOCK_EVENT
         | cb::UPDATE_ATTRIBUTES
+        | cb::UPDATE_MOB_EFFECT
+        | cb::REMOVE_MOB_EFFECT
         | cb::SOUND
         | cb::SOUND_ENTITY
         | cb::SET_ENTITY_DATA
@@ -703,6 +807,15 @@ fn renumber(ids: &Ids, p: &mut play::Clientbound) -> Option<()> {
         }
         play::Clientbound::BlockEvent(e) => {
             e.block = down_or_substitute(ids.block, ids.substitutes.block, e.block)?;
+            Some(())
+        }
+        // An effect the client lacks (added after its release) is not sent.
+        play::Clientbound::UpdateMobEffect(e) => {
+            e.effect = ids.mob_effect.down(e.effect)?;
+            Some(())
+        }
+        play::Clientbound::RemoveMobEffect(e) => {
+            e.effect = ids.mob_effect.down(e.effect)?;
             Some(())
         }
         play::Clientbound::UpdateAttributes(a) => {
@@ -780,6 +893,91 @@ mod tests {
 
     // Expected ids are read off the 26.2 and 26.3 packets and registries reports by hand, not from the
     // generated tables.
+
+    #[test]
+    fn an_effect_an_older_client_lacks_is_not_sent() {
+        let s = ClientSession::new(ServerVersion::V1_21_1);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        let effect = |effect| {
+            play::Clientbound::UpdateMobEffect(play::UpdateMobEffect {
+                id: 1,
+                effect,
+                amplifier: 0,
+                duration: 100,
+                flags: 0,
+            })
+            .encode()
+        };
+        // Speed (0) is known to 1.21.1; pinned 39 was added after it (1.21.1 has 39 effects).
+        assert!(s.clientbound(&effect(0)).unwrap().is_some());
+        assert_eq!(s.clientbound(&effect(39)).unwrap(), None);
+        let removed =
+            play::Clientbound::RemoveMobEffect(play::RemoveMobEffect { id: 1, effect: 39 })
+                .encode();
+        assert_eq!(s.clientbound(&removed).unwrap(), None);
+    }
+
+    #[test]
+    fn a_1_21_3_pick_item_swaps_the_slot_into_the_held_hotbar_slot() {
+        let s = ClientSession::new(ServerVersion::V1_21_3);
+        s.reading.store(to_u8(State::Play), Ordering::Release);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        // The server put the hand on hotbar slot 2.
+        let mut w = Writer::new();
+        w.varint(2);
+        s.clientbound(&body(packet_ids::play::clientbound::SET_HELD_SLOT, &w.data))
+            .unwrap();
+        // pick_item (34 in 1.21.3) of inventory index 20.
+        let mut w = Writer::new();
+        w.varint(20);
+        let (id, payload) = s.serverbound(34, w.data).unwrap().unwrap();
+        assert_eq!(id, packet_ids::play::serverbound::CONTAINER_CLICK);
+        let click = play::Serverbound::decode(id, &payload).unwrap();
+        let play::Serverbound::ContainerClick(c) = click else {
+            panic!("{click:?}");
+        };
+        assert_eq!((c.container, c.slot, c.button, c.input), (0, 20, 2, 2));
+        // A hotbar index is the menu's 36 + index; the held one itself is nothing to swap.
+        let mut w = Writer::new();
+        w.varint(2);
+        assert_eq!(s.serverbound(34, w.data).unwrap(), None);
+        // 1.21.4 clients send no pick_item: 34 is not taken over for them.
+        assert_eq!(old_pick_item_id(ServerVersion::V1_21_4), None);
+        assert_eq!(old_pick_item_id(ServerVersion::V1_20_6), Some(32));
+    }
+
+    #[test]
+    fn a_1_21_1_client_is_sent_the_real_explosion_radius() {
+        let s = ClientSession::new(ServerVersion::V1_21_1);
+        s.reading.store(to_u8(State::Play), Ordering::Release);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        let body = play::Clientbound::Explode(play::Explode {
+            center: [1.0, 2.0, 3.0],
+            radius: 6.5,
+            block_count: 12,
+            knockback: Some([0.5, 0.1, 0.0]),
+            particle: crate::entity_data::Particle { id: 29, data: None },
+            sound: (-1, Some(("minecraft:entity.generic.explode".into(), None))),
+            block_particles: Vec::new(),
+            play_sound: true,
+        })
+        .encode();
+        // Every older client is sent it (1.21.8 and older used to fail on reading it back).
+        for v in ServerVersion::ALL {
+            let t = ClientSession::new(v);
+            t.writing.store(to_u8(State::Play), Ordering::Release);
+            assert!(t.clientbound(&body).unwrap().is_some(), "{v:?}");
+        }
+        let sent = s.clientbound(&body).unwrap().unwrap();
+        let mut r = Reader::new(&sent);
+        r.varint().unwrap();
+        assert_eq!(
+            [r.f64().unwrap(), r.f64().unwrap(), r.f64().unwrap()],
+            [1.0, 2.0, 3.0]
+        );
+        // 1.21.1's strength, after the centre: 26.3's radius, not a guess.
+        assert_eq!(r.f32().unwrap(), 6.5);
+    }
 
     #[test]
     fn each_direction_follows_its_own_switches() {

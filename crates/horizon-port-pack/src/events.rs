@@ -24,7 +24,14 @@ pub const CATALOG: &str = include_str!("../../../native-hooks.json");
 /// 1.21.1's documentation doesn't name it, only that the client has "a full
 /// copy of the `RecipeManager`". 26.1's client gets just the recipe types a
 /// mod asks for (`OnDatapackSyncEvent#sendRecipes`), in `RecipesReceivedEvent`.
-const RENAMED: [(&str, &str); 5] = [
+/// Two more changed what they carry. `RenderTooltipEvent.Color` set a
+/// tooltip's background and border colours; 26.1 draws a tooltip from a
+/// style's textures and has only `RenderTooltipEvent.Texture`, which picks
+/// them. `AnvilRepairEvent` fired when the player took a repaired result out
+/// of the anvil and let a mod change the anvil's break chance; 26.1's
+/// `AnvilCraftEvent` fires on that take, `.Pre` before the inputs are used
+/// and the anvil is damaged, and has no break chance.
+const RENAMED: [(&str, &str); 7] = [
     ("Capabilities.ItemHandler.", "Capabilities.Item."),
     ("Capabilities.EnergyStorage.", "Capabilities.Energy."),
     ("AddReloadListenerEvent", "AddServerReloadListenersEvent"),
@@ -33,6 +40,8 @@ const RENAMED: [(&str, &str); 5] = [
         "ModelEvent.RegisterStandalone",
     ),
     ("RecipesUpdatedEvent", "RecipesReceivedEvent"),
+    ("RenderTooltipEvent.Color", "RenderTooltipEvent.Texture"),
+    ("AnvilRepairEvent", "AnvilCraftEvent.Pre"),
 ];
 
 /// Events that are only a parent of the events NeoForge documents under

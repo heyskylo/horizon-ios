@@ -307,6 +307,10 @@ impl Game<'_> {
         let p = self.item_frames[i].pos;
         self.world.modified.insert((p[0] >> 4, p[2] >> 4));
         self.frame_output_changed(p);
+        // ItemFrame.interact: BLOCK_CHANGE by the player, after setItem or
+        // setRotation.
+        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        self.post_game_event("minecraft:block_change", at, ctx);
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             let frame = self.item_frames.iter().find(|f| f.id == entity_id);
             let item = frame
@@ -369,6 +373,10 @@ impl Game<'_> {
             self.entity_killed_event(at, true);
         }
         self.drop_frame_items(&f, with_frame, true);
+        // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
+        // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
+        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        self.post_game_event("minecraft:block_change", at, ctx);
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
@@ -478,6 +486,9 @@ impl Game<'_> {
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
             self.drop_frame_items(&f, true, false);
+            // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
+            let ctx = self.who_context(None, None);
+            self.post_game_event("minecraft:block_change", center(&f), ctx);
             self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
             if f.item.is_some() {
                 self.frame_output_changed(f.pos);
@@ -506,6 +517,9 @@ impl Game<'_> {
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
                     self.drop_frame_items(&f, true, false);
+                    // ItemFrame.dropItem(level, null): BLOCK_CHANGE after the drops.
+                    let ctx = self.who_context(None, None);
+                    self.post_game_event("minecraft:block_change", center(&f), ctx);
                     if f.item.is_some() {
                         self.frame_output_changed(f.pos);
                     }
@@ -550,6 +564,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(f.id));
             let s = f.step();
             // Pose: to the block centre, then X/Y rotation by facing.
             let (x_rot, y_rot) = if s[1] == 0 {
@@ -688,6 +703,7 @@ impl Game<'_> {
         for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
+            self.mark_motion(entity_start, Self::MOTION_FRAME_ITEM | u64::from(id));
             let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
             let state = self.resolve_item(
                 &stack,
@@ -707,9 +723,36 @@ impl Game<'_> {
                 self.cull_skinned(out, entity_start, skinned);
             }
         }
+        // Maps: keyed by their map id, which several frames can show, so they stay unmarked.
+        self.mark_motion(out.len(), 0);
+        // Nearest first: past the atlas's map slots, the far ones go without.
+        maps.sort_by(|a, b| {
+            let d = |m: &glam::Mat4| {
+                m.transform_point3(glam::Vec3::new(64.0, 64.0, 0.0))
+                    .length_squared()
+            };
+            d(&a.1).total_cmp(&d(&b.1))
+        });
         for (id, m, light, cull, kind) in maps {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
+            // Its outline first: a map out of sight takes no slot in the atlas, or with
+            // more maps around than slots, the ones in view lost theirs to it.
+            if cull {
+                for c in [[0.0, 0.0], [128.0, 0.0], [128.0, 128.0], [0.0, 128.0]] {
+                    out.push(Vertex {
+                        pos: m
+                            .transform_point3(glam::Vec3::new(c[0], c[1], 0.0))
+                            .to_array(),
+                        ..bytemuck::Zeroable::zeroed()
+                    });
+                }
+                self.cull_entity_vertices(out, entity_start);
+                if out.len() == entity_start {
+                    continue;
+                }
+                out.truncate(entity_start);
+            }
             self.map_vertices(id, true, m, light, out);
             if cull {
                 self.cull_entity_vertices(out, entity_start);

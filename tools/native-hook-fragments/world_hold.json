@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "world_hold",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_world_hold",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "collect",
+        "out": "hold"
+      }
+    }
+  ],
+  "rust_summary": "a held world (`native_world_hold`): the terrain kept drawn as it stands while the world changes under it, and every change shown on one frame when let go.",
+  "doc_summary": "a held world through `native_world_hold`: once a frame a client mod can hold the terrain's picture, all of it or\nonly inside circles; sections on screen that change are meshed and uploaded but wait beside the ones drawn, and\nletting go shows them all on one frame ([Holding the world's picture](#holding-the-worlds-picture)). Bundles need\n`\"hooks\": @API:world_hold@`."
+}
