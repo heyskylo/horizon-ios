@@ -2847,6 +2847,14 @@ tick later with a command.
   `expected`, and returns what was there (Bukkit's `setItem`); the second takes the stacks out of the given `Player`
   slots, each of which must still hold exactly its stack, all or none (a stake, a trade, a fine with enchanted gear).
   A player's screen follows with the tick's sync.
+- **`native_player_inventory_changed(player, stacks)`**: a player's inventory changed, heard at the moment vanilla's
+  `InventoryChangeTrigger` is checked (the per-tick check found another item or count in a slot), before any criterion
+  is looked at and whether or not any advancement uses `inventory_changed`. `stacks` are the 41 slots in
+  `native_inventory`'s `Player` numbering: 0..36 the main inventory (0..9 the hotbar), 36..40 the armour (feet, legs,
+  chest, head), 40 the off hand. It also fires at a player's first check after joining, so a mod sees what they log in
+  with. The player's state is swapped in. Heard for the single player, LAN guests and a dedicated server's players,
+  never on a client of a remote server: what quest, collection and "obtain an item" mods need instead of polling
+  every inventory. Bundles need `"hooks": @API:player_inventory_changed@`.
 
 #### Server hooks for plugin ports: login and profiles
 
