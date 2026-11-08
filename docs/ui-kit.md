@@ -10,12 +10,13 @@ inputs once a frame and the overlays draw with them. It is immediate mode, with 
 own. Vanilla's display lists (`hud_layout`, `screen_draw`) never use it: they are vanilla's, and
 parity-tested against it.
 
-The kit grows a piece at a time, each with an overlay that needs it. Today it has two:
+The kit grows a piece at a time, each with something on screen that needs it:
 
 | Piece | What it gives |
 |---|---|
 | `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
 | `hud_kit::plate` | `Plate`: the box behind a notice's text |
+| `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page |
 
 All sizes are GUI px from the view's top left, and an area is `[x, y, w, h]`.
 
@@ -74,3 +75,15 @@ screen.
   sprites.
 - `hud_kit::room` tests cover an empty room and when an overlay moves.
 - `game/split/hud.rs` tests place the join strip and the notice with 0 to 3 bars.
+
+## Tabs
+
+`hud_kit::tabs::collapsed(atlas, names, selected, area)` lays out a page list in one row: the
+selected name between `‹ ›` arrows, cut to the room between them, with a pip per page under the
+row, the selected one white. `tabs::draw(batch, atlas, &strip)` paints it.
+
+- `has_prev` and `has_next` say whether there is a page either way; an arrow without one is drawn
+  dimmed (`ARROW_OFF`). A screen may change them, as Shaders' search does.
+- When the pips don't all fit across the area, the ones shown are a window round the selected
+  page's, so they never leave the row's width.
+- It only lays out and paints: what a click or a bumper does is the screen's.
