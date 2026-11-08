@@ -49,12 +49,12 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
         std::env::temp_dir().join(format!("horizon-terrain-fade-{}", std::process::id())),
     );
     std::fs::create_dir_all(folder.0.join("shaders")).unwrap();
-    // The guard, initializer, varying and integer output are independent probe code.
+    // The initializer, varying and integer output are independent probe code. The program reads
+    // `mc_chunkFade` unguarded: Horizon defines no `IRIS_FEATURE_*` (spec OQ-2).
     let vertex = "#version 330\nout vec4 observation;\n\
-        #ifdef IRIS_FEATURE_FADE_VARIABLE\nfloat first = mc_chunkFade;\n#endif\n\
-        void main() {\n#ifdef IRIS_FEATURE_FADE_VARIABLE\n\
+        float first = mc_chunkFade;\n\
+        void main() {\n\
         observation = vec4(mc_chunkFade, first, gl_Color.a, gl_MultiTexCoord0.x);\n\
-        #else\nobservation = vec4(1.0, 1.0, gl_Color.a, gl_MultiTexCoord0.x);\n#endif\n\
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}";
     let fragment = "#version 330\nin vec4 observation;\nlayout(location = 0) out uvec4 pixel;\n\
         void main() { pixel = floatBitsToUint(observation); }";
@@ -159,7 +159,8 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
                             origin,
                             0x80ffffff,
                         );
-                        let fade = if requested { expected } else { 1.0 };
+                        // The fade reaches the program whether the pack requested it or not.
+                        let fade = expected;
                         let expected = [
                             fade,
                             if geometry { 0.8125 } else { fade },

@@ -256,6 +256,22 @@ fn strip(int: &[u8]) -> Vec<u8> {
     int[start..].to_vec()
 }
 
+/// `RSAKeyFactory.MAX_MODLEN`: the longest modulus Java's provider accepts.
+const MAX_MODULUS_BITS: usize = 16384;
+/// `RSAKeyFactory.MAX_MODLEN_RESTRICT_EXPONENT`: past this many modulus bits, the exponent is
+/// limited to [`MAX_RESTRICTED_EXPONENT_BITS`].
+const RESTRICT_EXPONENT_ABOVE: usize = 3072;
+/// `RSAKeyFactory.MAX_RESTRICTED_EXPLEN`.
+const MAX_RESTRICTED_EXPONENT_BITS: usize = 64;
+
+/// The bit length of a big-endian unsigned integer with no leading zero bytes, as
+/// `BigInteger.bitLength`.
+fn bit_len(int: &[u8]) -> usize {
+    int.first().map_or(0, |&top| {
+        (int.len() - 1) * 8 + (8 - top.leading_zeros() as usize)
+    })
+}
+
 impl RsaPublicKey {
     /// X509EncodedKeySpec: SubjectPublicKeyInfo { AlgorithmIdentifier, BIT STRING RSAPublicKey }.
     pub fn from_der(spki: &[u8]) -> Result<Self> {
@@ -286,7 +302,16 @@ impl RsaPublicKey {
             modulus: strip(n),
             exponent: strip(e),
         };
-        if key.modulus.len() < 64 || key.modulus.last().is_none_or(|b| b & 1 == 0) {
+        // RSAKeyFactory.checkKeyLengths, as vanilla's KeyFactory applies it: a modulus of at most
+        // 16384 bits and, past 3072 bits, an exponent of at most 64. The cost of an encryption
+        // grows with the modulus squared times the exponent's bits, and the server sends the key
+        // before anything is encrypted: unbounded, one key in a Hello held a login for hours.
+        let (n_bits, e_bits) = (bit_len(&key.modulus), bit_len(&key.exponent));
+        if key.modulus.len() < 64
+            || n_bits > MAX_MODULUS_BITS
+            || n_bits > RESTRICT_EXPONENT_ABOVE && e_bits > MAX_RESTRICTED_EXPONENT_BITS
+            || key.modulus.last().is_none_or(|b| b & 1 == 0)
+        {
             return Err(bad());
         }
         Ok(key)
@@ -762,6 +787,59 @@ pub(crate) mod tests {
         assert_eq!(key.size(), 128);
         assert!(RsaPublicKey::from_der(&hex(TEST_SPKI)[..100]).is_err());
         assert!(RsaPublicKey::from_der(b"not a key").is_err());
+    }
+
+    /// A SubjectPublicKeyInfo for modulus `n` and exponent `e`, both big-endian.
+    fn spki(n: &[u8], e: &[u8]) -> Vec<u8> {
+        fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
+            let len = body.len();
+            let mut out = vec![tag];
+            if len < 0x80 {
+                out.push(len as u8);
+            } else {
+                let bytes: Vec<u8> = len
+                    .to_be_bytes()
+                    .into_iter()
+                    .skip_while(|&b| b == 0)
+                    .collect();
+                out.push(0x80 | bytes.len() as u8);
+                out.extend(bytes);
+            }
+            out.extend_from_slice(body);
+            out
+        }
+        // INTEGERs are signed: a leading zero keeps a high top bit positive.
+        let int = |v: &[u8]| tlv(0x02, &[&[0u8][..], v].concat());
+        let algorithm = tlv(0x30, &[tlv(0x06, RSA_ENCRYPTION), tlv(0x05, &[])].concat());
+        let key = tlv(0x30, &[int(n), int(e)].concat());
+        let bits = tlv(0x03, &[&[0u8][..], &key].concat());
+        tlv(0x30, &[algorithm, bits].concat())
+    }
+
+    #[test]
+    fn keys_past_javas_limits_are_refused() {
+        // An odd modulus of `bits` bits: the top bit set, the rest 0xff.
+        let modulus = |bits: usize| {
+            let mut n = vec![0xff; bits.div_ceil(8)];
+            n[0] = 0xff >> ((8 - bits % 8) % 8);
+            n
+        };
+        let exponent = |bits: usize| modulus(bits);
+        let parses = |n: &[u8], e: &[u8]| RsaPublicKey::from_der(&spki(n, e)).is_ok();
+        // The builder makes keys from_der reads: the usual 65537, and the test key's modulus.
+        assert!(parses(&hex(TEST_N), &[1, 0, 1]));
+        assert!(parses(&modulus(2048), &[1, 0, 1]));
+        // A modulus of 16384 bits passes, one bit more is refused.
+        assert!(parses(&modulus(16384), &[1, 0, 1]));
+        assert!(!parses(&modulus(16385), &[1, 0, 1]));
+        // A 2049-byte modulus (the review's case) is refused whatever its exponent.
+        assert!(!parses(&modulus(2049 * 8), &[3]));
+        // Up to 3072 bits, the exponent may be as long as the modulus.
+        assert!(parses(&modulus(3072), &exponent(3072)));
+        // Past 3072 bits it may have 64 bits at most: 2048-byte modulus, 9-byte exponent refused.
+        assert!(parses(&modulus(3073), &exponent(64)));
+        assert!(!parses(&modulus(3073), &exponent(65)));
+        assert!(!parses(&modulus(16384), &exponent(9 * 8)));
     }
 
     /// Encrypted with the public key, decrypted with the private exponent:
