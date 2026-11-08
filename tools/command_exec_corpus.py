@@ -1476,6 +1476,22 @@ def items_and_loot():
     ]
 
 
+def loot_world_pack_tables():
+    """ResourceOrIdArgument looks loot tables up in the server's registries: a world pack's
+    table (advancement_loot_fixtures) is named by /loot and by a function of the pack."""
+    return [
+        *setup('/clear @s', '/setblock 2 220 2 minecraft:chest'),
+        cmd('/loot give @s loot parity:pack_loot'),
+        cmd('/clear @s minecraft:emerald 0'),
+        cmd('/loot replace block 2 220 2 container.0 loot parity:pack_loot'),
+        cmd('/data get block 2 220 2 Items'),
+        cmd('/function parity:pack_loot_give'),
+        cmd('/clear @s minecraft:emerald 0'),
+        cmd('/loot give @s loot parity:missing'),
+        *setup('/clear @s', '/setblock 2 220 2 minecraft:air'),
+    ]
+
+
 def aquatic_from_bucket():
     """Saved bucket flags default false, except the always-true tadpole (#7763)."""
     ops = []
@@ -2048,6 +2064,8 @@ def function_return_fixtures(group_names):
                           'command_macro:admit': 'scoreboard players add #admit macro_error 1\n',
                           'command_macro:fail': 'return fail\n',
                           'command_macro:zero': 'return 0\n'})
+    if 'loot world pack tables' in group_names:
+        functions['parity:pack_loot_give'] = 'loot give @s loot parity:pack_loot\n'
     if 'function return feedback' in group_names:
         functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
                           'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
@@ -5391,6 +5409,10 @@ def advancement_loot_fixtures(group_names):
                                       {'type': 'minecraft:item', 'name': 'minecraft:diamond'}]}]}
     if 'advancement empty loot reference' in group_names:
         tables['parity:empty_reward'] = {'type': 'minecraft:advancement_reward', 'pools': []}
+    if 'loot world pack tables' in group_names:
+        tables['parity:pack_loot'] = {'type': 'minecraft:chest', 'pools': [{'rolls': 1, 'entries': [
+            {'type': 'minecraft:item', 'name': 'minecraft:emerald',
+             'modifier': {'type': 'minecraft:set_count', 'count': 3}}]}]}
     try:
         from . import player_food_predicate_corpus as player_food
     except ImportError:
@@ -6295,6 +6317,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('loot world pack tables', loot_world_pack_tables()),
         ('numeric array edits', numeric_array_edits()),
         ('projectile saved UUID', projectile_saved_uuid()),
         ('awake villager saved position', awake_villager_saved_position()),

@@ -1286,6 +1286,11 @@ impl Items {
     pub fn has_loot_table(&self, id: &str) -> bool {
         self.loot.contains_key(id)
     }
+    /// Every loot table's id: the root's (vanilla's and the content mods')
+    /// and the packs' over them, in no order.
+    pub fn loot_table_ids(&self) -> impl Iterator<Item = &str> {
+        self.loot.ids()
+    }
     /// `LootTable.getRandomItems` of an inline table.
     pub fn inline_loot_table<R: RandomSource>(
         &self,
@@ -2724,6 +2729,29 @@ mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
+
+    /// The ids `/loot ... loot <id>` takes: a content mod's table in the
+    /// root and a world pack's table over it.
+    #[test]
+    fn loot_table_ids_list_the_roots_and_the_packs_tables() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-ids-{}", std::process::id()));
+        fs::create_dir_all(root.join("data/mymod/loot_table/rooms")).unwrap();
+        fs::write(root.join("items.json"), "{}").unwrap();
+        fs::write(
+            root.join("data/mymod/loot_table/rooms/a.json"),
+            r#"{"pools":[]}"#,
+        )
+        .unwrap();
+        let pack = [(
+            "loot_table/mypack:b".to_owned(),
+            vec![br#"{"pools":[]}"#.to_vec()],
+        )];
+        let items = Items::catalog(&root, &PackOverlay { files: &pack }).unwrap();
+        let mut ids: Vec<&str> = items.loot_table_ids().collect();
+        ids.sort();
+        assert_eq!(ids, ["mymod:rooms/a", "mypack:b"]);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn admitted_tool_rules_override_defaults_and_removals_survive_saving() {
