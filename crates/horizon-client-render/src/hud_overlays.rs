@@ -50,10 +50,14 @@ pub fn text_with_backdrop(
     text(out, t, x, y, color, true);
 }
 
-/// `Arrays.sort(T[], Comparator)` for the short arrays the HUD sorts: Java's
-/// TimSort below `MIN_MERGE` (a natural run, then binary insertion), which
-/// matters when the comparator is not a total order. Longer arrays fall back
-/// to a stable sort.
+/// `Arrays.sort(T[], Comparator)` for the short arrays the HUD sorts. Its Javadoc
+/// says it is adapted from Tim Peters's list sort for Python, and for fewer than 32
+/// elements that sort is one run plus binary insertion, as Tim Peters describes it
+/// in `listsort.txt` (CPython's `Objects/listsort.txt`): take the run at the start,
+/// reversed in place when it is strictly descending, then insert each remaining
+/// element by binary search after the elements equal to it, so the sort is stable.
+/// The order of the comparisons matters because vanilla's comparator here is not a
+/// total order. Longer arrays fall back to a stable sort.
 pub fn java_sort<T>(a: &mut [T], cmp: impl Fn(&T, &T) -> Ordering) {
     let n = a.len();
     if n < 2 {
@@ -63,7 +67,7 @@ pub fn java_sort<T>(a: &mut [T], cmp: impl Fn(&T, &T) -> Ordering) {
         a.sort_by(cmp);
         return;
     }
-    // countRunAndMakeAscending.
+    // The run at the start: strictly descending (then reversed) or non-descending.
     let mut run = 2;
     if cmp(&a[1], &a[0]) == Ordering::Less {
         while run < n && cmp(&a[run], &a[run - 1]) == Ordering::Less {
@@ -75,7 +79,7 @@ pub fn java_sort<T>(a: &mut [T], cmp: impl Fn(&T, &T) -> Ordering) {
             run += 1;
         }
     }
-    // binarySort.
+    // Binary insertion of the rest, each element after the last one not greater.
     for start in run..n {
         let (mut left, mut right) = (0, start);
         while left < right {
