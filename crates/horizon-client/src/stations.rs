@@ -774,7 +774,7 @@ impl StationRecipes {
                         parse_optional("template"),
                         Ingredient::parse(&v["base"], items),
                         parse_optional("addition"),
-                        SmithingResult::parse(&v["result"], &defaults),
+                        SmithingResult::parse(&v["result"], defaults),
                     ) {
                         smithing.push(Smithing::Transform {
                             id,
