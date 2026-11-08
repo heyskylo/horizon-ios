@@ -17,6 +17,9 @@ pub struct Facts {
     pub items: BTreeMap<String, Item>,
     #[serde(default)]
     pub tags: Tags,
+    /// The mods' recipes NeoForge loaded: those whose `neoforge:conditions` passed.
+    #[serde(default)]
+    pub recipes: BTreeMap<String, serde::de::IgnoredAny>,
     /// The game's items' default components (`items.json`), so item ports leave out what their template has.
     #[serde(skip)]
     pub vanilla_items: BTreeMap<String, Value>,
