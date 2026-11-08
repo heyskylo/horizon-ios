@@ -219,21 +219,23 @@ pub fn serve(session: &mut Session) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
-    #[test]
     #[test]
     fn paced_reading_tools_keep_the_world_still() {
         let find = |n: &str| commands::COMMANDS.iter().find(|c| c.name == n).unwrap();
         for n in ["state", "inventory", "entities", "events", "find-block", "pause", "save"] {
             assert!(still(find(n)), "{n} should not let time pass");
         }
-        for n in ["goto", "break", "place", "attack", "wait", "wait-for", "screenshot", "click-slot"] {
+        let moving = [
+            "goto", "break", "place", "attack", "wait", "wait-for", "screenshot", "click-slot",
+        ];
+        for n in moving {
             assert!(!still(find(n)), "{n} needs the world running");
         }
     }
 
+    #[test]
     fn base64_matches_rfc_4648() {
         assert_eq!(base64(b""), "");
         assert_eq!(base64(b"f"), "Zg==");
