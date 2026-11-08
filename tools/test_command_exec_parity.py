@@ -256,6 +256,8 @@ def main():
                   if name == 'potion custom effect icons']
     elif not args.only:
         groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_POTION_ICONS]
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_SEED_SYNC]
     if args.moving_piston_history_diagnostic:
         groups.append(('moving piston presentation diagnostic',
                        corpus_module.moving_piston_presentation_diagnostic()))
