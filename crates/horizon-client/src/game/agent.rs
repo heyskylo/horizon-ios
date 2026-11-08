@@ -54,8 +54,8 @@ pub(super) const HELP: &[&str] = &[
     "mouse-move DX DY               relative mouse motion, turned like a player's mouse",
     "attack [ID]                    swing at the target (after looking at entity ID)",
     "break X Y Z [--timeout S]      mine a block until it breaks; reports drops and pickups",
-    "place X Y Z [--item ITEM]      place the held (or given) item at a position",
-    "interact X Y Z [FACE]          right-click a block (open a door, chest, crafting table...)",
+    "place X Y Z [--item ITEM] [--sneak]  place the held (or given) item at a position",
+    "interact X Y Z [FACE] [--sneak]  right-click a block (open a door, chest, crafting table...)",
     "use-item [--hold S]            right-click with the held item (eat, drink, throw, draw a bow)",
     "select SLOT|ITEM               select a hotbar slot (1-9) or the hotbar slot holding ITEM",
     "drop [all]                     drop one of the held item (all: the stack)",
@@ -236,6 +236,8 @@ enum TaskKind {
         report_tick: u64,
         release: Option<Instant>,
         place: bool,
+        /// `--sneak`: the click waits until the sneak key has been held.
+        sneak: Option<SneakClick>,
     },
     Attack {
         id: Option<u32>,
@@ -274,6 +276,16 @@ struct Break {
     collect_until: Option<u64>,
     broke_tick: u64,
     drops: BTreeMap<u32, ItemStack>,
+}
+/// A right click made while sneaking (placing against a crafting table or a
+/// chest instead of opening it): the sneak key is held for a couple of ticks
+/// first, so the server has the player's shift state before the click.
+struct SneakClick {
+    /// Not clicked yet: click on this tick.
+    click_tick: Option<u64>,
+    /// The block (and face) to aim at again, as sneaking lowers the eye.
+    aim: Option<([i32; 3], Option<[i32; 3]>)>,
+    hold: f64,
 }
 struct Task {
     kind: TaskKind,
@@ -928,6 +940,25 @@ impl Game<'_> {
         Err(format!("no face of block {pos:?} is visible from here").into())
     }
 
+    /// `--sneak` on place or interact: hold the sneak key now and click a
+    /// couple of ticks later, from the lowered eye (see [`SneakClick`]).
+    fn sneak_click(
+        &mut self,
+        a: &Args<'_>,
+        aim: Option<([i32; 3], Option<[i32; 3]>)>,
+        hold: f64,
+    ) -> Option<SneakClick> {
+        if !a.has("sneak") {
+            return None;
+        }
+        self.keys.press(KeyCode::ShiftLeft, Source::Agent);
+        Some(SneakClick {
+            click_tick: Some(self.ticks + 2),
+            aim,
+            hold,
+        })
+    }
+
     /// A left or right click, as the mouse would.
     fn agent_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
         self.mouse_mapping(button, pressed, Source::Agent)
@@ -1382,6 +1413,7 @@ impl Game<'_> {
                 let mut aimed = !self.res.facts().is_air(before)
                     && !self.res.facts().get(before).outline.is_empty()
                     && self.aim_block(pos, None).is_ok();
+                let mut aim_at = aimed.then_some((pos, None));
                 for (_, d) in FACES.iter().filter(|_| !aimed) {
                     let d = *d;
                     let support = add(pos, d);
@@ -1396,6 +1428,7 @@ impl Game<'_> {
                     let face = d.map(|v| -v);
                     if self.aim_block(support, Some(face)).is_ok() {
                         aimed = true;
+                        aim_at = Some((support, Some(face)));
                         break;
                     }
                 }
@@ -1406,8 +1439,11 @@ impl Game<'_> {
                     .into());
                 }
                 let inventory = self.inventory_counts();
-                self.agent_mouse(MouseButton::Right, true)?;
-                self.agent_mouse(MouseButton::Right, false)?;
+                let sneak = self.sneak_click(&a, aim_at, 0.0);
+                if sneak.is_none() {
+                    self.agent_mouse(MouseButton::Right, true)?;
+                    self.agent_mouse(MouseButton::Right, false)?;
+                }
                 let report_tick = self.ticks + 2;
                 self.start_task(
                     "place",
@@ -1418,6 +1454,7 @@ impl Game<'_> {
                         report_tick,
                         release: None,
                         place: true,
+                        sneak,
                     },
                     reply,
                     5.0,
@@ -1426,22 +1463,29 @@ impl Game<'_> {
             "interact" | "use-item" => {
                 self.playing()?;
                 let hold = a.num("hold", 0.0)?;
+                let mut aim_at = None;
                 let pos = if name == "interact" {
                     let pos = a.block_pos(0)?;
                     let face = a.pos.get(3).map(|f| face_dir(f)).transpose()?;
                     self.aim_block(pos, face)?;
+                    aim_at = Some((pos, face));
                     Some(pos)
                 } else {
                     None
                 };
                 let before = pos.map(|p| self.world.block(p[0], p[1], p[2]));
                 let inventory = self.inventory_counts();
-                self.agent_mouse(MouseButton::Right, true)?;
-                let release = if hold > 0.0 {
-                    Some(Instant::now() + Duration::from_secs_f64(hold))
-                } else {
-                    self.agent_mouse(MouseButton::Right, false)?;
+                let sneak = self.sneak_click(&a, aim_at, hold);
+                let release = if sneak.is_some() {
                     None
+                } else {
+                    self.agent_mouse(MouseButton::Right, true)?;
+                    if hold > 0.0 {
+                        Some(Instant::now() + Duration::from_secs_f64(hold))
+                    } else {
+                        self.agent_mouse(MouseButton::Right, false)?;
+                        None
+                    }
                 };
                 let report_tick = self.ticks + 2;
                 self.start_task(
@@ -1457,6 +1501,7 @@ impl Game<'_> {
                         report_tick,
                         release,
                         place: false,
+                        sneak,
                     },
                     reply,
                     hold + 5.0,
@@ -1971,7 +2016,29 @@ impl Game<'_> {
                 report_tick,
                 release,
                 place,
+                sneak,
             } => {
+                if let Some(s) = sneak
+                    && let Some(at) = s.click_tick
+                {
+                    if self.ticks < at && !timed_out && interrupted.is_none() {
+                        return None;
+                    }
+                    s.click_tick = None;
+                    if interrupted.is_none() && !timed_out {
+                        if let Some((p, f)) = s.aim {
+                            let _ = self.aim_block(p, f);
+                        }
+                        let _ = self.agent_mouse(MouseButton::Right, true);
+                        if s.hold > 0.0 {
+                            *release = Some(Instant::now() + Duration::from_secs_f64(s.hold));
+                        } else {
+                            let _ = self.agent_mouse(MouseButton::Right, false);
+                        }
+                        *report_tick = self.ticks + 2;
+                        return None;
+                    }
+                }
                 if let Some(at) = release {
                     if Instant::now() < *at && !timed_out && interrupted.is_none() {
                         return None;
@@ -2010,6 +2077,9 @@ impl Game<'_> {
                     && !timed_out
                 {
                     return None;
+                }
+                if sneak.is_some() {
+                    self.keys.release(&KeyCode::ShiftLeft, Source::Agent);
                 }
                 let after = pos.map(|p| self.block_json(p));
                 let used = delta(inventory, &self.inventory_counts());
