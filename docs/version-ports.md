@@ -44,12 +44,10 @@ to players. Players still prepare their own copy from their official launcher (`
   | `crates/horizon-client/src/lan/command_suggestions.rs` | `generate_command_suggestions.py` | `VanillaCommandSuggestionsExporter` |
   | `crates/horizon-client/src/lan/command_order.rs` | `generate_lan_command_order.py` | vanilla's command tree |
   | `crates/horizon-command/src/vanilla_order.rs` | `generate_command_order.py` | command-parse harness export |
-  | `crates/horizon-world/src/datafix/block_state_data.txt` | `gen_block_state_data.py` | decompiled `BlockStateData` |
-  | `crates/horizon-world/src/datafix/flat_tables.rs` | `gen_flat_tables.py` | 1.13 flattening fixers (never change) |
 
-  Everything else data-driven (block behaviours, items, worldgen, models, sounds, languages) is not committed: the
-  game reads what `horizon-prepare` exports from the user's own jar, so it follows a new version by itself as long
-  as the exporters still compile and the formats still parse.
+  Everything else data-driven (block behaviours, items, worldgen, models, sounds, languages, the 1.13 data fixers' id
+  tables and `BlockStateData`) is not committed: the game reads what `horizon-prepare` exports from the user's own
+  jar, so it follows a new version by itself as long as the exporters still compile and the formats still parse.
 
 - **The proof.** ~300 harnesses (`tools/test_*_parity.py`) each compare a Rust probe with a Java oracle that calls
   vanilla's own classes; `tools/parity.py` runs them and records each one's dependencies.
