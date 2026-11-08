@@ -1,6 +1,10 @@
 {
-  "_doc": "docs/layers.md. Each crate's layer: engine < platform < horizon, and tool for dev tools. A crate depends only on its own layer or a lower one. 'allowed' lists the upward dependencies left to move: entries only go away.",
-  "order": ["engine", "platform", "horizon"],
+  "_doc": "docs/layers.md. Each crate's layer (engine, platform, horizon, or tool for dev tools) and the layers each may depend on: the Horizon layer uses only the platform, so it can build from its own repository. 'allowed' lists the exceptions left to move: entries only go away.",
+  "may_depend": {
+    "engine": ["engine"],
+    "platform": ["engine", "platform"],
+    "horizon": ["platform", "horizon"]
+  },
   "workspaces": [
     "Cargo.toml",
     "launcher/Cargo.toml",
@@ -96,6 +100,13 @@
     "horizon-client-render -> horizon-shader-api",
     "horizon-client-render -> horizon-shaders",
     "horizon-client-render -> horizon-telemetry",
-    "horizon-client-render -> horizon-theme"
+    "horizon-client-render -> horizon-theme",
+    "horizon-launcher -> horizon-core",
+    "horizon-launcher -> horizon-prepare",
+    "horizon-launcher -> horizon-protocol",
+    "horizon-launcher -> horizon-world",
+    "horizon-server -> horizon-core",
+    "horizon-server -> horizon-server-files",
+    "horizon-server -> horizon-world"
   ]
 }

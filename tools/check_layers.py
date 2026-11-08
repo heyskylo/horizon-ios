@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Check that each crate depends only on its own layer or a lower one (docs/layers.md).
+"""Check that each crate depends only on the layers its own layer may use (docs/layers.md).
 
-engine < platform < horizon; `tool` crates (dev tools) may use anything and nothing shipped uses them.
-tools/layers.json gives every crate its layer and lists today's exceptions in `allowed`. The check fails on:
+tools/layers.json's `may_depend` says which: engine on engine; platform on engine and platform; horizon on
+platform and horizon only, so the Horizon layer builds against the platform's public API and can live in its own
+repository. `tool` crates (dev tools) may use anything and nothing shipped uses them. `crates` gives every crate its
+layer and `allowed` lists today's exceptions. The check fails on:
 - a workspace crate with no layer;
-- a normal, build or optional dependency on a higher layer that `allowed` doesn't list;
+- a normal, build or optional dependency on a layer its crate's layer may not use that `allowed` doesn't list;
 - with --base, an `allowed` entry the branch added from a crate that already had a layer on the base;
 - a shipped crate depending on a tool.
 An `allowed` entry with no dependency left is reported, not failed. Dev-dependencies are not checked.
 
     python3 tools/check_layers.py                     # the check
     python3 tools/check_layers.py --base origin/main  # and no new exceptions since the base
-    python3 tools/check_layers.py --list              # each crate's layer and the upward dependencies left
+    python3 tools/check_layers.py --list              # each crate's layer and the exceptions left
 """
 
 import argparse
@@ -61,21 +63,21 @@ def edges(packages):
     return graph
 
 
-def upward(config, graph):
-    """The dependencies that go up a layer, as 'crate -> dependency'."""
-    rank = {layer: i for i, layer in enumerate(config["order"])}
+def crossings(config, graph):
+    """The dependencies on a layer the crate's layer may not use, as 'crate -> dependency'."""
+    may = config["may_depend"]
     layers = config["crates"]
     out = []
     for crate in sorted(graph):
         for dep in sorted(graph[crate]):
-            if layers.get(crate) in rank and layers.get(dep) in rank and rank[layers[dep]] > rank[layers[crate]]:
+            if layers.get(crate) in may and layers.get(dep) in may and layers[dep] not in may[layers[crate]]:
                 out.append(f"{crate} -> {dep}")
     return out
 
 
 def check(config, graph, base=None):
     """(problems, notes): problems fail the check, notes are only printed."""
-    rank = {layer: i for i, layer in enumerate(config["order"])}
+    may = config["may_depend"]
     layers = config["crates"]
     allowed = set(config.get("allowed", []))
     problems = []
@@ -83,23 +85,23 @@ def check(config, graph, base=None):
         layer = layers.get(crate)
         if layer is None:
             problems.append(f"{crate}: no layer. Give it one in {CONFIG_PATH} ({DOC}{WHERE} says which)")
-        elif layer != TOOL and layer not in rank:
+        elif layer != TOOL and layer not in may:
             problems.append(f"{crate}: unknown layer {layer!r} in {CONFIG_PATH}")
     for crate in sorted(graph):
         layer = layers.get(crate)
-        if layer is None or layer == TOOL or layer not in rank:
+        if layer is None or layer == TOOL or layer not in may:
             continue
         for dep in sorted(graph[crate]):
             # A path dependency with no layer is a vendored crate (third_party/) or a fixture.
             if layers.get(dep) == TOOL:
                 problems.append(f"{crate} ({layer}) -> {dep} (tool): shipped code may not depend on a dev tool "
                                 f"({DOC}{SECTION[TOOL]})")
-    found = set(upward(config, graph))
+    found = set(crossings(config, graph))
     for edge in sorted(found - allowed):
         crate, dep = edge.split(" -> ")
         problems.append(f"{edge}: {layers[crate]} may not depend on {layers[dep]}. "
-                        f"See {DOC}{SECTION[layers[crate]]}: move the code up, or offer an extension point "
-                        f"the {layers[dep]} side plugs into")
+                        f"See {DOC}{SECTION[layers[crate]]}: move the code to the right layer, or offer an "
+                        f"extension point the other side plugs into")
     if base is not None:
         base_layers = base.get("crates", {})
         for edge in sorted(allowed - set(base.get("allowed", []))):
@@ -125,15 +127,15 @@ def workspace_graph(config):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", help="refuse 'allowed' entries added since this git ref")
-    parser.add_argument("--list", action="store_true", help="print each crate's layer and the upward dependencies")
+    parser.add_argument("--list", action="store_true", help="print each crate's layer and the exceptions")
     args = parser.parse_args(argv)
     config = load_config()
     graph = workspace_graph(config)
     if args.list:
         for crate in sorted(graph):
             print(f"{config['crates'].get(crate, '?'):<9} {crate}")
-        ups = upward(config, graph)
-        print(f"\n{len(ups)} upward dependencies:")
+        ups = crossings(config, graph)
+        print(f"\n{len(ups)} dependencies on a layer the crate's layer may not use:")
         for edge in ups:
             print(f"  {edge}")
         return 0
@@ -145,7 +147,7 @@ def main(argv=None):
         for problem in problems:
             print(f"  {problem}")
         return 1
-    print(f"Layer check passed: {len(graph)} crates, {len(config.get('allowed', []))} upward dependencies left "
+    print(f"Layer check passed: {len(graph)} crates, {len(config.get('allowed', []))} exceptions left "
           f"to move ({DOC}).")
     return 0
 
