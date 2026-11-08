@@ -363,7 +363,10 @@ pub fn stage(source: &Path, work: &Path, pack: &import::Pack) -> Result<Report, 
         if fs::symlink_metadata(&root).is_ok() {
             walk(&root, "", &mut files, &mut total)?;
         }
-        if game.join("shaderpacks").exists() {
+        // The game and some mods create `shaderpacks/` empty: only a pack in it counts.
+        let has_shaders = fs::read_dir(game.join("shaderpacks"))
+            .is_ok_and(|mut entries| entries.next().is_some());
+        if has_shaders {
             report.set(
                 "shaderpacks/",
                 State::Unsupported,
@@ -394,7 +397,7 @@ pub fn stage(source: &Path, work: &Path, pack: &import::Pack) -> Result<Report, 
             for i in 0..zip.len() {
                 let entry = zip.by_index(i).map_err(|e| e.to_string())?;
                 let raw = entry.name().map_err(|e| e.to_string())?.into_owned();
-                if raw.starts_with(&format!("{root}/shaderpacks/")) {
+                if !entry.is_dir() && raw.starts_with(&format!("{root}/shaderpacks/")) {
                     report.set(
                         "shaderpacks/",
                         State::Unsupported,

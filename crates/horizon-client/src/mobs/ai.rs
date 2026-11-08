@@ -676,6 +676,9 @@ pub fn tick(
     if m.alive() {
         super::spear_use::update_using_item(m, w, known_speed, events);
     }
+    // LivingEntity.tick: detectEquipmentUpdates, a sulfur cube's body
+    // archetype modifiers.
+    super::sulfur_cube::adopt_body(m);
     // LivingEntity.tick: a sleeper whose bed is gone stands up before
     // aiStep, with or without AI.
     if super::villager::sleeping(m)
@@ -725,9 +728,9 @@ pub fn tick(
             super::equine::ai_step(m, w, events);
         }
         // LivingEntity.aiStep ends in the water's hurt with or without AI;
-        // a NoAI enderman's hurts still teleport it (Enderman.hurtServer).
+        // a NoAI enderman's or shulker's hurts still teleport it (hurtServer).
         hurt_by_water(m, w, events);
-        enderman_hurt_teleports(m, w, events);
+        hurt_teleports(m, w, events);
         // Ravager.aiStep runs outside serverAiStep: NoAI still advances
         // attack/stun/roar, including the stun-to-roar transition.
         if m.species() == Species::Ravager {
@@ -1119,6 +1122,28 @@ fn axolotl_air_supply(m: &mut Mob, w: &MobWorld) {
         }
     }
 }
+/// `Nautilus.baseTick`: `LivingEntity.baseTick` refills the air of this
+/// water breather, then, unless it has no AI, `Nautilus.handleAirSupply`
+/// takes it back out of water, where the nautilus dries out.
+fn nautilus_air_supply(m: &mut Mob) {
+    const MAX_AIR: i32 = 300;
+    let before = m.air;
+    if m.alive() {
+        m.air = (m.air + 4).min(MAX_AIR);
+    }
+    if m.no_ai {
+        return;
+    }
+    if m.alive() && !m.fluids.in_water {
+        m.air = before - 1;
+        if m.air <= -20 {
+            m.air = 0;
+            m.damage(2.0, Damage::of(DamageKind::DryOut));
+        }
+    } else {
+        m.air = MAX_AIR;
+    }
+}
 /// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
 /// visit every cell covered by the thin eye box and ask whether a suffocating
 /// collision shape actually intersects it. Width multiplication is a float.
@@ -1251,7 +1276,9 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         // superclass Breath/drown path must still process its air.
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w);
-        } else if m.kind.flags.needs_water && !(m.no_ai && m.species() == Species::Nautilus) {
+        } else if m.species() == Species::Nautilus {
+            nautilus_air_supply(m);
+        } else if m.kind.flags.needs_water {
             if !m.fluids.in_water {
                 m.air -= 1;
                 if m.air == -20 {
@@ -1314,8 +1341,9 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     // invulnerable time of that tick has already dropped.
     let was_on_fire = m.fire_ticks > 0;
     block_contact_damage(m, fire);
-    // Enderman.hurtServer teleports inside the hurt (fire, lava, a block).
-    enderman_hurt_teleports(m, w, events);
+    // Enderman.hurtServer and Shulker.hurtServer teleport inside the hurt
+    // (fire, lava, a block, an effect).
+    hurt_teleports(m, w, events);
     if !m.alive() {
         m.death_time += 1;
     }
@@ -1734,7 +1762,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         // Mannequin.isEffectiveAi: an immovable one never travels.
         m.travel(w, input, events);
         // A fall's hurt (checkFallDamage) teleports at once.
-        enderman_hurt_teleports(m, w, events);
+        hurt_teleports(m, w, events);
     }
     // LivingEntity.aiStep: applyEffectsFromBlocks follows travel.
     m.apply_effects_from_blocks(w, events);
@@ -1756,15 +1784,19 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
 fn hurt_by_water(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
         m.damage(1.0, Damage::of(DamageKind::Drown));
-        enderman_hurt_teleports(m, w, events);
+        hurt_teleports(m, w, events);
     }
 }
-/// The teleport `Enderman.hurtServer` makes inside a hurt, after the hurt's
-/// sound; with or without AI.
-fn enderman_hurt_teleports(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+/// The teleport `Enderman.hurtServer` or `Shulker.hurtServer` makes inside a
+/// hurt, after the hurt's sound; with or without AI.
+fn hurt_teleports(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.species() == Species::Enderman && m.extra.counter2 > 0 {
         events.append(&mut m.outbox);
         super::enderman::run_pending_teleports(m, w, events);
+    }
+    if m.species() == Species::Shulker && m.extra.flag {
+        events.append(&mut m.outbox);
+        super::shulker::hurt_teleport(m, w, events);
     }
 }
 impl Mob {
@@ -3086,28 +3118,45 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             }
             _ => {}
         }
-        if !infinite && m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
-            let ticks = &mut m.extra.effects[i].1;
-            *ticks = if expired { 0 } else { *ticks - 1 };
-        } else if infinite
-            && expired
-            && effect == "minecraft:absorption"
-            && m.extra.effects.get(i).is_some_and(|e| e.0 == effect)
-        {
-            // An infinite Absorption goes the same way (tickServer asks it
-            // by tickCount); other infinite effects keep their -1.
-            m.extra.effects[i].1 = 0;
+        if m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
+            if expired {
+                // Cancellation ends the instance, not just its active layer.
+                m.extra.effects[i].1 = 0;
+                m.set_effect_fallback(effect, None);
+            } else {
+                let mut active = m.effect_instance(i);
+                // Only the existing pure duration/promotion operation, after
+                // server periodic/native work; never the player action engine.
+                active.tick_client();
+                m.project_effect_instance(i, active);
+            }
         }
         i += 1;
     }
-    // AbsorptionMobEffect.removeAttributeModifiers: the hearts it gave go with it.
-    for i in 0..m.extra.effects.len() {
-        let e = m.extra.effects[i];
-        if e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1 {
-            m.absorption = (m.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
-        }
-    }
+    let absorption_gone = m
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1);
+    let boost_gone = m
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:health_boost" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
+    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes ->
+    // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the
+    // maximum left without the effect's modifier.
+    if absorption_gone {
+        m.absorption = m.absorption.min(super::armor::max_absorption(m));
+    }
+    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
+    if boost_gone {
+        super::finalize::health_boost_changed(m);
+    }
+    m.extra
+        .effect_fallbacks
+        .retain(|h| m.extra.effects.iter().any(|e| e.0 == h.id));
     m.extra
         .hidden_effects
         .retain(|h| m.extra.effects.iter().any(|e| e.0 == *h));
@@ -5845,5 +5894,74 @@ mod happy_ghast_ambient_tests {
             },
         );
         assert!(ran, "prepared-data callback did not run");
+    }
+}
+
+#[cfg(test)]
+mod hidden_speed_causal_tests {
+    use super::*;
+    use std::sync::Arc;
+    fn mob() -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+    #[test]
+    fn zero_active_never_promotes_and_infinite_fallback_counts_once() {
+        let mut m = mob();
+        m.add_effect("speed", 200, 0);
+        m.add_effect("speed", 0, 1);
+        assert_eq!(m.extra.effect_fallbacks.len(), 1);
+        tick_effects(&mut m, None);
+        assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
+        m.add_effect("speed", -1, 0);
+        m.add_effect("speed", 2, 1);
+        tick_effects(&mut m, None);
+        assert_eq!(m.extra.effects, [("minecraft:speed", 1, 1)]);
+        assert_eq!(m.extra.effect_fallbacks[0].duration, -1);
+        tick_effects(&mut m, None);
+        assert_eq!(m.extra.effects, [("minecraft:speed", -1, 0)]);
+        tick_effects(&mut m, None);
+        assert_eq!(m.extra.effects, [("minecraft:speed", -1, 0)]);
+        assert!(m.extra.effect_fallbacks.is_empty());
+    }
+    #[test]
+    fn native_cancellation_drops_the_whole_chain_before_promotion() {
+        struct Cancel(std::cell::Cell<usize>);
+        impl crate::mobs::ModEffectTicks for Cancel {
+            fn tick_mod_effect(&self, id: &str, mob: u32, count: i32, amp: i32) -> bool {
+                assert_eq!((id, mob, amp), ("h202:cancel", 202, 1));
+                assert!(count == 1 || count == 17);
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        for duration in [1, -1] {
+            let mut m = mob();
+            m.age = 17;
+            m.add_effect("h202:cancel", 200, 0);
+            if duration == -1 {
+                // A loaded subtree can accompany an infinite active instance.
+                m.extra.effects[0].1 = -1;
+                let h = crate::effects::EffectInstance {
+                    id: "h202:cancel",
+                    duration: 200,
+                    amplifier: 0,
+                    ambient: false,
+                    visible: true,
+                    show_icon: true,
+                    hidden: None,
+                };
+                m.extra.effects[0].2 = 1;
+                m.extra.effect_fallbacks.push(h);
+            } else {
+                m.add_effect("h202:cancel", duration, 1);
+            }
+            let cancel = Cancel(std::cell::Cell::new(0));
+            tick_effects(&mut m, Some(&cancel));
+            assert_eq!(cancel.0.get(), 1);
+            assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
+        }
     }
 }

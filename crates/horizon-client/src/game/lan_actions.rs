@@ -1376,12 +1376,13 @@ impl Game<'_> {
         };
         // The menu provider's getDisplayName: a container's custom name
         // (BaseContainerBlockEntity.getName) or its default name.
-        let custom = |k: (i32, i32, i32)| self.world.block_names.get(&k).map(String::as_str);
+        let custom = |k: (i32, i32, i32)| self.block_name_plain(k);
         let title = match slots {
             Slots::Ender => horizon_protocol::text::translatable("container.enderchest", &[]),
-            Slots::Double(first, second) => {
-                horizon_client::containers::double_chest_name(custom(first), custom(second))
-            }
+            Slots::Double(first, second) => horizon_client::containers::double_chest_name(
+                custom(first).as_deref(),
+                custom(second).as_deref(),
+            ),
             Slots::Block(k) => {
                 // A mod block's container is named after its block
                 // (`Block.getDescriptionId`).
@@ -1392,7 +1393,7 @@ impl Game<'_> {
                     }
                     None => return false,
                 };
-                horizon_client::containers::display_name(custom(k), &key)
+                horizon_client::containers::display_name(custom(k).as_deref(), &key)
             }
             // Opened by a mod (`native_open_menu`), never here.
             Slots::Native => return false,
@@ -3325,15 +3326,21 @@ impl Game<'_> {
             return;
         };
         let at = g.position;
+        let players = self.stab_players_for(host, conn);
         let sound = self
             .guest_hit_by(host, conn, |g| {
                 if g.cannot_attack_with_item(g.attack_ticks as i32, 5) {
                     None
                 } else {
-                    g.jab()
+                    let outer = std::mem::replace(&mut g.stab_players, players);
+                    let sound = g.jab();
+                    g.stab_players = outer;
+                    sound
                 }
             })
             .flatten();
+        // The players the jab stabbed, now that the hub is back.
+        self.land_player_stabs(host);
         // PiercingWeapon.makeSound: `playSound(causer, ...)`, so the guest's
         // own client plays it.
         if let Some(name) = sound {
@@ -4120,6 +4127,7 @@ impl Game<'_> {
         self.lan_merchant_tick(host);
         self.lan_stations_tick(host);
         self.lan_tables_tick(host);
+        self.lan_mod_crafting_tick(host);
         self.lan_containers_tick(host);
         self.tick_lan_mount_menus(host);
         self.tick_player_menus(host);
@@ -4180,7 +4188,14 @@ impl Game<'_> {
             let using = play.using.is_some();
             let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
             if digging.is_some() || using || delayed {
+                // A spear in use reaches the other players too.
+                let players = if using {
+                    self.stab_players_for(host, conn)
+                } else {
+                    Vec::new()
+                };
                 self.as_guest(host, conn, |g| {
+                    let outer = std::mem::replace(&mut g.stab_players, players);
                     g.attack_ticks = g.attack_ticks.saturating_add(1);
                     if let Some((pos, face)) = digging {
                         g.forced_hit = Some(Hit {
@@ -4197,10 +4212,12 @@ impl Game<'_> {
                     g.forced_hit = None;
                     g.right = g.using.is_some();
                     g.tick_using();
+                    g.stab_players = outer;
                     if g.use_delay > 0 {
                         g.use_delay -= 1;
                     }
                 });
+                self.land_player_stabs(host);
                 // ServerPlayerGameMode.handleBlockBreakAction: creative and
                 // instant survival STARTs finish without a STOP from the client.
                 // tick_mining clears mining on completion; forget the START too,

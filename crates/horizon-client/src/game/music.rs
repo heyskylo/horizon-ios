@@ -198,6 +198,7 @@ impl Game<'_> {
             player_speed_sqr,
             player_fall_flying,
             ridden,
+            camera_position: self.audio.listener,
         };
         self.audio
             .set_listener_reserve(self.settings.extras.ui_sound_reserve);

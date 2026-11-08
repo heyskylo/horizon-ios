@@ -131,7 +131,13 @@ impl RingWork {
         rings
     }
 }
-const START_CACHE_LIMIT: usize = 65536;
+/// Chunks kept per generation of the cache. Each player's generated area
+/// reads the starts of some 2,000 chunks (its view distance plus the
+/// references' reach, at view distance 10): at 65,536, a server with 200
+/// players spread over the map overflowed it every few ticks and rebuilt
+/// outposts' and trial chambers' jigsaws on the server thread, where natural
+/// spawning asks about them. Most entries are chunks with no start.
+const START_CACHE_LIMIT: usize = 262_144;
 const START_SHARDS: usize = 64;
 
 /// The built starts by chunk, in shards: a lookup locks one shard for
@@ -562,7 +568,7 @@ impl StructureState {
                     .structures
                     .iter()
                     .position(|s| s.name == name.to_string_lossy())?;
-                read_jigsaw_start(
+                read_saved_start(
                     index,
                     &self.registry.structures[index],
                     chunk,
@@ -839,9 +845,9 @@ fn pieces_box(pieces: &[Piece]) -> Option<[i32; 6]> {
     }
     union.map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]])
 }
-/// `StructureStart.loadStaticStart` / `PiecesContainer.load`, restricted to complete jigsaw
+/// `StructureStart.loadStaticStart` / `PiecesContainer.load`, restricted to complete supported
 /// starts. Unsupported or unreadable children leave the entire start to regeneration.
-fn read_jigsaw_start(
+pub(super) fn read_saved_start(
     index: usize,
     def: &StructureDef,
     chunk: ChunkPos,
@@ -869,8 +875,17 @@ fn read_jigsaw_start(
     let pieces = children
         .iter()
         .map(|piece| {
-            // `PiecesContainer.load`'s RENAMES: only jigsaw pieces are read back.
-            saved_piece_id(piece)?;
+            // `PiecesContainer.load`'s RENAMES read the old jigsaw ids as `jigsaw`; the other
+            // supported types are template pieces.
+            if saved_piece_id(piece).is_none() {
+                let Tag::String(id) = piece.get("id")? else {
+                    return None;
+                };
+                let id = id.to_string_lossy();
+                let id = id.strip_prefix("minecraft:").unwrap_or(&id);
+                return super::structure::saved_templates::read(id, piece, resources, bindings)
+                    .map(Piece::Legacy);
+            }
             // Pool pieces have no orientation and depth 0. Preserve other values by falling
             // back until the representation can hold them, rather than silently losing them.
             if piece.get("O") != Some(&Tag::Int(-1)) || piece.get("GD") != Some(&Tag::Int(0)) {
@@ -1016,7 +1031,7 @@ mod tests {
         let mut original = StructureStart::new(7, &def, chunk, pieces);
         original.references = 3;
         let tag = original.save().unwrap();
-        let read = |tag: &Tag| read_jigsaw_start(7, &def, chunk, tag, &resources, &bindings);
+        let read = |tag: &Tag| read_saved_start(7, &def, chunk, tag, &resources, &bindings);
         let loaded = read(&tag).expect("complete jigsaw start");
         assert_eq!(loaded.save(), Some(tag.clone()));
         assert_eq!(

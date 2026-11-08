@@ -271,6 +271,10 @@ pub(super) trait Entity: EntityRules {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    /// `setOnGroundWithMovement` at the end of a piston's or shulker lid's
+    /// `Entity.move`, for the kinds that keep the flag: on a server it runs
+    /// for every push, sideways ones and those the collision turned away included.
+    fn set_piston_on_ground(&mut self, _on_ground: bool) {}
     /// `PistonMovingBlockEntity.causeBounce`: a slime block sets the velocity
     /// along the movement axis.
     fn piston_slime_bounce(&mut self, movement: Direction) {
@@ -568,15 +572,18 @@ macro_rules! stored_motion {
 
 impl Game<'_> {
     /// Tick an item owned by the caller. The two results are ordinary survival
-    /// and explicit consumption by a block-contact handler.
+    /// and explicit consumption by a block-contact handler. `escape_speed`:
+    /// the item is inside a block and moves without physics this tick, pushed
+    /// out at this speed.
     pub(super) fn tick_item_with_block_contacts(
         &mut self,
         item: &mut ItemEntity,
-        no_physics: bool,
+        escape_speed: Option<f32>,
         entity_boxes: &[Aabb],
         client: bool,
         splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
     ) -> (bool, bool) {
+        let no_physics = escape_speed.is_some();
         let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
         // Entity.baseTick splashes before moving, except on the first tick.
         item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
@@ -585,6 +592,7 @@ impl Game<'_> {
             self.res.facts(),
             self.collision,
             no_physics,
+            escape_speed,
             heights,
             entity_boxes,
             Some(self.border.geometry()),
@@ -1185,12 +1193,8 @@ impl Entity for ItemEntity {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
-    fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        // Entity.move(MoverType.PISTON): onGround only if the push was down.
-        if movement.y != 0.0 {
-            self.on_ground = movement.y < 0.0;
-        }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         ItemEntity::piston_slime_bounce(self, movement);
@@ -1252,11 +1256,8 @@ impl Entity for ExperienceOrb {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
-    fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        if movement.y != 0.0 {
-            self.on_ground = movement.y < 0.0;
-        }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
@@ -1490,6 +1491,11 @@ impl Entity for ArmorStand {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
+    /// A living entity's own flag too: keeping the old support flag would run
+    /// Frost Walker while the stand is moving over open water.
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn is_living(&self) -> bool {
         true
     }
@@ -1576,6 +1582,9 @@ impl Entity for PrimedTnt {
     }
     fn on_ground(&self) -> bool {
         self.on_ground
+    }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);

@@ -267,18 +267,24 @@ impl Game<'_> {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out = Vec::new();
-        for (item, layer) in worn
-            .into_iter()
-            .zip(["helmet", "chestplate", "leggings", "boots"])
-        {
+        for (item, (layer, slot)) in worn.into_iter().zip([
+            ("helmet", "head"),
+            ("chestplate", "chest"),
+            ("leggings", "legs"),
+            ("boots", "feet"),
+        ]) {
             let Some((item, stack)) = item else {
                 continue;
             };
-            let Some(asset) = self
-                .res
-                .items()
-                .get(item)
-                .and_then(|i| i.equip_asset.clone())
+            // HumanoidArmorLayer.renderArmorPiece: the stack's own
+            // `equippable`, drawn when it has an asset and is worn in its slot.
+            let equippable = match stack {
+                Some(s) => horizon_client::item_sync::equippable(s, self.res.items()),
+                None => horizon_client::item_sync::item_equippable(item, self.res.items()),
+            };
+            let Some(asset) = equippable
+                .filter(|e| e.slot == slot)
+                .and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -380,9 +386,8 @@ impl Game<'_> {
             let Some(stack) = stack.filter(|s| s.extra.is_some()) else {
                 continue;
             };
-            let Some(asset) = items
-                .get(&stack.item)
-                .and_then(|i| i.equip_asset.as_deref())
+            let Some(asset) =
+                horizon_client::item_sync::equippable(stack, items).and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -391,7 +396,7 @@ impl Game<'_> {
             } else {
                 "humanoid"
             };
-            if let Some(t) = assets.trim_texture(asset, kind, stack)
+            if let Some(t) = assets.trim_texture(&asset, kind, stack)
                 && !wanted.contains(&t)
             {
                 wanted.push(t);
@@ -948,6 +953,30 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// `Ravager.roar` with `mob_griefing` on: every armor stand in `area` (the
+    /// ravager's box grown by 4) takes `strongKnockback` from the ravager at
+    /// `from`. Its `mobAttack` leaves the stand whole (`ArmorStand.hurtServer`:
+    /// not a damage type that breaks one).
+    pub(super) fn roar_pushes_armor_stands(&mut self, area: Aabb, from: [f64; 3]) {
+        for a in self.armor_stands.iter_mut() {
+            let (width, height) = stand_box(a);
+            let half = f64::from(width) / 2.0;
+            let p = a.position;
+            let bounds = Aabb::new(
+                Vec3::new(p.x - half, p.y, p.z - half),
+                Vec3::new(p.x + half, p.y + f64::from(height), p.z + half),
+            );
+            if a.health <= 0.0 || !bounds.intersects(area) {
+                continue;
+            }
+            let (xd, zd) = (p.x - from[0], p.z - from[2]);
+            let dd = (xd * xd + zd * zd).max(0.001);
+            // Entity.push.
+            a.velocity = a
+                .velocity
+                .add_vector(Vec3::new(xd / dd * 4.0, 0.2, zd / dd * 4.0));
+        }
+    }
     /// `ArmorStand.pushEntities`: a plain minecart (`RIDABLE_MINECARTS`,
     /// `AbstractMinecart.isRideable`) whose box meets the stand's is shoved
     /// when `distanceToSqr` is at most 0.2. `AbstractMinecart.push` of a
@@ -1089,6 +1118,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(a.id));
             // EntityRenderer: drawn between last tick's position and this one's.
             let at = a.render_position(alpha);
             let p = super::entity_culling::at(at) - camera;
@@ -1216,20 +1246,20 @@ impl Game<'_> {
         // HumanoidArmorLayer: head, chest, legs, feet. One pose map for every layer
         // (`reset` keeps its capacity).
         let mut layer_poses = Poses::default();
-        for (slot, layer) in [
-            (5usize, "helmet"),
-            (4, "chestplate"),
-            (3, "leggings"),
-            (2, "boots"),
+        for (slot, layer, worn) in [
+            (5usize, "helmet", "head"),
+            (4, "chestplate", "chest"),
+            (3, "leggings", "legs"),
+            (2, "boots", "feet"),
         ] {
             let Some(stack) = &a.equipment[slot] else {
                 continue;
             };
-            let Some(asset) = self
-                .res
-                .items()
-                .get(&stack.item)
-                .and_then(|i| i.equip_asset.clone())
+            // HumanoidArmorLayer.renderArmorPiece: the stack's own
+            // `equippable`, drawn when it has an asset and is worn in its slot.
+            let Some(asset) = horizon_client::item_sync::equippable(stack, self.res.items())
+                .filter(|e| e.slot == worn)
+                .and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -1681,11 +1711,8 @@ impl Game<'_> {
         }
         // A head item that is not worn armour.
         if let Some(stack) = &a.equipment[5]
-            && self
-                .res
-                .items()
-                .get(&stack.item)
-                .is_none_or(|i| i.equip_asset.is_none())
+            && !horizon_client::item_sync::equippable(stack, self.res.items())
+                .is_some_and(|e| e.asset_id.is_some() && e.slot == "head")
             && let Some(head) = part_matrix(model, base, poses, "head", 0.0)
         {
             let pose = head
