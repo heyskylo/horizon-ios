@@ -744,7 +744,7 @@ impl Game<'_> {
                     inv_friction = 0.9;
                 }
                 Status::UnderWater => {
-                    buoyancy = f64::from(0.01_f32); // 0.01F, widened
+                    buoyancy = f64::from(0.01_f32);
                     inv_friction = 0.45;
                 }
                 Status::InAir => inv_friction = 0.9,

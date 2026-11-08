@@ -450,7 +450,7 @@ impl SectionMesh {
         self.packed.clear();
         self.packed_far = false;
         if packed::packing() && quads > 0 && self.solid_tints.len() == quads {
-            self.packed = packed::layout(&self.solid, &self.solid_tints);
+            packed::layout_into(&self.solid, &self.solid_tints, &mut self.packed);
         }
         self.solid_tints.clear();
     }
@@ -644,6 +644,8 @@ struct Info {
     block_entity: bool,
     tints: [Tint; 2],
     tint_count: u8,
+    /// A resource pack's Polytone colormap over its tints (an index in `MeshTables::colormaps`).
+    colormap: Option<u16>,
     /// `OffsetType` as (max horizontal, max vertical): vertical 0 for XZ.
     offset: Option<(f32, f32)>,
     /// `isSolid()` (legacy), for fluid corner heights.
@@ -700,6 +702,9 @@ pub struct MeshTables {
     lava_still: u16,
     lava_flow: u16,
     animated_layers: Vec<bool>,
+    /// Resource packs' Polytone block and fluid colormaps (#11486), and the water's.
+    colormaps: Vec<Arc<crate::environment::Colormap>>,
+    water_colormap: Option<u16>,
 }
 fn stem_color(age: u8) -> u32 {
     let a = u32::from(age);
@@ -842,6 +847,7 @@ impl MeshTables {
                 block_entity: s.block_entity,
                 tints,
                 tint_count,
+                colormap: None,
                 offset,
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
@@ -875,7 +881,51 @@ impl MeshTables {
             lava_still: layer("minecraft:block/lava_still")?,
             lava_flow: layer("minecraft:block/lava_flow")?,
             animated_layers,
+            colormaps: Vec::new(),
+            water_colormap: None,
         })
+    }
+    /// These tables with the colormaps of the Polytone block and fluid modifiers of the packs
+    /// merged at `pack_root` (wiki "Colormaps"): a tinted block they target takes its colour
+    /// from the colormap, and its own tint where the colormap's pixel is transparent.
+    #[must_use]
+    pub fn with_polytone_colormaps(
+        mut self,
+        pack_root: &std::path::Path,
+        registry: &horizon_world::registry::BlockRegistry,
+    ) -> Self {
+        let modifiers = crate::environment::polytone_colormap_modifiers(pack_root);
+        if modifiers.is_empty() {
+            return self;
+        }
+        let mut loaded: std::collections::HashMap<String, Option<u16>> = Default::default();
+        let mut index = |id: &str, colormaps: &mut Vec<Arc<crate::environment::Colormap>>| {
+            *loaded.entry(id.to_owned()).or_insert_with(|| {
+                let colormap = crate::environment::Colormap::load(pack_root, id)?;
+                colormaps.push(Arc::new(colormap));
+                Some((colormaps.len() - 1) as u16)
+            })
+        };
+        for (fluid, targets, id) in &modifiers {
+            if *fluid {
+                if targets.matches("minecraft:water", |_| false) {
+                    self.water_colormap = index(id, &mut self.colormaps);
+                }
+                continue;
+            }
+            let Some(i) = index(id, &mut self.colormaps) else {
+                continue;
+            };
+            for (state, info) in self.info.iter_mut().enumerate() {
+                let Some(block) = registry.state(BlockStateId(state as u32)) else {
+                    continue;
+                };
+                if info.tint_count > 0 && targets.matches(&block.name, |_| false) {
+                    info.colormap = Some(i);
+                }
+            }
+        }
+        self
     }
     /// Whether a terrain sprite layer has an animated clip.
     pub fn is_animated(&self, layer: u16) -> bool {
@@ -971,7 +1021,7 @@ impl MeshTables {
         }
         let [x, y, z] = pos;
         let origin = [x >> 4, z >> 4, y & !15];
-        let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin);
+        let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin).with_colormaps(self);
         Mesher::tint(info, 0, &mut tints, [x & 15, y & 15, z & 15])
     }
     /// `BlockColors` for each of the state's tint indices at `pos`, as the
@@ -989,7 +1039,8 @@ impl MeshTables {
         let sources = self.info.get(state.0 as usize).map(|info| {
             let [x, y, z] = pos;
             let origin = [x >> 4, z >> 4, y & !15];
-            let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin);
+            let mut tints =
+                Tints::new(region, biomes, zoom, blend_radius, origin).with_colormaps(self);
             let local = [x & 15, y & 15, z & 15];
             let colors = [0, 1].map(|i| Mesher::tint(info, i, &mut tints, local));
             (colors, i32::from(info.tint_count))
@@ -1382,6 +1433,11 @@ struct Tints<'a> {
     layers: [Option<Box<Layer>>; 16],
     /// `uniform_biome`, once computed.
     uniform: Option<Option<u16>>,
+    /// The packs' colormaps (`MeshTables::colormaps`), the water's, and their colours so far
+    /// by colormap and section-local block.
+    colormaps: &'a [Arc<crate::environment::Colormap>],
+    water_colormap: Option<u16>,
+    sampled: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
 }
 impl<'a> Tints<'a> {
     fn new(
@@ -1400,7 +1456,40 @@ impl<'a> Tints<'a> {
             origin,
             layers: Default::default(),
             uniform: None,
+            colormaps: &[],
+            water_colormap: None,
+            sampled: std::collections::HashMap::new(),
         }
+    }
+    /// With the packs' colormaps of `tables`.
+    fn with_colormaps(mut self, tables: &'a MeshTables) -> Self {
+        self.colormaps = &tables.colormaps;
+        self.water_colormap = tables.water_colormap;
+        self
+    }
+    /// Colormap `index`'s colour at block `(x, y, z)` (section-local), `None` where its pixel
+    /// is transparent.
+    fn colormap(&mut self, index: u16, x: i32, y: i32, z: i32) -> Option<u32> {
+        if let Some(&known) = self.sampled.get(&(index, [x, y, z])) {
+            return known;
+        }
+        let colormap = self.colormaps.get(usize::from(index))?;
+        let id = Self::biome_id(&self.zoom, self.region, self.plains, self.origin, [x, y, z]);
+        let [cx, cz, base_y] = self.origin;
+        let at = [cx * 16 + x, base_y + y, cz * 16 + z];
+        let mut host = crate::environment::BlockHost::new(at, self.biomes.get(id));
+        let colour = colormap.sample(&mut host).map(|c| c & 0xFF_FFFF);
+        self.sampled.insert((index, [x, y, z]), colour);
+        colour
+    }
+    /// The water's tint at block `(x, y, z)`: the packs' water colormap, else the biome's.
+    fn water(&mut self, x: i32, y: i32, z: i32) -> u32 {
+        if let Some(index) = self.water_colormap
+            && let Some(colour) = self.colormap(index, x, y, z)
+        {
+            return colour;
+        }
+        self.get(Resolver::Water, x, y, z)
     }
     /// The biome of block `(x, y, z)` (section-local x/z, y in 0..16), as `BiomeManager.getBiome`
     /// picks it.
@@ -1645,7 +1734,8 @@ impl Mesher<'_> {
             self.zoom,
             self.blend_radius,
             [center.x, center.z, base_y],
-        );
+        )
+        .with_colormaps(self.tables);
         let info = &self.tables.info;
         let full_faces = &self.tables.full_faces;
         let catalog = &self.render.model_catalog;
@@ -1674,7 +1764,7 @@ impl Mesher<'_> {
                         continue;
                     }
                     if state.fluid.kind() != FluidKind::Empty {
-                        let water = tints.get(Resolver::Water, x, y, z);
+                        let water = tints.water(x, y, z);
                         let shade = (
                             self.nether_shading,
                             self.shader_pack_lighting,
@@ -1808,13 +1898,18 @@ impl Mesher<'_> {
         if index < 0 || index >= i32::from(state.tint_count) {
             return None;
         }
+        if let Some(colormap) = state.colormap
+            && let Some(colour) = tints.colormap(colormap, x, y, z)
+        {
+            return Some(colour);
+        }
         Some(match state.tints[(index as usize).min(1)] {
             Tint::None => return None,
             Tint::Grass | Tint::GrassBlock | Tint::SugarCane => tints.get(Resolver::Grass, x, y, z),
             Tint::TallGrassUpper => tints.get(Resolver::Grass, x, y, z),
             Tint::Foliage => tints.get(Resolver::Foliage, x, y, z),
             Tint::DryFoliage => tints.get(Resolver::Dry, x, y, z),
-            Tint::Water => tints.get(Resolver::Water, x, y, z),
+            Tint::Water => tints.water(x, y, z),
             Tint::Constant(c) => c,
             Tint::LilyPad => 0x20_8030,
             Tint::Redstone(p) => redstone_color(p),

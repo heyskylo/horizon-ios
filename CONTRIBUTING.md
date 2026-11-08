@@ -76,7 +76,9 @@ another project's source may also be read and used, **only when that project's l
 
 User documentation and file formats are fine to read, and packs and mods are fine to run and observe, whatever their
 license. Shader packs are a clean-room rewrite of the pack format, produced from a written description of it (see
-#1561); they carry no foreign source, and the rules above still apply to anything you read while working on them.
+#1561): the [specification and its provenance log](docs/cleanroom/README.md) are public. They carry no foreign
+source, and the rules above still apply to anything you read while working on them. A shader-pack pull request
+names its sources: the sections of that specification, the documentation pages and the packs it ran.
 
 ## Before asking for review
 

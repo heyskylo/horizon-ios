@@ -442,6 +442,7 @@ pub(super) fn load_resources(
     }
     let tables = Arc::new(startup::time("pack.mesh_tables", || {
         MeshTables::new(&assets, &render, &facts, visibility)
+            .map(|t| t.with_polytone_colormaps(&root, assets.registry))
     })?);
     let pack_step = startup::step("pack.assemble");
     let pack = PackResources::assemble(

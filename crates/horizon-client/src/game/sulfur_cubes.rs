@@ -212,13 +212,33 @@ impl Game<'_> {
     /// `SulfurCube.primeWhenOnPoweredPosition`: an explosive cube standing in
     /// or next to redstone power lights its fuse (`getBestOwnOrNeighbourSignal`;
     /// no block has an own signal, so the neighbour signal is all there is).
-    pub(super) fn sulfur_cube_power_priming(&mut self) {
+    /// The resident sulfur cubes whose adopted body (`adopted_body`, the
+    /// body `collectEquipmentChanges` last took, so its `explosionData`)
+    /// explodes: those `primeWhenOnPoweredPosition` may prime this tick.
+    pub(super) fn sulfur_cubes_adopted_explosive(&self) -> Vec<u32> {
+        self.mobs
+            .iter()
+            .filter(|m| {
+                m.species() == Species::SulfurCube
+                    && m.extra
+                        .adopted_body
+                        .as_deref()
+                        .and_then(sulfur_cube::archetype_of)
+                        .is_some_and(|a| a.explosion.is_some())
+            })
+            .map(|m| m.id)
+            .collect()
+    }
+    /// `primeWhenOnPoweredPosition` for the cubes `primable` names (an
+    /// adopted explosive body when the tick started).
+    pub(super) fn sulfur_cube_power_priming(&mut self, primable: &[u32]) {
         if !self.ui.rules.bool("tnt_explodes") {
             return;
         }
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if m.species() != Species::SulfurCube
+                || !primable.contains(&m.id)
                 || !sulfur_cube::archetype(m).is_some_and(|a| a.explosion.is_some())
                 || !m.alive()
                 || sulfur_cube::primed(m)

@@ -1146,4 +1146,81 @@ mod tests {
         assert_eq!(experience, 0.7);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Every recipe the game has, as a Horizon server sends it to a Horizon
+    /// client: the client's own book keeps its entries, none is taken from the
+    /// packet (a regression of parity with Horizon on both sides otherwise).
+    /// Needs the prepared resources (`HORIZON_TEST_RESOURCES`, or the checkout's
+    /// `.local`); passes without them.
+    #[test]
+    fn a_horizon_server_of_the_real_recipes_leaves_the_clients_book_as_it_is() {
+        use crate::{
+            crafting::Recipes,
+            items::Items,
+            recipe_book::{Book, PacketNames, RecipeIndex},
+        };
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("registries.json").exists() {
+            return;
+        }
+        let none = &horizon_world::loot::PackOverlay::NONE;
+        let sync = SyncData::load(&root, none).unwrap();
+        let items = Items::catalog(&root, none).unwrap();
+        let recipes = Recipes::load(&root, &items, none).unwrap();
+        let mut book = Book::build(&recipes, &items);
+        book.set_display_ids(&RecipeIndex::load(&root, none));
+        let before: Vec<(String, i32, Option<String>)> = book
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.display_id, e.group.clone()))
+            .collect();
+        let mut sent = Vec::new();
+        for id in sync.advancements.recipes.keys() {
+            for bytes in sync.advancements.book_entries(id, &sync, 0) {
+                sent.push(RecipeBookEntry::read(&mut Reader::new(&bytes)).unwrap());
+            }
+        }
+        assert!(sent.len() > 1000, "{} entries sent", sent.len());
+        let item = |id: i32| {
+            sync.builtin
+                .get("minecraft:item")
+                .and_then(|i| i.name(id))
+                .map(str::to_owned)
+        };
+        let category = |id: i32| {
+            sync.builtin
+                .get("minecraft:recipe_book_category")
+                .and_then(|i| i.name(id))
+                .map(str::to_owned)
+        };
+        let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
+        book.use_server_entries(
+            &sent,
+            &PacketNames {
+                item: &item,
+                category: &category,
+                tag: &tag,
+            },
+        );
+        let after: Vec<(String, i32, Option<String>)> = book
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.display_id, e.group.clone()))
+            .collect();
+        let changed: Vec<_> = before
+            .iter()
+            .zip(&after)
+            .filter(|(b, a)| b != a)
+            .take(10)
+            .collect();
+        assert_eq!(after.len(), before.len(), "entries were added");
+        assert!(changed.is_empty(), "entries changed: {changed:?}");
+        assert!(book.server_requirements.is_empty());
+    }
 }

@@ -775,7 +775,21 @@ impl Game<'_> {
             super::persist::add_passengers(&mut tag, riders);
             tag
         });
+        let movement = (m.extra.mount.is_none()
+            && m.rider.is_none()
+            && self.riding != Some(m.id)
+            && self.lan.as_ref().is_none_or(|host| {
+                host.hub
+                    .guests
+                    .iter()
+                    .all(|guest| guest.vehicle != Some(m.id))
+            }))
+        .then_some(adv::MovementView {
+            per_tick: [m.velocity.x, m.velocity.y, m.velocity.z],
+            fall_distance: m.fall_distance,
+        });
         EntityView {
+            movement,
             kind: m.kind.id.clone(),
             position: [m.position.x, m.position.y, m.position.z],
             on_fire: m.fire_ticks > 0,
@@ -3293,6 +3307,117 @@ mod custom_data_equipment_tests {
         assert!(
             failures.is_empty(),
             "actual mob-equipment custom_data mismatch: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod movement_predicate_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_core::geometry::Vec3;
+    use horizon_core::position::BlockPos;
+    use serde_json::json;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch cwd/homes"]
+    fn actual_registered_movement_predicate_uses_admitted_mob() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(4, 4));
+        let root = std::env::current_dir().unwrap().join("movement-world");
+        let pack = root.join("datapacks/movement");
+        let folder = pack.join("data/motion/predicate");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"Movement fixture","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let entity =
+            |p| json!({"type":"minecraft:entity_properties","entity":"this","predicate":p});
+        let movement =
+            |p| entity(json!({"minecraft:entity_type":"minecraft:pig","minecraft:movement":p}));
+        let high = movement(json!({"x":{"min":100}}));
+        let zero = movement(json!({"x":{"min":0,"max":0}}));
+        let probes = [
+            ("high", high.clone(), false),
+            ("zero", zero.clone(), true),
+            ("empty", movement(json!({})), true),
+            (
+                "not_high",
+                json!({"type":"minecraft:inverted","term":high}),
+                true,
+            ),
+            (
+                "not_zero",
+                json!({"type":"minecraft:inverted","term":zero}),
+                false,
+            ),
+        ];
+        for (name, p, _) in &probes {
+            std::fs::write(folder.join(format!("{name}.json")), p.to_string()).unwrap();
+        }
+        std::fs::write(
+            folder.join("identity.json"),
+            entity(json!({"minecraft:entity_type":"minecraft:pig"})).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("always.json"),
+            r#"{"type":"minecraft:all_of","terms":[]}"#,
+        )
+        .unwrap();
+        game.world_root = root;
+        game.reload_datapacks(false);
+        assert!(game.run_command("scoreboard objectives add motion dummy"));
+        assert!(game.run_command("execute if predicate motion:always"));
+        let clock = game.world.game_time;
+        let actor = "000002a1-0000-0000-0000-000000000001";
+        assert!(game.run_command("summon pig 4.5 200 4.5 {UUID:[I;673,0,0,1],NoAI:1b,NoGravity:1b,Health:10f,Motion:[0d,0d,0d]}"));
+        assert!(game.run_command(&format!("execute as {actor} if entity @s[type=pig,nbt={{UUID:[I;673,0,0,1],Health:10f,Pos:[4.5d,200d,4.5d],Motion:[0d,0d,0d],NoAI:1b,NoGravity:1b}}]")));
+        assert!(game.run_command(&format!("execute as {actor} if predicate motion:identity")));
+        let id = *game
+            .persist
+            .uuids
+            .iter()
+            .find(|(_, u)| **u == [673, 0, 0, 1])
+            .unwrap()
+            .0;
+        let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(mob.velocity, Vec3::ZERO);
+        assert_eq!(mob.fall_distance, 0.0);
+        assert!(mob.no_ai && mob.no_gravity);
+        assert!(mob.extra.mount.is_none());
+        let view = game.entity_view_of(super::super::commands::Target::Mob(id));
+        assert_eq!(view.kind, "minecraft:pig");
+        let mut failures = Vec::new();
+        for (name, p, want) in probes {
+            assert!(
+                game.fns
+                    .store
+                    .predicates
+                    .contains_key(&format!("motion:{name}"))
+            );
+            let direct = game.conditions_hold(&p, Some(&view), [4.5, 200.0, 4.5]);
+            if direct != want {
+                failures.push(format!("direct {name}: {direct} != {want}"));
+            }
+            assert!(game.run_command("scoreboard players set result motion 91"));
+            assert!(game.run_command("scoreboard players set success motion 17"));
+            game.run_command(&format!("execute store result score result motion store success score success motion as {actor} if predicate motion:{name}"));
+            for key in ["result", "success"] {
+                let value = game.score.board.score(key, "motion").unwrap().value;
+                if value != i32::from(want) {
+                    failures.push(format!("registered {name} {key}: {value}"));
+                }
+            }
+        }
+        assert_eq!(game.world.game_time, clock, "zero observation ticks");
+        assert!(
+            failures.is_empty(),
+            "actual movement predicate mismatches: {failures:?}"
         );
     }
 }
