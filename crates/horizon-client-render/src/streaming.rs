@@ -381,6 +381,33 @@ impl MeshPool {
     }
 }
 
+/// The chunks `wanted` in the order they decorate: by rank, lowest first. No
+/// two share a rank, so only the chunks without one yet need their distance:
+/// those no ticket reached (forced and extra areas) are ranked after every
+/// other, nearest first. The pass that pops them stops once the workers are
+/// busy, usually long before the last, so a heap orders only what it takes. A
+/// server with players spread over the map holds tens of thousands of proto
+/// chunks; measuring and sorting them all every tick took a fifth of its tick.
+fn decoration_queue(
+    order: &mut DecorationOrder,
+    wanted: impl Iterator<Item = (i32, i32)>,
+    distance: impl Fn(i32, i32) -> i64,
+) -> std::collections::BinaryHeap<std::cmp::Reverse<(u64, i32, i32)>> {
+    let mut ranked = Vec::new();
+    let mut fresh = Vec::new();
+    for (x, z) in wanted {
+        match order.rank(x, z) {
+            Some(rank) => ranked.push(std::cmp::Reverse((rank, x, z))),
+            None => fresh.push((distance(x, z), x, z)),
+        }
+    }
+    fresh.sort_unstable();
+    for (_, x, z) in fresh {
+        ranked.push(std::cmp::Reverse((order.rank_or_append(x, z), x, z)));
+    }
+    std::collections::BinaryHeap::from(ranked)
+}
+
 /// Finished jobs, from the workers to the game thread, in the order they
 /// finished. Not an `mpsc` channel: its receiver waits for a sender it finds
 /// half way through a send, and a worker descheduled there on a busy machine
@@ -566,6 +593,9 @@ pub struct Streaming {
     pub extra: Vec<((i32, i32), i32)>,
     /// `extra`'s squares as a grid, made again when `extra` changes.
     cover: Option<ExtraCover>,
+    /// Set while `update` runs, after it refreshed `cover`: nothing else can
+    /// change `extra` meanwhile, so `cover` answers without comparing them.
+    cover_current: bool,
     /// Mesh the sections for drawing (false on a server thread).
     pub mesh: bool,
     /// The pregeneration band (`set_band`).
@@ -1128,6 +1158,7 @@ impl Streaming {
             relight_resent: false,
             extra: Vec::new(),
             cover: None,
+            cover_current: false,
             mesh: true,
             band: None,
             band_ranked: None,
@@ -1268,6 +1299,7 @@ impl Streaming {
             self.meshed.remove(&(x, z));
             self.lighting.remove(&(x, z));
             world.dirty_sections.take_column(x, z);
+            world.entities_pending.remove(&(x, z));
             chunks.extend(world.chunks.remove(&(x, z)));
         }
         chunks
@@ -1408,6 +1440,7 @@ impl Streaming {
             .block_names
             .extend(std::mem::take(&mut chunk.block_names));
         let entities = std::mem::take(&mut chunk.entities);
+        world.entities_pending.insert((chunk.x, chunk.z));
         if !entities.is_empty() {
             world.loaded_entities.push(((chunk.x, chunk.z), entities));
         }
@@ -1631,6 +1664,7 @@ impl Streaming {
             return (uploads, Vec::new());
         }
         ExtraCover::refresh(&mut self.cover, &self.extra);
+        self.cover_current = true;
         // The sweeps below walk every loaded column and proto chunk. Run them
         // at once when the view moves and every eighth tick otherwise: a
         // column can stay a little past the edge without anyone noticing.
@@ -1739,6 +1773,7 @@ impl Streaming {
                 if let Some(chunk) = world.chunks.remove(key) {
                     removed.push(chunk);
                 }
+                world.entities_pending.remove(key);
                 self.lit.remove(key);
                 self.meshed.remove(key);
                 self.lighting.remove(key);
@@ -1839,7 +1874,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             };
             let (protos, generating) = (&self.protos, &self.generating);
@@ -1871,29 +1906,24 @@ impl Streaming {
                         })
                     })
             };
-            let keys: Vec<(i32, i32)> = self
-                .protos
-                .iter()
-                .filter(|(k, p)| p.is_some() && wants(self, k.0, k.1))
-                .map(|(k, _)| *k)
-                .collect();
-            let mut wanted: Vec<(u64, i64, i32, i32)> = keys
-                .into_iter()
-                .map(|(x, z)| (0, self.distance(x, z), x, z))
-                .collect();
-            // Chunks no ticket reached (forced and extra areas) go last, nearest first.
-            wanted.sort_unstable_by_key(|w| w.1);
-            for w in &mut wanted {
-                w.0 = self.decoration_order.rank_or_append(w.2, w.3);
-            }
-            wanted.sort_unstable();
+            // Out for the call: ranking reads the streamer's ranges.
+            let mut order = std::mem::take(&mut self.decoration_order);
+            let mut wanted = decoration_queue(
+                &mut order,
+                self.protos
+                    .iter()
+                    .filter(|&(&(x, z), proto)| proto.is_some() && wants(self, x, z))
+                    .map(|(&k, _)| k),
+                |x, z| self.distance(x, z),
+            );
+            self.decoration_order = order;
             // Most wanted chunks are blocked, and the same neighbours are
             // asked about for each of them: what `waits_for` says is kept for
             // the pass (nothing it reads changes in it but `decorated`, which
             // updates the entry). Without it, scheduling at render distance 32
             // took most of the thread that runs it while the world loaded.
             let waiting: std::cell::RefCell<FxHashMap<(i32, i32), bool>> = Default::default();
-            for (_, _, x, z) in wanted {
+            while let Some(std::cmp::Reverse((_, x, z))) = wanted.pop() {
                 if self.decorating >= workers * 2 {
                     break;
                 }
@@ -1998,6 +2028,7 @@ impl Streaming {
         // A server draws nothing: its sections are never meshed.
         if !self.mesh {
             world.dirty_sections.clear();
+            self.cover_current = false;
             return (uploads, removed);
         }
         // Meshing once the column and its neighbours are lit, and the column
@@ -2018,7 +2049,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             };
             self.waiting.retain(|&(x, sy, z)| {
@@ -2106,6 +2137,7 @@ impl Streaming {
                 );
             }
         }
+        self.cover_current = false;
         (uploads, removed)
     }
     fn schedule_generation(&mut self, world: &World, workers: usize) {
@@ -2116,7 +2148,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             },
             world,
@@ -2250,7 +2282,7 @@ impl Streaming {
             extra: &self.extra,
             forced: &self.forced,
             mod_forced: &self.mod_forced,
-            cover: ExtraCover::matching(&self.cover, &self.extra),
+            cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
             band: self.band.as_ref(),
         }
     }
@@ -2620,6 +2652,20 @@ impl ExtraCover {
         extra: &[((i32, i32), i32)],
     ) -> Option<&'a ExtraCover> {
         cover.as_ref().filter(|c| c.extra == extra)
+    }
+    /// [`Self::matching`], told whether `cover` is known to match: the
+    /// comparison reads every area, and `update` asks for each column it
+    /// looks at (a server holds an area per player).
+    fn current<'a>(
+        cover: &'a Option<ExtraCover>,
+        extra: &[((i32, i32), i32)],
+        known: bool,
+    ) -> Option<&'a ExtraCover> {
+        if known {
+            debug_assert!(cover.as_ref().is_none_or(|c| c.extra == extra));
+            return cover.as_ref();
+        }
+        Self::matching(cover, extra)
     }
     /// Rebuild the coverage index if `extra` changed; none for one area or none
     /// (a scan is as quick).
@@ -3178,6 +3224,64 @@ static NO_CHUNKS: std::sync::LazyLock<HashSet<(i32, i32)>> = std::sync::LazyLock
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The queue hands out the wanted chunks in the order the full sort did
+    /// (every chunk measured, sorted by distance, the new ones ranked in that
+    /// order, then all sorted by rank), and ranks the new ones the same way,
+    /// whatever order the chunks are listed in.
+    #[test]
+    fn decoration_queue_pops_in_the_order_a_full_sort_gives() {
+        // Distinct for every chunk, so the full sort has one answer.
+        let distance = |x: i32, z: i32| i64::from(x) * 100_000 + i64::from(z);
+        let full_sort = |order: &mut DecorationOrder, wanted: &[(i32, i32)]| {
+            let mut w: Vec<(u64, i64, i32, i32)> = wanted
+                .iter()
+                .map(|&(x, z)| (0, distance(x, z), x, z))
+                .collect();
+            w.sort_unstable_by_key(|w| w.1);
+            for w in &mut w {
+                w.0 = order.rank_or_append(w.2, w.3);
+            }
+            w.sort_unstable();
+            w.into_iter().map(|w| (w.2, w.3)).collect::<Vec<_>>()
+        };
+        let ranked = |order: &mut DecorationOrder| {
+            order.reassign((0, 0), 6, |x, z| (x + z).rem_euclid(5) == 0);
+        };
+        let (mut fast, mut full) = (DecorationOrder::default(), DecorationOrder::default());
+        ranked(&mut fast);
+        ranked(&mut full);
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut shuffled = |mut keys: Vec<(i32, i32)>| {
+            for i in (1..keys.len()).rev() {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                keys.swap(i, (seed % (i as u64 + 1)) as usize);
+            }
+            keys
+        };
+        // Some of the player's ranked chunks, and an extra area's that no
+        // ticket reached; the second time, more of the area, the first part
+        // ranked by then.
+        let mut wanted: Vec<(i32, i32)> = (-6i32..=6)
+            .flat_map(|x| (-6..=6).map(move |z| (x, z)))
+            .filter(|&(x, z)| (x * 7 + z).rem_euclid(3) != 0)
+            .collect();
+        wanted.extend((20..=24).flat_map(|x| (-3..=3).map(move |z| (x, z))));
+        for round in 0..2 {
+            if round == 1 {
+                wanted.extend((25..=27).flat_map(|x| (-3..=3).map(move |z| (x, z))));
+            }
+            let wanted = shuffled(wanted.clone());
+            let mut queue = decoration_queue(&mut fast, wanted.iter().copied(), distance);
+            let popped: Vec<(i32, i32)> = std::iter::from_fn(|| queue.pop())
+                .map(|std::cmp::Reverse((_, x, z))| (x, z))
+                .collect();
+            assert_eq!(popped, full_sort(&mut full, &wanted), "round {round}");
+            assert_eq!(fast.ordered(), full.ordered(), "round {round}");
+        }
+    }
 
     #[test]
     fn a_resent_column_keeps_its_sections_but_takes_new_biomes() {

@@ -3046,9 +3046,15 @@ pub fn arrow_to_nbt(
         map.remove(&"LeftOwner".into());
         map.remove(&"inBlockState".into());
         map.remove(&"weapon".into());
+        map.remove(&"can_break".into());
     }
     if let Some(weapon) = &a.fired_from_weapon {
         put(&mut tag, "weapon", item_to_nbt(weapon));
+    }
+    // `Projectile.addAdditionalSaveData`: the actual decoded predicate,
+    // never a stale source compound or the pickup item's component patch.
+    if let Some(predicate) = &a.can_break {
+        put(&mut tag, "can_break", predicate.clone());
     }
     if p.left_owner {
         put(&mut tag, "LeftOwner", Tag::Byte(1));
@@ -3105,6 +3111,18 @@ pub fn arrow_from_nbt(
     a.pickup = Pickup::from_byte(number(tag.get("pickup")).unwrap_or(0));
     a.pierce = number(tag.get("PierceLevel")).unwrap_or(0) as u8;
     a.has_been_shot = flag(tag, "HasBeenShot");
+    // `Projectile.readAdditionalSaveData`: one block predicate or a nonempty
+    // list. Unsupported conjuncts remain saved, but cannot grant permission.
+    a.can_break = tag
+        .get("can_break")
+        .filter(|predicate| match predicate {
+            Tag::Compound(_) => true,
+            Tag::List(list) => {
+                !list.is_empty() && list.iter().all(|p| matches!(p, Tag::Compound(_)))
+            }
+            _ => false,
+        })
+        .cloned();
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
     a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.spectral = spectral;
@@ -4461,6 +4479,42 @@ mod spell_ticks_nbt_tests {
 
 #[cfg(test)]
 mod tests {
+    // Added after the actual old Game proof: live mutation and a fresh absent
+    // load cannot inherit a predicate from a contradictory saved compound.
+    #[test]
+    fn arrow_can_break_mutation_clone_and_absent_load_save_actual_state() {
+        let parse = |text: &str| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        let raw = parse(
+            "{id:\"minecraft:arrow\",Pos:[1d,200d,1d],NoGravity:1b,marker:37,can_break:{blocks:\"minecraft:chorus_flower\"}}",
+        );
+        let (mut arrow, _) = super::arrow_from_nbt(&raw, None, |_| None).unwrap();
+        let original = raw.get("can_break").unwrap().clone();
+        assert_eq!(
+            arrow.arrow.as_ref().unwrap().can_break.as_ref(),
+            Some(&original)
+        );
+        let replacement = parse("{blocks:\"minecraft:stone\"}");
+        arrow.arrow.as_mut().unwrap().can_break = Some(replacement.clone());
+        let cloned = arrow.clone();
+        for source in [None, Some(&raw)] {
+            let saved = super::arrow_to_nbt(&cloned, [197, 0, 0, 1], None, None, source).unwrap();
+            assert_eq!(saved.get("can_break"), Some(&replacement));
+            assert_eq!(saved.get("NoGravity"), Some(&super::Tag::Byte(1)));
+        }
+        arrow.arrow.as_mut().unwrap().can_break = None;
+        let saved = super::arrow_to_nbt(&arrow, [197, 0, 0, 1], None, None, Some(&raw)).unwrap();
+        assert!(saved.get("can_break").is_none());
+        assert_eq!(saved.get("marker"), Some(&super::Tag::Int(37)));
+        let absent = parse("{id:\"minecraft:arrow\",Pos:[1d,200d,1d]}");
+        let (fresh, _) = super::arrow_from_nbt(&absent, None, |_| None).unwrap();
+        assert!(fresh.arrow.as_ref().unwrap().can_break.is_none());
+        assert!(
+            super::arrow_to_nbt(&fresh, [197, 0, 0, 2], None, None, Some(&raw))
+                .unwrap()
+                .get("can_break")
+                .is_none()
+        );
+    }
     use super::*;
     use crate::items::ItemStack;
 
