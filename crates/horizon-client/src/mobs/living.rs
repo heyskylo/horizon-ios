@@ -1518,7 +1518,9 @@ impl Mob {
             self.move_relative(speed, input);
             self.do_move(w, events);
             let mut m = self.velocity;
-            if self.horizontal_collision && self.kind.flags.climber {
+            // LivingEntity.travelInWater: `horizontalCollision && onClimbable()`,
+            // a ladder or scaffolding under water as well as a climbing spider.
+            if self.horizontal_collision && self.on_climbable(w) {
                 m.y = 0.2;
             }
             m = Vec3::new(
