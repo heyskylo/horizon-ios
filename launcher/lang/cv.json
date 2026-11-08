@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Системӑри уҫӑсен ҫыххи {seconds} ҫеккунт хушшинче хуравламарӗ. Вӑл ӗҫленине тата уҫӑ пулнине тӗрӗслӗр, унтан лаунчера ҫӗнӗрен уҫӑр.",
   "Can't read {name}'s sign-in: {why}": "{name} кӗмелле информацине вулама май ҫук: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: эсӗ вылякан Horizon валли тунӑ {version} версийӗ усӑ курать",
+  "Recommended": "Сӗнетпӗр",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Кивӗрех версийӗ, {version}, эсӗ вылякан Horizon ҫинче пухӑнать: лартни ӑна суйлать",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} версийӗ пухӑнмарӗ, {older} тӗрӗслетпӗр",
+  "Use recommended (kept at {version})": "Сӗннине усӑ курас ({version} хӑварнӑ)"
 }

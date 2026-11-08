@@ -24,7 +24,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, sync::Arc};
@@ -173,6 +173,7 @@ pub(super) struct Minecart {
     pub custom_display: Option<horizon_world::nbt::Tag>,
     /// `AbstractMinecart.customDisplayOffset` (`DisplayOffset`), in sixteenths.
     pub custom_offset: Option<i32>,
+    pub random: LegacyRandom,
 }
 /// `EntityType.MINECART`'s `sized(0.98F, 0.7F)`: float dimensions, widened.
 pub(super) const WIDTH: f64 = 0.98_f32 as f64;
@@ -510,6 +511,7 @@ impl Minecart {
             synced_output: String::new(),
             custom_display: None,
             custom_offset: None,
+            random: random_source::entity(),
         }
     }
     pub fn bounds(&self) -> Aabb {
@@ -1481,7 +1483,7 @@ impl Game<'_> {
                 if c.fuel <= 0 {
                     c.push = Vec3::ZERO;
                 }
-                if c.fuel > 0 && self.world.random.next_int_bound(4).unwrap_or(1) == 0 {
+                if c.fuel > 0 && c.random.next_int_bound(4).unwrap_or(1) == 0 {
                     let at = [c.position.x, c.position.y + 0.8, c.position.z];
                     self.particles.add(
                         &ParticleOptions::simple(ParticleType::LargeSmoke),
@@ -1596,12 +1598,12 @@ impl Game<'_> {
             c.fuse = 80;
         }
     }
-    fn explode_cart(&mut self, c: &Minecart, speed_sqr: f64) {
+    fn explode_cart(&mut self, c: &mut Minecart, speed_sqr: f64) {
         if !self.ui.rules.bool("tnt_explodes") {
             return;
         }
         let speed = speed_sqr.sqrt().min(5.0);
-        let r = self.world.random.next_double();
+        let r = c.random.next_double();
         let power = (4.0 + r * 1.5 * speed) as f32;
         let at = [c.position.x, c.position.y, c.position.z];
         // The cart is the explosion's source: it is gone before the blast
@@ -1857,6 +1859,7 @@ impl Game<'_> {
                     && self.native_mob_may_ride(mob, id, true)
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob)
                 {
+                    horizon_client::mobs::shulker::on_start_riding(m);
                     m.extra.mount = Some(id);
                     m.extra.passenger = true;
                     m.ai.nav.stop();
@@ -1864,6 +1867,7 @@ impl Game<'_> {
                     occupied = true;
                     self.break_leash(mob, true, false);
                     self.note_started_riding(id);
+                    self.vehicle_picked_up();
                 }
                 continue;
             }
@@ -2477,25 +2481,26 @@ impl Game<'_> {
             self.eject_cart_mobs(i);
             let id = self.carts[i].id;
             self.release_vehicle_container(id);
-            let c = self.carts.remove(i);
-            self.explode_cart(&c, arrow_velocity.length_squared());
+            let mut c = self.carts.remove(i);
+            self.explode_cart(&mut c, arrow_velocity.length_squared());
             return;
         }
         self.hurt_cart(i, damage, creative, false);
     }
-    /// `Containers.dropContents(level, entity, container)` at a cart's
-    /// position: each slot, an empty one too, from a spot in the cart's block
-    /// in pieces of 10 to 30 with the level random's scatter, no pickup delay.
-    fn scatter_cart_contents(&mut self, at: [f64; 3], items: &[Option<ItemStack>]) {
-        let cell = horizon_core::position::BlockPos::new(
-            at[0].floor() as i32,
-            at[1].floor() as i32,
-            at[2].floor() as i32,
-        );
+    /// `Containers.dropContents(level, entity, container)` at a vehicle's
+    /// position `at`: each slot (an empty one too) from a spot in its block,
+    /// in pieces of 10 to 30 with the level random's scatter, no pickup
+    /// delay. `AbstractChestBoat.remove` and `AbstractMinecartContainer.remove`
+    /// spill this way for a destroying removal (kill or discard), and
+    /// `chestVehicleDestroyed` again for the emptied container.
+    pub(super) fn drop_vehicle_contents(&mut self, at: [f64; 3], items: &[Option<ItemStack>]) {
         for stack in items {
             let count = stack.as_ref().map_or(0, |s| s.count);
-            let pieces =
-                horizon_world::level::removal::drop_item_stack(&mut self.world.random, cell, count);
+            let pieces = horizon_world::level::removal::drop_item_stack_at(
+                &mut self.world.random,
+                at,
+                count,
+            );
             if let Some(stack) = stack {
                 for piece in pieces {
                     let piece_stack = ItemStack {
@@ -2562,28 +2567,29 @@ impl Game<'_> {
                 // MinecartTNT.destroy: prime instead of breaking.
                 if c.fuse < 0 {
                     self.prime_cart(&mut c);
-                    let r = &mut self.world.random;
-                    c.fuse = r.next_int_bound(20).unwrap_or(0) + r.next_int_bound(20).unwrap_or(0);
+                    c.fuse = c.random.next_int_bound(20).unwrap_or(0)
+                        + c.random.next_int_bound(20).unwrap_or(0);
                 }
                 self.carts.insert(i, c);
             } else {
                 let at = [c.position.x, c.position.y, c.position.z];
-                // VehicleEntity.destroy: `kill` (the cart's own ENTITY_DIE),
-                // then the drops; a creative hit only discards it.
+                // AbstractMinecartContainer.remove: `Containers.dropContents`
+                // for every destroying removal (the kill below, and a creative
+                // hit's discard), with no `entity_drops` gate of its own.
+                self.drop_vehicle_contents(at, &c.items);
+                // VehicleEntity.destroy: `kill` (the cart's own ENTITY_DIE
+                // after that removal), then the drops; a creative hit only
+                // discards it.
                 if !creative {
                     self.entity_killed_event(at, false);
                 }
-                if self.ui.rules.bool("entity_drops") {
-                    // AbstractMinecartContainer.remove: `Containers.dropContents`.
-                    self.scatter_cart_contents(at, &c.items);
-                    if !creative {
-                        // `spawnAtLocation`: an ItemEntity's own motion.
-                        self.spawn_item_own(ItemStack::new(c.kind.item(), 1), at, 10);
-                        // `chestVehicleDestroyed` drops the emptied container
-                        // again, which only draws each slot's spot.
-                        let empty = vec![None; c.items.len()];
-                        self.scatter_cart_contents(at, &empty);
-                    }
+                if !creative && self.ui.rules.bool("entity_drops") {
+                    // `spawnAtLocation`: an ItemEntity's own motion.
+                    self.spawn_item_own(ItemStack::new(c.kind.item(), 1), at, 10);
+                    // `chestVehicleDestroyed` drops the emptied container
+                    // again, which only draws each slot's spot.
+                    let empty = vec![None; c.items.len()];
+                    self.drop_vehicle_contents(at, &empty);
                 }
             }
         }
@@ -2958,6 +2964,11 @@ impl Minecart {
             raw,
         );
         if let Tag::Compound(map) = &mut tag {
+            // ContainerEntity.addChestVehicleSaveData belongs only to the
+            // container subclasses, never to a plain or specialized cart.
+            if self.kind.slots() == 0 {
+                map.remove(&JavaString::from("Items"));
+            }
             if self.kind == CartKind::CommandBlock {
                 for key in ["LastOutput", "LastExecution"] {
                     map.remove(&JavaString::from(key));
@@ -3017,7 +3028,13 @@ impl Minecart {
             }
             // A loaded loot table goes back while the items are still its roll;
             // otherwise the items replace it, as vanilla's unpackLootTable does.
-            if !self.loot.as_ref().is_some_and(|l| l.restore(map)) {
+            if self.loot.as_ref().is_some_and(|l| l.restore(map)) {
+                if let Some(table) = horizon_client::save::text(map.get(&"LootTable".into()))
+                    .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+                {
+                    map.insert("LootTable".into(), Tag::String(table.as_str().into()));
+                }
+            } else {
                 map.remove(&JavaString::from("LootTable"));
                 map.remove(&JavaString::from("LootTableSeed"));
             }
@@ -3781,5 +3798,83 @@ mod cart_push_tests {
         );
         assert_eq!(cart(1).loot.as_ref(), Some(&loot));
         assert_eq!(cart(2).loot, None);
+    }
+}
+
+#[cfg(test)]
+mod container_drop_tests {
+    use super::super::boats::Boat;
+    use super::super::native_machines::tests::server_game;
+    use super::{CartKind, Minecart};
+    use horizon_client::items::ItemStack;
+    use horizon_core::geometry::Vec3;
+    use horizon_core::random::{LegacyRandom, RandomSource};
+    use std::sync::Arc;
+
+    /// Advances `r` past the draws a spill takes from the level random, as
+    /// vanilla's `Containers.dropContents` takes them: for each slot
+    /// (`Containers.dropItemStack`) its spot, then for each pile the split
+    /// size and the triangle motion. Every count here is at most 10, so a
+    /// slot with items is a single pile.
+    fn vanilla_spill_draws(r: &mut LegacyRandom, counts: &[u32]) {
+        for &count in counts {
+            for _ in 0..3 {
+                r.next_double();
+            }
+            if count > 0 {
+                let _ = r.next_int_bound(21);
+                for _ in 0..3 {
+                    r.triangle(0.0, 0.114_850_001_711_398_36);
+                }
+            }
+        }
+    }
+
+    /// A chest boat or chest minecart broken with entity_drops on spills its
+    /// slots in `remove` and then the emptied container again in
+    /// `chestVehicleDestroyed`; the hull item takes the item entity's own
+    /// random. The level random must end where vanilla's does.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_broken_chest_vehicle_draws_the_level_random_like_vanilla() {
+        let mut slots = vec![None; 27];
+        slots[0] = Some(ItemStack::new("minecraft:diamond", 5));
+        slots[4] = Some(ItemStack::new("minecraft:dirt", 8));
+        let mut counts = vec![0; 27];
+        counts[0] = 5;
+        counts[4] = 8;
+        for boat in [true, false] {
+            let mut game = server_game();
+            assert!(game.ui.rules.bool("entity_drops"));
+            let at = Vec3::new(8.5, 64.0, 8.5);
+            if boat {
+                let mut b = Boat::new(1, Arc::from("oak"), at, 0.0);
+                b.chest = true;
+                b.items = slots.clone();
+                game.boats.push(b);
+            } else {
+                let mut c = Minecart::new(1, CartKind::Chest, at);
+                c.items = slots.clone();
+                game.carts.push(c);
+            }
+            game.world.random = LegacyRandom::new(1234);
+            if boat {
+                assert_eq!(game.hurt_boat_result(0, 100.0, false), Some(true));
+                assert!(game.boats.is_empty());
+            } else {
+                assert!(game.hurt_cart_result(0, 100.0, false, false));
+                assert!(game.carts.is_empty());
+            }
+            let mut expected = LegacyRandom::new(1234);
+            vanilla_spill_draws(&mut expected, &counts);
+            vanilla_spill_draws(&mut expected, &[0; 27]);
+            assert_eq!(
+                game.world.random.next_long(),
+                expected.next_long(),
+                "boat: {boat}"
+            );
+            // The two piles and the hull item.
+            assert_eq!(game.dropped.len(), 3, "boat: {boat}");
+        }
     }
 }

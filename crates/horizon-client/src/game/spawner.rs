@@ -47,6 +47,13 @@ impl Game<'_> {
             .as_ref()
             .is_some_and(|t| t.contains(id))
     }
+    /// Whether `entity_type_exists` has a registry to answer from.
+    pub(super) fn entity_types_loaded(&self) -> bool {
+        self.spawners
+            .entity_types
+            .as_ref()
+            .is_some_and(|t| !t.is_empty())
+    }
     pub(super) fn load_entity_types(&mut self) {
         if self.spawners.entity_types.is_some() {
             return;

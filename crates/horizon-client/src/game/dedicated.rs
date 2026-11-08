@@ -1173,6 +1173,7 @@ impl Game<'_> {
                 Vec::new()
             },
             owner_profile: None,
+            singleplayer_profile: None,
         };
         let config = HubConfig {
             allow_flight: props.allow_flight,
@@ -1326,6 +1327,7 @@ impl Game<'_> {
         // `/stop`, or a stop signal (the shutdown hook's `halt`): either way the players and levels are
         // saved below, after the wait `[transfer]` may make (transfer.rs).
         while !self.stop_now(&state) {
+            self.server_tick_deadline = Some(next + self.clock.tick_duration());
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
                 watchdog.tick_due(next, self.clock.tick_duration());

@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "De Schlësselbond vun Ärem System huet net bannent {seconds} Sekonnen geäntwert. Kuckt, datt e leeft an entspaart ass, a start dann de Launcher nei.",
   "Can't read {name}'s sign-in: {why}": "D'Umeldung vun {name} kann net gelies ginn: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: benotzt d'Versioun {version}, gemaach fir den Horizon, deen s du spills",
+  "Recommended": "Recommandéiert",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Eng méi al Versioun, {version}, baut um Horizon, deen s du spills: Installéiere wielt se",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: Versioun {version} huet net gebaut, probéiere {older}",
+  "Use recommended (kept at {version})": "Recommandéiert benotzen (op {version} gehalen)"
 }

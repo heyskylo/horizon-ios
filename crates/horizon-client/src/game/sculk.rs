@@ -568,6 +568,8 @@ impl Game<'_> {
         Context {
             source: Some(Who::Player),
             owner: None,
+            source_uuid: None,
+            owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: self.spectator(),
             stepping_carefully: self.keys.held(Action::Sneak),
@@ -598,6 +600,8 @@ impl Game<'_> {
         Context {
             source: Some(Who::Mob(id)),
             owner: None,
+            source_uuid: None,
+            owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: false,
             stepping_carefully: false,
@@ -688,6 +692,7 @@ impl Game<'_> {
             return;
         }
         let ctx = ctx(self);
+        let ctx = self.with_vibration_uuids(ctx);
         for key in near {
             self.sculk_listen(key, event, pos, &ctx);
         }
@@ -730,6 +735,27 @@ impl Game<'_> {
             );
         }
         slots
+    }
+    /// The context with the saved identities of its source and owner, as
+    /// `VibrationInfo`'s constructor takes them from the entities when the
+    /// event is heard. Only what the context already names is filled.
+    fn with_vibration_uuids(&self, mut ctx: Context) -> Context {
+        if ctx.source_uuid.is_none() {
+            ctx.source_uuid = self.vibration_uuid(ctx.source);
+        }
+        if ctx.owner_uuid.is_none() {
+            ctx.owner_uuid = self.vibration_uuid(ctx.owner);
+        }
+        ctx
+    }
+    /// The saved UUID of a vibration's mob through the save layer's
+    /// `save_who_uuid`. `Who::Player` stays `None`: on a server it can be the
+    /// acting guest as well as the host, so it names no single entity here.
+    fn vibration_uuid(&self, who: Option<Who>) -> Option<[i32; 4]> {
+        match who {
+            Some(who @ Who::Mob(_)) => self.save_who_uuid(who),
+            _ => None,
+        }
     }
     /// The mob at `index` hears a game event, if it is a warden or an allay.
     fn mob_listen(&mut self, index: usize, event: &'static str, pos: [f64; 3], ctx: &Context) {
@@ -876,6 +902,8 @@ impl Game<'_> {
                     pos,
                     source: ctx.source,
                     owner: ctx.owner,
+                    source_uuid: ctx.source_uuid,
+                    owner_uuid: ctx.owner_uuid,
                 },
                 time,
             );
@@ -1189,6 +1217,7 @@ impl Game<'_> {
                     let d = [at[0] - dest[0], at[1] - dest[1], at[2] - dest[2]];
                     let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
                     let time = self.world.game_time;
+                    let source_uuid = self.vibration_uuid(Some(who));
                     if let Some(e) = self.sculk_entity(key) {
                         e.vibration.schedule(
                             Info {
@@ -1197,6 +1226,8 @@ impl Game<'_> {
                                 pos: at,
                                 source: Some(who),
                                 owner: None,
+                                source_uuid,
+                                owner_uuid: None,
                             },
                             time,
                         );

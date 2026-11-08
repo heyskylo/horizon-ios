@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "システムのキーリングが{seconds}秒以内に応答しませんでした。動作中でロックが解除されていることを確認してから、ランチャーを再起動してください。",
   "Can't read {name}'s sign-in: {why}": "{name}のサインイン情報を読み取れません: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon はデータパックの関数、関数タグ、条件、アイテム修飾、レシピ、ルートテーブル、進捗、村人の取引、ダメージ種別、ほとんどのタグ、ワールド生成の大部分（バイオーム、地物、構造物、ディメンション）を実行します。ワールドプリセットなど、その他のファイルはまだ読み込みません。",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} は今のところ Horizon に何も変えません。Horizon はその {files} をまだ読み込みません。"
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} は今のところ Horizon に何も変えません。Horizon はその {files} をまだ読み込みません。",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: プレイ中の Horizon 向けのバージョン {version} を使います",
+  "Recommended": "おすすめ",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "古いバージョン {version} はプレイ中の Horizon でビルドできます: インストールするとそれが選ばれます",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: バージョン {version} はビルドできませんでした。{older} を試します",
+  "Use recommended (kept at {version})": "推奨を使う ({version} に固定中)"
 }

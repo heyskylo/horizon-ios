@@ -2395,6 +2395,19 @@ mod tests {
     }
 
     #[test]
+    fn left_and_right_step_a_focused_choice_back_and_on() {
+        let mut s = Settings::default();
+        let mut ui = ui();
+        row(&mut ui, &s, Item::Horizon(H::EntityCulling));
+        focus_on(&mut ui, Item::Horizon(H::EntityCulling));
+        assert_eq!(key(&mut ui, &mut s, K::ArrowLeft), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+        assert_eq!(key(&mut ui, &mut s, K::ArrowRight), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+        assert_eq!(ui.focused_row(), Some(Item::Horizon(H::EntityCulling)));
+    }
+
+    #[test]
     fn entity_culling_precheck_slider_is_only_live_for_async() {
         let item = Item::Horizon(H::EntityCullingPrecheck);
         let mut s = Settings::default();

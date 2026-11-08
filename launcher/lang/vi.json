@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Chùm khóa của hệ thống không phản hồi trong {seconds} giây. Hãy đảm bảo nó đang chạy và đã được mở khóa, rồi khởi động lại trình khởi chạy.",
   "Can't read {name}'s sign-in: {why}": "Không thể đọc thông tin đăng nhập của {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: dùng phiên bản {version}, làm cho Horizon bạn đang chơi",
+  "Recommended": "Đề xuất",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Một phiên bản cũ hơn, {version}, build được trên Horizon bạn đang chơi: cài đặt sẽ chọn nó",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: phiên bản {version} không build được, đang thử {older}",
+  "Use recommended (kept at {version})": "Dùng bản đề xuất (đang giữ ở {version})"
 }

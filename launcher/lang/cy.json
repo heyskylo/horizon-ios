@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Wnaeth cylch allweddi eich system ddim ateb o fewn {seconds} eiliad. Gwnewch yn siŵr ei fod yn rhedeg ac wedi'i ddatgloi, yna ailgychwynnwch y lansiwr.",
   "Can't read {name}'s sign-in: {why}": "Methu darllen mewngofnodi {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: yn defnyddio fersiwn {version}, wedi'i gwneud ar gyfer yr Horizon rwyt ti'n ei chwarae",
+  "Recommended": "Argymhellir",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Mae fersiwn hŷn, {version}, yn adeiladu ar yr Horizon rwyt ti'n ei chwarae: mae gosod yn ei dewis",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: ni adeiladodd fersiwn {version}, yn rhoi cynnig ar {older}",
+  "Use recommended (kept at {version})": "Defnyddio'r un a argymhellir (wedi'i chadw ar {version})"
 }

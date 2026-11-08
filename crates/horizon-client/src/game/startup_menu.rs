@@ -64,6 +64,7 @@ impl StartupMenu {
                 name: options.player_name(),
                 cookies: None,
                 lan: false,
+                realm: false,
             })
         } else {
             options
@@ -219,11 +220,16 @@ impl StartupMenu {
                 creative,
                 create: Some(Box::new(options)),
             },
-            Action::Connect { address, lan } => PendingWorldEntry::Server {
+            Action::Connect {
+                address,
+                lan,
+                realm,
+            } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
                 cookies: None,
                 lan,
+                realm,
             },
             _ => return,
         };
@@ -366,12 +372,12 @@ pub(super) fn spawn_loader(
         .name("resource-loader".into())
         .spawn(move || {
             let mut pack_error = None;
-            let root = packs::startup_root(&vanilla_root, &settings.resource_packs, &[])
+            let base = mods::content_root(&vanilla_root, &settings.mods.enabled, &dev_mods);
+            let root = packs::startup_root(&vanilla_root, &base, &settings.resource_packs, &[])
                 .unwrap_or_else(|error| {
                     pack_error = Some(error.to_string());
-                    vanilla_root.clone()
+                    base.clone()
                 });
-            let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
             let result = load_resources(
                 root,
                 world.as_deref(),
@@ -1446,6 +1452,7 @@ mod tests {
             Action::Connect {
                 address: "localhost:25565".into(),
                 lan: true,
+                realm: false,
             },
             "Guest".into(),
         );

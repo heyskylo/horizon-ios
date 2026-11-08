@@ -653,15 +653,17 @@ fn pack_lighting(
     sky_light: bool,
 ) -> Vec<Light> {
     let open = if sky_light { 0xF0 } else { 0x00 };
+    let mut data = [open; 4096];
     (0..sections)
         .map(|si| {
             if si * 16 >= h {
                 return Light::Uniform(open);
             }
-            let mut data = Box::new([open; 4096]);
             for ly in 0..16 {
                 let y = si * 16 + ly;
                 if y >= h {
+                    let out_row = ly << 8;
+                    data[out_row..out_row + 256].fill(open);
                     continue;
                 }
                 let y_offset = y * (W * W);
@@ -674,7 +676,7 @@ fn pack_lighting(
                     }
                 }
             }
-            Light::packed(data)
+            Light::from_slice(&data)
         })
         .collect()
 }
@@ -1281,7 +1283,7 @@ fn relight_layer(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chunk::{HEIGHT, MIN_Y, SECTIONS};
 
@@ -1310,13 +1312,13 @@ mod tests {
         assert_eq!(dirty(&[(0, 0, 0)]).len(), 8);
     }
 
-    const AIR: u32 = 0;
+    pub(crate) const AIR: u32 = 0;
     const STONE: u32 = 1;
-    const TORCH: u32 = 2;
+    pub(crate) const TORCH: u32 = 2;
     const SLAB: u32 = 3;
     /// Air, stone, torch and a bottom slab (full bottom face, half sides,
     /// empty top), with a third face shape for the half sides.
-    fn tables() -> LightTables {
+    pub(crate) fn tables() -> LightTables {
         let cell = |dampening, emission, faces: [u16; 6]| Cell {
             dampening,
             emission,
@@ -1335,7 +1337,7 @@ mod tests {
             3,
         )
     }
-    fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
+    pub(crate) fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
         world_of(crate::chunk::ColumnLayout::VANILLA, edit)
     }
     /// Lit chunks around (0, 0) of `layout`, stone up to y 0.

@@ -112,6 +112,9 @@ pub struct BiomeInfo {
     /// `BiomeGenerationSettings.features`: the placed feature ids of each
     /// `GenerationStep.Decoration` step, in order.
     pub features: Vec<Vec<String>>,
+    /// The biome's environment attributes (`Biome.getAttributes`): its layer in the
+    /// environment attribute stack.
+    pub attributes: horizon_world::environment_attributes::AttributeMap,
 }
 impl BiomeInfo {
     fn ambient_particles(v: &Value) -> Vec<(ParticleType, f32)> {
@@ -277,6 +280,11 @@ impl BiomeInfo {
                         .collect()
                 })
                 .collect(),
+            attributes: horizon_world::environment_attributes::AttributeMap::parse(attributes)
+                .unwrap_or_else(|e| {
+                    log::warn!("biome attributes: {e}");
+                    Default::default()
+                }),
             name,
         }
     }
@@ -392,6 +400,17 @@ impl Biomes {
     }
     pub fn get(&self, id: u16) -> &BiomeInfo {
         &self.list[usize::from(id).min(self.list.len() - 1)]
+    }
+    /// The name of biome `id`, plains (as for an unknown name) when the id is
+    /// past this table: a column a server sent under its earlier, longer
+    /// registry (a proxy's previous server) keeps its ids until the next
+    /// login replaces it. `get` clamps such an id to the last entry instead,
+    /// so for that stale column the colours and this name can come from
+    /// different biomes until the login.
+    pub fn name(&self, id: u16) -> &str {
+        self.list
+            .get(usize::from(id))
+            .map_or("minecraft:plains", |b| b.name.as_str())
     }
     pub fn grass(&self, id: u16, x: f64, z: f64) -> u32 {
         let b = self.get(id);
@@ -623,6 +642,49 @@ mod pack_tests {
         assert!(!other.contains("minecraft:molten_peaks"));
         assert_eq!(other.get(2).water, 0x3F76E4);
         assert!(!other.has_packs());
+    }
+
+    /// A column keeps the ids of the table it was decoded with. When a
+    /// proxy's next server lacks a biome the last one added, that id is past
+    /// the next table, and it names plains instead of indexing past the end
+    /// (#12148: "the len is 67 but the index is 67").
+    #[test]
+    fn an_id_past_the_table_names_plains() {
+        let next = builtin(&["minecraft:meadow", "minecraft:plains", "minecraft:river"]);
+        let last = next.with_packs([("limbo:void", &json!({}))]);
+        let stale = last.id("limbo:void");
+        assert_eq!((stale, last.name(stale)), (3, "limbo:void"));
+        assert_eq!(next.name(stale), "minecraft:plains");
+        assert_eq!(next.name(u16::MAX), "minecraft:plains");
+        assert_eq!(next.name(2), "minecraft:river");
+    }
+}
+
+#[cfg(test)]
+impl Biomes {
+    /// Biomes from their files' JSON, by name, in id order: for tests elsewhere.
+    pub(crate) fn from_jsons(entries: &[(&str, Value)]) -> Self {
+        let maps = Colormaps {
+            grass: Vec::new(),
+            foliage: Vec::new(),
+            dry: Vec::new(),
+        };
+        let list: Vec<_> = entries
+            .iter()
+            .map(|(name, v)| BiomeInfo::from_json((*name).to_owned(), v, &maps))
+            .collect();
+        Self {
+            builtin: Arc::new(list.clone()),
+            index: list
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (b.name.clone(), i as u16))
+                .collect(),
+            list,
+            info_noise: SimplexNoise::with_skipped_offsets(&mut LegacyRandom::new(2345), true),
+            colormaps: Arc::new(maps),
+            packs: BTreeMap::new(),
+        }
     }
 }
 

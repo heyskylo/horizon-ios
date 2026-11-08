@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Níor fhreagair fáinne eochracha do chórais laistigh de {seconds} soicind. Cinntigh go bhfuil sé ag rith agus díghlasáilte, ansin atosaigh an lainseálaí.",
   "Can't read {name}'s sign-in: {why}": "Ní féidir síniú isteach {name} a léamh: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: leagan {version} á úsáid, déanta don Horizon a imríonn tú",
+  "Recommended": "Molta",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Tógann leagan níos sine, {version}, ar an Horizon a imríonn tú: roghnaíonn suiteáil é",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: níor tógadh leagan {version}, ag triail {older}",
+  "Use recommended (kept at {version})": "Úsáid an ceann molta (coinnithe ag {version})"
 }

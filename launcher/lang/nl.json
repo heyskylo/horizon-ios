@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "De sleutelbos van je systeem heeft niet binnen {seconds} seconden geantwoord. Zorg dat hij draait en ontgrendeld is en start daarna de launcher opnieuw.",
   "Can't read {name}'s sign-in: {why}": "Kan de aanmelding van {name} niet lezen: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon voert de functies, functietags, predicaten, voorwerpwijzigers, recepten, buittabellen, vorderingen, dorpelingenhandel, schadetypen, de meeste tags en het grootste deel van de wereldgeneratie (biomen, kenmerken, structuren, dimensies) van een datapack uit. Andere bestanden, zoals wereldvoorinstellingen, worden nog niet gelezen.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} zou in Horizon nog niets veranderen: Horizon leest de {files} ervan nog niet."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} zou in Horizon nog niets veranderen: Horizon leest de {files} ervan nog niet.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: gebruikt versie {version}, gemaakt voor de Horizon die je speelt",
+  "Recommended": "Aanbevolen",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Een oudere versie, {version}, bouwt op de Horizon die je speelt: installeren kiest die",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: versie {version} bouwde niet, probeer {older}",
+  "Use recommended (kept at {version})": "Aanbevolen gebruiken (vastgehouden op {version})"
 }

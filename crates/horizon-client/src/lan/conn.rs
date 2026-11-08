@@ -990,6 +990,17 @@ fn serve_login(
         .forwarding_secret
         .as_deref()
         .filter(|_| online.is_none() && !c.is_memory());
+    // `ServerLoginPacketListenerImpl.handleHello`: the integrated server's own player
+    // (the name matches `getSingleplayerProfile`) logs in as that profile — the account's
+    // UUID — never as an offline profile made from the name. Every other memory player
+    // (a splitscreen seat) stays offline; a LAN guest could not own the name in online
+    // mode, and this keeps an offline host's name from being taken over a memory room.
+    let singleplayer = shared
+        .config
+        .singleplayer_profile
+        .as_ref()
+        .filter(|(owner_name, _)| c.is_memory() && hello.name.eq_ignore_ascii_case(owner_name))
+        .map(|(owner_name, uuid)| (owner_name.clone(), *uuid));
     let (uuid, mut properties) = match (online, forwarding) {
         (Some(online), _) => {
             match authenticate(&mut c, shared, online, &hello.name, address, &user) {
@@ -1035,7 +1046,19 @@ fn serve_login(
                 return Err(err);
             }
         },
-        (None, None) => (offline_uuid(&hello.name), Vec::new()),
+        (None, None) => match singleplayer {
+            Some((owner_name, owner_uuid)) => {
+                name = owner_name;
+                let properties = shared
+                    .config
+                    .owner_profile
+                    .as_ref()
+                    .map(|profile| profile.properties().to_vec())
+                    .unwrap_or_default();
+                (owner_uuid, properties)
+            }
+            None => (offline_uuid(&hello.name), Vec::new()),
+        },
     };
     // The mods may hold the login for their answers, or refuse it, before the server's checks.
     if !c.is_memory() {
@@ -2226,6 +2249,27 @@ mod tests {
         );
         assert_eq!(owner.uuid, offline_uuid("Owner"));
         assert!(owner.properties.is_empty());
+    }
+
+    /// `ServerLoginPacketListenerImpl.handleHello`: the integrated server's own player
+    /// logs in as `getSingleplayerProfile`'s UUID, not the offline one its name makes;
+    /// anyone else through memory keeps the offline profile.
+    #[test]
+    fn the_integrated_owners_login_is_the_singleplayer_profile() {
+        let owner_uuid = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdefu128;
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            singleplayer_profile: Some(("Owner".into(), owner_uuid)),
+            ..crate::lan::NetConfig::loopback(0, "Owner - World".into(), 8)
+        };
+        let lan =
+            crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
+                .unwrap();
+        let owner = login_profile(Connection::local(lan.connect_local().unwrap()), "Owner");
+        assert_eq!(owner.uuid, owner_uuid);
+        let guest = login_profile(Connection::local(lan.connect_local().unwrap()), "Alex");
+        assert_eq!(guest.uuid, offline_uuid("Alex"));
     }
 
     fn unpack(out: Out) -> Vec<Vec<u8>> {

@@ -1253,6 +1253,13 @@ impl RealmsClient {
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
+    /// `RealmsClient.agreeToTos`: `POST mco/tos/agreed`, an empty body.
+    pub fn agree_to_tos(&self) -> Result<(), RealmsError> {
+        let url = self.url("mco/tos/agreed");
+        Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(""))?;
+        Ok(())
+    }
+
     /// `RealmsClient.backupsFor`: `GET worlds/{id}/backups`.
     pub fn backups_for(&self, realm_id: i64) -> Result<Vec<Backup>, RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/backups"));

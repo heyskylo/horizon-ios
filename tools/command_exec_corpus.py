@@ -1528,6 +1528,33 @@ def loot_world_pack_tables():
     ]
 
 
+def loot_give_full_inventory():
+    """LootCommand.playerGive: `Inventory.add` keeps what fits and throws nothing out. A drop
+    counts only when all of it went in, and always for a player with infinite materials
+    (creative)."""
+    import json
+    two_dirt = {'pools': [{'rolls': 1, 'entries': [{'type': 'minecraft:item', 'name': 'minecraft:dirt',
+                                                     'modifier': {'type': 'minecraft:set_count', 'count': 2}}]}]}
+    give = '/loot give @s loot ' + json.dumps(two_dirt)
+    dropped = '/execute if entity @e[type=minecraft:item,distance=..8]'
+    ops = setup('/clear @s', '/gamemode survival', '/kill @e[type=minecraft:item]',
+                *[f'/item replace entity @s container.{i} with minecraft:stone 64' for i in range(35)],
+                '/item replace entity @s container.35 with minecraft:dirt 63')
+    return ops + [
+        # One of the two fits: it stays, the other is lost, and the drop doesn't count.
+        cmd(give),
+        cmd('/clear @s minecraft:dirt 0'),
+        cmd(dropped),
+        # None fits.
+        cmd(give),
+        cmd(dropped),
+        *setup('/gamemode creative'),
+        cmd(give),
+        cmd(dropped),
+        *setup('/clear @s', '/kill @e[type=minecraft:item]'),
+    ]
+
+
 def aquatic_from_bucket():
     """Saved bucket flags default false, except the always-true tadpole (#7763)."""
     ops = []
@@ -3022,6 +3049,24 @@ def summoned_potions():
     ]
     ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25}]
     return ops
+
+
+def potion_contents_names():
+    """`PotionItem.getName` and `TippedArrowItem.getName`: a potion or a tipped arrow is
+    named by its contents (`PotionContents.getName`: their own `custom_name`, the potion,
+    else `empty`), over its `item_name`; without contents it takes the item's own name, and a
+    custom name still wins."""
+    stacks = [
+        'minecraft:potion[minecraft:item_name="Bottle",minecraft:potion_contents={potion:"minecraft:long_swiftness"}]',
+        'minecraft:potion',
+        'minecraft:splash_potion[minecraft:potion_contents={custom_effects:[{id:"minecraft:speed",duration:600}]}]',
+        'minecraft:lingering_potion[minecraft:item_name="Cloud",minecraft:potion_contents={potion:"minecraft:poison"}]',
+        'minecraft:tipped_arrow[minecraft:item_name="Dart",minecraft:potion_contents={potion:"minecraft:poison"}]',
+        'minecraft:potion[minecraft:potion_contents={potion:"minecraft:water",custom_name:"swiftness"}]',
+        'minecraft:potion[!minecraft:potion_contents,minecraft:item_name="Bottle"]',
+        'minecraft:potion[minecraft:custom_name="Mine",minecraft:potion_contents={potion:"minecraft:swiftness"}]',
+    ]
+    return [*setup('/clear @s'), *[cmd(f'/give @s {s}') for s in stacks], *setup('/clear @s')]
 
 
 def trial_spawner_passengers():
@@ -5093,6 +5138,22 @@ def zombie_nautilus_ignored_age():
 
 
 
+def boat_passenger_tree_cases(original_full=False):
+    try:
+        from .boat_passenger_tree_corpus import cases
+    except ImportError:
+        from boat_passenger_tree_corpus import cases
+    return cases(cmd, original_full)
+
+
+def effective_component_presence_cases():
+    try:
+        from .effective_component_presence_corpus import cases
+    except ImportError:
+        from effective_component_presence_corpus import cases
+    return cases(cmd)
+
+
 def jukebox_saved_clock_cases():
     try:
         from .jukebox_saved_clock_corpus import cases
@@ -5889,6 +5950,24 @@ def piston_push_ground():
     return ops
 
 
+def primed_tnt_box():
+    """#12020: `EntityTypes.TNT` is sized 0.98F, so its box is half 0.49F wide
+    and 0.98F tall, both widened from float: TNT stopped by a wall ends 0.49F
+    short of it and TNT stopped by a ceiling 0.98F below it, not at 0.49 and
+    0.98. NoGravity keeps the stops independent of gravity and drag."""
+    ops = []
+    for case, motion, blocks in (('wall', '0.6d,0.0d,0.0d', '/fill 33 209 30 33 213 33 stone'),
+                                 ('ceiling', '0.0d,0.6d,0.0d', '/fill 30 212 30 33 212 33 stone')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 36 air', blocks,
+                     '/summon minecraft:tnt 31.5 210 31.5 '
+                     f'{{fuse:200s,NoGravity:1b,Motion:[{motion}],Tags:["tnt_box"]}}')
+        for _ in range(3):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd('/data get entity @e[type=minecraft:tnt,tag=tnt_box,limit=1] Pos'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 36 air')
+    return ops
+
+
 def piston_tnt_effects():
     """#12023: `Entity.move(MoverType.PISTON)` uses up primed TNT's pending
     stuck multiplier without scaling the push, adds to its fall and resets it
@@ -6291,9 +6370,14 @@ ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
 ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
 ISOLATED_FUNCTION_FEEDBACK = frozenset({'fork function feedback'})
+ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
+ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 # Its sync turns on fixed seeds for the whole script: the groups after it would draw from them (tools/test_seed_sync_parity.py).
 ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC
+ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
+ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
+ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
 
 
 def groups():
@@ -6310,6 +6394,10 @@ def groups():
     except ImportError:
         from vehicle_kill_corpus import vehicle_kill_contents
     try:
+        from .vehicle_container_corpus import vehicle_containers
+    except ImportError:
+        from vehicle_container_corpus import vehicle_containers
+    try:
         from .data_literal_corpus import storage_literals
     except ImportError:
         from data_literal_corpus import storage_literals
@@ -6321,6 +6409,14 @@ def groups():
         from .potion_effect_icon_corpus import cases as potion_effect_icons
     except ImportError:
         from potion_effect_icon_corpus import cases as potion_effect_icons
+    try:
+        from .trader_llama_delay_corpus import llama_delay
+    except ImportError:
+        from trader_llama_delay_corpus import llama_delay
+    try:
+        from .guest_close_event_corpus import cases as guest_close_events
+    except ImportError:
+        from guest_close_event_corpus import cases as guest_close_events
     try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
@@ -6367,8 +6463,10 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     result = [
         ('setup', group_setup()),
+        ('guest container close event', guest_close_events()),
         ('spectral saved duration', spectral_saved_duration(cmd, setup)),
         ('item Health short load', item_health_load(cmd, setup)),
+        ('vehicle container saved fields', vehicle_containers(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
@@ -6401,6 +6499,8 @@ def groups():
         ('named smoke predicates', named_smoke_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
+        ('boat passenger tree', boat_passenger_tree_cases()),
+        ('effective component presence', effective_component_presence_cases()),
         ('jukebox saved clock', jukebox_saved_clock_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
@@ -6447,6 +6547,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
@@ -6494,6 +6595,7 @@ def groups():
         ('entity landing sensors', entity_landing_sensors()),
         ('loot set damage', loot_set_damage()),
         ('loot set name and components', loot_set_name_and_components()),
+        ('loot give full inventory', loot_give_full_inventory()),
         ('item NBT count bounds', item_nbt_count_bounds()),
         ('item block containers', item_block_containers()),
         ('world', world_misc()),
@@ -6525,9 +6627,11 @@ def groups():
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),
         ('summoned potions', summoned_potions()),
+        ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]
     result.insert(1, ('vehicle kill contents', vehicle_kill_contents(cmd)))
+    result.insert(1, ('trader llama NoAI delay', llama_delay(cmd)))
     return result

@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Сістэмная звязка ключоў не адказала на працягу {seconds} секунд. Пераканайцеся, што яна працуе і разблакаваная, затым перазапусціце лаўнчар.",
   "Can't read {name}'s sign-in: {why}": "Не ўдаецца прачытаць уваход {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: выкарыстоўваецца версія {version}, зробленая для Horizon, у які ты гуляеш",
+  "Recommended": "Рэкамендуецца",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Старэйшая версія, {version}, збіраецца на Horizon, у які ты гуляеш: усталёўка выбірае яе",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: версія {version} не сабралася, спрабуем {older}",
+  "Use recommended (kept at {version})": "Выкарыстоўваць рэкамендаваную (замацавана {version})"
 }

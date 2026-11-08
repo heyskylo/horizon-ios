@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "El llavero de tu sistema no respondió en {seconds} segundos. Comprueba que esté funcionando y desbloqueado y luego reinicia el launcher.",
   "Can't read {name}'s sign-in: {why}": "No se puede leer el inicio de sesión de {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon ejecuta las funciones, etiquetas de funciones, predicados, modificadores de objetos, recetas, tablas de botín, logros, comercios de aldeanos, tipos de daño, la mayoría de las etiquetas y la mayor parte de la generación del mundo (biomas, características, estructuras, dimensiones) de un paquete de datos. El resto, como los ajustes preestablecidos de mundo, aún no se lee.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} no cambiaría nada en Horizon todavía: Horizon aún no lee sus {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} no cambiaría nada en Horizon todavía: Horizon aún no lee sus {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: se usa la versión {version}, hecha para el Horizon que juegas",
+  "Recommended": "Recomendada",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Una versión anterior, {version}, compila en el Horizon que juegas: instalar la elige",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: la versión {version} no compiló, probando {older}",
+  "Use recommended (kept at {version})": "Usar la recomendada (fijada en {version})"
 }

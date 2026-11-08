@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Привезак за кључеве вашег система није одговорио у року од {seconds} секунди. Проверите да ли ради и да ли је откључан, па поново покрените покретач.",
   "Can't read {name}'s sign-in: {why}": "Није могуће прочитати пријаву за {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: користи се верзија {version}, направљена за Horizon који играш",
+  "Recommended": "Препоручено",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Старија верзија, {version}, гради се на Horizon-у који играш: инсталација бира њу",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: верзија {version} се није изградила, покушава се {older}",
+  "Use recommended (kept at {version})": "Користи препоручену (задржано на {version})"
 }

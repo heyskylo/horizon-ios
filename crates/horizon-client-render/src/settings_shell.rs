@@ -751,7 +751,8 @@ const SCROLL_RATE: f32 = 18.0;
 pub(crate) enum Value {
     /// A tick box.
     Switch(bool),
-    /// A value stepped between `<` `>`, as it reads now.
+    /// A value stepped between `<` `>`, as it reads now: a press steps it on, a Shift press back,
+    /// and focused, Left and Right do the same.
     Choice(String),
     /// A slider: left and right step it (`steps`: its stops, else a pixel of the track), a press
     /// on the track sets it (a controller's focus does the same).
@@ -992,7 +993,7 @@ pub(crate) trait Hosted {
     /// The one way a list scrolls: the wheel, a right stick and a D-pad past the view's edge.
     fn scroll(&mut self, s: &Settings, size: (f32, f32), amount: f32);
     /// Typing in the search field, Tab and the arrows between controls, Left and Right on a
-    /// slider, Enter or Space to press, Escape to leave.
+    /// slider or a choice, Enter or Space to press, Escape to leave.
     fn key(
         &mut self,
         s: &mut Settings,
@@ -1415,6 +1416,9 @@ impl<S: Screen> Shell<S> {
             key: matches!(row.value, Value::Key(..)).then_some(waits),
         };
         self::row(batch, atlas, cols, y, &view);
+        if row.live && matches!(row.value, Value::Choice(_)) {
+            crate::widgets::steps_value(cols.row(y));
+        }
         crate::widgets::last_narratable(|n| n.hint = Some(row.described().to_owned()));
     }
     /// The strip under the plate: the hovered or focused row's name and what it does; with none,
@@ -1737,6 +1741,14 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             self.screen.slide(s, row.id, next);
             self.did(&[DRAGGED]);
             return vec![DRAGGED];
+        }
+        // A choice's `<` `>`: Left steps it back and Right on, as a Shift press and a press.
+        if matches!(key, K::ArrowLeft | K::ArrowRight)
+            && let Some(row) = focused
+            && row.live
+            && matches!(row.value, Value::Choice(_))
+        {
+            return self.activate(s, row, key == K::ArrowLeft, None);
         }
         if matches!(
             key,
@@ -2301,6 +2313,43 @@ mod tests {
         assert_eq!(key(&mut shell, K::Enter), vec![CLICK, CHANGED]);
         assert_eq!(shell.screen.pressed, [(FIRST_FILLER + 30, false)]);
         assert_eq!(key(&mut shell, K::Escape), vec![Output::Done]);
+    }
+
+    #[test]
+    fn left_and_right_step_a_focused_choice_and_leave_other_rows() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let mut key = |shell: &mut Shell<Probe>, k| shell.key(&mut s, k, None, false, SIZE);
+        shell.set_focus(Some(Target::Row(CHOICE)));
+        // Right is a press, Left a Shift press: the screen's own way back, and the focus stays.
+        assert_eq!(key(&mut shell, K::ArrowRight), vec![CLICK, CHANGED]);
+        assert_eq!(key(&mut shell, K::ArrowLeft), vec![CLICK, CHANGED]);
+        assert_eq!(shell.screen.pressed, [(CHOICE, false), (CHOICE, true)]);
+        assert_eq!(shell.focus, Some(Target::Row(CHOICE)));
+        assert!(shell.changed);
+        // A row that isn't a choice: Left goes to the page list, as before.
+        shell.set_focus(Some(Target::Row(FIRST_FILLER)));
+        assert!(key(&mut shell, K::ArrowLeft).is_empty());
+        assert!(matches!(shell.focus, Some(Target::Page(_))));
+        assert_eq!(shell.screen.pressed.len(), 2);
+    }
+
+    #[test]
+    fn a_drawn_choice_tells_the_pad_its_arrows_step_it() {
+        let atlas = atlas();
+        let s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let mut batch = HudBatch::new([1708, 960]);
+        shell.draw(&s, &mut batch, &atlas, (0.0, 0.0), false, None);
+        crate::widgets::end_frame(u64::MAX);
+        let view = shell.view(&s, (batch.width, batch.height));
+        let rect_of = |id| {
+            let mut placed = shell.placed(&view);
+            view.cols.row(placed.find(|(r, _)| r.id == id).unwrap().1)
+        };
+        assert!(crate::widgets::last_steps_value(rect_of(CHOICE)));
+        assert!(!crate::widgets::last_steps_value(rect_of(SLIDER)));
+        assert!(!crate::widgets::last_steps_value(rect_of(FIRST_FILLER)));
     }
 
     /// A controller presses with a click, then moves its own focus: only keys show this one.

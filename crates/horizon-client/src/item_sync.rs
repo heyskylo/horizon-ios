@@ -109,6 +109,35 @@ fn glider_and_slot(
     (glider, slot)
 }
 
+/// The `consumable` and `blocks_attacks` the server's patch adds to `stack`,
+/// components this client otherwise reads past (a server's sword made to
+/// block, `diamond_sword[blocks_attacks={},consumable={...}]`): the added
+/// consumable's `Consumable.consumeTicks` (`consumeSeconds * 20`), and
+/// whether `blocks_attacks` is added.
+pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
+    let Some((added, _)) = stack
+        .data()
+        .and_then(|d| d.wire.patch())
+        .and_then(|p| horizon_protocol::item::WirePatch::decode(p).ok())
+    else {
+        return (None, false);
+    };
+    let mut out = (None, false);
+    for (kind, c) in &added {
+        match (*kind, c) {
+            (component::CONSUMABLE, Component::Raw(bytes)) => {
+                out.0 = Reader::new(bytes)
+                    .f32()
+                    .ok()
+                    .map(|seconds| (seconds * 20.0) as i32);
+            }
+            (component::BLOCKS_ATTACKS, _) => out.1 = true,
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -295,6 +324,35 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                     continue;
                 };
                 predicate
+            }
+            Component::TrimDirect { material, pattern } => {
+                use horizon_protocol::item::TrimHolder;
+                let material = match material {
+                    TrimHolder::Id(id) => {
+                        let Some(name) = synced.name("minecraft:trim_material", *id) else {
+                            continue;
+                        };
+                        Tag::String(name.into())
+                    }
+                    TrimHolder::Direct(value) => Tag::compound([
+                        ("palette_id", Tag::String(value.palette_id.as_str().into())),
+                        ("description", value.description.clone()),
+                    ]),
+                };
+                let pattern = match pattern {
+                    TrimHolder::Id(id) => {
+                        let Some(name) = synced.name("minecraft:trim_pattern", *id) else {
+                            continue;
+                        };
+                        Tag::String(name.into())
+                    }
+                    TrimHolder::Direct(value) => Tag::compound([
+                        ("asset_id", Tag::String(value.asset_id.as_str().into())),
+                        ("description", value.description.clone()),
+                        ("decal", Tag::Byte(i8::from(value.decal))),
+                    ]),
+                };
+                Tag::compound([("material", material), ("pattern", pattern)])
             }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
@@ -1054,6 +1112,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn direct_trim_uses_actual_model_on_both_sides_without_cached_wire() {
+        let source = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:diamond_chestplate",count:1,components:{"minecraft:trim":{material:{palette_id:"minecraft:gold",description:"Inline material"},pattern:{asset_id:"minecraft:coast",description:"Inline pattern",decal:0b}},"minecraft:custom_data":{keep:284}}}"#).unwrap().0;
+        let modeled = crate::save::item_from_nbt(&source).unwrap();
+        let network =
+            crate::lan::guest::stack_to_network(|_| 1, |_, _| None, &Some(modeled.clone()))
+                .unwrap();
+        assert!(matches!(
+            network.component(component::TRIM),
+            Some(Component::TrimDirect { .. })
+        ));
+        let mut writer = horizon_protocol::buf::Writer::new();
+        horizon_protocol::item::Slot::write(&Some(network), &mut writer);
+        let mut reader = Reader::new(&writer.data);
+        let decoded = horizon_protocol::item::Slot::read(&mut reader)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reader.remaining(), 0);
+        let mut names = vec![String::new(); component::TRIM as usize + 1];
+        names[component::TRIM as usize] = "minecraft:trim".into();
+        names[component::CUSTOM_DATA as usize] = "minecraft:custom_data".into();
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".into(),
+                    Ids::from_names(vec![
+                        "minecraft:air".into(),
+                        "minecraft:diamond_chestplate".into(),
+                    ]),
+                ),
+                (
+                    "minecraft:data_component_type".into(),
+                    Ids::from_names(names),
+                ),
+            ]
+            .into(),
+        };
+        let mut back = from_network(&decoded, &builtin, &Dynamic::default());
+        back.data_mut().wire = Default::default();
+        assert_eq!(back, modeled);
+        assert_eq!(crate::save::item_to_nbt(&back), source);
+        let again = crate::lan::guest::stack_to_network(|_| 1, |_, _| None, &Some(back)).unwrap();
+        assert!(matches!(
+            again.component(component::TRIM),
+            Some(Component::TrimDirect { .. })
+        ));
+    }
+
     /// What a creative client sends (`stack_to_network`) comes back whole on
     /// the server: damage, both enchantment lists, repair cost, name, trim,
     /// potion and stew effects.
@@ -1139,7 +1245,7 @@ mod tests {
         let item_name = Tag::compound([("translate", Tag::String("filled_map.monument".into()))]);
         d.other
             .push(("minecraft:item_name".into(), item_name.clone()));
-        d.trim = Some((Arc::from("minecraft:gold"), Arc::from("minecraft:sentry")));
+        d.trim = Some(("minecraft:gold".into(), "minecraft:sentry".into()));
         let id = |registry: &str, name: &str| {
             builtin
                 .get(registry)
@@ -1172,7 +1278,7 @@ mod tests {
         assert_eq!(d.other("minecraft:item_name"), Some(&item_name));
         assert_eq!(
             d.trim,
-            Some((Arc::from("minecraft:gold"), Arc::from("minecraft:sentry")))
+            Some(("minecraft:gold".into(), "minecraft:sentry".into()))
         );
         // PotionContents: the potion is a built-in registry, as a hub's
         // `SyncData::id` treats it, so the id has to come from there.

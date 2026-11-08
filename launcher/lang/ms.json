@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Keyring sistem anda tidak menjawab dalam masa {seconds} saat. Pastikan ia sedang berjalan dan tidak berkunci, kemudian mulakan semula pelancar.",
   "Can't read {name}'s sign-in: {why}": "Tidak dapat membaca log masuk {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: menggunakan versi {version}, dibuat untuk Horizon yang anda main",
+  "Recommended": "Disyorkan",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Versi lebih lama, {version}, boleh dibina pada Horizon yang anda main: memasang akan memilihnya",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: versi {version} gagal dibina, mencuba {older}",
+  "Use recommended (kept at {version})": "Guna yang disyorkan (dikekalkan pada {version})"
 }

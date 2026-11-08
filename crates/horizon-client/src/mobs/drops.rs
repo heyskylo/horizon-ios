@@ -228,8 +228,9 @@ pub fn slot_item(m: &Mob, slot: &str) -> Option<LootStack> {
         for (e, l) in &g.slots[index] {
             stack.enchantments.push((e.to_string(), *l as i32));
         }
-        if let Some((material, pattern)) = &g.trims[index] {
-            let trim = serde_json::json!({ "material": &**material, "pattern": &**pattern });
+        if let Some(trim) = &g.trims[index] {
+            let trim =
+                horizon_client_core::scoreboard::tag_to_json(&crate::item_data::trim::to_nbt(trim));
             stack.components.push(("minecraft:trim".to_owned(), trim));
         }
     }

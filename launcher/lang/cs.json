@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Systémová klíčenka neodpověděla do {seconds} sekund. Ujistěte se, že běží a je odemčená, a pak spouštěč restartujte.",
   "Can't read {name}'s sign-in: {why}": "Nelze přečíst přihlášení účtu {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: používá se verze {version}, vytvořená pro Horizon, který hraješ",
+  "Recommended": "Doporučeno",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Starší verze {version} se sestaví na Horizonu, který hraješ: instalace vybere ji",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: verze {version} se nesestavila, zkouší se {older}",
+  "Use recommended (kept at {version})": "Použít doporučenou (ponecháno na {version})"
 }

@@ -50,6 +50,8 @@ Cases:
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
 - graphics_shell: the Graphics screen on the settings shell: the D-pad goes from its Quality page into the rows, A
   turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
+- shell_choice_step: on Graphics, Left and Right on a focused choice (Preset) step it back and on, from the D-pad
+  and the arrow keys alike, and the focus stays; up and down leave the row, and LB goes to the page list.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
@@ -1684,6 +1686,65 @@ def graphics_shell(args, name):
     return check.failures
 
 
+PRESET = 'Preset'
+
+
+def shell_choice_step(args, name):
+    # In a world: the arrow keys go through `horizon-ctl key`, which needs one.
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('options', 'graphics')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # Down to the General page (the first press lands the focus), and across into its first row.
+        for _ in range(3):
+            if game.focused_label() == 'General':
+                break
+            game.pad('down')
+        check(game.focused_label() == 'General', f"down never reached General: {game.menu()['focus']}")
+        game.pad('right')
+        start = game.focused_label() or ''
+        row = game.focus()
+        check(start.startswith(PRESET), f'right from General went to {start}, not {PRESET}')
+        if not start.startswith(PRESET):
+            return check.failures
+
+        def reads():
+            return next((w.get('label') or '' for w in game.widgets() if tuple(w['bounds']) == row), '')
+        game.pad('right')
+        on = reads()
+        check(on != start and on.startswith(PRESET), f'D-pad right left {PRESET} as {on}')
+        check(game.focus() == row, f'D-pad right moved the focus off {PRESET} to {game.focus()}')
+        check(declared(game).get('Apply') is True, f'a step showed no Undo: {declared(game)}')
+        shot(game, 'shell-choice-right')
+        game.pad('left')
+        check(reads() == start, f'D-pad left did not step {PRESET} back: {reads()}, not {start}')
+        check(game.focus() == row, f'D-pad left moved the focus off {PRESET} to {game.focus()}')
+        # The arrow keys do what the D-pad does.
+        game.ctl('key', 'right', 'tap')
+        time.sleep(SETTLE)
+        check(reads() == on, f'the Right key left {PRESET} as {reads()}, not {on}')
+        game.ctl('key', 'left', 'tap')
+        time.sleep(SETTLE)
+        check(reads() == start, f'the Left key left {PRESET} as {reads()}, not {start}')
+        check(game.focus() == row, f'the arrow keys moved the focus off {PRESET} to {game.focus()}')
+        # Up and down leave the row; LB goes to the page list, on the page before.
+        game.pad('down')
+        check(game.focus() != row, 'down did not leave the choice')
+        game.pad('up')
+        check(game.focus() == row, f'up did not come back to {PRESET}: {game.focused_label()}')
+        game.pad('rb')
+        focus = game.menu()['focus'] or {}
+        check(str(focus.get('kind')).startswith('tab') and game.focused_label() == 'Quality',
+              f'RB from {PRESET} went to {game.focused_label()} ({focus})')
+        check(label_of(game, FOG) is not None, f'RB did not open Quality: {labels(game)}')
+        shot(game, 'shell-choice-pages')
+    finally:
+        game.quit()
+    return check.failures
+
+
 ZOOM_INSTALL = 'Zoom: install from Mods'
 # How far a group's name sits over its first row (`graphics_style::GROUP_ROW`): the list's top from the Mods note.
 GROUP_NAME_H = 14
@@ -3116,6 +3177,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
+         'shell_choice_step': shell_choice_step,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'key_row_a_x': key_row_a_x,

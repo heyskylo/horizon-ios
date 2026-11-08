@@ -1255,5 +1255,10 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "N'eo ket bet respontet gant alc'hwezaoueg ho reizhiad e-pad {seconds} eilenn. Gwiriit emañ o vont en-dro ha dibrennet, ha neuze adloc'hit al loc'her.",
   "Can't read {name}'s sign-in: {why}": "N'haller ket lenn kennask {name}: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: implijout a ra ar stumm {version}, graet evit an Horizon a c'hoarit",
+  "Recommended": "Erbedet",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Ur stumm koshoc'h, {version}, a sav war an Horizon a c'hoarit: staliañ a zibab anezhañ",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: n'eo ket savet ar stumm {version}, o klask {older}",
+  "Use recommended (kept at {version})": "Implijout an hini erbedet (miret war {version})"
 }
