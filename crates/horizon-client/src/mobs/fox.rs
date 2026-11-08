@@ -563,8 +563,9 @@ impl Goal for StrollThroughVillage {
         if riders::mob_controlled(m, w) {
             return false;
         }
-        // Level.isBrightOutside: the End has a fixed time, so never there.
-        if w.daylight && !w.end {
+        // Level.isBrightOutside: never in a dimension with a fixed time
+        // (the Nether, the End).
+        if w.daylight && !w.dimension_type.has_fixed_time {
             return false;
         }
         if m.random.next_int_bound(reduced(200)).unwrap_or(1) != 0 {
