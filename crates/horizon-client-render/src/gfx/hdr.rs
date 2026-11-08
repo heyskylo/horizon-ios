@@ -72,25 +72,29 @@ fn named(name: Option<&str>) -> Option<Output> {
 struct Targets {
     size: [u32; 2],
     frame: wgpu::Texture,
-    /// The world as `keep_world` kept it; on the layered frame, the frame as the world and the
-    /// hand marked it, for `resolve`.
+    /// The world as `keep_world` kept it; on the layered frame, the frame as `resolve` (the
+    /// world and the hand marked it) or `tonemap` found it.
     world: wgpu::Texture,
     coverage: Option<wgpu::Texture>,
     /// The layered frame's HUD target: what the HUD draws on.
     hud: Option<wgpu::Texture>,
     group: wgpu::BindGroup,
-    /// The layered frame's passes' bindings: `resolve`, `keep_world` and `composite`.
+    /// The layered frame's passes' bindings: `resolve` (and `tonemap`), `keep_world` and
+    /// `composite`.
     passes: Option<[wgpu::BindGroup; 3]>,
 }
 
 /// The float frame with HUD coverage (`hud_coverage::supported`, docs/design/hdr-linear-light.md
 /// "The HUD and menus"): the world's marks become light once, after the world and the hand
-/// (`resolve`); the camera overlays draw on that light; the HUD draws on a target of its own,
+/// (`resolve`); the tone curve eases it into the peak after the post effects (`tonemap`); the
+/// camera overlays draw on that light; the HUD draws on a target of its own,
 /// the world clipped to white (`keep_world`); and the last pass composites the HUD over the
 /// world's light by its coverage (`fs_hdr_layered`), as the menu blur does before it blurs
 /// (`composite`).
 struct Layered {
     resolve: (wgpu::BindGroupLayout, wgpu::RenderPipeline),
+    /// Reads what `resolve` reads.
+    tonemap: wgpu::RenderPipeline,
     keep: (wgpu::BindGroupLayout, wgpu::RenderPipeline),
     composite: (wgpu::BindGroupLayout, wgpu::RenderPipeline),
     /// What `resolve` and `composite` read, written before they run (`begin`).
@@ -329,8 +333,10 @@ impl Hdr {
                 let pipeline = pass(label, &layout, entry, format);
                 (layout, pipeline)
             };
+            let resolve = with("Horizon HDR marks to light", &[1], true, "fs_resolve");
             Layered {
-                resolve: with("Horizon HDR marks to light", &[1], true, "fs_resolve"),
+                tonemap: pass("Horizon HDR tone curve", &resolve.0, "fs_tonemap", format),
+                resolve,
                 keep: with("Horizon HDR HUD backdrop", &[0], false, "fs_keep"),
                 composite: with("Horizon HDR composite", &[0, 4, 5], true, "fs_composite"),
                 params: params(),
@@ -532,10 +538,32 @@ impl Hdr {
     }
 
     /// On the layered frame, after the world and the hand drew and marked it: the marks
-    /// become light in the frame (`fs_resolve`), read from a copy of it in the world target.
+    /// become light in the frame (`fs_resolve`).
     pub fn resolve(
         &self,
         encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
+        self.redraw(encoder, |l| &l.resolve.1, "HDR marks to light", timing);
+    }
+
+    /// On the layered frame, after the post effects and before the camera overlays: the tone
+    /// curve eases the light into the peak (`fs_tonemap`).
+    pub fn tonemap(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
+        self.redraw(encoder, |l| &l.tonemap, "HDR tone curve", timing);
+    }
+
+    /// The layered frame drawn again by `pipeline`, which reads it from a copy in the world
+    /// target.
+    fn redraw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: impl Fn(&Layered) -> &wgpu::RenderPipeline,
+        label: &'static str,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let (Some(l), Some(t)) = (&self.layered, &self.targets) else {
@@ -550,14 +578,7 @@ impl Hdr {
             t.frame.size(),
         );
         let view = t.frame.create_view(&Default::default());
-        Self::draw(
-            encoder,
-            &l.resolve.1,
-            group,
-            &view,
-            "HDR marks to light",
-            timing,
-        );
+        Self::draw(encoder, pipeline(l), group, &view, label, timing);
     }
 
     /// On the layered frame: the picture so far (`fs_composite`), as the frame stores light,
@@ -1072,7 +1093,8 @@ mod tests {
             return;
         };
         // What the last pass shows of a world pixel nothing covers, from today's frame
-        // (`layered` false) or the layered one, whose marks turn into light before it.
+        // (`layered` false) or the layered one, whose marks turn into light before it, then
+        // pass the tone curve.
         let shown = |layered: bool, world: [f64; 4]| {
             let mut hdr =
                 Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, layered, None);
@@ -1082,6 +1104,7 @@ mod tests {
             if layered {
                 hdr.begin(&queue, true);
                 hdr.resolve(&mut encoder, None);
+                hdr.tonemap(&mut encoder, None);
                 hdr.keep_world(&mut encoder, None);
                 super::super::hud_coverage::clear(&mut encoder, &hdr.coverage_view().unwrap());
             } else {
@@ -1090,7 +1113,8 @@ mod tests {
             let capture = hdr.capture(&device, &queue, &mut encoder, true).unwrap();
             texel(&device, &queue, encoder, &capture)
         };
-        // Unmarked, below white and above it; HDR lighting; light sources of each tier.
+        // Unmarked, below white and above it; HDR lighting; light sources of each tier: all up to
+        // the tone curve's knee, which the curve leaves as they are.
         for world in [
             [0.5, 0.4, 0.3, 1.0],
             [1.5, 1.2, 0.6, 1.0],
@@ -1110,6 +1134,79 @@ mod tests {
                 assert!(layered[0] > shown(true, [world[0], world[1], world[2], 1.0])[0]);
             }
         }
+    }
+
+    #[test]
+    fn the_tone_curve_eases_light_into_the_peak() {
+        let Some((device, queue)) = gpu() else {
+            return;
+        };
+        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
+        (hdr.paper_white, hdr.peak) = (203.0, 1000.0);
+        let headroom = 1000.0 / 203.0;
+        // The frame holding `color` (in gamma, as it stores light) after `passes` ran on it.
+        let after =
+            |hdr: &mut Hdr, color: [f64; 4], passes: &dyn Fn(&Hdr, &mut wgpu::CommandEncoder)| {
+                let frame = hdr.frame(&device, [1, 1]);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                fill(&mut encoder, &frame, color);
+                hdr.begin(&queue, true);
+                passes(hdr, &mut encoder);
+                texel(&device, &queue, encoder, &frame)
+            };
+        let tonemap = |hdr: &Hdr, encoder: &mut wgpu::CommandEncoder| hdr.tonemap(encoder, None);
+        // Linear light in and out, in units of paper white.
+        let eased = |hdr: &mut Hdr, light: [f32; 3]| {
+            let [r, g, b] = light.map(|c| f64::from(c.powf(1.0 / 2.2)));
+            let [r, g, b, a] = after(hdr, [r, g, b, 1.0], &tonemap);
+            assert_eq!(a, 1.0);
+            [r, g, b].map(|c| c.powf(2.2))
+        };
+        let near = |got: f32, want: f32| (got - want).abs() <= 0.005 * want.max(1.0);
+        // Up to the knee (60% of the peak) the light stays exactly as stored.
+        for light in [0.0f32, 0.5, 1.0, 2.0, 2.9] {
+            let g = f64::from(light.powf(1.0 / 2.2));
+            let stored = after(&mut hdr, [g, g * 0.5, 0.0, 1.0], &|_, _| {});
+            assert_eq!(
+                after(&mut hdr, [g, g * 0.5, 0.0, 1.0], &tonemap),
+                stored,
+                "{light}"
+            );
+        }
+        // Past it, BT.2390's EETF in PQ at 203 and 1000 nits, with the source's peak at 2771
+        // nits (13.7 times paper white), worked out apart from the shader.
+        for (light, want) in [
+            (3.5, 3.43791),
+            (4.0, 3.78351),
+            (headroom, 4.23556),
+            (8.0, 4.82043),
+            (12.0, 4.92462),
+            (50.0, headroom),
+        ] {
+            let [r, ..] = eased(&mut hdr, [light; 3]);
+            assert!(near(r, want), "{light}: {r}, not {want}");
+        }
+        // It rises, stays under the peak, and the brightest channel scales the others: the
+        // light keeps its hue.
+        let mut last = 0.0;
+        for i in 0..40 {
+            let light = 2.5 * 1.08f32.powi(i);
+            let [r, g, b] = eased(&mut hdr, [light, light / 4.0, 0.0]);
+            assert!(r >= last - 0.001 && r <= headroom * 1.002, "{light}: {r}");
+            assert!(near(g * 4.0, r) && b == 0.0, "{light}: {r} {g} {b}");
+            last = r;
+        }
+        // No headroom (a peak below paper white): a clip at white, channel by channel.
+        hdr.peak = 150.0;
+        let [r, g, b] = eased(&mut hdr, [1.5, 0.5, 0.2]);
+        assert!(r == 1.0 && near(g, 0.5) && near(b, 0.2), "{r} {g} {b}");
+        // HDR lighting's gain stays past the knee until the curve: the marks become light
+        // without easing.
+        hdr.peak = 1000.0;
+        let resolve = |hdr: &Hdr, encoder: &mut wgpu::CommandEncoder| hdr.resolve(encoder, None);
+        let [r, ..] = after(&mut hdr, [1.0, 1.0, 1.0, 0.76], &resolve);
+        let gain = 1.0 + 3.0 * (1.0 - 194.0 / 255.0) / 0.24;
+        assert!(near(r.powf(2.2), gain), "{r}");
     }
 
     #[test]
