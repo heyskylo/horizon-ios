@@ -288,6 +288,11 @@ impl Game<'_> {
             return;
         }
         let hardware = match self.pad.feed {
+            // A scripted run leaves the person's pad at rest and unread, as the window drops
+            // their keys and mouse: a read makes a newly touched pad the active one, which lets
+            // go of the run's A held in a menu. A held button lets go as the run starts and is
+            // held again after it.
+            _ if self.scripted_run() => PadState::default(),
             Some(state) => state,
             None => self.pad.read(),
         };
