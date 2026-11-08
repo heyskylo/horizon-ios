@@ -306,7 +306,7 @@
   "Waits for the display's refresh: no tearing, a little latency.": "Waits for the display's refresh: no tearing, a little latency.",
   "Size of menus and the HUD.": "Size of menus and the HUD.",
   "Sets the options below together. Changing one makes it Custom.": "Sets the options below together. Changing one makes it Custom.",
-  "Lava, fire and sunlight shine brighter than white. Auto follows system HDR.": "Lava, fire and sunlight shine brighter than white. Auto follows system HDR.",
+  "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
   "Your display's darkest black. 0 for OLED; LCDs glow a little.": "Your display's darkest black. 0 for OLED; LCDs glow a little.",
   "How bright highlights get. Auto: the peak your system reports.": "How bright highlights get. Auto: the peak your system reports.",
   "How bright white paper and menus look. Auto: your desktop's white.": "How bright white paper and menus look. Auto: your desktop's white.",
