@@ -2036,13 +2036,13 @@ impl Game<'_> {
         if navigation::arrived(p, g.target, g.near) {
             return Some(
                 json!({ "ok": true, "arrived": true, "position": p, "target": g.target,
-                                "distance": dist(p, g.target), "warning": g.warning }),
+                                "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target), "warning": g.warning }),
             );
         }
         if timed_out {
             return Some(
                 json!({ "error": "timed out before arriving", "arrived": false, "position": p,
-                                "target": g.target, "distance": dist(p, g.target), "warning": g.warning }),
+                                "target": g.target, "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target), "warning": g.warning }),
             );
         }
         let previous_next = g.next;
@@ -2065,7 +2065,7 @@ impl Game<'_> {
                 if g.replans > 3 {
                     return Some(
                         json!({ "error": "stuck: cannot make progress", "arrived": false,
-                        "position": p, "target": g.target, "distance": dist(p, g.target) }),
+                        "position": p, "target": g.target, "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target) }),
                     );
                 }
                 if g.next > 0 && g.next < g.path.nodes.len() {
@@ -2084,7 +2084,7 @@ impl Game<'_> {
                 return Some(
                     json!({ "error": "no further walking progress through loaded terrain",
                     "arrived": false, "position": p, "target": g.target,
-                    "distance": dist(p, g.target), "warning": g.warning }),
+                    "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target), "warning": g.warning }),
                 );
             };
             g.path = path;
