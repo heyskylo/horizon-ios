@@ -514,6 +514,7 @@ impl Game<'_> {
                         | "minecraft:experience_bottle"
                         | "minecraft:fireball"
                         | "minecraft:small_fireball"
+                        | "minecraft:dragon_fireball"
                         | "minecraft:wind_charge"
                         | "minecraft:breeze_wind_charge"
                         | "minecraft:wither_skull"

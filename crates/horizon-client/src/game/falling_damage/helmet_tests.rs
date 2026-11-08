@@ -48,6 +48,9 @@ fn falling_impacts_wear_the_helmet_before_normal_armor_and_reduction() {
     )))
     .unwrap();
     for (case_index, case) in cases.as_array().unwrap().iter().enumerate() {
+        // The `mob_attack` cases are ordinary sources (outside
+        // `damages_helmet`): the piece that breaks on the hit must not reduce
+        // that same hit, while one that survives still does (#11696).
         for path in 0..2 {
             let index = case_index * 2 + path;
             game.player = Some(PlayerMotion::new(game.motion, position).unwrap());

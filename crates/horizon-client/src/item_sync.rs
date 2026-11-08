@@ -317,6 +317,16 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                 };
                 text
             }
+            // `DeathProtection`: the effects a stack runs when it saves its
+            // holder. The activation animation's hand lookup reads them, and
+            // an item like an apple with the component keeps its own look
+            // instead of a plain totem's (#12632).
+            Component::Raw(bytes) if *kind == component::DEATH_PROTECTION => {
+                let Some(protection) = death_protection_tag(bytes, builtin) else {
+                    continue;
+                };
+                protection
+            }
             // AdventureModePredicate: the blocks an adventure player may break
             // or place on, which this client matches as the server does.
             Component::Raw(bytes) if matches!(*kind, component::CAN_BREAK | CAN_PLACE_ON) => {
@@ -530,10 +540,14 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                 let hidden = hidden
                     .iter()
                     .filter_map(|id| Some(Tag::String(name(*id)?.into())));
-                Tag::compound([
-                    ("hide_tooltip", Tag::Byte(i8::from(*hide))),
-                    ("hidden_components", Tag::List(hidden.collect())),
-                ])
+                // As `OptionalFieldCodec`, the saved form leaves `hide_tooltip`
+                // out when it is false; `decode_components` compares the raid
+                // captain banner's tooltip against that form exactly.
+                let mut entries = vec![("hidden_components", Tag::List(hidden.collect()))];
+                if *hide {
+                    entries.push(("hide_tooltip", Tag::Byte(1)));
+                }
+                Tag::compound(entries)
             }
         };
         entries.push((key, value));
@@ -544,6 +558,16 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
             if *id == component::MAX_STACK_SIZE {
                 map.insert(
                     "!minecraft:max_stack_size".into(),
+                    Tag::Compound(Default::default()),
+                );
+            }
+            // A removal the item's own prototype would otherwise provide:
+            // `totem_of_undying[!death_protection]` must not keep protecting.
+            if *id == component::DEATH_PROTECTION
+                && let Some(name) = name(*id)
+            {
+                map.insert(
+                    format!("!{name}").as_str().into(),
                     Tag::Compound(Default::default()),
                 );
             }
@@ -684,6 +708,170 @@ fn sign_text_tag(bytes: &[u8]) -> Option<Tag> {
     text.push(("color", Tag::String(dye_name(r.varint().ok()?).into())));
     text.push(("has_glowing_text", Tag::Byte(i8::from(r.bool().ok()?))));
     Some(Tag::compound(text))
+}
+
+/// How deep a `ConsumeEffect`'s hidden effects may nest: deeper than vanilla's
+/// own effects ever go, shallow enough not to exhaust the stack on hostile bytes.
+const MAX_EFFECT_NESTING: u32 = 32;
+
+/// `DeathProtection.STREAM_CODEC` (component 36) as `DeathProtection.CODEC`
+/// saves it: `death_effects` (absent when empty), each one a `ConsumeEffect` in
+/// its codec's form. The activation animation's hand lookup reads this
+/// (`game::totem`), so an item carrying the component is drawn as itself.
+fn death_protection_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
+    let mut r = Reader::new(bytes);
+    let n = r.count(r.remaining()).ok()?;
+    let mut effects = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        effects.push(consume_effect_tag(&mut r, builtin, 0)?);
+    }
+    (r.remaining() == 0).then_some(())?;
+    Some(Tag::compound(if effects.is_empty() {
+        Vec::new()
+    } else {
+        vec![("death_effects", Tag::List(effects))]
+    }))
+}
+
+/// One `ConsumeEffect.STREAM_CODEC` as `ConsumeEffect.CODEC` saves it: a `type`
+/// then that type's fields, with a field at its default left out.
+fn consume_effect_tag(r: &mut Reader, builtin: &Builtin, depth: u32) -> Option<Tag> {
+    if depth > MAX_EFFECT_NESTING {
+        return None;
+    }
+    let mut fields: Vec<(&str, Tag)> = Vec::new();
+    match r.varint().ok()? {
+        // apply_effects: effects, probability.
+        0 => {
+            fields.push(("type", Tag::String("minecraft:apply_effects".into())));
+            let n = r.count(r.remaining()).ok()?;
+            let mut effects = Vec::with_capacity(n.min(64));
+            for _ in 0..n {
+                effects.push(mob_effect_tag(r, builtin, depth + 1)?);
+            }
+            fields.push(("effects", Tag::List(effects)));
+            let probability = r.f32().ok()?;
+            if probability.to_bits() != 1.0f32.to_bits() {
+                fields.push(("probability", Tag::Float(probability.to_bits())));
+            }
+        }
+        // remove_effects: a mob effect holder set, a tag or its entries.
+        1 => {
+            fields.push(("type", Tag::String("minecraft:remove_effects".into())));
+            fields.push((
+                "effects",
+                holder_set_tag(r, "minecraft:mob_effect", builtin)?,
+            ));
+        }
+        2 => fields.push(("type", Tag::String("minecraft:clear_all_effects".into()))),
+        // teleport_randomly: diameter, directional particles.
+        3 => {
+            fields.push(("type", Tag::String("minecraft:teleport_randomly".into())));
+            let diameter = r.f32().ok()?;
+            if diameter.to_bits() != 16.0f32.to_bits() {
+                fields.push(("diameter", Tag::Float(diameter.to_bits())));
+            }
+            if !r.bool().ok()? {
+                fields.push(("directional_particles", Tag::Byte(0)));
+            }
+        }
+        // play_sound.
+        4 => {
+            fields.push(("type", Tag::String("minecraft:play_sound".into())));
+            fields.push(("sound", sound_tag(r, builtin)?));
+        }
+        _ => return None,
+    }
+    Some(Tag::compound(fields))
+}
+
+/// `MobEffectInstance.CODEC`: the effect's identifier and its details.
+fn mob_effect_tag(r: &mut Reader, builtin: &Builtin, depth: u32) -> Option<Tag> {
+    let id = builtin
+        .get("minecraft:mob_effect")?
+        .name(r.varint().ok()?)?;
+    let Tag::Compound(mut details) = mob_effect_details_tag(r, depth)? else {
+        return None;
+    };
+    details.insert("id".into(), Tag::String(id.into()));
+    Some(Tag::Compound(details))
+}
+
+/// `MobEffectInstance.Details.MAP_CODEC`: amplifier, duration, ambient,
+/// show_particles, show_icon, then the hidden effect's details.
+fn mob_effect_details_tag(r: &mut Reader, depth: u32) -> Option<Tag> {
+    if depth > MAX_EFFECT_NESTING {
+        return None;
+    }
+    let amplifier = r.varint().ok()?;
+    let duration = r.varint().ok()?;
+    let ambient = r.bool().ok()?;
+    let particles = r.bool().ok()?;
+    let icon = r.bool().ok()?;
+    let mut fields: Vec<(&str, Tag)> = Vec::new();
+    if amplifier != 0 {
+        fields.push(("amplifier", Tag::Byte(amplifier as i8)));
+    }
+    if duration != 0 {
+        fields.push(("duration", Tag::Int(duration)));
+    }
+    if ambient {
+        fields.push(("ambient", Tag::Byte(1)));
+    }
+    if !particles {
+        fields.push(("show_particles", Tag::Byte(0)));
+    }
+    fields.push(("show_icon", Tag::Byte(i8::from(icon))));
+    if r.bool().ok()? {
+        fields.push(("hidden_effect", mob_effect_details_tag(r, depth + 1)?));
+    }
+    Some(Tag::compound(fields))
+}
+
+/// `ByteBufCodecs.holderSet`: a tag as `#name`, a lone entry as itself, else a
+/// list of names.
+fn holder_set_tag(r: &mut Reader, registry: &str, builtin: &Builtin) -> Option<Tag> {
+    match r.varint().ok()? {
+        0 => Some(Tag::String(
+            format!("#{}", r.string(32767).ok()?).as_str().into(),
+        )),
+        n => {
+            let count = usize::try_from(n.checked_sub(1)?).ok()?;
+            if count > r.remaining() {
+                return None;
+            }
+            let ids = builtin.get(registry)?;
+            let mut names: Vec<Tag> = Vec::with_capacity(count);
+            for _ in 0..count {
+                names.push(Tag::String(ids.name(r.varint().ok()?)?.into()));
+            }
+            Some(match names.len() {
+                1 => names.pop()?,
+                _ => Tag::List(names),
+            })
+        }
+    }
+}
+
+/// `SoundEvent.STREAM_CODEC` as `SoundEvent.CODEC` saves it: the event's name,
+/// or the event itself (`sound_id` and an optional `range`).
+fn sound_tag(r: &mut Reader, builtin: &Builtin) -> Option<Tag> {
+    match r.varint().ok()? {
+        0 => {
+            let id = r.string(32767).ok()?;
+            let mut fields: Vec<(&str, Tag)> = vec![("sound_id", Tag::String(id.as_str().into()))];
+            if r.bool().ok()? {
+                fields.push(("range", Tag::Float(r.f32().ok()?.to_bits())));
+            }
+            Some(Tag::compound(fields))
+        }
+        n => Some(Tag::String(
+            builtin
+                .get("minecraft:sound_event")?
+                .name(n.checked_sub(1)?)?
+                .into(),
+        )),
+    }
 }
 
 /// `ItemContainerContents.STREAM_CODEC`, one optional template per slot, as
@@ -1310,6 +1498,75 @@ mod tests {
             back.data().map(|d| d.stew_effects.clone()),
             Some(vec![(Arc::from("minecraft:fire_resistance"), 60)])
         );
+    }
+
+    /// The raid captain's banner keeps the name, rarity and hidden pattern
+    /// layers `Raid.getBannerComponentPatch` gives it, so a guest's copy reads
+    /// as the ominous banner rather than a white one (#12530).
+    #[test]
+    fn an_ominous_banner_keeps_its_name_across_the_wire() {
+        use horizon_protocol::buf::{Codec, Reader, Writer};
+        use horizon_protocol::item::Slot;
+        let mut components = vec![String::new(); component::BANNER_PATTERNS as usize + 1];
+        for (id, name) in [
+            (component::ITEM_NAME, "minecraft:item_name"),
+            (component::RARITY, "minecraft:rarity"),
+            (component::TOOLTIP_DISPLAY, "minecraft:tooltip_display"),
+            (component::BANNER_PATTERNS, "minecraft:banner_patterns"),
+        ] {
+            components[id as usize] = name.to_owned();
+        }
+        let items = ["minecraft:air", "minecraft:white_banner"];
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".to_owned(),
+                    Ids::from_names(items.iter().map(|s| s.to_string()).collect()),
+                ),
+                (
+                    "minecraft:data_component_type".to_owned(),
+                    Ids::from_names(components),
+                ),
+            ]
+            .into(),
+        };
+        let layers = crate::item_data::OMINOUS_LAYERS;
+        let dynamic = Dynamic {
+            registries: [(
+                "minecraft:banner_pattern".to_owned(),
+                layers
+                    .iter()
+                    .map(|(pattern, _)| (format!("minecraft:{pattern}"), None))
+                    .collect(),
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let id = |registry: &str, name: &str| {
+            builtin
+                .get(registry)
+                .and_then(|ids| ids.id(name))
+                .or_else(|| dynamic.id(registry, name))
+        };
+        let wire = crate::lan::guest::stack_to_network(
+            |name| id("minecraft:item", name).unwrap_or(0),
+            id,
+            &Some(crate::mobs::raider::ominous_banner()),
+        );
+        // Read it as a peer does: the slot codec, then the components.
+        let mut w = Writer::new();
+        Slot::write(&wire, &mut w);
+        let mut r = Reader::new(&w.data);
+        let read = Slot::read(&mut r).unwrap().unwrap();
+        assert_eq!(r.remaining(), 0);
+        let back = from_network(&read, &builtin, &dynamic);
+        let d = back.data().expect("components");
+        assert!(d.ominous_banner, "the name reads as the ominous banner");
+        assert_eq!(d.banner_patterns.len(), layers.len());
+        // The modelled parts are not duplicated into `other`.
+        assert_eq!(d.other("minecraft:item_name"), None);
+        assert_eq!(d.other("minecraft:rarity"), None);
+        assert_eq!(d.other("minecraft:tooltip_display"), None);
     }
 
     /// A painting's `painting/variant` (a `painting_variant` holder, id 109)
