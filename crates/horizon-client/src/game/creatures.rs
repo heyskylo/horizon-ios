@@ -4192,29 +4192,22 @@ impl Game<'_> {
         let events_before = self.player.as_ref().map_or(0, |p| p.events.len());
         let mut resolved_damage = None;
         let damage_outcome = if let Some(id) = self.health_resources.damage.id(damage_type) {
-            if self
+            // Every source that reaches the armor boundary wears it first:
+            // `getDamageAfterArmorAbsorb` calls `hurtArmor` before it reads
+            // the armor value, so a piece that breaks on this hit takes no
+            // part in the reduction of the hit that broke it (#11696). The
+            // hit's own advancement keeps the helmet phase's reported amount.
+            let damages_helmet = self
                 .health_resources
                 .damage
-                .in_tag(id, "minecraft:damages_helmet")
-            {
-                self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
-                    .map(|(outcome, actual)| {
+                .in_tag(id, "minecraft:damages_helmet");
+            self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
+                .map(|(outcome, actual)| {
+                    if damages_helmet {
                         resolved_damage = Some(actual);
-                        outcome
-                    })
-            } else if let Some(player) = self.player.as_mut() {
-                player.hurt_caused_by(
-                    &self.health_resources,
-                    self.world.health_rules,
-                    id,
-                    amount,
-                    blocking,
-                    living_cause,
-                    causing,
-                )
-            } else {
-                Ok(Default::default())
-            }
+                    }
+                    outcome
+                })
         } else {
             Ok(Default::default())
         };
@@ -4374,15 +4367,8 @@ impl Game<'_> {
     pub(super) fn hurt_player_by(&mut self, damage_type: &str, amount: f32) {
         let mut canceled = false;
         if !self.creative
-            && let Some(player) = self.player.as_mut()
             && let Some(id) = self.health_resources.damage.id(damage_type)
-            && let Ok(o) = player.hurt_blocking(
-                &self.health_resources,
-                self.world.health_rules,
-                id,
-                amount,
-                None,
-            )
+            && let Ok((o, _)) = self.hurt_player_equipment(id, amount, None, false, 0)
         {
             canceled = o.canceled;
         }
