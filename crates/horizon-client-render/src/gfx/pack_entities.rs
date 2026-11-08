@@ -30,7 +30,7 @@ pub fn buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
 /// What `gbuffers_entities` and `gbuffers_block` read from an entity vertex: camera-relative
 /// position, the shared atlas's UV, colour, light (block, sky in 16ths) and the world-oriented
 /// normal. The quad's corners, read from the same vertices at set 1, give the face normal where
-/// the vertex has none (block entities) and `at_tangent` along the texture's u, as for terrain.
+/// the vertex has none (custom geometry) and `at_tangent` along the texture's u, as for terrain.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
     let words = std::mem::size_of::<Vertex>() / 4;
     let mut declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
@@ -107,6 +107,10 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             "at_velocity",
             "hz_velocity(gbufferModelView, gbufferPreviousModelView)",
         ),
+        // Horizon's own, as for terrain: the HDR tier of a light-giving item, particle or glowing
+        // text (`mesher::hdr_tier`, the overlay's high bits), 0 for none, 1 to 4 for low to very
+        // bright.
+        ("horizonTier", "float((hz_v_overlay >> 16u) & 255u)"),
     ];
     horizon_shaders::GbuffersInputs {
         declarations,
@@ -123,6 +127,8 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         }),
         item_id_declared: false,
         far_depth: false,
+        // Entities, items and block entities read the shared atlas: its own maps (paged_maps.rs).
+        paged_maps: true,
     }
 }
 
@@ -186,6 +192,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
         alpha_test: None,
         item_id_declared: false,
         far_depth: false,
+        paged_maps: false,
     }
 }
 
@@ -1624,6 +1631,47 @@ mod velocity_translate_tests {
                 who == "entities",
                 "{who}: previous view in the block"
             );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tier_translate_tests {
+    /// A pack's entity and hand programs may read `horizonTier`, the overlay's HDR tier.
+    #[test]
+    fn a_pack_reading_horizon_tier_translates_for_entities_and_the_hand() {
+        let dir = std::env::temp_dir().join(format!("hz-entity-tier-{}", std::process::id()));
+        let shaders = dir.join("shaders");
+        std::fs::create_dir_all(&shaders).unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.vsh"),
+            "#version 120\nattribute float horizonTier;\nvarying float t;\n\
+             void main() {\n    gl_Position = ftransform();\n    t = horizonTier;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.fsh"),
+            "#version 120\nvarying float t;\nvoid main() {\n    gl_FragData[0] = vec4(t);\n}\n",
+        )
+        .unwrap();
+        let pack = horizon_shaders::Pack::open(&dir).unwrap();
+        let m = horizon_shaders::Macros::standard();
+        let vsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.vsh", &m);
+        let fsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.fsh", &m);
+        for (who, inputs) in [
+            ("entities", super::inputs()),
+            ("hand", super::super::pack_hand::inputs()),
+        ] {
+            let attribute = inputs.attributes.iter().find(|(n, _)| n == "horizonTier");
+            assert!(attribute.is_some(), "{who}");
+            horizon_shaders::translate_gbuffers(
+                &vsh,
+                &fsh,
+                horizon_shaders::Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{who}: {e:?}"));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

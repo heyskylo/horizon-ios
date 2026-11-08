@@ -405,7 +405,7 @@ pub fn pieces(
 /// EndCityPieces.EndCityPiece.
 #[derive(Debug)]
 /// The template piece and its genDepth (the collision tag of its batch).
-pub struct EndCityPiece(TemplatePiece, i32);
+pub struct EndCityPiece(pub(super) TemplatePiece, pub(super) i32);
 impl LegacyPiece for EndCityPiece {
     fn bounding_box(&self) -> BoundingBox {
         self.0.bounding_box

@@ -79,8 +79,7 @@ impl Game<'_> {
     pub(super) fn container_title(&self, default: String) -> String {
         self.container_parts()
             .iter()
-            .find_map(|(key, _)| self.world.block_names.get(key))
-            .cloned()
+            .find_map(|(key, _)| self.block_name_plain(*key))
             .unwrap_or(default)
     }
     /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box.
@@ -176,6 +175,19 @@ fn facing_step(facing: &str) -> (i32, i32) {
         "west" => (-1, 0),
         _ => (1, 0),
     }
+}
+
+/// `ChestBlock.getConnectedBlockPos` for a chest whose `type` is not single:
+/// where its other half belongs, whatever stands there now.
+pub(super) fn chest_connected_pos(
+    state: &horizon_world::chunk::BlockState,
+    pos: [i32; 3],
+) -> Option<[i32; 3]> {
+    if !is_chest_block(&state.name) {
+        return None;
+    }
+    let (dx, dz) = chest_half(state)?.connected_step()?;
+    Some([pos[0] + dx, pos[1], pos[2] + dz])
 }
 
 impl Game<'_> {

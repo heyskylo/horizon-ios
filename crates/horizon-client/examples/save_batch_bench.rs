@@ -19,7 +19,7 @@ use horizon_world::{
 use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 
 type Entities = HashMap<(i32, i32, i32), BlockEntity>;
-type Names = HashMap<(i32, i32, i32), String>;
+type Names = HashMap<(i32, i32, i32), Tag>;
 const BLOCKS: [&str; 5] = [
     "minecraft:air",
     "minecraft:stone",
@@ -96,7 +96,10 @@ fn fixture(per_chunk: usize) -> (Vec<Arc<Chunk>>, Entities, Names) {
             }
             c.set(p.0 & 15, p.1, p.2 & 15, block);
             if j % 4 == 2 {
-                names.insert(p, format!("Storage {x},{z}/{j}"));
+                names.insert(
+                    p,
+                    Tag::String(format!("Storage {x},{z}/{j}").as_str().into()),
+                );
             }
             // Exercise the existing NBT overlay and saved list order as well.
             if j % 8 == 2 {
