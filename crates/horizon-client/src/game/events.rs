@@ -11,7 +11,7 @@ use std::{
 };
 
 pub(super) const HELP: &[&str] = &[
-    "events [--since SEQ]           what happened (screen, chat, death, respawn, item, dimension, world), oldest first",
+    "events [--since SEQ]           what happened (screen, chat, death, respawn, item, hurt, heal, food, dimension, world), oldest first",
     "wait-for screen NAME|widget ID|loaded|chat TEXT|event KIND [--timeout S] [--since SEQ]  reply once it holds (default 30 s; chat and event count from SEQ, else from now)",
 ];
 
@@ -26,6 +26,23 @@ struct Snapshot {
     dimension: String,
     chat: u64,
     counts: BTreeMap<String, i64>,
+    /// The player's health and food level, while there is a player.
+    vitals: Option<(f32, i64)>,
+    /// The newest damage: when, its type, the amount and what dealt it.
+    hit: Option<(i64, String, f32, Option<String>)>,
+}
+
+/// What the newest damage was, for a `hurt` or `death` event.
+fn add_cause(event: &mut Value, before: &Snapshot, now: &Snapshot) {
+    if let Some((at, kind, damage, by)) = &now.hit
+        && before.hit.as_ref().is_none_or(|h| h.0 != *at)
+    {
+        event["cause"] = kind.as_str().into();
+        event["damage"] = (*damage).into();
+        if let Some(by) = by {
+            event["by"] = by.as_str().into();
+        }
+    }
 }
 
 enum Condition {
@@ -96,7 +113,9 @@ fn diff(before: &Snapshot, now: &Snapshot, chat: &[String]) -> Vec<Value> {
     if before.screen != now.screen {
         out.push(json!({ "event": "screen", "from": before.screen, "to": now.screen }));
         if now.screen == "dead" {
-            out.push(json!({ "event": "death" }));
+            let mut death = json!({ "event": "death" });
+            add_cause(&mut death, before, now);
+            out.push(death);
         } else if before.screen == "dead" {
             out.push(json!({ "event": "respawn" }));
         }
@@ -104,6 +123,23 @@ fn diff(before: &Snapshot, now: &Snapshot, chat: &[String]) -> Vec<Value> {
     // Oldest first; `chat` is newest first.
     for text in chat.iter().rev() {
         out.push(json!({ "event": "chat", "text": text }));
+    }
+    // Not across a respawn, which refills both.
+    if before.world == now.world
+        && before.screen != "dead"
+        && let (Some((health0, food0)), Some((health, food))) = (before.vitals, now.vitals)
+    {
+        if health < health0 {
+            let mut hurt =
+                json!({ "event": "hurt", "amount": health0 - health, "health": health });
+            add_cause(&mut hurt, before, now);
+            out.push(hurt);
+        } else if health > health0 {
+            out.push(json!({ "event": "heal", "amount": health - health0, "health": health }));
+        }
+        if food != food0 {
+            out.push(json!({ "event": "food", "delta": food - food0, "food": food }));
+        }
     }
     if before.world == now.world {
         let names = before.counts.keys().chain(now.counts.keys());
@@ -185,6 +221,12 @@ impl Game<'_> {
             } else {
                 BTreeMap::new()
             },
+            vitals: self
+                .player
+                .as_ref()
+                .filter(|_| world.is_some())
+                .map(|p| (p.health.health(), p.health.food.food as i64)),
+            hit: self.combat.last_hit(),
             world,
         }
     }
@@ -214,7 +256,14 @@ impl Game<'_> {
                     .collect(),
                 None => self.ui.chat.recent_lines(new_chat),
             };
-            for event in diff(before, &now, &lines) {
+            let at = self.player.as_ref().map(|p| [p.position.x, p.position.y, p.position.z]);
+            for mut event in diff(before, &now, &lines) {
+                // Where it happened: a death drops the inventory there.
+                if let Some(at) = at
+                    && matches!(event["event"].as_str(), Some("death" | "hurt"))
+                {
+                    event["position"] = json!(at);
+                }
                 self.repro.note_event(self.ticks, &event);
                 self.events.push(self.ticks, event);
             }
@@ -302,7 +351,34 @@ mod tests {
             dimension: "minecraft:overworld".into(),
             chat,
             counts: BTreeMap::from([("minecraft:oak_log".to_owned(), logs)]),
+            vitals: Some((20.0, 20)),
+            hit: None,
         }
+    }
+
+    #[test]
+    fn health_and_food_changes_are_events() {
+        let before = snap("playing", 0, 0);
+        let mut now = snap("playing", 0, 0);
+        now.vitals = Some((17.0, 19));
+        now.hit = Some((40, "mob_attack".into(), 3.0, Some("Zombie".into())));
+        let events = diff(&before, &now, &[]);
+        assert_eq!(
+            events[0],
+            json!({ "event": "hurt", "amount": 3.0, "health": 17.0,
+                    "cause": "mob_attack", "damage": 3.0, "by": "Zombie" })
+        );
+        assert_eq!(
+            events[1],
+            json!({ "event": "food", "delta": -1, "food": 19 })
+        );
+        // The same hit is not named again; a respawn's refill is no heal.
+        let mut healed = snap("playing", 0, 0);
+        healed.hit = now.hit.clone();
+        assert_eq!(diff(&now, &healed, &[])[0]["event"], "heal");
+        let mut dead = now;
+        dead.screen = "dead";
+        assert!(diff(&dead, &snap("playing", 0, 0), &[]).iter().all(|e| e["event"] != "heal"));
     }
 
     #[test]

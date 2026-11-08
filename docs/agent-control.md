@@ -303,8 +303,10 @@ turn the switch off.
 - `wait-for screen NAME|widget ID|loaded|chat TEXT|event KIND [--timeout S] [--since SEQ]`
   replies when the condition holds, or with `kind: timeout`.
 - `events [--since SEQ]` returns what happened since SEQ: screens, chat, deaths, respawns, items,
-  dimensions and worlds (the newest 256). Take `last` before an action, and wait with `--since`,
-  so the action's event can't slip in before the wait.
+  damage (`hurt`, with the damage type, the amount and what dealt it), `heal`, `food`, dimensions
+  and worlds (the newest 256). `hurt` and `death` carry the player's position: a death drops the
+  inventory there. Take `last` before an action, and wait with `--since`, so the action's event
+  can't slip in before the wait (`wait-for event hurt` wakes an agent when it is attacked).
 
 ### Input provenance
 

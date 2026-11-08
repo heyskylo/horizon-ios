@@ -27,7 +27,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
-| `events [--since SEQ]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds | `--since` (integer): only events after this seq |
+| `events [--since SEQ]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, damage taken (hurt, with its cause), healing, food, dimensions, worlds | `--since` (integer): only events after this seq |
 | `input-log [--since SEQ] [--limit N] [--origin user\|agent\|game]` | `input_log` | Recent input and who caused it: a person, an agent or the game | `--since` (integer): only events after this seq<br>`--limit` (integer): newest N events<br>`--origin` (user, agent, game): user, agent or game |
 | `state` | `state` | Player, world, screen and crosshair target in one reply | none |
 | `looking-at` | `looking_at` | The block or entity under the crosshair | none |
