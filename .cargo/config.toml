@@ -1,0 +1,4 @@
+# `cargo xtask …` runs the repository's task crate, so the commands in docs/perf-platform.md and
+# web/perf/README.md work as written. `cargo run -p xtask -- …` stays equivalent.
+[alias]
+xtask = "run --package xtask --"

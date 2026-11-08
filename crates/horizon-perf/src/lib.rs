@@ -5,6 +5,7 @@ pub mod bare;
 pub mod bench_diff;
 pub mod cli;
 pub mod diff;
+mod diff_calls;
 pub mod error;
 pub mod export;
 pub mod follow;
@@ -21,6 +22,8 @@ pub mod samples;
 pub mod stats;
 pub mod summary;
 pub mod view;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod watch;
 pub mod wire;
 

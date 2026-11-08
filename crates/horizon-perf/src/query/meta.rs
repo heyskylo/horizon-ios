@@ -1,8 +1,10 @@
-use horizon_perf_format::v1::{Capture, Machine, Options, Overhead, Settings, Side, Start, Stop};
+use horizon_perf_format::v1::{
+    Capture, GameRules, HorizonOptions, Machine, Options, Overhead, Settings, Side, Start, Stop,
+};
 
 use super::rows::{
-    BuildInfo, MachineInfo, MetaRow, ModInfo, OptionsInfo, OverheadInfo, Row, Sections,
-    SettingsInfo, StartInfo, StopInfo,
+    BuildInfo, GameRulesInfo, HorizonOptionsInfo, MachineInfo, MetaRow, ModInfo, OptionsInfo,
+    OverheadInfo, Row, Sections, SettingsInfo, StartInfo, StopInfo,
 };
 use super::{Ctx, QueryError, Reply, fine, num, opt_num};
 use crate::wire::{KindName, SideName, Unit};
@@ -68,6 +70,8 @@ fn start_info(s: &Start) -> StartInfo {
         machine: s.machine.as_ref().map(machine_info),
         options: s.options.as_ref().map(options_info),
         settings: s.settings.as_ref().map(settings_info),
+        game_rules: s.game_rules.as_ref().map(game_rules_info),
+        horizon_options: s.horizon_options.as_ref().map(horizon_options_info),
         mods: s
             .mods
             .iter()
@@ -106,6 +110,27 @@ fn options_info(o: &Options) -> OptionsInfo {
         gpu: o.gpu().into(),
         samples: o.samples,
         window_s: opt_num(o.window_s),
+    }
+}
+
+fn game_rules_info(g: &GameRules) -> GameRulesInfo {
+    GameRulesInfo {
+        random_tick_speed: g.random_tick_speed,
+        max_entity_cramming: g.max_entity_cramming,
+        fire_spread_radius_around_player: g.fire_spread_radius_around_player,
+        advance_time: g.advance_time,
+        mob_griefing: g.mob_griefing,
+        spawn_mobs: g.spawn_mobs,
+        spawn_monsters: g.spawn_monsters,
+        spawner_blocks_work: g.spawner_blocks_work,
+    }
+}
+
+fn horizon_options_info(h: &HorizonOptions) -> HorizonOptionsInfo {
+    HorizonOptionsInfo {
+        max_view_distance: h.max_view_distance,
+        lod_distance: h.lod_distance,
+        anticheat: h.anticheat,
     }
 }
 

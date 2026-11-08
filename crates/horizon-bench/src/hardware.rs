@@ -1,6 +1,7 @@
 //! The machine a report was measured on. CPU, RAM and OS are detected here; the GPU and the display
 //! come from the program that rendered (the game knows its adapter, the launcher its window).
 
+#[cfg(not(target_arch = "wasm32"))]
 use horizon_telemetry::system::command_output as output;
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +62,7 @@ pub struct Display {
     pub refresh_hz: Option<u32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Hardware {
     pub fn detect() -> Hardware {
         let probes = probes();
@@ -91,6 +93,7 @@ impl Hardware {
 }
 
 /// What the telemetry probes read (`horizon_telemetry::system`).
+#[cfg(not(target_arch = "wasm32"))]
 struct Probes {
     cores: Option<u16>,
     base: Option<u32>,
@@ -98,6 +101,7 @@ struct Probes {
     form: Option<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn probes() -> Probes {
     let s = horizon_telemetry::payload::System::detect();
     let some = |n: u32| (n > 0).then_some(n);
@@ -110,6 +114,7 @@ fn probes() -> Probes {
 }
 
 /// The one-minute load average: above about the number of threads the machine was busy.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load_average() -> Option<f64> {
     if cfg!(target_os = "macos") {
         // "{ 1.23 1.10 1.00 }"
@@ -130,11 +135,13 @@ pub fn load_average() -> Option<f64> {
 }
 
 /// `ac` or `battery`; `None` where it can't be read (and on machines without a battery on Linux).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn power_source() -> Option<&'static str> {
     horizon_telemetry::system::power()
 }
 
 /// Resident memory of a process, in bytes (macOS, Linux).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn rss_bytes(pid: u32) -> Option<u64> {
     if cfg!(target_os = "macos") {
         return output("ps", &["-o", "rss=", "-p", &pid.to_string()])?
@@ -152,6 +159,7 @@ pub fn rss_bytes(pid: u32) -> Option<u64> {
 }
 
 /// CPU time a process has used, user and system, in seconds (macOS, Linux).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn cpu_seconds(pid: u32) -> Option<f64> {
     if cfg!(target_os = "macos") {
         // "[[dd-]hh:]mm:ss.cc"
@@ -172,21 +180,25 @@ pub fn cpu_seconds(pid: u32) -> Option<f64> {
     Some(ticks / 100.0)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "macos")]
 fn os_version() -> Option<String> {
     output("sw_vers", &["-productVersion"])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "macos")]
 fn cpu() -> Option<String> {
     output("sysctl", &["-n", "machdep.cpu.brand_string"])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "macos")]
 fn ram_bytes() -> Option<u64> {
     output("sysctl", &["-n", "hw.memsize"])?.parse().ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "linux")]
 fn os_version() -> Option<String> {
     let release = std::fs::read_to_string("/etc/os-release").ok()?;
@@ -199,6 +211,7 @@ fn os_version() -> Option<String> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "linux")]
 fn cpu() -> Option<String> {
     let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
@@ -206,6 +219,7 @@ fn cpu() -> Option<String> {
     horizon_telemetry::system::linux_cpu_name(&info)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "linux")]
 fn ram_bytes() -> Option<u64> {
     let info = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -215,6 +229,7 @@ fn ram_bytes() -> Option<u64> {
     kb.parse::<u64>().ok().map(|kb| kb * 1024)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "linux")]
 fn key_value<'a>(text: &'a str, key: &str, sep: char) -> Option<&'a str> {
     text.lines().find_map(|line| {
@@ -223,16 +238,19 @@ fn key_value<'a>(text: &'a str, key: &str, sep: char) -> Option<&'a str> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "windows")]
 fn os_version() -> Option<String> {
     horizon_telemetry::system::windows_version()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "windows")]
 fn cpu() -> Option<String> {
     horizon_telemetry::system::windows_cpu()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "windows")]
 fn ram_bytes() -> Option<u64> {
     let out = output(
@@ -246,22 +264,25 @@ fn ram_bytes() -> Option<u64> {
     out.parse().ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn os_version() -> Option<String> {
     None
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn cpu() -> Option<String> {
     None
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn ram_bytes() -> Option<u64> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

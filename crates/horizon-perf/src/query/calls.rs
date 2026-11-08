@@ -70,6 +70,8 @@ struct Builder<'a> {
     children: Vec<Vec<u32>>,
     min_pct: f64,
     limit: usize,
+    /// Rows carry their own time as a share too.
+    share: bool,
     /// Rows of merged occurrences carry the function's `f:` id even when one call path would do.
     function_ids: bool,
 }
@@ -89,6 +91,7 @@ impl<'a> Builder<'a> {
             children,
             min_pct,
             limit: ctx.q.filters.limit,
+            share: ctx.q.self_share,
             function_ids: false,
         }
     }
@@ -127,6 +130,7 @@ impl<'a> Builder<'a> {
     fn row(&self, group: &[u32], id: String, depth: usize) -> TreeRow {
         let f = self.s().function_of(group[0]);
         let total = self.sum_ms(group, &self.t.total_ms);
+        let own = self.sum_ms(group, &self.t.self_ms);
         let (children, folded) = if depth > 0 {
             self.children_of(group, depth)
         } else {
@@ -136,9 +140,11 @@ impl<'a> Builder<'a> {
             id,
             function: f.id.clone(),
             name: f.name.clone(),
+            crate_name: f.crate_name.clone(),
             total: num(self.run.per_unit(total)),
-            self_ms: Some(num(self.run.per_unit(self.sum_ms(group, &self.t.self_ms)))),
+            self_ms: Some(num(self.run.per_unit(own))),
             pct: num(self.pct(total)),
+            self_pct: self.share.then(|| num(self.pct(own))),
             samples: self.sum_n(group),
             children,
             folded,
@@ -314,9 +320,11 @@ fn callers_level(
             id: f.id.clone(),
             function: f.id.clone(),
             name: f.name.clone(),
+            crate_name: f.crate_name.clone(),
             total: num(build.run.per_unit(ms)),
             self_ms: None,
             pct: num(build.pct(ms)),
+            self_pct: None,
             samples,
             children,
             folded: below,
@@ -355,9 +363,11 @@ pub(super) fn callees(ctx: &Ctx) -> Result<Reply, QueryError> {
             id: f.id.clone(),
             function: f.id.clone(),
             name: "(self)".to_string(),
+            crate_name: f.crate_name.clone(),
             total: num(run.per_unit(own)),
             self_ms: Some(num(run.per_unit(own))),
             pct: num(build.pct(own)),
+            self_pct: build.share.then(|| num(build.pct(own))),
             samples,
             children: Vec::new(),
             folded: None,

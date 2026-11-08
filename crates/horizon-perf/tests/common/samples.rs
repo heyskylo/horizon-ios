@@ -88,6 +88,13 @@ impl Builder {
         at
     }
 
+    /// A function that belongs to a crate.
+    pub fn func_in(&mut self, name: &str, krate: &str) -> u32 {
+        let at = self.func(name);
+        self.funcs.crate_[at as usize] = self.text(krate);
+        at
+    }
+
     /// A new call node; a root belongs to the sampled thread.
     pub fn node(&mut self, parent: Option<u32>, name: &str) -> u32 {
         let f = self.func(name);

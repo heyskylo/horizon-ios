@@ -31,7 +31,11 @@ const SWITCHES: [Flag; 3] = [Flag::Slow, Flag::All, Flag::Diff];
 
 /// A positional is a capture when it says so: `latest`, a `.hzperf` name or a file that exists.
 fn is_capture(arg: &str) -> bool {
-    arg == "latest" || arg.ends_with(".hzperf") || Path::new(arg).is_file()
+    arg == "latest"
+        || arg.ends_with(".hzperf")
+        || arg.starts_with("http://")
+        || arg.starts_with("https://")
+        || Path::new(arg).is_file()
 }
 
 /// `k=v[,k=v]`; a piece without `=` continues the value before it, as in a chunk's `dim/x,z`.
@@ -102,6 +106,8 @@ fn request(parsed: &Parsed) -> Result<QueryRequest, CliError> {
         matching: text(Flag::Match),
         depth: parsed.number(Flag::Depth)?,
         min_pct: parsed.number(Flag::MinPct)?,
+        self_share: false,
+        stats: false,
     })
 }
 

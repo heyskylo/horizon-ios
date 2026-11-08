@@ -77,6 +77,23 @@ pub struct SeriesRow {
     pub step_s: f64,
     pub t: Vec<f64>,
     pub values: Vec<Option<f64>>,
+    /// Present when the request asked for `stats`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<SeriesStats>,
+}
+
+/// What a series' points add up to. `mean` is the whole window's mean (time-weighted for health fields); the rest read the finite points.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeriesStats {
+    pub min: f64,
+    pub mean: f64,
+    pub median: f64,
+    /// The point at index floor(0.95 * (n - 1)) of the sorted points.
+    pub p95: f64,
+    pub max: f64,
+    pub last: f64,
+    pub points: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -242,7 +259,45 @@ pub struct StartInfo {
     pub machine: Option<MachineInfo>,
     pub options: Option<OptionsInfo>,
     pub settings: Option<SettingsInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_rules: Option<GameRulesInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_options: Option<HorizonOptionsInfo>,
     pub mods: Vec<ModInfo>,
+}
+
+/// The game rules the capture recorded; an absent rule is one the game did not fill.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameRulesInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub random_tick_speed: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entity_cramming: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fire_spread_radius_around_player: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance_time: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mob_griefing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_mobs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_monsters: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawner_blocks_work: Option<bool>,
+}
+
+/// The Horizon switches that change what a tick costs; an absent switch was off or not recorded.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HorizonOptionsInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_view_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lod_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticheat: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -422,10 +477,14 @@ pub struct TreeRow {
     pub id: String,
     pub function: String,
     pub name: String,
+    #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
+    pub crate_name: Option<String>,
     pub total: f64,
     #[serde(rename = "self", default, skip_serializing_if = "Option::is_none")]
     pub self_ms: Option<f64>,
     pub pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_pct: Option<f64>,
     pub samples: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<TreeRow>,

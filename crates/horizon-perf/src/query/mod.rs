@@ -36,7 +36,9 @@ pub use rows::Row;
 /// A loaded capture and the name it is listed under.
 pub struct Loaded {
     pub file: String,
-    pub capture: Capture,
+    /// Shared, so a caller that keeps a decoded capture (the wasm boundary) hands it out again
+    /// without copying it per query.
+    pub capture: std::sync::Arc<Capture>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -94,6 +96,10 @@ pub struct Query {
     pub matching: Option<String>,
     pub depth: Option<usize>,
     pub min_pct: Option<f64>,
+    /// `tree`: give every row its own time as a share of the selection.
+    pub self_share: bool,
+    /// `series`: add each series' statistics.
+    pub stats: bool,
 }
 
 impl Query {
@@ -114,6 +120,8 @@ impl Query {
             matching: None,
             depth: None,
             min_pct: None,
+            self_share: false,
+            stats: false,
         }
     }
 }

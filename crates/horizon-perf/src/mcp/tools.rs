@@ -282,6 +282,7 @@ pub fn diff(args: DiffArgs, env: &Env) -> Result<Outcome, String> {
         thread: args.thread,
         min_ms: args.min_ms.unwrap_or(0.0),
         limit: args.limit.unwrap_or(DEFAULT_LIMIT),
+        calls: false,
     };
     let answer = ops::compare(&a, &b, &options)?;
     json(&DiffToolReply {

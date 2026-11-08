@@ -224,6 +224,7 @@ vocab! {
         Chunk = "chunk",
         Dim = "dim" | "dimension",
         Thread = "thread",
+        Mod = "mod",
         State = "state",
         Slow = "slow",
     }
