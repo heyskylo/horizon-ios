@@ -606,8 +606,11 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                             shared.emit("phase", serde_json::json!({ "phase": "running" }));
                             crate::management::started(&shared);
                         }
-                    } else if line.contains("/INFO]: Stopping server") {
-                        // The game's own `stop` (a command in the game, not the supervisor's).
+                    } else if line.contains("/INFO]: Stopping server")
+                        || line.contains("/INFO]: Stopping in ")
+                    {
+                        // The game's own `stop` (a command in the game, not the supervisor's), or the
+                        // start of the wait `[transfer]` makes before it, so a proxy hears of it then.
                         crate::management::stopping(&shared);
                     }
                 }

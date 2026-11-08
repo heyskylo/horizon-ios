@@ -1997,6 +1997,9 @@ impl Game<'_> {
             return;
         }
         self.riding = None;
+        if self.dismount_in_portal(self.carts[i].position) {
+            return;
+        }
         let c = &self.carts[i];
         let (bx, by, bz) = (
             c.position.x.floor() as i32,
@@ -2347,6 +2350,30 @@ impl Game<'_> {
         }
         self.hurt_cart(i, damage, creative, false);
     }
+    /// `Containers.dropContents(level, entity, container)` at a cart's
+    /// position: each slot, an empty one too, from a spot in the cart's block
+    /// in pieces of 10 to 30 with the level random's scatter, no pickup delay.
+    fn scatter_cart_contents(&mut self, at: [f64; 3], items: &[Option<ItemStack>]) {
+        let cell = horizon_core::position::BlockPos::new(
+            at[0].floor() as i32,
+            at[1].floor() as i32,
+            at[2].floor() as i32,
+        );
+        for stack in items {
+            let count = stack.as_ref().map_or(0, |s| s.count);
+            let pieces =
+                horizon_world::level::removal::drop_item_stack(&mut self.world.random, cell, count);
+            if let Some(stack) = stack {
+                for piece in pieces {
+                    let piece_stack = ItemStack {
+                        count: piece.count,
+                        ..stack.clone()
+                    };
+                    self.spawn_item(piece_stack, piece.pos, piece.motion, 0);
+                }
+            }
+        }
+    }
     /// `VehicleEntity.hurtServer`: shake, add the damage, break past 40 (at
     /// once for creative players); TNT minecarts prime instead when moving
     /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
@@ -2414,11 +2441,16 @@ impl Game<'_> {
                     self.entity_killed_event(at, false);
                 }
                 if self.ui.rules.bool("entity_drops") {
-                    for s in c.items.iter().flatten() {
-                        self.spawn_item(s.clone(), at, [0.0, 0.1, 0.0], 10);
-                    }
+                    // AbstractMinecartContainer.remove: `Containers.dropContents`.
+                    self.scatter_cart_contents(at, &c.items);
                     if !creative {
-                        self.spawn_item(ItemStack::new(c.kind.item(), 1), at, [0.0, 0.1, 0.0], 10);
+                        // `spawnAtLocation`: an ItemEntity's own motion.
+                        let motion = super::dispenser::new_item_motion();
+                        self.spawn_item(ItemStack::new(c.kind.item(), 1), at, motion, 10);
+                        // `chestVehicleDestroyed` drops the emptied container
+                        // again, which only draws each slot's spot.
+                        let empty = vec![None; c.items.len()];
+                        self.scatter_cart_contents(at, &empty);
                     }
                 }
             }
@@ -2768,6 +2800,7 @@ impl Game<'_> {
             skull: &|_| None,
             glyph: &|c| self.gui.atlas.glyph_cell(c),
             glyphs: self.gui.atlas.font.epoch(),
+            font: Some(&self.gui.atlas.font),
             dynamic_visible: None,
         };
         self.res
