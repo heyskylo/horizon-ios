@@ -1260,10 +1260,12 @@ mod tests {
             format!(r#"{{"attributes": {attributes}}}"#),
         )
         .unwrap();
-        let environment =
-            crate::environment::Environment::load_dimension(&root, name, false).unwrap();
+        let environment = crate::environment::Environment::load_dimension(&root, name).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
-        environment.sample(6000, None, None)
+        environment.sample(&crate::environment::Sample {
+            day_time: 6000,
+            ..Default::default()
+        })
     }
 
     #[test]
