@@ -710,9 +710,21 @@ public final class LocatorBarClient {
                     value.addProperty("flags", entry.flags());
                     value.add("display", net.minecraft.world.item.crafting.display.RecipeDisplay.CODEC.encodeStart(
                         ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), entry.contents().display()).getOrThrow());
+                    var contents = entry.contents();
+                    if (contents.group().isPresent()) value.addProperty("group", contents.group().getAsInt());
+                    value.addProperty("category", net.minecraft.core.registries.BuiltInRegistries.RECIPE_BOOK_CATEGORY
+                        .getKey(contents.category()).toString());
+                    contents.craftingRequirements().ifPresent(list -> value.add("requirements",
+                        net.minecraft.world.item.crafting.Ingredient.CODEC.listOf().encodeStart(
+                            ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), list).getOrThrow()));
                     entries.add(value);
                 }
                 j.add("entries", entries);
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundRecipeBookRemovePacket c) {
+                j.addProperty("kind", "recipes-removed");
+                var ids = new com.google.gson.JsonArray();
+                for (var id : c.recipes()) ids.add(id.index());
+                j.add("ids", ids);
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundPlaceGhostRecipePacket c) {
                 j.addProperty("kind", "ghost");
                 j.addProperty("window", c.containerId());
