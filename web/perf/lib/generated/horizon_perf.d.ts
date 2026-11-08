@@ -29,6 +29,8 @@ export interface DiffRequest {
   thread?: string;
   min_ms?: number;
   limit?: number;
+  /** Also compare the sampled functions (`f:`) and call paths (`p:`). */
+  calls?: boolean;
 }
 
 export interface ExportRequest {

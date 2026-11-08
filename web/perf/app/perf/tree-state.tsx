@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useMemo } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
+import type { Changes } from "@/lib/compare";
 import { entry, last } from "@/lib/tree-model";
 import type { OpenState, TreeNode } from "@/lib/tree-model";
 import { probeOptions } from "@/lib/tree-options";
@@ -57,6 +58,8 @@ export interface TreeEnv {
   mods: ReadonlySet<string>;
   kind: AmountKind;
   unit: Unit | undefined;
+  /** The changes against a second capture, while the tree shows what the comparison measured. */
+  changes: Changes | null;
   open: OpenState;
   setOpen: (next: OpenState) => void;
   selected: Target | null;

@@ -10,6 +10,7 @@ import { sampleFilters } from "@/lib/tree-options";
 import type { GroupKind, SampleOptions, SampleSelection, ViewKind } from "@/lib/tree-options";
 import type { TreeRow } from "@/lib/types";
 import { amountKind } from "@/lib/units";
+import { useChanges } from "./comparison";
 import { TreeFlame } from "./tree-flame";
 import { GroupList, ScopedTree } from "./tree-groups";
 import { TreeDetail } from "./tree-detail";
@@ -46,6 +47,9 @@ function TreeView({ reader, capture, options }: ViewProps) {
   const meta = capture.meta.rows.find((row) => row.side === capture.side);
   const mods = useMemo(() => modCrates(meta?.mods ?? []), [meta]);
   const whole = useRows<TreeRow>(reader, capture, "tree", { ...filters, ...TREE_SHAPE });
+  const compare = useChanges();
+  // The diff measures every tick of the main thread, so only that tree has changes to show.
+  const changes = compare && selection === "all" && thread === null && group === "none" ? compare.changes : null;
 
   const fresh = useCallback(() => {
     setOpen(HOT_OPEN);
@@ -62,6 +66,7 @@ function TreeView({ reader, capture, options }: ViewProps) {
     mods,
     kind: amountKind(whole.reply?.unit),
     unit: whole.reply?.unit,
+    changes,
     open,
     setOpen,
     selected,
@@ -115,7 +120,7 @@ function TreeView({ reader, capture, options }: ViewProps) {
         <TreeFlame whole={whole.rows} group={group} focused={focused} />
       ) : (
         <div className={tree.layout} data-detail={selected !== null}>
-          <div className={tree.list}>
+          <div className={tree.list} data-delta={changes !== null}>
             <TreeHeader />
             {focused ? (
               <ScopedTree scope={focused.scope} focusKey={focused.key} rows={focused.scope.filters ? null : whole.rows} />

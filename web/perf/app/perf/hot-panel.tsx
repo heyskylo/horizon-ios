@@ -5,6 +5,8 @@ import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { num } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { GroupRow, HotRow } from "@/lib/types";
+import { useChanges } from "./comparison";
+import { Delta, NewRows } from "./delta";
 import { RowTools } from "./row-tools";
 import { Segmented } from "./segmented";
 import { useRows } from "./use-capture";
@@ -31,6 +33,7 @@ export function HotPanel({ reader, capture }: Props) {
   const view: Mode = hasMods ? mode : "flat";
 
   const { rows, error } = useRows<HotRow>(reader, capture, "hot", { limit: 250, by: sort });
+  const compare = useChanges();
   const mods = useRows<GroupRow>(reader, capture, "group", { by: "mod", limit: 100 }, view === "mods");
   const max = largest(rows.map((row) => row[sort]));
   const modMax = largest(mods.rows.map((row) => row.value));
@@ -65,12 +68,14 @@ export function HotPanel({ reader, capture }: Props) {
         ) : null}
       </div>
       {view === "flat" ? (
-        <div className={styles.meterList}>
+        <>
+        <div className={styles.meterList} data-delta={compare ? "last" : undefined}>
           <div className={styles.meterHead}>
             <span>{t("hot.function")}</span>
             <span />
             <span>{t("hot.self")}</span>
             <span>{t("hot.total")}</span>
+            {compare ? <span>{t("compare.columnTotalChange")}</span> : null}
           </div>
           {rows.map((row) => (
             <div key={row.id} className={styles.meterRow} title={row.full}>
@@ -83,9 +88,12 @@ export function HotPanel({ reader, capture }: Props) {
               </span>
               <span className={styles.meterValue}>{num(row.self, 2)} ms</span>
               <span className={styles.meterExtra}>{num(row.total, 2)} ms</span>
+              {compare ? <Delta row={compare.changes.get(row.id)} /> : null}
             </div>
           ))}
         </div>
+        {compare ? <NewRows rows={compare.rows} prefix="f:" shown={new Set(rows.map((row) => row.id))} /> : null}
+        </>
       ) : (
         <div className={styles.meterList}>
           {mods.rows.map((row) => {

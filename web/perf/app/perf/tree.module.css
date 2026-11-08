@@ -114,6 +114,10 @@
   gap: 12px;
 }
 
+.list[data-delta="true"] .row {
+  grid-template-columns: minmax(0, 1fr) minmax(48px, 0.6fr) 96px 168px 56px 64px 72px;
+}
+
 .row[data-picked="true"] {
   background: var(--plate-soft);
 }
@@ -315,6 +319,14 @@
     grid-template-columns: minmax(0, 1fr) 72px 44px 46px;
     gap: 6px;
     padding-inline: 4px;
+  }
+
+  .list[data-delta="true"] .row {
+    grid-template-columns: minmax(0, 1fr) 72px 64px;
+  }
+
+  .list[data-delta="true"] .row > :nth-child(n + 5) {
+    display: none;
   }
 
   .name {

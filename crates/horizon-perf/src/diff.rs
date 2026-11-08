@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use horizon_perf_format::v1::{Capture, Side, Unit as TickUnit};
 use serde::{Deserialize, Serialize};
 
+use crate::diff_calls::{CallSeries, call_series};
 use crate::error::{Error, side_name};
 use crate::health::{HealthField, live, mean};
 use crate::stats::{self, MAX_BLOCKS, Verdict, compare, median};
@@ -53,6 +54,9 @@ pub struct DiffSelection {
 #[serde(deny_unknown_fields)]
 pub struct DiffRow {
     pub id: String,
+    /// A function's short name, on `f:` rows of `diff --calls`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub a: Option<f64>,
     pub b: Option<f64>,
     pub diff: Option<f64>,
@@ -86,6 +90,8 @@ pub struct DiffOptions {
     /// Rows whose value is under this in both captures are left out.
     pub min_ms: f64,
     pub limit: usize,
+    /// Also compare the sampled functions (`f:`) and call paths (`p:`) by their time per tick or frame.
+    pub calls: bool,
 }
 
 impl Default for DiffOptions {
@@ -95,6 +101,7 @@ impl Default for DiffOptions {
             thread: None,
             min_ms: 0.0,
             limit: DEFAULT_LIMIT,
+            calls: false,
         }
     }
 }
@@ -103,6 +110,7 @@ impl Default for DiffOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub id: String,
+    pub name: Option<String>,
     pub a: Option<f64>,
     pub b: Option<f64>,
     pub effect: Option<f64>,
@@ -121,6 +129,7 @@ impl Row {
     pub(crate) fn wire(&self) -> DiffRow {
         DiffRow {
             id: self.id.clone(),
+            name: self.name.clone(),
             a: self.a.map(num),
             b: self.b.map(num),
             diff: self.effect.map(num),
@@ -491,6 +500,9 @@ pub fn diff(a: &Capture, b: &Capture, options: &DiffOptions) -> Result<Diff, Err
         })
         .filter(|r| r.a.unwrap_or(0.0).max(r.b.unwrap_or(0.0)) >= options.min_ms)
         .collect();
+    if options.calls {
+        rows.extend(call_rows(&va, &vb, side, requested, options.min_ms));
+    }
     let (health, mut spans): (Vec<Row>, Vec<Row>) =
         rows.drain(..).partition(|r| r.id.starts_with("h:"));
     spans.sort_by(|x, y| {
@@ -548,6 +560,47 @@ pub fn diff(a: &Capture, b: &Capture, options: &DiffOptions) -> Result<Diff, Err
     })
 }
 
+/// The functions and call paths of both captures, matched by id; one a capture lacks is new or gone.
+fn call_rows(a: &View, b: &View, side: Side, thread: Option<&str>, min_ms: f64) -> Vec<Row> {
+    let (calls_a, calls_b) = (
+        call_series(a, side, thread, min_ms),
+        call_series(b, side, thread, min_ms),
+    );
+    let mut names: BTreeMap<&str, &Option<String>> = BTreeMap::new();
+    for set in [&calls_a, &calls_b] {
+        for call in set {
+            names.entry(call.id.as_str()).or_insert(&call.name);
+        }
+    }
+    let by_id = |set: &[CallSeries]| -> HashMap<String, usize> {
+        set.iter()
+            .enumerate()
+            .map(|(i, c)| (c.id.clone(), i))
+            .collect()
+    };
+    let (index_a, index_b) = (by_id(&calls_a), by_id(&calls_b));
+    names
+        .into_iter()
+        .filter_map(|(id, name)| {
+            let mut row = row(
+                id,
+                values_of(&calls_a, &index_a, id),
+                values_of(&calls_b, &index_b, id),
+            )?;
+            row.name = name.clone();
+            (row.a.unwrap_or(0.0).max(row.b.unwrap_or(0.0)) >= min_ms).then_some(row)
+        })
+        .collect()
+}
+
+fn values_of<'a>(
+    set: &'a [CallSeries],
+    index: &HashMap<String, usize>,
+    id: &str,
+) -> Option<&'a [f64]> {
+    index.get(id).map(|&i| set[i].values.as_slice())
+}
+
 fn magnitude(row: &Row) -> f64 {
     row.effect.or(row.a).or(row.b).unwrap_or(0.0).abs()
 }
@@ -556,6 +609,7 @@ pub(crate) fn row(id: &str, a: Option<&[f64]>, b: Option<&[f64]>) -> Option<Row>
     let blocks = [a.map_or(0, <[f64]>::len), b.map_or(0, <[f64]>::len)];
     let lone = |id: &str, a: Option<f64>, b: Option<f64>, verdict| Row {
         id: id.to_string(),
+        name: None,
         a,
         b,
         effect: None,
@@ -569,6 +623,7 @@ pub(crate) fn row(id: &str, a: Option<&[f64]>, b: Option<&[f64]>) -> Option<Row>
             let c = compare(x, y)?;
             Row {
                 id: id.to_string(),
+                name: None,
                 a: Some(c.a),
                 b: Some(c.b),
                 effect: Some(c.effect),

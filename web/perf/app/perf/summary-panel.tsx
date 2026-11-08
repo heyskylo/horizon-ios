@@ -19,6 +19,9 @@ import {
 import type { Overview, PhaseNode } from "@/lib/overview";
 import type { CostRow, GroupRow, HotRow, TickRow } from "@/lib/types";
 import { spanId } from "@/lib/info";
+import type { Changes } from "@/lib/compare";
+import { useChanges } from "./comparison";
+import { Delta } from "./delta";
 import { RowTools } from "./row-tools";
 import { Segmented } from "./segmented";
 import { Spark } from "./spark";
@@ -106,6 +109,8 @@ function Meter({
   extra,
   extraColor,
   strong = false,
+  delta,
+  deltaFirst = false,
 }: {
   id?: string;
   name: string;
@@ -117,6 +122,10 @@ function Meter({
   extra?: string;
   extraColor?: string;
   strong?: boolean;
+  /** The change of this row, once a second capture is compared. */
+  delta?: ReactNode;
+  /** Whether the change sits after the value rather than after the extra. */
+  deltaFirst?: boolean;
 }) {
   return (
     <div className={strong ? styles.meterRowStrong : styles.meterRow} title={title}>
@@ -132,20 +141,24 @@ function Meter({
         />
       </span>
       <span className={styles.meterValue}>{value}</span>
+      {deltaFirst ? delta : null}
       <span className={styles.meterExtra} style={extraColor ? { color: extraColor } : undefined}>
         {extra}
       </span>
+      {deltaFirst ? null : delta}
     </div>
   );
 }
 
-function MeterHead({ name, value, extra }: { name: string; value: string; extra?: string }) {
+function MeterHead({ name, value, extra, change, changeFirst = false }: { name: string; value: string; extra?: string; change?: string; changeFirst?: boolean }) {
   return (
     <div className={styles.meterHead} aria-hidden="true">
       <span>{name}</span>
       <span />
       <span>{value}</span>
+      {change && changeFirst ? <span>{change}</span> : null}
       <span>{extra}</span>
+      {change && !changeFirst ? <span>{change}</span> : null}
     </div>
   );
 }
@@ -155,7 +168,7 @@ function Empty({ text }: { text: string }) {
 }
 
 /** A phase of the tick, drawn as a row of the span tree `query spans` describes. */
-function Phase({ node, depth, max }: { node: PhaseNode; depth: number; max: number }) {
+function Phase({ node, depth, max, changes }: { node: PhaseNode; depth: number; max: number; changes: Changes | null }) {
   const pct = node.pct;
   const extraColor =
     pct >= 30 ? "var(--ink)" : pct >= 10 ? "var(--ink-soft)" : "var(--muted)";
@@ -170,6 +183,8 @@ function Phase({ node, depth, max }: { node: PhaseNode; depth: number; max: numb
       extra={`${num(node.pct, 1)}%`}
       extraColor={extraColor}
       strong={depth === 0}
+      deltaFirst
+      delta={changes ? <Delta row={changes.get(node.id)} /> : undefined}
     />
   );
 }
@@ -184,6 +199,8 @@ export interface ViewProps {
 /** The summary's drawing (§7.2, UI1): tiles, the tick's span tree and the lists under it. */
 export function SummaryView({ capture, data, text }: ViewProps) {
   const [hotBy, setHotBy] = useState<HotBy>("self");
+  const compare = useChanges();
+  const changes = compare ? compare.changes : null;
   const [copied, setCopied] = useState(false);
 
   const fields = useMemo(() => byField(data.series), [data]);
@@ -399,14 +416,16 @@ export function SummaryView({ capture, data, text }: ViewProps) {
           )
         }
       >
-        <div className={styles.meterList}>
+        <div className={styles.meterList} data-delta={changes ? "value" : undefined}>
           <MeterHead
             name={t("summary.phase")}
             value={t("summary.msPerTick")}
             extra={t("summary.pctOfTick")}
+            change={changes ? t("compare.columnChange") : undefined}
+            changeFirst
           />
           {phases.map(([node, depth]) => (
-            <Phase key={node.id} node={node} depth={depth} max={phaseMax} />
+            <Phase key={node.id} node={node} depth={depth} max={phaseMax} changes={changes} />
           ))}
         </div>
       </Card>
@@ -427,11 +446,12 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 />
               }
             >
-              <div className={styles.meterList}>
+              <div className={styles.meterList} data-delta={changes ? "last" : undefined}>
                 <MeterHead
                   name={t("summary.function")}
                   value={t("summary.self")}
                   extra={t("summary.total")}
+                  change={changes ? t("compare.columnTotalChange") : undefined}
                 />
                 {data.hot.map((row: HotRow) => (
                   <Meter
@@ -443,6 +463,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                     tone="good"
                     value={num(row.self, 2)}
                     extra={num(row.total, 2)}
+                    delta={changes ? <Delta row={changes.get(row.id)} /> : undefined}
                   />
                 ))}
               </div>

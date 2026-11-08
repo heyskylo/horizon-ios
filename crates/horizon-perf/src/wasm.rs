@@ -282,6 +282,9 @@ pub struct DiffCall {
     pub min_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// Also compare the sampled functions and call paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<bool>,
 }
 
 /// What `hp_diff` returns: the text table and the JSON reply `diff --json` prints, as the MCP tool.
@@ -310,6 +313,7 @@ pub fn diff(a: u32, b: u32, request: &str) -> Reply {
         thread: call.thread,
         min_ms: call.min_ms.unwrap_or(0.0),
         limit: call.limit.unwrap_or(crate::query::DEFAULT_LIMIT),
+        calls: call.calls.unwrap_or(false),
     };
     match ops::compare_captures(("a.hzperf", &a), ("b.hzperf", &b), &options) {
         Ok(answer) => {

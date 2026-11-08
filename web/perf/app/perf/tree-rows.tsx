@@ -12,6 +12,7 @@ import type { FlatRow } from "@/lib/tree-model";
 import type { TreeRow } from "@/lib/types";
 import { amount } from "@/lib/units";
 import { Icons } from "./icons";
+import { Delta } from "./delta";
 import { RowTools, infoText } from "./row-tools";
 import { targetOf, useTreeEnv } from "./tree-state";
 import type { Scope } from "./tree-state";
@@ -41,12 +42,13 @@ export function Swatch({ group }: { group: CrateGroup | null }) {
 
 /** The column titles above every list of lines. */
 export function TreeHeader() {
-  const { unit } = useTreeEnv();
+  const { unit, changes } = useTreeEnv();
   return (
     <div className={`${styles.meterHead} ${tree.row}`}>
       <span>{t("tree.function")}</span>
       <span className={tree.trackCell} />
       <span>{unit ? t(`tree.unit.${unit}`) : t("tree.unit.ms_per_tick")}</span>
+      {changes ? <span>{t("compare.columnChange")}</span> : null}
       <span>{t("tree.share")}</span>
       <span>{t("tree.selfShare")}</span>
       <span className={tree.samplesCell}>{t("tree.samples")}</span>
@@ -120,6 +122,7 @@ function NodeLine({ flat, scope, max }: NodeLineProps) {
         <span className={styles.meterFill} style={{ width: `${Math.min(100, (first.total / max) * 100)}%` }} />
       </span>
       <span className={styles.meterValue}>{amount(first.total, env.kind)}</span>
+      {env.changes ? <Delta row={env.changes.get(env.merge ? first.function : first.id)} /> : null}
       <span className={styles.meterExtra}>{num(first.pct, 1)}%</span>
       <span className={styles.meterExtra}>{tail.self_pct == null ? "—" : `${num(tail.self_pct, 1)}%`}</span>
       <span className={`${styles.meterExtra} ${tree.samplesCell}`}>{grouped(first.samples)}</span>
@@ -138,6 +141,7 @@ function FoldLine({ flat }: { flat: Extract<FlatRow, { kind: "fold" }> }) {
       </span>
       <span className={tree.trackCell} />
       <span className={styles.meterValue}>{amount(flat.folded.total, env.kind)}</span>
+      {env.changes ? <span /> : null}
       <span />
       <span />
       <span className={tree.samplesCell} />

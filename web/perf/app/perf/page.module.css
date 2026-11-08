@@ -1116,6 +1116,14 @@
   color: var(--danger);
 }
 
+.table td.verdictCell[data-tone="better"] {
+  color: var(--success);
+}
+
+.table td.verdictCell[data-tone="worse"] {
+  color: var(--danger);
+}
+
 /* Text panes */
 
 .pre,
@@ -1160,6 +1168,145 @@
 
 .raw .button {
   justify-self: start;
+}
+
+/* Changes against a second capture */
+
+.split .stack {
+  --track: minmax(56px, 0.8fr);
+}
+
+.meterList[data-delta] {
+  --delta-width: 168px;
+}
+
+.meterList[data-delta="value"] :is(.meterHead, .meterRow, .meterRowStrong) {
+  grid-template-columns: minmax(0, 1fr) var(--track, minmax(88px, 1.4fr)) 84px var(--delta-width) 68px;
+}
+
+.meterList[data-delta="last"] :is(.meterHead, .meterRow, .meterRowStrong) {
+  grid-template-columns: minmax(0, 1fr) var(--track, minmax(88px, 1.4fr)) 84px 68px var(--delta-width);
+}
+
+.delta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.deltaChange,
+.deltaPct {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.deltaPct {
+  opacity: 0.75;
+}
+
+.deltaTag {
+  flex: none;
+  width: 48px;
+  text-align: left;
+}
+
+.delta[data-tone="better"] {
+  color: var(--success);
+}
+
+.delta[data-tone="worse"] {
+  color: var(--danger);
+}
+
+.delta[data-tone="edge"] {
+  color: var(--ink-soft);
+}
+
+.onlyThere {
+  margin-top: 24px;
+}
+
+.onlyTitle {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.meterOnly {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px 168px;
+  gap: 16px;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  transition: background 120ms ease;
+}
+
+.meterOnly:hover {
+  background: var(--plate-soft);
+}
+
+.meterOnly:hover .copyId,
+.meterOnly:has(:focus-visible) .copyId {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.compareStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  margin: -8px 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.compareStrip .error {
+  margin: 0;
+}
+
+/* A narrow screen shows the change alone; the colour and the row's hover title carry the verdict. */
+@media (max-width: 720px) {
+  .meterList[data-delta] {
+    --delta-width: 64px;
+  }
+
+  .meterList[data-delta="value"] :is(.meterHead, .meterRow, .meterRowStrong) {
+    grid-template-columns: minmax(0, 1fr) 76px var(--delta-width);
+  }
+
+  .meterList[data-delta="value"] :is(.meterHead, .meterRow, .meterRowStrong) > :nth-child(5),
+  .meterList[data-delta="last"] :is(.meterHead, .meterRow, .meterRowStrong) > :nth-child(3) {
+    display: none;
+  }
+
+  .meterList[data-delta="last"] :is(.meterHead, .meterRow, .meterRowStrong) {
+    grid-template-columns: minmax(0, 1fr) 76px var(--delta-width);
+  }
+
+  .meterOnly {
+    grid-template-columns: minmax(0, 1fr) 76px 64px;
+    gap: 8px;
+  }
+
+  .deltaPct,
+  .deltaTag {
+    display: none;
+  }
+
+  .delta[data-tone="edge"] .deltaTag {
+    display: block;
+    width: auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

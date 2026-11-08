@@ -356,6 +356,8 @@ export interface BenchRow {
 /** One row of a comparison: A is the first capture, B the second. */
 export interface DiffRow {
   id: string;
+  /** A function's short name, on the `f:` rows of a diff that asked for calls. */
+  name?: string;
   a: number | null;
   b: number | null;
   diff: number | null;

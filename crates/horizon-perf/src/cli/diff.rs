@@ -14,6 +14,7 @@ pub(super) fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(),
             Flag::Limit,
             Flag::Dir,
             Flag::Json,
+            Flag::Calls,
         ],
     )?;
     let [a, b] = parsed.positional.as_slice() else {
@@ -29,6 +30,7 @@ pub(super) fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(),
         thread: parsed.flags.get(&Flag::Thread).cloned(),
         min_ms: parsed.number(Flag::MinMs)?.unwrap_or(0.0),
         limit: parsed.number(Flag::Limit)?.unwrap_or(DEFAULT_LIMIT),
+        calls: parsed.flags.contains_key(&Flag::Calls),
     };
     let answer = ops::compare(&path_a, &path_b, &options).map_err(failed)?;
     let text = if parsed.flags.contains_key(&Flag::Json) {

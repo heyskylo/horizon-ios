@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useMemo, useState } from "react";
 import type { ComponentType } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { t } from "@/lib/i18n";
@@ -9,6 +9,7 @@ import type { Tab } from "@/lib/tabs";
 import type { NetPlayerRow, NetTotalRow, Side } from "@/lib/types";
 import { GpuPanel } from "./gpu-panel";
 import { ComparePanel } from "./compare-panel";
+import { ComparisonProvider, useComparison } from "./comparison";
 import { MetadataPanel } from "./metadata-panel";
 import { RawPanel } from "./raw-panel";
 import { Segmented } from "./segmented";
@@ -23,7 +24,7 @@ import { MarksPanel } from "./marks-panel";
 import { WarningsPanel } from "./warnings-panel";
 import { HotPanel } from "./hot-panel";
 import { TreePanel } from "./tree-panel";
-import type { CaptureRef, LoadedCapture } from "./use-capture";
+import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
 const PANELS: Record<Exclude<Tab, "compare">, ComponentType<{ reader: HorizonPerf; capture: LoadedCapture }>> = {
@@ -50,12 +51,32 @@ interface Props {
   onClose: () => void;
 }
 
+/** What is said under the tabs while the views show changes against a second capture. */
+function CompareStrip() {
+  const { clear, error } = useComparison();
+  return (
+    <div className={styles.compareStrip}>
+      {error ? <p className={styles.error}>{error}</p> : <span>{t("compare.active")}</span>}
+      <button type="button" className={styles.buttonSmall} onClick={clear}>
+        {t("compare.stop")}
+      </button>
+    </div>
+  );
+}
+
 /** Everything shown for an open capture. */
 export function CaptureView({ reader, capture, showSide, onClose }: Props) {
+  return (
+    <ComparisonProvider reader={reader} base={capture}>
+      <Shown reader={reader} capture={capture} showSide={showSide} onClose={onClose} />
+    </ComparisonProvider>
+  );
+}
+
+function Shown({ reader, capture, showSide, onClose }: Props) {
   const [picked, setPicked] = useState<Tab>("summary");
-  const [compareCapture, setCompareCapture] = useState<CaptureRef | null>(null);
-  const compareHandle = useRef<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const { other } = useComparison();
 
   const sides = capture.sides.filter((side) => side !== "unspecified");
   const tabs = useMemo(() => {
@@ -73,25 +94,6 @@ export function CaptureView({ reader, capture, showSide, onClose }: Props) {
     return tabsFor((query) => ask(query).length > 0, hasTraffic);
   }, [reader, capture.handle, capture.name, capture.side]);
   const tab = tabs.includes(picked) ? picked : "summary";
-
-  const chooseCompare = async (file: File) => {
-    try {
-      const handle = reader.open(await file.arrayBuffer());
-      if (compareHandle.current !== null) reader.close(compareHandle.current);
-      compareHandle.current = handle;
-      setCompareCapture({ handle, name: file.name });
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-    }
-  };
-
-  useEffect(
-    () => () => {
-      if (compareHandle.current !== null) reader.close(compareHandle.current);
-      compareHandle.current = null;
-    },
-    [reader],
-  );
 
   const exportCapture = (kind: string) => {
     try {
@@ -158,9 +160,11 @@ export function CaptureView({ reader, capture, showSide, onClose }: Props) {
         ))}
       </nav>
 
+      {other && tab !== "compare" ? <CompareStrip /> : null}
+
       <section key={tab} className={styles.panel}>
         {tab === "compare" ? (
-          <ComparePanel reader={reader} base={capture} side={capture.side} other={compareCapture} onPick={(file) => void chooseCompare(file)} />
+          <ComparePanel base={capture} />
         ) : (
           createElement(PANELS[tab], { reader, capture })
         )}
