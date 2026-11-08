@@ -1658,7 +1658,7 @@ impl Game<'_> {
         cancel
     }
     /// LivingEntity.die / dropAllDeathLoot.
-    fn mob_died(&mut self, m: &Mob) {
+    pub(super) fn mob_died(&mut self, m: &Mob) {
         if self.mob_death_canceled(m) {
             return;
         }
