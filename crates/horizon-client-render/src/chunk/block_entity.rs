@@ -85,6 +85,11 @@ pub enum BlockEntity {
     DaylightDetector,
     /// `BellBlockEntity`: saved identity only; ringing state is kept separately.
     Bell,
+    /// `ConduitBlockEntity`: the UUID of its `destroyTarget` (`Target`). Its
+    /// shape and animation are kept separately (`block_entity_anim`).
+    Conduit(Option<[i32; 4]>),
+    /// `EnchantingTableBlockEntity`: its custom name is the world's block name.
+    EnchantingTable,
     /// Suspicious sand and gravel: saved loot and the transient brushed face.
     Brushable(Box<Brushable>),
     /// A shelf holds three displayed item stacks.
