@@ -263,7 +263,12 @@ def prepare(game):
               'gamerule spawn_mobs false', 'weather clear 1000000', 'effect clear @s',
               f'forceload add {X - 40} {Z - 40} {X + 40} {Z + 40}'):
         game.command(c)
-    game.command(f'execute in minecraft:overworld run tp @s {X + 0.5} {Y + 3} {Z + 0.5}')
+    # 🤖 Agent: The player waits on the first viewpoint's block: left in the air, it falls into the sea below while the
+    # scenes are built, which unlocks the boat recipes, and their toast shows over the first shots at a different
+    # moment each run.
+    where, _, (x, y, z), _, _ = SCENES['day_water']
+    game.command(f'execute in minecraft:{where} run setblock {int(x // 1)} {y - 1} {int(z // 1)} minecraft:stone')
+    game.command(f'execute in minecraft:{where} run tp @s {x} {y} {z}')
     game.settle()
     # 🤖 Agent: Day over water: a stone platform with a pool, sand around it, the sky and clouds behind.
     game.command(f'fill {X - 8} {Y - 1} {Z - 8} {X + 8} {Y - 1} {Z + 8} minecraft:stone')

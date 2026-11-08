@@ -1028,6 +1028,19 @@ pub fn item_stack(m: &Mob, slot: usize) -> Option<crate::items::ItemStack> {
         Some(stack)
     })
 }
+/// `LivingEntity.getItemBySlot` from the stacks a mob keeps: the hands and
+/// armour from `item_stack` (`EquipmentSlot` ordinals match these slots), the
+/// body and saddle from their own fields.
+pub fn equipment_stack(
+    m: &Mob,
+    slot: horizon_world::player_inventory::EquipmentSlot,
+) -> Option<crate::items::ItemStack> {
+    use horizon_world::player_inventory::EquipmentSlot as S;
+    match slot {
+        S::Body | S::Saddle => m.item_by_slot(slot),
+        _ => item_stack(m, slot as usize),
+    }
+}
 /// `setItemSlot` with the whole `stack`: its enchantments, trim, damage, name
 /// and count stay with the mob.
 pub fn set_item_stack(m: &mut Mob, slot: usize, stack: crate::items::ItemStack) {
