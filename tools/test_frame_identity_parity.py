@@ -14,6 +14,9 @@ Sessions, each a fresh game and world (seed 7) per build:
 - golden_hour: the Golden Hour example pack (shader API 0.1) in SDR, the same scenes.
 - golden_hour_hdr: Golden Hour with offscreen HDR output on (HORIZON_HDR_OUTPUT=pq): each screenshot and its -hdr.png.
 - hdr_toggle: vanilla started with HDR on (the 16-bit frame), shot, HDR turned off from its settings page, shot.
+- golden_hour_0_2, golden_hour_0_2_hdr: the Golden Hour 0.2 pack (shader API 0.2) on HORIZON_HDR_FRAME=float, in SDR
+  and with HDR on.
+- float_oit, float_visbuffer: HDR on the float frame with Improved Transparency, and with the visibility buffer.
 
 Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is installed (Linux), else the machine's
 default. When the base and the change differ only in files no game binary is built from (tools/, tests/, .github/,
@@ -354,8 +357,10 @@ SESSIONS = {
                         'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
     'float_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_HDR_FRAME': 'float'},
                         ['day_water', 'night_lights'], False),
-    'float_visbuffer': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_HDR_FRAME': 'float', 'HORIZON_VISBUFFER': '1'},
-                        ['day_water', 'night_lights'], False),
+    # 🤖 Agent: The visibility buffer draws only frames drawn flat, which frames without a pack are by default only on
+    # Metal and some Intel drivers.
+    'float_visbuffer': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_HDR_FRAME': 'float', 'HORIZON_VISBUFFER': '1',
+                        'HORIZON_FLAT_DRAWS': '1'}, ['day_water', 'night_lights'], False),
 }
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which HORIZON_STILL doesn't cover: off, as by default.
@@ -430,6 +435,11 @@ def session_checks(shots, sessions):
                 for x in ('.png', '-hdr.png')
                 if (shots / f'{without}.{s}{x}').exists() and (shots / f'{name}.{s}{x}').exists())]
             problems += [f'{name}.{s}: the same as without the pack: it didn\'t run' for s in same]
+        # 🤖 Agent: the log says whether the visibility buffer was built; with HORIZON_FLAT_DRAWS=1 it draws every frame.
+        log = shots / f'{name}.log'
+        built = log.exists() and 'through a visibility buffer' in log.read_text(encoding='utf-8')
+        if 'HORIZON_VISBUFFER' in extra and not built:
+            problems.append(f'{name}: the visibility buffer didn\'t run')
     return problems
 
 
