@@ -758,5 +758,15 @@ mod tests {
             "Done also returns without grabbing the pointer"
         );
         assert!(game.screen == Screen::Playing);
+        game.title.as_mut().unwrap().mode = horizon_client::title::Mode::Select {
+            worlds: Vec::new(),
+            selected: None,
+        };
+        let selection = game.title.as_ref().unwrap().screen_key();
+        assert!(
+            !game.run_debug_action(horizon_client::debug_keys::DebugAction::DebugOptions, false)
+        );
+        assert!(game.debug_options.is_none());
+        assert_eq!(game.title.as_ref().unwrap().screen_key(), selection);
     }
 }

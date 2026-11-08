@@ -759,6 +759,14 @@ impl Game<'_> {
                 self.debug_charts.toggle_lightmap(&mut self.debug);
                 true
             }
+            // Other title submenus still need their own interruption/close policy.
+            DebugAction::DebugOptions
+                if self.title.as_ref().is_some_and(|title| {
+                    !matches!(title.mode, horizon_client::title::Mode::Main)
+                }) =>
+            {
+                false
+            }
             DebugAction::DebugOptions => {
                 self.toggle_debug_options();
                 true
