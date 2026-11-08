@@ -4230,6 +4230,8 @@ pub enum Msg {
     PackLine(String),
     /// A modpack step ended: the pack as it now is.
     PackDone(Result<Box<crate::modpacks::Imported>, String>),
+    /// The modpacks other launchers keep on this computer (`modpacks::found_on_this_computer`).
+    FoundPacks(Vec<crate::other_launchers::Found>),
     /// How many play Horizon now, or none when the server can't be reached (`telemetry`).
     Playing(Option<u64>),
     /// How many play on the official server now, or none when it doesn't answer its status ping
