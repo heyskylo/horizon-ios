@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     include!("block_clone_item_tests.rs");
+    include!("state_block_entity_tests.rs");
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -61,6 +62,7 @@ mod tests {
         pub(super) struct ModelPart;
         pub(super) struct NativeShake;
         pub(super) struct WorldPrimitives;
+        pub(super) struct WorldHold;
         pub(super) struct Music;
         pub(super) struct MusicLayer;
         pub(super) struct NativeBlockRim;

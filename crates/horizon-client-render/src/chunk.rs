@@ -620,6 +620,14 @@ impl Chunk {
             entities: Vec::new(),
         }
     }
+    /// The original `structures.starts`, including starts with unknown pieces.
+    pub fn saved_structure_starts(&self) -> Option<&horizon_world::nbt::Compound> {
+        let structures = self.saved.as_ref()?.root.get(&"structures".into())?;
+        match structures.get("starts")? {
+            horizon_world::nbt::Tag::Compound(starts) => Some(starts),
+            _ => None,
+        }
+    }
     /// The minimum block Y of the column.
     #[inline]
     pub fn min_y(&self) -> i32 {

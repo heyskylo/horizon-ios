@@ -12,6 +12,7 @@
 //! server read itself: `login_acknowledged` and `login_finished` move each direction to configuration,
 //! `finish_configuration` to play, and `configuration_acknowledged` / `start_configuration` back.
 use std::{
+    cell::Cell,
     collections::{HashMap, VecDeque},
     sync::{
         Mutex,
@@ -125,6 +126,34 @@ impl Teleport {
             pitch: angle(rel::X_ROT, from.pitch, self.to.pitch).clamp(-90.0, 90.0),
         }
     }
+}
+
+thread_local! {
+    /// The client's ids while [`ClientSession::older_layout_down`] runs: its steps re-read payloads already in them.
+    static CLIENT_IDS: Cell<Option<&'static Ids>> = const { Cell::new(None) };
+}
+
+/// Restores the previous client ids when dropped.
+struct ClientIds(Option<&'static Ids>);
+impl Drop for ClientIds {
+    fn drop(&mut self) {
+        CLIENT_IDS.set(self.0);
+    }
+}
+
+/// Runs `read` on a payload the renumbering already wrote in the client's ids, reading them as the pinned ones
+/// (a particle's data, say, is chosen by its pinned id).
+pub(super) fn read_in_client_ids<T>(read: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _guard = CLIENT_IDS.get().map(|ids| ids::renumbering(ids, Way::Up));
+    read()
+}
+
+/// Runs `write`, writing pinned ids as the client's again (the other half of [`read_in_client_ids`]).
+pub(super) fn write_in_client_ids(write: impl FnOnce(&mut Writer)) -> Vec<u8> {
+    let _guard = CLIENT_IDS.get().map(|ids| ids::renumbering(ids, Way::Down));
+    let mut w = Writer::new();
+    write(&mut w);
+    w.data
 }
 
 impl ClientSession {
@@ -343,6 +372,7 @@ impl ClientSession {
         mut payload: Vec<u8>,
     ) -> Result<Option<Vec<u8>>> {
         let v = self.version;
+        let _client_ids = ClientIds(CLIENT_IDS.replace(v.ids()));
         // 1.21.2 reworked the recipe book (recipe displays, no ids a 1.21.1 client knows): a 1.21.1 client gets no
         // recipe book, so its update_recipes and place_ghost_recipe are not sent. Its recipe_book_add, _remove and
         // _settings have no 1.21.1 id at all (the id tables drop them).
@@ -367,6 +397,12 @@ impl ClientSession {
         {
             return Ok(None);
         }
+        // 26.3's explode carries the radius right after the centre; 1.21.8 dropped it, so it is kept here for
+        // 1.21.1's strength (written at the same place, after the centre).
+        let explode_radius = (v.at_most(ServerVersion::V1_21_1)
+            && (state, id) == (State::Play, packet_ids::play::clientbound::EXPLODE))
+            .then(|| payload.get(24..28).map(|b| [b[0], b[1], b[2], b[3]]))
+            .flatten();
         type Step = fn(State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
         let steps: [(ServerVersion, Step); 4] = [
             (ServerVersion::V26_1, step_26_1::clientbound),
@@ -406,6 +442,11 @@ impl ClientSession {
             && let Some(next) = step_1_21_1::clientbound(state, id, &payload)?
         {
             payload = next;
+        }
+        if let Some(radius) = explode_radius
+            && let Some(strength) = payload.get_mut(24..28)
+        {
+            strength.copy_from_slice(&radius);
         }
         // 1.20.6 is the oldest release: its packets are brought down after every step above.
         if v.at_most(ServerVersion::V1_20_6)
@@ -780,6 +821,39 @@ mod tests {
 
     // Expected ids are read off the 26.2 and 26.3 packets and registries reports by hand, not from the
     // generated tables.
+
+    #[test]
+    fn a_1_21_1_client_is_sent_the_real_explosion_radius() {
+        let s = ClientSession::new(ServerVersion::V1_21_1);
+        s.reading.store(to_u8(State::Play), Ordering::Release);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        let body = play::Clientbound::Explode(play::Explode {
+            center: [1.0, 2.0, 3.0],
+            radius: 6.5,
+            block_count: 12,
+            knockback: Some([0.5, 0.1, 0.0]),
+            particle: crate::entity_data::Particle { id: 29, data: None },
+            sound: (-1, Some(("minecraft:entity.generic.explode".into(), None))),
+            block_particles: Vec::new(),
+            play_sound: true,
+        })
+        .encode();
+        // Every older client is sent it (1.21.8 and older used to fail on reading it back).
+        for v in ServerVersion::ALL {
+            let t = ClientSession::new(v);
+            t.writing.store(to_u8(State::Play), Ordering::Release);
+            assert!(t.clientbound(&body).unwrap().is_some(), "{v:?}");
+        }
+        let sent = s.clientbound(&body).unwrap().unwrap();
+        let mut r = Reader::new(&sent);
+        r.varint().unwrap();
+        assert_eq!(
+            [r.f64().unwrap(), r.f64().unwrap(), r.f64().unwrap()],
+            [1.0, 2.0, 3.0]
+        );
+        // 1.21.1's strength, after the centre: 26.3's radius, not a guess.
+        assert_eq!(r.f32().unwrap(), 6.5);
+    }
 
     #[test]
     fn each_direction_follows_its_own_switches() {
