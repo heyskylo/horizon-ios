@@ -37,7 +37,7 @@ ChunkMap.close	port	crates/horizon-client-render/src/streaming.rs::Streaming::dr
 ChunkMap.saveAllChunks	port	crates/horizon-client/src/game.rs::Game::save_level	modified chunks only; wait picks the flushing form
 ChunkMap.hasWork	port	crates/horizon-client-render/src/streaming.rs::Streaming::busy	
 ChunkMap.processUnloads	inline	crates/horizon-client/src/game.rs::Game::update_world	unloaded columns: modified ones saved, entities and block entities dropped
-ChunkMap.saveChunksEagerly	inline	crates/horizon-client-render/src/streaming.rs::Streaming::receive_generated	gap: minor: fresh chunks are marked modified and written at the next autosave or unload, not within a few ticks
+ChunkMap.saveChunksEagerly	port	crates/horizon-client/src/game.rs::Game::save_chunks_eagerly	ordered dirty queue; per-level cooldown, tick-time and active chunk write gates
 ChunkMap.scheduleUnload	inline	crates/horizon-client/src/game.rs::Game::update_world	save if modified, unload entities and block entities
 ChunkMap.promoteChunkMap	skip:java		copy of the holder map for the main thread; Horizon has one chunk map
 ChunkMap.scheduleChunkLoad	port	crates/horizon-client-render/src/streaming.rs::ChunkGenerator::load	the Generate job loads a saved final chunk, else a proto is made
@@ -50,7 +50,7 @@ ChunkMap.runGenerationTask	port	crates/horizon-client-render/src/streaming.rs::S
 ChunkMap.onChunkReadyToSend	inline	crates/horizon-client/src/lan/hub.rs::Hub::next_batch	queued columns are sent once lit
 ChunkMap.prepareAccessibleChunk	inline	crates/horizon-client-render/src/streaming.rs::Streaming::update	a column finishes once its 3x3 is decorated
 ChunkMap.allChunksWithAtLeastStatus	inline	crates/horizon-client/src/game/integrated.rs::Game::publish_load_view	only the loading screen asks: lit chunks around the spawn
-ChunkMap.saveChunkIfNeeded	inline	crates/horizon-client/src/game.rs::Game::save_level	the modified set stands for the unsaved flag; autosave every 6000 ticks
+ChunkMap.saveChunkIfNeeded	inline	crates/horizon-client/src/game.rs::Game::save_chunks_eagerly	resident full chunks only; ordered selection delegates to World.modified
 ChunkMap.isExistingChunkFull	inline	crates/horizon-client-render/src/streaming.rs::Streaming::save_checked_out	protos exist only for columns not final, so one cannot overwrite a final chunk
 ChunkMap.markChunkPendingToSend	port	crates/horizon-client/src/lan/hub.rs::requeue	chunks entering the view join the guest's queue, closest first
 ChunkMap.getChunkToSend	inline	crates/horizon-client/src/lan/hub.rs::Hub::next_batch	only lit columns are taken

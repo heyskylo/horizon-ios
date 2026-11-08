@@ -1222,6 +1222,12 @@ API 144 adds a player's or mob's breathing, on the single player server thread a
 
 API 145 adds blocks and items a native mod declares in code, as NeoForge's `DeferredRegister.Blocks` and `.Items` drained by `RegisterEvent`, instead of one content file each: `native_blocks(blocks)` and `native_items(items)`, asked once at start on every side, take `horizon_mods::content::Block` and `Item`, the declarations a content mod's `data/<id>/horizon/block/` and `item/` files hold (a vanilla template and what differs; `item: true` gives a block its item). Ids are in the mod's namespace. They join the content mods' blocks and items, inside the content mod whose id is that namespace when it is on (its models, textures, loot and recipes), else on their own with the template's look, so their network ids, saves and the joining client's content check are the files' (docs/mods.md). They pass the files' checks; a namespace whose declarations don't is logged and left out. Bundles that use them need `"hooks": 145`.
 
+`Block.state_light` optionally takes a `content::StateLight` (`StateValues<u8>`), selecting emission
+from 0 to 15 by state-property tuples, exactly as the [content declaration](mods.md) does. It overrides
+the scalar `BlockProperties.light` only when present. The content compiler validates and resolves
+every state once; native, content-only, dedicated-server and client declarations use the same emitted
+state facts and ordinary light propagation, without a runtime callback.
+
 `Item.place_block: Option<String>` binds an item to an ordinary `BlockItem` placement of a vanilla
 block or a block in the item's namespace, including blocks with `item: false`. It uses the same
 [content field](mods.md) on clients and servers. Components still come from the item template;
@@ -2841,6 +2847,14 @@ tick later with a command.
   `expected`, and returns what was there (Bukkit's `setItem`); the second takes the stacks out of the given `Player`
   slots, each of which must still hold exactly its stack, all or none (a stake, a trade, a fine with enchanted gear).
   A player's screen follows with the tick's sync.
+- **`native_player_inventory_changed(player, stacks)`**: a player's inventory changed, heard at the moment vanilla's
+  `InventoryChangeTrigger` is checked (the per-tick check found another item or count in a slot), before any criterion
+  is looked at and whether or not any advancement uses `inventory_changed`. `stacks` are the 41 slots in
+  `native_inventory`'s `Player` numbering: 0..36 the main inventory (0..9 the hotbar), 36..40 the armour (feet, legs,
+  chest, head), 40 the off hand. It also fires at a player's first check after joining, so a mod sees what they log in
+  with. The player's state is swapped in. Heard for the single player, LAN guests and a dedicated server's players,
+  never on a client of a remote server: what quest, collection and "obtain an item" mods need instead of polling
+  every inventory. Bundles need `"hooks": @API:player_inventory_changed@`.
 
 #### Server hooks for plugin ports: login and profiles
 
@@ -4128,6 +4142,28 @@ game.native_play_local_sound("ironfall:ear.ringing", eye, 1.0, 1.0, 0);
 
 Bundles need `"hooks": @API:muffle_sounds@`.
 
+### Fireworks a client mod draws
+
+`native_client_fireworks(at, velocity, explosions)` (client, `host.client_fireworks`) draws a firework's explosions at
+`at` in this client's world as `ClientLevel.createFireworks` does when a rocket explodes (vanilla's client-only
+`FireworkParticles.Starter`): each `FireworkExplosion` in turn, two ticks apart, with its `shape` (`SmallBall`,
+`LargeBall`, `Star`, `Creeper`, `Burst`), `colors` and `fade` (RGB, as the `firework_explosion` component's), `trail`
+and `twinkle`, the flash, and the blast (large for three or more explosions or a large ball, far past 16 blocks) and
+twinkle sounds. No explosions puffs a little smoke, as vanilla's. `velocity` is a rocket's, which the sparks carry.
+Only the picture and the sound: there is no rocket entity, no damage or knockback, nothing on the server, and other
+players see nothing. A mod that celebrates with them has its server half tell each nearby client half (mod messages)
+to draw it. `FireworkExplosion` and `FireworkShape` are in `mod_api`. True when queued; false on a server, without a
+client player or level, for non-finite numbers and for more than 64 explosions. Bundles need
+`"hooks": @API:client_fireworks@`.
+
+```rust,ignore
+use horizon_client::mod_api::{FireworkExplosion, FireworkShape};
+let star = FireworkExplosion {
+    shape: FireworkShape::Star, colors: vec![0xFFD700], fade: vec![0xFFFFFF], trail: true, twinkle: false,
+};
+host.client_fireworks([x, y + 3.0, z], [0.0, 0.0, 0.0], &[star]);
+```
+
 ### Fluid currents
 
 `native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
@@ -4472,6 +4508,68 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+- `native_world_warp(warp)`: give the frame a [world warp](#world-warps), WGSL every terrain and entity vertex goes
+  through. Asked once a frame before the world is drawn (not on the title screen's panorama); the last mod to set
+  one draws.
+
+### World warps
+
+A world warp bends the drawn world itself: every terrain vertex (far terrain's tiles too) and entity vertex goes
+through a mod's WGSL, so what moves is the real geometry, with its light and depth, seen from any side. Set
+`WorldWarp` in `native_world_warp`:
+
+- `source`: the WGSL, an `Arc<str>` (keep one and hand out clones: a source that compares equal to the last one is
+  not built again). `None`, the default, is no warp.
+- `on`: whether this frame draws with it. A source given while `on` is false is still built, so give it a moment
+  before it's needed: building takes a while the first time (logged as "a mod's world warp built in N ms").
+- `params`: sixteen floats the WGSL reads as `warp.params`, four `vec4<f32>`. Set them every frame.
+
+The source has `world_warp`, and may go on after a line `// [fragments]` with `world_fragment` for the terrain's
+pixels:
+
+```wgsl
+// pos: the vertex from the camera. section: the corner of the section or far tile it belongs to, from the camera
+// (a vertex on the edge between two sections says by itself which it lies on no better than its position does);
+// for an entity, its own position; for a block entity, its section's corner.
+fn world_warp(pos: vec3<f32>, section: vec3<f32>) -> Warped {
+    // where the world's point p is from the camera, exact far from the origin:
+    // (p - warp.camera.xyz) - warp.camera_rest.xyz; warp.camera.w is the frame's partial tick
+    let lift = sin((pos.x + warp.camera.x) * 0.1 + warp.params[0].x) * warp.params[0].y;
+    // Warped: pos, where to draw it (from the camera); tint, what its colour is multiplied by
+    // (terrain only: red under 0 marks the vertex's faces cut)
+    return Warped(pos + vec3(0.0, lift, 0.0), vec3(1.0));
+}
+// [fragments]
+fn world_fragment(f: Fragment) -> Painted {
+    // Fragment: home (where the point really is, from the camera: world_warp's pos), at (where it is drawn), uv and
+    // layer (sprite(f.uv, f.layer) is the block's texture), color (biome tint, light, shading and the warp's tint),
+    // light (sky and block, 0 to 15), cut (over 0 where a tint had red under 0), front (false on a face's back)
+    if f.cut > 0.0 || !f.front { return Painted(vec4(0.0, 0.0, 0.0, -1.0), 1.0); }  // alpha under 0: left out
+    return Painted(sprite(f.uv, f.layer) * f.color, 1.0);  // Painted: color, and fog (how much of the fog it takes)
+}
+```
+
+Without a `world_fragment` the terrain is drawn as the game draws it, less the faces a tint cut. The source goes into
+copies of the game's terrain and entity shaders (`crates/horizon-client-render/src/gfx/world_warp.rs`), so prefix
+what else it declares to keep clear of their names. What follows `// [fragments]` goes into the terrain's only:
+entities have no pixel stage of the warp. A source that doesn't compile is logged ("a mod's world warp did not
+compile", with naga's message) and the frame draws without it until the source changes.
+
+While a warp draws, the warp's pipelines don't cull back faces and the frame leaves nothing out by where it was:
+frustum, cave and occlusion culling (CPU and GPU) and the culling of section faces turned away are off for it, since
+the warp may bring any of it into view. That makes the frame cost more: turn the warp off when it's done. A warped
+frame also keeps to the plain per-section draws: flat draws, the visibility buffer, improved transparency, the water
+mirror, and a Horizon shader pack's material stage and `[displacement]` give way to it for that frame (the pack's sky
+and post stages still run; its shadows are of the unwarped world). A shader pack that draws the terrain itself (Iris
+and OptiFine format) isn't warped: the frame draws without the warp, logged once. TAA reprojects by the camera alone,
+so a warp that moves fast smears as other moving things do. Warped: terrain (solid and translucent), entities, items,
+particles, block entities, entity shadows and name tags. Not warped: the hand, sky, clouds, weather, block outlines and
+breaking cracks, lightning, and what mods draw themselves (world primitives, the world canvas, native models and
+fluids). A frame without a warp costs nothing more: the game's own shaders hold only comments where a warp goes in,
+and nothing of the warp's is made until a mod gives one.
+
+`cargo run -p horizon-client-render --example world_warp_check -- <dir>` (with throwaway `HORIZON_HOME`,
+`HORIZON_LAUNCHER_HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME`) draws a warp through the renderer offscreen.
 
 ### World primitives
 

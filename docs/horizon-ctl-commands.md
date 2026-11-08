@@ -7,7 +7,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
-| `launch [--world NAME] [--seed N] [--creative] [--version TAG] [--game PATH] [--wait] [GAME ARGS...]` | `launch` | Start Horizon with the control socket and wait until it answers | `--world` (string): world folder to open or create<br>`--seed` (string): seed for a new world<br>`--creative` (boolean): creative mode for a new world<br>`--version` (string): an installed launcher version tag such as v2026.10.13<br>`--game` (string): path to a horizon-client binary<br>`--wait` (boolean): also wait until the world is ready (default in MCP)<br>`--offscreen` (boolean): render without showing a window (screenshots still work): locked or headless sessions<br>`--headless` (boolean): no display, window or GPU: a player that plays through these commands only (no screenshots) |
+| `launch [--world NAME] [--seed N] [--creative] [--version TAG] [--game PATH] [--wait] [GAME ARGS...]` | `launch` | Start Horizon with the control socket and wait until it answers | `--world` (string): world folder to open or create<br>`--seed` (string): seed for a new world<br>`--creative` (boolean): creative mode for a new world<br>`--version` (string): an installed launcher version tag such as v2026.10.13<br>`--game` (string): path to a horizon-client binary<br>`--wait` (boolean): also wait until the world is ready (default in MCP)<br>`--offscreen` (boolean): render without showing a window, splitscreen's too (screenshots still work): locked or headless sessions<br>`--headless` (boolean): no display, window or GPU: a player that plays through these commands only (no screenshots) |
 | `wait-for screen NAME\|widget ID\|loaded\|chat TEXT\|event KIND [--timeout S] [--since SEQ]` | `wait_for` | Wait until the game reaches a state, then reply | `--timeout` (number): seconds (default 30)<br>`--since` (integer): chat and event: count from this event seq<br>`condition` (screen, widget, loaded, chat, event, required): what to wait for<br>`value` (text): the screen name, widget id, chat text or event kind |
 | `wait-ready [SECONDS]` | `wait_ready` | Wait until the player has spawned and no chunks are pending | `seconds` (number): how long to wait (default 120) |
 | `logs [--lines N] [--crash]` | `logs` | The end of the game's log, or its newest crash report | `--lines` (integer): how many lines of latest.log (default 100)<br>`--crash` (boolean): the newest crash report instead |
@@ -27,7 +27,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
-| `events [--since SEQ]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds | `--since` (integer): only events after this seq |
+| `events [--since SEQ] [--limit N]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, damage taken (hurt, with its cause), healing, food, dimensions, worlds | `--since` (integer): only events after this seq<br>`--limit` (integer): newest N events |
 | `input-log [--since SEQ] [--limit N] [--origin user\|agent\|game]` | `input_log` | Recent input and who caused it: a person, an agent or the game | `--since` (integer): only events after this seq<br>`--limit` (integer): newest N events<br>`--origin` (user, agent, game): user, agent or game |
 | `state` | `state` | Player, world, screen and crosshair target in one reply | none |
 | `looking-at` | `looking_at` | The block or entity under the crosshair | none |
@@ -63,12 +63,14 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | --- | --- | --- | --- |
 | `emote [ID\|stop]` | `emote` | Play one of the player's emotes, stop it, or list them | `id` (string): an owned emote's id, or stop |
 | `break X Y Z [--timeout S]` | `break` | Mine a block, holding the attack button until it breaks | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--timeout` (number): give up after this many seconds (default 30) |
-| `place X Y Z [--item ITEM]` | `place` | Place the held item (or ITEM from the hotbar) at an empty position | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--item` (string): hotbar item to select first |
-| `interact X Y Z [FACE]` | `interact` | Right-click a block: open a chest or crafting table, press a button, open a door | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`face` (down, up, north, south, west, east): which face to click |
+| `place X Y Z [--item ITEM] [--sneak]` | `place` | Place the held item (or ITEM from the hotbar) at an empty position | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`--item` (string): hotbar item to select first<br>`--sneak` (boolean): sneak while clicking: place against a crafting table or chest instead of opening it |
+| `interact X Y Z [FACE] [--sneak]` | `interact` | Right-click a block: open a chest or crafting table, press a button, open a door | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`face` (down, up, north, south, west, east): which face to click<br>`--sneak` (boolean): sneak while clicking: use the held item on the block instead of opening it |
 | `use-item [--hold SECONDS]` | `use_item` | Right-click with the held item: eat, drink, throw, draw a bow | `--hold` (number): hold the button this long |
 | `attack [ID]` | `attack` | Swing at what the crosshair targets (after facing entity ID) | `id` (integer): entity id to face first |
 | `select SLOT\|ITEM` | `select` | Select a hotbar slot 1-9, or the hotbar slot holding ITEM | `slot` (string, required): 1-9 or an item id |
 | `drop [all]` | `drop` | Drop one of the held item, or the whole stack | `all` (boolean): drop the whole stack |
+| `hunt ID [--timeout S]` | `hunt` | Walk up to a mob and hit it until it is gone, then pick up its drops | `id` (integer, required): entity id from entities<br>`--timeout` (number): give up after this many seconds (default 30) |
+| `collect [RADIUS]` | `collect` | Walk over every dropped item within RADIUS blocks (default 8) to pick it up | `radius` (number): search radius in blocks (default 8) |
 | `hold KEY SECONDS` | CLI only | Press a key, wait, release it | `key` (string, required): key name<br>`seconds` (number, required): how long |
 | `key KEY down\|up\|tap\|repeat` | `key` | Press, release or auto-repeat a key (w a s d space shift ctrl e q esc f3 1-9 arrows ...) | `key` (string, required): key name<br>`action` (down, up, tap, repeat, required): what to do |
 | `mouse left\|right\|middle down\|up\|click` | `mouse` | Press or release a mouse button in the world | `button` (left, right, middle, required): button<br>`action` (down, up, click, required): what to do |
@@ -139,7 +141,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | --- | --- | --- | --- |
 | `script [FILE] [--keep-going]` | CLI only | Run commands from FILE (or stdin), one per line | none |
 | `sleep SECONDS` | CLI only | Wait (in scripts) | none |
-| `mcp` | CLI only | Serve the Model Context Protocol on stdin/stdout, one tool per command | none |
+| `mcp [--paced]` | CLI only | Serve the Model Context Protocol on stdin/stdout, one tool per command | none |
 | `bench SECONDS` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure |
 | `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |

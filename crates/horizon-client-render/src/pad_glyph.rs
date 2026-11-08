@@ -417,7 +417,9 @@ mod tests {
         assert_eq!(file(Button::East, style), Some("nx_a"));
         assert_eq!(file(Button::West, style), Some("nx_y"));
         assert_eq!(file(Button::North, style), Some("nx_x"));
-        assert_eq!(file(Button::LeftTrigger, style), Some("nx_zl"));
+        assert_eq!(file(Button::LeftBumper, style), Some("nx_l"));
+        assert_eq!(file(Button::RightTrigger, style), Some("nx_zr"));
+        assert_eq!(file(Button::Select, style), Some("nx_minus"));
         assert_eq!(file(Button::Start, style), Some("nx_plus"));
     }
 
@@ -429,8 +431,34 @@ mod tests {
             (GlyphStyle::Nintendo, "nx_"),
         ] {
             for button in Button::ALL {
-                let name = file(button, style).unwrap();
-                assert!(name.starts_with(prefix), "{button:?} {name}");
+                let name = file(button, style).unwrap_or_else(|| panic!("{button:?}"));
+                assert!(name.starts_with(prefix), "{name}");
+            }
+        }
+    }
+
+    /// Each family's art is its own drawing: Nintendo's once was Xbox's files copied (LB for L, a red
+    /// B), and View, Create and − were one plain minus.
+    #[test]
+    fn no_two_buttons_share_a_picture_across_families() {
+        let differs = |a: &Art, b: &Art| a.button == b.button && a.family != b.family;
+        // The sticks and the d-pad are the same part on every pad, so they may share a picture.
+        let shared = [
+            Button::LeftStick,
+            Button::RightStick,
+            Button::DPadUp,
+            Button::DPadDown,
+            Button::DPadLeft,
+            Button::DPadRight,
+        ];
+        for (i, art) in ART.iter().enumerate() {
+            for other in ART[..i].iter().filter(|o| o.png == art.png) {
+                assert!(
+                    differs(art, other) && shared.contains(&art.button),
+                    "{} is {}",
+                    art.sprite,
+                    other.sprite
+                );
             }
         }
     }
@@ -472,6 +500,10 @@ mod tests {
             20.0
         );
         assert_eq!(width(&atlas, g(Button::DPadUp, GlyphStyle::Nintendo)), 12.0);
+        assert_eq!(
+            width(&atlas, g(Button::LeftTrigger, GlyphStyle::Nintendo)),
+            20.0
+        );
         let mut no_art = atlas;
         no_art
             .sprites
