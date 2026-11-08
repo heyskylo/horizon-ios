@@ -97,7 +97,7 @@ Player.hasCorrectToolForDrops	port	crates/horizon-client/src/game.rs::Game::tick
 Player.canDropItems	inline	crates/horizon-client/src/lan/menu.rs::click	THROW is not acted on while the client has dropped items too fast
 Player.readAdditionalSaveData	port	crates/horizon-client/src/save.rs::Level::read_player	
 Player.addAdditionalSaveData	port	crates/horizon-client/src/save.rs::Level::player_tag	
-Player.hurtHelmet	inline	crates/horizon-client/src/game.rs::Game::hurt_armor	gap: minor: hurt_armor hits all four armour slots; the head-only hit from LivingEntity.hurt is not separated
+Player.hurtHelmet	inline	crates/horizon-client/src/game/item_durability.rs::Game::hurt_armor	gap: minor: hurt_armor hits all four armour slots; the head-only hit from LivingEntity.hurt is not separated
 Player.isAboveGround	inline	crates/horizon-world/src/edge_backoff.rs::back_off_from_edge	the on-the-edge test before backing off
 Player.canFallAtLeast	inline	crates/horizon-world/src/edge_backoff.rs::back_off_from_edge	the no-collision drop test at the edge
 Player.deflectProjectile	port	crates/horizon-client/src/game/deflect.rs::Game::attack_redirectable	
