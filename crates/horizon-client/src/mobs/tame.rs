@@ -84,11 +84,11 @@ pub fn register(m: &mut Mob) {
         .add(4, NearestTarget::player(true).when(angry_at_player));
     m.ai.targets.add(
         5,
-        NearestTarget::new(Prey::Filter(wolf_prey), false).gate(|m, _| !m.extra.tame),
+        NonTameTarget::new(NearestTarget::new(Prey::Filter(wolf_prey), false)),
     );
     m.ai.targets.add(
         6,
-        NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).gate(|m, _| !m.extra.tame),
+        NonTameTarget::new(NearestTarget::new(Prey::Filter(baby_turtle_on_land), false)),
     );
     m.ai.targets.add(
         7,
@@ -147,12 +147,63 @@ impl Goal for LandOnOwnersShoulder {
         }
     }
 }
+/// `NonTameRandomTargetGoal`: a tameable mob's prey target, only while it is
+/// wild. Vanilla re-tests the subclass selector while hunting, so a baby
+/// turtle that enters water stops being hunted.
+#[derive(Clone, Debug)]
+struct NonTameTarget(NearestTarget);
+impl NonTameTarget {
+    fn new(inner: NearestTarget) -> Self {
+        Self(inner.named("NonTameRandomTargetGoal"))
+    }
+    fn prey_matches(prey: &Prey, who: Who, w: &MobWorld) -> bool {
+        match prey {
+            Prey::Player => who == Who::Player,
+            Prey::Species(list) => match who {
+                Who::Player => false,
+                Who::Mob(id) => w.seen(id).is_some_and(|s| list.contains(&s.species)),
+            },
+            Prey::Filter(f) => match who {
+                Who::Player => false,
+                Who::Mob(id) => w.seen(id).is_some_and(f),
+            },
+        }
+    }
+}
+impl Goal for NonTameTarget {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        self.0.flags()
+    }
+    fn name(&self) -> &'static str {
+        "NonTameRandomTargetGoal"
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        !m.extra.tame && self.0.can_use(m, cx)
+    }
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        let Some(who) = m.ai.target else {
+            return false;
+        };
+        Self::prey_matches(&self.0.prey, who, cx.w) && self.0.can_continue(m, cx)
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.start(m, cx)
+    }
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.stop(m, cx)
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.tick(m, cx)
+    }
+}
+/// `Turtle.BABY_ON_LAND_SELECTOR`: a baby turtle out of water.
+fn baby_turtle_on_land(s: &super::Seen) -> bool {
+    s.species == Species::Turtle && s.baby && !s.in_water
+}
 /// `Wolf.PREY_SELECTOR`: sheep, rabbits and foxes.
 fn wolf_prey(s: &super::Seen) -> bool {
     matches!(s.species, Species::Sheep | Species::Rabbit | Species::Fox)
-}
-fn baby_turtle_on_land(s: &super::Seen) -> bool {
-    s.species == Species::Turtle && s.baby
 }
 /// `NeutralMob.isAngryAt(player)`: the player the anger names, or, with the
 /// `universal_anger` rule on and no anger target left, any player. Creative and
@@ -951,11 +1002,11 @@ pub fn register_cat(m: &mut Mob) {
     );
     m.ai.targets.add(
         1,
-        NearestTarget::species(&[Species::Rabbit], false).gate(|m, _| !m.extra.tame),
+        NonTameTarget::new(NearestTarget::species(&[Species::Rabbit], false)),
     );
     m.ai.targets.add(
         1,
-        NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).gate(|m, _| !m.extra.tame),
+        NonTameTarget::new(NearestTarget::new(Prey::Filter(baby_turtle_on_land), false)),
     );
 }
 /// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
@@ -2165,5 +2216,70 @@ mod tamable_panic_tests {
         assert!(cat, "a cat hit by a player runs");
         assert!(frozen, "a freezing wolf runs");
         assert!(!hit, "a wolf hit by a player does not panic");
+    }
+}
+
+#[cfg(test)]
+mod non_tame_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use horizon_core::geometry::Vec3;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `NonTameRandomTargetGoal.canContinueToUse` re-tests the subclass
+    /// selector: a baby turtle (`Turtle.BABY_ON_LAND_SELECTOR`) that enters
+    /// water is no longer a valid target.
+    #[test]
+    fn a_non_tame_target_stops_when_the_baby_turtle_enters_water() {
+        let mut kinds = None;
+        if !with_test_world(&[], |_, types| {
+            kinds = Some((
+                Arc::new(types.types["minecraft:cat"].clone()),
+                Arc::new(types.types["minecraft:turtle"].clone()),
+            ));
+        }) {
+            return;
+        }
+        let Some((cat, turtle)) = kinds else { return };
+        let mut turtle = Mob::new(2, turtle, Vec3::new(2.5, 64.0, 0.5), 0.0);
+        turtle.extra.age = -24000;
+        let mut m = Mob::new(1, cat, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        m.ai.goals.add(
+            1,
+            NonTameTarget::new(
+                NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).interval(0),
+            ),
+        );
+        let tick = |m: &mut Mob, w: &MobWorld| {
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(m, &mut cx);
+            let running = goals.is_running("NonTameRandomTargetGoal");
+            m.ai.goals = goals;
+            running
+        };
+        let land = [turtle.seen(None)];
+        let mut started = None;
+        if !with_test_world(&land, |w, _| started = Some(tick(&mut m, w))) {
+            return;
+        }
+        turtle.fluids.in_water = true;
+        let water = [turtle.seen(None)];
+        let mut stopped = None;
+        if !with_test_world(&water, |w, _| stopped = Some(!tick(&mut m, w))) {
+            return;
+        }
+        assert_eq!(
+            (started, stopped),
+            (Some(true), Some(true)),
+            "a baby turtle on land is hunted and one in water is not"
+        );
     }
 }
