@@ -311,7 +311,7 @@ impl Game<'_> {
                 != Some(Ticker::Bell)
             {
                 self.be_anims.bells.remove(&pos);
-            } else if self.tickets.levels().block_ticking_at(pos[0], pos[2]) {
+            } else if self.block_ticking_area()(pos[0], pos[2]) {
                 self.tick_bell(pos, &raiders);
             }
         }
@@ -531,7 +531,14 @@ impl Game<'_> {
         if self.world.game_time % 40 == 0 {
             self.find_conduits();
         }
-        let mut positions: Vec<[i32; 3]> = self.be_anims.conduit_servers.keys().copied().collect();
+        let ticking = self.block_ticking_area();
+        let mut positions: Vec<[i32; 3]> = self
+            .be_anims
+            .conduit_servers
+            .keys()
+            .copied()
+            .filter(|p| ticking(p[0], p[2]))
+            .collect();
         positions.sort_unstable();
         for pos in positions {
             self.tick_conduit_server(pos);
@@ -775,13 +782,13 @@ impl Game<'_> {
     /// (`Level.tickBlockEntities`): the cooldown an entry started runs out,
     /// and every 2400 ticks `triggerCooldown` sends its block event.
     fn tick_gateway_servers(&mut self) {
-        let levels = self.tickets.levels();
+        let ticking = self.block_ticking_area();
         let mut positions: Vec<[i32; 3]> = self
             .be_anims
             .gateway_servers
             .keys()
             .copied()
-            .filter(|p| levels.block_ticking_at(p[0], p[2]))
+            .filter(|p| ticking(p[0], p[2]))
             .collect();
         positions.sort_unstable();
         for pos in positions {

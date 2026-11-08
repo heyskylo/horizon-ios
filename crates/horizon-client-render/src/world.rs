@@ -75,6 +75,10 @@ pub struct World {
     pub light_edits: Vec<((i32, i32, i32), u32, u32)>,
     /// Saved entities of chunks that just loaded, spawned by the game.
     pub loaded_entities: Vec<((i32, i32), Vec<horizon_world::nbt::Tag>)>,
+    /// Chunks loaded since the level's last pass, their entity sections not
+    /// ready yet (`PersistentEntitySectionManager`'s PENDING), empty ones too:
+    /// the pass ends by readying them (`processPendingLoads`).
+    pub entities_pending: FxHashSet<(i32, i32)>,
     /// Chunks that just came into this level from a worker, and whether each
     /// was generated rather than read from the save: the game tells native mods.
     pub loaded_chunks: Vec<(i32, i32, bool)>,
@@ -214,6 +218,7 @@ impl World {
             dirty_light: Default::default(),
             light_edits: Vec::new(),
             loaded_entities: Vec::new(),
+            entities_pending: FxHashSet::default(),
             loaded_chunks: Vec::new(),
             modified: FxHashSet::default(),
             attachments: Default::default(),

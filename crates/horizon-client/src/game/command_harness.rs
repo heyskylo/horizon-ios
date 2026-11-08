@@ -208,6 +208,7 @@ impl Game<'_> {
                     // in those chunks (areEntitiesActuallyLoadedAndTicking):
                     // after a dimension change they come back from the save.
                     self.spawn_loaded_entities();
+                    self.world.entities_pending.clear();
                     return Ok(());
                 }
             }
@@ -463,6 +464,8 @@ impl Game<'_> {
                                         .iter()
                                         .any(|(key, _)| *key == (x, z))
                             }) {
+                                // The oracle waits for `areEntitiesLoaded` too.
+                                g.world.entities_pending.clear();
                                 break;
                             }
                             if Instant::now() > deadline {

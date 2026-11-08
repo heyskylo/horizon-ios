@@ -1975,10 +1975,12 @@ impl LevelAccess for GameLevel<'_> {
         )
         .unwrap_or(false)
     }
-    /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, and
-    /// a ticking chunk.
+    /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, a
+    /// ticking chunk, and its entities loaded.
     fn is_ticking_chunk(&self, chunk: horizon_core::position::ChunkPos) -> bool {
-        self.tickets.block_ticking(chunk.x, chunk.z) && ticking_chunk(self.world, chunk.x, chunk.z)
+        self.tickets.block_ticking(chunk.x, chunk.z)
+            && ticking_chunk(self.world, chunk.x, chunk.z)
+            && !self.world.entities_pending.contains(&(chunk.x, chunk.z))
     }
     /// Entities that trigger pressure plates, tripwires, detector rails and
     /// wooden buttons: the players (the host and the LAN guests), the mobs,
@@ -7795,6 +7797,10 @@ impl Game<'_> {
             horizon_client::spans::time("tick_particles", || self.tick_particles());
             self.tick_client_ambient();
         }
+        // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
+        // block entity ticker (the bells, conduits and gateways above too): the
+        // chunks loaded before this pass have their entities loaded from the next.
+        self.world.entities_pending.clear();
         self.tick_frame_visuals(running);
         if running {
             // MinecraftServer.tickServer: GameTestTicker.SINGLETON.tick().
