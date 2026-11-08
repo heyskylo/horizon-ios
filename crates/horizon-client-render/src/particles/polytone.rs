@@ -1044,11 +1044,11 @@ impl super::ParticleController for Controller {
         }
         // Moves with collision when it has physics, else freely; then the friction.
         if def.has_physics {
-            let before = p.position;
             p.move_by(level, p.velocity);
-            let still = (0..3).all(|i| (p.position[i] - before[i]).abs() < 1.0e-7);
+            // `kill_when_still`: a particle a collision stopped (one that landed), not one that
+            // was never moving: in Java a resting emitter with physics lives out its life.
             if (def.kill_on_contact && (p.on_ground || p.stopped_by_collision))
-                || (def.kill_when_still && still)
+                || (def.kill_when_still && p.stopped_by_collision)
             {
                 p.remove();
             }
@@ -1683,6 +1683,43 @@ mod tests {
             (sounds[0].0, sounds[0].2, sounds[0].3),
             ("minecraft:block.note_block.harp", 0.5, 1.0)
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The freepack's light rays come from an emitter with physics that rests beside a leaf and
+    /// emits every tick of its life: resting is not being still, only a stopped fall is.
+    #[test]
+    fn a_resting_particle_with_physics_lives_out_its_life() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/rest.json",
+                serde_json::json!({"has_physics": true, "render_type": "invisible",
+                    "initializer": {"lifetime": "20"}}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [{"particle": "test:rest", "chance": "1"}]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        engine.polytone_entity(&level, "minecraft:player", [1.5, 70.0, 1.5]);
+        let mut p = engine.pending.pop().unwrap();
+        for _ in 0..10 {
+            engine.tick_particle(&mut p, &level);
+            assert!(!p.removed);
+        }
+        // Stopped by a collision, it goes.
+        p.stopped_by_collision = true;
+        engine.tick_particle(&mut p, &level);
+        assert!(p.removed);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
