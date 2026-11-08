@@ -764,6 +764,21 @@ impl AttributeMap {
         map
     }
 
+    /// Sets the attribute's entry, replacing the one it had.
+    pub fn set(&mut self, attribute: &'static Attribute, entry: Entry) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+        self.0.push((attribute, entry));
+    }
+
+    /// Drops the attribute's entry.
+    pub fn remove(&mut self, attribute: &Attribute) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn get(&self, attribute: &Attribute) -> Option<&Entry> {
         self.0
             .iter()

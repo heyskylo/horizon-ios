@@ -36,6 +36,7 @@ pub fn main() -> horizon_client::Result<()> {
             thunder: f[3].parse()?,
             blend: None,
             biome: Some(&info.attributes),
+            ..Sample::default()
         });
         let v3 = |c: [f32; 3]| format!("[{:?},{:?},{:?}]", c[0], c[1], c[2]);
         let v4 = |c: [f32; 4]| format!("[{:?},{:?},{:?},{:?}]", c[0], c[1], c[2], c[3]);

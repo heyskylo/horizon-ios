@@ -2332,6 +2332,9 @@ pub struct PackResources {
     forcefield: Arc<(u32, u32, Vec<u8>)>,
     /// OptiFine custom sky layers (`optifine/sky`) with their textures; empty without them.
     custom_sky: Arc<horizon_client::custom_sky::CustomSky>,
+    /// The overworld's, Nether's and End's attribute stacks with the packs' Polytone biome and
+    /// dimension modifiers (#11486), when a pack has some: what the frame draws.
+    environments: Option<Arc<[Environment; 3]>>,
 }
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
@@ -14233,7 +14236,7 @@ impl Game<'_> {
             .get(&(block[0] >> 4, block[2] >> 4))
             .map(|c| c.biome(block[0], block[1], block[2]))
             .unwrap_or(0);
-        let environment = self.dim_environment();
+        let environment = self.view_environment();
         // EnvironmentAttributeProbe: the spatially interpolated biome colours,
         // Gaussian-weighted over the noise biomes around the camera (plains
         // where no chunk is loaded, as ClientLevel.getUncachedNoiseBiome).
@@ -14251,10 +14254,28 @@ impl Game<'_> {
         let water_fog = horizon_client::biome::blend_rgb(&weights, |b| {
             horizon_client::biome::rgb(biomes.get(b).water_fog)
         });
-        // The attribute stack, with the camera's biome mix in the probe's order.
+        // The attribute stack, with the camera's biome mix in the probe's order; the biome
+        // maps as the packs left them.
+        let attributes_of = |b: u16| {
+            let info = biomes.get(b);
+            environment.biome(&info.name).unwrap_or(&info.attributes)
+        };
         let mut blend = horizon_world::environment_system::BiomeBlend::default();
         for &(b, weight) in &weights {
-            blend.accumulate(weight, &biomes.get(b).attributes);
+            blend.accumulate(weight, attributes_of(b));
+        }
+        // The packs' biome post-process group, mixed the same way where they set one.
+        let empty = horizon_world::environment_attributes::AttributeMap::default();
+        let post_of = |b: u16| {
+            environment
+                .biome_post(&biomes.get(b).name)
+                .unwrap_or(&empty)
+        };
+        let mut post_blend = horizon_world::environment_system::BiomeBlend::default();
+        if environment.has_biome_post() {
+            for &(b, weight) in &weights {
+                post_blend.accumulate(weight, post_of(b));
+            }
         }
         let (rain, thunder) = self.view_weather(alpha as f32);
         let mut sky = environment.sample(&horizon_client::environment::Sample {
@@ -14262,7 +14283,9 @@ impl Game<'_> {
             rain,
             thunder,
             blend: Some(&blend),
-            biome: Some(&biomes.get(biome).attributes),
+            biome: Some(attributes_of(biome)),
+            post_blend: Some(&post_blend),
+            post_biome: Some(post_of(biome)),
         });
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
