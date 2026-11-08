@@ -301,7 +301,7 @@ impl ChunkTickets {
             && sources
                 .portal
                 .iter()
-                .all(|chunk| self.portal.iter().any(|(current, _)| current == chunk))
+                .all(|chunk| self.portal.iter().any(|ticket| ticket.chunk == *chunk))
     }
     pub fn levels(&self) -> Levels {
         self.levels.clone()
