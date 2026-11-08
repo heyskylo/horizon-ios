@@ -741,6 +741,8 @@ fn down(ids: &'static Ids, state: State, id: i32, payload: &[u8]) -> Result<Sent
         | cb::LEVEL_EVENT
         | cb::BLOCK_EVENT
         | cb::UPDATE_ATTRIBUTES
+        | cb::UPDATE_MOB_EFFECT
+        | cb::REMOVE_MOB_EFFECT
         | cb::SOUND
         | cb::SOUND_ENTITY
         | cb::SET_ENTITY_DATA
@@ -805,6 +807,15 @@ fn renumber(ids: &Ids, p: &mut play::Clientbound) -> Option<()> {
         }
         play::Clientbound::BlockEvent(e) => {
             e.block = down_or_substitute(ids.block, ids.substitutes.block, e.block)?;
+            Some(())
+        }
+        // An effect the client lacks (added after its release) is not sent.
+        play::Clientbound::UpdateMobEffect(e) => {
+            e.effect = ids.mob_effect.down(e.effect)?;
+            Some(())
+        }
+        play::Clientbound::RemoveMobEffect(e) => {
+            e.effect = ids.mob_effect.down(e.effect)?;
             Some(())
         }
         play::Clientbound::UpdateAttributes(a) => {
@@ -882,6 +893,29 @@ mod tests {
 
     // Expected ids are read off the 26.2 and 26.3 packets and registries reports by hand, not from the
     // generated tables.
+
+    #[test]
+    fn an_effect_an_older_client_lacks_is_not_sent() {
+        let s = ClientSession::new(ServerVersion::V1_21_1);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        let effect = |effect| {
+            play::Clientbound::UpdateMobEffect(play::UpdateMobEffect {
+                id: 1,
+                effect,
+                amplifier: 0,
+                duration: 100,
+                flags: 0,
+            })
+            .encode()
+        };
+        // Speed (0) is known to 1.21.1; pinned 39 was added after it (1.21.1 has 39 effects).
+        assert!(s.clientbound(&effect(0)).unwrap().is_some());
+        assert_eq!(s.clientbound(&effect(39)).unwrap(), None);
+        let removed =
+            play::Clientbound::RemoveMobEffect(play::RemoveMobEffect { id: 1, effect: 39 })
+                .encode();
+        assert_eq!(s.clientbound(&removed).unwrap(), None);
+    }
 
     #[test]
     fn a_1_21_3_pick_item_swaps_the_slot_into_the_held_hotbar_slot() {
