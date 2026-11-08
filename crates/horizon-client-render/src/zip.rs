@@ -7,7 +7,10 @@ use std::{
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use zip::{CompressionMethod, ZipArchive};
 
@@ -169,30 +172,12 @@ impl Zip {
         self.index(name).is_some()
     }
     pub fn read(&self, name: &str) -> io::Result<Vec<u8>> {
-        let index = self
-            .index(name)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?;
-        // A clone shares the reader's data and the central directory: reading
-        // needs `&mut`.
-        let mut archive = self.archive.clone();
-        let mut entry = archive.by_index_raw(index).map_err(invalid)?;
-        let method = entry.compression();
-        let mut raw = Vec::with_capacity((entry.compressed_size() as usize).min(self.len));
-        entry.read_to_end(&mut raw)?;
+        let (method, raw) = self.raw(name)?;
         match method {
             CompressionMethod::Stored => Ok(raw),
             CompressionMethod::Deflated => {
-                // Java's ZipFile trusts neither size an entry declares: it
-                // inflates the stream to its end and keeps what comes out.
-                // Packs in the wild (a Nexo-generated one served through
-                // Dropbox, for one) carry central-directory sizes that point
-                // at other files, and miniz_oxide, which refuses input past
-                // the stream's end, failed whole entries with "corrupt
-                // deflate stream" and with them the whole pack. Only the
-                // size limit stands between the archive and a zip bomb.
-                let decoder = flate2::read::DeflateDecoder::new(raw.as_slice());
                 let mut decoded = Vec::with_capacity(raw.len().min(MAX_ENTRY));
-                decoder
+                inflate(&raw)
                     .take(MAX_ENTRY as u64 + 1)
                     .read_to_end(&mut decoded)
                     .map_err(|_| invalid("corrupt deflate stream"))?;
@@ -204,6 +189,81 @@ impl Zip {
             _ => Err(invalid("unsupported zip compression")),
         }
     }
+    /// What [`Self::read`] reads, written to `out` a piece at a time as it inflates, each piece
+    /// taken from `budget`: the bytes left for everything sharing it. Past the budget it stops
+    /// with [`io::ErrorKind::FileTooLarge`], `out` holding part of the entry; the entry's own
+    /// limit ([`MAX_ENTRY`]) still applies. Memory stays at the compressed entry and one piece,
+    /// whatever the entry inflates to. The bytes written.
+    pub fn copy_to(
+        &self,
+        name: &str,
+        out: &mut impl io::Write,
+        budget: &AtomicU64,
+    ) -> io::Result<u64> {
+        let (method, raw) = self.raw(name)?;
+        let mut from: Box<dyn Read + '_> = match method {
+            CompressionMethod::Stored => Box::new(raw.as_slice()),
+            CompressionMethod::Deflated => Box::new(inflate(&raw)),
+            _ => return Err(invalid("unsupported zip compression")),
+        };
+        let mut piece = vec![0; 64 << 10];
+        let mut total = 0u64;
+        loop {
+            let n = match from.read(&mut piece) {
+                Ok(0) => return Ok(total),
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return Err(invalid("corrupt deflate stream")),
+            };
+            total += n as u64;
+            if total > MAX_ENTRY as u64 {
+                return Err(invalid("entry inflates past the size limit"));
+            }
+            take(budget, n as u64)?;
+            out.write_all(&piece[..n])?;
+        }
+    }
+    /// The entry `name` as stored: its compression and its bytes.
+    fn raw(&self, name: &str) -> io::Result<(CompressionMethod, Vec<u8>)> {
+        let index = self
+            .index(name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?;
+        // A clone shares the reader's data and the central directory: reading
+        // needs `&mut`.
+        let mut archive = self.archive.clone();
+        let mut entry = archive.by_index_raw(index).map_err(invalid)?;
+        let method = entry.compression();
+        let mut raw = Vec::with_capacity((entry.compressed_size() as usize).min(self.len));
+        entry.read_to_end(&mut raw)?;
+        Ok((method, raw))
+    }
+}
+
+/// `n` bytes taken from `budget`, or `FileTooLarge` (taking nothing) when it has fewer left.
+fn take(budget: &AtomicU64, n: u64) -> io::Result<()> {
+    let mut left = budget.load(Ordering::Relaxed);
+    loop {
+        let rest = left.checked_sub(n).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "the packs unpack to more than their size allows",
+            )
+        })?;
+        match budget.compare_exchange_weak(left, rest, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Ok(()),
+            Err(now) => left = now,
+        }
+    }
+}
+
+/// A deflated entry's bytes as they inflate. Java's ZipFile trusts neither size an entry
+/// declares: it inflates the stream to its end and keeps what comes out. Packs in the wild (a
+/// Nexo-generated one served through Dropbox, for one) carry central-directory sizes that point
+/// at other files, and miniz_oxide, which refuses input past the stream's end, failed whole
+/// entries with "corrupt deflate stream" and with them the whole pack. Only the size limits
+/// stand between the archive and a zip bomb.
+fn inflate(raw: &[u8]) -> flate2::read::DeflateDecoder<&[u8]> {
+    flate2::read::DeflateDecoder::new(raw)
 }
 
 /// The 22 fixed bytes of the end-of-central-directory record.

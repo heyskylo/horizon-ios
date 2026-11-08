@@ -51,7 +51,7 @@ pub fn flag(m: &Mob, f: i32) -> bool {
 /// blocks of the fox's; otherwise the ambient sound.
 pub fn awake_ambient(m: &mut Mob, w: &MobWorld) -> &'static str {
     // Level.isBrightOutside: the End has a fixed time, so never there.
-    let bright = w.daylight && !w.end;
+    let bright = w.daylight && !w.dimension_type.has_fixed_time;
     if !bright && m.random.next_float() < 0.1 {
         let around = m.bounds().inflate(Vec3::new(16.0, 16.0, 16.0));
         let player_near = w

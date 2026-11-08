@@ -1078,15 +1078,7 @@ impl Game<'_> {
             self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
             let b = &self.boats[i];
-            let mut tag = horizon_client::entity_nbt::boat_to_nbt(
-                &b.entity_type(),
-                b.position,
-                b.velocity,
-                [b.yaw, b.pitch],
-                uuid,
-                self.persist_raw(id),
-                b.chest.then_some(&b.items[..]),
-            );
+            let mut tag = b.to_nbt(uuid, self.persist_raw(id));
             // The mobs riding it cross with it and mount it again.
             self.put_mob_passengers(&mut tag, id);
             for rider in self.remove_mob_riders(id) {

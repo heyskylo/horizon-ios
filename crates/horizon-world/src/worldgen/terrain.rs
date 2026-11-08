@@ -459,6 +459,19 @@ impl<'r, B: TerrainBlockStates> TerrainChunk<'r, B> {
         }
         Ok(previous)
     }
+    /// Whether writing `state` at every y of a run changes the stage's
+    /// heightmaps as writing it at the run's top y alone does: an opaque block
+    /// raises a map only at the y written (`Heightmap::update` returns below
+    /// `first_available - 2`), and no fluid waits for post-processing.
+    pub(crate) fn stage_heightmaps_opaque(&self, state: BlockStateId) -> bool {
+        let properties = self.blocks.properties.heightmap_state(state);
+        !properties.has_fluid()
+            && self
+                .stage
+                .heightmaps()
+                .iter()
+                .all(|&kind| kind.is_opaque(properties))
+    }
     pub fn position(&self) -> ChunkPos {
         self.position
     }
