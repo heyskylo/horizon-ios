@@ -16,7 +16,7 @@ Sessions, each a fresh game and world (seed 7) per build:
 - hdr_toggle: vanilla started with HDR on (the 16-bit frame), shot, HDR turned off from its settings page, shot.
 - golden_hour_0_2, golden_hour_0_2_hdr: the Golden Hour 0.2 pack (shader API 0.2) on HORIZON_HDR_FRAME=float, in SDR
   and with HDR on.
-- float_oit: HDR on the float frame with Improved Transparency.
+- oit, hdr_oit: Improved Transparency with HDR off, and with HDR on the 16-bit frame.
 - visbuffer, hdr_visbuffer: the visibility buffer (HORIZON_VISBUFFER=1) with HDR off, and with HDR on the 16-bit frame.
 
 Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is installed (Linux), else the machine's
@@ -356,7 +356,8 @@ SESSIONS = {
                         ['day_water', 'night_lights'], False),
     'golden_hour_0_2_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour_0_2',
                         'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
-    'float_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_HDR_FRAME': 'float'},
+    'oit': ('', {}, ['day_water', 'night_lights'], False),
+    'hdr_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
     # 🤖 Agent: The visibility buffer draws only frames drawn flat, which frames without a pack are by default only on
     # Metal and some Intel drivers. On the float frame it writes light, so it's in these sessions with HDR off and on
@@ -388,7 +389,7 @@ def run_session(name, label, bin_dir, out, env_base, args):
     started = time.monotonic()
     try:
         game.launch()
-        if name == 'float_oit':
+        if name in ('oit', 'hdr_oit'):
             # 🤖 Agent: Old unversioned options run through the graphics-mode migration, which resets this switch.
             game.ctl('options-set', 'improvedTransparency', 'true')
             option = game.ctl('options-get', 'improvedTransparency')
@@ -443,6 +444,11 @@ def session_checks(shots, sessions):
         built = log.exists() and 'through a visibility buffer' in log.read_text(encoding='utf-8')
         if 'HORIZON_VISBUFFER' in extra and not built:
             problems.append(f'{name}: the visibility buffer didn\'t run')
+        # 🤖 Agent: Improved Transparency needs blendable float targets; without them the option changes nothing.
+        if name in ('oit', 'hdr_oit') and without in sessions and all(
+                compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
+                for s in scenes for x in ('.png', '-hdr.png') if (shots / f'{name}.{s}{x}').exists()):
+            problems.append(f'{name}: the same as without Improved Transparency: it didn\'t run')
     return problems
 
 
