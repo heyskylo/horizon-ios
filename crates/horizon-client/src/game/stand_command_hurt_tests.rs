@@ -5,6 +5,7 @@
 //! (tools/test_stand_command_hurt_parity.py measures the same on vanilla 26.3).
 use super::*;
 use horizon_client::chunk::Chunk;
+use horizon_client::mobs::Who;
 use horizon_core::position::ChunkPos;
 use std::sync::Arc;
 
@@ -285,4 +286,53 @@ fn control_a_source_in_neither_tag_still_fails_without_a_hurt() {
     summon(&mut game, "");
     assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:generic")));
     assert!(game.run_command(&format!("execute if entity {STAND}")));
+}
+
+/// The game events (name, source) posted while `f` runs.
+fn events(game: &mut Game<'_>, f: impl FnOnce(&mut Game<'_>)) -> Vec<(&'static str, Option<Who>)> {
+    super::sculk::TEST_POSTED_EVENTS.with(|e| *e.borrow_mut() = Some(Vec::new()));
+    f(game);
+    super::sculk::TEST_POSTED_EVENTS.with(|e| {
+        e.borrow_mut()
+            .take()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.0 == "minecraft:entity_damage" || e.0 == "minecraft:entity_die")
+            .map(|e| (e.0, e.2))
+            .collect()
+    })
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_hit_from_damage_posts_entity_damage_then_entity_die_for_its_causing_entity() {
+    let mut game = game();
+    summon(&mut game, "");
+    assert!(game.run_command("summon pig 14.5 100 2.5 {NoAI:1b}"));
+    let by_pig = format!("damage {STAND} 1 minecraft:player_attack by @e[type=pig,limit=1]");
+    // hurtServer: the first hit gameEvent(ENTITY_DAMAGE, pig); the second,
+    // within five ticks, brokenByPlayer then kill: gameEvent(ENTITY_DIE, pig).
+    let first = events(&mut game, |g| assert!(g.run_command(&by_pig)));
+    assert!(matches!(
+        &first[..],
+        [("minecraft:entity_damage", Some(Who::Mob(_)))]
+    ));
+    let second = events(&mut game, |g| assert!(g.run_command(&by_pig)));
+    assert!(matches!(
+        &second[..],
+        [("minecraft:entity_die", Some(Who::Mob(_)))]
+    ));
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn an_always_killing_source_posts_only_entity_die_for_a_stand_without_a_cause() {
+    let mut game = game();
+    summon(&mut game, "");
+    // No causing entity: kill attributes the event to the stand itself, which
+    // the listeners see as no source. always_kills skips the wobble.
+    let posted = events(&mut game, |g| {
+        assert!(g.run_command(&format!("damage {STAND} 1 minecraft:arrow")));
+    });
+    assert!(matches!(&posted[..], [("minecraft:entity_die", None)]));
 }
