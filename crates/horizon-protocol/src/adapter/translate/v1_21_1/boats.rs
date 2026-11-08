@@ -1,10 +1,31 @@
 //! Before 1.21.2 one boat type carried its wood in metadata. The pinned protocol has separate types.
 use super::*;
+use crate::adapter::pinned_ids::entity_type as entity;
 use crate::entity_data::Value;
 
 // Vanilla Boat.Type ordinal order, matched to the pinned entity registry.
-pub(crate) const TYPES: [i32; 9] = [90, 128, 12, 75, 0, 23, 34, 82, 9];
-pub(crate) const CHEST_TYPES: [i32; 9] = [91, 129, 13, 76, 1, 24, 35, 83, 8];
+pub(crate) const TYPES: [i32; 9] = [
+    entity::OAK_BOAT,
+    entity::SPRUCE_BOAT,
+    entity::BIRCH_BOAT,
+    entity::JUNGLE_BOAT,
+    entity::ACACIA_BOAT,
+    entity::CHERRY_BOAT,
+    entity::DARK_OAK_BOAT,
+    entity::MANGROVE_BOAT,
+    entity::BAMBOO_RAFT,
+];
+pub(crate) const CHEST_TYPES: [i32; 9] = [
+    entity::OAK_CHEST_BOAT,
+    entity::SPRUCE_CHEST_BOAT,
+    entity::BIRCH_CHEST_BOAT,
+    entity::JUNGLE_CHEST_BOAT,
+    entity::ACACIA_CHEST_BOAT,
+    entity::CHERRY_CHEST_BOAT,
+    entity::DARK_OAK_CHEST_BOAT,
+    entity::MANGROVE_CHEST_BOAT,
+    entity::BAMBOO_CHEST_RAFT,
+];
 
 pub(crate) struct Boat {
     spawn: play::AddEntity,
@@ -17,7 +38,7 @@ pub(crate) struct Boat {
 
 pub(crate) fn spawn(session: &Session, old_kind: Option<i32>, entity: &play::AddEntity) {
     let kind = old_kind.and_then(|kind| session.version.ids()?.entity_type.up(kind));
-    if !matches!(kind, Some(90 | 91)) {
+    if !matches!(kind, Some(entity::OAK_BOAT | entity::OAK_CHEST_BOAT)) {
         session.legacy_boats.lock().unwrap().remove(&entity.id);
         return;
     }
@@ -25,7 +46,7 @@ pub(crate) fn spawn(session: &Session, old_kind: Option<i32>, entity: &play::Add
         entity.id,
         Boat {
             spawn: entity.clone(),
-            chest: kind == Some(91),
+            chest: kind == Some(entity::OAK_CHEST_BOAT),
             replace: false,
             metadata: Vec::new(),
             passengers: None,
