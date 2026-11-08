@@ -104,7 +104,7 @@ ItemStack.processDurabilityChange	port	crates/horizon-client/src/game/enchant_ef
 ItemStack.applyDamage	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: no item durability advancement trigger fires
 ItemStack.hurtAndConvertOnBreak	port	crates/horizon-client/src/game/mounts.rs::stick_on_break	`FoodOnAStickItem.use` wears the steering stick through `hurtAndBreak` (so `processDurabilityChange` gets its say) and leaves a transmuted fishing rod - the components carry over and the rod starts whole - rather than a fresh plain one
 ItemStack.hurtEnemy	port	crates/horizon-client/src/game/mace.rs::Game::weapon_wear	the per-hit durability loss of a weapon
-ItemStack.interactLivingEntity	port	crates/horizon-client/src/game.rs::Game::interact_entity	equip-on-interact is in the mob paths (nautili.rs, ghasts.rs)
+ItemStack.interactLivingEntity	port	crates/horizon-client/src/game/item_actions.rs::Game::interact_entity	equip-on-interact is in the mob paths (nautili.rs, ghasts.rs)
 ItemStack.copy	skip:java		value copy
 ItemStack.copyWithCount	skip:java		value copy with a count
 ItemStack.transmuteCopyIgnoreEmpty	port	crates/horizon-items/src/item_data.rs::ItemStack::transmute	keeps the components, changes the item

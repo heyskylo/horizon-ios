@@ -1101,6 +1101,7 @@ pub fn tick_fuse(m: &mut Mob, events: &mut Vec<MobEvent>) {
                 [m.position.x, m.position.y + 0.0625, m.position.z],
                 power,
                 m.species(),
+                m.silent,
             ));
         }
         m.removed = true;
