@@ -22,9 +22,9 @@ def pig(tag, n, extra=''):
 INTERNAL = ['same_uuid', 'sibling', 'leaf_root']
 
 
-def summon_uuid(raw=False, internal=False):
-    """Live-UUID conflicts with their controls. `internal` adds the trees
-    with duplicate UUIDs inside them (Horizon still admits those: #11807)."""
+def summon_uuid(raw=False, internal=True):
+    """Live-UUID conflicts with their controls, and trees with duplicate UUIDs
+    inside them (#11807)."""
     ops = []
 
     def run(text, expected=None, record=True):

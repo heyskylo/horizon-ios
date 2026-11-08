@@ -1185,13 +1185,12 @@ impl Streaming {
     /// The resident sections `LevelExtractor.allChanged` queues again. An
     /// unlit column will queue itself when its light job completes.
     fn mark_loaded_sections_dirty(world: &mut World, lit: &FxHashSet<(i32, i32)>) {
+        let mask = SectionMask::below(world.layout().sections());
         for &(x, z) in world.chunks.keys() {
             if !lit.contains(&(x, z)) {
                 continue;
             }
-            for sy in 0..world.layout().sections() as i32 {
-                world.dirty_sections.insert((x, sy, z));
-            }
+            world.dirty_sections.insert_column_mask((x, z), mask);
         }
     }
     /// A column received from a server, with the light it sent
@@ -1204,10 +1203,12 @@ impl Streaming {
         world.chunks.insert(key, Arc::new(chunk));
         self.lit.insert(key);
         self.generated_total += 1;
+        let mask = SectionMask::below(world.layout().sections());
         for dz in -1..=1 {
             for dx in -1..=1 {
-                for sy in 0..world.layout().sections() as i32 {
-                    world.dirty_sections.insert((key.0 + dx, sy, key.1 + dz));
+                let n = (key.0 + dx, key.1 + dz);
+                if n == key || world.chunks.contains_key(&n) {
+                    world.dirty_sections.insert_column_mask(n, mask);
                 }
             }
         }
@@ -1947,22 +1948,22 @@ impl Streaming {
                 if keys.iter().any(|k| self.decorating_finals.contains(k)) {
                     continue;
                 }
+                let has_final = keys.iter().any(|k| world.chunks.contains_key(k));
+                if has_final && !self.saves_beside_final {
+                    self.decorated.insert((x, z));
+                    waiting.borrow_mut().insert((x, z), false);
+                    continue;
+                }
+                if !keys.iter().all(|k| {
+                    world.chunks.contains_key(k) || matches!(self.protos.get(k), Some(Some(_)))
+                }) {
+                    continue;
+                }
                 let finals: Vec<(usize, Chunk)> = keys
                     .iter()
                     .enumerate()
                     .filter_map(|(i, k)| Some((i, (**world.chunks.get(k)?).clone())))
                     .collect();
-                if !finals.is_empty() && !self.saves_beside_final {
-                    self.decorated.insert((x, z));
-                    waiting.borrow_mut().insert((x, z), false);
-                    continue;
-                }
-                if !keys.iter().enumerate().all(|(i, k)| {
-                    finals.iter().any(|(f, _)| *f == i)
-                        || matches!(self.protos.get(k), Some(Some(_)))
-                }) {
-                    continue;
-                }
                 let region: Box<[Proto; 9]> = Box::new(std::array::from_fn(|i| {
                     let k = &keys[i];
                     if finals.iter().any(|(f, _)| *f == i) {
@@ -2257,10 +2258,14 @@ impl Streaming {
         world.dirty_light.extend(columns);
     }
     /// Sections whose meshes sample a changed light value (faces and corners
-    /// read light from neighbouring blocks).
+    /// read light from neighbouring blocks). Every column whose stored light
+    /// changed is saved again (`ChunkHolder.sectionLightChanged` marks the
+    /// chunk unsaved): an edit's light reaches up to 15 blocks into columns
+    /// the edit itself did not mark, which may already have been saved.
     fn mark_light_changes(world: &mut World, changed: &LightChanges) {
-        if let Some(log) = &mut world.light_log {
-            for (x, sy, z) in changed.sections() {
+        for (x, sy, z) in changed.sections() {
+            world.modified.insert((x, z));
+            if let Some(log) = &mut world.light_log {
                 log.entry((x, z)).or_default().insert(sy as usize);
             }
         }
@@ -4360,6 +4365,38 @@ mod tests {
                 -40 + dz
             );
         }
+    }
+
+    /// An edit's light change in a neighbouring column marks that column
+    /// unsaved too, or a column saved before the edit keeps its old light on
+    /// disk.
+    #[test]
+    fn light_spilling_into_a_saved_neighbour_marks_it_unsaved() {
+        use crate::light::tests::{AIR, TORCH, tables, world};
+        let tables = tables();
+        let mut w = World::new(horizon_world::registry::BlockStateId(0), 0);
+        for (key, chunk) in world(|c| {
+            c.set(14, 0, 8, TORCH);
+        }) {
+            w.chunks.insert(key, chunk);
+        }
+        assert!(w.modified.is_empty());
+        Arc::make_mut(w.chunks.get_mut(&(0, 0)).unwrap()).set(14, 0, 8, AIR);
+        let mut changed = crate::light::LightChanges::default();
+        crate::light::relight(
+            &mut w.chunks,
+            &tables,
+            true,
+            &[(14, 0, 8)],
+            false,
+            &mut changed,
+        );
+        assert_eq!(w.chunks[&(1, 0)].light(0, 0, 8) & 15, 0); // was 12
+        Streaming::mark_light_changes(&mut w, &changed);
+        assert!(w.modified.contains(&(1, 0)));
+        assert!(w.modified.contains(&(0, 0)));
+        // The torch never reached x -1: that column's light is unchanged.
+        assert!(!w.modified.contains(&(-1, 0)));
     }
 
     fn resident_column(world: &mut World, light: u8) -> Chunk {

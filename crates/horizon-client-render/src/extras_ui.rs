@@ -5,7 +5,7 @@ use crate::{
     lang,
     options_ui::{Event, Page},
     settings::Settings,
-    settings_shell::{self as shell, Group, Output, Row, Screen, Sheet, Value},
+    settings_shell::{self as shell, Binding, Group, Output, Row, Screen, Sheet, Value},
 };
 
 const TITLE: &str = "horizon.pages.extras";
@@ -36,7 +36,7 @@ pub(crate) enum ExtraRow {
 fn item_row(item: Item, s: &Settings) -> Row<ExtraRow> {
     let e = &s.extras;
     let value = match (item.key_name(), item.switch(e)) {
-        (Some(key), _) => Value::Key(key, item.value(e)),
+        (Some(key), _) => Value::Binding(Binding::key(key, item.value(e))),
         (None, Some(on)) => Value::Switch(on),
         (None, None) => Value::Choice(item.value(e)),
     };
@@ -116,13 +116,10 @@ impl Screen for ExtrasScreen {
     }
     fn press(&mut self, s: &mut Settings, row: ExtraRow, back: bool) -> Vec<Output> {
         match row {
-            ExtraRow::Item(item) => match item.key_name() {
-                Some(key) => vec![Output::BindKey(key)],
-                None => {
-                    item.cycle(&mut s.extras, back);
-                    vec![Output::Event(Event::Changed)]
-                }
-            },
+            ExtraRow::Item(item) => {
+                item.cycle(&mut s.extras, back);
+                vec![Output::Event(Event::Changed)]
+            }
             ExtraRow::Zoom(i) => {
                 s.mods.toggle(i);
                 vec![Output::Event(Event::Changed)]
@@ -208,15 +205,21 @@ mod tests {
     /// The sort key binds instead of cycling; the wheel leaves it be.
     #[test]
     fn the_key_row_waits_for_a_key() {
+        use crate::settings_shell::Capture;
         let mut s = Settings::default();
-        let mut screen = ExtrasScreen;
+        s.extras.sort = true;
+        let mut shell = Shell::<ExtrasScreen>::default();
         let row = ExtraRow::Item(Item::SortKey);
         let key = s.extras.sort_key.clone();
+        let at = shell.point_at(&s, SIZE, row);
         assert_eq!(
-            screen.press(&mut s, row, false),
-            vec![Output::BindKey(extras::SORT_KEY)]
+            shell.click(&mut s, at, SIZE, false, false, false),
+            vec![
+                Output::Event(Event::ButtonClick),
+                Output::Bind(Capture::Key(extras::SORT_KEY))
+            ]
         );
-        screen.wheel_step(&mut s, row, true);
+        ExtrasScreen.wheel_step(&mut s, row, true);
         assert_eq!(s.extras.sort_key, key);
     }
 

@@ -387,14 +387,11 @@ impl Game<'_> {
                             block_states: RefCell::default(),
                         });
                         let started_ids = std::time::Instant::now();
-                        let table = terrain_table(
-                            &block_id_table(&self.pack, &ids),
-                            &block_emission_table(&self.pack),
-                        );
+                        let table = terrain_state_ids(self.pack.assets.registry, &ids);
                         log::info!(
-                            "shader pack {name}: mc_Entity for {} of {} block sprites in {} ms",
-                            table.chunks(3).filter(|p| p[0] != -1).count(),
-                            table.len() / 3,
+                            "shader pack {name}: mc_Entity for {} of {} block states in {} ms",
+                            table.chunks(2).filter(|p| p[0] != -1).count(),
+                            table.len() / 2,
                             started_ids.elapsed().as_millis()
                         );
                         log::info!("shader pack {name}: folder `{folder}`, building its pipelines");
@@ -779,6 +776,78 @@ fn name_id(name: &str) -> i32 {
     hash as i32
 }
 
+/// Model/fluid material ids by the original state, independent of sprite sharing and
+/// multipart model selection. Waterlogged model faces retain their model id; emitted
+/// fluid faces use the fluid's state (the source state itself for liquid blocks).
+fn terrain_state_ids(
+    registry: &horizon_world::registry::BlockRegistry,
+    ids: &BlockIds,
+) -> Vec<i32> {
+    use horizon_world::{
+        fluid::{FluidKind, FluidState},
+        registry::BlockStateId,
+    };
+    let material = |state: &horizon_world::chunk::BlockState| {
+        ids.id(&state.name, |k| state.properties.get(k).map(String::as_str))
+            .unwrap_or(-1)
+    };
+    (0..registry.len())
+        .flat_map(|i| {
+            let Some(state) = registry.state(BlockStateId(i as u32)) else {
+                return [-1, -1];
+            };
+            let fluid = FluidState::from_block(state).unwrap_or(FluidState::EMPTY);
+            let name = match fluid.kind() {
+                FluidKind::Water | FluidKind::FlowingWater => "minecraft:water",
+                FluidKind::Lava | FluidKind::FlowingLava => "minecraft:lava",
+                FluidKind::Empty => return [material(state), -1],
+            };
+            let fluid = if state.name == name {
+                Some(state)
+            } else {
+                registry
+                    .default_state(name)
+                    .and_then(|id| registry.state(id))
+            };
+            [material(state), fluid.map_or(-1, material)]
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod terrain_source_tests {
+    use super::*;
+
+    #[test]
+    fn terrain_source_cpu_state_filters_fluid_owners_and_pack_reload() {
+        let rows = serde_json::json!({"defaults":{"minecraft:air":0,"fixture:signal":1,"minecraft:water":3,"minecraft:lava":5},"states":[
+            ["",true,false,"","minecraft:air"],
+            ["",false,false,"",{"id":"fixture:signal","properties":{"lit":"false","waterlogged":"false"}}],
+            ["",false,true,"",{"id":"fixture:signal","properties":{"lit":"true","waterlogged":"true"}}],
+            ["",false,true,"",{"id":"minecraft:water","properties":{"level":"0"}}],
+            ["",false,true,"",{"id":"minecraft:water","properties":{"level":"1"}}],
+            ["",false,true,"",{"id":"minecraft:lava","properties":{"level":"0"}}]
+        ]});
+        let registry =
+            horizon_world::registry::BlockRegistry::from_facts_json(rows.to_string().as_bytes())
+                .unwrap();
+        let parse = |text| BlockIds::parse(&Properties::parse(text, &Macros::standard()));
+        let ids = parse(
+            "block.31=fixture:signal:lit=false\nblock.47=fixture:signal:lit=true\nblock.59=minecraft:water:level=0\nblock.61=minecraft:water:level=1\nblock.73=minecraft:lava\n",
+        );
+        assert_eq!(
+            terrain_state_ids(&registry, &ids),
+            [-1, -1, 31, -1, 47, 59, 59, 59, 61, 61, 73, 73]
+        );
+        let changed = parse("block.211=fixture:signal:lit=true\nblock.223=minecraft:water\n");
+        assert_eq!(
+            terrain_state_ids(&registry, &changed),
+            [-1, -1, -1, -1, 211, 223, 223, 223, 223, 223, -1, -1]
+        );
+        assert_eq!(terrain_state_ids(&registry, &BlockIds::default()), [-1; 12]);
+    }
+}
+
 /// Votes from distinct blocks, so adding states cannot change a shared sprite's material.
 #[derive(Default)]
 struct BlockIdVotes<'a>(BTreeMap<(u32, i32), (bool, std::collections::BTreeSet<&'a str>)>);
@@ -942,97 +1011,6 @@ fn fluid_pairs(layers: usize, fluids: impl IntoIterator<Item = u32>) -> Vec<i32>
     table
 }
 
-/// `at_midBlock.w` of each block sprite layer: the light the block drawing it gives (Iris's
-/// `BLOCK_EMISSION_ATTRIBUTE`; 0 to 15, as Iris 1.11.7 passes it). Terrain vertices carry their
-/// sprite layer, not their block, so as for `mc_Entity` a layer takes the light of the block
-/// named like its sprite, else the light most block states drawing it give (ties: the lowest).
-pub(super) fn block_emission_table(pack: &super::PackResources) -> Vec<i32> {
-    use std::collections::BTreeMap;
-    let layers = pack
-        .render
-        .sprite_layers
-        .values()
-        .max()
-        .map_or(0, |l| l + 1) as usize;
-    let registry = pack.assets.registry;
-    let catalog = &pack.render.model_catalog;
-    let sprite = |name: &str| pack.render.sprite_layers.get(name).copied();
-    // (layer, light) -> (a block named like the sprite draws it, how many states do).
-    let mut votes: BTreeMap<(u32, u8), (bool, usize)> = BTreeMap::new();
-    for i in 0..registry.len() {
-        let state_id = horizon_world::registry::BlockStateId(i as u32);
-        let Some(state) = registry.state(state_id) else {
-            continue;
-        };
-        let light = pack
-            .context
-            .tables
-            .facts(state_id)
-            .map_or(0, |f| f.emission);
-        let block = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
-        let mut vote = |layer: u32| {
-            let named = pack
-                .layer_names
-                .get(&layer)
-                .and_then(|n| n.strip_prefix("block/"))
-                == Some(block);
-            let v = votes.entry((layer, light)).or_default();
-            v.0 |= named;
-            v.1 += 1;
-        };
-        let fluid = match block {
-            "water" => ["water_still", "water_flow"],
-            "lava" => ["lava_still", "lava_flow"],
-            _ => ["", ""],
-        };
-        for f in fluid.iter().filter(|f| !f.is_empty()) {
-            if let Some(l) = sprite(&format!("minecraft:block/{f}")) {
-                vote(l);
-            }
-        }
-        let origin = horizon_core::position::BlockPos::new(0, 0, 0);
-        for (_, model) in catalog.collect(state_id, origin).unwrap_or_default() {
-            for face in &model.faces {
-                vote(face.layer);
-            }
-        }
-    }
-    layer_lights(&votes, layers)
-}
-
-/// Each of `layers` sprite layers' light from `votes`, (layer, light) -> (a block named like the
-/// sprite draws it, how many states do): the named block's, else the most states', ties the
-/// lowest; 0 for a layer no block draws.
-fn layer_lights(
-    votes: &std::collections::BTreeMap<(u32, u8), (bool, usize)>,
-    layers: usize,
-) -> Vec<i32> {
-    let mut best: std::collections::BTreeMap<u32, (bool, usize, i32)> = Default::default();
-    for (&(layer, light), &(named, states)) in votes {
-        let candidate = (named, states, -i32::from(light));
-        let b = best.entry(layer).or_insert(candidate);
-        if candidate > *b {
-            *b = candidate;
-        }
-    }
-    let mut table = vec![0; layers];
-    for (layer, (_, _, light)) in best {
-        if let Some(slot) = table.get_mut(layer as usize) {
-            *slot = -light;
-        }
-    }
-    table
-}
-
-/// The table a `shaders/` pack's terrain reads per sprite layer: `mc_Entity`'s (id, fluid) pair
-/// from `ids` (`block_id_table`), then `at_midBlock.w` from `emission`.
-fn terrain_table(ids: &[i32], emission: &[i32]) -> Vec<i32> {
-    ids.chunks(2)
-        .enumerate()
-        .flat_map(|(layer, pair)| [pair[0], pair[1], emission.get(layer).copied().unwrap_or(0)])
-        .collect()
-}
-
 #[cfg(test)]
 mod fluid_pair_tests {
     use super::fluid_pairs;
@@ -1044,38 +1022,6 @@ mod fluid_pair_tests {
     fn terrain_reads_y_1_on_fluids_and_0_elsewhere() {
         assert_eq!(fluid_pairs(4, [1, 3]), [-1, 0, -1, 1, -1, 0, -1, 1]);
         assert_eq!(fluid_pairs(2, []), [-1, 0, -1, 0]);
-    }
-}
-
-#[cfg(test)]
-mod emission_tests {
-    use super::{layer_lights, terrain_table};
-
-    /// A sprite's light: the block named like it gives its own (a torch, 14, over a wall
-    /// torch's); a shared one takes what most states drawing it give (a furnace's side: as
-    /// many lit states, 13, as unlit, 0: the lowest), and a layer no block draws stays 0.
-    #[test]
-    fn a_sprite_takes_the_light_of_its_block() {
-        let votes = std::collections::BTreeMap::from([
-            ((0, 14), (true, 1)),
-            ((0, 0), (false, 5)),
-            ((1, 13), (false, 4)),
-            ((1, 0), (false, 4)),
-            ((2, 15), (false, 4)),
-            ((2, 0), (false, 5)),
-            ((3, 7), (false, 2)),
-        ]);
-        assert_eq!(layer_lights(&votes, 5), [14, 0, 0, 7, 0]);
-    }
-
-    /// The table `shaders/` packs' terrain reads: three values a layer, `mc_Entity`'s pair
-    /// then the light.
-    #[test]
-    fn the_terrain_table_holds_ids_then_light() {
-        assert_eq!(
-            terrain_table(&[10, -1, 20, 1], &[14, 0]),
-            [10, -1, 14, 20, 1, 0]
-        );
     }
 }
 

@@ -11,7 +11,9 @@ use horizon_client::{
     biome::Biomes,
     blocks::{BlockFacts, Fluid},
     containers::BlockEntity,
-    particles::{ParticleLevel, ParticleOptions, ParticleType},
+    mobs::Mob,
+    motion::PlayerMotion,
+    particles::{ParticleLevel, ParticleOptions, ParticleType, TrackingBody, TrackingTarget},
     world::World,
 };
 use horizon_client::{
@@ -20,6 +22,23 @@ use horizon_client::{
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_world::{heightmap::HeightmapType, worldgen::terrain::TerrainBlockStates};
+
+pub(super) fn player_tracking_body(player: &PlayerMotion) -> TrackingBody {
+    TrackingBody {
+        feet: [player.position.x, player.position.y, player.position.z],
+        width: f64::from(player.dimensions.width),
+        height: f64::from(player.dimensions.height),
+    }
+}
+
+pub(super) fn mob_tracking_body(mob: &Mob) -> TrackingBody {
+    let (width, height, _) = mob.dims();
+    TrackingBody {
+        feet: [mob.position.x, mob.position.y, mob.position.z],
+        width,
+        height,
+    }
+}
 
 /// `getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)` from the chunk's
 /// heightmap: one above the highest block in `blocks_motion_in_heightmap` or
@@ -437,6 +456,18 @@ impl Game<'_> {
             settle_rain_fog(&mut self.fog, rain, sky_light, rains);
         }
     }
+    pub(super) fn remote_tracking_body(
+        &mut self,
+        id: i32,
+    ) -> Option<(TrackingTarget, TrackingBody)> {
+        if self.remote.as_ref().is_some_and(|r| r.entity_id == id) {
+            let player = self.player.as_ref()?;
+            return Some((TrackingTarget::LocalPlayer, player_tracking_body(player)));
+        }
+        let mob = self.mob_index.get(&self.mobs, id as u32)?;
+        Some((TrackingTarget::Entity(id), mob_tracking_body(mob)))
+    }
+
     pub(super) fn tick_particles(&mut self) {
         let eye = self.eye_position();
         if let Some(e) = eye {
@@ -523,6 +554,11 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
+            self.particles
+                .set_polytone(self.pack.polytone_particles.clone());
+            if let Some(registry) = &self.pack.polytone_particles {
+                registry.set_biomes(biomes);
+            }
             animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
             // The Horizon Weather option off means no rain visuals or sounds at all.
             if rain > 0.0 && self.settings.horizon.weather {
@@ -637,7 +673,37 @@ impl Game<'_> {
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
         };
-        self.particles.tick(&level);
+        // Resource packs' Polytone entity emitters on the player (#11486): fog, dust and
+        // weather around them; nothing without such a pack.
+        if let Some(p) = &self.player {
+            let feet = [p.position.x, p.position.y, p.position.z];
+            self.particles
+                .polytone_entity(&level, "minecraft:player", feet);
+        }
+        let player = self.player.as_ref();
+        let mobs = &self.mobs;
+        let mob_index = &mut self.mob_index;
+        let lan = self.lan.as_ref();
+        let dimension = self.dim.id();
+        self.particles.tick_tracking(&level, |target| match target {
+            TrackingTarget::LocalPlayer => player.map(player_tracking_body),
+            TrackingTarget::Entity(id) => {
+                if let Some(guest) = lan.and_then(|host| {
+                    host.hub
+                        .guests
+                        .iter()
+                        .find(|guest| guest.entity_id == id && guest.dimension == dimension)
+                }) {
+                    let dimensions = guest.dimensions();
+                    return Some(TrackingBody {
+                        feet: guest.position,
+                        width: f64::from(dimensions.width),
+                        height: f64::from(dimensions.height),
+                    });
+                }
+                mob_index.get(mobs, id as u32).map(mob_tracking_body)
+            }
+        });
         self.tick_pickups();
         let camera = self.particles.camera;
         for (name, at, volume, pitch, delayed) in std::mem::take(&mut self.particles.sounds) {
