@@ -653,15 +653,17 @@ fn pack_lighting(
     sky_light: bool,
 ) -> Vec<Light> {
     let open = if sky_light { 0xF0 } else { 0x00 };
+    let mut data = [open; 4096];
     (0..sections)
         .map(|si| {
             if si * 16 >= h {
                 return Light::Uniform(open);
             }
-            let mut data = Box::new([open; 4096]);
             for ly in 0..16 {
                 let y = si * 16 + ly;
                 if y >= h {
+                    let out_row = ly << 8;
+                    data[out_row..out_row + 256].fill(open);
                     continue;
                 }
                 let y_offset = y * (W * W);
@@ -674,7 +676,7 @@ fn pack_lighting(
                     }
                 }
             }
-            Light::packed(data)
+            Light::from_slice(&data)
         })
         .collect()
 }

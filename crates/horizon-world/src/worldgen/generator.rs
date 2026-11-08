@@ -436,20 +436,9 @@ impl GeneratorData {
         };
         let motion = tag_set("minecraft:blocks_motion_in_heightmap")?;
         let no_leaves = tag_set("minecraft:blocks_motion_in_heightmap_no_leaves")?;
-        let mut values = BTreeMap::<(String, String), bool>::new();
         let states = (0..registry.len())
             .map(|i| {
                 let state = registry.state(BlockStateId(i as u32)).unwrap();
-                for (key, value) in &state.properties {
-                    let integer = !value.is_empty()
-                        && value
-                            .trim_start_matches('-')
-                            .bytes()
-                            .all(|b| b.is_ascii_digit());
-                    *values
-                        .entry((state.name.clone(), key.clone()))
-                        .or_insert(true) &= integer;
-                }
                 GenBlockState {
                     air: flags[i].0,
                     air_block: state.name == "minecraft:air",
@@ -459,10 +448,7 @@ impl GeneratorData {
                 }
             })
             .collect::<Vec<_>>();
-        let integers = values
-            .into_iter()
-            .filter_map(|(key, integer)| integer.then_some(key))
-            .collect();
+        let integers = super::block_feature::integer_properties(registry);
         let biomes = read_bundle(dir, ov, "biomes")?;
         let biome_tags = build_tags(
             &read_bundle(dir, ov, "biome_tags")?,

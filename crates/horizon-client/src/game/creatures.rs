@@ -2615,6 +2615,11 @@ impl Game<'_> {
                         }
                     }
                 }
+                MobEvent::LidPush {
+                    shulker,
+                    area,
+                    delta,
+                } => self.lid_pushes_armor_stands(shulker, area, delta),
                 MobEvent::Wololo { mob } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
                         // DyeColor.RED.

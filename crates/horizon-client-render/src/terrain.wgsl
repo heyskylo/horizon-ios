@@ -762,8 +762,8 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
     return solid_light(solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv)));
 }
-// A finished solid pixel as the frame keeps it: its mark in alpha, or on the written lane its
-// light, alpha 1.
+// A finished solid pixel as the frame keeps it: on the float frame its colour, alpha 1, lit by
+// HDR's gain where it applies (`hdr_light.w`); else its mark in alpha.
 fn solid_light(finished: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT {
         if globals.hdr_light.w != 0.0 {
