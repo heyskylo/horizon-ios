@@ -8,6 +8,10 @@ impl Game<'_> {
     /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
+        if self.screen == Screen::Playing && self.studio_replay.is_some() && key == KeyCode::KeyM {
+            self.add_studio_marker();
+            return Ok(());
+        }
         // `CreativeModeInventoryScreen.keyPressed` clears `ignoreTextInput` on
         // every key, before it decides anything.
         self.creative_ignore_text = false;
