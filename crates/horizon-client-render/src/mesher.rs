@@ -450,7 +450,7 @@ impl SectionMesh {
         self.packed.clear();
         self.packed_far = false;
         if packed::packing() && quads > 0 && self.solid_tints.len() == quads {
-            self.packed = packed::layout(&self.solid, &self.solid_tints);
+            packed::layout_into(&self.solid, &self.solid_tints, &mut self.packed);
         }
         self.solid_tints.clear();
     }
