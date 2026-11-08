@@ -106,7 +106,11 @@ def run_case(command, out, label, case, jar):
                 assert time.monotonic() < deadline, f'{label} {case}: {what}'
                 time.sleep(0.2)
 
-        server.wait_for(r'Done \(')
+        try:
+            server.wait_for(r'Done \(')
+        except BaseException:
+            server.stop()
+            raise
         return server, reply, until
 
     def recorded(reply):
