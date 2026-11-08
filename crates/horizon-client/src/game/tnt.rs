@@ -49,7 +49,8 @@ impl PrimedTnt {
         )
     }
 
-    pub(super) const SIZE: f64 = 0.98;
+    /// `EntityTypes.TNT`'s `sized(0.98F, 0.98F)`, widened from the float.
+    pub(super) const SIZE: f64 = 0.98_f32 as f64;
     pub(super) fn bounds(&self) -> Aabb {
         let h = Self::SIZE / 2.0;
         Aabb::new(
