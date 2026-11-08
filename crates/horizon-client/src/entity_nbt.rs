@@ -599,7 +599,11 @@ pub fn mob_to_nbt(
             .map(|(_, part)| string(part))
             .collect();
         put(&mut tag, "hidden_layers", Tag::List(hidden));
-        let hand = if m.extra.main_hand_left { "left" } else { "right" };
+        let hand = if m.extra.main_hand_left {
+            "left"
+        } else {
+            "right"
+        };
         put(&mut tag, "main_hand", string(hand));
         let pose = match m.extra.avatar_pose {
             crate::pose::Pose::Crouching => "crouching",
