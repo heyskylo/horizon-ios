@@ -3101,6 +3101,9 @@ struct Game<'a> {
     /// The item columns for one pass of the players' pickups
     /// (`tick_guests`), in which items do not move: see `item_columns`.
     pickup_columns: Option<machines::ItemColumns>,
+    /// The item columns for one pass of the carts (`tick_carts`): hopper
+    /// minecarts ask them before scanning every item.
+    cart_item_columns: Option<machines::ItemColumns>,
     /// Where the mobs are, while the block entities tick (potent sulfur gas).
     pass_mobs: Option<potent_sulfur::PassMobs>,
     /// Block-entity positions retained between ticks for client effects.
@@ -17525,6 +17528,7 @@ impl<'a> Game<'a> {
             mod_chunk_tickets: HashMap::new(),
             item_columns: None,
             pickup_columns: None,
+            cart_item_columns: None,
             pass_mobs: None,
             spawner_tick_positions: Vec::new(),
             trial_spawner_tick_positions: Vec::new(),

@@ -1944,6 +1944,8 @@ impl Game<'_> {
         // By id: an exploding cart can destroy or prime others mid-loop.
         let ids: Vec<u32> = self.carts.iter().map(|c| c.id).collect();
         let mut index = CartIndex::default();
+        // Items do not move while the carts tick, but for a cart's command.
+        self.cart_item_columns = Some(Default::default());
         let mut hint = 0;
         for &id in &ids {
             let Some(i) = cart_at(&self.carts, id, hint) else {
@@ -1985,8 +1987,9 @@ impl Game<'_> {
                 self.carts[i] = c;
                 if due {
                     self.perform_cart_command(id);
-                    // A command can move, add or remove any cart.
+                    // A command can move, add or remove any cart, or item.
                     index.forget_carts();
+                    self.cart_item_columns = Some(Default::default());
                 }
             } else {
                 self.eject_cart_mobs(i);
@@ -1996,6 +1999,7 @@ impl Game<'_> {
             // After the ticked cart is stored: a mod reads and changes the cart as it is now.
             self.native_tick_post_one(&round, id, kind);
         }
+        self.cart_item_columns = None;
         // On the server for every cart, the ridden ones too.
         let mut hint = 0;
         for id in ids {
