@@ -1158,6 +1158,10 @@ impl Game<'_> {
     pub(super) fn break_armor_stand_by_anything(&mut self, i: usize) {
         let a = self.armor_stands.remove(i);
         let at = [a.position.x, a.position.y, a.position.z];
+        // brokenByAnything's dropAllDeathLoot, before the equipment.
+        if !a.small && self.ui.rules.bool("mob_drops") {
+            self.armor_stand_death_loot(at, a.fire_ticks > 0);
+        }
         let (pos, drops) = broken_armor_stand_equipment(a);
         for stack in drops {
             self.pop_resource(pos, stack);
@@ -1166,6 +1170,42 @@ impl Game<'_> {
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
         self.entity_killed_event(at, false);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+    }
+    /// `LivingEntity.dropFromLootTable` for a stand that is not small, with
+    /// `mob_drops` on (`shouldDropLoot`): its type's table
+    /// `minecraft:entities/armor_stand` with seed 0 (`getLootTableSeed`), so
+    /// the table's random sequence or else the level's random, each stack
+    /// spawned at the stand's position. Its view is only the type and whether
+    /// it burns; no damage source, killer or player is known here.
+    fn armor_stand_death_loot(&mut self, at: [f64; 3], on_fire: bool) {
+        const TABLE: &str = "minecraft:entities/armor_stand";
+        let Some(loot) = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        ) else {
+            return;
+        };
+        if !loot.has_table(TABLE) {
+            return;
+        }
+        let params = horizon_world::loot::EntityLootParams {
+            this: horizon_world::loot::LootEntity {
+                on_fire,
+                baby: false,
+                ..horizon_world::loot::LootEntity::new("minecraft:armor_stand")
+            },
+            ..horizon_world::loot::EntityLootParams::default()
+        };
+        let stacks = match loot.random_sequence(TABLE) {
+            Some(id) => {
+                let random = self.rand_sequences.get(id, self.level.seed);
+                loot.roll_entity(TABLE, random, &params)
+            }
+            None => loot.roll_entity(TABLE, &mut self.world.random, &params),
+        };
+        for stack in stacks.iter().filter(|s| !s.is_empty()) {
+            self.spawn_item_own(super::creatures::from_loot(stack), at, 10);
+        }
     }
     /// `ArmorStand.hurtServer` for a command's damage of `damage_type` from the
     /// causing entity `causing`, up to its sources that act and still return

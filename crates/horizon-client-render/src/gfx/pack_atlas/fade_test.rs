@@ -307,9 +307,12 @@ fn sample(
         bytemuck::cast_slice(&vertices),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
-    let ids = buffer(bytemuck::bytes_of(&[0i32; 3]), wgpu::BufferUsages::STORAGE);
+    let ids = buffer(bytemuck::bytes_of(&[0u32; 2]), wgpu::BufferUsages::STORAGE);
     let rects = buffer(
-        bytemuck::cast_slice(&atlas.rects_table()),
+        bytemuck::cast_slice(&super::super::pack_post::terrain_tables(
+            &[],
+            &atlas.rects_table(),
+        )),
         wgpu::BufferUsages::STORAGE,
     );
     let binding = |n, storage| wgpu::BindGroupLayoutEntry {

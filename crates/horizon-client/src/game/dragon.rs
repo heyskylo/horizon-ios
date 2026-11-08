@@ -928,7 +928,7 @@ fn hurt_source(
     direct: Option<&ProjectileKind>,
 ) -> HurtSource<'static> {
     let causing = by.unwrap_or(0);
-    let melee = direct.is_none() && super::creatures::melee(kind);
+    let melee = direct.is_none() && (super::creatures::melee(kind) || kind == DamageKind::Thorns);
     HurtSource {
         damage_type: super::creatures::damage_type(kind, by.is_some()),
         causing,
@@ -1583,9 +1583,9 @@ impl Game<'_> {
     ) -> Hurt {
         // `dealDefaultKnockback` for a player's melee: away from the attacker's
         // feet. The scope names that player to the knockback hook.
-        let _attacker = (kind == DamageKind::PlayerAttack)
+        let _attacker = (matches!(kind, DamageKind::PlayerAttack | DamageKind::Thorns))
             .then(|| self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id)));
-        let from = (kind == DamageKind::PlayerAttack)
+        let from = (matches!(kind, DamageKind::PlayerAttack | DamageKind::Thorns))
             .then(|| self.player.as_ref().map(|p| p.position))
             .flatten();
         self.hurt_dragon_part_at(part, damage, counts, by, kind, direct, from)
@@ -1633,6 +1633,10 @@ impl Game<'_> {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
             self.audio
                 .play("minecraft:entity.ender_dragon.hurt", Some(at), 5.0, pitch);
+            if kind == DamageKind::Thorns {
+                self.audio
+                    .play("minecraft:enchant.thorns.hit", Some(at), 1.0, 1.0);
+            }
             if let Some(s) = source {
                 d.last_source = Some((
                     s.damage_type,
@@ -2685,8 +2689,25 @@ impl Game<'_> {
                     )
                 })
                 .collect();
-            for (mob, allowed) in self.mobs.iter_mut().zip(allowed) {
-                horizon_client::mobs::dragon_contacts::contact(mob, &frame, allowed);
+            // knockBack(wing1), knockBack(wing2), hurt(head), hurt(neck): each
+            // part's list in turn, so Thorns' level and dragon draws follow it.
+            for part in 0..4 {
+                for (index, &allowed) in allowed.iter().enumerate() {
+                    if horizon_client::mobs::dragon_contacts::contact_part(
+                        &mut self.mobs[index],
+                        &frame,
+                        allowed,
+                        part,
+                    ) {
+                        let id = self.mobs[index].id;
+                        self.mob_post_attack(
+                            id,
+                            Some(horizon_client::mobs::Who::Mob(frame.dragon_id)),
+                            Some("minecraft:ender_dragon"),
+                            Some("minecraft:mob_attack"),
+                        );
+                    }
+                }
             }
         }
         // checkWalls over head, neck and body.
@@ -3112,6 +3133,35 @@ impl Game<'_> {
             });
         }
         self.combat.forget_noted(canceled);
+        if !sitting
+            && !hurt_lately
+            && let Some(id) = self.dragon.as_ref().map(|d| d.id)
+        {
+            self.thorns(id);
+        }
+    }
+    /// `DamageEntity.apply`: the dragon's own random, including when the
+    /// wearer's mob source cannot take health from it.
+    pub(super) fn dragon_effect_random(&mut self, id: u32) -> Option<f32> {
+        self.dragon
+            .as_mut()
+            .filter(|d| d.id == id)
+            .map(|d| d.random.next_float())
+    }
+    /// `EnderDragon.hurtServer`: Thorns hits the body part, so damage is
+    /// quartered plus at most one, with the player as its causing entity.
+    pub(super) fn dragon_thorns(&mut self, attacker: u32, min: f32, max: f32) {
+        let Some(d) = self.dragon.as_mut().filter(|d| d.id == attacker) else {
+            return;
+        };
+        let damage = d.random.next_float() * (max - min) + min;
+        self.hurt_dragon(
+            2,
+            damage,
+            true,
+            Some(self.acting_player()),
+            DamageKind::Thorns,
+        );
     }
     /// Damage from the dragon, which is its causing entity
     /// (`DamageSources.mobAttack(dragon)`, `indirectMagic(cloud, dragon)`): the
@@ -3119,6 +3169,13 @@ impl Game<'_> {
     fn dragon_hurts_player(&mut self, damage_type: &str, amount: f32) {
         self.note_dragon_attacker(damage_type);
         self.hurt_player_by(damage_type, amount);
+        // EnderDragon.hurt(List) runs effects even when hurtServer refused.
+        // The breath cloud's indirect magic never runs them.
+        if damage_type == "minecraft:mob_attack"
+            && let Some(id) = self.dragon.as_ref().map(|d| d.id)
+        {
+            self.thorns(id);
+        }
     }
     /// The causing entity of the dragon's next `damage_type` damage, for the
     /// death message.
@@ -5689,3 +5746,7 @@ mod tests {
         assert_eq!(d.hurt_time, 10);
     }
 }
+
+#[cfg(test)]
+#[path = "thorns_tests.rs"]
+mod thorns_tests;

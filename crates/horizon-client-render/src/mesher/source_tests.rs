@@ -127,6 +127,7 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         block_entity: false,
         tints: [Tint::None; 2],
         tint_count: 0,
+        colormap: None,
         offset: None,
         legacy_solid: false,
         overlay: false,
@@ -161,6 +162,8 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         lava_still: 0,
         lava_flow: 0,
         animated_layers: vec![false],
+        colormaps: Vec::new(),
+        water_colormap: None,
     };
     let maps = path.join("assets/minecraft/textures/colormap");
     std::fs::create_dir_all(&maps).unwrap();
@@ -227,12 +230,20 @@ fn terrain_source_cpu_multipart_and_waterlogged_faces_keep_their_owner() {
     );
     let before: Vec<_> = mesh
         .solid
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(&mesh.solid_sources)
         .map(|(q, s)| (bytemuck::cast_slice::<_, u8>(q).to_vec(), *s))
         .collect();
     mesh.sort_solid();
-    for (q, s) in mesh.solid.chunks_exact(4).zip(&mesh.solid_sources) {
+    for (q, s) in mesh
+        .solid
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(&mesh.solid_sources)
+    {
         assert!(
             before.contains(&(bytemuck::cast_slice::<_, u8>(q).to_vec(), *s)),
             "sort changed face ownership"
@@ -243,7 +254,7 @@ fn terrain_source_cpu_multipart_and_waterlogged_faces_keep_their_owner() {
     mesher.shader_pack = false;
     let native = mesher.mesh_reusing(&region, 0, mesh, &mut MeshScratch::default());
     assert!(native.solid_sources.is_empty() && native.translucent_sources.is_empty());
-    for q in native.solid.chunks_exact(4) {
+    for q in native.solid.as_chunks::<4>().0.iter() {
         assert!(
             before
                 .iter()
@@ -273,7 +284,9 @@ fn terrain_source_cpu_partial_metadata_never_inherits_a_previous_face() {
     mesh.sort_solid();
     assert_eq!(
         mesh.solid
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|q| q[0].pos[1])
             .collect::<Vec<_>>(),
         [3.0, 2.0, 1.0]

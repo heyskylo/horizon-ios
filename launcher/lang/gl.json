@@ -1257,5 +1257,8 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: úsase a versión {version}, feita para o Horizon que xogas",
-  "Recommended": "Recomendada"
+  "Recommended": "Recomendada",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Unha versión máis antiga, {version}, compila no Horizon que xogas: instalar escóllea",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: a versión {version} non compilou, probando {older}",
+  "Use recommended (kept at {version})": "Usar a recomendada (fixada en {version})"
 }
