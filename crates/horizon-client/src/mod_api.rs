@@ -41,6 +41,8 @@ pub use crate::game::{
     NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gamerules::Value as GameRuleValue;
+/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API @API:world_hold@.
+pub use crate::gfx::WorldHold;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,
@@ -90,6 +92,7 @@ pub use horizon_world::{
     attachments::{
         AttachmentCodec, AttachmentError, AttachmentHost, AttachmentType, Attachments, Holder,
     },
+    block_state_properties::BlockProperties,
     fluid::{FluidKind, FluidState},
     level::{BlockId, Dimension as LevelDimension, PlacementContext},
     loot::{LootStack, NativeLootContext},
@@ -976,6 +979,8 @@ mod generated_host {
     include!(concat!(env!("OUT_DIR"), "/mod_api_generated_host.rs"));
 }
 pub use generated_host::Host;
+
+pub use crate::game::native_client_services::HudMode;
 
 /// Result of accessing or decoding an attachment.
 pub type AttachmentResult<T> = std::result::Result<T, AttachmentError>;

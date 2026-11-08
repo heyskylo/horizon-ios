@@ -274,14 +274,17 @@ pub(super) fn field_click(rect: Rect) -> (f32, f32) {
 /// (`AbstractSelectionList`) and of a focused `EditBox`. Buttons, sliders
 /// and tabs show their highlighted sprite, drawn under the hidden pointer.
 pub(super) fn draw_outline(atlas: &HudAtlas, batch: &mut HudBatch, focus: Target) {
-    let [x, y, w, h] = focus.rect;
     if matches!(focus.kind, Kind::Row | Kind::Field) {
-        let white = rgba(255, 255, 255, 255);
-        batch.fill(atlas, x, y, w, 1.0, white);
-        batch.fill(atlas, x, y + h - 1.0, w, 1.0, white);
-        batch.fill(atlas, x, y, 1.0, h, white);
-        batch.fill(atlas, x + w - 1.0, y, 1.0, h, white);
+        draw_white_outline(atlas, batch, focus.rect);
     }
+}
+
+pub(super) fn draw_white_outline(atlas: &HudAtlas, batch: &mut HudBatch, [x, y, w, h]: Rect) {
+    let white = rgba(255, 255, 255, 255);
+    batch.fill(atlas, x, y, w, 1.0, white);
+    batch.fill(atlas, x, y + h - 1.0, w, 1.0, white);
+    batch.fill(atlas, x, y, 1.0, h, white);
+    batch.fill(atlas, x + w - 1.0, y, 1.0, h, white);
 }
 
 #[cfg(test)]
