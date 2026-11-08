@@ -77,6 +77,9 @@ pub struct BlockEntities {
     /// The fluid tanks of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_fluids: FxHashMap<u32, Arc<ModFluidTanks>>,
+    /// State-aware native factory ownership. Shared across level snapshots;
+    /// an empty slice means the declarations have not yet been compiled.
+    stateful_entities: Arc<[bool]>,
     /// The energy buffers of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_energy: FxHashMap<u32, Arc<ModEnergyBuffer>>,
@@ -208,6 +211,21 @@ impl BlockEntities {
     /// The fluid tanks of a mod block's block entity in block state `state`.
     pub fn mod_fluids(&self, state: u32) -> Option<&Arc<ModFluidTanks>> {
         self.mod_fluids.get(&state)
+    }
+    pub fn set_stateful_entities(&mut self, states: Vec<bool>) {
+        self.stateful_entities = states.into();
+    }
+    pub fn has_stateful_entity_table(&self) -> bool {
+        !self.stateful_entities.is_empty()
+    }
+    pub fn stateful_entities(&self) -> Arc<[bool]> {
+        self.stateful_entities.clone()
+    }
+    pub fn stateful_entity(&self, state: u32) -> bool {
+        self.stateful_entities
+            .get(state as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn set_mod_energy(&mut self, energy: FxHashMap<u32, Arc<ModEnergyBuffer>>) {
         self.mod_energy = energy;

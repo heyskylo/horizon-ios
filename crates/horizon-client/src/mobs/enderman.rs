@@ -228,7 +228,8 @@ pub fn attacking_speed(m: &Mob) -> f64 {
 /// Enderman.customServerAiStep: in daylight, flee by teleporting. The End has a
 /// fixed time, so `Level.isBrightOutside` is never true there.
 pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
-    if cx.w.daylight && !cx.w.end && m.age as i32 >= m.extra.counter + 600 {
+    if cx.w.daylight && !cx.w.dimension_type.has_fixed_time && m.age as i32 >= m.extra.counter + 600
+    {
         let br = super::hostile::mob_brightness(m, cx.w);
         let (x, y, z) = (
             m.position.x.floor() as i32,
@@ -474,6 +475,13 @@ impl Goal for TakeBlock {
             pos: [x, y, z],
             state: cx.w.world.air,
         });
+        // level.gameEvent(BLOCK_DESTROY, pos, Context.of(enderman, blockState)).
+        cx.events.push(MobEvent::GameEvent {
+            event: "minecraft:block_destroy",
+            at: [f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5],
+            source: m.id,
+            state,
+        });
         m.extra.carried = Some(state);
     }
 }
@@ -709,6 +717,7 @@ mod tests {
             loot: &loot,
             damage: None,
             player: None,
+            player_killed: false,
             luck: 0.0,
             vehicle: None,
             mob_drops,

@@ -1,5 +1,5 @@
 //! Cosmetics on players ([docs/cosmetics.md](../../../../docs/cosmetics.md)): only Horizon
-//! clients draw them, off unless `horizon_cosmetics::enabled()`. What another player wears comes
+//! clients draw them, off unless [`enabled`]. What another player wears comes
 //! from the cosmetics service by UUID (`horizon_cosmetics::Cosmetics`, its own thread); this file
 //! puts the items on the avatar's bones, on the GPU skin path when the renderer takes it.
 //!
@@ -433,11 +433,18 @@ fn body_top(
         .reduce(f32::max)
 }
 
+/// Whether cosmetics, emotes and the "Horizon player" presence run at all: the `horizon-extras`
+/// feature's gate for all three (docs/forking.md), then `horizon_cosmetics::enabled()`. The game
+/// asks this, never `horizon_cosmetics::enabled()` itself.
+pub(super) fn enabled() -> bool {
+    cfg!(feature = "horizon-extras") && horizon_cosmetics::enabled()
+}
+
 impl Game<'_> {
     /// Once a frame, before drawing: starts the service's client on first use and puts the
     /// textures the last frame wanted into the atlas.
     pub(super) fn cosmetics_frame(&mut self) {
-        if !horizon_cosmetics::enabled() {
+        if !enabled() {
             return;
         }
         let c = &mut self.cosmetics;
@@ -644,7 +651,7 @@ impl Game<'_> {
         const AGAIN: Duration = Duration::from_secs(600);
         let e = &mut self.emotes;
         if self.cosmetics.local
-            || !horizon_cosmetics::enabled()
+            || !enabled()
             || horizon_client::auth::current().is_none()
             || e.loading.is_some()
             || e.loaded.is_some_and(|at| at.elapsed() < AGAIN)

@@ -20,6 +20,14 @@ use crate::{
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
+
+/// False only in a game built without the `horizon-extras` feature (docs/forking.md), which says
+/// so once at startup: the Options screen then has vanilla's Telemetry Data slot instead of
+/// Horizon Settings and Mods, and Credits & Attribution names the official build.
+pub static HORIZON_EXTRAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+fn horizon_extras() -> bool {
+    HORIZON_EXTRAS.load(std::sync::atomic::Ordering::Relaxed)
+}
 fn generic(caption: &str, value: Text) -> Text {
     Text::translate("options.generic_value", &[tr(caption), value])
 }
@@ -304,11 +312,13 @@ impl Opt {
             Opt::PadRepeatInterval => "horizon.options.repeat_interval",
             Opt::PadInvertX => "horizon.options.invert_x",
             Opt::PadInvertY => "horizon.options.invert_y",
+            Opt::PadCraftOnServers => "horizon.options.craft_on_servers",
             Opt::PadToggleSneak => "horizon.options.sneak_button",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
             Opt::PadTriggerThreshold => "horizon.options.trigger_threshold",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
+            Opt::PadNintendoButtons => "horizon.options.nintendo_buttons",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
             Opt::PadGameplayGuide => "horizon.options.gameplay_guide",
             Opt::ModelPart(i) => [
@@ -840,6 +850,7 @@ impl Opt {
             }),
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
+            Opt::PadCraftOnServers => on_off(s.controller.craft_on_servers),
             Opt::PadToggleSneak => tr(if s.controller.toggle_sneak {
                 "options.key.toggle"
             } else {
@@ -855,6 +866,11 @@ impl Opt {
                 GlyphStyle::Xbox => "horizon.options.glyphs.xbox",
                 GlyphStyle::PlayStation => "horizon.options.glyphs.playstation",
                 GlyphStyle::Nintendo => "horizon.options.glyphs.nintendo",
+            }),
+            Opt::PadNintendoButtons => tr(if s.controller.nintendo_letters {
+                "horizon.options.nintendo_buttons.letter"
+            } else {
+                "horizon.options.nintendo_buttons.position"
             }),
             Opt::PadKeyboard => tr(match s.controller.keyboard {
                 gamepad::TextKeyboard::Auto => "horizon.options.keyboard.auto",
@@ -1142,7 +1158,13 @@ impl Opt {
             }
             Opt::PadInvertX => s.controller.invert_x = !s.controller.invert_x,
             Opt::PadInvertY => s.controller.invert_y = !s.controller.invert_y,
+            Opt::PadCraftOnServers => {
+                s.controller.craft_on_servers = !s.controller.craft_on_servers
+            }
             Opt::PadToggleSneak => s.controller.toggle_sneak = !s.controller.toggle_sneak,
+            Opt::PadNintendoButtons => {
+                s.controller.nintendo_letters = !s.controller.nintendo_letters
+            }
             Opt::PadLightbar => {
                 let all = gamepad::Lightbar::ALL;
                 let i = all
@@ -3096,6 +3118,22 @@ impl OptionsUi {
                     ("horizon.pages.open.mods", Some(Page::Mods)),
                     ("options.credits_and_attribution", Some(Page::Credits)),
                 ];
+                // horizon-extras: without it, vanilla's last row instead of Horizon Settings and
+                // Mods: Telemetry Data (greyed: nothing is sent) and Credits & Attribution.
+                let plain;
+                let entries: &[_] = if horizon_extras() {
+                    &entries
+                } else {
+                    plain = [
+                        &entries[..entries.len() - 3],
+                        &[
+                            ("options.telemetry", None),
+                            ("options.credits_and_attribution", Some(Page::Credits)),
+                        ],
+                    ]
+                    .concat();
+                    &plain
+                };
                 let rows = entries.len().div_ceil(2) as f32;
                 let gy = (61.0 + 30.0f32).min(h - 33.0 - rows * 24.0);
                 for (i, (key, page)) in entries.iter().enumerate() {
@@ -3144,6 +3182,22 @@ impl OptionsUi {
                 {
                     let y = y + 28.0 * (i + 1) as f32;
                     out.push(inactive(button(x, y, 210.0, tr(key), Act::None)));
+                }
+                // horizon-extras: a build without them says where the official one is.
+                if !horizon_extras() {
+                    out.push(Widget {
+                        x: 0.0,
+                        y: (y + 92.0).min(h - 42.0),
+                        w,
+                        h: 9.0,
+                        kind: WKind::Text {
+                            text: tr("horizon.plain.official"),
+                            color: 0xFFA0A0A0,
+                            centered: true,
+                        },
+                        list: false,
+                        row: 0,
+                    });
                 }
                 out.push(done(h - 27.0));
                 top = 0.0;
