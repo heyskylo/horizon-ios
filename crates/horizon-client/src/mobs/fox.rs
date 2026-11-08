@@ -178,7 +178,7 @@ pub fn register(m: &mut Mob) {
     g.add(6, SeekShelter::new(1.25));
     g.add(
         7,
-        Wrap::new(MeleeAttack::new(1.2, true).bite("entity.fox.bite"))
+        Wrap::new(MeleeAttack::new(f64::from(1.2_f32), true).bite("entity.fox.bite"))
             .when(
                 |m| !flag(m, SITTING | SLEEPING | CROUCHING | FACEPLANTED),
                 false,
@@ -1053,7 +1053,7 @@ struct EatBerries {
 impl EatBerries {
     fn new() -> Self {
         Self {
-            block: MoveToBlock::new(1.2, 12, 1),
+            block: MoveToBlock::new(f64::from(1.2_f32), 12, 1),
             waited: 0,
         }
     }
