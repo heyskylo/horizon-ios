@@ -1023,8 +1023,11 @@ def shulker_command_damage():
     ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in range(9, 13) for z in range(9, 12)]}]
     ops += setup('/tick freeze', *[f'/scoreboard objectives add sd_{k} dummy' for k in ('x', 'y', 'z', 'x2', 'y2', 'z2')])
     # Each on the west wall of its gap (AttachFace west), its shell opening east into the gap.
-    ops += setup(*[f'/summon shulker {x}.5 212 {z}.5 {{Tags:["sd"],AttachFace:4b,PersistenceRequired:1b}}'
-                   for x in range(163, 185, 3) for z in (168, 170, 172, 174)])
+    # Fixed UUIDs: the shulkers stay score holders after the kill (the bodies are
+    # unloaded, never removed), and a later `/scoreboard players list` names them.
+    spots = [(x, z) for x in range(163, 185, 3) for z in (168, 170, 172, 174)]
+    ops += setup(*[f'/summon shulker {x}.5 212 {z}.5 {{UUID:[I;12185,0,0,{n}],Tags:["sd"],AttachFace:4b,PersistenceRequired:1b}}'
+                   for n, (x, z) in enumerate(spots)])
     ops += [cmd('/execute if entity @e[tag=sd]', expect_result=32)]
     def store(suffix):
         return [f'/execute as @e[tag=sd] store result score @s sd_{k}{suffix} run data get entity @s Pos[{i}] 10'

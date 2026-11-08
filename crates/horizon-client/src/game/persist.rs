@@ -1847,9 +1847,9 @@ impl Game<'_> {
         alive
     }
     /// `ServerLevel.EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`
-    /// for every kind of entity, not only the mobs `score_entity_removed`
-    /// covers as they die: an item picked up or killed, an expired cloud, a
-    /// discarded projectile leaves the board and its team. Unloaded and
+    /// for every kind of entity: a mob's body once it is removed, an item
+    /// picked up or killed, an expired cloud, a discarded projectile leaves
+    /// the board and its team. Unloaded and
     /// travelling entities leave `persist.uuids` first (`forget_entity`,
     /// `detach_entity`), so they keep their scores, as vanilla's do. Once a
     /// tick, so a command in the same tick still sees them; nothing to do
