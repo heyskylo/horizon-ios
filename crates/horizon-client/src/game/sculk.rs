@@ -474,6 +474,20 @@ impl Game<'_> {
             }
             self.sculk.known = loaded;
         }
+        self.sculk_sync_writes();
+    }
+
+    /// `LevelChunk.setBlockState`: register a command-placed sculk block
+    /// before `BlockInput.place` loads its tag into the new block entity.
+    pub(super) fn sculk_place_entity(&mut self, state: BlockStateId) -> bool {
+        if self.kind_of_state(state.0) == 0 {
+            return false;
+        }
+        self.sculk_sync_writes();
+        true
+    }
+
+    fn sculk_sync_writes(&mut self) {
         let writes = std::mem::take(&mut self.world.watched_writes);
         for (key, old, new) in writes {
             let (old_kind, new_kind) = (self.kind_of_state(old), self.kind_of_state(new));

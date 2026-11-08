@@ -2737,6 +2737,7 @@ impl Game<'_> {
             return Ok(false);
         }
         self.ensure_stateful_entity_table();
+        self.sculk_prepare();
         // A different block replaces the block entity (Level.setBlock).
         let (old, new) = (
             self.res.facts().get(previous).name.clone(),
@@ -2780,6 +2781,7 @@ impl Game<'_> {
         let needs_entity = !self.world.block_entities.stateful_entity(landed.0) && old != new;
         if needs_entity
             && self.res.facts().get(landed).name == new
+            && !self.sculk_place_entity(landed)
             && let Some(entity) = self.new_block_entity_for_state(landed)
         {
             self.world.block_entities.insert(key, entity);
