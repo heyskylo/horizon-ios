@@ -1380,12 +1380,13 @@ pub fn carry(
             if declared.contains(full) {
                 continue;
             }
-            if item
-                .block
-                .as_ref()
-                .is_some_and(|b| facts.blocks.contains_key(b))
-                && report.blocks_unknown.contains_key(name)
-            {
+            // The block it places must be carried: a vanilla one or one of this mod's declared ones.
+            if item.block.as_ref().is_some_and(|b| {
+                !b.starts_with("minecraft:")
+                    && !b
+                        .strip_prefix(&prefix)
+                        .is_some_and(|b| report.blocks.contains_key(b))
+            }) {
                 report
                     .items_unknown
                     .insert(name.to_owned(), "its block is left out".into());
@@ -2788,6 +2789,75 @@ mod tests {
                 "data/gem/recipe/other.json"
             ]
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Seeds place a block of another name (`BlockItem.getBlock`): the item is carried binding that block,
+    /// and an item whose block is left out stays out.
+    #[test]
+    fn items_place_their_block_of_another_name() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-seeds-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let block = |class: &str, item: &str| {
+            json!({"class": [class, "net.minecraft.world.level.block.Block"], "properties": {}, "default": "",
+                "item": item, "explosion_resistance": 3.0, "friction": 0.6, "speed_factor": 1.0,
+                "jump_factor": 1.0, "states": {"": {"hardness": 2.0, "emission": 0, "requires_tool": false,
+                    "map_color_id": 13, "sound": {"break": "wood"}, "outline": [[0, 0, 0, 1, 1, 1]],
+                    "collision": [[0, 0, 0, 1, 1, 1]]}}})
+        };
+        let seeds = |b: &str| {
+            json!({"class": "net.minecraft.world.item.ItemNameBlockItem", "max_stack_size": 64,
+                "rarity": "common", "block": b})
+        };
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:oak_planks": block("net.minecraft.world.level.block.Block", "minecraft:oak_planks"),
+                "gem:cabbages": block("gem.Cabbages", "gem:cabbage_seeds"),
+            },
+            "items": {"gem:cabbage_seeds": seeds("gem:cabbages"), "gem:lost_seeds": seeds("gem:lost")}
+        }))
+        .unwrap();
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let out = dir.join("out");
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            report.items_unknown.keys().collect::<Vec<_>>(),
+            ["lost_seeds"]
+        );
+        let carried = out.join("carry");
+        let package = horizon_mods::Package::read(&carried).unwrap();
+        let content = horizon_mods::Content::read(&carried, &package.manifest).unwrap();
+        let item = content
+            .items
+            .iter()
+            .find(|i| i.id == "gem:cabbage_seeds")
+            .unwrap();
+        assert_eq!(item.place_block.as_deref(), Some("gem:cabbages"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
