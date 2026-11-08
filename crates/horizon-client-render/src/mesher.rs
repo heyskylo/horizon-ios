@@ -8,6 +8,9 @@ mod leaf_culling;
 mod lighting;
 pub mod packed;
 mod sides;
+#[cfg(test)]
+#[path = "mesher/source_tests.rs"]
+mod source_tests;
 use crate::connected::{Pick, TileLayer};
 use crate::{
     assets::{Assets, RenderAssets},
@@ -340,13 +343,41 @@ mod section_mesh_tests {
         );
     }
 }
+/// A shader terrain quad's unmodified source state and owning section cell. Two words
+/// per quad, kept beside (not in) the native 24-byte vertex format. Word 1 has cell XYZ
+/// in three nibbles, a fluid flag, a valid flag, then the emitted light (0..15).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TerrainSource {
+    state: u32,
+    cell: u32,
+}
+impl TerrainSource {
+    pub(crate) fn new(state: u32, pos: [i32; 3], emission: u8, fluid: bool) -> Self {
+        debug_assert!(pos.iter().all(|&v| (0..16).contains(&v)));
+        Self {
+            state,
+            cell: pos[0] as u32
+                | (pos[1] as u32) << 4
+                | (pos[2] as u32) << 8
+                | u32::from(fluid) << 12
+                | 1 << 13
+                | u32::from(emission.min(15)) << 14,
+        }
+    }
+}
+
 pub struct SectionMesh {
     pub solid: Vec<TerrainVertex>,
+    /// One source per quad when a shader pack meshes terrain; independent of its sprite
+    /// and geometry. Empty on native/default meshes and on distant terrain.
+    pub solid_sources: Vec<TerrainSource>,
     /// The buckets `solid` is sorted in by the side its quads face: empty
     /// until `sort_solid`, which the meshing workers call; `solid` is in
     /// model order before.
     pub sides: Sides,
     pub translucent: Vec<TerrainVertex>,
+    pub translucent_sources: Vec<TerrainSource>,
     /// Whether `packed` holds far tile records (`lod::packed`) rather than
     /// section records (`mesher::packed`): the two are read apart, by the base
     /// vertex their draws use.
@@ -380,8 +411,10 @@ impl Default for SectionMesh {
     fn default() -> Self {
         Self {
             solid: Vec::new(),
+            solid_sources: Vec::new(),
             sides: Sides::default(),
             translucent: Vec::new(),
+            translucent_sources: Vec::new(),
             packed: Vec::new(),
             packed_far: false,
             solid_tints: Vec::new(),
@@ -416,7 +449,9 @@ impl SectionMesh {
     /// Retain geometry capacity after an upload, but none of its old contents.
     pub fn clear(&mut self) {
         self.solid.clear();
+        self.solid_sources.clear();
         self.translucent.clear();
+        self.translucent_sources.clear();
         self.packed.clear();
         self.packed_far = false;
         self.solid_tints.clear();
@@ -431,6 +466,8 @@ impl SectionMesh {
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
             + self.translucent.capacity() * std::mem::size_of::<TerrainVertex>()
+            + (self.solid_sources.capacity() + self.translucent_sources.capacity())
+                * std::mem::size_of::<TerrainSource>()
             + self.packed.capacity() * std::mem::size_of::<[u32; 6]>()
             + self.solid_tints.capacity() * std::mem::size_of::<u32>()
             + self.block_entities.capacity() * std::mem::size_of::<([i32; 3], u32)>()
@@ -445,7 +482,11 @@ impl SectionMesh {
         if !self.solid_tints.is_empty() {
             self.solid_tints.resize(quads, packed::UNKNOWN_TINT);
         }
-        self.sides = sides::sort_tinted(&mut self.solid, &mut self.solid_tints);
+        self.sides = sides::sort_sourced(
+            &mut self.solid,
+            &mut self.solid_tints,
+            &mut self.solid_sources,
+        );
         self.bounds = self.compute_bounds();
         self.packed.clear();
         self.packed_far = false;
@@ -453,6 +494,20 @@ impl SectionMesh {
             packed::layout_into(&self.solid, &self.solid_tints, &mut self.packed);
         }
         self.solid_tints.clear();
+    }
+
+    /// Every face emitted since `start` belongs to this block, including multipart,
+    /// connected-texture pieces, overlays and duplicated/back-facing fluid faces.
+    fn record_source(&mut self, start: [usize; 2], source: TerrainSource) {
+        for (vertices, sources, start) in [
+            (&self.solid, &mut self.solid_sources, start[0]),
+            (&self.translucent, &mut self.translucent_sources, start[1]),
+        ] {
+            if vertices.len() > start {
+                sources.resize(start / 4, TerrainSource::default());
+                sources.resize(vertices.len() / 4, source);
+            }
+        }
     }
 
     /// Computes the tight axis-aligned bounding box [min, max] of actual terrain geometry vertices.
@@ -1674,6 +1729,7 @@ impl Mesher<'_> {
                         continue;
                     }
                     if state.fluid.kind() != FluidKind::Empty {
+                        let start = [out.solid.len(), out.translucent.len()];
                         let water = tints.get(Resolver::Water, x, y, z);
                         let shade = (
                             self.nether_shading,
@@ -1682,6 +1738,12 @@ impl Mesher<'_> {
                             self.shader_pack,
                         );
                         fluid::tesselate(self.tables, shade, pad, water, &mut out, [x, y, z]);
+                        if self.shader_pack {
+                            out.record_source(
+                                start,
+                                TerrainSource::new(id, [x, y, z], state.emission, true),
+                            );
+                        }
                     }
                     if !state.model {
                         continue;
@@ -1754,6 +1816,7 @@ impl Mesher<'_> {
                                 .unwrap_or(true);
                     }
                     let connected = &self.render.connected;
+                    let start = [out.solid.len(), out.translucent.len()];
                     for model in &models {
                         for face in &model.faces {
                             if face.quad.cull.is_some_and(|d| !visible[d as usize]) {
@@ -1796,6 +1859,12 @@ impl Mesher<'_> {
                                 interior_leaf,
                             );
                         }
+                    }
+                    if self.shader_pack {
+                        out.record_source(
+                            start,
+                            TerrainSource::new(id, [x, y, z], state.emission, false),
+                        );
                     }
                 }
             }
