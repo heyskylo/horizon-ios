@@ -14139,5 +14139,27 @@ CHECKS += ['ride_guest']
 CHECK_FNS['ride_guest'] = check_ride_guest
 
 
+def check_loot_give_guest(host, guest, out):
+    """LootCommand.playerGive on another server player: the host's /loot give puts the drop in the
+    guest's inventory, as vanilla does for any ServerPlayer (the console's, a function's or another
+    player's /loot give), and @a gives each player one."""
+    host('command', command=f'clear {GUEST_NAME}')
+    host('command', command='clear @s')
+    seen = {'guest': host('command', command=f'loot give {GUEST_NAME} loot minecraft:blocks/dirt').get('chat'),
+            'all': host('command', command='loot give @a loot minecraft:blocks/dirt').get('chat')}
+    guest.wait(10)
+    seen['guest holds'] = host('command', command=f'clear {GUEST_NAME} minecraft:dirt 0').get('chat')
+    seen['host holds'] = host('command', command='clear @s minecraft:dirt 0').get('chat')
+    guest.shot(out, 'loot-give-guest')
+    assert any('Dropped 1 [Dirt]' in line for line in seen['guest'] or []), f'one dirt for the guest: {seen}'
+    assert any('Found 2 matching' in line for line in seen['guest holds'] or []), f'the guest holds two: {seen}'
+    assert any('Found 1 matching' in line for line in seen['host holds'] or []), f'the host holds one: {seen}'
+    return seen
+
+
+CHECKS += ['loot_give_guest']
+CHECK_FNS['loot_give_guest'] = check_loot_give_guest
+
+
 if __name__ == '__main__':
     main()
