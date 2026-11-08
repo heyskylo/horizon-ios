@@ -123,6 +123,14 @@ impl Default for Pass {
     }
 }
 
+/// How long a server tick took and what it spent the time in.
+pub(super) struct TickTiming {
+    pub wall_ms: f32,
+    pub cpu_ms: Option<f32>,
+    /// As recorded in the tick, each span after the spans inside it; the ones from between ticks are left out.
+    pub raw: Vec<horizon_client::spans::Span>,
+}
+
 /// The levels not in place, by dimension.
 #[derive(Default)]
 pub(super) struct Levels {
@@ -600,17 +608,14 @@ impl Game<'_> {
     /// `tick_server` as a server thread runs it. With `HORIZON_SPIKES=MS`, a
     /// tick longer than MS is logged with its thread CPU time and spans.
     pub(super) fn tick_server_timed(&mut self, paused: bool) -> Result<()> {
-        self.tick_server_spans(paused, |_, _, _, _| {})
+        self.tick_server_spans(paused, |_| {})
     }
 
-    /// `tick_server_timed`, handing the tick's wall time, thread CPU time
-    /// and spans (milliseconds, summed by name) to `record` while spans are on, with how many
-    /// spans the tick itself recorded: a dedicated server's performance report turns them on to
-    /// record its ticks.
+    /// `tick_server_timed`, handing the tick's timing to `record` while spans are on.
     pub(super) fn tick_server_spans(
         &mut self,
         paused: bool,
-        record: impl FnOnce(f32, Option<f32>, Vec<horizon_client::spans::Span>, usize),
+        record: impl FnOnce(TickTiming),
     ) -> Result<()> {
         let started = Instant::now();
         horizon_threads::work::tick_start();
@@ -622,7 +627,7 @@ impl Game<'_> {
     fn tick_server_recorded(
         &mut self,
         paused: bool,
-        record: impl FnOnce(f32, Option<f32>, Vec<horizon_client::spans::Span>, usize),
+        record: impl FnOnce(TickTiming),
     ) -> Result<()> {
         if self.options.spikes.is_none() && !horizon_client::spans::enabled() {
             return self.tick_server(paused);
@@ -638,11 +643,10 @@ impl Game<'_> {
             .map(|(end, start)| (end - start).as_secs_f32() * 1000.0);
         // Taken every tick: nothing else takes this thread's spans.
         let raw = horizon_client::spans::take_raw();
-        let in_tick = raw.len();
         let spans = if between.is_empty() {
             horizon_client::spans::merge(&raw)
         } else {
-            horizon_client::spans::merge(&[between, raw].concat())
+            horizon_client::spans::merge(&[&between[..], &raw[..]].concat())
         };
         let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes
@@ -657,7 +661,11 @@ impl Game<'_> {
             );
         }
         self.native_server_tick_timed(wall, cpu, &spans);
-        record(wall, cpu, spans, in_tick);
+        record(TickTiming {
+            wall_ms: wall,
+            cpu_ms: cpu,
+            raw,
+        });
         result
     }
 

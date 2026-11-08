@@ -813,6 +813,8 @@ struct ServerState {
     perf: horizon_client::server_perf::ServerPerf,
     /// The perf clock's zero: the tick loop's start.
     perf_epoch: Instant,
+    /// The Horizon switches a capture records.
+    horizon: horizon_perf_format::v1::HorizonOptions,
     /// View and simulation distance, and the player limit, for the report.
     view: (u32, u32),
     max_players: usize,
@@ -1220,6 +1222,7 @@ impl Game<'_> {
         }
         self.sync_ops(&lists);
         let anticheat = load_anticheat();
+        let anticheat_on = anticheat.enabled;
         let chat_filter = load_chat_filter();
         self.settings.extras.pvp.combat.rules = load_combat();
         // Horizon's far ring (docs/hosting.md): server.toml's `max_view_distance`.
@@ -1282,6 +1285,17 @@ impl Game<'_> {
                 self.options.spikes.unwrap_or(SLOW_TICK_MS),
             ),
             perf_epoch: Instant::now(),
+            horizon: horizon_client::server_perf::horizon_options(
+                if self.lan.as_ref().is_some_and(|h| h.hub.far.is_some()) {
+                    far as u32
+                } else {
+                    0
+                },
+                horizon_client::lod_net::distance_property(
+                    props.raw.get(horizon_client::lod_net::PROPERTY),
+                ),
+                anticheat_on,
+            ),
             compression: props.network_compression_threshold,
             view: (
                 props.view_distance.clamp(2, 32) as u32,
@@ -1353,13 +1367,14 @@ impl Game<'_> {
             // `MinecraftServer.runServer` catches what the tick throws, writes the crash
             // report and still stops the server (saves). A panic here does the same.
             let slow_ms = state.perf.slow_threshold_ms();
-            let mut slow_detail = None;
+            let capturing = state.perf.capturing();
+            let mut tick_detail = None;
             let ticked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut detail = |wall: f32, cpu, spans: &[horizon_client::spans::Span]| {
-                    if wall > slow_ms {
-                        slow_detail = Some(horizon_client::server_perf::SlowDetail {
-                            cpu_ms: cpu,
-                            spans: spans.to_vec(),
+                let mut detail = |timing: super::levels::TickTiming| {
+                    if capturing || timing.wall_ms > slow_ms {
+                        tick_detail = Some(horizon_client::server_perf::TickDetail {
+                            cpu_ms: timing.cpu_ms,
+                            spans: timing.raw,
                         });
                     }
                 };
@@ -1367,16 +1382,14 @@ impl Game<'_> {
                     Some(recording) => {
                         let sampled = recording.sample_next();
                         super::tick_profile::set_sampling(sampled);
-                        let ticked =
-                            self.tick_server_spans(paused, |wall, cpu, spans, recorded| {
-                                detail(wall, cpu, &spans);
-                                recording.add(wall, cpu, spans, recorded, sampled)
-                            });
+                        let ticked = self.tick_server_spans(paused, |timing| {
+                            recording.add(sampled);
+                            detail(timing)
+                        });
                         super::tick_profile::set_sampling(false);
                         ticked
                     }
-                    None => self
-                        .tick_server_spans(paused, |wall, cpu, spans, _| detail(wall, cpu, &spans)),
+                    None => self.tick_server_spans(paused, detail),
                 }
             }));
             match ticked {
@@ -1386,13 +1399,8 @@ impl Game<'_> {
                     break;
                 }
             }
-            if state.report.as_ref().is_some_and(report::Recording::done)
-                && let Some(recording) = state.report.take()
-            {
-                self.finish_report(recording, state.view, state.max_players);
-                state
-                    .perf
-                    .begin_stop(state.perf_epoch.elapsed().as_secs_f64(), StopReason::Normal);
+            if state.report.as_ref().is_some_and(report::Recording::done) {
+                self.finish_perf_capture(&mut state, StopReason::Normal);
             }
             report::log_saved(&mut state.perf, false);
             if horizon_client::spans::trace::due()
@@ -1421,8 +1429,9 @@ impl Game<'_> {
             state.perf.tick(
                 state.perf_epoch.elapsed().as_secs_f64(),
                 tick_start.elapsed().as_secs_f32() * 1000.0,
-                slow_detail.take(),
+                tick_detail.take(),
                 || self.perf_world_counts(),
+                || self.wire_bytes(),
             );
             // The far ring's brake, once a second on the average tick.
             if braked.elapsed() >= Duration::from_secs(1)
@@ -1449,11 +1458,8 @@ impl Game<'_> {
         if let Some(watchdog) = &watchdog {
             watchdog.running.store(false, Ordering::Relaxed);
         }
-        report::finish_capture(
-            &mut state.perf,
-            state.perf_epoch.elapsed().as_secs_f64(),
-            StopReason::Shutdown,
-        );
+        self.finish_perf_capture(&mut state, StopReason::Shutdown);
+        report::log_saved(&mut state.perf, true);
         match crashed {
             Some(message) => self.stop_after_crash(&message),
             None => self.stop_dedicated(),
@@ -1696,23 +1702,17 @@ impl Game<'_> {
                         report::MAX_SECONDS
                     ),
                 ),
-                Ok(report::Command::Stop) => match state.report.take() {
-                    Some(recording) => {
-                        log("INFO", "Stopping the performance report: writing it now");
-                        self.finish_report(recording, state.view, state.max_players);
-                        state.perf.begin_stop(
-                            state.perf_epoch.elapsed().as_secs_f64(),
-                            StopReason::Normal,
-                        );
-                    }
-                    None => log("INFO", "No performance report is being recorded"),
-                },
+                Ok(report::Command::Stop) if state.report.is_some() => {
+                    log("INFO", "Stopping the performance report: writing it now");
+                    self.finish_perf_capture(state, StopReason::Normal);
+                }
+                Ok(report::Command::Stop) => log("INFO", "No performance report is being recorded"),
                 Ok(report::Command::Status) => match &state.report {
                     Some(recording) => log("INFO", &recording.status()),
                     None => log("INFO", "No performance report is being recorded"),
                 },
                 Ok(report::Command::Record { seconds, samples }) if state.report.is_none() => {
-                    state.report = Some(report::Recording::start(seconds, self.wire_bytes()));
+                    state.report = Some(report::Recording::start(seconds));
                     self.start_perf_capture(state, seconds, samples);
                     log(
                         "INFO",

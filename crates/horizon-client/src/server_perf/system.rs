@@ -1,5 +1,6 @@
+use crate::gamerules::GameRules as Rules;
 use horizon_perf_format::Gauges;
-use horizon_perf_format::v1::{Build, Machine, Settings};
+use horizon_perf_format::v1::{Build, GameRules, HorizonOptions, Machine, Settings};
 
 use std::sync::OnceLock;
 
@@ -151,6 +152,33 @@ pub fn settings(view: u32, simulation: u32, max_players: u32, compression: i32) 
         simulation_distance: Some(simulation),
         max_players: Some(max_players),
         network_compression_threshold: Some(compression),
+    }
+}
+
+/// The game rules a capture records: the typed allowlist, nothing else from the world's rule set.
+pub fn game_rules(rules: &Rules) -> GameRules {
+    GameRules {
+        random_tick_speed: Some(rules.int("random_tick_speed")),
+        max_entity_cramming: Some(rules.int("max_entity_cramming")),
+        fire_spread_radius_around_player: Some(rules.int("fire_spread_radius_around_player")),
+        advance_time: Some(rules.bool("advance_time")),
+        mob_griefing: Some(rules.bool("mob_griefing")),
+        spawn_mobs: Some(rules.bool("spawn_mobs")),
+        spawn_monsters: Some(rules.bool("spawn_monsters")),
+        spawner_blocks_work: Some(rules.bool("spawner_blocks_work")),
+    }
+}
+
+/// The Horizon switches a capture records: the typed allowlist, never the environment or `server.toml`.
+pub fn horizon_options(
+    max_view_distance: u32,
+    lod_distance: u32,
+    anticheat: bool,
+) -> HorizonOptions {
+    HorizonOptions {
+        max_view_distance: Some(max_view_distance),
+        lod_distance: Some(lod_distance),
+        anticheat: Some(anticheat),
     }
 }
 
