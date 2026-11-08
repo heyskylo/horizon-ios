@@ -145,11 +145,25 @@ impl StackData {
         self.set_other(id, Some(tag));
     }
     /// `SetComponentsFunction`: one component of a loot patch, in its JSON
-    /// form. Trim is modelled; the rest keep their saved components.
-    /// A null value removes the component.
+    /// form. A component Horizon models is read into its field as a saved
+    /// stack's is, so a rolled potion's contents are the effects it gives;
+    /// the rest keep their saved components. A null value removes the
+    /// component.
     pub fn set_loot_component(&mut self, id: &str, value: &serde_json::Value) {
         let tag = (!value.is_null()).then(|| horizon_client_core::scoreboard::json_to_tag(value));
         match id {
+            // `set_banner_pattern` (and `set_components`) write the layers a
+            // banner or shield wears; the renderer and the tooltip read them
+            // from `banner_patterns`, not from a tag in `other`.
+            "minecraft:banner_patterns" => {
+                self.banner_patterns = crate::banner_layer::layers_from_nbt(tag.as_ref());
+            }
+            // `set_book_cover` (and `set_components`) write the book's title,
+            // author, generation and pages as one component: the fields the
+            // tooltip and the reading screen use come back out of it.
+            "minecraft:written_book_content" => {
+                self.written = tag.as_ref().map(written_book_from_tag);
+            }
             "minecraft:trim" => {
                 self.trim = match (value["material"].as_str(), value["pattern"].as_str()) {
                     (Some(material), Some(pattern)) => {
@@ -157,6 +171,23 @@ impl StackData {
                     }
                     _ => None,
                 };
+            }
+            // The stack's damage is outside its data; a name keeps its own reading.
+            "minecraft:damage" | "minecraft:custom_name" => self.set_other(id, tag),
+            _ if MODELLED.contains(&id) => {
+                let mut saved = match components_tag(0, Some(self)) {
+                    Some(Tag::Compound(c)) => c,
+                    _ => Default::default(),
+                };
+                saved.remove(&JavaString::from(id));
+                if let Some(tag) = tag {
+                    saved.insert(JavaString::from(id), tag);
+                }
+                // A damage set before stays where it was: reading would take it.
+                let damage = self.other("minecraft:damage").cloned();
+                let (_, read) = decode_components(Some(&Tag::Compound(saved)));
+                *self = read.map_or_else(Default::default, |data| *data);
+                self.set_other("minecraft:damage", damage);
             }
             _ => self.set_other(id, tag),
         }
@@ -532,6 +563,28 @@ fn plain_component(t: &Tag) -> Tag {
     }
     t.clone()
 }
+/// `WrittenBookContent` from its component: the title and author (a
+/// `Filterable`'s raw text), the generation and the pages, whose component
+/// tags are kept apart from their plain text for click events.
+fn written_book_from_tag(b: &Tag) -> WrittenBook {
+    WrittenBook {
+        title: b.get("title").and_then(filterable_text).unwrap_or_default(),
+        author: b.get("author").and_then(string).unwrap_or_default(),
+        generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
+        pages: match b.get("pages") {
+            Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
+            _ => Vec::new(),
+        },
+        page_tags: match b.get("pages") {
+            Some(Tag::List(pages)) => pages
+                .iter()
+                .map(|p| plain_component(p.get("raw").unwrap_or(p)))
+                .collect(),
+            _ => Vec::new(),
+        },
+    }
+}
+
 fn filterable_text(t: &Tag) -> Option<String> {
     match t.get("raw") {
         Some(raw) => read_text(raw),
@@ -1088,22 +1141,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
         },
         written: c
             .get("minecraft:written_book_content")
-            .map(|b| WrittenBook {
-                title: b.get("title").and_then(filterable_text).unwrap_or_default(),
-                author: b.get("author").and_then(string).unwrap_or_default(),
-                generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
-                pages: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
-                    _ => Vec::new(),
-                },
-                page_tags: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages
-                        .iter()
-                        .map(|p| plain_component(p.get("raw").unwrap_or(p)))
-                        .collect(),
-                    _ => Vec::new(),
-                },
-            }),
+            .map(written_book_from_tag),
         fireworks: c
             .get("minecraft:fireworks")
             .map(|f| {
@@ -1260,6 +1298,65 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::banner_layer::BannerLayer;
+
+    /// `set_banner_pattern` (and `set_components`) hand a banner's layers over
+    /// as a component; the renderer and the tooltip read `banner_patterns`, so
+    /// they have to come out of it.
+    #[test]
+    fn a_loot_banner_patterns_component_dresses_the_banner() {
+        let mut stack = ItemStack::new("minecraft:white_banner", 1);
+        stack.data_mut().set_loot_component(
+            "minecraft:banner_patterns",
+            &serde_json::json!([
+                {"pattern": "minecraft:stripe_bottom", "color": "red"},
+                {"pattern": "minecraft:border", "color": "blue"},
+            ]),
+        );
+        let layers = &stack.data().expect("a component box").banner_patterns;
+        assert_eq!(
+            layers,
+            &[
+                BannerLayer::new("minecraft:stripe_bottom", "red"),
+                BannerLayer::new("minecraft:border", "blue"),
+            ]
+        );
+        // A null component takes them off again.
+        stack
+            .data_mut()
+            .set_loot_component("minecraft:banner_patterns", &serde_json::Value::Null);
+        assert!(stack.data().is_none_or(|d| d.banner_patterns.is_empty()));
+    }
+
+    /// `set_book_cover` (and `set_components`) hand a written book's content
+    /// over as a component; the fields the tooltip and the reading screen read
+    /// have to come out of it, not just sit in `other` unread.
+    #[test]
+    fn a_loot_written_book_component_fills_the_book() {
+        let mut stack = ItemStack::new("minecraft:written_book", 1);
+        stack.data_mut().set_loot_component(
+            "minecraft:written_book_content",
+            &serde_json::json!({
+                "title": {"raw": "A Guide"},
+                "author": "Cartographer",
+                "generation": 2,
+                "pages": [{"raw": "page one"}, {"raw": "page two"}],
+            }),
+        );
+        let book = stack
+            .data()
+            .and_then(|d| d.written.as_ref())
+            .expect("content");
+        assert_eq!(book.title, "A Guide");
+        assert_eq!(book.author, "Cartographer");
+        assert_eq!(book.generation, 2);
+        assert_eq!(book.pages, ["page one", "page two"]);
+        // A null component is no component.
+        stack
+            .data_mut()
+            .set_loot_component("minecraft:written_book_content", &serde_json::Value::Null);
+        assert!(stack.data().is_none_or(|d| d.written.is_none()));
+    }
 
     #[test]
     fn an_empty_enchanted_book_patch_is_elided_only_when_saved() {
@@ -2012,6 +2109,49 @@ mod tests {
             .data_mut()
             .set_loot_component("minecraft:custom_name", &serde_json::Value::Null);
         assert!(stack.custom_name().is_none());
+    }
+
+    /// A chest's `set_components` patch: a potion's contents land where
+    /// drinking and splashing read them, not only in its saved form, and the
+    /// components Horizon keeps as saved stay so.
+    #[test]
+    fn a_loot_component_horizon_models_lands_in_its_field() {
+        use serde_json::json;
+        let mut swift = ItemStack::new("minecraft:splash_potion", 1);
+        swift.data_mut().set_loot_component(
+            "minecraft:potion_contents",
+            &json!({"potion": "minecraft:swiftness"}),
+        );
+        assert_eq!(swift.potion(), Some("minecraft:swiftness"));
+        let mut custom = ItemStack::new("minecraft:potion", 1);
+        let data = custom.data_mut();
+        data.set_loot_component("minecraft:custom_data", &json!({"page": 3}));
+        data.set_loot_component("minecraft:damage", &json!(5));
+        let effects = json!({"custom_effects": [{"id": "minecraft:resistance", "amplifier": 1, "duration": 1800}]});
+        data.set_loot_component("minecraft:potion_contents", &effects);
+        assert_eq!(
+            custom.custom_potion_effects(),
+            [("minecraft:resistance".to_owned(), 1800, 1)]
+        );
+        let data = custom.data().unwrap();
+        assert!(data.other("minecraft:custom_data").is_some());
+        assert!(
+            data.other("minecraft:damage").is_some(),
+            "a damage set before stays"
+        );
+        // Saved as before: the patch's contents, with the codec's icon flag.
+        let saved = encode_components(&custom).unwrap();
+        assert_eq!(
+            horizon_client_core::scoreboard::tag_to_json(
+                saved.get("minecraft:potion_contents").unwrap()
+            ),
+            json!({"custom_effects": [{"id": "minecraft:resistance", "amplifier": 1, "duration": 1800, "show_icon": true}]})
+        );
+        // A null value takes the potion away again.
+        swift
+            .data_mut()
+            .set_loot_component("minecraft:potion_contents", &serde_json::Value::Null);
+        assert_eq!(swift.potion(), None);
     }
 
     #[test]

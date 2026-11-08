@@ -194,14 +194,15 @@ pub(super) trait Entity: EntityRules {
             return (0.0, 0.0);
         }
         let (bounds, at, eye) = (self.bounds(), self.position(), self.fluid_eye_y());
-        horizon_client::entities::update_entity_fluids(
+        let (water, lava, _) = horizon_client::entities::update_entity_fluids(
             bounds,
             at,
             eye,
             self.velocity_mut(),
             world,
             fluids,
-        )
+        );
+        (water, lava)
     }
     /// `BubbleColumnBlock.entityInside` through `applyEffectsFromBlocks`: a
     /// column lifts or drags every kind alike.
@@ -2142,6 +2143,7 @@ mod set_rotation_tests {
             ticks: 0,
             health: 5,
             rotation: [0.0, 0.0],
+            following: None,
         };
         orb.set_rotation([90.0, 10.0]);
         assert_eq!(orb.rotation(), [90.0, 10.0]);

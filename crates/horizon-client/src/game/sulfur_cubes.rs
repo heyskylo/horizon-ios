@@ -337,7 +337,7 @@ impl Game<'_> {
             let zd = (f64::from(i / 2) - 0.5) * offset;
             let at = [m.position.x + xd, m.position.y + 0.5, m.position.z + zd];
             let yaw = self.world.random.next_float() * 360.0;
-            if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
+            if let Some(id) = self.spawn_mob_raw(&m.kind.id, at, m.persistent)
                 && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
             {
                 c.extra.age = -24000;

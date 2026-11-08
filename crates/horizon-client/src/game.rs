@@ -93,6 +93,8 @@ mod client_ambient;
 mod clipboard;
 #[cfg(test)]
 mod clone_block_ticks_tests;
+#[cfg(test)]
+mod clone_dimensions_tests;
 mod code_of_conduct;
 mod combat;
 mod command_blocks;
@@ -1987,6 +1989,10 @@ impl LevelAccess for GameLevel<'_> {
         )
         .unwrap_or(false)
     }
+    /// `ServerLevel.shouldTickBlocksAt`: only the block-ticking ticket range.
+    fn should_tick_blocks_at(&self, chunk: horizon_core::position::ChunkPos) -> bool {
+        self.tickets.block_ticking(chunk.x, chunk.z)
+    }
     /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, a
     /// ticking chunk, and its entities loaded.
     fn is_ticking_chunk(&self, chunk: horizon_core::position::ChunkPos) -> bool {
@@ -2871,6 +2877,10 @@ struct Game<'a> {
     sleep_seen: (i64, i64),
     dim: Dim,
     world_root: PathBuf,
+    /// The owner's offline-to-account UUID move of this world, when it opened under
+    /// the account (`playerdata::migrate_owner`): entities the world loads still name
+    /// the player by the offline UUID until their chunk is saved again.
+    owner_migration: Option<(u128, u128)>,
     /// The world's data packs' content tables, when it has packs (`None`
     /// keeps `Resources.rest`'s own in use).
     world_tables: Option<WorldTables>,
@@ -6056,7 +6066,7 @@ impl Game<'_> {
                             f64::from(pos.y) - 0.5,
                             f64::from(pos.z) + dz,
                         ];
-                        let _ = self.spawn_mob("minecraft:tadpole", spawn, true);
+                        let _ = self.spawn_mob_raw("minecraft:tadpole", spawn, true);
                     }
                 }
                 LevelEvent::BlockEvent {
@@ -6691,7 +6701,7 @@ impl Game<'_> {
                         f64::from(pos[1]),
                         f64::from(pos[2]) + 0.5,
                     ];
-                    if let Some(id) = self.spawn_mob("minecraft:silverfish", at, false) {
+                    if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false) {
                         self.mob_poof(id);
                     }
                 }
@@ -11051,10 +11061,12 @@ impl Game<'_> {
             session_lock,
             rand_sequences,
             locator,
+            owner_migration,
         } = prepared;
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
         self.world_root = save_root.clone();
+        self.owner_migration = owner_migration;
         // The world's packs over the game's biomes (`Biomes::with_packs`),
         // the table its chunks were built with.
         self.world_biomes = self.packed_biomes();
@@ -12452,34 +12464,46 @@ impl Game<'_> {
         self.native_experience_orb_merge(dimension, into, from, from_value, &mut canceled);
         !canceled
     }
-    /// `ExperienceOrb.scanForMerges`, run by each orb on `tickCount % 20 == 1`:
-    /// it absorbs the orbs that `canMerge` within 0.5 blocks of its box,
-    /// adding their counts and keeping the smaller age. Server only.
-    fn merge_orbs(&mut self) {
-        let mut removed = vec![false; self.orbs.len()];
-        for i in 0..self.orbs.len() {
-            if removed[i] || self.orbs[i].ticks % 20 != 1 {
+    /// `ExperienceOrb.tick`'s scanForMerges for one orb, in its own turn
+    /// before the move: it absorbs the orbs that `canMerge` within 0.5 blocks
+    /// of its box, adding their counts and keeping the smaller age. Server
+    /// only, as the caller checks. An orb absorbed here is gone before its
+    /// own turn finds it.
+    fn merge_orb(&mut self, i: usize) {
+        // `tickCount % 20 == 1`, with `tickCount` the increment `tick` adds
+        // later in the turn: at the scan's moment the stored count is one
+        // behind, so the cadence reads `tickCount - 1` a whole 20.
+        if !self.orbs[i].ticks.is_multiple_of(20) {
+            return;
+        }
+        let area = self.orbs[i].bounds().inflate(Vec3::new(0.5, 0.5, 0.5));
+        let mut absorbed = Vec::new();
+        for j in 0..self.orbs.len() {
+            if j == i || !self.orbs[j].bounds().intersects(area) {
                 continue;
             }
-            let area = self.orbs[i].bounds().inflate(Vec3::new(0.5, 0.5, 0.5));
-            for j in 0..self.orbs.len() {
-                if j == i || removed[j] || !self.orbs[j].bounds().intersects(area) {
-                    continue;
-                }
+            let (vanilla, into, into_value, from, from_value, count, age) = {
                 let (a, b) = (&self.orbs[i], &self.orbs[j]);
-                let vanilla = b.can_merge(a.id, a.value);
-                let (into, into_value, from, from_value) = (a.id, a.value, b.id, b.value);
-                if !self.orb_merges(into, into_value, from, from_value, vanilla) {
-                    continue;
-                }
-                let (count, age) = (self.orbs[j].count, self.orbs[j].age);
-                self.orbs[i].count = self.orbs[i].count.saturating_add(count);
-                self.orbs[i].age = self.orbs[i].age.min(age);
-                removed[j] = true;
+                (
+                    b.can_merge(a.id, a.value),
+                    a.id,
+                    a.value,
+                    b.id,
+                    b.value,
+                    b.count,
+                    b.age,
+                )
+            };
+            if !self.orb_merges(into, into_value, from, from_value, vanilla) {
+                continue;
             }
+            self.orbs[i].count = self.orbs[i].count.saturating_add(count);
+            self.orbs[i].age = self.orbs[i].age.min(age);
+            absorbed.push(j);
         }
-        let mut removed = removed.into_iter();
-        self.orbs.retain(|_| !removed.next().unwrap_or(false));
+        for j in absorbed.into_iter().rev() {
+            self.orbs.remove(j);
+        }
     }
     /// `Entity.unstuckIfPossible`, which `ExperienceOrb`'s constructor runs on an
     /// orb whose box is in a block: the free spot nearest its box's centre. An
@@ -12538,6 +12562,7 @@ impl Game<'_> {
             count: 1,
             ticks: 0,
             health: 5,
+            following: None,
         });
         // ServerLevel.addFreshEntity.
         self.native_joins_flush(false, 0);
@@ -12587,18 +12612,23 @@ impl Game<'_> {
     }
     /// `ExperienceOrb.followNearbyPlayer`'s candidates: each orb goes for the
     /// nearest living player within 8 blocks, the host's own or a guest. Each
-    /// is the player's feet and the point the orb homes on.
-    pub(super) fn orb_followed(&self) -> Vec<([f64; 3], [f64; 3])> {
+    /// is the player's entity id (by which an orb keeps its
+    /// `followingPlayer`), the player's feet, and the point the orb homes on.
+    pub(super) fn orb_followed(&self) -> Vec<(u32, [f64; 3], [f64; 3])> {
         let spectator = self.spectator();
         let player = self
             .player
             .as_ref()
             .filter(|p| !p.health.dead_or_dying() && !spectator);
-        let mut followed: Vec<([f64; 3], [f64; 3])> = player
+        let mut followed: Vec<(u32, [f64; 3], [f64; 3])> = player
             .map(|p| {
                 let feet = [p.position.x, p.position.y, p.position.z];
                 let eye = f64::from(p.dimensions.eye_height);
-                (feet, [feet[0], feet[1] + eye / 2.0, feet[2]])
+                (
+                    p.entity_id as u32,
+                    feet,
+                    [feet[0], feet[1] + eye / 2.0, feet[2]],
+                )
             })
             .into_iter()
             .collect();
@@ -12611,11 +12641,32 @@ impl Game<'_> {
                     .filter(|g| !g.spectator())
                     .map(|g| {
                         let p = g.position;
-                        (p, [p[0], p[1] + g.eye_height() / 2.0, p[2]])
+                        (
+                            g.entity_id as u32,
+                            p,
+                            [p[0], p[1] + g.eye_height() / 2.0, p[2]],
+                        )
                     }),
             );
         }
         followed
+    }
+    /// `Player.getVehicle().getBoundingBox()` for the local player's vehicle
+    /// (`riding`): a mob, one of `object_target`'s kinds (boat, cart, armour
+    /// stand, item frame, painting) or a tracked special — the same chain
+    /// `guest_target_box` resolves a guest's vehicle through.
+    fn riding_box(&self) -> Option<Aabb> {
+        let id = self.riding?;
+        if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+            return Some(m.bounds());
+        }
+        if let Some((lo, hi, _)) = self.object_target(id as i32) {
+            return Some(Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            ));
+        }
+        self.tracked_special_box(id as i32)
     }
     /// The orbs' tick, but for the movement: that is `tick_ordered_before`'s,
     /// in join order with the other kinds.
@@ -12628,26 +12679,36 @@ impl Game<'_> {
             .player
             .as_ref()
             .filter(|p| !p.health.dead_or_dying() && !spectator);
-        // Player.aiStep: the pickup area is the box inflated by (1, 0.5, 1).
+        // Player.aiStep: standing, the pickup area is the player's box
+        // inflated by (1, 0.5, 1); riding, the union with the vehicle's box
+        // inflated by (1, 0, 1).
         let bounds = player.map(|p| {
             let w = f64::from(p.dimensions.width) / 2.0;
+            let own = Aabb::new(
+                Vec3::new(p.position.x - w, p.position.y, p.position.z - w),
+                Vec3::new(
+                    p.position.x + w,
+                    p.position.y + f64::from(p.dimensions.height),
+                    p.position.z + w,
+                ),
+            );
+            let area = match self.riding_box() {
+                Some(vehicle) => own.union_bounds(vehicle).inflate(Vec3::new(1.0, 0.0, 1.0)),
+                None => own.inflate(Vec3::new(1.0, 0.5, 1.0)),
+            };
             (
                 [
-                    p.position.x - w - 1.0,
-                    p.position.y - 0.5,
-                    p.position.z - w - 1.0,
+                    area.min_position().x,
+                    area.min_position().y,
+                    area.min_position().z,
                 ],
                 [
-                    p.position.x + w + 1.0,
-                    p.position.y + f64::from(p.dimensions.height) + 0.5,
-                    p.position.z + w + 1.0,
+                    area.max_position().x,
+                    area.max_position().y,
+                    area.max_position().z,
                 ],
             )
         });
-        // ExperienceOrb.scanForMerges runs on the server only.
-        if self.remote.is_none() {
-            self.merge_orbs();
-        }
         let mut orbs = std::mem::take(&mut self.orbs);
         let mut gained = 0;
         let mut taken = Vec::new();
@@ -17126,6 +17187,7 @@ impl<'a> Game<'a> {
             sleep_seen: (0, 0),
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
+            owner_migration: None,
             world_flat: false,
             world_debug: false,
             server_trips: Vec::new(),

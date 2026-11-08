@@ -4390,12 +4390,21 @@ impl Level {
     }
     /// Write every file; a world without a player UUID gets a random one.
     pub fn write(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, true)
+        self.write_internal(dir, true, false)
     }
 
     /// Dedicated servers save connected players separately.
     pub fn write_without_player(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, false)
+        self.write_internal(dir, false, false)
+    }
+
+    /// The temporary world a Realms upload packs
+    /// (`RealmsCreateWorldFlow.createTemporaryWorldFolder`): level.dat as
+    /// `WorldData.createTag(null)` writes it — no `singleplayer_uuid` — with the world
+    /// generation and game rules, and no player file or weather/clocks the server makes
+    /// on its own. The caller writes the data packs and removes the folder.
+    pub fn write_upload(&mut self, dir: &Path) -> Result<()> {
+        self.write_internal(dir, false, true)
     }
 
     /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
@@ -4410,7 +4419,7 @@ impl Level {
         write_dat(&player_file, self.player_tag())
     }
 
-    fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
+    fn write_internal(&mut self, dir: &Path, write_player: bool, upload: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
         let existing = read_dat(&dir.join("level.dat")).and_then(|r| r.get("Data").cloned());
@@ -4457,7 +4466,9 @@ impl Level {
                 map.remove(&JavaString::from(key));
             }
         }
-        let uuid = self.ensure_player_uuid();
+        // An upload's level.dat names no player (`createTag(null)`); every other file
+        // names this world's own.
+        let uuid = (!upload).then(|| self.ensure_player_uuid());
         // A new world's first spawn point is its world spawn.
         if self.world_spawn.is_none() {
             self.world_spawn = self.spawn.map(|s| {
@@ -4534,10 +4545,12 @@ impl Level {
             ),
             ("difficulty_settings", difficulty),
             ("initialized", Tag::Byte(1)),
-            ("singleplayer_uuid", uuid_tag(uuid)),
             ("ServerBrands", Tag::List(brands)),
         ] {
             put(&mut data, key, value);
+        }
+        if let Some(uuid) = uuid {
+            put(&mut data, "singleplayer_uuid", uuid_tag(uuid));
         }
         if let Tag::Compound(map) = &mut data {
             map.entry("allowCommands".into()).or_insert(Tag::Byte(0));
@@ -4574,27 +4587,30 @@ impl Level {
             });
         }
         // Saved data: weather, clocks, and (when missing or legacy) world
-        // generation settings and game rules.
-        write_saved_data(
-            dir,
-            "weather",
-            Tag::compound([
-                ("clear_weather_time", Tag::Int(self.weather.clear_time)),
-                ("rain_time", Tag::Int(self.weather.rain_time)),
-                ("thunder_time", Tag::Int(self.weather.thunder_time)),
-                ("raining", Tag::Byte(i8::from(self.weather.raining))),
-                ("thundering", Tag::Byte(i8::from(self.weather.thundering))),
-            ]),
-        )?;
-        let mut clocks = compound_or_empty(read_saved_data(dir, "world_clocks"));
-        let mut overworld = compound_or_empty(clocks.get("minecraft:overworld").cloned());
-        put(&mut overworld, "total_ticks", Tag::Long(self.day_time));
-        put(&mut clocks, "minecraft:overworld", overworld);
-        if let Tag::Compound(map) = &mut clocks {
-            map.entry("minecraft:the_end".into())
-                .or_insert_with(|| Tag::compound([("total_ticks", Tag::Long(self.time))]));
+        // generation settings and game rules. An upload's temporary world carries only
+        // what the server needs before its first tick.
+        if !upload {
+            write_saved_data(
+                dir,
+                "weather",
+                Tag::compound([
+                    ("clear_weather_time", Tag::Int(self.weather.clear_time)),
+                    ("rain_time", Tag::Int(self.weather.rain_time)),
+                    ("thunder_time", Tag::Int(self.weather.thunder_time)),
+                    ("raining", Tag::Byte(i8::from(self.weather.raining))),
+                    ("thundering", Tag::Byte(i8::from(self.weather.thundering))),
+                ]),
+            )?;
+            let mut clocks = compound_or_empty(read_saved_data(dir, "world_clocks"));
+            let mut overworld = compound_or_empty(clocks.get("minecraft:overworld").cloned());
+            put(&mut overworld, "total_ticks", Tag::Long(self.day_time));
+            put(&mut clocks, "minecraft:overworld", overworld);
+            if let Tag::Compound(map) = &mut clocks {
+                map.entry("minecraft:the_end".into())
+                    .or_insert_with(|| Tag::compound([("total_ticks", Tag::Long(self.time))]));
+            }
+            write_saved_data(dir, "world_clocks", clocks)?;
         }
-        write_saved_data(dir, "world_clocks", clocks)?;
         if legacy || !saved_data_path(dir, "world_gen_settings").exists() {
             write_world_gen_settings(dir, self.seed, WorldGen::default())?;
         }

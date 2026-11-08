@@ -409,6 +409,10 @@ impl PosSet {
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+    /// Iteration order of the native set without materializing a position list.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = [i32; 3]> + '_ {
+        self.0.entries().map(|(key, _)| key.0)
+    }
     /// Iteration order of the native set.
     pub(crate) fn to_vec(&self) -> Vec<[i32; 3]> {
         self.0.entries().map(|(k, _)| k.0).collect()
