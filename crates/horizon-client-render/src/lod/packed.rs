@@ -75,6 +75,7 @@ impl Axis {
         }
     }
 
+    #[cfg(test)]
     fn from_bits(bits: u32) -> Option<Self> {
         Self::ALL.into_iter().find(|a| a.bits() == bits)
     }
@@ -151,6 +152,7 @@ impl Face {
 
     /// The face a record names, or `None` for a record that spills its quad's
     /// vertices (`FULL`) or that does not name an axis.
+    #[cfg(test)]
     fn from_words(w: [u32; 6]) -> Option<Self> {
         if w[5] & FULL != 0 {
             return None;
