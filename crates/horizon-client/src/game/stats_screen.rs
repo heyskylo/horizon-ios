@@ -535,8 +535,7 @@ impl Game<'_> {
                     let stack = ItemStack::new(item, 1);
                     // ItemRowWidget, an ItemDisplayWidget: "Item: <name>".
                     horizon_client::widgets::narratable(|| {
-                        let names = |id: &str| self.pack.names.display_item(id);
-                        let name = horizon_client::stations::hover_name(&names, &stack);
+                        let name = horizon_client::stations::hover_name(&self.pack.names, &stack);
                         horizon_client::widgets::Narratable::text(
                             tr("narration.item", &[&name]),
                             [left + 1.0, y + 1.0, 18.0, 18.0],

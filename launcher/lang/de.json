@@ -1250,5 +1250,8 @@
   "Use a different Microsoft account": "Anderes Microsoft-Konto verwenden",
   "Buy": "Kaufen",
   "Gift": "Verschenken",
-  "Looks": "Looks"
+  "Found on this computer": "Auf diesem Computer gefunden",
+  "Looks": "Looks",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Der Schlüsselbund deines Systems hat nicht innerhalb von {seconds} Sekunden geantwortet. Stelle sicher, dass er läuft und entsperrt ist, und starte dann den Launcher neu.",
+  "Can't read {name}'s sign-in: {why}": "Die Anmeldung von {name} kann nicht gelesen werden: {why}"
 }

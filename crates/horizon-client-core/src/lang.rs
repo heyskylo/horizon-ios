@@ -46,6 +46,21 @@ thread_local! {
 }
 /// The current language's `bidirectional`, read for every drawn string.
 static BIDIRECTIONAL: AtomicBool = AtomicBool::new(false);
+/// Counts the languages set (`set`): another count is another language, so text looked up
+/// before it may read otherwise.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    /// Counts the scopes this thread entered and left (`scoped`), which no other thread sees.
+    static SCOPE_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+/// Which language text looks up in now, on this thread, as a count that changes whenever that
+/// can: both counts only grow, so their sum changes when either does.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed) + SCOPE_GENERATION.get()
+}
+fn scope_changed() {
+    SCOPE_GENERATION.set(SCOPE_GENERATION.get() + 1);
+}
 
 /// A source of resource files: the prepared root plus packs, highest priority last.
 pub trait ResourceSource {
@@ -524,6 +539,7 @@ pub fn available(sources: &[&dyn ResourceSource]) -> Vec<LanguageInfo> {
 pub fn set(language: Language) {
     BIDIRECTIONAL.store(language.bidirectional, Ordering::Relaxed);
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(language));
+    GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 pub fn current() -> Option<Arc<Language>> {
     if let Some(language) = SCOPE.with(|s| s.borrow().as_ref().map(|s| s.language.clone())) {
@@ -543,6 +559,7 @@ pub fn scoped<R>(language: Language, f: impl FnOnce() -> R) -> (R, Vec<String>) 
     impl Drop for Restore {
         fn drop(&mut self) {
             SCOPE.with(|s| *s.borrow_mut() = self.0.take());
+            scope_changed();
         }
     }
     let outer = SCOPE.with(|s| {
@@ -552,6 +569,7 @@ pub fn scoped<R>(language: Language, f: impl FnOnce() -> R) -> (R, Vec<String>) 
         })
     });
     let _restore = Restore(outer);
+    scope_changed();
     let result = f();
     let missed = SCOPE.with(|s| {
         s.borrow_mut()

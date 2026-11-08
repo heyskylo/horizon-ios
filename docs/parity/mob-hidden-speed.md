@@ -1,0 +1,33 @@
+# Mob hidden Speed instances (partial H202)
+
+A pig given Speed I for 200 ticks and then Speed II for 40 ticks must retain the weaker instance, count its duration down while hidden, and promote it at tick40 with160 ticks remaining. Current main discarded it. The active `Extra.effects` tuples remain authoritative; a default-empty collection now holds only their weaker subtrees, using the existing recursive `EffectInstance` type. Temporary instances join actual tuples/flags and fallbacks for the existing update and pure duration/promotion operations. No second active cache or player tick engine is used.
+
+## Frozen command proof
+
+`python3 tools/mob_hidden_speed_fixture.py --reference-only --work-dir /fresh/java-path` creates the pinned Java26.3 reference through the existing command harness. Run the byte-identical script with `--binary /absolute/frozen-game --reference /fresh/java-path/vanilla.jsonl --work-dir /fresh/native-path`. Every directory must be fresh. Prepared resources and the existing harness/codec are required; no new observer is added.
+
+The 370-record contract admits actual UUID-bound pigs, AI/NoAI, Health, initial position/motion, floor, loaded chunk, owner and actual clocks0/39/40/41. It measures command-created and loaded chains, active/hidden typed durations and flags, identical strong and shorter weak reapplication, a no-hidden counterpart, promotion and clear, with exact callbacks/styles and fresh result/success stores. Full effects/bodies/motion remain raw diagnostics, including H191 presentation differences. The inherited runner group caption is retained so the frozen script stays byte-identical; actual inputs are Speed effects.
+
+Fresh Java admits370. Pristine main `1fe21fb861002308bbdb055dddc1a3edbd21218e` matches295/370, with all independent admission guards passing. The75 differences are48 hidden-state,24 active/promotion and3 dependent-clear records. Original v1/v2 are preserved: before any native pair, v2 classifies the post-promotion clear as a dependent outcome rather than setup admission. All370 records and expected outcomes remain unchanged; independently fresh Java reference bytes are identical. The fixed Game matches **370/370** using identical script/reference bytes. No failure-based output filtering or normalization.
+
+## Model/tick and causal controls
+
+Three frozen old tests fail meaningfully: real decode/model/no-raw save loses hidden200, and actual full AI/NoAI Mob ticks reach active `(speed,1,1)` at39 but fail at40 with an empty list instead of `(speed,160,0)`. The same three pass fixed. Four added causal tests pass: actual modeled flags and duration override stale raw and survive no-raw save; hidden-only updates return false while extending the weaker node; conversion copies an independent subtree; remove/clear/readd cannot resurrect it; active0 never promotes; an infinite fallback stays infinite; native cancellation ends finite/infinite active instances and their subtrees without promotion. The cancellation control uses the existing ModEffectTicks interface, not a new plugin harness or runtime plugin-parity claim.
+
+Periodic/native work still runs against the installed active list first. Only accepted instances then use the existing pure duration/promotion operation once, in the same slot; the old decrement is not also run. Zero eligibility and list/removal order remain in place. Cancellation drops the entire instance. Existing native hook calls/signatures/order and EffectInstance/Player method bodies are unchanged; no new draw or random stream is introduced.
+
+## Source reach and limits
+
+The new state reaches Mob add/load/save/tick paths for all effect IDs, with hygiene alongside existing death-protection clear/remove, command clear, trader replacement/clear, illusioner replacement, zombie weakness removal, conversion and zombie-villager copy. Active-only readers (attributes/movement/damage/views/LAN/particles/clouds) keep their tuple interfaces. Audited rabbit/trader initialization tuple inserts are test-only and remain unchanged. Known internal mutation boundaries carry/prune fallbacks; arbitrary external/native direct writes to public tuples do not acquire automatic synchronization.
+
+Runtime coverage is the measured positive ordered Speed chain and saved state, not movement, attributes, packets, all effects, reload or simulation parity. Promotion notifications/attribute caches, independent root show_icon, numeric codec edges and other families remain unclosed. An already-nonpositive *hidden* node is also outside this claim: pinned mapDuration preserves hidden0, while the reused existing helper decrements it; that is retained source-only evidence, not a new current runtime pass or repair. Active-zero and infinite controls above do not close that separate input boundary.
+
+Keep-both guidance: pending11766's amplifier read remains independent of the recursive state carry (no numeric patch imported). Pending11847/11883/11934 removal/Absorption/HealthBoost policies must retain fallback cleanup and duration projection when later combined; no policy or cache repair is included here. Player/guest save PR11688 stays unchanged. Child11935 tracks this measured slice of the owner's released Mob portion; broad parent11384 is neither claimed nor closed by it.
+
+All scripts/reference/raw captures, invalid Java-path/class lookup attempts, rejected zero-test/privacy prerequisites, source/test equivalence receipts, binaries/hashes and phase records remain in `.local/h202`. Required checks run only after the final source/tests settle. Disk growth is guarded at the unchanged thresholds; only verified inactive own executable cache was archived with archive/extracted hashes and restore manifests. Proofs, refs, shared resources and other owners' artifacts are preserved.
+
+## Final local checks
+
+Required `pr_ready.py --quick --verbose --base 1fe21fb861002308bbdb055dddc1a3edbd21218e` ran once on frozen source/tests: **3,371 selected Rust tests, Clippy, rustfmt, public tree and doctests pass**. Full exit is **1**: Python ran720, with the same three optional-release Bash empty-array failures (`musl[@]` masks0/1, `arm64[@]` mask2), two skipped. The426 affected parity harnesses were listed for CI, not run by `--quick`; the explicit370-record pair and7focused controls ran separately. No full-green claim.
+
+UTC: `2026-11-07T17:41:03.076315+00:00` to `2026-11-07T17:56:49.507373+00:00`. Read-only ledger `--no-compare` retains advisory unrelated/partial call edges. All34 predeclared full traces are retained: old matches3 and fixed9 exactly; the25 fixed full-body/effects-text/absolute-clock residuals are not normalized or claimed green.

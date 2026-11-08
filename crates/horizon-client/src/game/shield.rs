@@ -265,10 +265,11 @@ impl Game<'_> {
             {
                 self.native_player_shield_disable(player, &name, ticks);
             }
-            let item = self
+            let used = self
                 .using
                 .and_then(|(slot, _)| self.stack_in(slot))
-                .map(|stack| stack.item.clone());
+                .cloned();
+            let item = used.as_ref().map(|stack| stack.item.clone());
             let mut cancel = false;
             if let (Some(player), Some(name), Some(item)) =
                 (self.lan_acting_uuid, self.lan_acting_name.clone(), item)
@@ -277,6 +278,17 @@ impl Game<'_> {
             }
             if !cancel {
                 self.shield_cooldown = ticks;
+                // ItemCooldowns.addCooldown(stack, ticks) on the shield's group: a guest is
+                // sent it (ServerItemCooldowns), which keeps the shield down on their screen,
+                // and the 0 that ends it.
+                if let Some(stack) = &used {
+                    let default = self
+                        .items()
+                        .get(&stack.item)
+                        .and_then(|i| i.use_cooldown.clone());
+                    let group = horizon_client::cooldowns::group(stack, default.as_ref());
+                    self.add_cooldown(group, ticks as i32);
+                }
             }
             self.using = None;
             if let Some(sound) = &component.disabled_sound {

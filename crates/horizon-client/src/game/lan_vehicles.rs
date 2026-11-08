@@ -284,23 +284,19 @@ impl Game<'_> {
         let cart = self.carts.iter().any(|c| c.id == vehicle);
         let mount = self.mobs.iter().any(|m| m.id == vehicle);
         let cushion = self.cushions.iter().any(|c| c.id == vehicle);
+        let seat = self.seat(vehicle).is_some();
         // The vehicle is gone (broken, in another level) or the rider died:
         // its client drops it with the entity or the death screen.
-        if dead || (boat.is_none() && !cart && !mount && !cushion) {
+        if dead || (boat.is_none() && !cart && !mount && !cushion && !seat) {
             let g = &mut host.hub.guests[gi];
             (g.vehicle, g.vehicle_good) = (None, None);
             return;
         }
         let mut ejected = false;
         if let Some(i) = boat {
-            // AbstractBoat.tick on the server for a boat its rider drives:
-            // only the hurt animation and the damage wear off here.
-            let b = &mut self.boats[i];
-            b.hurt_time = (b.hurt_time - 1).max(0);
-            b.damage = (b.damage - 1.0).max(0.0);
             // `Entity.ejectPassengers`: every player in the boat must see
             // the request; the common boat tick clears it once nobody rides.
-            ejected = b.eject_riders;
+            ejected = self.boats[i].eject_riders;
         }
         // ServerGamePacketListenerImpl.tick: the vehicle's last good position
         // is where it is now, so a move the server made (a piston, a push)
@@ -327,6 +323,12 @@ impl Game<'_> {
                 }
                 let c = game.cushions.iter().find(|c| Some(c.id) == game.riding)?;
                 let p = c.seat();
+                return Some([p.x, p.y, p.z]);
+            }
+            // An armor stand, a display, a marker...: the rider keeps its seat as the vehicle is
+            // moved (/tp, a mod) until it sneaks.
+            if game.riding.is_some_and(|id| game.seat(id).is_some()) {
+                let p = game.tick_seat_riding(keys)?;
                 return Some([p.x, p.y, p.z]);
             }
             if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.riding) {
@@ -388,7 +390,8 @@ impl Game<'_> {
                     .iter()
                     .find(|c| c.id == vehicle)
                     .map(|c| (c.position, c.seat()))
-            });
+            })
+            .or_else(|| self.seat(vehicle).map(|s| (s.position, s.player_seat())));
         if let Some((p, seat)) = at {
             let g = &mut host.hub.guests[gi];
             g.vehicle_good = Some([p.x, p.y, p.z]);

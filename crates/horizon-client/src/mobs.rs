@@ -1122,6 +1122,9 @@ pub struct Extra {
     pub items: Vec<Option<crate::items::ItemStack>>,
     /// Occupied InventoryCarrier stacks: Piglin/trader (8 slots), Pillager (5).
     pub inventory: Vec<crate::items::ItemStack>,
+    /// `AbstractHorse.temper` of every equine (horses, llamas, camels).
+    /// Loaded signed values are independent of the gameplay modification cap.
+    pub equine_temper: i32,
     pub tame: bool,
     pub sitting: bool,
     /// `Parrot.partyParrot` and `jukebox`: the playing jukebox it dances to.
@@ -1159,6 +1162,9 @@ pub struct Extra {
     /// The body item (`getItemBySlot(BODY)`): a horse's armour, a llama's
     /// carpet, a wolf's armour, a harness, a sulfur cube's swallowed block.
     pub body: Option<Arc<str>>,
+    /// The body a sulfur cube's archetype attribute modifiers came from
+    /// (`LivingEntity.lastEquipmentItems` for `BODY`).
+    pub adopted_body: Option<Arc<str>>,
     /// Worn armour below the head (humanoid mobs).
     pub chest: Option<Arc<str>>,
     pub legs: Option<Arc<str>>,
@@ -1222,6 +1228,9 @@ pub struct Extra {
     /// Species scratch values (the wither's head targets and clocks).
     pub ints: [i32; 6],
     pub counter: i32,
+    /// Nautilus ATTACK_TARGET_COOLDOWN saved slot: None is absent,
+    /// Some(MAX) is permanent, otherwise the remaining lifetime. The value is `counter`.
+    pub nautilus_attack_cooldown_ttl: Option<i64>,
     pub counter2: i32,
     pub home: Option<[i32; 3]>,
     /// A copper golem's `openedChestPos`.
@@ -1233,6 +1242,9 @@ pub struct Extra {
     pub vector: [f64; 3],
     /// Active status effects: (effect id, ticks left, amplifier).
     pub effects: Vec<(&'static str, i32, i32)>,
+    /// Only the weaker subtrees of active effects, keyed by the same namespaced id.
+    /// The public tuples above remain the active state, never a cached wrapper.
+    pub effect_fallbacks: Vec<crate::effects::EffectInstance>,
     /// The effects above given with `hideParticles`: no swirls for them.
     pub hidden_effects: Vec<&'static str>,
     /// The effects above that are ambient (`MobEffectInstance.isAmbient`: a beacon's), whose swirls
@@ -1456,6 +1468,9 @@ pub struct Mob {
     /// `Entity.needsSync`: knocked back, pushed or jumped since its server
     /// last sent it, so the next update goes out at once.
     pub needs_sync: bool,
+    /// `Entity.syncPosition`: it bounced this tick (`restituteMovementAfterCollisions`),
+    /// so its tracker keeps this position as a step of the next move it sends.
+    pub sync_position: bool,
     /// `getAttributeValue(KNOCKBACK_RESISTANCE)` with the modifiers of the
     /// items it wears or holds, which the game works out each tick for a mob
     /// that has any (the mob itself knows no item): `None` for the rest.
@@ -1721,6 +1736,8 @@ pub enum MobEvent {
     ChestOpen {
         chest: [i32; 3],
         open: bool,
+        /// The golem, the source of the container's game event.
+        mob: u32,
     },
     /// `BeeEnterHiveGoal.start`: the bee goes into its hive (the host stores
     /// its tag with `BeehiveBlockEntity.addOccupant` and discards it).
@@ -1743,9 +1760,12 @@ pub enum MobEvent {
         slot: usize,
         stack: Option<crate::items::ItemStack>,
     },
-    /// `InfestedMobEffect.onMobHurt`: the mob was hurt while infested.
+    /// `InfestedMobEffect.onMobHurt`: the mob was hurt while infested and its
+    /// draws (`infested_silverfish`) spawn silverfish at `at`, half its height
+    /// up where it was hurt, each thrown with its velocity.
     Infested {
-        mob: u32,
+        at: [f64; 3],
+        velocities: Vec<Vec3>,
     },
     /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that landed on a mob
     /// wearing body armour (a horse's) leaves the piece owing
@@ -1756,6 +1776,14 @@ pub enum MobEvent {
         mob: u32,
         amount: f32,
         kind: DamageKind,
+    },
+    /// `LivingEntity.updateFallFlying`: every 20 glide ticks the glider in
+    /// `slot` (the one `Util.getRandom` picked) takes one point of wear,
+    /// `ItemStack.hurtAndBreak(1, this, slot)`. The host applies it with the
+    /// item's maximum and Unbreaking.
+    GliderWear {
+        mob: u32,
+        slot: horizon_world::player_inventory::EquipmentSlot,
     },
     /// `OfferFlowerGoal.stop`: the item goes to the target's antenna (saddle)
     /// slot if it is empty, as a guaranteed drop.
@@ -1897,8 +1925,8 @@ pub enum MobEvent {
         kind: String,
     },
     /// The centre, the radius and the kind of the mob blowing up (it may be
-    /// gone from the list by the time the blast is handled).
-    Explode([f64; 3], f32, Species),
+    /// gone from the list by the time the blast is handled), and its `Silent`.
+    Explode([f64; 3], f32, Species, bool),
     /// `Creeper.spawnLingeringCloud`, right after its `Explode`: an `AreaEffectCloud` at the
     /// creeper with its active effects `(id, remaining ticks, amplifier)`, in their mixed colour.
     LingeringCloud {
@@ -2037,6 +2065,12 @@ pub enum MobEvent {
         mob: u32,
         item: Arc<str>,
         count: u32,
+        at: [f64; 3],
+    },
+    /// `Entity.spawnAtLocation` with the complete stack and its components.
+    DropStack {
+        mob: u32,
+        stack: crate::items::ItemStack,
         at: [f64; 3],
     },
     /// `new ItemEntity(.., stack)` thrown by `mob` (`setThrower`): `Dolphin.ItemGoal.drop`.
@@ -2224,6 +2258,12 @@ pub enum MobEvent {
     Buck {
         mob: u32,
     },
+    /// `Entity.unRide`'s `ejectPassengers` before a move (a shulker's
+    /// teleport): whoever rides `mob` gets off where it stood, `from`.
+    EjectPassengers {
+        mob: u32,
+        from: Vec3,
+    },
     /// A piglin's admiring is over: barter or keep the item.
     FinishAdmiring {
         mob: u32,
@@ -2246,6 +2286,12 @@ pub enum MobEvent {
     VillagerMeet {
         mob: u32,
         other: u32,
+    },
+    /// `Villager.customServerAiStep`: deliver the pending TRADE reputation
+    /// event for the actual player recorded by rewardTradeXp.
+    VillagerTrade {
+        mob: u32,
+        player: [i32; 4],
     },
     /// `AbstractVillager.getOffers` for a villager whose offers are not made
     /// yet: the level rolls them (the brain has no trade data), so the
@@ -3106,7 +3152,7 @@ pub struct MobWorld<'a> {
     pub day_time: i64,
     pub raining: bool,
     pub thundering: bool,
-    pub nether: bool,
+    pub level: horizon_core::LevelKey,
     pub block_tags: &'a HashMap<String, std::collections::HashSet<String>>,
     /// Each block's `fallOn` rule (the player's landing registry).
     pub landing: &'a horizon_world::block_landing::BlockLandingRegistry,
@@ -3122,8 +3168,8 @@ pub struct MobWorld<'a> {
     /// `getCurrentDifficultyAt` at the mob being ticked (near the player
     /// outside the mob tick).
     pub difficulty: spawning::LocalDifficulty,
-    /// The End (its dimension type's monster spawn light rules).
-    pub end: bool,
+    /// The level's dimension type.
+    pub dimension_type: &'a horizon_world::dimension_type::DimensionFacts,
     /// The world seed (slime chunks).
     pub world_seed: i64,
     /// `Level.getSeaLevel` (63 in the overworld, -63 in a flat world).
@@ -3172,6 +3218,35 @@ impl<'a> Teams<'a> {
         }
     }
 }
+/// `InfestedMobEffect.onMobHurt`'s draws from the bearer's random
+/// (`mob.getRandom()`): a 10% chance of one or two silverfish, each thrown
+/// along `look` (`spawnSilverfish`). Their velocities; none when the chance
+/// fails.
+pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec3> {
+    if random.next_float() > 0.1 {
+        return Vec::new();
+    }
+    let count = 1 + random.next_int_bound(2).unwrap_or(0);
+    (0..count)
+        .map(|_| {
+            // Mth.randomBetween(-PI / 2, PI / 2), then in floats (JOML
+            // Vector3f): the look direction `.mul(0.3f).mul(1, 1.5f, 1)`,
+            // `.rotateY(angle)`.
+            let half = std::f32::consts::FRAC_PI_2;
+            let angle = random.next_float() * (2.0 * half) - half;
+            let sin = horizon_assets::math::joml_sin(angle);
+            let cos = horizon_assets::math::cos_from_sin(sin, angle);
+            let x = look[0] as f32 * 0.3;
+            let y = look[1] as f32 * 0.3 * 1.5;
+            let z = look[2] as f32 * 0.3;
+            Vec3::new(
+                f64::from(x * cos + z * sin),
+                f64::from(y),
+                f64::from(-x * sin + z * cos),
+            )
+        })
+        .collect()
+}
 /// `Entity.random` of a client's copy of entity `id` first seen at `position`: vanilla's is its
 /// own (`RandomSource.create()`), drawn on by nothing else; this one is seeded from the two.
 pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
@@ -3205,6 +3280,7 @@ impl Mob {
             horizontal_collision: false,
             vertical_collision_below: false,
             needs_sync: false,
+            sync_position: false,
             gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,
@@ -3766,6 +3842,13 @@ impl Mob {
                         .push(MobEvent::Sound(sound, at, ai::sound_volume(self), pitch));
                 }
             }
+            // playSecondaryHurtSound: a thorns hit sounds where the mob
+            // stands, silent or not.
+            if source.kind == DamageKind::Thorns {
+                let at = [self.position.x, self.position.y, self.position.z];
+                self.outbox
+                    .push(MobEvent::Sound("enchant.thorns.hit", at, 1.0, 1.0));
+            }
         }
         // IronGolem.hurtServer: a new crack level plays the damage sound.
         if let Some(before) = crackiness
@@ -3776,8 +3859,25 @@ impl Mob {
             self.outbox
                 .push(MobEvent::Sound("entity.iron_golem.damage", at, 1.0, 1.0));
         }
+        // LivingEntity.hurtServer ends with MobEffectInstance.onMobHurt, so
+        // Infested draws from the mob's random here, before a subclass's own
+        // draws after `super.hurtServer` (an enderman's or a shulker's
+        // teleport), and its silverfish come out where the mob was hurt.
         if self.has_effect("minecraft:infested") {
-            self.outbox.push(MobEvent::Infested { mob: self.id });
+            let look = self.view_vector();
+            let velocities = infested_silverfish(&mut self.random, look);
+            if !velocities.is_empty() {
+                let at = [
+                    self.position.x,
+                    self.position.y + f64::from(self.height()) / 2.0,
+                    self.position.z,
+                ];
+                self.outbox.push(MobEvent::Infested { at, velocities });
+            }
+        }
+        // Shulker.hurtServer: the low-health teleport roll after `super.hurtServer`.
+        if self.species() == Species::Shulker {
+            shulker::after_hurt(self);
         }
         // Squid.hurtServer: a squid hurt after a living entity hit it squirts ink.
         if matches!(self.species(), Species::Squid | Species::GlowSquid)
@@ -4033,7 +4133,7 @@ impl Mob {
             .iter()
             .find(|e| e.0 == effect)
             .map(|e| (e.1, e.2));
-        self.add_effect(effect, ticks, amplifier);
+        let updated = self.add_effect_inner(effect, ticks, amplifier, Some((ambient, visible)));
         let after = self
             .extra
             .effects
@@ -4057,9 +4157,11 @@ impl Mob {
             self.extra.hidden_effects.push(effect);
         }
         after.is_some()
-            && (before != after
-                || present_ambient != self.extra.ambient_effects.contains(&effect)
-                || was_visible != visible)
+            && updated.unwrap_or(
+                before != after
+                    || present_ambient != self.extra.ambient_effects.contains(&effect)
+                    || was_visible != visible,
+            )
     }
     /// `LivingEntity.actuallyHurt`'s last step: what got past absorption goes to
     /// a native mod's `LivingDamageEvent.Pre`, which may change it, then comes
@@ -4155,6 +4257,7 @@ impl Mob {
         match effect {
             // `LivingEntity.removeAllEffects`: the absorption hearts go with it.
             ConsumeEffect::ClearAllEffects => {
+                self.extra.effect_fallbacks.clear();
                 for e in std::mem::take(&mut self.extra.effects) {
                     if e.0 == "minecraft:absorption" {
                         self.absorption = (self.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
@@ -4167,6 +4270,9 @@ impl Mob {
                     !ids.iter()
                         .any(|id| id.trim_start_matches("minecraft:") == held)
                 });
+                self.extra
+                    .effect_fallbacks
+                    .retain(|h| self.extra.effects.iter().any(|e| e.0 == h.id));
             }
             // `ApplyStatusEffectsConsumeEffect.apply`: one random draw, even at
             // probability 1.
@@ -4250,32 +4356,116 @@ impl Mob {
         !(self.kind.flags.undead && matches!(effect, "minecraft:poison" | "minecraft:regeneration"))
     }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
+        let _ = self.add_effect_inner(effect, ticks, amplifier, None);
+    }
+    /// Join the authoritative active tuple with only its weaker subtree.
+    pub(crate) fn effect_instance(&self, index: usize) -> crate::effects::EffectInstance {
+        let (id, duration, amplifier) = self.extra.effects[index];
+        let visible = !self.extra.hidden_effects.contains(&id);
+        crate::effects::EffectInstance {
+            id,
+            duration,
+            amplifier,
+            ambient: self.extra.ambient_effects.contains(&id),
+            visible,
+            // Independent active icon retention remains outside this Mob model.
+            show_icon: visible,
+            hidden: self
+                .extra
+                .effect_fallbacks
+                .iter()
+                .find(|h| h.id == id)
+                .cloned()
+                .map(Box::new),
+        }
+    }
+    pub(crate) fn set_effect_fallback(
+        &mut self,
+        id: &'static str,
+        hidden: Option<Box<crate::effects::EffectInstance>>,
+    ) {
+        let at = self.extra.effect_fallbacks.iter().position(|h| h.id == id);
+        match (at, hidden) {
+            (Some(i), Some(h)) => self.extra.effect_fallbacks[i] = *h,
+            (Some(i), None) => {
+                self.extra.effect_fallbacks.remove(i);
+            }
+            (None, Some(h)) => self.extra.effect_fallbacks.push(*h),
+            (None, None) => {}
+        }
+    }
+    /// Project duration/promotion back into the same active slot and flag sets.
+    pub(crate) fn project_effect_instance(
+        &mut self,
+        index: usize,
+        e: crate::effects::EffectInstance,
+    ) {
+        self.extra.effects[index] = (e.id, e.duration, e.amplifier);
+        for (ids, enabled) in [
+            (&mut self.extra.hidden_effects, !e.visible),
+            (&mut self.extra.ambient_effects, e.ambient),
+        ] {
+            if ids.contains(&e.id) != enabled {
+                ids.retain(|id| *id != e.id);
+                if enabled {
+                    ids.push(e.id);
+                }
+            }
+        }
+        self.set_effect_fallback(e.id, e.hidden);
+    }
+    fn add_effect_inner(
+        &mut self,
+        effect: &'static str,
+        ticks: i32,
+        amplifier: i32,
+        flags: Option<(bool, bool)>,
+    ) -> Option<bool> {
         let effect = horizon_client_core::potions::namespaced(effect);
         // LivingEntity.addEffect: an effect the mob refuses is never added, so it
         // never joins the list the client draws or an effect tick reads.
         // WitherBoss.addEffect returns false for every effect.
         if self.species() == Species::Wither || !self.can_be_affected(effect) {
-            return;
+            return None;
         }
-        // AbsorptionMobEffect.onEffectStarted, which addEffect runs for every
-        // effect it accepts, new, stronger or not: at least 4 hearts-halves per
-        // level of the effect given (#11386).
-        if effect == "minecraft:absorption" {
-            self.absorption = self.absorption.max(4.0 * (amplifier + 1) as f32);
-        }
-        if let Some(e) = self.extra.effects.iter_mut().find(|e| e.0 == effect) {
-            // MobEffectInstance.update: a stronger effect replaces with its
-            // own duration, an equal one only extends it; a weaker one is
-            // ignored (vanilla keeps it hidden behind the active one).
-            if amplifier > e.2 {
-                e.1 = ticks;
-                e.2 = amplifier;
-            } else if amplifier == e.2 && e.1 != -1 && (ticks == -1 || e.1 < ticks) {
-                e.1 = ticks;
-            }
+        let added = if let Some(i) = self.extra.effects.iter().position(|e| e.0 == effect) {
+            let mut active = self.effect_instance(i);
+            let (ambient, visible) = flags.unwrap_or((false, true));
+            // A struct literal preserves this caller's numeric behavior.
+            let incoming = crate::effects::EffectInstance {
+                id: effect,
+                duration: ticks,
+                amplifier,
+                ambient,
+                visible,
+                show_icon: visible,
+                hidden: None,
+            };
+            let changed = active.update(&incoming);
+            self.extra.effects[i] = (effect, active.duration, active.amplifier);
+            self.set_effect_fallback(effect, active.hidden);
+            Some(changed)
         } else {
+            self.set_effect_fallback(effect, None);
             self.extra.effects.push((effect, ticks, amplifier));
+            Some(true)
+        };
+        // AbsorptionMobEffect.onEffectStarted, which addEffect runs for every
+        // effect it accepts, new, stronger or not, after onEffectAdded or
+        // onEffectUpdated put its modifier on: at least 4 hearts-halves per
+        // level of the effect given (#11386), within getMaxAbsorption
+        // (setAbsorptionAmount).
+        if effect == "minecraft:absorption" {
+            self.absorption = self
+                .absorption
+                .max(4.0 * (amplifier + 1) as f32)
+                .clamp(0.0, armor::max_absorption(self));
         }
+        // MobEffect.addAttributeModifiers, then refreshDirtyAttributes.
+        if effect == "minecraft:health_boost" {
+            finalize::health_boost_changed(self);
+        }
+        added
     }
     pub fn speed_bonus(&self) -> f64 {
         ai::speed_bonus(self)
@@ -5372,6 +5562,50 @@ mod magic_absorb_tests {
         assert_eq!(m.extra.effects, vec![(speed, 900, 0)]);
     }
 
+    /// `LivingEntity.playSecondaryHurtSound`: a `thorns` hit that lands whole
+    /// sounds `enchant.thorns.hit` where the mob stands, after its own hurt
+    /// sound and for a silent mob too (`level.playSound`, not the mob's). The
+    /// rest of a stronger hit inside the hurt cooldown makes no sound, and
+    /// another kind of hit makes none.
+    #[test]
+    fn a_thorns_hit_sounds_where_the_mob_stands() {
+        let thorns = Damage {
+            kind: DamageKind::Thorns,
+            attacker: Some(Who::Player),
+            from: Some([4.0, 2.0, 3.0]),
+            attacker_species: None,
+        };
+        let sounds = |m: &Mob| -> Vec<(&'static str, [f64; 3], f32, f32)> {
+            m.outbox
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::Sound(s, at, volume, pitch) => Some((*s, *at, *volume, *pitch)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut m = witch();
+        m.position = Vec3::new(1.0, 2.0, 3.0);
+        m.silent = true;
+        assert!(m.damage(4.0, thorns));
+        assert_eq!(
+            sounds(&m),
+            vec![("enchant.thorns.hit", [1.0, 2.0, 3.0], 1.0, 1.0)]
+        );
+        m.outbox.clear();
+        m.damage(8.0, thorns);
+        assert!(sounds(&m).is_empty(), "inside the hurt cooldown");
+
+        let mut loud = witch();
+        assert!(loud.damage(4.0, thorns));
+        let heard = sounds(&loud);
+        assert_eq!(heard.last().map(|s| s.0), Some("enchant.thorns.hit"));
+        let mut hit = witch();
+        assert!(hit.damage(4.0, Damage::player([4.0, 2.0, 3.0])));
+        assert_eq!(heard.len(), sounds(&hit).len() + 1, "{heard:?}");
+        assert!(sounds(&hit).iter().all(|s| s.0 != "enchant.thorns.hit"));
+    }
+
     /// `Witch.getDamageAfterMagicAbsorb`: `#witch_resistant_to` (`magic`,
     /// `indirect_magic`, `sonic_boom`, `thorns`) takes 15% of the hit, which
     /// leaves a 10 health witch on 7 of a 20 hit it would not survive whole.
@@ -6237,5 +6471,116 @@ mod visibility_percent_tests {
             sneaking.visibility_percent(Some("minecraft:skeleton"), Some(&items)),
             0.4
         );
+    }
+}
+
+#[cfg(test)]
+mod hidden_speed_mob_tick_tests {
+    use super::*;
+    fn full_tick_promotes(no_ai: bool) {
+        use horizon_core::random::LegacyRandom;
+        let admitted = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                world.set(2, 199, 4, stone).unwrap();
+            },
+            |w, types| {
+                let mut m = Mob::new(
+                    202,
+                    Arc::new(types.types["minecraft:pig"].clone()),
+                    Vec3::new(2.5, 200.0, 4.5),
+                    0.0,
+                );
+                m.no_ai = no_ai;
+                m.no_gravity = true;
+                assert!(m.add_effect_with("minecraft:speed", 200, 0, false, true));
+                assert!(m.add_effect_with("minecraft:speed", 40, 1, false, true));
+                assert_eq!(m.extra.effects, [("minecraft:speed", 40, 1)]);
+                let mut random = LegacyRandom::new(202);
+                let mut events = Vec::new();
+                for _ in 0..39 {
+                    assert!(m.tick(w, &mut random, &mut events));
+                }
+                assert_eq!(m.extra.effects, [("minecraft:speed", 1, 1)]);
+                assert!(m.tick(w, &mut random, &mut events));
+                assert_eq!(
+                    m.extra.effects,
+                    [("minecraft:speed", 160, 0)],
+                    "actual Mob tick must promote its counted-down fallback"
+                );
+                assert_eq!(m.age, 40);
+                assert!(m.tick(w, &mut random, &mut events));
+                assert_eq!(m.extra.effects, [("minecraft:speed", 159, 0)]);
+            },
+        );
+        // Without the vanilla data under .local/horizon-client there is no Mob
+        // world to tick: the test has nothing to check.
+        let _ = admitted;
+    }
+    #[test]
+    fn noai_full_mob_tick_promotes_speed() {
+        full_tick_promotes(true)
+    }
+    #[test]
+    fn ai_full_mob_tick_promotes_speed() {
+        full_tick_promotes(false)
+    }
+    // Added causal controls; the three original old/fixed tests remain above.
+    #[test]
+    fn hidden_only_updates_copy_and_clear_readd_keep_active_authority() {
+        let mut kind = (*sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let mut m = Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.add_effect("night_vision", 400, 0);
+        assert!(m.add_effect_with("speed", 200, 0, true, false));
+        assert!(m.add_effect_with("speed", 40, 1, false, true));
+        assert_eq!(
+            (
+                m.extra.effect_fallbacks[0].ambient,
+                m.extra.effect_fallbacks[0].visible
+            ),
+            (true, false)
+        );
+        assert!(!m.add_effect_with("speed", 300, 0, false, true));
+        assert_eq!(
+            m.extra.effects,
+            [
+                ("minecraft:night_vision", 400, 0),
+                ("minecraft:speed", 40, 1)
+            ]
+        );
+        assert_eq!(m.extra.effect_fallbacks[0].duration, 300);
+        assert!(!m.add_effect_with("speed", 40, 1, false, true));
+        let mut to = Mob::new(203, m.kind.clone(), Vec3::ZERO, 0.0);
+        conversion::single(&m, &mut to, conversion::Params::KEEP_ALL);
+        assert_eq!(to.extra.effects, m.extra.effects);
+        assert_eq!(to.extra.effect_fallbacks, m.extra.effect_fallbacks);
+        to.extra.effect_fallbacks[0].duration = 222;
+        assert_eq!(m.extra.effect_fallbacks[0].duration, 300);
+        m.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+            "minecraft:speed".into(),
+        ]));
+        assert_eq!(m.extra.effects, [("minecraft:night_vision", 400, 0)]);
+        assert!(m.extra.effect_fallbacks.is_empty());
+        m.add_effect("speed", 20, 0);
+        assert!(m.extra.effect_fallbacks.is_empty());
+        m.add_effect("speed", 5, 1);
+        assert_eq!(m.extra.effect_fallbacks[0].duration, 20);
+        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
+        // The basic add has default incoming flags, while preserving its
+        // existing active flag policy; a newly retained weaker node gets them.
+        assert!(m.add_effect_with("speed", 200, 0, true, false));
+        assert!(m.add_effect_with("speed", 40, 1, true, false));
+        m.add_effect("speed", 300, 0);
+        assert!(m.extra.ambient_effects.contains(&"minecraft:speed"));
+        assert!(m.extra.hidden_effects.contains(&"minecraft:speed"));
+        assert!(!m.extra.effect_fallbacks[0].ambient);
+        assert!(m.extra.effect_fallbacks[0].visible);
     }
 }
