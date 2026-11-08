@@ -2073,8 +2073,7 @@ impl Game<'_> {
             e.on_ground = o.on_ground;
             e.velocity = [o.velocity.x, o.velocity.y, o.velocity.z];
             // ExperienceOrb.DATA_VALUE.
-            e.meta
-                .push((8, serializer::INT, Value::Int(o.value as i32)));
+            e.meta.push((8, serializer::INT, Value::Int(o.value)));
         }
         self.lan_object_states(hub, out, drain_minecart_steps, after);
     }

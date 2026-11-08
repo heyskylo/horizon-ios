@@ -4403,7 +4403,7 @@ impl Game<'_> {
                         && let Value::Int(v) = value
                         && let Some(o) = self.orbs.iter_mut().find(|o| o.id == p.id as u32)
                     {
-                        o.value = (*v).max(0) as u32;
+                        o.value = *v;
                     }
                 }
                 self.remote_object_data(p.id, &p.values);
