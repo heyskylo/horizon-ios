@@ -67,6 +67,7 @@ fn run(game: &mut Game<'_>, commands: &[&str]) {
 /// to it with it. The wire between connected to the torch when it was placed, and loses it again: a
 /// wire that has lost its connection is a cross, not a dot (`RedStoneWireBlock.getConnectionState`).
 #[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_block_that_pops_off_in_the_neighbours_notice_leaves_the_wire_a_cross() {
     let mut game = game();
     run(
@@ -88,6 +89,7 @@ fn a_block_that_pops_off_in_the_neighbours_notice_leaves_the_wire_a_cross() {
 
 /// With nothing to take it off again the torch stays, and the wire is the line it connected.
 #[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_torch_that_stays_connects_the_wire_in_a_line_and_powers_it() {
     let mut game = game();
     run(
