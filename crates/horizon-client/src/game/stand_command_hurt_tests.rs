@@ -111,3 +111,71 @@ fn fire_from_damage_lights_or_burns_the_stand_though_the_command_fails() {
     let (_, health) = say(&mut game, &format!("data get entity {STAND} Health"));
     assert!(health.ends_with(": 16.0f"), "{health}");
 }
+
+// Controls added after the baseline: the guards before the acting sources,
+// and a stand broken once however often it is hurt.
+
+fn items(game: &mut Game<'_>) -> String {
+    say(game, "execute if entity @e[type=item]").1
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_an_absent_or_removed_stand_is_not_broken_again() {
+    let mut game = game();
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:explosion")));
+    assert_eq!(items(&mut game), "Test failed");
+    summon(
+        &mut game,
+        r#",equipment:{head:{id:"minecraft:diamond_helmet",count:1}}"#,
+    );
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:explosion")));
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:explosion")));
+    assert_eq!(items(&mut game), "Test passed. Count: 1");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_invulnerable_and_marker_stands_refuse_the_blast() {
+    for flag in ["Invulnerable:1b", "Marker:1b"] {
+        let mut game = game();
+        summon(
+            &mut game,
+            &format!(r#",{flag},equipment:{{head:{{id:"minecraft:diamond_helmet",count:1}}}}"#),
+        );
+        assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:explosion")));
+        assert!(
+            game.run_command(&format!("execute if entity {STAND}")),
+            "{flag}"
+        );
+        assert_eq!(items(&mut game), "Test failed", "{flag}");
+        assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:in_fire")));
+        let (_, fire) = say(&mut game, &format!("data get entity {STAND} Fire"));
+        assert!(fire.ends_with(": 0s"), "{flag}: {fire}");
+    }
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_repeated_burning_breaks_the_stand_once() {
+    let mut game = game();
+    summon(
+        &mut game,
+        r#",Fire:200s,equipment:{head:{id:"minecraft:diamond_helmet",count:1}}"#,
+    );
+    // Burning, in_fire takes 0.15 instead of lighting it again.
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:in_fire")));
+    let (_, health) = say(&mut game, &format!("data get entity {STAND} Health"));
+    assert!(
+        health.ends_with(&format!(": {}f", 20.0f32 - 0.15)),
+        "{health}"
+    );
+    assert!(game.run_command(&format!("data merge entity {STAND} {{Health:20f}}")));
+    // 20 -> 16 -> 12 -> 8 -> 4, then 0 breaks it.
+    for _ in 0..5 {
+        assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:on_fire")));
+    }
+    assert!(!game.run_command(&format!("execute if entity {STAND}")));
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:on_fire")));
+    assert_eq!(items(&mut game), "Test passed. Count: 1");
+}
