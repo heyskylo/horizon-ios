@@ -688,6 +688,19 @@ impl VanillaTerrain {
         u64::try_from(self.created.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
+/// `overrides` with the content mods' biome modifiers over the packs' biomes
+/// (`mod_content::biome_modifiers_over_packs`), for the worldgen bundle
+/// `dir` of a content root; `None` when its biomes stand as they are.
+pub fn biome_modifiers_over_packs(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+) -> Option<WorldgenOverrides> {
+    let root = dir.parent()?;
+    crate::mod_content::biome_modifiers_over_packs(root, overrides).unwrap_or_else(|e| {
+        log::warn!("Horizon: biome modifiers over data packs: {e}");
+        None
+    })
+}
 /// A bundle directory, the data packs over it, and what loading them gave.
 type SharedEntry = (std::path::PathBuf, WorldgenOverrides, Arc<GeneratorData>);
 static SHARED_DATA: std::sync::Mutex<Vec<SharedEntry>> = std::sync::Mutex::new(Vec::new());
@@ -725,7 +738,8 @@ pub fn shared_data_with(
         return Ok(data.clone());
     }
     let started = std::time::Instant::now();
-    let data = GeneratorData::load_with(dir, registry, overrides)?;
+    let modified = biome_modifiers_over_packs(dir, overrides);
+    let data = GeneratorData::load_with(dir, registry, modified.as_ref().unwrap_or(overrides))?;
     log::info!("Horizon: worldgen data loaded in {:?}", started.elapsed());
     for warning in data.warnings() {
         log::warn!("Horizon: data pack worldgen: {warning}");

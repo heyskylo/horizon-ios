@@ -1612,11 +1612,9 @@ pub struct OptionsUi {
     selected_native_key: Option<(usize, usize)>,
     /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
-    /// The glyphs the binds list shows (the setting, else the pad's family).
-    pub pad_style: GlyphStyle,
-    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
-    /// Nintendo's: each part shows the letter of the button playing it.
-    pub pad_by_letter: bool,
+    /// The glyphs menus show (`Glyphs::of`: the setting, else the pad's family, and a Nintendo
+    /// pad's letters when it goes by them). The game sets it each frame.
+    pub pad_glyphs: crate::pad_glyph::Glyphs,
     /// The pad's focus drives the page: its hidden pointer sits mid-widget, so a tooltip goes
     /// under the widget instead of beside the pointer.
     pub pad_driving: bool,
@@ -1660,7 +1658,8 @@ pub struct OptionsUi {
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
     graphics: shell::Shell<crate::graphics_ui::GraphicsScreen>,
-    pub controller: crate::controller_ui::ControllerUi,
+    /// Controller Settings, on the settings shell.
+    controller: shell::Shell<crate::controller_ui::ControllerScreen>,
     /// Horizon Extras, on the settings shell.
     extras: shell::Shell<crate::extras_ui::ExtrasScreen>,
     pub shader: crate::shader_ui::ShaderUi,
@@ -1715,8 +1714,7 @@ impl Default for OptionsUi {
             selected_key: None,
             selected_native_key: None,
             selected_pad_action: None,
-            pad_style: GlyphStyle::Xbox,
-            pad_by_letter: false,
+            pad_glyphs: crate::pad_glyph::Glyphs::default(),
             pad_driving: false,
             languages: Vec::new(),
             language_choice: None,
@@ -2100,7 +2098,6 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
-                Page::Controller | Page::PadBinds => self.controller.typing(),
                 _ if Self::shader_page(self.page()).is_some() => self.shader.typing(),
                 _ => match self.shell() {
                     Some(shell) => shell.typing(),
@@ -2212,9 +2209,6 @@ impl OptionsUi {
         if page == Page::Packs {
             self.pack_screen = None;
         }
-        if let Some(at) = Self::controller_page(page) {
-            self.controller.open(at);
-        }
         if let Some(at) = Self::shader_page(page) {
             self.shader.open(at);
         }
@@ -2223,6 +2217,9 @@ impl OptionsUi {
         }
         if let Some(at) = Self::graphics_page(page) {
             self.graphics.show(at);
+        }
+        if let Some(at) = Self::controller_page(page) {
+            self.controller.show(at);
         }
         if page == Page::SplitSetup {
             self.split_setup.reset();
@@ -2241,6 +2238,7 @@ impl OptionsUi {
         match self.page() {
             Page::Extras => Some(&self.extras),
             page if Self::graphics_page(page).is_some() => Some(&self.graphics),
+            page if Self::controller_page(page).is_some() => Some(&self.controller),
             _ => None,
         }
     }
@@ -2248,6 +2246,7 @@ impl OptionsUi {
         match self.page() {
             Page::Extras => Some(&mut self.extras),
             page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
+            page if Self::controller_page(page).is_some() => Some(&mut self.controller),
             _ => None,
         }
     }
@@ -2256,10 +2255,20 @@ impl OptionsUi {
     pub fn reveal(&mut self, s: &Settings, size: (f32, f32), rect: [f32; 4]) -> Option<f32> {
         self.shell_mut()?.reveal(s, size, rect)
     }
-    /// The window's size, for the graphics screen's vanilla rows that step through its
-    /// resolutions: before each input that can press one.
-    fn graphics_framebuffer(&mut self) {
+    /// The window's size, for the graphics and controller screens' rows that step an option
+    /// (`Opt::cycle`, which a fullscreen resolution needs): before each input that can press one.
+    fn shell_framebuffers(&mut self) {
         self.graphics.screen.framebuffer = self.framebuffer;
+        self.controller.screen.framebuffer = self.framebuffer;
+    }
+    /// Who and what Controller Settings is about: the game sets it before each draw.
+    pub fn set_controller_context(&mut self, context: crate::controller_ui::Context) {
+        self.controller.screen.context = context;
+    }
+    /// The binding the screen waits on: a controller button's, else a key's.
+    fn waiting(&self) -> Option<shell::Capture> {
+        let pad = self.selected_pad_action.map(shell::Capture::Pad);
+        pad.or(self.selected_key.map(shell::Capture::Key))
     }
     /// What a shell screen's outputs do to these options.
     fn shell_events(&mut self, s: &mut Settings, outputs: Vec<shell::Output>) -> Vec<Event> {
@@ -2267,7 +2276,10 @@ impl OptionsUi {
         for output in outputs {
             match output {
                 shell::Output::Event(event) => events.push(event),
-                shell::Output::BindKey(name) => self.selected_key = Some(name),
+                shell::Output::Bind(shell::Capture::Key(name)) => self.selected_key = Some(name),
+                shell::Output::Bind(shell::Capture::Pad(action)) => {
+                    self.selected_pad_action = Some(action)
+                }
                 shell::Output::Push(page) => {
                     if page == Page::HdrCalibration {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
@@ -2275,25 +2287,6 @@ impl OptionsUi {
                     self.push(page);
                 }
                 shell::Output::Done => events.extend(self.back(s)),
-            }
-        }
-        events
-    }
-    /// What the controller screen's actions do to these options.
-    fn controller_events(
-        &mut self,
-        s: &mut Settings,
-        actions: Vec<crate::controller_ui::Action>,
-    ) -> Vec<Event> {
-        use crate::controller_ui::Action;
-        let mut events = Vec::new();
-        for action in actions {
-            match action {
-                Action::ButtonClick => events.push(Event::ButtonClick),
-                Action::Changed => events.push(Event::Changed),
-                Action::SliderDrag => events.push(Event::SliderDrag),
-                Action::BindPad(action) => self.selected_pad_action = Some(action),
-                Action::Done => events.extend(self.back(s)),
             }
         }
         events
@@ -3687,16 +3680,11 @@ impl OptionsUi {
             c.draw(batch, atlas, cursor);
             return;
         }
-        if Self::controller_page(self.page()).is_some() {
-            self.controller.binding = self.selected_pad_action;
-            self.controller.draw(s, batch, atlas, cursor, self.in_world);
-            return;
-        }
         if Self::shader_page(self.page()).is_some() {
             self.shader.draw(s, batch, atlas, cursor, self.in_world);
             return;
         }
-        let waiting = self.selected_key;
+        let waiting = self.waiting();
         let in_world = self.in_world;
         if let Some(shell) = self.shell_mut() {
             shell.draw(s, batch, atlas, cursor, in_world, waiting);
@@ -3713,7 +3701,7 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             self.split_profiles
-                .draw(batch, atlas, cursor, self.in_world, self.pad_style);
+                .draw(batch, atlas, cursor, self.in_world, self.pad_glyphs);
             return;
         }
         if self.page() == Page::Studio {
@@ -4050,6 +4038,10 @@ impl OptionsUi {
             return self.calibration_outcome(s, outcome);
         }
         if self.shell().is_some() {
+            // Waiting on a controller button: a click cancels the wait.
+            if !drag && self.selected_pad_action.take().is_some() {
+                return Vec::new();
+            }
             // Waiting on a key: a mouse button binds, as on Key Binds.
             if self.selected_key.is_some() && !drag {
                 let button = if right {
@@ -4061,21 +4053,11 @@ impl OptionsUi {
             }
             let shift = self.shift;
             self.framebuffer = framebuffer;
-            self.graphics_framebuffer();
+            self.shell_framebuffers();
             let outputs = self.shell_mut().map_or_else(Vec::new, |shell| {
                 shell.click(s, (x, y), size, drag, right, shift)
             });
             return self.shell_events(s, outputs);
-        }
-        if Self::controller_page(self.page()).is_some() {
-            // Waiting on a button: a click cancels the wait.
-            if !drag && self.selected_pad_action.take().is_some() {
-                return Vec::new();
-            }
-            let actions =
-                self.controller
-                    .click(s, (x, y), size, framebuffer, drag, right, self.shift);
-            return self.controller_events(s, actions);
         }
         if Self::shader_page(self.page()).is_some() {
             let actions = self
@@ -4351,7 +4333,7 @@ impl OptionsUi {
         let slider = self.dragging.take().is_some();
         let (shader_slider, shader_pack) = self.shader.release();
         let shell_slider = self.shell_mut().is_some_and(|shell| shell.release());
-        let graphics_slider = self.controller.release() | shader_slider | shell_slider;
+        let graphics_slider = shader_slider | shell_slider;
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         let split_drop = self.split_setup.release();
         if slider || graphics_slider || calibration_slider {
@@ -4431,7 +4413,7 @@ impl OptionsUi {
         if self.resource_error.is_some() {
             return Vec::new();
         }
-        self.graphics_framebuffer();
+        self.shell_framebuffers();
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.wheel(s, size, cursor, amount);
             return self.shell_events(s, outputs);
@@ -4439,10 +4421,6 @@ impl OptionsUi {
         if self.page() == Page::Studio {
             self.studio.wheel(amount);
             return Vec::new();
-        }
-        if Self::controller_page(self.page()).is_some() {
-            let actions = self.controller.wheel(s, size, cursor, framebuffer, amount);
-            return self.controller_events(s, actions);
         }
         if Self::shader_page(self.page()).is_some() {
             self.shader.scroll(s, size, amount);
@@ -4529,10 +4507,6 @@ impl OptionsUi {
         }
         if self.page() == Page::Studio {
             self.studio.wheel(amount);
-            return;
-        }
-        if Self::controller_page(self.page()).is_some() {
-            self.controller.scroll(s, size, amount);
             return;
         }
         if Self::shader_page(self.page()).is_some() {
@@ -4723,8 +4697,6 @@ impl OptionsUi {
             if shell.typing() {
                 shell.type_text(text);
             }
-        } else if Self::controller_page(self.page()).is_some() && self.controller.typing() {
-            self.controller.type_text(text);
         } else if Self::shader_page(self.page()).is_some() && self.shader.typing() {
             self.shader.type_text(text);
         } else if self.settings_search_active() {
@@ -4760,9 +4732,6 @@ impl OptionsUi {
         }
         if let Some(shell) = self.shell_mut() {
             return shell.shortcut(shortcut, clipboard);
-        }
-        if Self::controller_page(self.page()).is_some() {
-            return self.controller.shortcut(shortcut, clipboard);
         }
         if Self::shader_page(self.page()).is_some() {
             return self.shader.shortcut(shortcut, clipboard);
@@ -4883,20 +4852,10 @@ impl OptionsUi {
         } else {
             MIN_KEY_GUI
         };
-        self.graphics_framebuffer();
+        self.shell_framebuffers();
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.key(s, key, text, shift, gui);
             return self.shell_events(s, outputs);
-        }
-        if Self::controller_page(self.page()).is_some() {
-            let size = (self.size.0.max(480.0), self.size.1.max(240.0));
-            let fb = [self.framebuffer[0].max(480), self.framebuffer[1].max(240)];
-            let (actions, _) = self.controller.key_modifiers(s, key, text, shift, size, fb);
-            let mut events = self.controller_events(s, actions);
-            if key == K::Escape {
-                events.extend(self.back(s));
-            }
-            return events;
         }
         if Self::shader_page(self.page()).is_some() {
             let size = (self.size.0.max(480.0), self.size.1.max(240.0));
@@ -6644,6 +6603,42 @@ mod tests {
             vec![Event::Changed]
         );
         assert_eq!(ui.page(), Page::Horizon);
+    }
+
+    /// A Bindings row pressed waits for a controller button: the next click or key cancels the
+    /// wait, Escape unbinds the action as on Key Binds, and none of them leaves the screen.
+    #[test]
+    fn a_controller_binding_waits_and_a_click_or_a_key_ends_the_wait() {
+        use crate::controller_ui::Item;
+        use winit::keyboard::KeyCode as K;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::PadBinds);
+        let size = (854.0, 480.0);
+        ui.size = size;
+        let jump = Item::Bind("key.jump");
+        let (x, y) = ui.controller.point_at(&s, size, jump);
+        let press = |ui: &mut OptionsUi, s: &mut Settings| {
+            ui.click(s, &atlas, x, y, size, [1708, 960], false, false)
+        };
+        assert_eq!(press(&mut ui, &mut s), vec![Event::ButtonClick]);
+        assert_eq!(ui.selected_pad_action, Some("key.jump"));
+        assert!(press(&mut ui, &mut s).is_empty());
+        assert_eq!(ui.selected_pad_action, None);
+        press(&mut ui, &mut s);
+        assert_eq!(ui.key(&mut s, &atlas, K::KeyQ, None), vec![Event::Changed]);
+        assert_eq!(
+            (ui.selected_pad_action, s.controller.is_default("key.jump")),
+            (None, true)
+        );
+        press(&mut ui, &mut s);
+        assert_eq!(
+            ui.key(&mut s, &atlas, K::Escape, None),
+            vec![Event::Changed]
+        );
+        assert_eq!(s.controller.binding("key.jump"), None);
+        assert_eq!(ui.page(), Page::PadBinds);
     }
 
     /// Every way a pad or a wheel scrolls a page on the shell moves the same list: Replay Studio's

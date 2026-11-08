@@ -4403,7 +4403,7 @@ impl Game<'_> {
                         && let Value::Int(v) = value
                         && let Some(o) = self.orbs.iter_mut().find(|o| o.id == p.id as u32)
                     {
-                        o.value = (*v).max(0) as u32;
+                        o.value = *v;
                     }
                 }
                 self.remote_object_data(p.id, &p.values);
@@ -4605,6 +4605,19 @@ impl Game<'_> {
                             .map(|m| &*m.kind.id == "minecraft:player")
                     });
                     self.native_client_hurt(attacker, player);
+                    // For `events`: this client has no combat tracker of its own here.
+                    let cause = self.remote.as_ref().and_then(|r| {
+                        r.registries
+                            .name("minecraft:damage_type", p.source_type)
+                            .map(str::to_owned)
+                    });
+                    let by = attacker.and_then(|id| {
+                        self.mob_index
+                            .get(&self.mobs, id)
+                            .map(|m| m.kind.id.to_string())
+                    });
+                    self.events
+                        .note_hit(cause.unwrap_or_else(|| "unknown".into()), by);
                     let at = self
                         .player
                         .as_ref()

@@ -2,10 +2,9 @@
 //! if it helps, how long it stays. A view holds one at a time (`NoticeSlot`), so they never stack:
 //! each player's game has its own slot, and what raises a notice (splitscreen's joins and
 //! reconnects, a solo game's controller coming and going) decides that for itself.
-use crate::gamepad::{Button, GlyphStyle};
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::hud_kit::plate::{self, Plate};
-use crate::pad_glyph;
+use crate::pad_glyph::{self, Glyph};
 use crate::toasts::Slide;
 use std::time::{Duration, Instant};
 
@@ -28,13 +27,6 @@ pub enum Priority {
     Info,
     /// The player may have to do something.
     Attention,
-}
-
-/// A button shown before the body, in the player's glyphs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Glyph {
-    pub button: Button,
-    pub style: GlyphStyle,
 }
 
 pub struct Notice {
@@ -66,6 +58,7 @@ impl Notice {
             slide: Slide::default(),
         }
     }
+    /// A button shown before the body, in the glyphs of the controller it is about.
     pub fn with_glyph(mut self, glyph: Glyph) -> Self {
         self.glyph = Some(glyph);
         self
@@ -132,9 +125,7 @@ impl NoticeSlot {
         let w = batch.width;
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let max = (w - 24.0).min(260.0);
-        let glyph = notice
-            .glyph
-            .map(|g| (g, pad_glyph::width(atlas, g.button, g.style) + 4.0));
+        let glyph = notice.glyph.map(|g| (g, pad_glyph::width(atlas, g) + 4.0));
         let indent = glyph.map_or(0.0, |g| g.1);
         let lines = crate::split_profiles::wrap(&notice.body, max - indent, width);
         let inner = lines
@@ -152,7 +143,7 @@ impl NoticeSlot {
             let lx = (px + (pw - width(line) - indent) / 2.0).floor();
             let y = py + 18.0 + 10.0 * k as f32;
             if let (0, Some((g, _))) = (k, glyph) {
-                pad_glyph::draw(batch, atlas, g.button, g.style, lx, y);
+                pad_glyph::draw(batch, atlas, g, lx, y);
             }
             batch.text(atlas, line, lx + indent, y, rgba(200, 200, 200, 255), false);
         }
