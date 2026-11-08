@@ -12,6 +12,7 @@ type and first differing field. docs/parity-workflow.md, "Fuzzing scenarios", sa
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -373,9 +374,16 @@ SMOKE = [{'family': 'smoke', 'seed': 1, 'steps': [
 
 
 def main():
+    try:
+        from . import parity_fuzz_scenarios as families
+    except ImportError:
+        import parity_fuzz_scenarios as families
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--replay', type=Path, help='run the scenarios of this JSON file (a list of scenarios)')
+    parser.add_argument('family', choices=sorted(families.FAMILIES), nargs='?', default='persist')
+    parser.add_argument('--seed', type=int, default=1, help='first scenario seed')
+    parser.add_argument('--count', type=int, default=40, help='scenarios to generate')
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--replay', type=Path, help='run the scenarios of this JSON file instead of generating them')
     source.add_argument('--smoke', action='store_true', help='fixed scenarios that must match: the tool works')
     parser.add_argument('--batch', type=int, default=40, help='scenarios per harness run')
     parser.add_argument('--shrink-rounds', type=int, default=6)
@@ -385,7 +393,12 @@ def main():
     work = args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
     runner = Runner(work, args.binary and args.binary.resolve(strict=True), args.batch)
-    scenarios = SMOKE if args.smoke else json.loads(args.replay.read_text(encoding='utf-8'))
+    if args.smoke or args.replay:
+        scenarios = SMOKE if args.smoke else json.loads(args.replay.read_text(encoding='utf-8'))
+    else:
+        families.discover(runner, work)
+        scenarios = [families.FAMILIES[args.family](random.Random(seed), seed)
+                     for seed in range(args.seed, args.seed + args.count)]
     results = runner.run(scenarios)
     failing = [(s, r) for s, r in zip(scenarios, results) if signatures(r)]
     invalid = [(s['seed'], r['invalid']) for s, r in zip(scenarios, results) if r.get('invalid')]
