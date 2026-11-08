@@ -830,7 +830,7 @@ impl Title {
             seed: String::new(),
             creative: false,
             focus: 0,
-            options: WorldOptions::default(),
+            options: WorldOptions::for_new_world(),
         }
     }
     /// WorldSelectionList.handleNewLevels: a singleplayer list that comes
