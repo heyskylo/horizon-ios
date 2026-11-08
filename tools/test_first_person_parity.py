@@ -61,6 +61,14 @@ def block_hit(pos, face=1):
 
 def scenarios():
     stone = {TARGETS[0]: 'minecraft:stone', TARGETS[1]: 'minecraft:dirt', TARGETS[2]: 'minecraft:glass'}
+    # Busy hands reject new attacks and uses, then recover when paddling stops.
+    # Keep held mining separate: continueAttack is a distinct vanilla path.
+    for creative in (False, True):
+        for hit in [('miss',), ('entity', True), block_hit(TARGETS[0])]:
+            uses = dict(entity='success', block='success', item='success')
+            steps = [step(hit, ac=1, uc=1, busy=True, uses=uses)] * 8
+            steps += [step()] * 5 + [step(hit, ac=1, uc=1, uses=uses)]
+            yield case(steps, creative, ['minecraft:dirt', 64], blocks=stone)
     # Consecutive instant survival breaks have no destroy delay. Cover both
     # zero hardness and a shovel with haste reaching one-tick destroy progress.
     for block, main, haste in [('minecraft:short_grass', None, None),

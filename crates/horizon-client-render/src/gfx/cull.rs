@@ -27,11 +27,13 @@
 //! as many draws as without culling: drivers that unroll an indirect
 //! multi-draw on the CPU (Mesa's on Intel Gen9) pay per entry. Phase 2's
 //! counts come from the GPU, which reads them from the draws themselves:
-//! Vulkan's native multi-draw, and Metal's, which wgpu replays as one
-//! indirect draw per entry. Translucent draws are not culled.
+//! Vulkan's native multi-draw, DirectX 12's `ExecuteIndirect`, and Metal's,
+//! which wgpu replays as one indirect draw per entry. Translucent draws are
+//! not culled.
 //!
 //! Metal cannot force the depth test before a fragment shader that writes
-//! storage (naga writes no `[[early_fragment_tests]]`), so there the boxes
+//! storage (naga writes no `[[early_fragment_tests]]`), nor can DirectX 12
+//! (`[earlydepthstencil]`, which wgpu doesn't offer there), so there the boxes
 //! are drawn in a pass of their own between the phases, which reads phase
 //! 1's depth as a texture and makes the same comparison in the shader: the
 //! fragment's depth against the stored one, greater or equal passing. The
@@ -224,9 +226,9 @@ impl Cull {
         adapter.features() & wgpu::Features::SHADER_EARLY_DEPTH_TEST
     }
     /// Where the device can run the test, if it can: Vulkan with early
-    /// depth tests, or Metal, both drawing an indirect multi-draw's entries
-    /// with the instance counts the GPU wrote, with fragment shaders that
-    /// write storage.
+    /// depth tests, or Metal and DirectX 12 with the test in the shader, all
+    /// drawing an indirect multi-draw's entries with the instance counts the
+    /// GPU wrote, with fragment shaders that write storage.
     pub fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Option<DepthTest> {
         let depth_test = match adapter.get_info().backend {
             wgpu::Backend::Vulkan | wgpu::Backend::Gl
@@ -236,7 +238,9 @@ impl Cull {
             {
                 DepthTest::Early
             }
-            wgpu::Backend::Metal => DepthTest::InShader,
+            // DirectX 12 has no forced early depth test in wgpu either: the test runs in the
+            // shader there too.
+            wgpu::Backend::Metal | wgpu::Backend::Dx12 => DepthTest::InShader,
             _ => return None,
         };
         (device

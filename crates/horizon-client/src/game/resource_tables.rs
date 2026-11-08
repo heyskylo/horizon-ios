@@ -207,6 +207,13 @@ impl PackResources {
             )
         });
         let polytone_particles = pack_particles(root, assets.registry);
+        let polytone_post = horizon_client::polytone_post::PolytonePost::read(
+            root,
+            horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Dir(
+                root.to_path_buf(),
+            )),
+        )
+        .map(Arc::new);
         Self {
             layer_names: Arc::new(
                 render
@@ -231,6 +238,7 @@ impl PackResources {
             custom_sky: Arc::new(custom_sky),
             environments: pack_environments(root),
             polytone_particles,
+            polytone_post,
         }
     }
 }
