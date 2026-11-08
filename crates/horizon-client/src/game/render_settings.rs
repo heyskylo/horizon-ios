@@ -39,7 +39,7 @@ impl Game<'_> {
         }
         let horizon = &self.settings.horizon;
         let key = (
-            horizon.hdr,
+            horizon.hdr_wanted(),
             horizon.wide_frame(),
             shader_packs::picked_pack(&self.settings).to_owned(),
         );

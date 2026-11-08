@@ -508,6 +508,61 @@ pub fn hdr_offered() -> bool {
     HDR_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static SYSTEM_HDR: AtomicU32 = AtomicU32::new(0);
+/// The window's current system HDR state, independent of swapchain availability.
+pub fn report_system_hdr(on: Option<bool>) {
+    SYSTEM_HDR.store(on.map_or(0, |on| if on { 2 } else { 1 }), Ordering::Relaxed);
+}
+pub fn system_hdr() -> Option<bool> {
+    match SYSTEM_HDR.load(Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HdrMode {
+    #[default]
+    Off,
+    On,
+    Auto,
+}
+impl HdrMode {
+    pub const ALL: [Self; 3] = [Self::Off, Self::On, Self::Auto];
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Off => "false",
+            Self::On => "true",
+            Self::Auto => "auto",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::On => "On",
+            Self::Auto => "Auto",
+        }
+    }
+    fn parse(value: &str, default: Self) -> Self {
+        match value {
+            "false" | "off" => Self::Off,
+            "true" | "on" => Self::On,
+            "auto" => Self::Auto,
+            _ => default,
+        }
+    }
+    /// On retains the old switch's intent even before a surface is opened; the renderer
+    /// still gates output on availability. Auto requires both availability and a live report.
+    fn wanted(self, offered: bool, system: Option<bool>) -> bool {
+        match self {
+            Self::Off => false,
+            Self::On => true,
+            Self::Auto => offered && system == Some(true),
+        }
+    }
+}
+
 static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// Whether the device can batch translucent quads (`Graphics::translucent_batching`): set when
@@ -783,7 +838,7 @@ pub struct Graphics {
     /// Frame generation (Horizon setting), off by default.
     pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
-    pub hdr: bool,
+    pub hdr: HdrMode,
     /// HDR paper white (where SDR white sits), in nits; 0 is Auto: the desktop's SDR
     /// white, as the system reports it ([`Graphics::paper_white_nits`]).
     pub hdr_paper_white: u32,
@@ -870,7 +925,7 @@ impl Default for Graphics {
             upscaling_sharpness: 85,
             screenshot_quality: 1,
             frame_generation: FrameGeneration::Off,
-            hdr: false,
+            hdr: HdrMode::Off,
             hdr_paper_white: 0,
             hdr_peak: 0,
             hdr_black_level: 0,
@@ -902,8 +957,8 @@ impl Graphics {
                 Vec::new()
             }
         };
-        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr {
-            g.hdr = false;
+        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr != HdrMode::Off {
+            g.hdr = HdrMode::Off;
             g.save(dir);
             log::warn!(
                 "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
@@ -1000,7 +1055,7 @@ impl Graphics {
                         .unwrap_or(1)
                 }
                 "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
-                "hdr" => g.hdr = flag(g.hdr),
+                "hdr" => g.hdr = HdrMode::parse(value, g.hdr),
                 "hdrLighting" => g.hdr_lighting = flag(g.hdr_lighting),
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
@@ -1082,7 +1137,7 @@ impl Graphics {
             self.upscaling_sharpness,
             self.screenshot_quality,
             self.frame_generation.name(),
-            bool_text(self.hdr),
+            self.hdr.key(),
             self.hdr_paper_white,
             self.hdr_peak,
             self.hdr_black_level,
@@ -1111,10 +1166,14 @@ impl Graphics {
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
     }
+    /// The single decision shared by rendering and the HDR settings page.
+    pub fn hdr_wanted(&self) -> bool {
+        self.hdr.wanted(hdr_offered(), system_hdr())
+    }
     /// Whether a renderer made now draws its frame in 16 bits (`Renderer::new`'s `wide_frame`):
     /// HDR on, with Smooth Gradients.
     pub fn wide_frame(&self) -> bool {
-        self.hdr && self.hdr_smooth_gradients
+        self.hdr_wanted() && self.hdr_smooth_gradients
     }
     /// Paper white, in nits: the player's, or on Auto the desktop's SDR white as the
     /// system reports it, else 203 (BT.2408's reference white).
@@ -1208,6 +1267,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hdr_modes_keep_boolean_files_and_round_trip_auto() {
+        assert_eq!(Graphics::parse("").hdr, HdrMode::Off);
+        for (value, expected) in [
+            ("true", HdrMode::On),
+            ("false", HdrMode::Off),
+            ("on", HdrMode::On),
+            ("off", HdrMode::Off),
+            ("auto", HdrMode::Auto),
+            ("unknown", HdrMode::Off),
+        ] {
+            let g = Graphics::parse(&format!("hdr:{value}\n"));
+            assert_eq!(g.hdr, expected, "{value}");
+            assert_eq!(Graphics::parse(&g.serialize()).hdr, expected);
+            let saved = g.serialize();
+            let value = saved.lines().find_map(|l| l.strip_prefix("hdr:")).unwrap();
+            // The old boolean parser keeps its Off default for an unknown value.
+            assert_eq!(value == "true", expected == HdrMode::On);
+        }
+        assert_eq!(Graphics::parse("hdr:true\nhdr:unknown\n").hdr, HdrMode::On);
+    }
+
+    #[test]
+    fn hdr_auto_needs_a_positive_system_report_and_an_output() {
+        for (offered, system, expected) in [
+            (false, None, false),
+            (false, Some(false), false),
+            (false, Some(true), false),
+            (true, None, false),
+            (true, Some(false), false),
+            (true, Some(true), true),
+        ] {
+            assert!(!HdrMode::Off.wanted(offered, system));
+            assert!(HdrMode::On.wanted(offered, system));
+            assert_eq!(
+                HdrMode::Auto.wanted(offered, system),
+                expected,
+                "{offered} {system:?}"
+            );
+        }
+        let readings = [Some(false), Some(true), Some(false), None, Some(true)];
+        assert_eq!(
+            readings.map(|r| HdrMode::Auto.wanted(true, r)),
+            [false, true, false, false, true]
+        );
+    }
+
+    #[test]
     fn the_api_choice_matches_the_system() {
         let choices = GraphicsApi::choices();
         if cfg!(windows) {
@@ -1267,7 +1373,7 @@ mod tests {
             upscaling_sharpness: 40,
             screenshot_quality: 4,
             frame_generation: FrameGeneration::Fsr31,
-            hdr: true,
+            hdr: HdrMode::On,
             hdr_paper_white: 240,
             hdr_peak: 1400,
             hdr_black_level: 12,
