@@ -771,13 +771,12 @@ impl Game<'_> {
             if moved.y < 0.0 && !c.in_water {
                 c.fall_distance -= f64::from(moved.y as f32);
             }
+            // A move up or none leaves the fall as it is (a saved one too).
             if c.on_ground {
                 if c.kind == CartKind::Tnt && c.fall_distance >= 3.0 {
                     let power = c.fall_distance / 10.0;
                     c.fall_blast = Some(power * power);
                 }
-                c.fall_distance = 0.0;
-            } else if moved.y >= 0.0 {
                 c.fall_distance = 0.0;
             }
         }
@@ -2805,8 +2804,10 @@ impl Game<'_> {
             if new_render {
                 (yaw, pitch) = lerp.map_or((c.yaw, c.pitch), |(_, yaw, pitch)| (yaw, pitch));
             } else if let Some(on) = self.rail_pos(x, y, z) {
-                let front = self.rail_pos_offs(x, y, z, 0.3).unwrap_or(on);
-                let back = self.rail_pos_offs(x, y, z, -0.3).unwrap_or(on);
+                // getPosOffs(..., 0.3F): the float widened.
+                let half = f64::from(0.3_f32);
+                let front = self.rail_pos_offs(x, y, z, half).unwrap_or(on);
+                let back = self.rail_pos_offs(x, y, z, -half).unwrap_or(on);
                 offset = glam::DVec3::new(on[0] - x, (front[1] + back[1]) / 2.0 - y, on[2] - z);
                 let d =
                     glam::DVec3::new(back[0] - front[0], back[1] - front[1], back[2] - front[2]);
@@ -2958,6 +2959,7 @@ impl Minecart {
             self.position,
             self.velocity,
             [self.yaw, self.pitch],
+            (self.on_ground, self.fall_distance),
             uuid,
             raw,
         );
@@ -3078,6 +3080,8 @@ impl Minecart {
             Some(Tag::Double(v)) => f64::from_bits(*v),
             _ => 0.0,
         };
+        // Entity.load: OnGround and fall_distance, as saved.
+        (c.on_ground, c.fall_distance) = horizon_client::entity_nbt::ground_from_nbt(tag);
         c.flipped = flag("FlippedRotation", false);
         c.first_tick = flag("HasTicked", false);
         if kind.slots() > 0 {

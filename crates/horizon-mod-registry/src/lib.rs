@@ -28,6 +28,7 @@ use horizon_mods::index::{
     self, Kind,
     registry::{self, Entry, EntryVersion, Sources},
 };
+use horizon_release_sign::native_build::{self, Mod, Request as BuildRequest};
 use ratings::Ratings;
 use serde::Deserialize;
 use serde_json::json;
@@ -51,6 +52,16 @@ const MAX_BODY: usize = index::MAX_FILE as usize + page::MAX_IMAGES + MAX_FORM *
 /// Ratings set per account per hour, and by everyone.
 const RATINGS_PER_ACCOUNT: usize = 30;
 const RATINGS_PER_HOUR: usize = 600;
+/// Maximum mods allowed in a single prebuilt request.
+const MAX_SET_MODS: usize = 64;
+/// Native build requests per address per hour, and from everyone.
+const BUILDS_PER_ADDRESS: usize = 12;
+const BUILDS_PER_HOUR: usize = 120;
+/// Status polls per address per hour, and from everyone: each one costs a GitHub API call.
+const POLLS_PER_ADDRESS: usize = 120;
+const POLLS_PER_HOUR: usize = 1200;
+/// How long a dispatched native build is deduplicated.
+const DISPATCH_DEDUP_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// How long the ratings' totals are served from memory (and cached by
 /// browsers and the launcher).
 const TOTALS_FOR: Duration = Duration::from_secs(60);
@@ -122,6 +133,12 @@ struct Inner {
     recent: Windows,
     /// Ratings set in the last hour, the same way.
     rated: Windows,
+    /// Native build requests in the last hour, by client address ("" for everyone's).
+    build_windows: Windows,
+    /// Deduplication window for recently dispatched native builds (key -> dispatched instant).
+    dispatched: Mutex<HashMap<String, Instant>>,
+    /// Status polls in the last hour, by client address ("" for everyone's).
+    poll_windows: Windows,
     ratings: Mutex<Ratings>,
     /// `GET /api/mods/ratings`' body, and when it was made.
     totals: Mutex<Option<(Instant, String)>>,
@@ -136,6 +153,9 @@ impl App {
             config,
             recent: Mutex::default(),
             rated: Mutex::default(),
+            build_windows: Mutex::default(),
+            dispatched: Mutex::default(),
+            poll_windows: Mutex::default(),
             ratings: Mutex::new(ratings),
             totals: Mutex::default(),
         })))
@@ -154,6 +174,14 @@ pub fn router(app: App) -> Router {
         .route(
             "/api/mods/submit",
             post(submit).layer(DefaultBodyLimit::max(MAX_BODY)),
+        )
+        .route(
+            "/api/native-builds",
+            post(request_native_build).get(get_native_build),
+        )
+        .route(
+            "/api/mods/native-builds",
+            post(request_native_build).get(get_native_build),
         )
         .with_state(app)
 }
@@ -1189,6 +1217,290 @@ pub fn publish(
     Ok(url)
 }
 
+/// The client's address as the proxy in front of the service saw it: `X-Real-IP`, else the
+/// last `X-Forwarded-For` hop (the one the proxy appended). The first hop is whatever the
+/// client sent, so a limit keyed on it could be dodged by changing the header.
+fn client_ip(headers: &HeaderMap) -> String {
+    let real = headers.get("x-real-ip").and_then(|v| v.to_str().ok());
+    let forwarded = || {
+        headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .last()
+    };
+    real.or_else(forwarded)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+fn is_hex_str(s: &str, len: usize) -> bool {
+    s.len() == len && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn is_target_triple(s: &str) -> bool {
+    matches!(
+        s,
+        "x86_64-unknown-linux-gnu"
+            | "x86_64-pc-windows-gnu"
+            | "x86_64-pc-windows-msvc"
+            | "aarch64-pc-windows-msvc"
+            | "aarch64-apple-darwin"
+            | "x86_64-apple-darwin"
+    )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NativeBuildRequest {
+    pub target: String,
+    pub base: String,
+    pub mods: Vec<NativeBuildMod>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NativeBuildMod {
+    pub id: String,
+    pub version: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NativeBuildQuery {
+    pub target: String,
+    pub base: String,
+    pub key: String,
+}
+
+async fn request_native_build(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(payload): Json<NativeBuildRequest>,
+) -> Result<Json<serde_json::Value>, Refusal> {
+    let inner = app.0.clone();
+    let ip = client_ip(&headers);
+    if !allow(
+        &inner.build_windows,
+        &ip,
+        BUILDS_PER_ADDRESS,
+        BUILDS_PER_HOUR,
+    ) {
+        return Err(Refusal::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many native build requests this hour: try again later",
+        ));
+    }
+
+    if payload.mods.is_empty() {
+        return Err(bad("a native build request needs at least one mod"));
+    }
+    if payload.mods.len() > MAX_SET_MODS {
+        return Err(bad(format!(
+            "at most {MAX_SET_MODS} mods per native build request"
+        )));
+    }
+
+    let mods: Vec<Mod> = payload
+        .mods
+        .into_iter()
+        .map(|m| Mod {
+            id: m.id,
+            version: m.version,
+            sha256: m.sha256,
+        })
+        .collect();
+
+    let request = BuildRequest::new(&payload.target, &payload.base, mods).map_err(bad)?;
+
+    let key = request.key();
+    let tag = native_build::release_tag(&request.base);
+    let archive_name = native_build::archive(&key, &request.target);
+    let sig_name = native_build::signature(&key, &request.target);
+
+    let gh = inner.config.github.clone();
+    let tag_clone = tag.clone();
+    let archive_clone = archive_name.clone();
+
+    let exists =
+        tokio::task::spawn_blocking(move || gh.release_asset_exists(&tag_clone, &archive_clone))
+            .await
+            .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(github_down)?;
+
+    let base_url = format!(
+        "https://github.com/{}/releases/download/{}",
+        inner.config.github.repo, tag
+    );
+    let archive_url = format!("{base_url}/{archive_name}");
+    let sig_url = format!("{base_url}/{sig_name}");
+
+    if exists {
+        return Ok(Json(json!({
+            "status": "ready",
+            "key": key,
+            "tag": tag,
+            "archive": archive_name,
+            "signature": sig_name,
+            "url": archive_url,
+            "sig_url": sig_url,
+        })));
+    }
+
+    // Verify all requested mods exist in the registry, match version and sha256, and are not revoked
+    let mods_to_check = request.mods.clone();
+    let gh = inner.config.github.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), Refusal> {
+        for m in &mods_to_check {
+            let entry = gh.entry(&m.id).map_err(github_down)?;
+            let Some((entry, _blob)) = entry else {
+                return Err(bad(format!("mod {:?} is not in the registry", m.id)));
+            };
+            if entry.kind != Kind::NativeMod {
+                return Err(bad(format!("mod {:?} is not a native mod", m.id)));
+            }
+            let version = entry.versions.iter().find(|v| v.version == m.version);
+            let Some(v) = version else {
+                return Err(bad(format!(
+                    "mod {:?} has no version {:?}",
+                    m.id, m.version
+                )));
+            };
+            if !v.sha256.eq_ignore_ascii_case(&m.sha256) {
+                return Err(bad(format!(
+                    "file SHA-256 mismatch for {:?}@{}: expected {}, got {}",
+                    m.id, m.version, v.sha256, m.sha256
+                )));
+            }
+        }
+        let revoked = gh.revoked().map_err(github_down)?;
+        if let Some(m) = mods_to_check.iter().find(|m| {
+            revoked.iter().any(|r| {
+                r.id == m.id
+                    && r.sha256
+                        .as_ref()
+                        .is_none_or(|h| h.eq_ignore_ascii_case(&m.sha256))
+            })
+        }) {
+            return Err(bad(format!("{}@{} was taken down", m.id, m.version)));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    // Check dedup window
+    let recent = {
+        let dispatched = inner.dispatched.lock().unwrap();
+        dispatched
+            .get(&key)
+            .is_some_and(|at| at.elapsed() < DISPATCH_DEDUP_WINDOW)
+    };
+
+    if !recent {
+        let gh = inner.config.github.clone();
+        let target = request.target.clone();
+        let base = request.base.clone();
+        let mods_str = request
+            .mods
+            .iter()
+            .map(|m| format!("{}@{}", m.id, m.version))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        tokio::task::spawn_blocking(move || {
+            gh.dispatch_native_build("main", &target, &base, &mods_str)
+        })
+        .await
+        .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(github_down)?;
+
+        inner
+            .dispatched
+            .lock()
+            .unwrap()
+            .insert(key.clone(), Instant::now());
+    }
+
+    Ok(Json(json!({
+        "status": "queued",
+        "key": key,
+        "tag": tag,
+        "archive": archive_name,
+        "signature": sig_name,
+        "url": archive_url,
+        "sig_url": sig_url,
+    })))
+}
+
+async fn get_native_build(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<NativeBuildQuery>,
+) -> Result<Json<serde_json::Value>, Refusal> {
+    if !allow(
+        &app.0.poll_windows,
+        &client_ip(&headers),
+        POLLS_PER_ADDRESS,
+        POLLS_PER_HOUR,
+    ) {
+        return Err(Refusal::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many native build polls this hour: try again later",
+        ));
+    }
+    if !is_hex_str(&query.base, 40) {
+        return Err(bad(format!(
+            "{:?} is not a commit (40 hex digits)",
+            query.base
+        )));
+    }
+    if !is_target_triple(&query.target) {
+        return Err(bad(format!(
+            "{:?} is not a valid target triple",
+            query.target
+        )));
+    }
+    if !is_hex_str(&query.key, 64) {
+        return Err(bad(format!(
+            "{:?} is not a request key (64 hex digits)",
+            query.key
+        )));
+    }
+
+    let tag = native_build::release_tag(&query.base);
+    let archive_name = native_build::archive(&query.key, &query.target);
+    let sig_name = native_build::signature(&query.key, &query.target);
+
+    let gh = app.0.config.github.clone();
+    let tag_clone = tag.clone();
+    let archive_clone = archive_name.clone();
+
+    let exists =
+        tokio::task::spawn_blocking(move || gh.release_asset_exists(&tag_clone, &archive_clone))
+            .await
+            .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(github_down)?;
+
+    let base_url = format!(
+        "https://github.com/{}/releases/download/{}",
+        app.0.config.github.repo, tag
+    );
+    let archive_url = format!("{base_url}/{archive_name}");
+    let sig_url = format!("{base_url}/{sig_name}");
+
+    let status = if exists { "ready" } else { "queued" };
+    Ok(Json(json!({
+        "status": status,
+        "key": query.key,
+        "tag": tag,
+        "archive": archive_name,
+        "signature": sig_name,
+        "url": archive_url,
+        "sig_url": sig_url,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,5 +1599,72 @@ mod tests {
             Some("https://playhorizon.dev.evil.test")
         ));
         assert!(!from_the_site("::", Some("null")));
+    }
+
+    #[test]
+    fn native_build_request_and_key_computation() {
+        let req = NativeBuildRequest {
+            target: "x86_64-unknown-linux-gnu".into(),
+            base: "0123456789abcdef0123456789abcdef01234567".into(),
+            mods: vec![
+                NativeBuildMod {
+                    id: "zoom".into(),
+                    version: "1.0.0".into(),
+                    sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                        .into(),
+                },
+                NativeBuildMod {
+                    id: "minimap".into(),
+                    version: "2.1.0".into(),
+                    sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+                        .into(),
+                },
+            ],
+        };
+        let mods: Vec<Mod> = req
+            .mods
+            .into_iter()
+            .map(|m| Mod {
+                id: m.id,
+                version: m.version,
+                sha256: m.sha256,
+            })
+            .collect();
+        let built = BuildRequest::new(&req.target, &req.base, mods).expect("valid request");
+        assert_eq!(built.mods[0].id, "minimap");
+        assert_eq!(built.mods[1].id, "zoom");
+        let key = built.key();
+        assert_eq!(key.len(), 64);
+        assert_eq!(
+            native_build::release_tag(&req.base),
+            "native-builds-0123456789ab"
+        );
+        let archive = native_build::archive(&key, &req.target);
+        assert!(archive.starts_with(&key[..16]));
+        assert!(archive.ends_with("-x86_64-unknown-linux-gnu.tar.gz"));
+        let sig = native_build::signature(&key, &req.target);
+        assert!(sig.starts_with(&key[..16]));
+        assert!(sig.ends_with("-x86_64-unknown-linux-gnu.sig"));
+    }
+
+    #[test]
+    fn a_client_cannot_pick_its_own_rate_limit_address() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 203.0.113.9".parse().unwrap());
+        assert_eq!(client_ip(&headers), "203.0.113.9");
+        headers.insert("x-real-ip", "198.51.100.7".parse().unwrap());
+        assert_eq!(client_ip(&headers), "198.51.100.7");
+        assert_eq!(client_ip(&HeaderMap::new()), "anonymous");
+    }
+
+    #[test]
+    fn native_build_query_validation() {
+        assert!(is_hex_str("0123456789abcdef0123456789abcdef01234567", 40));
+        assert!(!is_hex_str("0123456789abcdef", 40));
+        assert!(!is_hex_str("0123456789abcdef0123456789abcdef0123456g", 40));
+        assert!(is_target_triple("x86_64-unknown-linux-gnu"));
+        assert!(is_target_triple("x86_64-pc-windows-gnu"));
+        assert!(is_target_triple("aarch64-apple-darwin"));
+        assert!(!is_target_triple("riscv64gc-unknown-linux-gnu"));
     }
 }
