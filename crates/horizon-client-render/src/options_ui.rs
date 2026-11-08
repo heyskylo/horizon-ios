@@ -321,6 +321,8 @@ impl Opt {
             Opt::PadNintendoButtons => "horizon.options.nintendo_buttons",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
             Opt::PadGameplayGuide => "horizon.options.gameplay_guide",
+            Opt::PadRadialMode => "horizon.options.radial_mode",
+            Opt::PadRadialStick => "horizon.options.radial_stick",
             Opt::ModelPart(i) => [
                 "options.modelPart.cape",
                 "options.modelPart.jacket",
@@ -877,6 +879,15 @@ impl Opt {
                 gamepad::TextKeyboard::Horizon => "horizon.options.keyboard.horizon",
                 gamepad::TextKeyboard::Steam => "horizon.options.keyboard.steam",
             }),
+            Opt::PadRadialMode => tr(match s.controller.radial_mode {
+                gamepad::RadialMode::Hold => "options.key.hold",
+                gamepad::RadialMode::Toggle => "options.key.toggle",
+            }),
+            Opt::PadRadialStick => tr(match s.controller.radial_stick {
+                gamepad::RadialStick::Right => "horizon.options.radial_stick.right",
+                gamepad::RadialStick::Left => "horizon.options.radial_stick.left",
+                gamepad::RadialStick::Either => "horizon.options.radial_stick.either",
+            }),
             _ => Text::empty(),
         }
     }
@@ -1195,6 +1206,24 @@ impl Opt {
                     .position(|k| *k == s.controller.keyboard)
                     .unwrap_or(0) as u8;
                 s.controller.keyboard = all[usize::from(next(i, 3))];
+            }
+            Opt::PadRadialMode => {
+                let all = gamepad::RadialMode::ALL;
+                let i = all
+                    .iter()
+                    .position(|m| *m == s.controller.radial_mode)
+                    .unwrap_or(0) as u8;
+                s.controller.radial_mode = all[usize::from(next(i, all.len() as u8))];
+            }
+            Opt::PadRadialStick => {
+                let all = gamepad::RadialStick::ALL;
+                let i = all
+                    .iter()
+                    .position(|k| *k == s.controller.radial_stick)
+                    .unwrap_or(0) as u8;
+                // An opener under the thumb that now selects goes unbound.
+                s.controller
+                    .set_radial_stick(all[usize::from(next(i, all.len() as u8))]);
             }
             _ => {}
         }

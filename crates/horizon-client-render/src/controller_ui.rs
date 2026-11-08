@@ -106,6 +106,15 @@ fn choice_description(opt: Opt, pad: &PadSettings) -> Option<&'static str> {
             }
             gamepad::Lightbar::Off => "A DualSense keeps its own light.",
         },
+        Opt::PadRadialMode => match pad.radial_mode {
+            gamepad::RadialMode::Hold => "horizon.options.radial_mode.hold.about",
+            gamepad::RadialMode::Toggle => "horizon.options.radial_mode.toggle.about",
+        },
+        Opt::PadRadialStick => match pad.radial_stick {
+            gamepad::RadialStick::Right => "horizon.options.radial_stick.right.about",
+            gamepad::RadialStick::Left => "horizon.options.radial_stick.left.about",
+            gamepad::RadialStick::Either => "horizon.options.radial_stick.either.about",
+        },
         _ => return None,
     })
 }
@@ -122,6 +131,9 @@ fn info(info: Info, text: &'static str) -> Setting {
         text,
     }
 }
+
+/// The radial menu's group on General: how it opens and selects.
+const RADIAL_GROUP: &str = "Radial Menu";
 
 /// Shown on a binding's row until it is focused, and in the search.
 const BIND_TEXT: &str = "Press this row, then the button that should do it.";
@@ -199,6 +211,13 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Opt::PadTriggerThreshold,
                             "How far a trigger is pulled before it counts as pressed.",
                         ),
+                    ],
+                ),
+                (
+                    RADIAL_GROUP,
+                    vec![
+                        option(Opt::PadRadialMode, "horizon.options.radial_mode.about"),
+                        option(Opt::PadRadialStick, "horizon.options.radial_stick.about"),
                     ],
                 ),
                 (
@@ -936,6 +955,8 @@ mod tests {
             (Opt::PadNintendoButtons, 2),
             (Opt::PadKeyboard, 3),
             (Opt::PadLightbar, 3),
+            (Opt::PadRadialMode, 2),
+            (Opt::PadRadialStick, 3),
         ] {
             let setting = option(opt, "the fixed sentence");
             let mut seen = Vec::new();
@@ -969,6 +990,8 @@ mod tests {
                 Opt::PadNintendoButtons,
                 Opt::PadKeyboard,
                 Opt::PadLightbar,
+                Opt::PadRadialMode,
+                Opt::PadRadialStick,
             ] {
                 for _ in 0..4 {
                     lang::get(choice_description(opt, &settings.controller).unwrap());

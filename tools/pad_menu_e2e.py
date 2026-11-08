@@ -100,6 +100,8 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
   the thumb rolling off the D-pad opener onto Drop drops nothing.
 - radial_either_takeover: with Either, the right stick taking over from a walking left one selects at once, and the
   walking thumb easing on its frozen stick never takes over.
+- radial_stick_back: Selects With stepped from Left (Y the opener) back to Right gives D-pad Right again; Right and Left
+  step the row as every shell choice does.
 - radial_status_rows: survival with armour and absorption, shot at 427x240 and 320x180: the dial clear of the rows.
 """
 import argparse
@@ -3884,6 +3886,63 @@ def radial_either_takeover(game, check):
         game.ctl('key', 'escape', 'tap')
 
 
+def radial_stick_back(args, name):
+    """Selects With stepped from Left (Y opening it) back to Right: D-pad Right opens it again. Right and Left
+    step the row, as every shell choice."""
+    seed = lambda home: (home / 'horizon-controller.txt').write_text(
+        'bindLayout:2\nradialStick:left\nbind_pad.radial:north\n')
+    game = Game(args, name, world=True, seed=seed)
+    check = Check()
+    row = 'Radial Menu Selects With'
+    try:
+        game.ctl('pad', 'focus', 'true')
+        time.sleep(SETTLE)
+        game.ctl('options', 'controller')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # The first press lands the focus on the page list (General); then into its rows, and down
+        # to the radial group.
+        game.pad('down')
+        game.pad('right')
+        seen = []
+        for _ in range(60):
+            seen.append(game.focused_label())
+            if (game.focused_label() or '').startswith(row):
+                break
+            game.pad('down')
+        label = game.focused_label() or ''
+        check(label.startswith(row) and 'Left' in label, f'never reached the row: {label}, passing {seen}')
+        shot(game, 'radial_stick_left')
+        # Right and Left step it as every shell choice does, and the focus stays on the row.
+        game.pad('right')
+        stepped = game.focused_label() or ''
+        game.pad('left')
+        back = game.focused_label() or ''
+        check(stepped.startswith(row) and 'Either' in stepped and back.startswith(row) and 'Left' in back,
+              f'Right and Left did not step the row: {stepped}, then {back}')
+        # A steps it on: Either (no opener, Y being under the right thumb too), then Right.
+        steps = []
+        for _ in range(2):
+            game.pad('south')
+            steps.append(game.focused_label() or '')
+        label = steps[-1]
+        check('Either' in steps[0] and 'Right' in label, f'A did not step it round to the right stick: {steps}')
+        shot(game, 'radial_stick_back_right')
+        for _ in range(3):
+            if game.ctl('ui')['screen'] == 'playing':
+                break
+            game.pad('east')
+        time.sleep(SETTLE)
+        check('radialStick:left' not in controller_saved(game), f'not saved: {controller_saved(game)}')
+        game.ctl('pad', 'right', 'down')
+        time.sleep(0.2)
+        check(radial(game)['open'], f'D-pad Right does not open it on the right stick: {radial(game)}')
+        game.ctl('pad', 'right', 'up')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def radial_status_rows(args, name):
     """Survival with armour and absorption: the dial draws clear of the rows over the hotbar, at
     427x240 and 320x180 (shots only; the layout's own test checks the numbers)."""
@@ -4215,7 +4274,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'radial_unavailable': radial_unavailable, 'radial_old_file': radial_old_file,
          'radial_commit_screen': radial_commit_screen, 'radial_nintendo_glyphs': radial_nintendo_glyphs,
          'radial_cancel_roll': radial_cancel_roll, 'radial_toggle_roll': radial_toggle_roll,
-         'radial_either_takeover': radial_either_takeover,
+         'radial_either_takeover': radial_either_takeover, 'radial_stick_back': radial_stick_back,
          'radial_status_rows': radial_status_rows,
          'slider_needs_a': slider_needs_a,
          'gameplay_guide': gameplay_guide,

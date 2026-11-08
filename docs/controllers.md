@@ -104,8 +104,9 @@ stick that doesn't select still walks or turns the view.
 Every hold opens on the first page, so a flick aimed blind always lands on the
 same slot.
 
-Two settings change how it is held and aimed, saved as `radialMode` and
-`radialStick` in `horizon-controller.txt`:
+Two settings in Controller Settings > General, under Radial Menu, change how it
+is held and aimed, saved as `radialMode` and `radialStick` in
+`horizon-controller.txt`:
 
 - Radial Menu: Hold (the default) or Toggle (`radialMode:hold|toggle`). In
   Toggle a press opens it, shown at once, and it stays open with the opener up:
