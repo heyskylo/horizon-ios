@@ -170,6 +170,7 @@ fn self_pose_wire_lifecycle_preserves_existing_publishers() {
     let mut next_entity = 2;
     let border = crate::worldborder::WorldBorder::default();
     let ctx = TickCtx {
+        sea_level: 63,
         world: &mut world,
         entities: &[],
         next_entity: &mut next_entity,
@@ -410,6 +411,7 @@ fn tick_packet(hub: &mut Hub, world: &mut World, packet: S) {
     let mut next_entity = 2;
     let border = crate::worldborder::WorldBorder::default();
     let mut ctx = TickCtx {
+        sea_level: 63,
         world,
         entities: &[],
         next_entity: &mut next_entity,
@@ -476,6 +478,7 @@ fn a_shared_flag_cleared_after_a_level_change_reaches_the_player() {
     let mut next_entity = 2;
     let border = crate::worldborder::WorldBorder::default();
     let ctx = TickCtx {
+        sea_level: 63,
         world: &mut world,
         entities: &[],
         next_entity: &mut next_entity,
@@ -697,6 +700,7 @@ fn a_guests_riding_jump_reaches_the_game() {
     let mut next_entity = 100;
     let border = crate::worldborder::WorldBorder::default();
     let mut ctx = TickCtx {
+        sea_level: 63,
         world: &mut world,
         entities: &[],
         next_entity: &mut next_entity,
@@ -883,6 +887,7 @@ fn an_attacks_swing_goes_with_it_past_the_move_behind() {
     let mut next_entity = 2;
     let border = crate::worldborder::WorldBorder::default();
     let mut ctx = TickCtx {
+        sea_level: 63,
         world: &mut world,
         entities: &[],
         next_entity: &mut next_entity,
@@ -949,6 +954,7 @@ fn drain_action_then_move(action: i32) -> (Hub, Vec<S>, ([f64; 3], [f64; 3])) {
     let mut next_entity = 2;
     let border = crate::worldborder::WorldBorder::default();
     let mut ctx = TickCtx {
+        sea_level: 63,
         world: &mut world,
         entities: &[],
         next_entity: &mut next_entity,

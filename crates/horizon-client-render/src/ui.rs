@@ -810,8 +810,14 @@ fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &
     slider_sprites_ext(hover, active, false, false, dragging)
 }
 
-/// Track and handle sprites: the track outline shows while dragged or focused with
-/// keyboard navigation (!can_change_value), hovering or editing highlights the handle.
+/// `AbstractSliderButton.getSprite` and `getHandleSprite`: the track outline
+/// lights while the slider is focused and its value cannot change
+/// (`isActive() && isFocused() && !canChangeValue`), the handle while it is
+/// hovered or its value can change (`isActive() && (isHovered || canChangeValue)`).
+/// `canChangeValue` is set when the slider is focused with the mouse or Tab and
+/// flipped by Enter (`setFocused`, `keyPressed`): Horizon's `can_change_value`
+/// for the keyboard, and a drag for the mouse, which focuses it with the value
+/// free to change. So a dragged slider keeps its plain track.
 fn slider_sprites_ext(
     hover: bool,
     active: bool,
@@ -819,12 +825,13 @@ fn slider_sprites_ext(
     can_change_value: bool,
     dragging: bool,
 ) -> (&'static str, &'static str) {
-    let track = if dragging || (active && focused && !can_change_value) {
+    let can_change_value = can_change_value || dragging;
+    let track = if active && focused && !can_change_value {
         "gui/sprites/widget/slider_highlighted"
     } else {
         "gui/sprites/widget/slider"
     };
-    let handle = if active && (hover || can_change_value || dragging) {
+    let handle = if active && (hover || can_change_value) {
         "gui/sprites/widget/slider_handle_highlighted"
     } else {
         "gui/sprites/widget/slider_handle"
@@ -1231,6 +1238,9 @@ pub struct EditBox {
     /// Grey completion shown after the text (EditBox.setSuggestion).
     pub suggestion: Option<String>,
     pub text_color: u32,
+    /// `EditBox.setCentered`: the text starts in the middle of the box's
+    /// width, not at its left edge (`BookSignScreen`'s title).
+    pub centered: bool,
     /// `EditBox.textColorUneditable`: the colour of a box `setEditable(false)`
     /// made read-only, which still shows its value and caret.
     pub text_color_uneditable: u32,
@@ -1529,6 +1539,7 @@ impl EditBox {
             focused_at: Instant::now(),
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
+            centered: false,
             text_color_uneditable: rgba(112, 112, 112, 255),
             editable: true,
             message: String::new(),
@@ -1550,6 +1561,16 @@ impl EditBox {
             self.y + ((self.height - 8.0) / 2.0).floor()
         } else {
             self.y
+        }
+    }
+    /// `EditBox.updateTextPosition`: where the text starts, `(width - text
+    /// width) / 2` in for a centred box (vanilla's `textX`), else at
+    /// `text_x` (4 in from a border).
+    pub fn text_start_x(&self, text_width: f32) -> f32 {
+        if self.centered {
+            self.x + ((self.width - text_width) / 2.0).floor()
+        } else {
+            self.text_x()
         }
     }
     pub fn reset_blink(&mut self) {
@@ -1634,8 +1655,13 @@ impl EditBox {
     /// EditBox.findClickedPositionInText: the character boundary under GUI `x`.
     pub fn position_at(&mut self, atlas: &HudAtlas, x: f32) -> usize {
         self.layout(atlas);
-        let room = (x.floor() - self.text_x()).min(self.inner_width());
         let rest: String = self.value.chars().skip(self.display).collect();
+        let shown: String = rest
+            .chars()
+            .take(atlas.font.fit(&rest, self.inner_width()))
+            .collect();
+        let start = self.text_start_x(atlas.font.width_text(&Text::literal(shown.as_str())));
+        let room = (x.floor() - start).min(self.inner_width());
         self.display + atlas.font.fit(&rest, room)
     }
     /// EditBox.onClick: the cursor to the pointer, extending the selection
@@ -1842,7 +1868,12 @@ impl EditBox {
                 ),
             }
         };
-        let (tx, ty) = (self.text_x(), self.text_y());
+        let start = if self.centered {
+            self.text_start_x(atlas.font.width_text(&Text::literal(displayed.as_str())))
+        } else {
+            self.text_x()
+        };
+        let (tx, ty) = (start, self.text_y());
         let mut draw_x = tx;
         if !displayed.is_empty() {
             let half = if on_screen {
@@ -2175,15 +2206,36 @@ mod tests {
         }
     }
 
+    /// `AbstractSliderButton.getSprite`/`getHandleSprite`: a focused slider
+    /// whose value can't change lights its track, a hovered one or one whose
+    /// value can change (Tab or Enter, or the mouse's drag) lights its handle.
     #[test]
-    fn slider_track_is_outlined_only_while_dragged() {
+    fn slider_sprites_follow_focus_and_the_drag() {
+        // Hovered, at rest: plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, false);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Dragged: still a plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, true);
-        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Focused with the arrow keys: the value can't change, the track lights.
+        let (track, handle) = slider_sprites_ext(false, true, true, false, false);
+        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // Focused with Tab, or Enter pressed on it: the value can change, the handle lights.
+        let (track, handle) = slider_sprites_ext(false, true, true, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Focused while the mouse drags: the track stays plain.
+        let (track, _) = slider_sprites_ext(true, true, true, false, true);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        // Not hovered, not dragged: nothing is lit.
         let (track, handle) = slider_sprites(false, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // An inactive slider highlights neither, even when focused.
+        let (track, handle) = slider_sprites_ext(true, false, true, true, true);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle");
     }
@@ -2621,5 +2673,20 @@ mod tests {
         assert_eq!(edit.value, "namex");
         assert!(edit.key(winit::keyboard::KeyCode::Backspace, false, false));
         assert_eq!(edit.value, "name");
+    }
+
+    /// `EditBox.setCentered` (`BookSignScreen`'s title box): with the flag the
+    /// text starts `(width - text width) / 2` in, which is also where a click
+    /// maps; without it the text starts at the box's left edge.
+    #[test]
+    fn a_centred_box_starts_its_text_in_the_middle() {
+        let mut edit = EditBox::new(10.0, 0.0, 114.0, 9.0);
+        edit.bordered = false;
+        assert_eq!(edit.text_start_x(0.0), 10.0);
+        edit.centered = true;
+        assert_eq!(edit.text_start_x(0.0), 67.0);
+        assert_eq!(edit.text_start_x(18.0), 58.0);
+        // (114 - 5) / 2 = 54.5, rounded down.
+        assert_eq!(edit.text_start_x(5.0), 64.0);
     }
 }
