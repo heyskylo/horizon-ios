@@ -65,7 +65,9 @@ impl Game<'_> {
         }
 
         match words[0] {
-            "freecam" | "keyframe" | "path" => return self.studio_editor_command(&words),
+            "freecam" | "keyframe" | "path" if super::studio::EDITOR => {
+                return self.studio_editor_command(&words);
+            }
             "record" => match words.get(1).copied() {
                 Some("start") => match self.start_studio_recording(words.get(2).copied()) {
                     Ok(v) if v["ok"].as_bool() == Some(true) => {
@@ -555,7 +557,7 @@ impl Game<'_> {
                 }
                 _ => Ok(Some(json!({ "error": "unknown studio replay subcommand" }))),
             },
-            Some("screen") => self.studio_screen_control(words),
+            Some("screen") if super::studio::EDITOR => self.studio_screen_control(words),
             _ => Ok(Some(json!({ "error": "unknown studio command" }))),
         }
     }
