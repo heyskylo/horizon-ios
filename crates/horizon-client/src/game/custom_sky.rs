@@ -1,8 +1,8 @@
-//! OptiFine custom skies (`horizon_client::custom_sky`): each frame, the layers of the world's sky
-//! whose day, weather, biome and height hold at the camera, handed to the renderer, which draws
-//! them over the vanilla sky. A pack without `optifine/sky` hands it none.
+//! Custom skies (`horizon_client::custom_sky`, OptiFine's format): each frame, the layers of the
+//! world's sky whose day, weather, biome and height hold at the camera, handed to the renderer,
+//! which draws them over the vanilla sky. A pack without layers hands it none.
 use super::*;
-use horizon_optifine::sky::{Conditions, Now};
+use horizon_client::custom_sky::{Conditions, Weather};
 
 /// The layers' eased brightness between frames, and when the last frame was.
 #[derive(Default)]
@@ -46,11 +46,11 @@ impl Game<'_> {
             let mut state = std::mem::take(&mut self.custom_sky.state);
             // Level.isThundering / isRaining.
             let weather = if thunder > 0.9 && rain > 0.2 {
-                Now::Thunder
+                Weather::Thunder
             } else if rain > 0.2 {
-                Now::Rain
+                Weather::Rain
             } else {
-                Now::Clear
+                Weather::Clear
             };
             let conditions = Conditions {
                 day_time: self.view_day_time(),

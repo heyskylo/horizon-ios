@@ -7,3 +7,6 @@ pub use horizon_client_lib::*;
 pub mod entry;
 pub mod game;
 pub mod mod_api;
+
+#[cfg(test)]
+mod brewing_speed_load_tests;
