@@ -3,6 +3,7 @@
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
 mod mob_geometry;
+mod prep;
 mod projectile_world;
 mod pufferfish_player;
 mod spawn_eggs;
@@ -1187,20 +1188,9 @@ impl Game<'_> {
         self.init_sulfur_attribute_maps();
         let uuid = self.level.player_uuid;
         let level_id = self.dim.id();
-        // LivingEntity.isPushable reads onClimbable live; a mob's cached one
-        // is only refreshed by its own push step, so one that has not ticked
-        // yet (the first tick after a load, a fresh spawn) or has moved since
-        // would be pushed out of a ladder or scaffolding. Refreshed here, from
-        // where each mob stands now, before the snapshot others push it by.
-        let climbing: Vec<bool> = {
-            let w = self.mob_world_base(&[]);
-            self.mobs.iter().map(|m| m.on_climbable(&w)).collect()
-        };
-        for (m, climbing) in self.mobs.iter_mut().zip(climbing) {
-            m.on_climbable = climbing;
-        }
+        // Each mob's climbing, refreshed, and its snapshot entry (creatures/prep.rs).
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
-        snapshot.extend(self.mobs.iter().map(|m| seen(m, uuid)));
+        self.prepare_mobs(uuid, &mut snapshot);
         let mut events = std::mem::take(&mut self.creatures.event_buf);
         events.clear();
         // SulfurCube.primeWhenOnPoweredPosition runs before super.tick adopts
@@ -1287,6 +1277,7 @@ impl Game<'_> {
             let single_player = horizon_client::mobs::single_player_pos(
                 players.iter().map(|p| (p.position, p.spectator)),
             );
+            let nearest = prep::MobsNearest::new(&nearest, &mobs, single_player.is_none());
             let mut despawn_w = base.despawn_view();
             let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
@@ -1311,11 +1302,7 @@ impl Game<'_> {
                     keep.push(!m.hostile() || m.persistent);
                     continue;
                 }
-                let nearest_player = single_player.unwrap_or_else(|| {
-                    nearest
-                        .nearest(m.position.x, m.position.y, m.position.z)
-                        .map(|p| p.position)
-                });
+                let nearest_player = single_player.unwrap_or_else(|| nearest.at(i, m.position));
                 // ServerLevel.tick: every loaded entity checks despawning, but
                 // only those in entity-ticking chunks (within the simulation
                 // distance) tick. The despawn check reads the nearest player
