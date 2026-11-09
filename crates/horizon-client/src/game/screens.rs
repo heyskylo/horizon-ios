@@ -316,15 +316,9 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
-        for (i, (x, y, sprite)) in pause_icons(
-            w,
-            h,
-            links,
-            additions.is_some(),
-            &self.pause_rows(),
-        )
-        .into_iter()
-        .enumerate()
+        for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.is_some(), &self.pause_rows())
+            .into_iter()
+            .enumerate()
         {
             let active = icon_active(i, friends);
             let is_focused = (self.pause_focus == Some(10) && i == FRIENDS_ICON)
@@ -444,7 +438,11 @@ impl Game<'_> {
                     && *i < usize::from(u8::MAX - ADDED_PAGES)
             })
             .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8));
-        split.then_some((SPLIT_SETTINGS, 30)).into_iter().chain(added).collect()
+        split
+            .then_some((SPLIT_SETTINGS, 30))
+            .into_iter()
+            .chain(added)
+            .collect()
     }
     pub(super) fn pause_click(&mut self) -> Result<()> {
         let (w, h) = {
@@ -457,13 +455,7 @@ impl Game<'_> {
         };
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
-        let icons = pause_icons(
-            w,
-            h,
-            links,
-            additions.is_some(),
-            &self.pause_rows(),
-        );
+        let icons = pause_icons(w, h, links, additions.is_some(), &self.pause_rows());
         let friends = icons[FRIENDS_ICON];
         let hit = pause_buttons(
             w,
@@ -890,7 +882,10 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Screen, death_buttons, pause_buttons, pause_icon_focus_ids, pause_icons};
+    use super::{
+        ADDED_PAGES, SPLIT_SETTINGS, Screen, death_buttons, pause_buttons, pause_icon_focus_ids,
+        pause_icons,
+    };
 
     #[test]
     fn death_buttons_sit_on_whole_gui_pixels() {
@@ -1010,7 +1005,11 @@ mod tests {
         let y = |id| buttons.iter().find(|b| b.4 == id).unwrap().1;
         assert_eq!(y(ADDED_PAGES), y(30) + 24.0);
         assert_eq!(y(ADDED_PAGES + 2), y(ADDED_PAGES) + 24.0);
-        assert_eq!(y(1), y(ADDED_PAGES + 2) + 24.0, "Options under the last one");
+        assert_eq!(
+            y(1),
+            y(ADDED_PAGES + 2) + 24.0,
+            "Options under the last one"
+        );
         // The grid stays centred: three more rows start it higher.
         let without = pause_buttons(427.0, 300.0, true, false, false, &[]);
         let back = |b: &[(f32, f32, f32, &str, u8, bool)]| b.iter().find(|b| b.4 == 0).unwrap().1;
@@ -1019,7 +1018,14 @@ mod tests {
     #[test]
     fn split_settings_preserves_dialog_rows_and_icon_actions() {
         for (links, additions) in [(false, false), (true, false), (false, true), (true, true)] {
-            let buttons = pause_buttons(427.0, 300.0, true, links, additions, &[(SPLIT_SETTINGS, 30)]);
+            let buttons = pause_buttons(
+                427.0,
+                300.0,
+                true,
+                links,
+                additions,
+                &[(SPLIT_SETTINGS, 30)],
+            );
             let split = buttons.iter().find(|b| b.4 == 30).unwrap();
             let options = buttons.iter().find(|b| b.4 == 1).unwrap();
             assert_eq!(options.1, split.1 + 24.0);
