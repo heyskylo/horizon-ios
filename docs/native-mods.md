@@ -181,6 +181,11 @@ API 2 adds the item panel beside container screens and its recipe pages (`native
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
 recipe viewer needs.
 
+The pending `panel_style` helper, `native_panel_style(mod_id, style)`, lets a recipe viewer's panel look like one:
+`NativePanelStyle::Viewer` draws its page buttons as square buttons on a bar over the items and its search box with the
+viewer's skin, as Horizon's Recipes panel does; `NativePanelStyle::RecipeBook` (the default) keeps the recipe book's
+arrows. Only the drawing changes. Bundles need `"hooks": @API:panel_style@`.
+
 API 11 adds `GameLevel::native_send_particles` on authoritative servers. It sends supported
 vanilla particles to nearby players. Block particles require a valid block state. Item, trail and
 vibration particles are not supported by the current dispatch. Count zero sends one directional
