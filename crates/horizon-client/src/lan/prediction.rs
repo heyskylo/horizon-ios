@@ -23,8 +23,8 @@ use std::collections::VecDeque;
 
 pub mod record;
 
-use record::{Change, ClientTick, KEPT, Record, Restart};
 use horizon_core::geometry::Vec3;
+use record::{Change, ClientTick, KEPT, Record, Restart};
 
 use crate::motion::PlayerMotion;
 use crate::sprint::Keys;
@@ -652,13 +652,13 @@ fn sync(body: &mut PlayerMotion, server: &PlayerMotion) {
 
 #[cfg(test)]
 mod tests {
+    use super::record::Record;
     use super::*;
     use crate::{
         assets::Assets,
         motion::{MotionResources, MotionWorld},
         world::World,
     };
-    use super::record::Record;
     use std::path::Path;
 
     /// Keys for each tick: 20 walking, 12 sprint-jumping, 12 strafing while turning, 6 still.
