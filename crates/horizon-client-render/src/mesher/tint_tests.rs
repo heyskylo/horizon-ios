@@ -291,3 +291,77 @@ fn biome_colors_and_a_grass_block_colormap_replace_their_whole_biome_function() 
     assert_eq!(tints.water(3, 4, 5), 0x00_FF00);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn only_a_colormap_that_ignores_the_height_is_shared_up_a_column() {
+    let root = pack(&[
+        (
+            "assets/mypack/polytone/colormaps/flat.png",
+            png_row(&[[1, 2, 3, 255]]),
+        ),
+        (
+            "assets/mypack/polytone/colormaps/flat.json",
+            br#"{"x_axis": "biome_id", "y_axis": "r.noise(o.x/60, o.z/60)"}"#.to_vec(),
+        ),
+        (
+            "assets/mypack/polytone/colormaps/tall.png",
+            png_row(&[[1, 2, 3, 255]]),
+        ),
+        (
+            "assets/mypack/polytone/colormaps/tall.json",
+            br#"{"y_axis": "y_level"}"#.to_vec(),
+        ),
+    ]);
+    let load = |id| crate::environment::Colormap::load(&root, id).unwrap();
+    assert!(load("mypack:flat").column);
+    assert!(!load("mypack:tall").column);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Times a section's colormap tints with the freepack's kind of grass colormap (a biome id
+/// column and a noise row) over the default Biome Blend: `cargo test --release ... -- --ignored
+/// --nocapture colormap_tint_cost`.
+#[test]
+#[ignore = "timing, not a check"]
+fn colormap_tint_cost() {
+    const RADIUS: i32 = 2;
+    const LAYERS: i32 = 16;
+    let biomes = Biomes::from_jsons(&[(
+        "minecraft:plains",
+        serde_json::json!({"effects": {"water_color": 0x3F76E4}}),
+    )]);
+    let pixels: Vec<[u8; 4]> = (0..16).map(|i| [i * 16, 200, 64, 255]).collect();
+    let root = pack(&[
+        ("assets/mypack/polytone/colormaps/grass.png", png_row(&pixels)),
+        (
+            "assets/mypack/polytone/colormaps/grass.json",
+            br#"{"x_axis": "biome_id", "y_axis": "0.5+(r.noise(o.x/60,5+o.z/60)*0.55)", "biome_id_mapper": {"minecraft:plains": 1, "texture_size": 16}}"#
+                .to_vec(),
+        ),
+    ]);
+    let colormaps = vec![Arc::new(
+        crate::environment::Colormap::load(&root, "mypack:grass").unwrap(),
+    )];
+    let chunks: Vec<Vec<Chunk>> = (0..3)
+        .map(|rz| (0..3).map(|rx| filled(rx - 1, rz - 1, 0)).collect())
+        .collect();
+    let region: [[Option<&Chunk>; 3]; 3] =
+        std::array::from_fn(|rz| std::array::from_fn(|rx| Some(&chunks[rz][rx])));
+    let rounds = 50;
+    let start = std::time::Instant::now();
+    let mut check = 0u64;
+    for _ in 0..rounds {
+        let mut tints = Tints::new(&region, &biomes, BiomeZoom::new(0), RADIUS, [0, 0, 64]);
+        tints.colormaps = &colormaps;
+        for y in 0..LAYERS {
+            for z in 0..16 {
+                for x in 0..16 {
+                    check += u64::from(tints.colormap(0, x, y, z).unwrap_or(0));
+                }
+            }
+        }
+    }
+    let per = start.elapsed() / rounds;
+    println!("{LAYERS} layers of 256 blended colormap tints: {per:?} (checksum {check})");
+    std::fs::remove_dir_all(root).unwrap();
+}

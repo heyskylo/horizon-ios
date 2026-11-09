@@ -1557,9 +1557,9 @@ struct Tints<'a> {
     /// by colormap and section-local block.
     colormaps: &'a [Arc<crate::environment::Colormap>],
     water_colormap: Option<u16>,
-    sampled: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
+    sampled: crate::fast_hash::FxHashMap<(u16, [i32; 3]), Option<u32>>,
     /// Each colormap's own colour by block, before the blend averages them.
-    cells: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
+    cells: crate::fast_hash::FxHashMap<(u16, [i32; 3]), Option<u32>>,
 }
 impl<'a> Tints<'a> {
     fn new(
@@ -1580,8 +1580,8 @@ impl<'a> Tints<'a> {
             uniform: None,
             colormaps: &[],
             water_colormap: None,
-            sampled: std::collections::HashMap::new(),
-            cells: std::collections::HashMap::new(),
+            sampled: Default::default(),
+            cells: Default::default(),
         }
     }
     /// With the packs' colormaps of `tables`.
@@ -1593,10 +1593,16 @@ impl<'a> Tints<'a> {
     /// Colormap `index`'s colour at block `(x, y, z)` (section-local), `None` where its pixel
     /// is transparent.
     fn colormap(&mut self, index: u16, x: i32, y: i32, z: i32) -> Option<u32> {
+        let colormap = self.colormaps.get(usize::from(index))?.clone();
+        // A colormap that ignores the height, over one biome: one colour per column.
+        let y = if colormap.column && self.uniform_biome().is_some() {
+            0
+        } else {
+            y
+        };
         if let Some(&known) = self.sampled.get(&(index, [x, y, z])) {
             return known;
         }
-        let colormap = self.colormaps.get(usize::from(index))?.clone();
         // ClientLevel.calculateBlockTint: the mean of the (2r+1)^2 colours around the block, each
         // channel summed and divided. A transparent pixel in the square leaves the block's own.
         let r = if colormap.biome_blend { self.radius } else { 0 };
@@ -1635,7 +1641,11 @@ impl<'a> Tints<'a> {
         if let Some(&known) = self.cells.get(&(index, at)) {
             return known;
         }
-        let id = Self::biome_id(&self.zoom, self.region, self.plains, self.origin, at);
+        // One biome over the section and its blend margin: no zoom per block.
+        let id = match self.uniform_biome() {
+            Some(biome) => biome,
+            None => Self::biome_id(&self.zoom, self.region, self.plains, self.origin, at),
+        };
         let [cx, cz, base_y] = self.origin;
         let block = [cx * 16 + at[0], base_y + at[1], cz * 16 + at[2]];
         let mut host = crate::environment::BlockHost::new(block, self.biomes.get(id));
