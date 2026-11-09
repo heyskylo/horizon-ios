@@ -589,7 +589,7 @@ listed `linux_only` are skipped there (see above). By hand: `gh workflow run "ni
 Releases ship often, so nothing they leave behind may grow without bound.
 
 - **Artifacts:** every upload keeps 3 days (nightly parity logs 7); a release's assets live on the release itself.
-- **Mac runners:** `tools/ci/runner-gc.sh` runs every 6 hours from launchd on the Mac mini, as a copy taken from main
+- **Mac runners:** `tools/ci/runner-gc.sh` runs every 30 minutes from launchd (`StartInterval` 1800) on the Mac mini, as a copy taken from main
   (`~/.actions-runners/runner-gc.sh`, plist `dev.horizon.runner-gc`), never from a pull request's checkout. It skips a
   runner in a job, removes a checkout's cargo build folders past 12 GB (`MAX_TARGET_GB`) and harness work folders
   under `.local/` untouched for 3 days (`STALE_DAYS`), and keeps the 2 newest shared preparations (`KEEP_PREPARED`)
