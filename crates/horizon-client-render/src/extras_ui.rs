@@ -67,7 +67,10 @@ fn label_text(label: Label) -> String {
 }
 
 /// The page's group named `name`, made at the end if it has none.
-fn group_named(groups: &mut Vec<Group<ExtraRow>>, name: &'static str) -> &mut Group<ExtraRow> {
+fn group_named<'a>(
+    groups: &'a mut Vec<Group<ExtraRow>>,
+    name: &'static str,
+) -> &'a mut Group<ExtraRow> {
     let at = groups.iter().position(|group| group.name == name);
     let at = at.unwrap_or_else(|| {
         groups.push(Group {
@@ -93,7 +96,9 @@ fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
                     continue;
                 }
                 added::Row::Note(text) => Row::new(id, text, Value::Note).live(false),
-                added::Row::Toggle { label, on } => Row::new(id, lang::get(label), Value::Switch(on)),
+                added::Row::Toggle { label, on } => {
+                    Row::new(id, lang::get(label), Value::Switch(on))
+                }
                 added::Row::Cycle { label, value } => {
                     Row::new(id, lang::get(label), Value::Choice(label_text(value)))
                 }
@@ -243,7 +248,9 @@ impl Screen for ExtrasScreen {
                 Output::Event(Event::NativeSettings(i)),
             ],
             ExtraRow::ZoomInstall => Vec::new(),
-            ExtraRow::Added(page, r) => act(page, r, if back { Act::PressBack } else { Act::Press }),
+            ExtraRow::Added(page, r) => {
+                act(page, r, if back { Act::PressBack } else { Act::Press })
+            }
         }
     }
     fn slide(&mut self, _s: &mut Settings, row: ExtraRow, position: f32) {
@@ -483,7 +490,9 @@ mod tests {
             added::Place::HorizonSettings
         }
         fn rows(&self, rows: &mut Vec<added::Row>) {
-            rows.push(added::Row::Button { label: "test.elsewhere.button" });
+            rows.push(added::Row::Button {
+                label: "test.elsewhere.button",
+            });
         }
         fn act(&self, _: usize, _: Act) {}
     }
@@ -517,7 +526,11 @@ mod tests {
         let multiplayer = ids("horizon.extras.header.multiplayer");
         assert_eq!(multiplayer.last(), Some(&ExtraRow::Added(1, 0)));
         assert_eq!(groups.last().unwrap().name, "test.section.heading");
-        let own = [ExtraRow::Added(1, 2), ExtraRow::Added(1, 3), ExtraRow::Added(1, 4)];
+        let own = [
+            ExtraRow::Added(1, 2),
+            ExtraRow::Added(1, 3),
+            ExtraRow::Added(1, 4),
+        ];
         assert_eq!(ids("test.section.heading"), own);
         let all = rows_of(&s);
         assert!(!all.iter().any(|r| matches!(r.id, ExtraRow::Added(0, _))));
@@ -532,7 +545,11 @@ mod tests {
         let mut shell = Shell::<ExtrasScreen>::default();
         let switch = ExtraRow::Added(1, 0);
         let at = shell.point_at(&s, SIZE, switch);
-        assert!(!shell.click(&mut s, at, SIZE, false, false, false).is_empty());
+        assert!(
+            !shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
         assert!(*section.on.lock().unwrap());
         let value = |s: &Settings, id| rows_of(s).into_iter().find(|r| r.id == id).unwrap().value;
         assert_eq!(value(&s, switch), Value::Switch(true));
@@ -542,9 +559,16 @@ mod tests {
         assert_eq!(value(&s, step), Value::Choice("-1".into()));
         assert!(screen.wheel_step(&mut s, step, false).is_some());
         assert_eq!(*section.step.lock().unwrap(), 0);
-        assert_eq!(screen.wheel_step(&mut s, ExtraRow::Added(1, 3), false), None);
+        assert_eq!(
+            screen.wheel_step(&mut s, ExtraRow::Added(1, 3), false),
+            None
+        );
         let note = shell.point_at(&s, SIZE, ExtraRow::Added(1, 3));
-        assert!(shell.click(&mut s, note, SIZE, false, false, false).is_empty());
+        assert!(
+            shell
+                .click(&mut s, note, SIZE, false, false, false)
+                .is_empty()
+        );
         screen.slide(&mut s, ExtraRow::Added(1, 4), 0.25);
         assert_eq!(*section.volume.lock().unwrap(), 0.25);
     }
