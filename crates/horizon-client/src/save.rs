@@ -13,6 +13,7 @@
 //! game rules) is kept from the loaded files and written back unchanged.
 //! Worlds saved by older Horizon builds (`region/`, `DIM-1/`, `Player` in
 //! `level.dat`) are migrated on open.
+mod backpressure;
 mod respawn;
 
 use crate::{
@@ -2542,11 +2543,6 @@ pub struct SaveDir {
     blending_lookup: OnceLock<BlendingLookup>,
 }
 
-/// Keep asynchronous chunk saves from retaining an unbounded number of full
-/// chunk snapshots when generation is faster than the region writer (notably
-/// `/pregen`, which can unload thousands of freshly generated chunks per
-/// second).
-const MAX_ASYNC_CHUNK_WRITES: usize = 512;
 fn is_forced_ticket(ticket: &Tag) -> bool {
     matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:forced"))
 }
@@ -3192,15 +3188,7 @@ impl SaveDir {
         registry: &'static BlockRegistry,
         biomes: &Arc<Biomes>,
     ) -> Result<usize> {
-        if !chunks.is_empty() && self.active_chunk_writes() >= MAX_ASYNC_CHUNK_WRITES {
-            self.flush()?;
-        }
-        let encoding = Arc::new(Encoding {
-            registry,
-            biomes: biomes.clone(),
-            tables: self.tables.get().cloned(),
-            shape: self.shape,
-        });
+        let encoding = self.encoding_for_save_later(chunks, registry, biomes)?;
         let records = chunks
             .iter()
             .map(|c| {
