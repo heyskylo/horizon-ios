@@ -1264,5 +1264,7 @@
   "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Horizon {pin} валли тунӑ: лаунчер ӑна эсӗ вылякан {yours} ҫинче пухать, {pin} ҫинче унта компиляциленмесен ҫеҫ",
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} эсӗ вылякан Horizon ҫинче пухӑнмарӗҫ: вӗсем валли тунӑ версире пухатпӑр",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Юлашки пухӑмра, {mods} валли Horizon {commit} ҫинче, {horizon} ҫинче мар",
-  "In the last build, on {horizon}": "Юлашки пухӑмра, {horizon} ҫинче"
+  "In the last build, on {horizon}": "Юлашки пухӑмра, {horizon} ҫинче",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

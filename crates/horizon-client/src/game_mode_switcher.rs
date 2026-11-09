@@ -21,6 +21,15 @@ pub fn slot_origin(width: i32, height: i32, index: usize) -> (i32, i32) {
     (width / 2 - 59 + index as i32 * 31, height / 2 - 31)
 }
 
+/// `GameModeSwitcherScreen.mouseReleased`: `keyDebugModifier.matchesMouse`
+/// picks the hovered mode and closes the screen, as the modifier key's own
+/// release does in `keyReleased`. `button` and `modifier` are mapping key
+/// names (`key.mouse.4`); a modifier bound to a keyboard key matches no mouse
+/// release.
+pub fn release_applies(button: &str, modifier: &str) -> bool {
+    modifier.starts_with("key.mouse.") && button == modifier
+}
+
 pub struct GameModeSwitcher {
     pub selected: GameMode,
     first_mouse: Option<(i32, i32)>,
@@ -115,5 +124,16 @@ mod tests {
         }
         state.hover(320, 240, (x + 25, y + 25));
         assert_eq!(state.selected, GameMode::Adventure);
+    }
+
+    /// `GameModeSwitcherScreen.mouseReleased`: only the debug modifier's own
+    /// button applies the selection (and closes the screen). A modifier on
+    /// F3 matches no mouse button, and another button is an ordinary release.
+    #[test]
+    fn only_the_debug_modifiers_mouse_button_applies_on_release() {
+        assert!(release_applies("key.mouse.4", "key.mouse.4"));
+        assert!(!release_applies("key.mouse.4", "key.keyboard.f3"));
+        assert!(!release_applies("key.mouse.middle", "key.mouse.4"));
+        assert!(!release_applies("key.mouse.4", "key.mouse.middle"));
     }
 }
