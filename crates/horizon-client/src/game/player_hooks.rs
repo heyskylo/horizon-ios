@@ -4,12 +4,15 @@
 //! registered nothing is built.
 
 use super::Game;
+use horizon_client::fast_hash::FxHashMap;
 use horizon_client::join_seq::JoinList;
-use horizon_client::mobs::Mob;
-use horizon_client::mobs::anim::BodyPose;
+use horizon_client::mesher::Vertex;
+use horizon_client::mobs::anim::{self, BodyPose, PooledPoses, Poses};
+use horizon_client::mobs::{Mob, Part, Polygon, render};
 use horizon_hooks::engine;
 use horizon_hooks::players::{
-    CameraView, Frame, Gear, Kind, PlayerModel, PlayerModels, SpriteStore, Sprites,
+    Bone, CameraView, Frame, Gear, Kind, Mesh, PartPoses, Pass, PlayerDraw, PlayerModel,
+    PlayerModels, SpriteStore, Sprites,
 };
 use std::sync::Arc;
 
@@ -146,7 +149,201 @@ impl SpriteStore for HookStore<'_, '_> {
     }
 }
 
+thread_local! {
+    /// The crates' meshes as the renderer takes them, by the mesh's address (each entry holds its
+    /// mesh, so the address isn't reused); render thread only.
+    static MESHES: std::cell::RefCell<FxHashMap<usize, (Arc<Mesh>, Arc<Part>)>> =
+        Default::default();
+}
+
+/// The game's model of `mesh`, made once.
+fn part_of(mesh: &Arc<Mesh>) -> Arc<Part> {
+    fn part(m: &Mesh) -> Part {
+        Part {
+            name: m.name.clone(),
+            pose: m.pose,
+            polygons: m
+                .quads
+                .iter()
+                .map(|q| Polygon {
+                    normal: q.normal,
+                    vertices: q.vertices,
+                    cull_back: false,
+                })
+                .collect(),
+            children: m.children.iter().map(part).collect(),
+        }
+    }
+    MESHES.with_borrow_mut(|meshes| {
+        let (_, part_of) = meshes
+            .entry(Arc::as_ptr(mesh) as usize)
+            .or_insert_with(|| (mesh.clone(), Arc::new(part(mesh))));
+        part_of.clone()
+    })
+}
+
+/// Forgets the meshes no crate holds any more (once a frame).
+fn forget_meshes() {
+    let _ = MESHES.try_with(|m| {
+        m.borrow_mut()
+            .retain(|_, (mesh, _)| Arc::strong_count(mesh) > 1)
+    });
+}
+
+/// `Poses` as a crate poses a mesh's parts.
+struct PosesOf<'a>(&'a mut Poses);
+
+impl PartPoses for PosesOf<'_> {
+    fn pose(&mut self, name: &str) -> &mut [f32; 9] {
+        self.0.get(name)
+    }
+}
+
+/// A player model drawn in the world pass, as a crate draws on it: posed on the GPU's skin path
+/// when `gpu` (the mob pass's skin frame, begun; the bounds of what went there grow, for
+/// culling), else its vertices go to `out`.
+struct DrawPlayer<'a, 'g> {
+    game: &'a Game<'g>,
+    m: &'a Mob,
+    pass: Pass,
+    /// The model's matrix (`render::base_transform`).
+    base: glam::Mat4,
+    alpha: f32,
+    light: u32,
+    gpu: bool,
+    out: &'a mut Vec<Vertex>,
+    bounds: Option<(glam::Vec3, glam::Vec3)>,
+    /// The body as it is drawn, posed on the first `bone`.
+    body: Option<PooledPoses>,
+    poses: PooledPoses,
+}
+
+impl DrawPlayer<'_, '_> {
+    fn body(&self) -> &Part {
+        let (key, _) = render::body(self.m);
+        self.m.kind.layer(&key).unwrap_or(&self.m.kind.model)
+    }
+}
+
+impl PlayerDraw for DrawPlayer<'_, '_> {
+    fn pass(&self) -> Pass {
+        self.pass
+    }
+
+    fn ticks(&self) -> f32 {
+        self.m.age as f32 + self.alpha
+    }
+
+    fn bone(&mut self, bone: Bone) -> Option<[[f32; 4]; 4]> {
+        if self.body.is_none() {
+            let mut poses = Poses::pooled();
+            poses.reset(self.body());
+            let data = self.game.res.mob_data();
+            let state = anim::state(self.m, self.alpha);
+            anim::setup(self.m, &state, &mut poses, &data.animations);
+            self.body = Some(poses);
+        }
+        let poses = self.body.as_ref()?;
+        let at = render::part_matrix(self.body(), self.base, poses, bone.part(), 0.0)?;
+        Some(at.to_cols_array_2d())
+    }
+
+    fn body_pose(&self) -> Option<&Arc<dyn BodyPose>> {
+        self.m.emote.as_ref()
+    }
+
+    fn sprite(&self, id: u64) -> Option<[f32; 4]> {
+        HookSprites(self.game).get(id)
+    }
+
+    fn draw(
+        &mut self,
+        mesh: &Arc<Mesh>,
+        matrix: [[f32; 4]; 4],
+        uv: [f32; 4],
+        pose: &mut dyn FnMut(&mut dyn PartPoses),
+    ) {
+        let model = part_of(mesh);
+        let matrix = glam::Mat4::from_cols_array_2d(&matrix);
+        self.poses.reset(&model);
+        pose(&mut PosesOf(&mut self.poses));
+        if self.gpu {
+            let mut models = self.game.skin_models.borrow_mut();
+            let mut frame = self.game.skin_frame.borrow_mut();
+            let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
+            skin.bounds = self.bounds;
+            let paint = horizon_client::mobs::skin::Paint {
+                uv,
+                scroll: 0.0,
+                color: 0xFFFF_FFFF,
+                light: self.light,
+                overlay: 0,
+            };
+            if skin.draw(&model, matrix, &self.poses, paint) {
+                self.bounds = skin.bounds;
+                return;
+            }
+        }
+        let poses = &self.poses;
+        horizon_client::mobs::render_model(
+            &model,
+            matrix,
+            &|p: &Part| poses.pose(p),
+            uv,
+            self.light,
+            0,
+            self.out,
+        );
+    }
+}
+
 impl Game<'_> {
+    /// What crates draw on player model `m` in the world pass (`creatures.rs`), then the
+    /// cosmetics still drawn here: see [`DrawPlayer`]. The bounds of what went to the GPU.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn player_layers_geometry(
+        &self,
+        m: &Mob,
+        base: glam::Mat4,
+        camera: glam::DVec3,
+        alpha: f32,
+        light: u32,
+        gpu: bool,
+        out: &mut Vec<Vertex>,
+    ) -> Option<(glam::Vec3, glam::Vec3)> {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        let kind = kind(m)?;
+        let mut bounds = None;
+        if engine::any() {
+            let model = model(m, kind, self.remote_player_uuid(m.id));
+            let mut draw = DrawPlayer {
+                game: self,
+                m,
+                pass: Pass::World,
+                base,
+                alpha,
+                light,
+                gpu,
+                out: &mut *out,
+                bounds: None,
+                body: None,
+                poses: Poses::pooled(),
+            };
+            engine::player_layers(&model, &mut draw);
+            bounds = draw.bounds;
+        }
+        let worn = super::cosmetics::enabled()
+            .then(|| self.cosmetics_geometry(m, false, base, Some(camera), alpha, light, gpu, out))
+            .flatten();
+        match (bounds, worn) {
+            (Some((l, h)), Some((lo, hi))) => Some((l.min(lo), h.max(hi))),
+            (b, w) => b.or(w),
+        }
+    }
+
     /// Once a frame, before drawing.
     pub(super) fn client_hooks_frame(&mut self) {
         debug_assert!(
@@ -160,6 +357,7 @@ impl Game<'_> {
         let connection = self.remote.as_ref().map_or(0, |r| r.session.serial());
         let frame = Frame::new(connection, self.integrated.is_some());
         engine::frame(&frame, &mut HookStore(self));
+        forget_meshes();
         self.cosmetics_frame();
     }
 

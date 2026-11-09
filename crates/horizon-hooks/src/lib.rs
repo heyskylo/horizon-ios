@@ -74,6 +74,9 @@ pub trait Hooks: Sync {
         None
     }
 
+    /// Draws on a player model, after its vanilla layers, each time it is drawn.
+    fn player_layers(&self, _model: &players::PlayerModel, _draw: &mut dyn players::PlayerDraw) {}
+
     /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
     /// offers one is used. Asked on the network thread when joining and on the game thread when
     /// an address is shown, never per frame.
@@ -207,6 +210,13 @@ pub mod engine {
         all().iter().find_map(|h| h.player_mark(uuid))
     }
 
+    /// [`Hooks::player_layers`].
+    pub fn player_layers(model: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
+        for hooks in all() {
+            hooks.player_layers(model, draw);
+        }
+    }
+
     /// [`Hooks::camera`].
     pub fn camera(own: &players::CameraView) -> Option<players::CameraOverride> {
         all().iter().find_map(|h| h.camera(own))
@@ -268,6 +278,14 @@ mod tests {
         }
         fn camera(&self, own: &players::CameraView) -> Option<players::CameraOverride> {
             Some(players::CameraOverride::new(own.age / 10.0))
+        }
+        /// A hat on the head, its brim turned by the model's age.
+        fn player_layers(&self, _: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
+            let (Some(head), Some(uv)) = (draw.bone(players::Bone::Head), draw.sprite(1)) else {
+                return;
+            };
+            let turn = draw.ticks() / 100.0;
+            draw.draw(&HAT, head, uv, &mut |p| p.pose("brim")[4] = turn);
         }
         fn tick(&self, models: &mut dyn players::PlayerModels) {
             let mut ids = Vec::new();
@@ -333,6 +351,55 @@ mod tests {
         }
     }
 
+    static HAT: std::sync::LazyLock<std::sync::Arc<players::Mesh>> =
+        std::sync::LazyLock::new(|| {
+            let brim = players::Mesh::new("brim".into(), [0.0; 9], Vec::new(), Vec::new());
+            std::sync::Arc::new(players::Mesh::new(
+                "hat".into(),
+                [0.0; 9],
+                Vec::new(),
+                vec![brim],
+            ))
+        });
+
+    /// A player drawn at age 50, its head where the camera is; logs each draw.
+    #[derive(Default)]
+    struct Canvas(Vec<(String, [[f32; 4]; 4], [f32; 4], f32)>);
+    impl players::PlayerDraw for Canvas {
+        fn pass(&self) -> players::Pass {
+            players::Pass::World
+        }
+        fn ticks(&self) -> f32 {
+            50.0
+        }
+        fn bone(&mut self, bone: players::Bone) -> Option<[[f32; 4]; 4]> {
+            (bone == players::Bone::Head).then_some([[1.0, 0.0, 0.0, 0.0]; 4])
+        }
+        fn body_pose(&self) -> Option<&std::sync::Arc<dyn players::BodyPose>> {
+            None
+        }
+        fn sprite(&self, id: u64) -> Option<[f32; 4]> {
+            (id == 1).then_some([0.0, 0.0, 0.5, 0.5])
+        }
+        fn draw(
+            &mut self,
+            mesh: &std::sync::Arc<players::Mesh>,
+            matrix: [[f32; 4]; 4],
+            uv: [f32; 4],
+            pose: &mut dyn FnMut(&mut dyn players::PartPoses),
+        ) {
+            struct Rest([f32; 9]);
+            impl players::PartPoses for Rest {
+                fn pose(&mut self, _: &str) -> &mut [f32; 9] {
+                    &mut self.0
+                }
+            }
+            let mut brim = Rest(mesh.children[0].pose);
+            pose(&mut brim);
+            self.0.push((mesh.name.clone(), matrix, uv, brim.0[4]));
+        }
+    }
+
     /// Implements nothing: the defaults do nothing.
     struct Silent;
     impl Hooks for Silent {}
@@ -367,6 +434,17 @@ mod tests {
         assert_eq!(engine::player_mark(8), None);
         let camera = engine::camera(&players::CameraView::new(5.0));
         assert_eq!(camera.map(|c| c.distance), Some(0.5));
+        let mut canvas = Canvas::default();
+        engine::player_layers(&model(players::Kind::Player), &mut canvas);
+        assert_eq!(
+            canvas.0,
+            [(
+                "hat".to_owned(),
+                [[1.0, 0.0, 0.0, 0.0]; 4],
+                [0.0, 0.0, 0.5, 0.5],
+                0.5
+            )]
+        );
         let mut models = Two(Default::default());
         engine::tick(&mut models);
         assert!(models.body_pose(3).is_some() && models.body_pose(7).is_some());

@@ -210,3 +210,100 @@ impl CameraOverride {
         Self { distance }
     }
 }
+
+/// A model a crate draws on players, as the game's own models are: a tree of parts, 16 units a
+/// block, y down. Build it once and keep the `Arc`: the engine prepares it for the GPU once, by
+/// the `Arc`'s address, while the crate holds it.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct Mesh {
+    /// What [`PartPoses::pose`] names it by.
+    pub name: String,
+    /// At rest: x, y, z, x/y/z rotation (radians), x/y/z scale.
+    pub pose: [f32; 9],
+    pub quads: Vec<Quad>,
+    pub children: Vec<Mesh>,
+}
+
+impl Mesh {
+    pub fn new(name: String, pose: [f32; 9], quads: Vec<Quad>, children: Vec<Mesh>) -> Self {
+        Self {
+            name,
+            pose,
+            quads,
+            children,
+        }
+    }
+}
+
+/// One face of a [`Mesh`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct Quad {
+    pub normal: [f32; 3],
+    /// Its corners: x, y, z, then u, v across the sprite (0 to 1).
+    pub vertices: [[f32; 5]; 4],
+}
+
+impl Quad {
+    pub fn new(normal: [f32; 3], vertices: [[f32; 5]; 4]) -> Self {
+        Self { normal, vertices }
+    }
+}
+
+/// A part of the player's body a crate draws on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Bone {
+    Head,
+    Body,
+    RightArm,
+    LeftArm,
+    RightLeg,
+    LeftLeg,
+}
+
+impl Bone {
+    /// Its name among [`BODY_PARTS`].
+    pub fn part(self) -> &'static str {
+        BODY_PARTS[self as usize]
+    }
+}
+
+/// Which picture of a player is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Pass {
+    /// In the world, seen by the camera.
+    World,
+}
+
+/// The poses of a [`Mesh`]'s parts for one [`PlayerDraw::draw`], each at rest to begin with.
+pub trait PartPoses {
+    /// Part `name`'s pose, to change (see [`Mesh::pose`]); a name the mesh lacks gets a pose that
+    /// is not used.
+    fn pose(&mut self, name: &str) -> &mut [f32; 9];
+}
+
+/// Where a crate draws on a player model ([`crate::Hooks::player_layers`]). Matrices are
+/// column-major, relative to the camera, in blocks.
+pub trait PlayerDraw {
+    fn pass(&self) -> Pass;
+    /// The model's age in ticks, with the frame's part of a tick.
+    fn ticks(&self) -> f32;
+    /// Where `bone` is as the body is drawn this frame; None if the model has no such part.
+    fn bone(&mut self, bone: Bone) -> Option<[[f32; 4]; 4]>;
+    /// The pose laid over the model's body ([`PlayerModels::set_body_pose`]), if any.
+    fn body_pose(&self) -> Option<&Arc<dyn BodyPose>>;
+    /// As [`Sprites::get`].
+    fn sprite(&self, id: u64) -> Option<[f32; 4]>;
+    /// Draws `mesh` at `matrix`, textured by the sprite part `uv` (u0, v0, u1, v1) and lit as the
+    /// model is; `pose` poses its parts first.
+    fn draw(
+        &mut self,
+        mesh: &Arc<Mesh>,
+        matrix: [[f32; 4]; 4],
+        uv: [f32; 4],
+        pose: &mut dyn FnMut(&mut dyn PartPoses),
+    );
+}
