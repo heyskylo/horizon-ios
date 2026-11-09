@@ -23,6 +23,11 @@ pub(super) struct Studio {
     pub(super) camera_track_dirty: bool,
 }
 
+/// Studio's editor runs. It is a Horizon extra (docs/layers.md: the replay editor), so a build
+/// without `horizon-extras` (horizon-plain) plays replays without it: no free camera, path,
+/// timeline or top bar, and no editor commands or keys.
+pub(super) const EDITOR: bool = cfg!(feature = "horizon-extras");
+
 impl Studio {
     /// The free camera flies, apart from the player.
     pub(super) fn flying(&self) -> bool {
@@ -519,7 +524,7 @@ impl Game<'_> {
 impl Game<'_> {
     /// The top bar and the timeline over the HUD, while Studio is up in play.
     pub(super) fn draw_studio_bars(&mut self, batch: &mut super::HudBatch) {
-        if self.ui.hide_gui || self.screen != Screen::Playing || !self.studio_up() {
+        if !EDITOR || self.ui.hide_gui || self.screen != Screen::Playing || !self.studio_up() {
             return;
         }
         self.studio.topbar.render(
@@ -535,7 +540,7 @@ impl Game<'_> {
 
     /// The camera path among the debug lines, while Studio is up.
     pub(super) fn studio_camera_path(&self, gizmos: &mut horizon_client::gizmos::Gizmos) {
-        if self.studio_up() {
+        if EDITOR && self.studio_up() {
             horizon_client::studio::render_camera_path(
                 &self.studio.freecam.track,
                 gizmos,
@@ -547,7 +552,8 @@ impl Game<'_> {
 
     /// The pointer moved while the timeline's playhead or a keyframe is dragged: Studio took it.
     pub(super) fn studio_mouse_dragged(&mut self, width: f32) -> bool {
-        if self.screen != Screen::Playing
+        if !EDITOR
+            || self.screen != Screen::Playing
             || !(self.studio.timeline.dragging_playhead
                 || self.studio.timeline.dragging_keyframe.is_some())
         {
@@ -570,6 +576,9 @@ impl Game<'_> {
         pressed: bool,
         button: winit::event::MouseButton,
     ) -> bool {
+        if !EDITOR {
+            return self.screen == Screen::Playing && self.replay.playing();
+        }
         if !pressed && button == winit::event::MouseButton::Left {
             let action = self.studio.timeline.handle_mouse_up();
             if !matches!(action, TimelineAction::None) {
@@ -690,6 +699,8 @@ impl Game<'_> {
                 self.pause_menu = true;
                 self.capture(false);
             }
+            // The rest are the editor's.
+            _ if !EDITOR => {}
             KeyCode::KeyF => self.handle_studio_timeline_action(TimelineAction::ToggleFreecam),
             KeyCode::KeyT => self.studio.timeline.visible = !self.studio.timeline.visible,
             KeyCode::KeyM => self.add_studio_marker(),
