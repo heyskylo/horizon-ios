@@ -15,6 +15,8 @@ import json
 import os
 import random
 import subprocess
+import tempfile
+from pathlib import Path
 try:
     from . import block_update_harness as h, lab, test_rust_parity as base
     from .integration_env import run_game
@@ -278,6 +280,22 @@ def vehicle_cases(states, seed, only):
 def cases(facts, count, seed, only):
     rng = random.Random(seed)
     states = States(facts)
+    if not only or only in 'minecraft:stick':
+        # A stick starts with neither durability component. Check explicit zero,
+        # already worn stacks, missing components, unbreakable and creative.
+        for patch, creative in [
+            ('"minecraft:max_damage":2,"minecraft:damage":0', False),
+            ('"minecraft:max_damage":2,"minecraft:damage":1', False),
+            ('"minecraft:max_damage":2', False),
+            ('"minecraft:damage":0', False),
+            ('"minecraft:max_damage":2,"minecraft:damage":0,"minecraft:unbreakable":{}', False),
+            ('"minecraft:max_damage":2,"minecraft:damage":0', True),
+        ]:
+            blocking = '"minecraft:blocks_attacks":{item_damage:{threshold:0.0f,base:1.0f,factor:0.0f}}'
+            item = '{id:"minecraft:stick",count:1,components:{' + ','.join(
+                (blocking, '"minecraft:max_stack_size":1', patch)) + '}}'
+            yield {'seed': seed, 'pos': [0, 0, 0], 'cells': [], 'items': [],
+                   'blocking_wear': {'item': item, 'creative': creative}}
     dragon_egg = plain('ender_dragon_spawn_egg')
     if not only or only in dragon_egg:
         # Both the unobstructed position and a fractional collision height must
@@ -400,7 +418,7 @@ def voice(line):
 
 
 def run(command, **kwargs):
-    runner = run_game if str(command[0]).endswith('/horizon-client') else subprocess.run
+    runner = run_game if Path(command[0]).stem == 'horizon-client' else subprocess.run
     done = runner(command, capture_output=True, text=True, **kwargs)
     if done.returncode:
         print((done.stdout + done.stderr)[-4000:])
@@ -468,8 +486,10 @@ def main():
          str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
     run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'], cwd=lab.ROOT,
         env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '3')})
-    run([str(lab.cargo_target() / 'fast/horizon-client'), '--resources', str(resources)], cwd=work,
-        env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
+    executable = lab.cargo_target() / ('fast/horizon-client.exe' if os.name == 'nt' else 'fast/horizon-client')
+    with tempfile.TemporaryDirectory(prefix='game-', dir=work) as game_dir:
+        run([str(executable), '--resources', str(resources), '--game-dir', game_dir], cwd=work,
+            env={**os.environ, 'HORIZON_DISPENSE_FIXTURE': f'{work / "cases.jsonl"},{work / "rust.txt"}'})
     # Loot table names (D) are vanilla's bookkeeping; the drops themselves are compared.
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
     native = h.split_cases((work / 'native.txt').read_text(), ignore)
@@ -495,6 +515,9 @@ def main():
             a = [voice(line) for line in a if not line.startswith('rng ')]
             b = [voice(line) for line in b if not line.startswith('rng ')]
         if not same(a, b):
+            if 'blocking_wear' in case:
+                groups.setdefault('blocking wear', []).append((case, a, b))
+                continue
             item = next(i[4] for i in case['items'] if i[:3] == [0, 0, 0])
             block = facts.states[case['cells'][0][3]][0].split(':')[1]
             groups.setdefault(f'{block} {item.split(chr(34))[1]}', []).append((case, a, b))
@@ -515,6 +538,8 @@ def main():
 
 
 def describe(case, facts):
+    if 'blocking_wear' in case:
+        return json.dumps(case['blocking_wear'])
     cells = ' '.join(f'{c[0]},{c[1]},{c[2]}={facts.describe(c[3])}' for c in case['cells'])
     extra = ''
     if case.get('entities'):

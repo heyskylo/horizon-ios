@@ -190,6 +190,9 @@ impl Game<'_> {
     fn dispense_case(&mut self, case: &Value) -> Result<Vec<String>> {
         let seed = case["seed"].as_i64().unwrap_or(0);
         self.fixture_reset(seed);
+        if let Some(op) = case.get("blocking_wear") {
+            return self.fixture_blocking_wear(op);
+        }
         // The oracle level answers one sky and one block light everywhere.
         let light = case["light"].as_array();
         let level = |i: usize, default: i64| {
@@ -662,6 +665,39 @@ impl Game<'_> {
     /// source, the hurt with the weapon's armor effects, then `weapon_hit`
     /// (the mace's smash, post-attack enchantments, the wear), as
     /// `VanillaDispenserOracle.attack` prints them.
+    fn fixture_blocking_wear(&mut self, op: &Value) -> Result<Vec<String>> {
+        let stack = parse_stack(op["item"].as_str().ok_or("missing blocking stack")?)?
+            .ok_or("empty blocking stack")?;
+        // Reload the stack just as a player inventory does between sessions.
+        let saved = horizon_client::item_nbt::item_to_nbt(&stack);
+        self.inventory[self.selected] = horizon_client::item_nbt::item_from_nbt(&saved);
+        self.creative = op["creative"].as_bool().unwrap_or(false);
+        self.mode = if self.creative {
+            GameMode::Creative
+        } else {
+            GameMode::Survival
+        };
+        self.combat = Default::default();
+        self.using = None;
+        self.shield_cooldown = 0;
+        self.yaw = 0.0;
+        self.player = Some(PlayerMotion::new(
+            self.motion,
+            horizon_core::geometry::Vec3::new(0.0, 64.0, 0.0),
+        )?);
+        if !self.raise_shield(self.selected) || self.using.is_none() {
+            return Err("could not raise blocking stack".into());
+        }
+        let mut lines = Vec::new();
+        for _ in 0..2 {
+            self.hurt_player_from(4.0, Some([0.0, 64.0, 2.0]), "minecraft:arrow", Some(None));
+            let stack = self.inventory[self.selected].as_ref();
+            let (count, damage) = stack.map_or((0, 0), |stack| (stack.count, stack.damage));
+            lines.push(format!("blocking wear {count} {damage}"));
+        }
+        Ok(lines)
+    }
+
     fn fixture_attack(&mut self, op: &Value, targets: &[Target]) -> Result<Vec<String>> {
         let stack = parse_stack(op["item"].as_str().unwrap_or("-"))?;
         self.mode = if op["creative"].as_bool().unwrap_or(false) {
