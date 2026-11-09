@@ -783,7 +783,7 @@ pub fn frog(p: &mut Poses, s: &State, f: &Frog, a: &Animations) {
     if f.swimming {
         walk(a, "FrogAnimation.FROG_SWIM", s, 1.0, 2.5, p);
     } else {
-        walk(a, "FrogAnimation.FROG_WALK", s, 1.5, 2.5, p);
+        walk(a, "FrogAnimation.FROG_WALK", s, 1.0, 2.5, p);
     }
     run(a, "FrogAnimation.FROG_IDLE_WATER", &f.swim_idle, s, p);
     p.visible("croaking_body", f.croak.started.is_some());

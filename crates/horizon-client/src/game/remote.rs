@@ -7548,15 +7548,15 @@ impl Game<'_> {
             } else if m.alive() {
                 m.body_rotation_tick();
             }
-            // Squid.aiStep follows LivingEntity's interpolation and head turn.
+            // Squid.aiStep; WalkAnimationState.update from the horizontal distance.
             horizon_client::mobs::aquatic::squid_client_step(m, &mut mob_fx);
-            // WalkAnimationState.update from the horizontal distance moved.
-            let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
-            let (target, factor) = if horizon_client::mobs::camel::is_camel(m.species()) {
-                // Camel.updateWalkAnimation.
-                horizon_client::mobs::camel::walk_target(m, (dx * dx + dz * dz).sqrt() as f32)
+            let d = (m.position.x - m.previous.x).hypot(m.position.z - m.previous.z) as f32;
+            let (target, factor) = if m.species() == horizon_client::mobs::Species::Frog {
+                (horizon_client::mobs::frog::walk_target(m, d), 0.4)
+            } else if horizon_client::mobs::camel::is_camel(m.species()) {
+                horizon_client::mobs::camel::walk_target(m, d)
             } else {
-                ((((dx * dx + dz * dz).sqrt() * 4.0) as f32).min(1.0), 0.4)
+                ((d * 4.0).min(1.0), 0.4)
             };
             m.limb_speed += (target - m.limb_speed) * factor;
             m.limb_position += m.limb_speed;
