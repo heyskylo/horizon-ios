@@ -8,9 +8,88 @@ use horizon_hooks::pages as added;
 /// `selected_key` while a registered page's key waits (`selected_native_key`: page, row).
 pub(super) const PAGE_KEY: &str = "horizon.pageKey";
 
+#[cfg(test)]
+thread_local! {
+    /// A test's own pages, instead of the game's registered ones: each test runs on its thread.
+    static TEST_PAGES: std::cell::Cell<Option<&'static [&'static dyn added::Page]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The pages crates registered.
+fn registered() -> &'static [&'static dyn added::Page] {
+    #[cfg(test)]
+    if let Some(pages) = TEST_PAGES.get() {
+        return pages;
+    }
+    added::engine::all()
+}
+
 /// A registered page's title (a translation key).
 pub(super) fn title(page: usize) -> &'static str {
-    added::engine::all().get(page).map_or("", |p| p.title())
+    registered().get(page).map_or("", |p| p.title())
+}
+
+/// Row `r` of a registered page, as it is now.
+fn row(page: usize, r: usize) -> Option<added::Row> {
+    let mut rows = Vec::new();
+    registered().get(page)?.rows(&mut rows);
+    rows.into_iter().nth(r)
+}
+
+/// A registered page's slider ([`Opt::Page`]): its caption (a translation key).
+pub(super) fn slider_caption(page: usize, r: usize) -> &'static str {
+    match row(page, r) {
+        Some(added::Row::Slider { label, .. }) => label,
+        _ => "",
+    }
+}
+
+/// A registered page's slider: its position.
+pub(super) fn slider_kind(page: usize, r: usize) -> Kind {
+    match row(page, r) {
+        Some(added::Row::Slider { value, .. }) => Kind::Slider(value.clamp(0.0, 1.0)),
+        _ => Kind::Cycle,
+    }
+}
+
+/// A registered page's slider: the value its message shows after the caption.
+pub(super) fn slider_text(page: usize, r: usize) -> Text {
+    match row(page, r) {
+        Some(added::Row::Slider { text, .. }) => label_text(text),
+        _ => Text::empty(),
+    }
+}
+
+/// A registered page's slider moved.
+pub(super) fn slide(page: usize, r: usize, value: f32) {
+    if let Some(registered) = registered().get(page) {
+        registered.act(r, added::Act::Slide(value));
+    }
+}
+
+/// What a registered page's row says on hover.
+pub(super) fn tooltip(page: usize, r: usize) -> Option<Text> {
+    registered().get(page)?.tooltip(r).map(label_text)
+}
+
+/// What a button opening one of Horizon's pages says on hover.
+pub(super) fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
+    Some(match page {
+        Page::Horizon => "horizon.pages.settings.tooltip",
+        Page::Studio => "horizon.pages.studio.tooltip",
+        Page::Graphics => "horizon.pages.graphics.tooltip",
+        Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
+        Page::Controller => "horizon.pages.controller.tooltip",
+        Page::Extras => "horizon.pages.extras.tooltip",
+        Page::Pvp => "horizon.pages.pvp.tooltip",
+        Page::Agent => "horizon.pages.agent.tooltip",
+        Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
+        Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
+        Page::Mods => "horizon.pages.mods.tooltip",
+        Page::SplitSetup => "horizon.pages.split_setup.tooltip",
+        Page::Music => "horizon.pages.music.tooltip",
+        _ => return None,
+    })
 }
 
 fn label_text(label: added::Label) -> Text {
@@ -66,8 +145,7 @@ impl OptionsUi {
 
     /// The entries of the pages registered for Horizon Settings, two to a row like the engine's.
     fn added_entries(&self, rows: &mut Vec<Row>) {
-        let mut entries = self
-            .pages
+        let mut entries = registered()
             .iter()
             .enumerate()
             .filter(|(_, page)| page.place() == added::Place::HorizonSettings)
@@ -79,7 +157,7 @@ impl OptionsUi {
 
     /// A registered page's rows, asked of it each time the page is drawn.
     pub(super) fn added_rows(&self, page: usize) -> Vec<Row> {
-        let Some(registered) = self.pages.get(page) else {
+        let Some(registered) = registered().get(page) else {
             return Vec::new();
         };
         let mut rows = Vec::new();
@@ -98,6 +176,7 @@ impl OptionsUi {
             added::Row::Note(text) => Row::Note(text),
             added::Row::Toggle { label, on } => wide(generic(label, on_off(on))),
             added::Row::Cycle { label, value } => wide(generic(label, label_text(value))),
+            added::Row::Slider { .. } => Row::Big(Opt::Page(page, r)),
             added::Row::Button { label } => wide(tr(label)),
             added::Row::Key { label, key } => {
                 let mut message = keybinds::display_name(&key);
@@ -120,7 +199,7 @@ impl OptionsUi {
 
     /// A registered page's row was pressed: a key row waits for a key, any other row hears it.
     pub(super) fn page_act(&mut self, page: usize, r: usize, shift: bool) -> Vec<Event> {
-        let Some(registered) = self.pages.get(page) else {
+        let Some(registered) = registered().get(page) else {
             return Vec::new();
         };
         let mut rows = Vec::new();
@@ -199,7 +278,7 @@ impl OptionsUi {
     ) -> Vec<Event> {
         let (i, k) = self.selected_native_key.take().unwrap_or_default();
         if name == PAGE_KEY {
-            if let Some(page) = self.pages.get(i) {
+            if let Some(page) = registered().get(i) {
                 page.act(k, added::Act::Bind(value));
             }
             return vec![Event::Changed];
@@ -221,11 +300,12 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// A page with a heading, a switch, a number that steps either way and a key.
+    /// A page with a heading, a switch, a number that steps either way, a key and a volume.
     struct Sample {
         on: Mutex<bool>,
         step: Mutex<i32>,
         key: Mutex<String>,
+        volume: Mutex<f32>,
     }
 
     impl added::Page for Sample {
@@ -252,6 +332,12 @@ mod tests {
                 label: "test.sample.key",
                 key: self.key.lock().unwrap().clone(),
             });
+            let volume = *self.volume.lock().unwrap();
+            rows.push(added::Row::Slider {
+                label: "test.sample.volume",
+                value: volume,
+                text: added::Label::Value(format!("{}%", (volume * 100.0).round())),
+            });
         }
         fn act(&self, row: usize, act: added::Act) {
             match (row, act) {
@@ -262,8 +348,12 @@ mod tests {
                 (2, added::Act::Press) => *self.step.lock().unwrap() += 1,
                 (2, added::Act::PressBack) => *self.step.lock().unwrap() -= 1,
                 (3, added::Act::Bind(key)) => *self.key.lock().unwrap() = key,
+                (4, added::Act::Slide(v)) => *self.volume.lock().unwrap() = v,
                 other => panic!("row and act the page doesn't expect: {other:?}"),
             }
+        }
+        fn tooltip(&self, row: usize) -> Option<added::Label> {
+            (row == 1).then_some(added::Label::Key("test.sample.switch.tooltip"))
         }
     }
 
@@ -271,6 +361,7 @@ mod tests {
         on: Mutex::new(false),
         step: Mutex::new(0),
         key: Mutex::new(String::new()),
+        volume: Mutex::new(0.0),
     };
     static PAGES: [&dyn added::Page; 1] = [&SAMPLE];
 
@@ -297,10 +388,8 @@ mod tests {
     #[test]
     fn a_registered_page_opens_from_horizon_settings_and_hears_its_rows() {
         let mut s = Settings::default();
-        let mut ui = OptionsUi {
-            pages: &PAGES,
-            ..OptionsUi::default()
-        };
+        TEST_PAGES.set(Some(&PAGES));
+        let mut ui = OptionsUi::default();
         ui.show(Page::Horizon);
         press(&mut ui, &mut s, Act::Push(Page::Added(0)), false);
         assert_eq!(ui.page(), Page::Added(0));
@@ -323,5 +412,34 @@ mod tests {
         assert_eq!(events, [Event::Changed]);
         assert_eq!(*SAMPLE.key.lock().unwrap(), "key.keyboard.z");
         assert_eq!(ui.selected_key, None);
+        // The volume is one of the screen's own sliders: dragged to its middle, then let go.
+        let size = (480.0, 240.0);
+        let (widgets, ..) = ui.layout(&s, size.0, size.1);
+        let slider = widgets
+            .iter()
+            .find(|w| matches!(w.kind, WKind::Slider { opt: Opt::Page(0, 4), .. }))
+            .expect("the volume's slider");
+        let (x, y) = (slider.x + slider.w / 2.0, slider.y + 1.0);
+        ui.click(&mut s, &atlas, x, y, size, [480, 240], false, false);
+        let volume = *SAMPLE.volume.lock().unwrap();
+        assert!((0.45..0.55).contains(&volume), "{volume}");
+        assert!(ui.release().contains(&Event::Changed));
+        let (widgets, ..) = ui.layout(&s, size.0, size.1);
+        let shown = |kind: &WKind| match kind {
+            WKind::Slider { label, .. } => label.plain(),
+            WKind::Button { label, .. } => label.plain(),
+            _ => String::new(),
+        };
+        let percent = format!("{}%", (volume * 100.0).round());
+        assert!(widgets.iter().any(|w| shown(&w.kind).ends_with(&percent)));
+        // The page's tooltip for its switch.
+        let switch = widgets
+            .iter()
+            .find(|w| matches!(&w.kind, WKind::Button { act: Act::PageRow(0, 1), .. }))
+            .expect("the switch");
+        assert_eq!(
+            tooltip_text(&s, switch).map(|t| t.plain()),
+            Some(tr("test.sample.switch.tooltip").plain())
+        );
     }
 }

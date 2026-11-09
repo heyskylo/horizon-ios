@@ -27,6 +27,11 @@ pub trait Page: Sync {
     /// The player acted on row `row` (its index in [`Page::rows`]). The options screen saves the
     /// settings when it closes, as for every setting.
     fn act(&self, row: usize, act: Act);
+    /// What row `row` says on hover (and the narrator after its label), which may follow its
+    /// value. None by default.
+    fn tooltip(&self, _row: usize) -> Option<Label> {
+        None
+    }
 }
 
 /// A row of a page. Labels are translation keys.
@@ -41,6 +46,13 @@ pub enum Row {
     Toggle { label: &'static str, on: bool },
     /// `<label>: <value>`; a press steps forward, a shift-press back ([`Act::PressBack`]).
     Cycle { label: &'static str, value: Label },
+    /// `<label>: <text>` on a slider at `value` (0 to 1); dragging or the arrow keys send
+    /// [`Act::Slide`].
+    Slider {
+        label: &'static str,
+        value: f32,
+        text: Label,
+    },
     /// A button that does something.
     Button { label: &'static str },
     /// A key binding, as Key Binds shows one: `key` is its key name (`key.keyboard.z`,
@@ -63,6 +75,8 @@ pub enum Act {
     Press,
     /// The same with Shift held: a cycle steps back.
     PressBack,
+    /// A slider moved to this position (0 to 1).
+    Slide(f32),
     /// A key row got its new key: its key name (`key.keyboard.z`).
     Bind(String),
 }
