@@ -40,6 +40,8 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   a claim with no open PR linking it is released after 5 days. The issues free to claim, without reading threads:
   `gh issue list --search 'is:open no:assignee -label:"in progress" -label:tracker -label:proposal -label:"not claimable" -linked:pr'`
 - **Controllers reach what registers.** Draw controls with a registering helper (`ui::button`, `settings_shell::foot_button`); `graphics_style::button` and `screen_draw::button` only paint, and registering one part of a screen ends its crosshair, so register all of it.
+- **Render passes keep HDR's light.** A pass that reads, filters or redraws the world's picture (upscaling,
+  anti-aliasing, sharpening, frame generation, post effects, captures) follows [docs/hdr-passes.md](docs/hdr-passes.md).
 
 ## Crates
 
