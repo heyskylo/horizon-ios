@@ -93,10 +93,12 @@ again. The controls options can make it hold-to-sneak.
 A Nintendo pad's face buttons can go by their places, as the table and SDL's
 layout have them (B, at the bottom, jumps and confirms), or by their letters,
 as a Switch's own menus and keyboard do: A (right) jumps and confirms, B goes
-back and drops, X swaps the offhand, Y opens the inventory, and the binds list
-and the on-screen keyboard's hints show those letters (splitscreen's join and
-lost-controller prompts, which a controller nobody holds yet answers, stay by
-places). Controller Settings > Device > Nintendo Buttons picks one: By
+back and drops, X swaps the offhand, Y opens the inventory, and every glyph
+shows those letters: the binds list, the gameplay guide, the glyphs on declared
+buttons, notices and the on-screen keyboard's hints. Letter mode is part of the
+player's resolved glyph style, so nothing that draws a glyph handles it
+([ui-kit.md](ui-kit.md)). Splitscreen's join and lost-controller prompts, which
+a controller nobody holds yet answers, stay by places. Controller Settings > Device > Nintendo Buttons picks one: By
 Position or By Letter, saved as `nintendoLetters:true|false` in
 `horizon-controller.txt`. By position unless changed (a build for the Switch
 itself goes by letters). The row is always there, like the DualSense rows
@@ -133,7 +135,7 @@ for it, or running off a split view, goes without it and keeps its pad button. W
 stops counting as soon as another screen is drawn over it (`widgets::begin_screen`: a popup's buried
 buttons can't be pressed) or takes its place. While a key row waits for its key nothing is declared and only B and Start act:
 they are Escape, which unbinds. A row on Controller Settings > Bindings takes the next button pressed
-as its binding, and Start cancels.
+as its binding, and Start, a click or a key cancels; the keyboard's Escape unbinds it, as on Key Binds.
 
 Don't declare a button Escape deliberately ignores: Optimize World's and a connection's Cancel have
 no pad button, only A on them, and show in `undeclared` for that reason.
@@ -435,18 +437,25 @@ book's page text), the pad drives the pointer instead.
 
 A button is drawn as Horizon's own art where its family has a picture, and otherwise as the label
 printed on the pad, in its colour, on a dark key (`pad_glyph.rs`; no Mojang assets, nothing from the
-player's jar). Whatever draws or measures a glyph goes through that module.
+player's jar). Whatever draws or measures a glyph goes through that module, asking for it by what the button
+does (a bound action or a menu job), never by a button: a rebinding or a pad's letters reach every glyph
+([ui-kit.md](ui-kit.md)).
 
 | Family | Art | Text |
 |---|---|---|
 | Xbox, also Auto, Steam Deck and anything unknown | `xb_*`: a b x y, lb rb lt rt, view menu, l3 r3, up down left right | none |
 | PlayStation | `psx_*`: cross circle square triangle, l1 r1 l2 r2, create options, l3 r3, up down left right | none |
-| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left right | none |
+| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left riEach family has its own file for every picture, so a family's art can change without touching another's.
+Only the sticks and the D-pad are the same picture in all three. Nintendo's letters are plain white, as the
+pad prints them, where Xbox's carry Xbox's colours. Text remains for what runs inside a line of text, and for
+an atlas without the sprite.
 
-Every family has its own file for every button, so a family's art can change without touching another's.
-Some are copies until theirs is drawn: Nintendo's letters and shoulders are Xbox's, and all three share the
-same sticks, D-pad and menu pictures. Text remains for what runs inside a line of text, and for an atlas
-without the sprite.
+Nintendo's art, Xbox's View and Menu and PlayStation's Create and Options are drawn by
+`tools/pad_glyphs/gen.py` (standard library only: `python3 tools/pad_glyphs/gen.py` rewrites them in place,
+byte for byte); the rest is hand-made. The script measures nothing at run time: the key shapes and bevel
+were measured from the hand-made art and typed in, so the set matches.
+
+ the sprite.
 
 The art is in `crates/horizon-client/assets/horizon/textures/gui/controller/`, built into the binary, one
 line of `pad_glyph::ART` per picture: a button with no line is text, and adding one is that line and its
@@ -477,13 +486,25 @@ and everything else are Xbox.
 
 Controller settings are Horizon's own: **Options → Controls → Controller
 Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
-a screen in the graphics settings' style with a search field and General, Bindings and Device pages. Bindings
-is a list like the key binds screen (pick an action, press a button; conflicts marked as vanilla does), and
-Reset. General's Play group has the **Gameplay Guide** setting (Full, Basic or Off) and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
+a screen on the settings shell (`controller_ui.rs` on `settings_shell.rs`, [ui-kit.md](ui-kit.md)), like
+Extras and Graphics, with a search field and General, Bindings and Device pages. The strip under the list
+describes the pointed or focused row, and what a choice's value does. Left and Right step a choice both
+ways, as its `<` `>` show. The search gives the keys back as soon as the focus leaves it.
+
+Bindings is a list like the key binds screen. Each action's row shows its button's art in the player's
+glyphs. Press the row and then a button; Start, a click or a key cancels, and the keyboard's Escape
+unbinds. Meanwhile the row reads "> A <" and the strip names the button that cancels. A button that does
+more than one action is marked "[ ]" in yellow, as vanilla marks conflicts, and the strip lists what else
+it does; an unbound action says so in the strip. A changed binding has a reset at its row's end (Right
+reaches it), and Reset All puts every action back.
+
+General's Play group has the **Gameplay Guide** setting (Full, Basic or Off) and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
 0.1 to 0.9, by default 0.4, which also places a DualSense's catch (see "Adaptive triggers"). The screen
 names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
-product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
-while something differs from when the screen opened, and **Done** (B) leaves. They live in
+product ids, the detected glyph family and the override, as lines the focus reaches so the strip can say
+what each one is. Changes apply at once; **Undo** (X) is there only while something differs from when the
+screen opened, a binding included, and puts back every value and binding as they were. **Done** (B)
+leaves. They live in
 `horizon-controller.txt` next to `options.txt`, like `horizon-graphics.txt`: `options.txt` stays
 exactly vanilla's, so a vanilla client can share the game folder.
 

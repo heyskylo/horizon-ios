@@ -274,6 +274,7 @@ impl Game<'_> {
                         item_transformation: None,
                         interaction: None,
                         knot_check: None,
+                        eye: None,
                         position: horizon_core::geometry::Vec3::new(x, y, z),
                         yaw: 0.0,
                         pitch: 0.0,
@@ -399,10 +400,14 @@ impl Game<'_> {
                             st.liked_player_ttl = was.liked_player_ttl;
                         }
                     }
-                    // Entity.load mutates the existing living entity; its
-                    // previous-hit amount is not read from saved NBT (its hurt
-                    // immunity is, as `invulnerable_time`).
+                    // Entity.load mutates the existing living entity; its hurt
+                    // cooldown and previous-hit amount are not read from saved NBT
+                    // (`invulnerable_time` is another field, and is).
+                    slot.invulnerable = old.invulnerable;
                     slot.last_hurt = old.last_hurt;
+                    // Entity.isInPowderSnow isn't saved data either: a skeleton in
+                    // powder snow stays afflicted through a merge.
+                    slot.in_powder_snow = old.in_powder_snow;
                     // Entity.load updates saved data on the existing entity;
                     // lastTradedPlayer is transient and survives a live NoAI edit.
                     if slot.species() == horizon_client::mobs::Species::Villager {
@@ -563,7 +568,7 @@ impl Game<'_> {
                     Some(Tag::Short(fuse)) => i32::from(*fuse),
                     _ => 80,
                 };
-                tnt.on_ground = matches!(tag.get("OnGround"), Some(Tag::Byte(1)));
+                tnt.on_ground = entity_nbt::flag(&tag, "OnGround");
                 tnt.fall_distance =
                     horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0);
                 tnt.no_gravity = entity_nbt::flag(&tag, "NoGravity");
@@ -607,6 +612,16 @@ impl Game<'_> {
                 }
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
+            Target::Trident(id) => {
+                let loaded = entity_nbt::trident_from_nbt(&tag).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                self.tridents
+                    .iter_mut()
+                    .find(|trident| trident.id == id)
+                    .ok_or_else(stale)?
+                    .load_nbt(loaded);
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
             Target::Cart(id) => {
                 let uuid = self.uuid_for(id);
                 let i = self
@@ -648,6 +663,25 @@ impl Game<'_> {
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
                 set_key(&mut tag, "id", Tag::String(marker.kind.as_str().into()));
             }
+            Target::Projectile(id) => {
+                let uuid = self.uuid_for(id);
+                let p = self
+                    .creatures
+                    .projectiles
+                    .iter_mut()
+                    .find(|p| p.id == id)
+                    .ok_or_else(stale)?;
+                if let Some(pos) = entity_nbt::position(&tag) {
+                    p.position = pos;
+                    p.previous = pos;
+                }
+                p.velocity = entity_nbt::motion(&tag);
+                let [yaw, pitch] = entity_nbt::rotation(&tag);
+                p.yaw = yaw;
+                p.pitch = pitch;
+                p.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
             _ => return Err(stale()),
         }
         if let Target::Mob(id)
@@ -659,8 +693,10 @@ impl Game<'_> {
         | Target::Tnt(id)
         | Target::Orb(id)
         | Target::Cushion(id)
+        | Target::Trident(id)
         | Target::Other(id)
-        | Target::Fangs(id) = t
+        | Target::Fangs(id)
+        | Target::Projectile(id) = t
         {
             if let Some(kept) = kept_passengers
                 && let Tag::Compound(c) = &mut tag
@@ -988,20 +1024,23 @@ impl Game<'_> {
         }
     }
     fn query_text(&self, r: &DataRef, data: &Tag, path: Option<&NbtPath>) -> Text {
-        // Only the live piston writer supplies this provenance. The same
-        // compound in storage, an entity, or another block keeps default order.
+        // Only a block's writer supplies this provenance: the live piston's
+        // fields, or any other block entity's saveWithFullMetadata. The same
+        // compound in storage or an entity keeps default order.
+        let root = path.is_none_or(|p| p.is_field_path(&[]));
         let piston = if let DataRef::Block(p) = r
             && self.moving_piston_data(*p).is_some()
         {
             match path {
-                None => Some(snbt::PistonPart::Entity),
-                Some(p) if p.is_field_path(&[]) => Some(snbt::PistonPart::Entity),
+                _ if root => Some(snbt::PistonPart::Entity),
                 Some(p) if p.is_field_path(&["blockState"]) => Some(snbt::PistonPart::State),
                 Some(p) if p.is_field_path(&["blockState", "properties"]) => {
                     Some(snbt::PistonPart::Properties)
                 }
                 _ => None,
             }
+        } else if matches!(r, DataRef::Block(_)) && root {
+            Some(snbt::PistonPart::BlockEntity)
         } else {
             None
         };
@@ -1395,6 +1434,8 @@ impl Game<'_> {
             Some(Target::Other(id))
         } else if self.tnts.iter().any(|t| t.id == id) {
             Some(Target::Tnt(id))
+        } else if self.crystals.iter().any(|c| c.id == id) {
+            Some(Target::Crystal(id))
         } else if self.cushions.iter().any(|c| c.id == id) {
             Some(Target::Cushion(id))
         } else if self.falling.iter().any(|f| f.id == id) {
@@ -1405,6 +1446,8 @@ impl Game<'_> {
             Some(Target::Trident(id))
         } else if self.ominous_spawners.iter().any(|s| s.id == id) {
             Some(Target::Spawner(id))
+        } else if self.creatures.projectiles.iter().any(|p| p.id == id) {
+            Some(Target::Projectile(id))
         } else {
             None
         }
@@ -1604,6 +1647,7 @@ mod wolf_live_anger_tests {
             game.mobs[i].invulnerable = 17;
             game.mobs[i].last_hurt = 2.0;
             game.mobs[i].age = 6;
+            game.mobs[i].in_powder_snow = true;
             for end in [12_395, 12_395, 12_420, -1] {
                 let mut tag = game.mob_tree_nbt(i);
                 let Tag::Compound(fields) = &mut tag else {
@@ -1629,6 +1673,7 @@ mod wolf_live_anger_tests {
                     ),
                     (17, 2.0, 6)
                 );
+                assert!(game.mobs[i].in_powder_snow, "{kind} end={end}");
             }
         }
     }

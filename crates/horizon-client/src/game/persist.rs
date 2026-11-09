@@ -1,6 +1,8 @@
 //! Saving and loading the game state that lives outside chunk blocks:
 //! entities (`entities/*.mca`, per chunk like vanilla's `EntityStorage`) and
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
+mod display;
+
 use super::{FallingBlock, Game};
 use horizon_client::{
     Result,
@@ -23,6 +25,40 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
+
+/// `Entity.saveWithoutId`: materialize the mandatory fields of an entity
+/// whose simulation state is still represented by its loaded compound.
+fn write_static_entity_fields(tag: &mut Tag) {
+    use horizon_client::{nbt_path::int_value, save::float};
+
+    let int = |key, default| tag.get(key).and_then(int_value).unwrap_or(default);
+    let motion = entity_nbt::loaded_motion(tag);
+    let double = |value: f64| Tag::Double(if value == 0.0 { 0 } else { value.to_bits() });
+    let fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    let values = [
+        (
+            "Motion",
+            Tag::List([motion.x, motion.y, motion.z].map(double).to_vec()),
+        ),
+        ("fall_distance", double(fall_distance)),
+        ("Fire", Tag::Short(int("Fire", 0) as i16)),
+        ("Air", Tag::Short(int("Air", 300) as i16)),
+        (
+            "OnGround",
+            Tag::Byte(i8::from(entity_nbt::flag(tag, "OnGround"))),
+        ),
+        (
+            "Invulnerable",
+            Tag::Byte(i8::from(entity_nbt::flag(tag, "Invulnerable"))),
+        ),
+        ("PortalCooldown", Tag::Int(int("PortalCooldown", 0))),
+    ];
+    if let Tag::Compound(fields) = tag {
+        for (key, value) in values {
+            fields.insert(key.into(), value);
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) enum PassengerSlot {
@@ -514,6 +550,7 @@ impl Game<'_> {
                         | "minecraft:experience_bottle"
                         | "minecraft:fireball"
                         | "minecraft:small_fireball"
+                        | "minecraft:dragon_fireball"
                         | "minecraft:wind_charge"
                         | "minecraft:breeze_wind_charge"
                         | "minecraft:wither_skull"
@@ -817,7 +854,7 @@ impl Game<'_> {
                 previous: position,
                 velocity: entity_nbt::motion(&tag),
                 fuse,
-                on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
+                on_ground: entity_nbt::flag(&tag, "OnGround"),
                 fall_distance: horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0),
                 stuck: Vec3::ZERO,
                 in_water: false,
@@ -857,6 +894,8 @@ impl Game<'_> {
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
             b.fire_ticks = super::boats::saved_fire(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
+            // Entity.load: OnGround and fall_distance, as saved.
+            (b.on_ground, b.fall_distance) = entity_nbt::ground_from_nbt(&tag);
             if chest {
                 b = b.with_chest();
                 b.items =
@@ -1192,11 +1231,9 @@ impl Game<'_> {
     fn load_other(&mut self, mut tag: Tag, kind: &str) -> Option<u32> {
         strip_finalize(&mut tag);
         let mut position = entity_nbt::position(&tag)?;
-        let item_transformation = if kind == "minecraft:item_display" {
-            super::native_entities::ItemDisplayTransformation::from_tag(tag.get("transformation"))
-        } else {
-            None
-        };
+        let item_transformation = (kind == "minecraft:item_display").then(|| {
+            super::native_entities::DisplayTransformation::from_tag(tag.get("transformation"))
+        });
         let knot_check = (kind == "minecraft:leash_knot").then_some(0);
         if knot_check.is_some() {
             // BlockAttachedEntity.setPos -> LeashFenceKnotEntity.recalculateBoundingBox.
@@ -1219,6 +1256,8 @@ impl Game<'_> {
         let uuid = entity_nbt::uuid(&tag);
         let interaction = super::interactions::is_interaction(kind)
             .then(|| super::interactions::InteractionState::from_tag(&tag));
+        let eye =
+            (kind == "minecraft:eye_of_ender").then(|| super::end::SummonedEye::load(&mut tag));
         self.remember(id, uuid, tag);
         self.others.push(super::commands::OtherEntity {
             id,
@@ -1229,6 +1268,7 @@ impl Game<'_> {
             item_transformation,
             interaction,
             knot_check,
+            eye,
         });
         Some(id)
     }
@@ -1259,27 +1299,41 @@ impl Game<'_> {
                 ]),
             );
             c.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
-            if let Some(transformation) = o.item_transformation {
-                c.insert("transformation".into(), transformation.to_tag());
-            }
-            if let Some(state) = &o.interaction {
-                // Interaction.addAdditionalSaveData, from the live settings.
-                state.write(c);
-            } else if super::interactions::is_interaction(&o.kind) {
-                // Interaction.addAdditionalSaveData always writes these settings.
-                c.entry("width".into())
-                    .or_insert(Tag::Float(1.0_f32.to_bits()));
-                c.entry("height".into())
-                    .or_insert(Tag::Float(1.0_f32.to_bits()));
-                c.entry("response".into()).or_insert(Tag::Byte(0));
-            }
         }
-        // Marker and LeashFenceKnotEntity still use Entity.saveWithoutId's
-        // common fields when their additional-save methods write nothing.
-        if matches!(
+        let display = matches!(
             o.kind.as_str(),
-            "minecraft:marker" | "marker" | "minecraft:leash_knot"
-        ) {
+            "minecraft:text_display" | "minecraft:block_display" | "minecraft:item_display"
+        );
+        if display || super::interactions::is_interaction(&o.kind) {
+            write_static_entity_fields(&mut tag);
+        }
+        if display {
+            self.write_display_nbt(o, &mut tag);
+        }
+        if let Some(state) = &o.interaction
+            && let Tag::Compound(fields) = &mut tag
+        {
+            state.write(fields);
+        }
+        if let Some(eye) = o.eye
+            && let Tag::Compound(c) = &mut tag
+        {
+            // Entity.saveWithoutId: the live motion and the fire ticks.
+            let m = eye.motion;
+            c.insert(
+                "Motion".into(),
+                Tag::List([m.x, m.y, m.z].map(|v| Tag::Double(v.to_bits())).to_vec()),
+            );
+            c.entry("Fire".into()).or_insert(Tag::Short(0));
+        }
+        // Marker, LeashFenceKnotEntity and EyeOfEnder still use
+        // Entity.saveWithoutId's common fields, which their own saves leave out.
+        if o.eye.is_some()
+            || matches!(
+                o.kind.as_str(),
+                "minecraft:marker" | "marker" | "minecraft:leash_knot"
+            )
+        {
             entity_nbt::fill_common_defaults(&mut tag);
         }
         tag
@@ -1504,6 +1558,13 @@ impl Game<'_> {
         {
             self.uuid_for(target);
         }
+        // The mob that last hurt it, still resident, gets its UUID now, as the
+        // anger target does, so `put_last_hurt_by_mob` can name it.
+        if let Some(horizon_client::mobs::Who::Mob(attacker)) = self.mobs[i].ai.last_hurt_by
+            && self.mobs.iter().any(|m| m.id == attacker)
+        {
+            self.uuid_for(attacker);
+        }
         let mut tag = entity_nbt::mob_to_nbt(
             &self.mobs[i],
             uuid,
@@ -1511,6 +1572,7 @@ impl Game<'_> {
             Some(self.pack.assets.registry),
             |other| self.persist.uuid_of(other),
         );
+        self.put_last_hurt_by_mob(&self.mobs[i], &mut tag);
         if horizon_client::mobs::camel::is_camel(self.mobs[i].species())
             && let Tag::Compound(c) = &mut tag
         {
@@ -1521,6 +1583,42 @@ impl Game<'_> {
         self.write_leash(&mut tag, i);
         self.put_mob_passengers(&mut tag, id);
         tag
+    }
+    /// `LivingEntity.addAdditionalSaveData`'s `last_hurt_by_mob` and
+    /// `ticks_since_last_hurt_by_mob`, a PARTIAL projection at save time: both
+    /// from `ai.last_hurt_by` while the attacker is a living mob in the level
+    /// with a registered UUID and at most 100 ticks have passed (`baseTick`
+    /// drops the record after that, or once the attacker is dead). Otherwise
+    /// both keys go, a copy read from loaded data included. A player attacker
+    /// is not written. This is not `baseTick`'s cleanup itself, the AI's
+    /// record, `#no_anger`, or reading the keys back.
+    pub(super) fn put_last_hurt_by_mob(&self, m: &horizon_client::mobs::Mob, tag: &mut Tag) {
+        let Tag::Compound(c) = tag else { return };
+        let since = i64::from(m.age) - i64::from(m.ai.last_hurt_by_time);
+        let reference = match m.ai.last_hurt_by {
+            Some(horizon_client::mobs::Who::Mob(attacker))
+                if (0..=100).contains(&since)
+                    && self.mobs.iter().any(|a| a.id == attacker && a.alive()) =>
+            {
+                self.persist.uuid_of(attacker)
+            }
+            _ => None,
+        };
+        match reference {
+            Some(uuid) => {
+                c.insert("last_hurt_by_mob".into(), Tag::IntArray(uuid.to_vec()));
+                c.insert(
+                    "ticks_since_last_hurt_by_mob".into(),
+                    Tag::Int(since as i32),
+                );
+            }
+            None => {
+                c.remove(&horizon_world::nbt::JavaString::from("last_hurt_by_mob"));
+                c.remove(&horizon_world::nbt::JavaString::from(
+                    "ticks_since_last_hurt_by_mob",
+                ));
+            }
+        }
     }
     /// Forget an entity that left the world (its UUID and loaded compound).
     pub(super) fn forget_entity(&mut self, id: u32) {
@@ -3624,13 +3722,9 @@ mod item_display_saved_transform_tests {
             assert_eq!(fresh.get("transformation"), Some(&identity));
             assert_eq!(fresh.get("UUID"), tag.get("UUID"));
             assert_eq!(fresh.get("Pos"), tag.get("Pos"));
-            for key in [
-                "interpolation_duration",
-                "teleport_duration",
-                "start_interpolation",
-            ] {
-                assert!(fresh.get(key).is_none());
-            }
+            assert_eq!(fresh.get("interpolation_duration"), Some(&Tag::Int(0)));
+            assert_eq!(fresh.get("teleport_duration"), Some(&Tag::Int(0)));
+            assert!(fresh.get("start_interpolation").is_none());
             game.persist.raw.insert(id, raw);
             assert_eq!(game.world.game_time, clock);
         });
@@ -3706,13 +3800,9 @@ mod item_display_saved_transform_tests {
             let raw = game.persist.raw.remove(&id).unwrap();
             let fresh = game.entity_nbt(Target::Other(id)).unwrap();
             assert_eq!(fresh.get("transformation"), Some(&want));
-            for key in [
-                "interpolation_duration",
-                "teleport_duration",
-                "start_interpolation",
-            ] {
-                assert!(fresh.get(key).is_none());
-            }
+            assert_eq!(fresh.get("interpolation_duration"), Some(&Tag::Int(0)));
+            assert_eq!(fresh.get("teleport_duration"), Some(&Tag::Int(0)));
+            assert!(fresh.get("start_interpolation").is_none());
             game.persist.raw.insert(id, raw);
             let invalid = NativeDisplay {
                 left_rotation: [0.0; 4],
@@ -3732,8 +3822,8 @@ mod item_display_saved_transform_tests {
         });
     }
     #[test]
-    #[ignore = "prepared resources; preservation controls, not Java matrix/invalid admission"]
-    fn unprojected_forms_and_non_item_classes_keep_their_existing_saved_route() {
+    #[ignore = "prepared resources; matrix and malformed transforms through actual summon"]
+    fn item_display_matrices_and_invalid_values_save_a_typed_transformation() {
         with_game(|game| {
             for (n, form) in [
                 (5, "[1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f]"),
@@ -3747,34 +3837,15 @@ mod item_display_saved_transform_tests {
                     .find(|o| game.persist.uuid_of(o.id) == Some([132, 0, 0, n]))
                     .unwrap()
                     .id;
-                let before = game
-                    .persist
-                    .raw
-                    .get(&id)
-                    .unwrap()
-                    .get("transformation")
-                    .unwrap()
-                    .clone();
-                assert_eq!(
-                    game.entity_nbt(Target::Other(id))
-                        .unwrap()
-                        .get("transformation"),
-                    Some(&before)
-                );
+                let identity = expected([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]);
+                let saved = game.entity_nbt(Target::Other(id)).unwrap();
+                assert_eq!(saved.get("transformation"), Some(&identity), "{form}");
                 let raw = game.persist.raw.remove(&id).unwrap();
-                assert!(
-                    game.entity_nbt(Target::Other(id))
-                        .unwrap()
-                        .get("transformation")
-                        .is_none()
-                );
+                let fresh = game.entity_nbt(Target::Other(id)).unwrap();
+                assert_eq!(fresh.get("transformation"), Some(&identity), "{form}");
                 game.persist.raw.insert(id, raw);
             }
-            for (n, kind, extra) in [
-                (8, "marker", ",data:{audit:7}"),
-                (9, "leash_knot", ""),
-                (10, "text_display", ",text:\"control\""),
-            ] {
+            for (n, kind, extra) in [(8, "marker", ",data:{audit:7}"), (9, "leash_knot", "")] {
                 assert!(game.run_command(&format!(
                     "summon {kind} 10.5 200 10.5 {{UUID:[I;132,0,0,{n}]{extra}}}"
                 )));

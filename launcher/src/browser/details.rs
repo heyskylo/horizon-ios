@@ -84,6 +84,9 @@ pub struct Filters {
     pub environment: Option<Environment>,
     /// None: by relevance with search text, else by downloads.
     pub sort: Option<Sort>,
+    /// Only what works on the selected instance: Horizon's registry leaves out the native mods
+    /// with no version that builds on it.
+    pub works_on: bool,
 }
 
 impl Filters {

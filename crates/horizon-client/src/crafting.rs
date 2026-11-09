@@ -1350,6 +1350,12 @@ pub struct Recipes {
 }
 type CookIndex = HashMap<String, crate::fast_hash::FxHashMap<String, Vec<usize>>>;
 /// `MinMaxBounds.Ints` as (min, max) with the given defaults.
+/// `TransmuteRecipe`'s `material_count` as the recipe parser reads it: a
+/// number is exact, an object's missing ends are 1 and 8, both kept in 1..8.
+pub(crate) fn transmute_material_bounds(material_count: Option<&Value>) -> (usize, usize) {
+    let (min, max) = bounds(material_count, (1, 1), (1, 8));
+    (min.clamp(1, 8) as usize, max.clamp(1, 8) as usize)
+}
 fn bounds(v: Option<&Value>, default: (i64, i64), open: (i64, i64)) -> (i64, i64) {
     match v {
         Some(Value::Number(n)) => {
@@ -1634,12 +1640,12 @@ impl Recipes {
                         }),
                 ),
                 "minecraft:crafting_transmute" => special((|| {
-                    let (min, max) = bounds(v.get("material_count"), (1, 1), (1, 8));
+                    let (min, max) = transmute_material_bounds(v.get("material_count"));
                     Some(Special::Transmute {
                         input: ing("input")?,
                         material: ing("material")?,
-                        min: min.clamp(1, 8) as usize,
-                        max: max.clamp(1, 8) as usize,
+                        min,
+                        max,
                         add_count: v["add_material_count_to_result"].as_bool().unwrap_or(false),
                         result: result()?,
                     })

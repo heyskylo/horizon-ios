@@ -4,6 +4,7 @@
 //! then what Play still needs (the launcher's rows). Dark appearance only.
 use super::*;
 use crate::glass_ui::{self as ui, white};
+use crate::scrollbar::TakeWheel;
 use home_tabs::HomeTab;
 use horizon_theme::glass::{ink, radius};
 
@@ -376,9 +377,10 @@ impl Launcher {
             .rounded(px(radius::LARGE))
             .bg(white(0.04))
             .overflow_y_scroll()
-            // The list takes the wheel in both directions; at its ends it must not hand it on
-            // to the page behind it.
-            .on_scroll(|_, _, cx| cx.stop_propagation())
+            .track_scroll(&self.patch_scroll.handle)
+            // The list takes the wheel while it can still move that way; at an end, or when
+            // everything fits, the page behind it gets it.
+            .take_wheel(&self.patch_scroll)
             .child(
                 div()
                     .flex()

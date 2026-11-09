@@ -4,7 +4,7 @@
     {"name": "set_inventory", "target": "horizon_client::game::native_inventories::Game<'_>::native_set_inventory"}
   ],
   "rust_summary": "a player's whole inventory or ender chest replaced, live or in their file (`native_set_inventory`).",
-  "doc_summary": "`native_set_inventory(uuid, kind, slots, selected)` replaces a player's whole inventory (`Player`, 41 slots) or ender chest (`Ender`, 27) as Bukkit's `PlayerInventory.setContents` does, live or in their file like `native_inventory`; for `Player` it also sets the held hotbar slot and empties the cursor and the 2x2 crafting grid, and a player on the server is sent the whole inventory at once. Bundles need \"hooks\": @API:set_inventory@.",
+  "doc_summary": "`native_set_inventory(uuid, kind, slots, selected)` replaces a player's whole inventory (`Player`, 41 slots), ender chest (`Ender`, 27), cursor (`Cursor`, 1, live only) or crafting grid (`Crafting`, 4, live only) as Bukkit's `PlayerInventory.setContents` does, live or in their file like `native_inventory`; for `Player` it also sets the held hotbar slot and empties the cursor and the 2x2 crafting grid, and a player on the server is sent the whole inventory at once. Bundles need \"hooks\": @API:set_inventory@.",
   "comments": [
     "crates/horizon-client/src/game/native_inventories.rs"
   ]

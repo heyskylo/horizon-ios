@@ -105,6 +105,8 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         item_id_declared: false,
         far_depth: true,
         paged_maps: false,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
@@ -133,6 +135,8 @@ pub fn celestial_inputs() -> horizon_shaders::GbuffersInputs {
         item_id_declared: false,
         far_depth: true,
         paged_maps: false,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
