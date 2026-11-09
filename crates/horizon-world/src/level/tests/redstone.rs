@@ -284,3 +284,53 @@ fn a_comparator_compares_and_subtracts_by_vanillas_rules() {
         );
     }
 }
+/// `CopperBulbBlock.checkAndFlip`: a bulb flips `LIT` only when it becomes powered,
+/// not when it loses power, and `POWERED` follows the signal either way. So the
+/// light alternates on every power-up: on, stays on through the power-down, off, stays
+/// off through the next, on again. Every oxidation and waxed variant does the same.
+#[test]
+fn a_copper_bulb_flips_its_light_only_when_it_becomes_powered() {
+    for name in [
+        "copper_bulb",
+        "exposed_copper_bulb",
+        "weathered_copper_bulb",
+        "oxidized_copper_bulb",
+        "waxed_copper_bulb",
+    ] {
+        let mut w = world!();
+        let (bulb, power, air) = (w.id(name, &[]), w.id("redstone_block", &[]), w.b().air());
+        let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(1, 5, 0));
+        w.set(at, bulb);
+        let state = |w: &World| (w.prop(at, "lit"), w.prop(at, "powered"));
+        assert_eq!(
+            state(&w),
+            ("false".into(), "false".into()),
+            "{name} placed unpowered"
+        );
+        // (what the redstone block does, the light and the power the bulb should show)
+        let steps = [
+            (true, "true", "true"),
+            (false, "true", "false"),
+            (true, "false", "true"),
+            (false, "false", "false"),
+            (true, "true", "true"),
+        ];
+        for (powered, lit, follows) in steps {
+            w.set(source, if powered { power } else { air });
+            assert_eq!(
+                state(&w),
+                (lit.to_string(), follows.to_string()),
+                "{name}, power {}",
+                if powered { "on" } else { "off" }
+            );
+        }
+    }
+
+    // Placed beside power, `onPlace` runs the same check: it lights at once.
+    let mut w = world!();
+    w.set(BlockPos::new(1, 5, 0), w.id("redstone_block", &[]));
+    let at = BlockPos::new(0, 5, 0);
+    w.set(at, w.id("copper_bulb", &[]));
+    assert_eq!(w.prop(at, "lit"), "true", "placed beside power");
+    assert_eq!(w.prop(at, "powered"), "true");
+}
