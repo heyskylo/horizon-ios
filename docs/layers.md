@@ -20,13 +20,15 @@ This page says:
 - the plan.
 
 CI checks the rules, so review doesn't have to. Contributors fixing vanilla behaviour never have to touch
-cosmetics, the shop or a server address. Ports (iOS, Android, 3DS) and mods build on the platform without editing
-engine files.
+cosmetics, the shop or a server address. Mods and desktop-class ports (iOS, Android) build on the platform without
+editing engine files; ports to machines the desktop client can't run on (a handheld console, a browser) build on
+the [portable crates](#portable-crates).
 
 Credits:
 
-- **duckybertduck:** the three layers, the dependency rule, the address rule and the plan ("3-layer split: engine /
-  platform / Horizon", #contributors, 2026-11-08).
+- **NikitaMGrimm** (DuckyBertDuck on Discord): the three layers, the dependency rule, the address rule and the plan
+  ("3-layer split: engine / platform / Horizon", #contributors, 2026-11-08), the portable crates (#12997, #13002),
+  and the review that made the Horizon layer linked crates rather than native mods.
 - **arismoko:** the mod API owns its types and a CI property check keeps engine types out of it
   ([arismoko/horizon](https://github.com/arismoko/horizon), arismoko/horizon#1608). Also the idea of shipping
   Horizon's own parts from another repository as a launcher plugin.
@@ -64,10 +66,20 @@ Vanilla Minecraft: Java Edition 26.3, and nothing else.
   doesn't have, a network address vanilla doesn't contact, Horizon branding.
 - **Network:** only what vanilla contacts: Mojang and Microsoft services, and the servers the player joins.
 
+### Portable crates
+
+`horizon-core`, `horizon-world`, `horizon-protocol`, `horizon-items`, `horizon-command`, `horizon-client-core`
+and `horizon-assets` hold vanilla's rules and data with no desktop in them: no window, GPU, sound, gamepad or
+clipboard library, no HTTP client, and no engine crate outside this list. The platform sits on the desktop engine
+(`wgpu`, `winit`, `cpal`), which a handheld console or a browser can't run, so a port there builds on these crates
+instead. They stay that way: the layer check fails when one takes `winit`, `wgpu`, `cpal`, `gilrs`, `arboard` or
+`ureq`, or an engine crate outside the list (#13002). Gameplay itself still lives in `horizon-client`; step P of
+the [plan](#plan) moves it here over time.
+
 ## Platform
 
 What makes vanilla nicer to change, port and run, with no Horizon branding and no address of its own. It is the
-public API that mods, ports and the Horizon layer build on.
+public API that mods, desktop-class ports and the Horizon layer build on.
 
 - **Belongs:** the mod API and mod formats, the native mod host, the shader API and pack formats beyond vanilla
   (OptiFine, Polytone, `shaders/`), HDR, controllers, the settings system, agent control (`horizon-ctl`, MCP),
@@ -116,7 +128,7 @@ Developer tools that no player runs: `xtask`, `horizon-bots`, `horizon-mod-api-g
 | A mod hook, host method or mod format | platform | `horizon-mods`, the mod API (today: `game/mod_api_host.rs`, `game/native_*.rs`) |
 | A shader or resource pack format vanilla doesn't read | platform | `horizon-shaders`, `horizon-optifine`, `horizon-polytone`, or a new platform crate |
 | A dedicated server option (anticheat, chat filter) | platform | `horizon-anticheat`, `horizon-chat-filter` |
-| A Horizon extra (a setting, screen or HUD element vanilla doesn't have) | Horizon, or a native mod | its own module behind `horizon-extras`, built on platform API; better, a native mod |
+| A Horizon extra (a setting, screen or HUD element vanilla doesn't have) | Horizon | its own module behind `horizon-extras`, built on platform API; or an optional native mod that players add themselves |
 | Anything that talks to playhorizon.dev, a partner or a third-party service by itself | Horizon | a Horizon crate, its address in `horizon-addresses` |
 | Cosmetics, emotes, the shop, sponsors, Discord, telemetry, official servers | Horizon | `horizon-cosmetics`, `horizon-telemetry`..., behind `horizon-extras` |
 | A launcher page | Horizon | `launcher/src/` |
@@ -141,8 +153,11 @@ that. horizon-plain becomes a plain build of this repository.
 1. No engine or platform code names a Horizon crate. The layer check refuses it.
 2. The Horizon layer uses the platform's public API only. The layer check refuses its engine dependencies, and
    today's are on the exceptions list.
-3. Horizon's in-game parts (extras, cosmetics, emotes, Discord, Play with Friends, the ping) load into the game
-   the way a native mod does, through the platform. The game runs the same without them.
+3. Horizon's in-game parts (extras, cosmetics, emotes, Discord, Play with Friends, the ping) are crates linked into
+   the official game build in CI, plugged in through the platform's hooks. Players never compile them: a native
+   mod is source the launcher compiles per instance, so it is not the way. The official executable is a thin
+   binary crate in the Horizon repository that links the platform and the Horizon crates; this repository keeps
+   its own plain executable. The game runs the same without them.
 4. Every Horizon address is in `horizon-addresses`, which moves with the layer.
 5. The launcher is Horizon's: it moves too. It installs the game from this repository's releases and adds the
    Horizon layer to it.
@@ -163,8 +178,8 @@ and `install.ps1` (the dedicated server). The server's anticheat and chat filter
 
 ## Extras that may leave the game
 
-Horizon's extras are Horizon-layer code. Each one is a candidate to become a native mod, or a cfg-gated module
-until then. None moves yet; the list is here so new work doesn't add to them. See [extras.md](extras.md) for each one:
+Horizon's extras are Horizon-layer code. Each one is a candidate to become an optional native mod that players add
+themselves, or stays a cfg-gated module linked into the official build. None moves yet; the list is here so new work doesn't add to them. See [extras.md](extras.md) for each one:
 
 - zoom (OptiFine-style), keystrokes and FPS overlays, own name tag;
 - Mouse Tweaks controls, sorting, scroll-wheel settings, smooth chat;
@@ -291,13 +306,19 @@ mechanical steps (checks, M1–M4) continue meanwhile. M5 and M6 wait for that r
 | 2 | Layer check in CI and pr_ready, with the PR template's checklist | | #12983 |
 | 3 | Address check in CI and pr_ready | | #12990 |
 | 4 | File-size check in CI and pr_ready | | #13015 |
+| 2b | The portable crates' rule in the layer check ([Portable crates](#portable-crates)) | | #13002 (NikitaMGrimm) |
 | M1 | `horizon-addresses`, the address list file; the Horizon crates read it | 7 address entries | #12993 |
 | M2 | `horizon-system` (engine): the hardware probes leave `horizon-telemetry`, and the crash report and GPU info read them there | prepares M3 | |
 | M3 | The renderer's telemetry and benchmark modules leave `horizon-client-render` for a Horizon crate, through a stats and crash-report extension point | render → telemetry, bench | |
 | M4 | Cosmetics leave `horizon-client-render`: their settings lines through a registered settings section, the tab list's mark through a name-decoration callback | render → cosmetics | |
-| M5 | Horizon's in-game parts (extras, cosmetics, emotes, Discord, Friends, ping, benchmark upload, official server) leave `horizon-client` for Horizon crates loaded through the platform, the way a native mod is | client, client-lib → cosmetics, friends, telemetry, bench | after review |
-| M6 | The engine crates stop depending on platform crates: the renderer's shader-pack, pack-format, HDR and theme code moves behind engine extension points; the mod host and agent control move to platform crates; the launcher and `horizon-server` reach the engine through platform API | the 29 engine → platform and 7 Horizon → engine exceptions | after review |
+| M5 | Horizon's in-game parts (extras, cosmetics, emotes, Discord, Friends, ping, benchmark upload, official server) leave `horizon-client` for Horizon crates linked into the official build through platform hooks | client, client-lib → cosmetics, friends, telemetry, bench | after review |
+| M6 | The engine crates stop depending on platform crates: the renderer's shader-pack, pack-format, HDR and theme code moves behind engine extension points; the mod host and agent control move to platform crates; the launcher and `horizon-server` reach the engine through platform API | the 29 engine → platform and 7 Horizon → engine exceptions | after review; HDR's part with NikitaMGrimm, below |
+| P | Optional, longer: gameplay into the portable crates. `Game` holds the world and its presentation (renderer, screens, particles, sound): split its state module by module, turn gameplay's direct particle and sound calls into level events as vanilla's server sends them, then move each clean module into a portable crate | | any time, small PRs |
 | R | The Horizon layer moves to its own repository and ships in every official download (the table above) | | after the split, Ludovic's call |
+
+HDR in M6: moving HDR behind engine extension points moves the frame pipeline (float targets, tone mapping,
+present). NikitaMGrimm leads HDR, so that part is planned with them and comes after HDR's step 5 (float targets on
+by default), so the pipeline moves once. HDR off stays bit-exact.
 
 The mod API work on arismoko/horizon lands upstream as part of the platform. The API owns its types,
 `horizon-mod-runtime` gets no game dependency, and its CI property check stays as a stricter check inside the
