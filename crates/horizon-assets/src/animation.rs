@@ -15,6 +15,33 @@ pub struct AnimationMetadata {
     pub height: Option<i32>,
     pub frame_time: i32,
     pub interpolate: bool,
+    /// Polytone's `mode` (wiki "Variant Textures"): what drives the animation instead of the
+    /// game's ticks.
+    pub mode: Option<ClipMode>,
+}
+
+/// What drives a Polytone animation (its `.png.mcmeta` `mode`): the whole animation stretched over
+/// one cycle of the time of day, the weather, or an expression's value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipMode {
+    /// `day_time`: frame 0 at time 0, the last at the cycle's end, then again.
+    DayTime { cycle: i64 },
+    /// `weather`: frame 0 in clear weather, 1 in rain, 2 in a storm (the rain and thunder levels
+    /// added up), at most the last.
+    Weather,
+    /// A Polytone expression: its value's fraction is how far through the animation it is.
+    Expression(String),
+    /// `game_time`, `screen_time`, `season`: not driven yet; the animation runs on ticks.
+    Unsupported(String),
+}
+
+/// The values [`ClipMode`]s read this frame.
+pub struct ModeInputs<'a> {
+    pub day_time: i64,
+    /// The rain level plus the thunder level, 0 to 2.
+    pub weather: f32,
+    /// An expression's value this frame, by its source.
+    pub expression: &'a dyn Fn(&str) -> Option<f64>,
 }
 
 fn optional<'a>(object: &Object<'a>, name: &str) -> Option<&'a RawValue> {
@@ -79,6 +106,20 @@ impl AnimationMetadata {
                 .map(|v| serde_json::from_str(v.get()))
                 .transpose()?
                 .unwrap_or(false),
+            mode: optional(&fields, "mode")
+                .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
+                .map(|mode| {
+                    let cycle = optional(&fields, "time_cycle_duration")
+                        .and_then(|v| serde_json::from_str::<f64>(v.get()).ok())
+                        .filter(|c| *c >= 1.0)
+                        .map_or(24_000, |c| c as i64);
+                    match mode.as_str() {
+                        "day_time" => ClipMode::DayTime { cycle },
+                        "weather" => ClipMode::Weather,
+                        "game_time" | "screen_time" | "season" => ClipMode::Unsupported(mode),
+                        _ => ClipMode::Expression(mode),
+                    }
+                }),
         })
     }
 
@@ -129,6 +170,7 @@ impl AnimationMetadata {
             ends,
             duration,
             interpolate: self.interpolate,
+            mode: self.mode.clone(),
         }))
     }
 }
@@ -139,6 +181,7 @@ pub struct AnimationClip {
     ends: Vec<u64>,
     duration: u64,
     interpolate: bool,
+    mode: Option<ClipMode>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnimationSample {
@@ -162,6 +205,9 @@ impl AnimationClip {
     pub fn interpolates(&self) -> bool {
         self.interpolate
     }
+    pub fn mode(&self) -> Option<&ClipMode> {
+        self.mode.as_ref()
+    }
 
     /// Random access to the state after `tick` native ticks. Binary search avoids
     /// advancing every missed tick when a render frame takes longer than 50 ms.
@@ -182,5 +228,119 @@ impl AnimationClip {
             needs_draw: self.interpolate || dirty,
             interpolation_millis: ((sub_frame as f32 / duration as f32) * 1000.0) as u32,
         }
+    }
+}
+
+impl AnimationClip {
+    /// What a Polytone-driven animation shows now (measured on the real mod, Polytone
+    /// 26.3-6.8.6: with four frames, times 0, 6000, 12000 and 18000 show frames 0 to 3, an
+    /// expression `0.6` frame 2 and `2` frame 0, clear weather frame 0, rain frame 1 and a storm,
+    /// even after 15 seconds, frame 2); `None` for a plain animation, which runs on ticks.
+    pub fn sample_mode(&self, inputs: &ModeInputs) -> Option<AnimationSample> {
+        let fraction = match self.mode.as_ref()? {
+            ClipMode::DayTime { cycle } => day_fraction(inputs.day_time, *cycle),
+            ClipMode::Weather => {
+                let last = self.sequence.len() - 1;
+                let index = (inputs.weather.max(0.0) as usize).min(last);
+                let start = if index == 0 { 0 } else { self.ends[index - 1] };
+                return Some(self.sample(start));
+            }
+            ClipMode::Expression(source) => (inputs.expression)(source)?.rem_euclid(1.0),
+            ClipMode::Unsupported(_) => return None,
+        };
+        Some(self.sample_fraction(fraction))
+    }
+
+    /// The state `fraction` (0 to 1) of the way through the whole animation, mixing within a
+    /// frame by how far into it that is.
+    fn sample_fraction(&self, fraction: f64) -> AnimationSample {
+        let time = fraction.clamp(0.0, 1.0) * self.duration as f64;
+        let mut sample = self.sample((time as u64).min(self.duration - 1));
+        let (_, frame_time) = self.sequence[sample.sequence_index];
+        let start = if sample.sequence_index == 0 {
+            0
+        } else {
+            self.ends[sample.sequence_index - 1]
+        };
+        let into = ((time - start as f64) / f64::from(frame_time)).clamp(0.0, 1.0);
+        sample.interpolation_millis = (into * 1000.0) as u32;
+        sample
+    }
+}
+
+fn day_fraction(day_time: i64, cycle: i64) -> f64 {
+    day_time.rem_euclid(cycle) as f64 / cycle as f64
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    fn clip(mcmeta: &str) -> AnimationClip {
+        AnimationMetadata::from_json(mcmeta)
+            .unwrap()
+            .clip(4)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn frame(clip: &AnimationClip, day_time: i64, weather: f32, value: f64) -> u32 {
+        let expression = move |_: &str| Some(value);
+        clip.sample_mode(&ModeInputs {
+            day_time,
+            weather,
+            expression: &expression,
+        })
+        .unwrap()
+        .frame
+    }
+
+    #[test]
+    fn polytone_modes_pick_the_frames_the_real_mod_shows() {
+        let day = clip(r#"{"frametime": 1, "mode": "day_time"}"#);
+        let frames: Vec<u32> = [0, 6000, 12_000, 18_000, 30_000]
+            .map(|t| frame(&day, t, 0.0, 0.0))
+            .into();
+        assert_eq!(frames, [0, 1, 2, 3, 1]);
+        let value = clip(r#"{"frametime": 1, "mode": "0.6"}"#);
+        assert_eq!(frame(&value, 0, 0.0, 0.6), 2);
+        assert_eq!(frame(&value, 0, 0.0, 2.0), 0);
+        let weather = clip(r#"{"frametime": 1, "mode": "weather"}"#);
+        let frames: Vec<u32> = [0.0, 1.0, 2.0].map(|w| frame(&weather, 0, w, 0.0)).into();
+        assert_eq!(frames, [0, 1, 2]);
+        // Three frames: clear, rain and storm are the first, the middle and the last.
+        let three = AnimationMetadata::from_json(r#"{"frametime": 1, "mode": "weather"}"#)
+            .unwrap()
+            .clip(3)
+            .unwrap()
+            .unwrap();
+        let frames: Vec<u32> = [0.0, 1.0, 2.0].map(|w| frame(&three, 0, w, 0.0)).into();
+        assert_eq!(frames, [0, 1, 2]);
+        // A plain animation and the modes not driven yet run on ticks.
+        assert!(
+            clip(r#"{"frametime": 1}"#)
+                .sample_mode(&ModeInputs {
+                    day_time: 0,
+                    weather: 0.0,
+                    expression: &|_| None
+                })
+                .is_none()
+        );
+        assert!(
+            clip(r#"{"frametime": 1, "mode": "season"}"#)
+                .sample_mode(&ModeInputs {
+                    day_time: 0,
+                    weather: 0.0,
+                    expression: &|_| None
+                })
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_custom_cycle_stretches_the_day() {
+        let day = clip(r#"{"frametime": 1, "mode": "day_time", "time_cycle_duration": 1000}"#);
+        assert_eq!(frame(&day, 250, 0.0, 0.0), 1);
+        assert_eq!(frame(&day, 1250, 0.0, 0.0), 1);
     }
 }

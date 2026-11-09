@@ -1493,6 +1493,8 @@ struct Tints<'a> {
     colormaps: &'a [Arc<crate::environment::Colormap>],
     water_colormap: Option<u16>,
     sampled: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
+    /// Each colormap's own colour by block, before the blend averages them.
+    cells: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
 }
 impl<'a> Tints<'a> {
     fn new(
@@ -1514,6 +1516,7 @@ impl<'a> Tints<'a> {
             colormaps: &[],
             water_colormap: None,
             sampled: std::collections::HashMap::new(),
+            cells: std::collections::HashMap::new(),
         }
     }
     /// With the packs' colormaps of `tables`.
@@ -1528,13 +1531,51 @@ impl<'a> Tints<'a> {
         if let Some(&known) = self.sampled.get(&(index, [x, y, z])) {
             return known;
         }
-        let colormap = self.colormaps.get(usize::from(index))?;
-        let id = Self::biome_id(&self.zoom, self.region, self.plains, self.origin, [x, y, z]);
-        let [cx, cz, base_y] = self.origin;
-        let at = [cx * 16 + x, base_y + y, cz * 16 + z];
-        let mut host = crate::environment::BlockHost::new(at, self.biomes.get(id));
-        let colour = colormap.sample(&mut host).map(|c| c & 0xFF_FFFF);
+        let colormap = self.colormaps.get(usize::from(index))?.clone();
+        // ClientLevel.calculateBlockTint: the mean of the (2r+1)^2 colours around the block, each
+        // channel summed and divided. A transparent pixel in the square leaves the block's own.
+        let r = if colormap.biome_blend { self.radius } else { 0 };
+        let mut sum = [0u32; 3];
+        let mut blended = true;
+        'square: for dz in -r..=r {
+            for dx in -r..=r {
+                let Some(c) = self.colormap_cell(&colormap, index, [x + dx, y, z + dz]) else {
+                    blended = false;
+                    break 'square;
+                };
+                sum = [
+                    sum[0] + (c >> 16 & 255),
+                    sum[1] + (c >> 8 & 255),
+                    sum[2] + (c & 255),
+                ];
+            }
+        }
+        let colour = if blended {
+            let n = ((2 * r + 1) * (2 * r + 1)) as u32;
+            Some((sum[0] / n) << 16 | (sum[1] / n) << 8 | (sum[2] / n))
+        } else {
+            self.colormap_cell(&colormap, index, [x, y, z])
+        };
         self.sampled.insert((index, [x, y, z]), colour);
+        colour
+    }
+    /// Colormap `index`'s own colour at block `at` (section-local, x and z may reach into the
+    /// neighbours), before any blend.
+    fn colormap_cell(
+        &mut self,
+        colormap: &crate::environment::Colormap,
+        index: u16,
+        at: [i32; 3],
+    ) -> Option<u32> {
+        if let Some(&known) = self.cells.get(&(index, at)) {
+            return known;
+        }
+        let id = Self::biome_id(&self.zoom, self.region, self.plains, self.origin, at);
+        let [cx, cz, base_y] = self.origin;
+        let block = [cx * 16 + at[0], base_y + at[1], cz * 16 + at[2]];
+        let mut host = crate::environment::BlockHost::new(block, self.biomes.get(id));
+        let colour = colormap.sample(&mut host).map(|c| c & 0xFF_FFFF);
+        self.cells.insert((index, at), colour);
         colour
     }
     /// The water's tint at block `(x, y, z)`: the packs' water colormap, else the biome's.
