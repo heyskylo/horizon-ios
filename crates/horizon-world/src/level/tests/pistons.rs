@@ -247,3 +247,46 @@ fn a_piston_moves_twelve_blocks_and_refuses_a_thirteenth() {
         }
     }
 }
+
+/// `PistonStructureResolver.canStickToEachOther`: a slime block drags slime and
+/// a honey block drags honey, but slime and honey never stick to each other.
+/// Built in open air: a slime block on stone drags the floor too, which is
+/// vanilla's as well but would make the check about something else.
+#[test]
+fn slime_and_honey_each_drag_their_own_kind_and_never_each_other() {
+    // (the block the piston faces, the block at its side, is the side one dragged)
+    for (front, side, dragged) in [
+        ("slime_block", "slime_block", true),
+        ("honey_block", "honey_block", true),
+        ("slime_block", "honey_block", false),
+        ("honey_block", "slime_block", false),
+    ] {
+        let mut w = world!();
+        let (front_id, side_id) = (w.id(front, &[]), w.id(side, &[]));
+        let air = w.b().air();
+        let (ahead, beside) = (BlockPos::new(1, 5, 0), BlockPos::new(1, 5, 1));
+        w.set(ahead, front_id);
+        w.set(beside, side_id);
+        w.set(
+            BlockPos::new(0, 5, 0),
+            w.id("piston", &[("facing", "east")]),
+        );
+        w.set(BlockPos::new(-1, 5, 0), w.id("redstone_block", &[]));
+        settle(&mut w);
+        assert_eq!(
+            w.prop(BlockPos::new(0, 5, 0), "extended"),
+            "true",
+            "{front} ahead, {side} beside: the front block always moves"
+        );
+        assert_eq!(w.get(BlockPos::new(2, 5, 0)), front_id, "{front} moved");
+        let moved = w.get(BlockPos::new(2, 5, 1));
+        let stayed = w.get(beside);
+        if dragged {
+            assert_eq!(moved, side_id, "{front} ahead drags {side} beside it");
+            assert_eq!(stayed, air, "{front} ahead: {side} left its place");
+        } else {
+            assert_eq!(moved, air, "{front} ahead does not drag {side}");
+            assert_eq!(stayed, side_id, "{front} ahead: {side} stays where it was");
+        }
+    }
+}
