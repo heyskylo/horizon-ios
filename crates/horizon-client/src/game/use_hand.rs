@@ -194,7 +194,15 @@ impl Game<'_> {
                         _ => {}
                     }
                 }
-                if result.consumes_action() {
+                // SignBlock.useWithoutItem answers PASS for a sign that is
+                // not waxed, has no click action to run and that nobody may
+                // build on: ServerPlayerGameMode.useItemOn goes on to
+                // ItemStack.useOn, so an adventure-mode `can_place_on` stack
+                // still places against the sign.
+                let sign_passes = branch == horizon_world::level::UseBranch::WithoutItem
+                    && self.res.facts().get(cake).sign_form().is_some()
+                    && !self.sign_consumes_click(hit.pos);
+                if result.consumes_action() && !sign_passes {
                     // ServerPlayerGameMode.useItemOn: ITEM_USED_ON_BLOCK with
                     // the stack before the use, or DEFAULT_BLOCK_USE.
                     match branch {
@@ -686,3 +694,7 @@ impl Game<'_> {
         self.damage_held(1);
     }
 }
+
+#[cfg(test)]
+#[path = "sign_use_tests.rs"]
+mod sign_use_tests;
