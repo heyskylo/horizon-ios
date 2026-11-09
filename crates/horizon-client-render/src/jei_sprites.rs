@@ -27,4 +27,29 @@ pub(crate) const SPRITES: &[(&str, &[u8])] = &[
         "search_background_v2",
         include_bytes!("jei_recipes/search_background_v2.png"),
     ),
+    ("slot", include_bytes!("jei_recipes/slot.png")),
+    (
+        "icons/list_badge",
+        include_bytes!("jei_recipes/icons/list_badge.png"),
+    ),
+    (
+        "interactive_ingredient_tooltip_background",
+        include_bytes!("jei_recipes/interactive_ingredient_tooltip_background.png"),
+    ),
+    (
+        "recipe_preview_background_v2",
+        include_bytes!("jei_recipes/recipe_preview_background_v2.png"),
+    ),
+    (
+        "ingredient_list_slot_background_v2",
+        include_bytes!("jei_recipes/ingredient_list_slot_background_v2.png"),
+    ),
+    (
+        "scrollbar_background_v2",
+        include_bytes!("jei_recipes/scrollbar_background_v2.png"),
+    ),
+    (
+        "scrollbar_marker_v2",
+        include_bytes!("jei_recipes/scrollbar_marker_v2.png"),
+    ),
 ];

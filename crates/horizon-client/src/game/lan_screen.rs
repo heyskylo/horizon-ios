@@ -152,6 +152,14 @@ impl WorldOptions {
         }
         self.port.value.parse::<u16>().ok().filter(|p| *p >= 1024)
     }
+
+    /// `portEdit.setTooltip(PORT_INFO_TEXT)`: the port box explains itself while
+    /// the cursor is over it. The box is drawn even with LAN off, so the tooltip
+    /// shows there too; a remote world has no such box.
+    fn port_tooltip(port: &EditBox, cursor: (f32, f32), remote: bool) -> Option<Text> {
+        (!remote && ui::hovered(cursor, port.x, port.y, port.width, port.height))
+            .then(|| Text::translate("lanServer.port", &[]))
+    }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             default_mode: self.default_mode,
@@ -1002,6 +1010,10 @@ impl Game<'_> {
                 active,
                 hover,
             );
+        }
+        // The widgets are drawn; the port box's tooltip goes over them.
+        if let Some(tip) = WorldOptions::port_tooltip(&o.port, cursor, o.remote) {
+            ui::tooltip(batch, atlas, &[tip], cursor);
         }
     }
 
@@ -1898,5 +1910,16 @@ mod tests {
         assert!(!o.active(Button::Apply));
         assert!(o.locked);
         assert!(!o.active(Button::Difficulty));
+    }
+
+    /// `portEdit.setTooltip(PORT_INFO_TEXT)`: hovering the port box shows its
+    /// label; a remote world (`o.remote`) has no port box to hover.
+    #[test]
+    fn the_port_box_explains_itself_on_hover() {
+        let port = EditBox::new(158.0, 100.0, 40.0, 20.0);
+        assert!(WorldOptions::port_tooltip(&port, (159.0, 101.0), false).is_some());
+        assert!(WorldOptions::port_tooltip(&port, (157.0, 101.0), false).is_none());
+        assert!(WorldOptions::port_tooltip(&port, (159.0, 121.0), false).is_none());
+        assert!(WorldOptions::port_tooltip(&port, (159.0, 101.0), true).is_none());
     }
 }
