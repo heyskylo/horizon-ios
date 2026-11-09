@@ -466,8 +466,15 @@ impl Game<'_> {
         })
     }
 
+    /// What the pad draws over the HUD, last: the radial menu, then the pad's cursor or focus
+    /// highlight and the on-screen keyboard over everything else (`draw_pad_cursor`).
+    pub(in crate::game) fn draw_pad_over_hud(&self, batch: &mut horizon_client::hud::HudBatch) {
+        self.draw_pad_radial(batch);
+        self.draw_pad_cursor(batch);
+    }
+
     /// The overlay, over the HUD, in this player's view: while it shows, and while it fades out.
-    pub(in crate::game) fn draw_pad_radial(&self, batch: &mut horizon_client::hud::HudBatch) {
+    fn draw_pad_radial(&self, batch: &mut horizon_client::hud::HudBatch) {
         let clock = self.hud_clock();
         let look = &self.pad.radial_look;
         let Some(seen) = self.pad_radial_drawn(clock) else {
@@ -507,8 +514,7 @@ impl Game<'_> {
         look.showing(clock)
     }
 
-    /// The overlay is showing (not only fading out): chat lines and the first-person hand give
-    /// way to it.
+    /// The overlay is showing (not only fading out): it holds the view (`overlay_holds_view`).
     pub(in crate::game) fn pad_radial_shown(&self) -> bool {
         self.pad.radial_look.open()
     }

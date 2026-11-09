@@ -1,8 +1,10 @@
 //! The HUD's `Room` this frame (`docs/ui-kit.md`): what vanilla's HUD shows that Horizon's own
 //! overlays keep clear of. `hud` empties it each frame and `hud_layers` fills it in before the
 //! world's HUD draws, into `ui.room`; the controller notice, splitscreen's join strip and the
-//! radial menu read it. With it, the frame's `motion::Clock` (`hud_clock`).
+//! radial menu read it. With it, the frame's `motion::Clock` (`hud_clock`), and whether an
+//! overlay holds the view (`overlay_holds_view`), which what vanilla draws there gives way to.
 use super::Game;
+use horizon_client::hud::HudBatch;
 use horizon_client::hud_kit::motion::Clock;
 use horizon_client::hud_kit::room::{Keep, Room};
 use horizon_client::{boss_overlay, hud_layout, hud_overlays};
@@ -66,6 +68,34 @@ impl Game<'_> {
                     (h - top) as f32,
                 ],
             );
+        }
+    }
+
+    /// An overlay holds the middle of the view (the radial menu, once it shows: a quick tap of
+    /// its opener draws nothing, so nothing blinks). The 2D and F3 crosshairs, the chat's lines,
+    /// the toasts and the first-person hands give way to it.
+    pub(super) fn overlay_holds_view(&self) -> bool {
+        self.pad_radial_shown()
+    }
+
+    /// ToastManager.extractRenderState: F1 hides the toasts (`hidden`), and so does an overlay
+    /// holding the view, as the radial menu's page tabs run across the top where the toasts are.
+    /// They go on timing out meanwhile, as under F1.
+    pub(super) fn draw_every_toast(&mut self, batch: &mut HudBatch, hidden: bool) {
+        let hidden = hidden || self.overlay_holds_view();
+        self.draw_toasts(batch, hidden);
+        self.draw_tutorial_toasts(batch, hidden);
+        self.draw_pack_toasts(batch, hidden);
+        self.draw_music_toast(batch, hidden);
+    }
+
+    /// The hands drawn in first person this frame: none while an overlay holds the view, as the
+    /// radial menu's tiles sit where they are.
+    pub(super) fn hands_shown(&self) -> [bool; 2] {
+        if self.overlay_holds_view() {
+            [false; 2]
+        } else {
+            self.hands_to_render()
         }
     }
 }

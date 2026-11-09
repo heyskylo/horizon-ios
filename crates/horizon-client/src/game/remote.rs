@@ -3728,8 +3728,6 @@ impl Game<'_> {
                 }
                 self.using = None;
                 self.end_mod_use();
-                // A new LocalPlayer: nothing the old one's controller had open runs on it.
-                self.pad_player_replaced();
                 // After a death (no KEEP_ENTITY_DATA) the new LocalPlayer
                 // rides nothing: the server pairs a vehicle again with its
                 // passengers. A dimension change keeps the vehicle it travels in.

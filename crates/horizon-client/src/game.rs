@@ -7309,8 +7309,7 @@ impl Game<'_> {
         self.draw_debug_overlay(&mut batch, size);
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
-        self.draw_pad_radial(&mut batch);
-        self.draw_pad_cursor(&mut batch);
+        self.draw_pad_over_hud(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -7431,13 +7430,11 @@ impl Game<'_> {
             let delay = horizon_client::attack_strength::delay(self.main_hand_attack_speed());
             let strength = self.hand_strength.scale(0.0, self.main_hand_attack_speed());
             // The 3D crosshair (F3) takes the 2D one's place.
-            // Hud.extractCrosshair: a spectator only sees it over something to open. The radial
-            // menu's stick takes the middle of the view once it shows: a quick tap of the opener
-            // draws nothing, so it doesn't blink the crosshair either.
+            // Hud.extractCrosshair: a spectator only sees it over something to open.
             if self.camera_type.first_person()
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
-                && !self.pad_radial_shown()
+                && !self.overlay_holds_view()
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -7661,8 +7658,7 @@ impl Game<'_> {
         if self.screen == Screen::Chat {
             self.draw_chat(&mut batch);
         } else if show_hud {
-            // The radial menu covers the chat's corner of the view: its lines give way.
-            if !self.pad_radial_shown() {
+            if !self.overlay_holds_view() {
                 self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
             }
             self.gui_layer("minecraft:tab_list", &mut batch, |g, batch| {
@@ -7735,14 +7731,7 @@ impl Game<'_> {
         // after this point and so over what a mod drew.
         self.fire_screen_render_post(&mut batch);
         self.draw_saving_indicator(&mut batch);
-        // ToastManager.extractRenderState: F1 hides the toasts too. So does the radial menu while it
-        // shows: its page tabs run across the top, where the toasts are (they go on timing out
-        // meanwhile, as under F1).
-        let toasts_hidden = !show_hud || self.pad_radial_shown();
-        self.draw_toasts(&mut batch, toasts_hidden);
-        self.draw_tutorial_toasts(&mut batch, toasts_hidden);
-        self.draw_pack_toasts(&mut batch, toasts_hidden);
-        self.draw_music_toast(&mut batch, toasts_hidden);
+        self.draw_every_toast(&mut batch, !show_hud);
         if self.server_packs.prompt.is_none() {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
@@ -12206,12 +12195,7 @@ impl Game<'_> {
             eye[2].floor() as i32,
         );
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-        // The radial menu's tiles sit where the hands are: they give way while it shows.
-        let shown = if self.pad_radial_shown() {
-            [false; 2]
-        } else {
-            self.hands_to_render()
-        };
+        let shown = self.hands_shown();
         let used_hand = self.used_hand();
         let spinning = self
             .player
@@ -13659,7 +13643,7 @@ impl Game<'_> {
             self.camera_type.first_person(),
             self.ui.hide_gui,
             self.shows_panorama(),
-            self.pad_radial_shown(),
+            self.overlay_holds_view(),
         ) {
             let scale = HudBatch::new(size).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
@@ -17566,15 +17550,14 @@ pub(crate) fn closest_space_nudge(
 
 /// GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown, and only over
 /// a level. The F3 overlay stays on when the world closes, so it must not reach the panorama.
-/// The radial menu's stick takes the middle of the view, as from the 2D crosshair.
 fn debug_crosshair_drawn(
     enabled: bool,
     first_person: bool,
     hide_gui: bool,
     panorama: bool,
-    radial_open: bool,
+    overlay_holds_view: bool,
 ) -> bool {
-    enabled && first_person && !hide_gui && !panorama && !radial_open
+    enabled && first_person && !hide_gui && !panorama && !overlay_holds_view
 }
 
 /// GameRenderer.shouldRenderBlockOutline, and only over a level. A panorama frame (the title
