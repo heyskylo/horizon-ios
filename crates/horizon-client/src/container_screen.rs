@@ -95,6 +95,23 @@ impl Button {
     }
 }
 
+/// `AbstractContainerScreen.mouseClicked`'s double click: the same slot and
+/// the same button within 250 ms (`MouseHandler`'s `doubleClick`), with
+/// `lastClickSlot` replaced by every click that reaches the container logic —
+/// `None` for a click outside the window, which ends the chain.
+pub fn double_click(
+    last: &mut Option<(std::time::Instant, Option<usize>, bool)>,
+    slot: Option<usize>,
+    right: bool,
+    now: std::time::Instant,
+) -> bool {
+    let double = last.is_some_and(|(at, was_slot, was_right)| {
+        was_slot == slot && was_right == right && now.duration_since(at).as_millis() < 250
+    });
+    *last = Some((now, slot, right));
+    double
+}
+
 /// The input state `mouseClicked`/`mouseReleased` keep between events.
 #[derive(Clone, Debug, Default)]
 pub struct Clicks {
@@ -408,6 +425,30 @@ mod tests {
             clicks.press(&slot, Button::Left, true, false, false),
             Some(Input::Pickup)
         );
+    }
+
+    /// `AbstractContainerScreen.mouseClicked`: `this.lastClickSlot = slot`
+    /// runs for every click that reaches the container logic, and
+    /// `doubleclick` is the same slot and button within `MouseHandler`'s
+    /// 250 ms. A click outside is a click on no slot (`null`), so the next
+    /// click on a real slot is not a double click.
+    #[test]
+    fn a_click_on_no_slot_ends_the_double_click_chain() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut last = None;
+        let at = |ms| start + Duration::from_millis(ms);
+        assert!(!double_click(&mut last, Some(4), false, at(0)));
+        assert!(double_click(&mut last, Some(4), false, at(100)));
+        // The click outside records null: the slot under the pointer is no
+        // longer the last click's slot.
+        assert!(!double_click(&mut last, None, false, at(120)));
+        assert!(!double_click(&mut last, Some(4), false, at(140)));
+        // The same slot from another button is not the same double click.
+        assert!(!double_click(&mut last, Some(4), true, at(150)));
+        assert!(double_click(&mut last, Some(4), true, at(200)));
+        // Over 250 ms is two clicks, not a double click.
+        assert!(!double_click(&mut last, Some(4), true, at(500)));
     }
 
     /// `AbstractContainerScreen.checkHotbarKeyPressed`:

@@ -2,6 +2,12 @@
 //! drags, throws and the press/release of a slot click.
 use super::*;
 
+/// Q throws the whole stack with Control down: the same modifier word the
+/// screens read (`has_control_down`), never a latched sprint toggle.
+pub(super) fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
+    modifiers.control_key()
+}
+
 impl Game<'_> {
     /// `CreativeModeInventoryScreen.keyPressed` on the search tab: a hotbar
     /// key over a slot swaps before the search box sees it.
@@ -125,6 +131,15 @@ impl Game<'_> {
             return;
         }
         let (slot, outside) = self.inventory_target();
+        // mouseClicked: `lastClickSlot = slot` for every press that reaches
+        // the container, and the double click is the same slot and button
+        // within 250 ms. A click outside records no slot, ending the chain.
+        let double = horizon_client::container_screen::double_click(
+            &mut self.last_inv_click,
+            slot,
+            right,
+            std::time::Instant::now(),
+        );
         let shift = self.has_shift_down();
         let target = Target::of(slot, outside);
         let input = self.inv_clicks.press(
@@ -153,11 +168,6 @@ impl Game<'_> {
             && shift
             && slot != 200
         {
-            let now = std::time::Instant::now();
-            let double = self.last_inv_click.is_some_and(|(at, last, was_right)| {
-                last == slot && was_right == right && now.duration_since(at).as_millis() < 250
-            });
-            self.last_inv_click = Some((now, slot, right));
             // mouseClicked's QUICK_MOVE (and Horizon's at-press QUICK_MOVE
             // of a carried stack, mouseReleased's in vanilla) remember the
             // stack it moves.
@@ -197,16 +207,12 @@ impl Game<'_> {
         {
             // An item tab's display slots take no drags or PICKUP_ALL.
             let display = slot >= Creative::DISPLAY;
-            let now = std::time::Instant::now();
-            let double = !shift
+            let double = double
+                && !shift
                 && !right
                 && !display
                 && self.carried.is_some()
-                && self.last_inv_click.is_some_and(|(at, last, was_right)| {
-                    last == slot && !was_right && now.duration_since(at).as_millis() < 250
-                })
                 && self.pick_all_allowed(slot);
-            self.last_inv_click = Some((now, slot, right));
             if double && self.menu_click(Some(slot), 0, Input::PickupAll) {
                 self.last_inv_click = None;
                 // The double click's own release (`mouseReleased`'s PICKUP_ALL).

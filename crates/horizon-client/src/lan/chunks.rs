@@ -2311,12 +2311,16 @@ mod tests {
             secondary: Some("minecraft:regeneration".into()),
             ..Default::default()
         };
-        let BlockEntity::Beacon(b) =
-            load("minecraft:beacon", BlockEntity::Beacon(Box::new(beacon)))
-        else {
+        let beacon = BlockEntity::Beacon(Box::new(beacon));
+        // getUpdateTag (saveCustomOnly) carries Levels; loadAdditional never reads them.
+        assert_eq!(
+            entity_tag(&beacon, false).unwrap().get("Levels"),
+            Some(&Tag::Int(4))
+        );
+        let BlockEntity::Beacon(b) = load("minecraft:beacon", beacon) else {
             panic!("not a beacon");
         };
-        assert_eq!(b.levels, 4);
+        assert_eq!(b.levels, 0);
         assert_eq!(b.primary.as_deref(), Some("minecraft:speed"));
         assert_eq!(b.secondary.as_deref(), Some("minecraft:regeneration"));
         let gateway = EndGateway {
