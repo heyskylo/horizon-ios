@@ -2,6 +2,7 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
+mod below_world;
 mod placement;
 
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
@@ -985,7 +986,7 @@ impl Game<'_> {
                 };
                 self.boats[i].wear_off_hurt();
                 // Entity.baseTick burns it before it moves; the fire may break it.
-                if !self.boat_fire_tick(i) {
+                if !self.boat_fire_tick(i) && !self.boat_below_world(i) {
                     let b = self.boats[i].clone();
                     self.boats[i] = self.tick_boat(b, false);
                     self.boat_server_passes(id, &driven, &ticking, &round);
