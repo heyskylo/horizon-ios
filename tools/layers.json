@@ -46,6 +46,7 @@
     "horizon-shaders": "platform",
     "horizon-theme": "platform",
 
+    "horizon-addresses": "horizon",
     "horizon-bench": "horizon",
     "horizon-cosmetics": "horizon",
     "horizon-friends": "horizon",

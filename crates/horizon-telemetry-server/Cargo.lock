@@ -238,6 +238,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-addresses"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
@@ -253,6 +257,7 @@ name = "horizon-telemetry"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "horizon-addresses",
  "horizon-platform",
  "ruzstd",
  "serde",
