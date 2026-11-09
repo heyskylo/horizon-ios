@@ -469,11 +469,27 @@ mod tests {
         let machine = crate::system::Machine::detect();
         let system = System::detect();
         assert_eq!(
-            (system.os.as_str(), system.cpu.as_str(), system.threads, system.ram_gb),
-            (machine.os.as_str(), machine.cpu.as_str(), machine.threads, machine.ram_gb)
+            (
+                system.os.as_str(),
+                system.cpu.as_str(),
+                system.threads,
+                system.ram_gb
+            ),
+            (
+                machine.os.as_str(),
+                machine.cpu.as_str(),
+                machine.threads,
+                machine.ram_gb
+            )
         );
-        assert_eq!((system.power.as_str(), system.form.as_str()), (machine.power, machine.form));
-        assert!(system.gpu.is_empty() && system.display.is_none(), "the game fills them in");
+        assert_eq!(
+            (system.power.as_str(), system.form.as_str()),
+            (machine.power, machine.form)
+        );
+        assert!(
+            system.gpu.is_empty() && system.display.is_none(),
+            "the game fills them in"
+        );
     }
 
     #[test]
