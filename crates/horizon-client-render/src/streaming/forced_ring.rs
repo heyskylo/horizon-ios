@@ -115,4 +115,37 @@ mod tests {
             .collect();
         assert_eq!(first_nine, expected);
     }
+
+    /// Jobs queued before a chunk was forced follow it once it is
+    /// (`Streaming::requeue` ranks them again).
+    #[test]
+    fn queued_jobs_follow_a_forced_chunk() {
+        use super::super::{Job, Queued, rank_again};
+        use std::collections::BinaryHeap;
+        let job = |x, z, order| Queued {
+            priority: 0,
+            at: Some((x, z)),
+            bias: 0,
+            order,
+            job: Job::Generate(x, z),
+        };
+        let first_after = |forced: &HashSet<(i32, i32)>| {
+            let ranges = Ranges {
+                center: (0, 0),
+                radius: 2,
+                extra: &[],
+                forced,
+                mod_forced: &NO_CHUNKS,
+                cover: None,
+                band: None,
+            };
+            // (255, 254) lies nearer the origin than (258, 256), the
+            // forced chunk's neighbour two chunks east.
+            let mut queue = BinaryHeap::from(vec![job(255, 254, 1), job(258, 256, 2)]);
+            rank_again(&mut queue, |x, z| ranges.priority(x, z));
+            queue.pop().and_then(|q| q.at)
+        };
+        assert_eq!(first_after(&HashSet::new()), Some((255, 254)));
+        assert_eq!(first_after(&[(256, 256)].into()), Some((258, 256)));
+    }
 }
