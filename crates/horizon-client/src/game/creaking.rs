@@ -249,6 +249,13 @@ impl Game<'_> {
     /// death and a natural heart drops experience. `onExplosionHit` does the
     /// same for the creaking (`by_player` false), without the experience.
     pub(super) fn creaking_heart_broken(&mut self, pos: [i32; 3], by_player: bool) {
+        let award = by_player && !self.creative && !self.spectator();
+        self.creaking_heart_broken_by(pos, award);
+    }
+    /// `creaking_heart_broken` once the breaker is known: `award` is
+    /// `tryAwardExperience`'s player check (a player who neither builds
+    /// instantly, `preventsBlockDrops`, nor spectates).
+    pub(super) fn creaking_heart_broken_by(&mut self, pos: [i32; 3], award: bool) {
         let key = (pos[0], pos[1], pos[2]);
         if !matches!(
             self.world.block_entities.get(&key),
@@ -271,7 +278,7 @@ impl Game<'_> {
             .state(state)
             .and_then(|s| s.properties.get("natural").cloned())
             .is_some_and(|v| v == "true");
-        if by_player && natural && !self.creative && !self.spectator() {
+        if award && natural {
             let xp = 20 + self.world.random.next_int_bound(5).unwrap_or(0) as u32;
             self.spawn_orbs(
                 [
