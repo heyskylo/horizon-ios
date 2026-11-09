@@ -1,8 +1,8 @@
 """command_exec groups share one world: the harness removes what one group leaves alive before the next.
 
 A persistent zombie the bell group left made the entities group's unbounded PersistenceRequired check
-flaky: whether it was still loaded there depended on each engine's entity loading after the player had
-been far away. tools/test_command_exec_parity.py puts corpus.group_cleanup() between two groups.
+flaky: it burned in daylight and died at a random tick in each engine, so whether it was still there was
+chance. tools/test_command_exec_parity.py puts corpus.group_cleanup() between two groups.
 """
 import re
 import unittest
