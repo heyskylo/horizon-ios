@@ -1747,7 +1747,7 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         (hdr.paper_white, hdr.peak, hdr.black) = (250.0, 800.0, 0.0);
         (hdr.ui, hdr.look, hdr.lighting) = (0.5, false, false);
         hdr.masks.parts = 0.4;
-        hdr.tiers[1].share = 0.7;
+        hdr.tiers[1].gain = 3.0;
         hdr.debug = true;
         hdr.calibration = Some(super::Calibration {
             step: 2,
