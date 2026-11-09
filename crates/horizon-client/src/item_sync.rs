@@ -243,6 +243,15 @@ pub fn consumable_sound(stack: &ItemStack) -> Option<String> {
         _ => None,
     }
 }
+/// `Consumable.hasConsumeParticles` from the stack's `consumable` component.
+pub fn consumable_particles(stack: &ItemStack) -> Option<bool> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    data.and_then(|d| d.other("minecraft:consumable"))
+        .map(|c| horizon_world::datafix::dynamic::as_bool(c.get("has_consume_particles"), true))
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -1195,6 +1204,21 @@ mod tests {
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
         assert_eq!(consumable_sound(&stack), None);
+    }
+
+    #[test]
+    fn consumable_particles_come_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([("has_consume_particles", Tag::Byte(0))])),
+        );
+        assert_eq!(consumable_particles(&stack), Some(false));
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_particles(&stack), None);
     }
 
     #[test]
