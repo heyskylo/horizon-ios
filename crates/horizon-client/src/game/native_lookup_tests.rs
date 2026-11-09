@@ -157,7 +157,7 @@ fn an_entity_in_another_level_has_its_data_read_in_place() {
         .expect("read in its own level");
     assert_eq!(nbt.get(&"NoAI".into()), Some(&Tag::Byte(1)));
     assert!(
-        nbt.get(&"id".into()).is_none(),
+        !nbt.contains_key(&"id".into()),
         "as native_entity_nbt: no id"
     );
     // The level in place is the overworld again, and the id names nothing there.
