@@ -1,6 +1,7 @@
 //! A native mod asks for a chunk without waiting (`native_chunk_load_request`),
 //! polls it, checks it without loading and lets it go.
 use super::super::*;
+use crate::mod_api::NativeChunkLoad;
 use std::time::{Duration, Instant};
 
 const OVERWORLD: &str = "minecraft:overworld";
