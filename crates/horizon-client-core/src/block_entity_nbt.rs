@@ -271,15 +271,25 @@ fn int_array(tag: Option<&Tag>) -> Option<&Vec<i32>> {
 fn is_pos(tag: &Tag) -> bool {
     matches!(tag, Tag::IntArray(v) if v.len() == 3)
 }
+/// The default `SignText`: four empty lines, black, not glowing.
+fn empty_sign_side() -> Tag {
+    Tag::compound([
+        ("messages", Tag::List(vec![string(""); 4])),
+        ("color", string("black")),
+        ("has_glowing_text", boolean(false)),
+    ])
+}
 /// The loaded `SignText` of one side, or the empty text.
 pub fn sign_side(tag: Option<&Tag>) -> Tag {
-    let empty = || string("");
-    let mut messages: Vec<Tag> = match tag.and_then(|t| t.get("messages")) {
-        Some(Tag::List(list)) => list.iter().filter_map(component).collect(),
-        _ => Vec::new(),
+    // `SignText.CODEC` reads a side all or nothing: `messages` must be a list
+    // of exactly 4 valid components, otherwise the whole side loads empty.
+    let lines: Option<Vec<Tag>> = match tag.and_then(|t| t.get("messages")) {
+        Some(Tag::List(list)) if list.len() == 4 => list.iter().map(component).collect(),
+        _ => None,
     };
-    messages.resize_with(4, empty);
-    messages.truncate(4);
+    let Some(messages) = lines else {
+        return empty_sign_side();
+    };
     let mut out = vec![
         ("messages", Tag::List(messages)),
         (
@@ -955,6 +965,22 @@ mod tests {
         assert_eq!(structure.get("sizeY"), Some(&Tag::Int(0)));
         assert_eq!(structure.get("posY"), Some(&Tag::Int(1)));
         assert_eq!(structure.get("showboundingbox"), Some(&Tag::Byte(1)));
+    }
+
+    #[test]
+    fn sign_side_needs_exactly_four_messages() {
+        let ok = snbt("{messages:[\"a\",\"\",\"\",\"\"],color:\"red\",has_glowing_text:1b}");
+        let side = sign_side(Some(&ok));
+        assert_eq!(side.get("color"), Some(&string("red")));
+        for bad in [
+            "{color:\"red\",has_glowing_text:1b}",
+            "{messages:[\"a\",\"b\"],color:\"red\",has_glowing_text:1b}",
+            "{messages:[\"a\",\"\",\"\",\"\",\"e\"],color:\"red\",has_glowing_text:1b}",
+        ] {
+            let side = sign_side(Some(&snbt(bad)));
+            assert_eq!(side, sign_side(None), "{bad}");
+            assert_eq!(side.get("color"), Some(&string("black")));
+        }
     }
 
     #[test]
