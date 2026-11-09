@@ -6,7 +6,7 @@ use super::{
     classes::{Class, Interface},
 };
 use crate::{
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidKind, FluidState, FluidTemplate},
     registry::BlockStateId,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
@@ -42,10 +42,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let b = self.b;
         let state = self.state(pos);
         let item = if b.instance_of(state, Class::Liquid) {
-            match b.fluid(state).kind() {
-                FluidKind::Water | FluidKind::FlowingWater => "minecraft:water_bucket",
-                FluidKind::Lava | FluidKind::FlowingLava => "minecraft:lava_bucket",
-                FluidKind::Empty => return None,
+            match b.fluid(state).kind().template() {
+                FluidTemplate::Water => "minecraft:water_bucket",
+                FluidTemplate::Lava => "minecraft:lava_bucket",
+                FluidTemplate::Empty => return None,
             }
         } else if b.implements(state, Interface::SimpleWaterlogged)
             && b.table.has(state, b.props.waterlogged)

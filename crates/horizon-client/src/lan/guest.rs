@@ -124,6 +124,10 @@ pub struct Guest {
     /// A native mod's limit on `view_distance` for this player alone
     /// (`native_set_player_view_distance`); None: the server's.
     pub view_limit: Option<i32>,
+    /// A fake player (a mod's bot with no client; `native_set_player_fake`): it keeps only a small
+    /// area loaded and ticking around it and does not count for natural spawning, so hundreds of
+    /// bots do not each hold a whole view distance.
+    pub fake: bool,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
     pub yaw: f32,
@@ -458,6 +462,7 @@ impl Guest {
             latency: j.latency,
             view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
             view_limit: None,
+            fake: false,
             info: j.info,
             brand: j.brand,
             channels: j.configured.channels,
@@ -615,6 +620,9 @@ impl Guest {
         })
     }
     pub fn send(&self, packet: &play::Clientbound) {
+        if self.fake && !super::conn::fake_wants_id(packet.id()) {
+            return;
+        }
         if self.anticheat.record.is_some() {
             self.note_change(packet);
         }
@@ -1394,19 +1402,28 @@ fn network_stack(
                 .push((horizon_protocol::item::component::TRIM, component));
         }
         // BannerPatternLayers: each pattern a reference into the synced registry;
-        // a layer that has none leaves the stack without the component.
-        let layers: Option<Vec<(i32, i32)>> = d
-            .banner_patterns
+        // a layer that has none leaves the stack without the component. An
+        // ominous banner made by the raid keeps only its flag, so its layers
+        // are the ones the NBT encoder synthesises from it.
+        let patterns: Vec<(&str, &str)> = if d.ominous_banner && d.banner_patterns.is_empty() {
+            crate::item_data::OMINOUS_LAYERS.to_vec()
+        } else {
+            d.banner_patterns
+                .iter()
+                .map(|layer| (&*layer.pattern, &*layer.color))
+                .collect()
+        };
+        let layers: Option<Vec<(i32, i32)>> = patterns
             .iter()
-            .map(|layer| {
-                let name = if layer.pattern.contains(':') {
-                    layer.pattern.to_string()
+            .map(|(pattern, color)| {
+                let name = if pattern.contains(':') {
+                    pattern.to_string()
                 } else {
-                    format!("minecraft:{}", layer.pattern)
+                    format!("minecraft:{pattern}")
                 };
                 Some((
                     synced_id("minecraft:banner_pattern", &name)?,
-                    dye_id(&layer.color)?,
+                    dye_id(color)?,
                 ))
             })
             .collect();
@@ -1414,6 +1431,29 @@ fn network_stack(
             stack.added.push((
                 horizon_protocol::item::component::BANNER_PATTERNS,
                 horizon_protocol::item::Component::BannerPatterns(layers),
+            ));
+        }
+        // The raid captain's banner: `Raid.getBannerComponentPatch` gives it
+        // the ominous name, rarity and hidden layers, which `StackData` keeps
+        // as `ominous_banner` rather than in `other` (#12530).
+        if d.ominous_banner {
+            stack.added.push((
+                horizon_protocol::item::component::ITEM_NAME,
+                horizon_protocol::item::Component::Text(horizon_world::nbt::Tag::compound([(
+                    "translate",
+                    horizon_world::nbt::Tag::String("block.minecraft.ominous_banner".into()),
+                )])),
+            ));
+            stack.added.push((
+                horizon_protocol::item::component::RARITY,
+                horizon_protocol::item::Component::Int(1),
+            ));
+            stack.added.push((
+                horizon_protocol::item::component::TOOLTIP_DISPLAY,
+                horizon_protocol::item::Component::TooltipDisplay {
+                    hide: false,
+                    hidden: vec![horizon_protocol::item::component::BANNER_PATTERNS],
+                },
             ));
         }
         // `painting/variant`: a reference into the synced registry.

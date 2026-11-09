@@ -241,6 +241,7 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.extra.left_handed = from.extra.left_handed;
     to.no_ai = from.no_ai;
     to.invulnerable_flag = from.invulnerable_flag;
+    to.invulnerable_time = from.invulnerable_time;
     to.no_gravity = from.no_gravity;
     to.silent = from.silent;
     to.extra.set_main_hand(from.extra.main_hand.clone());

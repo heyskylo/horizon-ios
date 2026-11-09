@@ -136,4 +136,4 @@ SlotDisplay.WithAnyPotion.resolve	port	crates/horizon-client/src/crafting.rs::bo
 SlotDisplay.WithRemainder.resolve	missing		remainders are kept for play (Recipes::remainders), and the book's displays never apply them
 SlotDisplay.WithRemainder.isEnabled	missing		no feature flag check: the recipe load and the book never read the level's enabled_features
 BlockPlaceContext.at	port	crates/horizon-world/src/level/place.rs::Sim::placement_at	the placement position and face from the clicked block
-UseOnContext.isSecondaryUseActive	port	crates/horizon-client/src/game.rs::Game::use_hand	the shift key sets the context's sneaking flag
+UseOnContext.isSecondaryUseActive	port	crates/horizon-client/src/game/use_hand.rs::Game::use_hand	the shift key sets the context's sneaking flag

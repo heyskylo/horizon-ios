@@ -156,4 +156,20 @@ impl Game<'_> {
             block: self.res.facts().get(state).name.to_string(),
         })
     }
+    /// The entities of the loaded level `dimension` inside the box from `min` to `max` (both corners included), by
+    /// id, as `native_level_entities` lists them; players the hub holds are included. Empty for a level not loaded,
+    /// and on a client. Walks every entity of the level: a mod calls it for a few boxes, not every tick. API
+    /// @API:entities_in@.
+    pub(super) fn native_entities_in(
+        &mut self,
+        dimension: &str,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Vec<u32> {
+        self.native_level_entities(dimension)
+            .into_iter()
+            .filter(|(_, _, p)| (0..3).all(|i| min[i] <= p[i] && p[i] <= max[i]))
+            .map(|(id, _, _)| id)
+            .collect()
+    }
 }

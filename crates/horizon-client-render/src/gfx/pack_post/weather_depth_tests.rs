@@ -5,7 +5,7 @@ use wgpu::util::DeviceExt;
 
 #[test]
 #[ignore = "requires a host GPU; missing adapter is a failure"]
-fn rain_depth_controls_writes_for_rain_snow_and_fallbacks() {
+fn rain_and_snow_leave_depth_alone_whatever_rain_depth_says() {
     let instance = crate::gfx::test_gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     eprintln!("Weather depth GPU: {:?}", adapter.get_info());
@@ -16,14 +16,10 @@ fn rain_depth_controls_writes_for_rain_snow_and_fallbacks() {
     }))
     .unwrap();
     let mut depth_failures = Vec::new();
+    // Iris 1.11.7 left no rain or snow in `depthtex0` with `rain.depth` absent, true or false,
+    // drawn by `gbuffers_weather` or its fallback (probe packs of ours, #10492).
     for program in ["gbuffers_weather", "gbuffers_textured_lit"] {
-        for (property, writes) in [
-            ("rain.depth=true", true),
-            ("rain.depth=false", false),
-            // An evidence-limited compatibility choice: preserve accepted main here.
-            // The permitted packs do not establish the external omitted-value default.
-            ("", true),
-        ] {
+        for property in ["rain.depth=true", "rain.depth=false", ""] {
             let mut post = pack(&device, &queue, &adapter, program, property);
             // Retain the pipelines for another frame, then resize their targets.
             for size in [[6, 1], [6, 1], [12, 2]] {
@@ -90,7 +86,7 @@ fn rain_depth_controls_writes_for_rain_snow_and_fallbacks() {
                         }
                         let depth =
                             f32::from_le_bytes(depths[offset..offset + 4].try_into().unwrap());
-                        let expected_depth = if visible && writes { 0.25 } else { 0.5 };
+                        let expected_depth = 0.5;
                         if depth != expected_depth {
                             depth_failures.push(format!(
                                 "{program} {property:?} size={size:?} ({x},{y}): depth={depth}, expected={expected_depth}"
