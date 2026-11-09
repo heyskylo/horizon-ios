@@ -281,10 +281,16 @@ fn empty_sign_side() -> Tag {
 }
 /// The loaded `SignText` of one side, or the empty text.
 pub fn sign_side(tag: Option<&Tag>) -> Tag {
-    // `SignText.CODEC` reads a side all or nothing: `messages` must be a list
-    // of exactly 4 valid components, otherwise the whole side loads empty.
+    // `SignText.DIRECT_CODEC`: `messages` is a component list (an entry that
+    // fails is dropped, `ListCodec`'s partial result) cut to 4 lines by
+    // `Util.fixedSize`. Fewer than 4 valid lines fail the side, and
+    // `SignBlockEntity.loadAdditional` then loads an empty one; more keep the
+    // first 4 with the side's colour and glow.
     let lines: Option<Vec<Tag>> = match tag.and_then(|t| t.get("messages")) {
-        Some(Tag::List(list)) if list.len() == 4 => list.iter().map(component).collect(),
+        Some(Tag::List(list)) => {
+            let lines: Vec<Tag> = list.iter().filter_map(component).take(4).collect();
+            (lines.len() == 4).then_some(lines)
+        }
         _ => None,
     };
     let Some(messages) = lines else {
@@ -972,10 +978,20 @@ mod tests {
         let ok = snbt("{messages:[\"a\",\"\",\"\",\"\"],color:\"red\",has_glowing_text:1b}");
         let side = sign_side(Some(&ok));
         assert_eq!(side.get("color"), Some(&string("red")));
+        // A fifth line, or a bad entry among five, leaves the first 4 valid
+        // lines with the colour (checked against the 26.3 codec).
+        for kept in [
+            "{messages:[\"a\",\"\",\"\",\"\",\"e\"],color:\"red\",has_glowing_text:1b}",
+            "{messages:[\"a\",1,\"\",\"\",\"\"],color:\"red\",has_glowing_text:1b}",
+        ] {
+            let side = sign_side(Some(&snbt(kept)));
+            assert_eq!(side.get("messages"), ok.get("messages"), "{kept}");
+            assert_eq!(side.get("color"), Some(&string("red")), "{kept}");
+        }
         for bad in [
             "{color:\"red\",has_glowing_text:1b}",
             "{messages:[\"a\",\"b\"],color:\"red\",has_glowing_text:1b}",
-            "{messages:[\"a\",\"\",\"\",\"\",\"e\"],color:\"red\",has_glowing_text:1b}",
+            "{messages:[\"a\",\"\",\"\",1],color:\"red\",has_glowing_text:1b}",
         ] {
             let side = sign_side(Some(&snbt(bad)));
             assert_eq!(side, sign_side(None), "{bad}");
