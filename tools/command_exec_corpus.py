@@ -989,21 +989,25 @@ def minecart_numeric_fields():
 def rocket_data_merge():
     """#13083: /data merge and /data modify on a firework rocket run Entity.load over it
     (FireworkRocketEntity.readAdditionalSaveData: Life, LifeTime, FireworksItem, ShotAtAngle;
-    Entity.load: Motion, OnGround, Tags). Frozen, then one tick: an angled rocket keeps its motion."""
+    Entity.load: Motion, Rotation, OnGround, Tags; Projectile: HasBeenShot, 0b until its first tick
+    posts the shot). Frozen, then one tick: an angled rocket keeps its motion."""
     sel = '@e[tag=rocket_merge,limit=1]'
     ops = setup('/forceload add 384 384', '/tick freeze',
                 '/summon firework_rocket 384.5 230 384.5 {LifeTime:200,Tags:["rocket_merge"]}')
     ops += [{'op': 'settle', 'required_chunks': [[24, 24]]}]
-    ops += [cmd(f'/data merge entity {sel} {{LifeTime:77,Life:5,ShotAtAngle:1b,Motion:[0.1d,0.2d,0.3d],OnGround:1b}}'),
+    ops += [cmd(f'/data get entity {sel} HasBeenShot'),
+            cmd(f'/data merge entity {sel} {{LifeTime:77,Life:5,ShotAtAngle:1b,Motion:[0.1d,0.2d,0.3d],OnGround:1b,'
+                'Rotation:[90f,10f]}'),
             cmd(f'/data modify entity {sel} Life set value 9'),
             cmd(f'/data merge entity {sel} {{FireworksItem:{{id:"minecraft:firework_rocket",count:3,'
-                'components:{"minecraft:fireworks":{flight_duration:2b}}}}}'),
+                'components:{"minecraft:fireworks":{flight_duration:2b}}}}'),
             cmd(f'/data merge entity {sel} {{Tags:["rocket_merge","rocket_merged"]}}')]
-    for key in ('LifeTime', 'Life', 'ShotAtAngle', 'Motion', 'OnGround', 'FireworksItem', 'Tags'):
+    for key in ('LifeTime', 'Life', 'ShotAtAngle', 'Motion', 'Rotation', 'OnGround', 'FireworksItem', 'Tags'):
         ops.append(cmd(f'/data get entity {sel} {key}'))
     ops += setup('/tick unfreeze')
     ops.append({'op': 'tick', 'n': 1})
-    ops += [cmd(f'/data get entity {sel} Pos'), cmd(f'/data get entity {sel} Life')]
+    ops += [cmd(f'/data get entity {sel} Pos'), cmd(f'/data get entity {sel} Life'),
+            cmd(f'/data get entity {sel} HasBeenShot')]
     return ops + setup('/kill @e[type=minecraft:firework_rocket]', '/forceload remove 384 384')
 
 

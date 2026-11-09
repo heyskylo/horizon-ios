@@ -5276,7 +5276,7 @@ impl Game<'_> {
         }
     }
     /// Dispatch with the projectile's actual owner context, including a guest shooter.
-    fn projectile_shoot_event(&mut self, owner: Option<Who>, guest: Option<u32>, at: [f64; 3]) {
+    pub(super) fn projectile_shoot_event(&mut self, owner: Option<Who>, guest: Option<u32>, at: [f64; 3]) {
         if let Some(conn) = guest.filter(|conn| self.lan_acting != Some(*conn)) {
             let dispatched = if let Some(mut host) = self.lan.take() {
                 let result = self.as_guest(&mut host, conn, |g| {
@@ -10042,6 +10042,35 @@ mod loaded_arrow_shot_tests {
             .unwrap()
             .id
     }
+    /// `Projectile.tick`: a rocket loaded without `HasBeenShot` posts
+    /// `projectile_shoot` on its first tick, once; one loaded shot posts none.
+    /// `FireworkRocketEntity.tick`'s launch sound skips a silent one.
+    #[test]
+    #[ignore = "prepared resources; actual registered load, Game tick and posted events"]
+    fn a_rocket_posts_its_shot_once_and_a_silent_one_launches_quietly() {
+        with_game(|game| {
+            let launch = "minecraft:entity.firework_rocket.launch";
+            assert!(game.run_command(
+                "summon firework_rocket 6.5 201.5 10.5 {LifeTime:100,Silent:1b,NoGravity:1b}"
+            ));
+            assert!(game.run_command(
+                "summon firework_rocket 9.5 201.5 10.5 {LifeTime:100,HasBeenShot:1b}"
+            ));
+            assert!(game.rockets.iter().all(|r| r.has_been_shot == (r.position.x == 9.5)));
+            game.audio.heard.clear();
+            start_events();
+            game.tick_rockets();
+            let first = take_shots();
+            game.tick_rockets();
+            let second = take_shots();
+            stop_events();
+            assert_eq!(first, vec![("minecraft:projectile_shoot", [6.5, 201.5, 10.5], None)]);
+            assert!(second.is_empty());
+            assert!(game.rockets.iter().all(|r| r.has_been_shot));
+            // Only the rocket that isn't silent launches with a sound.
+            assert_eq!(game.audio.heard.get(launch), Some(&1));
+        });
+    }
     #[test]
     #[ignore = "prepared resources; actual registered load, Game tick and posted events"]
     fn loaded_arrow_first_tick_dispatches_once_with_its_real_owner() {
@@ -10205,15 +10234,19 @@ mod loaded_arrow_shot_tests {
     }
     #[test]
     #[ignore = "prepared resources; non-arrow launch posts remain unchanged"]
-    fn non_arrow_rocket_and_mob_trident_keep_their_immediate_posts() {
+    fn a_crossbow_rocket_posts_on_its_first_tick_and_a_mob_trident_at_once() {
         with_game(|game| {
             assert!(game.run_command("item replace entity @s weapon.mainhand with crossbow[charged_projectiles=[{id:\"minecraft:firework_rocket\",count:1}]]"));
             start_events();
             let bow = game.held().unwrap().clone();
             assert!(game.use_crossbow(&bow));
             assert_eq!(game.rockets.len(), 1);
-            assert_eq!(take_shots().len(), 1);
-            game.tick_projectiles().unwrap();
+            assert!(take_shots().is_empty());
+            // Projectile.tick: where the rocket is, with the player as owner.
+            let at = game.rockets[0].position.components();
+            game.tick_rockets();
+            assert_eq!(take_shots(), vec![("minecraft:projectile_shoot", at, Some(Who::Player))]);
+            game.tick_rockets();
             assert!(take_shots().is_empty());
             stop_events();
             let mut p = Projectile::new(
