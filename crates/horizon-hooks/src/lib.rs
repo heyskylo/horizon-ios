@@ -220,7 +220,13 @@ mod tests {
         }
         fn for_each(&self, f: &mut dyn FnMut(players::PlayerModel)) {
             for id in [3, 7] {
-                f(players::PlayerModel::new(id, players::Kind::Player, None, 0, false));
+                f(players::PlayerModel::new(
+                    id,
+                    players::Kind::Player,
+                    None,
+                    0,
+                    false,
+                ));
             }
         }
         fn body_pose(&self, id: u32) -> Option<&std::sync::Arc<dyn players::BodyPose>> {
@@ -257,7 +263,12 @@ mod tests {
         assert!(models.body_pose(3).is_some() && models.body_pose(7).is_some());
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
-            ["started 0.2.31", "published true", "published false", "frame 4"]
+            [
+                "started 0.2.31",
+                "published true",
+                "published false",
+                "frame 4"
+            ]
         );
         assert_eq!(register(&Silent), Err(TooLate));
     }

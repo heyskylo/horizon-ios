@@ -22,8 +22,8 @@ use horizon_cosmetics::trail::{Budget, Emitter};
 use horizon_cosmetics::{Item, Slot};
 use horizon_hooks::players::{Frame, Kind, PlayerModel, PlayerModels};
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Horizon's mark before a Horizon player's name, over their name tag and in the player list.

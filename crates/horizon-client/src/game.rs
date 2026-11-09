@@ -368,12 +368,12 @@ mod pick_entity;
 mod pickups;
 mod piglins;
 mod piston_push;
-pub(crate) mod player_hooks;
 #[cfg(test)]
 mod place_feature_tests;
 mod play_input;
 mod play_keys;
 mod player_equip;
+pub(crate) mod player_hooks;
 mod player_spawn;
 mod pointer_capture;
 #[cfg(test)]

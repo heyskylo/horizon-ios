@@ -8,9 +8,9 @@ use crate::game::Game;
 use crate::game::perspective::CameraType;
 use horizon_client::mobs::Mob;
 use horizon_client::mobs::anim::BodyPose;
-use horizon_hooks::players::PlayerModels;
 use horizon_cosmetics::account::OwnedEmote;
 use horizon_cosmetics::{Item, Playing, Slot};
+use horizon_hooks::players::PlayerModels;
 use std::sync::Arc;
 
 /// How far the player may drift (blocks) before the emote stops: a nudge, not a step.

@@ -32,7 +32,10 @@ impl Models<'_> {
     fn find(&mut self, id: u32) -> Option<&mut Mob> {
         match self.own.as_deref_mut() {
             Some(m) if m.id == id => Some(m),
-            _ => self.mobs.iter_mut().find(|m| m.id == id && kind(m).is_some()),
+            _ => self
+                .mobs
+                .iter_mut()
+                .find(|m| m.id == id && kind(m).is_some()),
         }
     }
 }
@@ -92,7 +95,10 @@ impl PlayerModels for Models<'_> {
 impl Game<'_> {
     /// Once a frame, before drawing.
     pub(super) fn client_hooks_frame(&mut self) {
-        debug_assert!(self.serving.is_none(), "a server thread calls no client hook");
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
         if !engine::any() {
             return;
         }
@@ -104,7 +110,10 @@ impl Game<'_> {
 
     /// Once a client tick in a world: the player's own emote, then the hooks.
     pub(super) fn client_hooks_tick(&mut self) {
-        debug_assert!(self.serving.is_none(), "a server thread calls no client hook");
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
         self.tick_emotes();
         if !engine::any() {
             return;
@@ -120,4 +129,3 @@ impl Game<'_> {
         });
     }
 }
-
