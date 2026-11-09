@@ -278,6 +278,23 @@ def vehicle_cases(states, seed, only):
 def cases(facts, count, seed, only):
     rng = random.Random(seed)
     states = States(facts)
+    for tool in ('shears', 'flint_and_steel', 'brush'):
+        if only and only not in tool:
+            continue
+        for components in ('"minecraft:unbreakable":{}', '"!minecraft:damage":{}',
+                           '"!minecraft:max_damage":{}', '"minecraft:max_damage":1',
+                           '"minecraft:max_damage":3,"minecraft:damage":2',
+                           '"minecraft:max_damage":2147483647,"minecraft:damage":2147483647'):
+            cells = [[0, 0, 0, states.get('dispenser', facing='north', triggered='false')]]
+            if tool == 'shears':
+                cells.append([0, 0, -1, states.get('beehive', honey_level='5', facing='north')])
+            elif tool == 'flint_and_steel':
+                cells.append([0, -1, -1, states.get('stone')])
+            case = dict(seed=1, time=0, mode='dispense', pos=[0, 0, 0], cells=cells,
+                        items=[[0, 0, 0, 0, '{id:"minecraft:%s",count:1,components:{%s}}' % (tool, components)]])
+            if tool == 'brush':
+                case['entities'] = [{'type': 'minecraft:armadillo', 'pos': [0.5, 0.0, -0.5], 'yaw': 0.0}]
+            yield case
     dragon_egg = plain('ender_dragon_spawn_egg')
     if not only or only in dragon_egg:
         # Both the unobstructed position and a fractional collision height must
