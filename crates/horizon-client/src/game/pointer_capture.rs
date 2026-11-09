@@ -49,23 +49,7 @@ impl Game<'_> {
             && !self.is_published()
             && !self.has_split_players()
             && self.title.is_none()
-            && (matches!(
-                self.screen,
-                Screen::Paused
-                    | Screen::Options
-                    | Screen::Stats
-                    | Screen::Advancements
-                    | Screen::WorldOptions
-                    | Screen::Friends
-                    | Screen::Social
-                    | Screen::ServerLinks
-                    | Screen::ConfirmLink
-                    | Screen::DialogWarning
-                    | Screen::CommandBlock
-                    | Screen::DebugOptions
-                    | Screen::HudEditor
-            ) || self.book.is_some()
-                || self.win_screen_pauses())
+            && (self.screen.is_pause_screen() || self.book.is_some() || self.win_screen_pauses())
     }
     /// A screen open over gameplay while `screen` stays `Playing`: a book or
     /// lectern, a sign, a server dialog, the code of conduct, a link or
