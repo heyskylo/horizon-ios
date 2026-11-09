@@ -262,6 +262,9 @@ pub struct WrittenBook {
     /// Each page's component when it is not a plain string, so that its
     /// click events survive; empty or one per page.
     pub page_tags: Vec<Tag>,
+    /// `WrittenBookContent.resolved`: a book whose selectors and scores have
+    /// been resolved is never resolved again.
+    pub resolved: bool,
 }
 impl StackData {
     pub fn is_empty(&self) -> bool {
@@ -577,6 +580,37 @@ fn plain_component(t: &Tag) -> Tag {
     }
     t.clone()
 }
+/// `WrittenBookContent.CODEC`: the title and author as `Filterable` values,
+/// the pages (each `{raw: component}`), the generation when it is not 0 and
+/// the resolved flag when it is set.
+fn written_book_tag(w: &WrittenBook) -> Tag {
+    // Filterable values are saved as {raw: ..}.
+    let raw = |t: Tag| Tag::compound([("raw", t)]);
+    let pages = if w.page_tags.len() == w.pages.len() {
+        w.page_tags.iter().cloned().map(raw).collect()
+    } else {
+        w.pages
+            .iter()
+            .map(|p| raw(Tag::String(p.as_str().into())))
+            .collect()
+    };
+    let mut fields = vec![
+        ("title", raw(Tag::String(w.title.as_str().into()))),
+        ("author", Tag::String(w.author.as_str().into())),
+    ];
+    // `optionalFieldOf("pages", List.of())`: no pages, no field.
+    if !w.pages.is_empty() {
+        fields.push(("pages", Tag::List(pages)));
+    }
+    if w.generation != 0 {
+        fields.push(("generation", Tag::Int(i32::from(w.generation))));
+    }
+    if w.resolved {
+        fields.push(("resolved", Tag::Byte(1)));
+    }
+    Tag::compound(fields)
+}
+
 /// `WrittenBookContent` from its component: the title and author (a
 /// `Filterable`'s raw text), the generation and the pages, whose component
 /// tags are kept apart from their plain text for click events.
@@ -596,6 +630,58 @@ fn written_book_from_tag(b: &Tag) -> WrittenBook {
                 .collect(),
             _ => Vec::new(),
         },
+        resolved: b.get("resolved").and_then(component_bool).unwrap_or(false),
+    }
+}
+
+/// `WrittenBookContent.resolvePage`: the page's component with its selectors
+/// and scores replaced by the text they name, recursing into `extra` and
+/// `with`.
+fn resolve_page_tag(tag: &Tag, text: &mut impl FnMut(&Tag) -> Option<String>) -> Tag {
+    let Tag::Compound(c) = tag else {
+        return tag.clone();
+    };
+    if let Some(resolved) = text(tag) {
+        return Tag::compound([("text", Tag::String(resolved.as_str().into()))]);
+    }
+    let mut out = c.clone();
+    for key in ["extra", "with"] {
+        if let Some(Tag::List(list)) = out.get(&key.into()) {
+            let list = list.iter().map(|t| resolve_page_tag(t, text)).collect();
+            out.insert(key.into(), Tag::List(list));
+        }
+    }
+    Tag::Compound(out)
+}
+
+impl WrittenBook {
+    /// `WrittenBookContent.resolve` and `markResolved`: every page's
+    /// selectors and scores become their text, and the book is marked
+    /// resolved. A page whose resolved text passes `WrittenBookContent`'s
+    /// 32767-character limit (`resolvePage`) cancels the resolution, and the
+    /// book is only marked resolved. True when the pages were rewritten.
+    pub fn resolve(&mut self, mut text: impl FnMut(&Tag) -> Option<String>) -> bool {
+        if self.resolved {
+            return false;
+        }
+        self.resolved = true;
+        if self.page_tags.len() != self.pages.len() {
+            return false;
+        }
+        let mut pages = Vec::with_capacity(self.pages.len());
+        let mut tags = Vec::with_capacity(self.page_tags.len());
+        for tag in &self.page_tags {
+            let resolved = resolve_page_tag(tag, &mut text);
+            let plain = horizon_client_core::component::name_text(&resolved).plain();
+            if plain.chars().count() > 32767 {
+                return false;
+            }
+            pages.push(plain);
+            tags.push(resolved);
+        }
+        self.pages = pages;
+        self.page_tags = tags;
+        true
     }
 }
 
@@ -959,31 +1045,7 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
             ));
         }
         if let Some(w) = &d.written {
-            let pages = if w.page_tags.len() == w.pages.len() {
-                w.page_tags.iter().cloned().map(raw).collect()
-            } else {
-                w.pages
-                    .iter()
-                    .map(|p| raw(Tag::String(p.as_str().into())))
-                    .collect()
-            };
-            entries.push((
-                "minecraft:written_book_content",
-                Tag::compound({
-                    let mut fields = vec![
-                        ("title", raw(Tag::String(w.title.as_str().into()))),
-                        ("author", Tag::String(w.author.as_str().into())),
-                    ];
-                    // `optionalFieldOf("pages", List.of())`: no pages, no field.
-                    if !w.pages.is_empty() {
-                        fields.push(("pages", Tag::List(pages)));
-                    }
-                    if w.generation != 0 {
-                        fields.push(("generation", Tag::Int(i32::from(w.generation))));
-                    }
-                    fields
-                }),
-            ));
+            entries.push(("minecraft:written_book_content", written_book_tag(w)));
         }
         if let Some((flight, explosions)) = &d.fireworks {
             let mut fields = Vec::new();

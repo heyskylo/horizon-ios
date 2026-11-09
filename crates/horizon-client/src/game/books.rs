@@ -3,7 +3,7 @@
 //! pixels, 1024 characters, 100 pages), signing it into a written book,
 //! reading written books, and lecterns (placing a book, turning its pages
 //! with a redstone pulse, the comparator output and taking the book).
-use super::{Game, lan::LanHost, screen_info};
+use super::{Game, chat::PLAYER_NAME, lan::LanHost, screen_info};
 use horizon_client::{
     containers::{BlockEntity, Lectern},
     first_person::Hand,
@@ -18,6 +18,7 @@ use horizon_client::{
 use horizon_core::position::BlockPos;
 use horizon_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
 use horizon_world::level::flags as level_flags;
+use horizon_world::nbt::Tag;
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -213,6 +214,15 @@ impl Game<'_> {
             "minecraft:written_book" => true,
             _ => return false,
         };
+        // `ServerPlayer.openItemGui` resolves a written book for the player
+        // opening it before the screen reads it.
+        let held;
+        let stack = if written && self.resolve_held_book() {
+            held = self.held().cloned();
+            held.as_ref().unwrap_or(stack)
+        } else {
+            stack
+        };
         if self.lan_acting.is_some() {
             if written {
                 let hand = i32::from(self.hand == Hand::Off);
@@ -226,6 +236,56 @@ impl Game<'_> {
         self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
+    }
+    /// `ServerPlayer.openItemGui` -> `WrittenBookContent.resolveForItem`: the
+    /// selectors and scores of the written book in the acting hand become
+    /// their text for the player opening it, and the book is marked resolved
+    /// (so it is never resolved again). True when the pages were rewritten.
+    fn resolve_held_book(&mut self) -> bool {
+        let Some(mut book) = self
+            .held()
+            .and_then(|s| s.data())
+            .and_then(|d| d.written.clone())
+        else {
+            return false;
+        };
+        if book.resolved {
+            return false;
+        }
+        let string = |v: &Tag| match v {
+            Tag::String(s) => Some(s.to_string_lossy()),
+            _ => None,
+        };
+        let changed = book.resolve(|tag| {
+            let Tag::Compound(c) = tag else { return None };
+            if let Some(Tag::String(selector)) = c.get(&"selector".into()) {
+                let selector = selector.to_string_lossy();
+                return Some(self.resolve_selector_text(&selector));
+            }
+            let score = c.get(&"score".into())?;
+            let name = score.get("name").and_then(string).unwrap_or_default();
+            let objective = score.get("objective").and_then(string).unwrap_or_default();
+            let name = if name == "*" {
+                PLAYER_NAME
+            } else {
+                name.as_str()
+            };
+            Some(
+                self.score
+                    .board
+                    .score(name, &objective)
+                    .map_or_else(String::new, |s| s.value.to_string()),
+            )
+        });
+        if let Some(stack) = self.held_mut() {
+            stack.data_mut().written = Some(book);
+        }
+        // A guest's copy of the book lives in its mirrored inventory: the
+        // host sends the resolved slot back with the rest of the inventory.
+        if self.lan_acting.is_some() {
+            self.guest_inventory_resend = true;
+        }
+        changed
     }
     /// The screen a book in hand opens: `BookEditScreen` for a book and
     /// quill, `BookViewScreen` for a written book.
@@ -349,6 +409,7 @@ impl Game<'_> {
                 generation: 0,
                 pages,
                 page_tags: Vec::new(),
+                resolved: false,
             });
             *stack = written;
         } else {
