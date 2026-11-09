@@ -11,9 +11,11 @@
 use horizon_platform::hooks::{self, Hooks};
 
 /// Every Horizon part in the game, in the order its hooks run.
-const PARTS: [&dyn Hooks; 1] = [
+const PARTS: [&dyn Hooks; 2] = [
     // The anonymous "I'm playing" ping.
     &horizon_heartbeat::HOOKS,
+    // The official server in the player's server list.
+    &horizon_official_servers::HOOKS,
 ];
 
 /// Registers Horizon's in-game parts with the game. The executable calls it before it runs the

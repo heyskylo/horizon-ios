@@ -119,8 +119,7 @@ default = ["audio", "controllers", "horizon-extras"]
 audio = ["horizon-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
 controllers = ["dep:gilrs", "horizon-client-input/controllers"]
-# Horizon's own parts (docs/forking.md, docs/layers.md): the features below, and the official
-# server in the list (`official_servers`).
+# Horizon's own parts still in this crate (docs/forking.md, docs/layers.md): the features below.
 horizon-extras = ["discord", "friends"]
 # "Playing Horizon" on the player's Discord profile (`discord_presence`).
 discord = []

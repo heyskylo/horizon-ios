@@ -10,6 +10,8 @@ description = "The platform's public API: what the Horizon layer and mods may us
 horizon-system = { path = "../horizon-system" }
 # The game's extension points, re-exported as `hooks`.
 horizon-hooks = { path = "../horizon-hooks" }
+# servers.dat, re-exported as `servers`.
+horizon-protocol = { path = "../horizon-protocol" }
 
 [lints]
 workspace = true

@@ -16,3 +16,11 @@ pub use horizon_system as system;
 pub mod hooks {
     pub use horizon_hooks::{Hooks, Started, TooLate, register};
 }
+
+/// The multiplayer server list as vanilla stores it (`servers.dat`): read, write, add, remove,
+/// and the lock held while it is read and written back.
+pub mod servers {
+    pub use horizon_protocol::servers::{
+        ServerEntry, load, lock, parse_address, prepend, remove_where, save,
+    };
+}
