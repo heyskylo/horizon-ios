@@ -334,3 +334,45 @@ fn glazed_terracotta_is_pushed_in_line_but_never_dragged_sideways() {
     assert_eq!(w.prop(BlockPos::new(0, 5, 0), "extended"), "true");
     assert_eq!(w.get(BlockPos::new(2, 5, 0)), terracotta, "pushed in line");
 }
+
+/// `PistonBaseBlock.isPushable`: a piston is pushable only while retracted. An
+/// extended one (`EXTENDED`) answers false, so a push that meets it fails and
+/// the pusher stays put; the same push moves a retracted piston.
+///
+/// The extended one is held extended by a power source of its own, beside it
+/// and out of the pusher's reach. Unpowered it would retract on the tick, and
+/// that retraction updates the pusher, which then pushes it: also vanilla, and
+/// not what is being checked.
+#[test]
+fn a_piston_pushes_a_retracted_piston_and_refuses_an_extended_one() {
+    for kind in ["piston", "sticky_piston"] {
+        for (extended, held_by_power, moves) in [("false", false, true), ("true", true, false)] {
+            let mut w = world!();
+            let target = w.id(kind, &[("facing", "north"), ("extended", extended)]);
+            // Written raw: an extended piston with no head would be removed by
+            // the updates `set` sends, and the check is about the resolver.
+            w.put(BlockPos::new(1, 5, 0), target);
+            if held_by_power {
+                // Beside the target, diagonal to the pusher: not a neighbour of it.
+                w.set(BlockPos::new(1, 5, 1), w.id("redstone_block", &[]));
+            }
+            w.set(
+                BlockPos::new(0, 5, 0),
+                w.id("piston", &[("facing", "east")]),
+            );
+            w.set(BlockPos::new(-1, 5, 0), w.id("redstone_block", &[]));
+            settle(&mut w);
+            assert_eq!(
+                w.prop(BlockPos::new(0, 5, 0), "extended"),
+                if moves { "true" } else { "false" },
+                "a {kind} with extended={extended} ahead"
+            );
+            if moves {
+                assert_eq!(w.get(BlockPos::new(2, 5, 0)), target, "{kind} pushed along");
+            } else {
+                assert_eq!(w.get(BlockPos::new(1, 5, 0)), target, "{kind} left alone");
+                assert_eq!(w.prop(BlockPos::new(1, 5, 0), "extended"), "true");
+            }
+        }
+    }
+}
