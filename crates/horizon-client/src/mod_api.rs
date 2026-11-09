@@ -36,13 +36,13 @@ pub use crate::game::native_client_services::{
 };
 pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
-    AdvancementDisplay, ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError,
-    NativeBlockRun, NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks,
-    NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion,
-    NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem,
-    NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender,
-    NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake,
-    NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
+    AdvancementDisplay, ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockNbt,
+    NativeBlockReadError, NativeBlockRun, NativeClientBiomes, NativeClientChunks, NativeClock,
+    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
+    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
+    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
+    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
+    NativeShake, NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gamerules::Value as GameRuleValue;
 /// What a mod asks of the terrain's picture each frame (`native_world_hold`). API 414.
@@ -119,6 +119,21 @@ use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
 pub use winit::keyboard::KeyCode;
+
+/// How far a chunk a mod asked for with `native_chunk_load_request` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeChunkLoad {
+    /// Asked for and not loaded yet (generating, loading from disk, or its
+    /// level opening); ask again after a tick.
+    Pending,
+    /// Loaded: its blocks can be read and written (the mod's ticket keeps
+    /// it loaded, as a `/forceload`ed chunk is).
+    Loaded,
+    /// Not asked for by this owner: the request was refused (off a server,
+    /// no namespace, past the world's edge, a dimension Horizon lacks) or
+    /// has been released.
+    Failed,
+}
 
 /// An owned fluid payload. Component additions and removals are preserved exactly;
 /// the amount is in millibuckets. Empty/negative stacks are not transferable.
@@ -439,6 +454,25 @@ pub struct NativeStack {
     pub item: String,
     pub count: u32,
     pub components: String,
+}
+
+/// One item a loot table can drop and its odds (`native_loot_odds`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeLootOdds {
+    /// The item (`minecraft:flint`).
+    pub item: String,
+    /// Its components beyond the item's own, in vanilla's item syntax, or "".
+    pub components: String,
+    /// The chance at least one comes from one roll of the whole table.
+    pub chance: f64,
+    /// How many come when it does: the fewest one drop gives, and the most
+    /// the table can give at once.
+    pub min: u32,
+    pub max: u32,
+    /// The conditions on its way that could not be judged here (a tool when
+    /// none was named, the weather, a killer), as short lines; they were
+    /// taken as met.
+    pub conditions: Vec<String>,
 }
 
 /// What a mod asks the recipe viewer to do with a stack

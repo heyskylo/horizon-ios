@@ -76,20 +76,13 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 ## Architecture: world generation
 
-- [World generation](world-generation.md): the pipeline from noise to features.
+- [World generation](world-generation.md): the pipeline from noise to features. Each stage's vanilla comparison is its harness (`tools/test_<name>_parity.py`); `python3 tools/port_ledger.py where Class.method` finds the Rust port of a vanilla method.
 - [World height](world-height.md): each level's shape from its dimension type, data packs' taller levels.
 - [Pregeneration](pregeneration.md): `/pregen`, generating, lighting and saving an area ahead of the players.
-- [Noise generation](noise-generation.md), [compiled density functions](density-functions.md), [structure density](structure-density.md), [terrain filling](terrain-filling.md).
-- Biomes: [lookup](biome-lookup.md), [temperatures](biome-temperatures.md).
-- Surfaces: [material surfaces](material-surfaces.md), [material conditions](material-conditions.md), [rule libraries](material-rule-libraries.md), [vertical anchors](vertical-anchors.md), [value providers](value-providers.md).
-- [Carving](carving.md), [heightmaps](heightmaps.md), [feature placement](feature-placement.md).
 
 ## Architecture: world data and simulation
 
 - [World data](world-data.md): chunk storage, palettes, region files.
-- [Block-state codecs](block-state-codecs.md), [scheduled ticks](scheduled-ticks.md).
-- [Collision geometry](collision-geometry.md): shapes, collision, movement and fluids.
-- [Face visibility](face-visibility.md): which model faces the mesher emits.
 
 ## Java comparison profiling
 

@@ -101,6 +101,16 @@ pub fn enchantment_list(
     }
     list
 }
+/// `ItemStack.isEnchantable`: an enchantable component, no enchantments
+/// yet, and the enchantments component present (all items have it by
+/// default; a removal patch leaves none).
+pub fn is_enchantable(e: &Enchantments, stack: &ItemStack) -> bool {
+    e.enchantable_of(stack) > 0
+        && stack.enchantments().is_empty()
+        && stack
+            .data()
+            .is_none_or(|d| d.other("!minecraft:enchantments").is_none())
+}
 /// `EnchantmentMenu.slotsChanged` for an enchantable item.
 pub fn enchant_offers(
     e: &Enchantments,
@@ -111,8 +121,7 @@ pub fn enchant_offers(
 ) -> EnchantOffers {
     let mut offers = EnchantOffers::default();
     let Some(stack) = stack else { return offers };
-    // ItemStack.isEnchantable: enchantable component and no enchantments yet.
-    if e.enchantable_of(stack) == 0 || !stack.enchantments().is_empty() {
+    if !is_enchantable(e, stack) {
         return offers;
     }
     let mut random = LegacyRandom::new(i64::from(seed));
@@ -466,7 +475,11 @@ pub fn anvil_result(
         if naming_cost != price || naming_cost == 0 {
             base = increased_repair_cost(base);
         }
-        r.data_mut().repair_cost = base;
+        // `set(REPAIR_COST, base)` replaces the patch, including a removal
+        // marker the input carried; zero is the component's default.
+        let data = r.data_mut();
+        data.set_other("!minecraft:repair_cost", None);
+        data.repair_cost = base;
         r.set_crafting_enchantments(enchantments);
         r.tidy();
     }
@@ -1672,6 +1685,78 @@ mod tests {
         );
         assert_eq!(increased_repair_cost(0), 1);
         assert_eq!(increased_repair_cost(3), 7);
+    }
+
+    /// Anvil: `set(REPAIR_COST, …)` replaces a removal marker the input had,
+    /// whether the result adds work or only changes the name.
+    #[test]
+    fn anvil_replaces_a_removed_repair_cost() {
+        let e = sample();
+        let items = sample_items();
+        let removed = || Some(Tag::compound(Vec::<(&str, Tag)>::new()));
+        let mut patched = sword(&[]);
+        patched
+            .data_mut()
+            .set_other("!minecraft:repair_cost", removed());
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&patched),
+            Some(&book(&[("minecraft:sharpness", 1)])),
+            Some("Blade"),
+            "Diamond Sword",
+            false,
+        );
+        let out = r.result.expect("the enchantment and name apply");
+        assert_eq!(r.cost, 2);
+        assert_eq!(out.repair_cost(), 1);
+        assert!(
+            out.data()
+                .and_then(|d| d.other("!minecraft:repair_cost"))
+                .is_none()
+        );
+        let mut renamed = sword(&[]);
+        renamed
+            .data_mut()
+            .set_other("!minecraft:repair_cost", removed());
+        let out = anvil_result(
+            &e,
+            &items,
+            Some(&renamed),
+            None,
+            Some("Blade"),
+            "Diamond Sword",
+            false,
+        )
+        .result
+        .expect("the rename applies");
+        assert_eq!(out.repair_cost(), 0);
+        assert!(
+            out.data()
+                .and_then(|d| d.other("!minecraft:repair_cost"))
+                .is_none()
+        );
+    }
+
+    /// Enchanting: `ItemStack.isEnchantable` needs the enchantments component
+    /// present; a removal patch leaves no offers.
+    #[test]
+    fn enchanting_needs_the_stacks_enchantments_component() {
+        let e = sample();
+        let items = sample_items();
+        let mut removed = sword(&[]);
+        removed.data_mut().set_other(
+            "!minecraft:enchantments",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            enchant_offers(&e, &items, 1234, 15, Some(&removed)).costs,
+            [0, 0, 0]
+        );
+        assert_ne!(
+            enchant_offers(&e, &items, 1234, 15, Some(&sword(&[]))).costs,
+            [0, 0, 0]
+        );
     }
 
     /// Checks against the prepared vanilla resources when they are present.
