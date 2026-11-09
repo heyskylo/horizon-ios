@@ -6,11 +6,11 @@
 //! the world (a server dialog, the code of conduct, a link, command or resource pack prompt).
 //! Only one owns the pad at a time. Screens are not overlays: `pad_in_menu` says when one has the
 //! pad.
-use super::Game;
+use super::super::Game;
 
 /// An overlay that owns the controller, highest priority first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PadCapture {
+pub(in crate::game) enum PadCapture {
     /// The on-screen keyboard: every press types or moves on it.
     Keyboard,
     /// A prompt over the world, answered before anything behind it.
@@ -19,7 +19,7 @@ pub(super) enum PadCapture {
 
 impl Game<'_> {
     /// The overlay that owns the pad now, if one does.
-    pub(super) fn pad_capture(&self) -> Option<PadCapture> {
+    pub(in crate::game) fn pad_capture(&self) -> Option<PadCapture> {
         if self.pad.menu.osk.is_some() {
             Some(PadCapture::Keyboard)
         } else if self.prompt_open() {
@@ -30,7 +30,7 @@ impl Game<'_> {
     }
 
     /// The on-screen keyboard owns the pad.
-    pub(super) fn pad_keyboard_captures(&self) -> bool {
+    pub(in crate::game) fn pad_keyboard_captures(&self) -> bool {
         self.pad_capture() == Some(PadCapture::Keyboard)
     }
 }

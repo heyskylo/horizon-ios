@@ -210,7 +210,7 @@ twelve-screen pack in a real game).
 ## Pad capture
 
 Several overlays over play take the controller for themselves. `Game::pad_capture`
-(`crates/horizon-client/src/game/pad_capture.rs`) is the one place that says which owns it now,
+(`crates/horizon-client/src/game/pad/capture.rs`) is the one place that says which owns it now,
 in one priority order:
 
 | `PadCapture` | Owns the pad while |

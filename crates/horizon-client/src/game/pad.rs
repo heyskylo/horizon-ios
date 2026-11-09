@@ -111,6 +111,7 @@ struct Context {
     enabled: bool,
 }
 
+mod capture;
 mod guide;
 #[cfg(feature = "controllers")]
 mod hardware;
