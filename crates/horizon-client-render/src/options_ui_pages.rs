@@ -27,8 +27,7 @@ impl OptionsUi {
         // buttons; each opens one of Horizon's settings pages. Each page has
         // one way in: graphics and shader packs are Video Settings' (the graphics
         // screen), the controller is Controls', mods are the Options screen's.
-        let open =
-            |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
+        let open = |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
         let mut rows: Vec<Row> = vec![
             Row::Buttons(
                 open("horizon.pages.open.extras", Page::Extras),
@@ -57,9 +56,8 @@ impl OptionsUi {
         ]
         .into_iter()
         .chain(
-            (!s.extras.no_ai).then(|| {
-                Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
-            }),
+            (!s.extras.no_ai)
+                .then(|| Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)),
         )
         .collect();
         self.added_entries(&mut rows);
@@ -68,7 +66,10 @@ impl OptionsUi {
 
     /// The entries of the pages registered for Horizon Settings, two to a row like the engine's.
     fn added_entries(&self, rows: &mut Vec<Row>) {
-        let mut entries = self.pages.iter().enumerate()
+        let mut entries = self
+            .pages
+            .iter()
+            .enumerate()
             .filter(|(_, page)| page.place() == added::Place::HorizonSettings)
             .map(|(i, page)| button(0.0, 0.0, 150.0, tr(page.title()), Act::Push(Page::Added(i))));
         while let Some(first) = entries.next() {
@@ -100,7 +101,9 @@ impl OptionsUi {
             added::Row::Button { label } => wide(tr(label)),
             added::Row::Key { label, key } => {
                 let mut message = keybinds::display_name(&key);
-                if self.selected_key == Some(PAGE_KEY) && self.selected_native_key == Some((page, r)) {
+                if self.selected_key == Some(PAGE_KEY)
+                    && self.selected_native_key == Some((page, r))
+                {
                     message = Text::literal("> ")
                         .append(message.with_color(text::WHITE))
                         .append(" <")
@@ -129,7 +132,14 @@ impl OptionsUi {
                 Vec::new()
             }
             Some(_) => {
-                registered.act(r, if shift { added::Act::PressBack } else { added::Act::Press });
+                registered.act(
+                    r,
+                    if shift {
+                        added::Act::PressBack
+                    } else {
+                        added::Act::Press
+                    },
+                );
                 vec![Event::Changed]
             }
             None => Vec::new(),
@@ -287,14 +297,20 @@ mod tests {
     #[test]
     fn a_registered_page_opens_from_horizon_settings_and_hears_its_rows() {
         let mut s = Settings::default();
-        let mut ui = OptionsUi::default();
-        ui.pages = &PAGES;
+        let mut ui = OptionsUi {
+            pages: &PAGES,
+            ..OptionsUi::default()
+        };
         ui.show(Page::Horizon);
         press(&mut ui, &mut s, Act::Push(Page::Added(0)), false);
         assert_eq!(ui.page(), Page::Added(0));
         // Rows: the heading (0), the switch (1), the step (2), the key (3).
         let events = press(&mut ui, &mut s, Act::PageRow(0, 1), false);
-        assert_eq!(events.last(), Some(&Event::Changed), "the settings get saved");
+        assert_eq!(
+            events.last(),
+            Some(&Event::Changed),
+            "the settings get saved"
+        );
         assert!(*SAMPLE.on.lock().unwrap());
         press(&mut ui, &mut s, Act::PageRow(0, 2), false);
         press(&mut ui, &mut s, Act::PageRow(0, 2), true);
