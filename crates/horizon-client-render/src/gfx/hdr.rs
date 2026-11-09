@@ -419,6 +419,26 @@ impl Hdr {
         }
     }
 
+    /// The same HDR output presenting `output` instead (`output_apply`): the same frame and
+    /// HUD layer, and the player's tuning as it is (HDR Lighting, the world's lighting, the UI
+    /// brightness, the masks and tiers, the debug view, calibration and the luminance). Its
+    /// targets are made again on the next frame.
+    pub fn retargeted(&self, device: &wgpu::Device, queue: &wgpu::Queue, output: Output) -> Self {
+        Self {
+            debug: self.debug,
+            paper_white: self.paper_white,
+            peak: self.peak,
+            black: self.black,
+            tiers: self.tiers,
+            ui: self.ui,
+            masks: self.masks,
+            lighting: self.lighting,
+            look: self.look,
+            calibration: self.calibration,
+            ..Self::new(device, queue, self.format, output, self.layered.is_some())
+        }
+    }
+
     /// The frame every pass draws into this frame, sized like the window.
     pub fn frame(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::Texture {
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
@@ -1516,6 +1536,93 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         hdr.peak = 150.0;
         let [r, g, b] = eased(&mut hdr, [1.5, 0.5, 0.2]);
         assert!(r == 1.0 && near(g, 0.5) && near(b, 0.2), "{r} {g} {b}");
+    }
+
+    /// HDR output switched from HDR10 to scRGB and back (`output_apply`): the player's tuning
+    /// stays, each swapchain gets the same light in its own encoding, and the HDR10 capture
+    /// and the HDR10 picture after the switch back are the ones before it.
+    #[test]
+    fn a_switched_encoding_keeps_the_tuning_and_shows_the_same_light() {
+        let Some((device, queue)) = gpu() else {
+            eprintln!("HDR encoding switch GPU skipped: no adapter");
+            return;
+        };
+        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
+        (hdr.paper_white, hdr.peak, hdr.black) = (250.0, 800.0, 0.0);
+        (hdr.ui, hdr.look, hdr.lighting) = (0.5, false, false);
+        hdr.masks.parts = 0.4;
+        hdr.tiers[1].share = 0.7;
+        hdr.debug = true;
+        hdr.calibration = Some(super::Calibration {
+            step: 2,
+            nits: 700.0,
+            band: 0.6,
+        });
+        let tuning = |h: &Hdr| {
+            (
+                [h.paper_white, h.peak, h.black, h.ui],
+                (h.look, h.lighting, h.debug, h.layered.is_some(), h.format),
+                (h.masks, h.tiers, h.calibration),
+            )
+        };
+        let switched = hdr.retargeted(&device, &queue, Output::ScRgb);
+        assert_eq!(switched.output, Output::ScRgb);
+        assert_eq!(tuning(&switched), tuning(&hdr));
+        hdr.calibration = None;
+        hdr.debug = false;
+        // The swapchain's first texel (`capture`: the HDR10 screenshot's) for light 2 times
+        // paper white, grey, as the layered frame stores it.
+        let shot = |hdr: &mut Hdr, capture: bool| {
+            let frame = hdr.frame(&device, [1, 1]);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let g = 2f64.powf(1.0 / 2.2);
+            fill(&mut encoder, &frame, [g, g, g, 1.0]);
+            hdr.begin(&queue, true);
+            hdr.keep_world(&mut encoder, None);
+            super::super::hud_coverage::clear(&mut encoder, &hdr.coverage_view().unwrap());
+            let target = if capture {
+                hdr.capture(&device, &queue, &mut encoder, true).unwrap()
+            } else {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: frame.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: hdr.output.format(),
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                })
+            };
+            if !capture {
+                hdr.present(&queue, &mut encoder, &target, true, None);
+            }
+            texel(&device, &queue, encoder, &target)
+        };
+        // BT.2100's PQ EOTF: a 10-bit code's nits.
+        let pq_nits = |code: f32| {
+            let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+            let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 128.0, 2392.0 / 128.0);
+            let p = (code / 1023.0f32).powf(1.0 / m2);
+            ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1) * 10000.0
+        };
+        let pq = shot(&mut hdr, false);
+        let pq_capture = shot(&mut hdr, true);
+        let mut scrgb = hdr.retargeted(&device, &queue, Output::ScRgb);
+        let linear = shot(&mut scrgb, false);
+        assert_eq!(shot(&mut scrgb, true), pq_capture);
+        // Two times paper white in both: 500 nits, as HDR10's code and as scRGB's 80-nit units.
+        let near = |got: f32| (got - 500.0).abs() <= 0.015 * 500.0;
+        assert!(
+            near(pq_nits(pq[0])) && pq[..3].iter().all(|&c| c == pq[0]),
+            "{pq:?}"
+        );
+        assert!(near(linear[0] * 80.0), "{linear:?}");
+        let mut back = scrgb.retargeted(&device, &queue, Output::Pq);
+        assert_eq!(
+            (shot(&mut back, false), shot(&mut back, true)),
+            (pq, pq_capture)
+        );
     }
 
     #[test]
