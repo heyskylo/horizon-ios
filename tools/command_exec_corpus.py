@@ -1949,6 +1949,19 @@ def entity_landing_sensors():
             ops += [cmd(f'/execute if entity {target[:-1]},nbt={{OnGround:1b}}]'),
                     cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=active]')]
         ops += [cmd('/data get block 9 200 10 last_vibration_frequency')]
+    # A piston's push is Entity.move too: a falling block it pushes onto the ground lands in that
+    # step (fallOn, HIT_GROUND, the fall forgotten), not on its own next tick.
+    ops += setup('/kill @e[tag=landing_actor]', '/fill 0 200 0 31 206 31 air',
+                 '/setblock 6 202 10 piston[facing=down]',
+                 '/summon falling_block 6.5 200.3 10.5 {Tags:["landing_actor","landing_pushed"],'
+                 'BlockState:{Name:"minecraft:sand"},NoGravity:1b,fall_distance:3d,Time:1}',
+                 '/setblock 6 203 10 redstone_block')
+    for _ in range(4):
+        ops += setup('/tick step 1')
+        ops += [{'op': 'tick', 'n': 1}]
+        ops += [cmd('/data get entity @e[tag=landing_pushed,limit=1] fall_distance'),
+                cmd('/data get entity @e[tag=landing_pushed,limit=1] Pos[1]'),
+                cmd('/execute if entity @e[tag=landing_pushed,nbt={OnGround:1b}]')]
     ops += setup('/fill 0 200 0 31 206 31 air', '/tp @s 6.5 200 7.5')
     return ops + setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
                        '/scoreboard objectives remove landing_probe',

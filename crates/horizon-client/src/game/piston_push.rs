@@ -778,6 +778,9 @@ impl Game<'_> {
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
         }
+        if let Target::Entity(EntityHandle::Falling(i)) = target {
+            self.finish_falling_piston_move(i, resolved);
+        }
         if let Some((i, from)) = projectile_from {
             self.projectile_piston_block_effects(i, from);
         }
