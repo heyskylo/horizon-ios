@@ -237,11 +237,7 @@ pub fn texture_path(root: &Path, texture: &str, directory: &str) -> PathBuf {
     let stays = rel
         .split('/')
         .all(|segment| !matches!(segment, "" | "." | "..") && !segment.contains('\\'));
-    root.join(if stays {
-        &rel
-    } else {
-        NOWHERE
-    })
+    root.join(if stays { &rel } else { NOWHERE })
 }
 
 /// `SpriteSourceList.list`: every sprite id of the atlas and its origin.
