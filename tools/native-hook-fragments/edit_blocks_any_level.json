@@ -1,0 +1,7 @@
+{
+  "hooks": [],
+  "helpers": [],
+  "rust_summary": "`native_edit_blocks` for any loaded level, not only the one being ticked (`execute in <dimension> run`), so a `native_server_tick` hook can edit the Nether or the End.",
+  "doc_summary": "`native_edit_blocks(dimension, edit)` takes any level the server has loaded: the level is put in place for the edit and the one that was is put back, as `execute in <dimension> run` does, so a `native_server_tick` hook edits the Nether or the End. A level not loaded is refused. Bundles need \"hooks\": @API:edit_blocks_any_level@.",
+  "comments": ["crates/horizon-client/src/game/native_world_edit.rs"]
+}

@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "loot_odds",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_loot_odds"
+    }
+  ],
+  "rust_summary": "a loot table's odds from one roll, worked out (`native_loot_odds`).",
+  "doc_summary": "`native_loot_odds(table, tool)` (`host.loot_odds`) works out what one roll of the world's loot table `table` gives: each item's chance to come at least once, how many come, and the conditions on its way it couldn't judge (taken as met, named in `conditions`). Weights, rolls, alternatives, groups, sequences, nested tables, random chances and set counts count; luck and enchantments are none. With `tool`, `match_tool` conditions are judged with that item in hand. For a recipe viewer that lists a fishing spot's or a sieve's outputs: a server works them out from its own tables and sends them to its players. Bundles need \"hooks\": @API:loot_odds@."
+}
