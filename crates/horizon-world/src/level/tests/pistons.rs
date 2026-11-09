@@ -290,3 +290,47 @@ fn slime_and_honey_each_drag_their_own_kind_and_never_each_other() {
         }
     }
 }
+
+/// `PushReaction.PUSH` (glazed terracotta, the only block 26.3 gives it) moves
+/// only along the line it is pushed in: `isPushable` answers `direction ==
+/// connectionDirection`, so a slime block beside it cannot drag it sideways,
+/// where it drags an ordinary block.
+#[test]
+fn glazed_terracotta_is_pushed_in_line_but_never_dragged_sideways() {
+    let mut w = world!();
+    let slime = w.id("slime_block", &[]);
+    let dirt = w.id("dirt", &[]);
+    let terracotta = w.id("white_glazed_terracotta", &[("facing", "north")]);
+    let air = w.b().air();
+    // The slime block drags the dirt on one side and cannot drag the
+    // terracotta on the other.
+    w.set(BlockPos::new(1, 5, 0), slime);
+    w.set(BlockPos::new(1, 5, 1), dirt);
+    w.set(BlockPos::new(1, 5, -1), terracotta);
+    w.set(
+        BlockPos::new(0, 5, 0),
+        w.id("piston", &[("facing", "east")]),
+    );
+    w.set(BlockPos::new(-1, 5, 0), w.id("redstone_block", &[]));
+    settle(&mut w);
+    assert_eq!(w.prop(BlockPos::new(0, 5, 0), "extended"), "true");
+    assert_eq!(w.get(BlockPos::new(2, 5, 1)), dirt, "the dirt is dragged");
+    assert_eq!(
+        w.get(BlockPos::new(1, 5, -1)),
+        terracotta,
+        "the terracotta stays beside the slime block"
+    );
+    assert_eq!(w.get(BlockPos::new(2, 5, -1)), air);
+
+    // In line with the push it moves like any block.
+    let mut w = world!();
+    w.set(BlockPos::new(1, 5, 0), terracotta);
+    w.set(
+        BlockPos::new(0, 5, 0),
+        w.id("piston", &[("facing", "east")]),
+    );
+    w.set(BlockPos::new(-1, 5, 0), w.id("redstone_block", &[]));
+    settle(&mut w);
+    assert_eq!(w.prop(BlockPos::new(0, 5, 0), "extended"), "true");
+    assert_eq!(w.get(BlockPos::new(2, 5, 0)), terracotta, "pushed in line");
+}
