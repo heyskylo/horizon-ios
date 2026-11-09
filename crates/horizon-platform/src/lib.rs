@@ -27,3 +27,8 @@ pub mod settings {
 pub mod pages {
     pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, register};
 }
+
+/// Drawing on the HUD (docs/layers.md, "Platform registries").
+pub mod hud {
+    pub use horizon_hooks::hud::{Canvas, Corner, Layer, register};
+}
