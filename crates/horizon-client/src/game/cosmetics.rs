@@ -9,7 +9,7 @@
 
 mod fx;
 
-use super::Game;
+use super::{Game, emotes};
 use horizon_client::fast_hash::FxHashMap;
 use horizon_client::mesher::Vertex;
 use horizon_client::mobs::anim::Poses;
@@ -577,14 +577,15 @@ impl Game<'_> {
             for m in self.mobs.iter_mut() {
                 let age = m.age as f32;
                 if &*m.kind.id == "minecraft:mannequin"
-                    && m.emote.as_ref().is_none_or(|p| p.at(age).is_none())
+                    && emotes::playing(m).is_none_or(|p| p.at(age).is_none())
                 {
-                    m.emote = Some(horizon_cosmetics::Playing {
+                    let playing = horizon_cosmetics::Playing {
                         item: first.clone(),
                         // Out of step, so a crowd doesn't move as one.
                         start: age - (m.id % 40) as f32,
                         stop: None,
-                    });
+                    };
+                    emotes::set_playing(m, Some(playing));
                 }
             }
             return;
@@ -595,7 +596,7 @@ impl Game<'_> {
         if !shown {
             feed.ask([]);
             for m in self.mobs.iter_mut() {
-                m.emote = None;
+                emotes::set_playing(m, None);
             }
             return;
         }
@@ -622,7 +623,8 @@ impl Game<'_> {
                 let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
                 dx * dx + dz * dz > 1e-4
             };
-            match (seen, &mut m.emote) {
+            let mut next = emotes::playing(m).cloned();
+            match (seen, &mut next) {
                 (Some(seen), Some(p)) if Arc::ptr_eq(&p.item, &seen.item) => {
                     if moved && p.stop.is_none() {
                         p.stop = Some(age);
@@ -639,9 +641,7 @@ impl Game<'_> {
                 (_, Some(p)) if p.stop.is_none() => p.stop = Some(age),
                 _ => {}
             }
-            if m.emote.as_ref().is_some_and(|p| p.at(age).is_none()) {
-                m.emote = None;
-            }
+            emotes::set_playing(m, next.filter(|p| p.at(age).is_some()));
         }
     }
 
@@ -790,7 +790,7 @@ impl Game<'_> {
         let worn = self.worn(m, own);
         // An emote's props: its time and weight while it plays.
         let ticks = m.age as f32 + alpha;
-        let emote = m.emote.as_ref().and_then(|p| {
+        let emote = emotes::playing(m).and_then(|p| {
             let (t, w) = p.at(ticks)?;
             (p.item.vertices > 0).then_some((&p.item, t, w))
         });

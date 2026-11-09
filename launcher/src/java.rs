@@ -140,7 +140,7 @@ pub fn runtimes_dir() -> PathBuf {
 
 /// The runtimes in a Mojang `runtime` folder.
 pub fn mojang_runtimes(dir: &Path) -> Vec<Runtime> {
-    horizon_prepare::java::minecraft_runtimes(dir)
+    horizon_platform::prepare::java::minecraft_runtimes(dir)
         .into_iter()
         .filter_map(|home| runtime(home, Source::Mojang))
         .collect()

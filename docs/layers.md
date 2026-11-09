@@ -442,7 +442,9 @@ controllers and replay recording are not extras: they are platform ([above](#con
 A Rust file over 3000 lines may not grow compared with the base of the branch. `game.rs` (~21,700 lines),
 `game/remote.rs` (~10,900) and `gfx.rs` (~10,100) are the worst; they slow incremental builds. Smaller files may
 grow to 3000 lines, and a big file may shrink or stay as it is. There is no list of files, so no check breaks on
-an unrelated edit. Generated files and `third_party/` are not checked.
+an unrelated edit. Generated files and `third_party/` are not checked. Test code doesn't count either, since a normal
+build doesn't compile it: inline `#[cfg(test)] mod name { ... }` modules, and files named `tests.rs` or
+`<name>_tests.rs`. Other `#[cfg(test)]` items count.
 
 ## The checks
 
