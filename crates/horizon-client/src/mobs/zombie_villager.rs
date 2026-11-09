@@ -143,8 +143,23 @@ fn parse_cure(tag: &Tag) -> Option<Cure> {
         starter: crate::save::uuid_from_tag(tag.get("ConversionPlayer")),
     })
 }
-/// The saved fields: the cure and the gossip.
+/// `ZombieVillager.initializeZombieVillagerData`: the constructor picks a
+/// profession (`VILLAGER_PROFESSION.getRandom`, 15 of them) from the fresh
+/// entity's random, before anything seeds it: an independent draw that
+/// leaves the mob's own random alone.
+pub fn constructor_profession(m: &Mob) -> u8 {
+    let mut fresh = horizon_core::random::LegacyRandom::new(
+        (m.random.state() as i64).wrapping_mul(0x5851_F42D_4C95_7F2D) ^ i64::from(m.id),
+    );
+    fresh.next_int_bound(15).unwrap_or(0) as u8
+}
+/// The saved fields: the finalized flag, the cure and the gossip.
 pub fn write_nbt(m: &Mob, map: &mut Compound) {
+    let finalized = villager::ext(m).is_some_and(|e| e.data_finalized);
+    map.insert(
+        "VillagerDataFinalized".into(),
+        Tag::Byte(i8::from(finalized)),
+    );
     put_cure(map, cure(m).copied());
     if let Some(e) = villager::ext(m)
         && !e.gossips.is_empty()
@@ -152,9 +167,18 @@ pub fn write_nbt(m: &Mob, map: &mut Compound) {
         map.insert("Gossips".into(), e.gossips.to_nbt());
     }
 }
+/// `ZombieVillager.readAdditionalSaveData`: a save with neither
+/// `VillagerDataFinalized` nor `VillagerData` keeps the constructor's random
+/// profession and stays unfinalized.
 pub fn read_nbt(m: &mut Mob, tag: &Tag) {
+    let saved = tag.get("VillagerData").is_some();
+    let finalized = saved || crate::entity_nbt::flag(tag, "VillagerDataFinalized");
+    if !saved {
+        m.extra.variant2 = constructor_profession(m);
+    }
     let cure = parse_cure(tag);
     let e = villager::ext_mut(m);
+    e.data_finalized = finalized;
     e.cure = cure;
     e.gossips = tag
         .get("Gossips")

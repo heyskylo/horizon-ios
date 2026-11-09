@@ -1389,9 +1389,6 @@ impl Game<'_> {
             }
         }
         self.set_mode(mode);
-        if self.screen == Screen::Inventory && (self.creative || self.spectator()) {
-            self.screen = Screen::Playing;
-        }
         true
     }
     fn cmd_gamemode(&mut self, ctx: &Context) -> R<i32> {
@@ -2973,57 +2970,6 @@ impl Game<'_> {
         });
         self.process_level_events()
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
-    }
-    /// The block entity part of `BlockInput.place`: load the block entity
-    /// from the argument's tag (read; `load_block_entity_nbt` reads SNBT); true when its saved data changed.
-    pub(super) fn load_block_entity_tag(
-        &mut self,
-        pos: [i32; 3],
-        mut tag: horizon_world::nbt::Tag,
-    ) -> bool {
-        use horizon_world::nbt::Tag;
-        if self.pot_data(pos).is_some() {
-            return self.set_pot_data(pos, &tag).unwrap_or(false);
-        }
-        let key = (pos[0], pos[1], pos[2]);
-        let Some(e) = self.world.block_entities.get(&key) else {
-            return false;
-        };
-        let name = self.data_block_name(pos);
-        let before = horizon_client::save::encode_block_entity(key, e, &name);
-        if let Tag::Compound(c) = &mut tag {
-            for k in ["id", "x", "y", "z"] {
-                if let Some(v) = before.get(k) {
-                    c.insert(k.into(), v.clone());
-                }
-            }
-        }
-        let Some((_, mut new)) = horizon_client::save::decode_block_entity(&tag) else {
-            return false;
-        };
-        let rolled = self.take_loot_table(key, &tag, &mut new);
-        let after = horizon_client::save::encode_block_entity(key, &new, &name);
-        // The lock is outside the model: a tag that only changes it still
-        // changes the block entity.
-        let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        // So is the custom name.
-        let name_changed = self.load_block_name(key, &new, &tag);
-        let cooldown_changed = if name == "minecraft:hopper" {
-            let state = super::machines::HopperState::load(&tag);
-            let changed = self.hoppers.get(&key).map_or(-1, |s| s.cooldown) != state.cooldown;
-            self.hoppers.insert(key, state);
-            changed
-        } else {
-            false
-        };
-        if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
-            return false;
-        }
-        self.world.block_entities.insert(key, new);
-        self.world.set_block_lock(key, &tag);
-        self.update_spawner_display(key);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        true
     }
     /// `RandomizableContainer.unpackLootTable` for a player who opens a
     /// container: a roll the container still holds fires

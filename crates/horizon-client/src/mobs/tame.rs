@@ -226,6 +226,21 @@ pub fn set_tame(m: &mut Mob, tame: bool) {
     } else {
         m.attrs.max_health = 8.0;
     }
+    // `setBaseValue`: a base kept from the load or `/attribute` is replaced too.
+    let base = wolf_health_base(tame);
+    if m.species() == Species::Wolf
+        && let Some(b) = m.extra.attributes.as_mut().and_then(|s| {
+            s.bases
+                .iter_mut()
+                .find(|(a, _)| *a == super::finalize::Attr::MaxHealth)
+        })
+    {
+        b.1 = base;
+    }
+}
+/// The max_health base `Wolf.applyTamingSideEffects` sets.
+pub fn wolf_health_base(tame: bool) -> f64 {
+    if tame { 40.0 } else { 8.0 }
 }
 /// `TamableAnimal.getOwner`: the player the saved owner UUID names, when it
 /// is the one this mob sees; anyone else nearby is not its owner.
@@ -610,7 +625,7 @@ impl Beg {
             i.as_deref()
                 .is_some_and(|i| i == "minecraft:bone" || self.food.iter().any(|f| f == i))
         };
-        p.alive && !p.spectator && (held(&p.main_hand) || held(&p.off_hand))
+        p.alive && (held(&p.main_hand) || held(&p.off_hand))
     }
 }
 impl Goal for Beg {
@@ -621,7 +636,7 @@ impl Goal for Beg {
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         cx.w.player
             .as_ref()
-            .is_some_and(|p| m.distance_sqr(p.position) <= 64.0)
+            .is_some_and(|p| p.alive && !p.spectator && m.distance_sqr(p.position) <= 64.0)
             && self.interesting(cx.w)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
@@ -661,7 +676,7 @@ fn stop_being_angry(m: &mut Mob) {
     m.ai.last_hurt_by_time = m.age as i32;
     m.ai.target = None;
     m.extra.angry_at = None;
-    m.extra.anger = 0;
+    super::neutral_anger::stop(m);
 }
 /// `NeutralMob.playerDied`: the anger at the player who died ends.
 pub fn forgive_dead_player(m: &mut Mob) {
@@ -2093,6 +2108,53 @@ mod tests {
                 );
             });
         }
+    }
+
+    /// `BegGoal` finds its player with `TargetingConditions.forNonCombat()`,
+    /// which never picks a spectator or a dead player.
+    #[test]
+    fn a_spectator_holding_a_bone_does_not_make_a_wolf_beg() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+                p.main_hand = Some("minecraft:bone".into());
+                p.spectator = spectator;
+                world.player = Some(p);
+                let mut kind = (*kind()).clone();
+                kind.species = Species::Wolf;
+                let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(
+                    1,
+                    super::Beg {
+                        food: Arc::from(vec!["minecraft:bone".to_string()]),
+                        ticks: 0,
+                    },
+                );
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("Beg"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player's bone makes it beg; a spectator's does not"
+        );
     }
 }
 
