@@ -3893,8 +3893,7 @@ impl Game<'_> {
         velocity: Option<[f64; 3]>,
         pickup_delay: u32,
     ) -> [f64; 3] {
-        let item = stack.item.clone();
-        let count = stack.count as i32;
+        let (item, count) = (stack.item.clone(), stack.count as i32);
         self.next_entity += 1;
         let p = Vec3::new(position[0], position[1], position[2]);
         // The item's own random, in vanilla's order: Entity's UUID, ItemEntity's
@@ -3911,6 +3910,7 @@ impl Game<'_> {
         self.dropped.push(ItemEntity {
             rotation: [yaw, 0.0],
             pickup_delay: i64::from(pickup_delay),
+            random: own,
             ..ItemEntity::new(
                 self.next_entity,
                 stack,
