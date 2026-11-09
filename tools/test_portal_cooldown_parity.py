@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 try:
     from . import lab, test_rust_parity as base
 except ImportError:
@@ -25,7 +26,7 @@ def main():
     parser.add_argument('--resources', type=Path, default=lab.RESOURCES)
     parser.add_argument('--reference-only', action='store_true')
     args = parser.parse_args()
-    build = args.work_dir or lab.LOCAL / 'rust-portal-cooldown-parity'
+    build = (args.work_dir or lab.LOCAL / 'rust-portal-cooldown-parity').resolve()
     build.mkdir(parents=True, exist_ok=True)
     lock, jars, libraries = base.verify_artifacts()
     classes = build / 'classes'
@@ -55,8 +56,21 @@ def main():
     env = lab.game_env(inherited, HORIZON_TELEMETRY_URL="off", HORIZON_TEST_RESOURCES=args.resources.resolve(strict=True),
                        HORIZON_PORTAL_REFERENCE=reference.resolve(),
                        HORIZON_PORTAL_REPORT=(build / 'native.json').resolve())
-    run(['cargo', 'test', '-p', 'horizon-client', '--lib', TEST, '--', '--ignored',
-         '--exact', '--nocapture'], 'native', env)
+    run(['cargo', 'test', '-p', 'horizon-client', '--lib', '--no-run',
+         '--message-format=json'], 'build-native', env)
+    executables = [row['executable']
+                   for line in (build / 'build-native.log').read_text(encoding='utf-8').splitlines()
+                   if line.startswith('{')
+                   and (row := json.loads(line)).get('reason') == 'compiler-artifact'
+                   and row.get('executable') and row.get('profile', {}).get('test')]
+    if len(executables) != 1:
+        raise SystemExit(f'expected one production test binary, got {executables}')
+    with tempfile.TemporaryDirectory(prefix='horizon-portal-cooldown-') as scratch:
+        with (build / 'native.log').open('w', encoding='utf-8') as log:
+            result = subprocess.run([executables[0], TEST, '--ignored', '--exact', '--nocapture'],
+                                    cwd=scratch, env=env, stdout=log, stderr=subprocess.STDOUT)
+        if result.returncode:
+            raise SystemExit(f'native failed ({result.returncode}); see {build / "native.log"}')
     output = (build / 'native.log').read_text(encoding='utf-8', errors='replace')
     if not re.search(r'test result: ok\. 1 passed; 0 failed;', output):
         raise SystemExit('native test did not execute exactly one passing production regression')
