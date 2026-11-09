@@ -43,6 +43,11 @@ pub fn enter_native_mod(call: NativeModCall) -> NativeModGuard {
     }
 }
 
+/// The native mod call this thread is currently inside, if any.
+pub fn current_native_mod() -> Option<NativeModCall> {
+    IN_NATIVE_MOD.with(Cell::get)
+}
+
 /// Puts back the call that `enter_native_mod` found.
 #[must_use]
 pub struct NativeModGuard {

@@ -2710,20 +2710,17 @@ dependencies = [
  "gpui-fast",
  "gpui-fast-platform",
  "horizon-bench",
- "horizon-core",
  "horizon-cosmetics",
  "horizon-friends",
  "horizon-mcp",
  "horizon-mod-api-gen",
  "horizon-mods",
+ "horizon-platform",
  "horizon-port-pack",
- "horizon-prepare",
- "horizon-protocol",
  "horizon-release-sign",
  "horizon-shader-api",
  "horizon-telemetry",
  "horizon-theme",
- "horizon-world",
  "image",
  "keyring",
  "libc",
@@ -2791,8 +2788,12 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-core",
  "horizon-hooks",
+ "horizon-prepare",
+ "horizon-protocol",
  "horizon-system",
+ "horizon-world",
 ]
 
 [[package]]
