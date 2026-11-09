@@ -650,12 +650,17 @@ mod tests {
         assert_eq!(zh.get("horizon.pages.mods"), Some("模组"));
         assert_eq!(zh.get("Preset"), Some("预设"));
         assert_eq!(zh.get("%s chunks"), Some("%s 个区块"));
-        // Not every bundle is complete: the en_us layer is in every map, so a
-        // missing key falls back to English (`horizon.mods.not_built` is not
-        // in la_la).
         assert_eq!(zh.get("LOD Distance"), Some("LOD 距离"));
-        let la = Language::load(&[&empty], "la_la");
-        assert_eq!(la.get("horizon.mods.not_built"), Some(" (Not built)"));
+        // Not every bundle is complete: the en_us layer is in every map, so a
+        // key the language's own file lacks falls back to English. A synthetic
+        // partial bundle keeps this true whatever the shipped files cover.
+        let partial = Mem(HashMap::from([(
+            "assets/minecraft/lang/en_gb.json".to_owned(),
+            br#"{"horizon.pages.mods": "Mods (British)"}"#.to_vec(),
+        )]));
+        let en_gb = Language::load(&[&partial], "en_gb");
+        assert_eq!(en_gb.get("horizon.pages.mods"), Some("Mods (British)"));
+        assert_eq!(en_gb.get("horizon.mods.not_built"), Some(" (Not built)"));
         let pl = Language::load(&[&empty], "pl_pl");
         assert_eq!(pl.get("horizon.options.controller"), Some("Kontroler"));
         assert_eq!(pl.get("horizon.options.vibration"), Some("Wibracje"));
