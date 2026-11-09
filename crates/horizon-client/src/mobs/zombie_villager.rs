@@ -261,6 +261,7 @@ mod tests {
             dragon: None,
             leash_boats: &[],
             who_lookup: None,
+            foreign: None,
             others_grid: None,
             others_index: None,
             others_villagers: None,

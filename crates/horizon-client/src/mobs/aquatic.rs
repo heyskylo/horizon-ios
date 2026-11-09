@@ -749,18 +749,35 @@ fn can_be_followed(s: Species, followers: i32) -> bool {
 }
 /// `startFollowing` on a recruit, applied after the recruiter's tick. A fish
 /// another leader took this tick (its snapshot was older) stays with it.
-pub fn start_following(mobs: &mut [Mob], fish: u32, leader: u32) {
-    let alive = |mobs: &[Mob], id: u32| mobs.iter().any(|m| m.id == id && m.alive() && !m.removed);
-    let Some(current) = mobs.iter().find(|m| m.id == fish).map(|m| m.extra.leader) else {
+pub fn start_following<M: super::MobSlot>(mobs: &mut [M], fish: u32, leader: u32) {
+    let alive = |mobs: &[M], id: u32| {
+        mobs.iter()
+            .map(super::MobSlot::mob)
+            .any(|m| m.id == id && m.alive() && !m.removed)
+    };
+    let Some(current) = mobs
+        .iter()
+        .map(super::MobSlot::mob)
+        .find(|m| m.id == fish)
+        .map(|m| m.extra.leader)
+    else {
         return;
     };
     if current.is_some_and(|l| alive(mobs, l)) {
         return;
     }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == fish) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == fish)
+    {
         m.extra.leader = Some(leader);
     }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == leader) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == leader)
+    {
         m.extra.followers += 1;
     }
 }

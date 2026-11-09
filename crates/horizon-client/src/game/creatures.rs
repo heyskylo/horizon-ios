@@ -1049,18 +1049,11 @@ impl Game<'_> {
             teams: std::sync::Arc::new(self.mob_teams()),
             items: Some(self.items()),
             lid_openers: &self.lid_openers,
-            mod_effects: if self.remote.is_none() {
-                Some(self)
-            } else {
-                None
-            },
+            mod_effects: self.remote.is_none().then_some(self as _),
             // A warden's away suspects are UUIDs: on the server side, where the
             // entity UUIDs live, they resolve back to the mobs that are here.
-            who_lookup: if self.remote.is_none() {
-                Some(self)
-            } else {
-                None
-            },
+            who_lookup: self.remote.is_none().then_some(self as _),
+            foreign: None,
             border: Some(self.border.geometry()),
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
@@ -8363,6 +8356,7 @@ mod pearl_tests {
             dragon: None,
             leash_boats: &[],
             who_lookup: None,
+            foreign: None,
             others_grid: None,
             others_index: None,
             others_villagers: None,
