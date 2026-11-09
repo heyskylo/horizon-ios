@@ -8,6 +8,8 @@ description = "The platform's public API: what the Horizon layer and mods may us
 
 [dependencies]
 horizon-system = { path = "../horizon-system" }
+# The game's extension points, re-exported as `hooks`.
+horizon-hooks = { path = "../horizon-hooks" }
 
 [lints]
 workspace = true
