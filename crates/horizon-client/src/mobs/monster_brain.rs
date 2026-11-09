@@ -1255,13 +1255,7 @@ fn shoot_tick(m: &mut Mob, cx: &mut Bx) {
     );
     // The new entity's own random spreads the shot (5 - difficulty id * 4):
     // not the breeze's.
-    let mut own = LegacyRandom::new(
-        cx.now
-            .wrapping_mul(0x5DEE_CE66)
-            .wrapping_add(i64::from(m.id)),
-    );
-    p.shoot(
-        &mut own,
+    p.shoot_own(
         [xd, yd, zd],
         0.7,
         5.0 - f32::from(cx.w.difficulty.id) * 4.0,

@@ -80,4 +80,14 @@ def cases(cmd, setup):
         sync(13), *setup('/summon chicken 7.5 201 13.5 {NoAI:1b,EggLayTime:1}'), {'op': 'tick'},
         *get(near('chicken', 7, 13), 'EggLayTime'),
         *setup('/kill @e[type=!player]', '/fill 0 201 0 15 202 15 minecraft:air'),
+        # Projectile.shoot spreads a dispensed shot with the projectile's own random, after its UUID's two draws.
+        *[c for case, item, kind, z in ((14, 'arrow', 'arrow', 7), (15, 'snowball', 'snowball', 9)) for c in (
+            *setup(f'/setblock 1 201 {z} minecraft:dispenser[facing=east]{{Items:[{{Slot:0b,id:"minecraft:{item}",count:1}}]}}'),
+            sync(case), {'op': 'crafter_tick', 'pos': [1, 201, z]},
+            *get(near(kind, 2, z), 'UUID', 'Motion'),
+            *setup('/kill @e[type=!player]', f'/setblock 1 201 {z} minecraft:air'),
+        )],
+        # A summoned arrow without a UUID keeps the one its own random made.
+        sync(16), *setup('/summon arrow 6.5 201 11.5 {NoGravity:1b}'), *get(near('arrow', 6, 11), 'UUID'),
+        *setup('/kill @e[type=!player]'),
     ]

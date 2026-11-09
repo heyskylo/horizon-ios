@@ -261,6 +261,18 @@ pub struct Projectile {
     /// charge until [`Projectile::set_item`] gives it another. None for the
     /// kinds that are no `Fireball` (a wither skull, a wind charge).
     pub item: Option<crate::items::ItemStack>,
+    /// The UUID its own random made (`Mth.createInsecureUUID`), for the server
+    /// to keep unless a save gives one: an arrow's at construction, another
+    /// kind's when it is shot (`shoot_own`), which is the same stream since
+    /// nothing else draws from it between.
+    pub uuid: Option<[i32; 4]>,
+}
+/// A new projectile's own random (`Entity.random`) and the UUID its first two
+/// draws make (`Mth.createInsecureUUID`).
+pub fn new_own_random() -> (horizon_core::random::LegacyRandom, [i32; 4]) {
+    let mut random = crate::random_source::entity();
+    let uuid = crate::save::insecure_uuid(&mut random);
+    (random, uuid)
 }
 /// `ThrownEnderpearl.isAllowedToTeleportOwner(owner, level)` for an owner in
 /// the pearl's own dimension: vanilla reaches
@@ -443,6 +455,9 @@ impl Projectile {
         } else {
             0.1
         };
+        // An arrow keeps its own random (`Entity.random`) for its later draws.
+        let own = kind_is_arrow.then(new_own_random);
+        let uuid = own.as_ref().map(|o| o.1);
         Self {
             join: Default::default(),
             id: 0,
@@ -475,12 +490,8 @@ impl Projectile {
             has_visual_fire: false,
             synced_fire: false,
             item,
-            arrow: kind_is_arrow.then(|| {
-                // The arrow's own random (`Entity.random`).
-                Box::new(crate::arrows::ArrowState::new(
-                    crate::random_source::entity(),
-                ))
-            }),
+            arrow: own.map(|(random, _)| Box::new(crate::arrows::ArrowState::new(random))),
+            uuid,
         }
     }
     /// Entity box (`EntityType.sized` cube of `kind.size()`), as `bounds`.
@@ -771,10 +782,26 @@ impl Projectile {
         self.velocity = Vec3::new(v[0], v[1], v[2]);
         self.update_rotation();
     }
-    /// Projectile.shootFromRotation for player throws.
+    /// `Projectile.shoot` from the projectile's own random, after its UUID's
+    /// draws: an arrow's, or for another kind one made now.
+    pub fn shoot_own(&mut self, dir: [f64; 3], speed: f32, uncertainty: f32) {
+        let mut random = match self.arrow.as_mut() {
+            Some(a) => a.random.clone(),
+            None => {
+                let (random, uuid) = new_own_random();
+                self.uuid = Some(uuid);
+                random
+            }
+        };
+        self.shoot(&mut random, dir, speed, uncertainty);
+        if let Some(a) = self.arrow.as_mut() {
+            a.random = random;
+        }
+    }
+    /// Projectile.shootFromRotation for player throws, from the projectile's
+    /// own random (`shoot_own`).
     pub fn shoot_from_rotation(
         &mut self,
-        random: &mut impl RandomSource,
         pitch: f32,
         yaw: f32,
         offset: f32,
@@ -793,7 +820,7 @@ impl Projectile {
             f64::from(-o.sin()),
             f64::from(y.cos() * p.cos()),
         ];
-        self.shoot(random, dir, speed, uncertainty);
+        self.shoot_own(dir, speed, uncertainty);
         self.velocity = Vec3::new(
             self.velocity.x + source_velocity.x,
             self.velocity.y

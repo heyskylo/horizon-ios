@@ -73,7 +73,6 @@ impl Game<'_> {
         let start = Vec3::new(pos.x, eye[1], pos.z);
         let mut proj = Projectile::new(ProjectileKind::WindCharge, start, Some(Who::Player));
         proj.shoot_from_rotation(
-            &mut self.world.random,
             self.pitch,
             self.yaw,
             0.0,

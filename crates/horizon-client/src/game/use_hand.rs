@@ -644,7 +644,6 @@ impl Game<'_> {
             (self.known_player_movement(), pl.ground.on_ground)
         });
         arrow.shoot_from_rotation(
-            &mut self.world.random,
             self.pitch,
             self.yaw,
             0.0,

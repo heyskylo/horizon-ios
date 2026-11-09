@@ -226,8 +226,7 @@ fn spit(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let zd = t.position.z - m.position.z;
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let mut p = Projectile::new(ProjectileKind::LlamaSpit, start, Some(Who::Mob(m.id)));
-    p.shoot(
-        &mut crate::random_source::entity(),
+    p.shoot_own(
         [xd, yd + yo, zd],
         1.5,
         10.0,

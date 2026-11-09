@@ -2377,6 +2377,10 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
         }
+        // The UUID its own random made, unless a load already gave it one.
+        if let Some(uuid) = p.uuid.take() {
+            self.persist.uuids.entry(p.id).or_insert(uuid);
+        }
         // Projectile.setOwner: the acting player's or the mob's UUID, which
         // its save keeps even once the owner is gone.
         if p.owner_uuid.is_none() {
@@ -7480,7 +7484,6 @@ impl Game<'_> {
         let start = Vec3::new(eye[0], eye[1] - 0.1, eye[2]);
         let mut proj = Projectile::new(kind.clone(), start, Some(Who::Player));
         proj.shoot_from_rotation(
-            &mut self.world.random,
             self.pitch,
             self.yaw,
             0.0,

@@ -493,7 +493,6 @@ impl Game<'_> {
             (self.known_player_movement(), p.ground.on_ground)
         });
         projectile.shoot_from_rotation(
-            &mut self.world.random,
             self.pitch,
             self.yaw,
             0.0,
@@ -503,6 +502,9 @@ impl Game<'_> {
             on_ground,
         );
         let id = self.take_entity_id();
+        if let Some(uuid) = projectile.uuid {
+            self.persist.uuids.insert(id, uuid);
+        }
         let owner_uuid = self.acting_player_uuid();
         self.tridents.push(ThrownTrident {
             join: Default::default(),
