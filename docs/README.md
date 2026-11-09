@@ -59,13 +59,13 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 ## Parity
 
-- [Rust rewrite status](rust-parity.md): completion criteria, how to reproduce the validation, and per-area scope.
+- [Rust rewrite status](rust-parity.md): where the state of the port lives (harnesses, port ledger, known issues) and the rules every port keeps.
 - [Parity workflow](parity-workflow.md): `tools/parity.py`, the gate, other machines, merging.
 - [CI runners](ci-runners.md): which jobs run on GitHub's runners and which on ours (the desktop, playhorizon, the Mac mini), the `SELF_HOSTED_CI` switch, and where a fork's pull request may run.
 - Area notes: [block behaviours and ticking](parity/blocks.md), [section meshing](parity/meshing.md), [redstone machines tick by tick](parity/redstone-diff.md), [the same seed in vanilla and Horizon](parity/world-compare.md).
 - [Port ledger](port-ledger.md): `tools/port_ledger.py`, every vanilla method next to the Rust functions that port it, both ways, with the gaps where a port isn't wired like vanilla.
 - [Version ports](version-ports.md): how a new Minecraft release is detected, diffed against the pinned one and ported, and what stays manual.
-- [Decompilation and research lab](research-lab.md) and [decompilation status](decompilation-status.md): the local game inspection workspace the harnesses build on.
+- [Reading vanilla](parity-workflow.md#reading-vanilla): the local decompiled sources and bytecode queries the harnesses build on.
 
 ## Design notes
 
