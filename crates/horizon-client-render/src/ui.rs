@@ -1234,9 +1234,6 @@ pub struct EditBox {
     /// `EditBox.textColorUneditable`: the colour of a box `setEditable(false)`
     /// made read-only, which still shows its value and caret.
     pub text_color_uneditable: u32,
-    /// `EditBox.setInvertHighlightedTextColor`: a selection draws its text
-    /// inverted (the default) or in the box's own colour (`AnvilScreen`).
-    pub invert_highlighted_text_color: bool,
     /// `EditBox.isEditable`: a read-only box keeps the focus, the caret keys
     /// and copy, but takes no typed text, Backspace/Delete or paste (`AnvilScreen`
     /// sets it by its input slot).
@@ -1244,6 +1241,9 @@ pub struct EditBox {
     /// `getMessage`: what the narrator calls the box ("<message> edit box:
     /// <value>").
     pub message: String,
+    /// `EditBox.setInvertHighlightedTextColor`: a selection draws its text
+    /// inverted (the default) or in the box's own colour (`AnvilScreen`).
+    pub invert_highlighted_text_color: bool,
     /// Where a borderless box drawn in a frame of its own focuses: a controller's outline goes
     /// round the frame, not over the text.
     pub frame: Option<[f32; 4]>,
@@ -1533,9 +1533,9 @@ impl EditBox {
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
             text_color_uneditable: rgba(112, 112, 112, 255),
-            invert_highlighted_text_color: true,
             editable: true,
             message: String::new(),
+            invert_highlighted_text_color: true,
             frame: None,
         }
     }
@@ -2584,6 +2584,20 @@ mod tests {
         );
     }
 
+    /// `EditBox.setInvertHighlightedTextColor`: a selection inverts its text
+    /// unless the box asks it not to (the anvil's rename box).
+    #[test]
+    fn a_selection_inverts_its_text_unless_the_box_says_not_to() {
+        let mut edit = EditBox::new(0.0, 0.0, 100.0, 20.0);
+        assert!(edit.invert_highlighted_text_color);
+        edit.invert_highlighted_text_color = false;
+        edit.set_value("name");
+        edit.set_cursor(0, false);
+        edit.set_cursor(4, true);
+        assert_eq!(edit.selected_text(), "name");
+        assert!(!edit.invert_highlighted_text_color);
+    }
+
     /// `EditBox.setEditable(false)`: the box keeps the focus, the caret keys
     /// and copy, but `charTyped`/paste/Backspace/Delete do nothing, and Cut
     /// copies without taking the text out. A value and the caret still show,
@@ -2629,19 +2643,5 @@ mod tests {
         assert_eq!(edit.value, "namex");
         assert!(edit.key(winit::keyboard::KeyCode::Backspace, false, false));
         assert_eq!(edit.value, "name");
-    }
-
-    /// `EditBox.setInvertHighlightedTextColor`: a selection inverts its text
-    /// unless the box asks it not to (the anvil's rename box).
-    #[test]
-    fn a_selection_inverts_its_text_unless_the_box_says_not_to() {
-        let mut edit = EditBox::new(0.0, 0.0, 100.0, 20.0);
-        assert!(edit.invert_highlighted_text_color);
-        edit.invert_highlighted_text_color = false;
-        edit.set_value("name");
-        edit.set_cursor(0, false);
-        edit.set_cursor(4, true);
-        assert_eq!(edit.selected_text(), "name");
-        assert!(!edit.invert_highlighted_text_color);
     }
 }
