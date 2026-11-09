@@ -33,12 +33,12 @@ pub(super) fn observed_overlay_id(overlays: &[(bool, &'static str)]) -> Option<&
 impl Game<'_> {
     fn observed_screen_view(&self) -> Option<NativeScreenView<'_>> {
         let book = match &self.book {
-            Some(super::books::BookScreen::Edit { signing: true, .. }) => Some("book_sign"),
-            Some(super::books::BookScreen::Edit { .. }) => Some("book_edit"),
-            Some(super::books::BookScreen::View {
+            Some(crate::game::books::BookScreen::Edit { signing: true, .. }) => Some("book_sign"),
+            Some(crate::game::books::BookScreen::Edit { .. }) => Some("book_edit"),
+            Some(crate::game::books::BookScreen::View {
                 lectern: Some(_), ..
             }) => Some("lectern"),
-            Some(super::books::BookScreen::View { .. }) => Some("book_view"),
+            Some(crate::game::books::BookScreen::View { .. }) => Some("book_view"),
             None => None,
         };
         let overlay = observed_overlay_id(&[
