@@ -706,7 +706,6 @@ impl Seat {
         }
         let said = &self.said;
         let own = m.kind == Kind::Own;
-        let shown = if own { said.mine } else { !said.others_hidden };
         // "Name tags only": other players' styles beside their names, nothing on their bodies.
         let bodies = own || said.others_shown;
         let ticks = draw.ticks();
