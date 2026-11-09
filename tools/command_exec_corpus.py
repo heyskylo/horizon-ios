@@ -6527,6 +6527,22 @@ def loaded_dead_mob():
                        f'/forceload remove {x0} {z0}')
 
 
+def beacon_levels_load():
+    """#13653: `BeaconBlockEntity.saveAdditional` writes `Levels` but `loadAdditional` never reads them:
+    a beacon placed with data reads 0 levels until `updateBase` (every 80 game ticks) sets them."""
+    x0, y0, z0 = 4032, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    for n, levels in enumerate(('-1', '3', '7')):
+        x = x0 + 3 + 3 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 4} beacon{{Levels:{levels}}}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 4} Levels'),
+                cmd(f'/data merge block {x} {y0} {z0 + 4} {{Levels:{levels}}}'),
+                cmd(f'/data get block {x} {y0} {z0 + 4} Levels')]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7105,6 +7121,7 @@ def groups():
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('beacon levels load', beacon_levels_load()),
         ('loaded dead mob', loaded_dead_mob()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
