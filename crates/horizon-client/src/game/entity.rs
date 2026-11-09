@@ -1308,6 +1308,9 @@ impl Entity for Boat {
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1378,6 +1381,9 @@ impl Entity for Boat {
 
 impl Entity for Minecart {
     fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
     fn rotation(&self) -> [f32; 2] {
