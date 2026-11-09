@@ -225,7 +225,8 @@ mod tests {
 
     #[test]
     fn layers_stack_with_the_extras_and_skip_hidden_corners() {
-        let atlas = HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap();
+        let atlas =
+            HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap();
         let mut batch = HudBatch::new([800, 600]);
         let (width, height) = (batch.width, batch.height);
         let mut corners = Corners::new(width, height, 0.0);
@@ -241,10 +242,20 @@ mod tests {
         };
         let layers: [&dyn hud::Layer; 2] = [&right, &left];
         let empty = batch.vertices.len();
-        draw_layers(&layers, &mut batch, &atlas, &mut corners, [false, true, true, true]);
+        draw_layers(
+            &layers,
+            &mut batch,
+            &atlas,
+            &mut corners,
+            [false, true, true, true],
+        );
         let (_, y) = right.at.lock().unwrap()[0].expect("the top right shows");
         assert_eq!(y, 2.0 + 64.0 + 2.0, "under the minimap");
-        assert_eq!(*left.at.lock().unwrap(), [None], "the debug screen covers the top left");
+        assert_eq!(
+            *left.at.lock().unwrap(),
+            [None],
+            "the debug screen covers the top left"
+        );
         assert!(batch.vertices.len() > empty, "the shown box is drawn");
     }
 }
