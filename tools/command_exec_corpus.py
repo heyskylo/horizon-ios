@@ -6963,7 +6963,8 @@ ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
 ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
+ISOLATED_POT_HOPPER = frozenset({'hopper pot saved slot'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER
 
 
 def vehicle_fall_clip():
@@ -7080,6 +7081,10 @@ def groups():
     except ImportError:
         from guest_close_event_corpus import cases as guest_close_events
     try:
+        from .pot_hopper_corpus import cases as pot_hopper_cases
+    except ImportError:
+        from pot_hopper_corpus import cases as pot_hopper_cases
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -7139,6 +7144,7 @@ def groups():
         ('vehicle container saved fields', vehicle_containers(cmd)),
         ('vehicle boolean save flags', vehicle_boolean_flags(cmd)),
         ('other entity boolean save flags', other_entity_boolean_flags(cmd)),
+        ('hopper pot saved slot', pot_hopper_cases(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
