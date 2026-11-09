@@ -1305,7 +1305,7 @@ impl Items {
                         string("type")?,
                         string("id")?,
                         horizon_world::datafix::dynamic::as_number(entry.get("amount")?)?
-                            .float_value() as f64,
+                            .double_value(),
                         string("operation").unwrap_or_else(|| "add_value".into()),
                         string("slot").unwrap_or_else(|| "any".into()),
                     ))
@@ -2984,7 +2984,7 @@ mod tests {
                 "id",
                 horizon_world::nbt::Tag::String("minecraft:test".into()),
             ),
-            ("amount", horizon_world::nbt::Tag::Double(5.0f64.to_bits())),
+            ("amount", horizon_world::nbt::Tag::Double(0.1f64.to_bits())),
             (
                 "operation",
                 horizon_world::nbt::Tag::String("add_value".into()),
@@ -2998,7 +2998,8 @@ mod tests {
         let modifiers = items.attribute_modifiers(&sword);
         assert_eq!(modifiers.len(), 1);
         assert_eq!(modifiers[0].0, "minecraft:attack_damage");
-        assert_eq!(modifiers[0].2, 5.0);
+        // A double, as `AttributeModifier.amount`: not rounded through a float.
+        assert_eq!(modifiers[0].2, 0.1);
         sword.data_mut().set_other(
             "!minecraft:attribute_modifiers",
             Some(horizon_world::nbt::Tag::compound(Vec::<(
