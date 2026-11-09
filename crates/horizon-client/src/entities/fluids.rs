@@ -45,6 +45,30 @@ pub fn fluid_flow(world: &World, fluids: &FluidResources, pos: [i32; 3]) -> [f64
     let flow = flow_at(&mut scene, state, at).unwrap_or(Vec3::ZERO);
     [flow.x, flow.y, flow.z]
 }
+/// `Entity.move`'s fall-reset ray along a move from `from`, up to 8 blocks:
+/// `ClipContext.Fluid.WATER` (the water's shape) and
+/// `ClipContext.Block.FALLDAMAGE_RESETTING` (a block `tagged` says is a reset
+/// block clips as a full block). Both shapes are queried for every visited
+/// block, the water's first (its first query fixes the shared cached shape);
+/// either one hitting ends the ray.
+pub fn fall_reset_hit(
+    world: &World,
+    fluids: &FluidResources,
+    tagged: impl Fn(BlockPos) -> bool,
+    from: Vec3,
+    moved: Vec3,
+) -> bool {
+    let to = from.add_vector(moved.normalize().scale(moved.length().min(8.0)));
+    let hit = horizon_core::geometry::traverse_blocks(from, to, 1_000_000, |p| {
+        let water = water_clip(world, fluids, from, to, p);
+        let reset = tagged(p)
+            && horizon_core::geometry::VoxelShape::block()
+                .clip(from, to, p)
+                .is_some();
+        (water || reset).then_some(())
+    });
+    matches!(hit, Ok(Some(())))
+}
 /// `ClipContext.Fluid.WATER` in a fall-reset ray through `p`: the water's
 /// shape from the shared `FlowingFluid.shapes` cache (the first query of a
 /// fluid state fixes its height), as the player's own ray reads it.
@@ -115,6 +139,7 @@ pub fn update_entity_fluids(
             0.0023333333333333335
         },
     );
+    let _ = interaction.apply_mod_currents(&mut scene);
     (water_height, lava_height, eye_in_water)
 }
 impl ItemEntity {
@@ -338,6 +363,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let item = ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -358,6 +384,7 @@ mod tests {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,

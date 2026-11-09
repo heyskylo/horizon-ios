@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_permission_value", "target": "horizon_client::game::native_permissions::Game<'_>::native_player_permission_value"}
+  ],
+  "rust_summary": "a permission node as the mods set it, three-valued (`native_player_permission_value`).",
+  "doc_summary": "`native_player_permission_value(player, node)` gives a permission node as the permissions mods set it: Some(true), Some(false), or None when none sets it (Bukkit's `isPermissionSet` against `hasPermission`), so a mod applies its own default and parent nodes; the operator level is `native_player_permission`. Bundles need \"hooks\": @API:permission_value@.",
+  "comments": ["crates/horizon-client/src/game/native_permissions.rs"]
+}

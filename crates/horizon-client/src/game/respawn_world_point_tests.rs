@@ -8,6 +8,16 @@ use std::sync::{Arc, atomic::AtomicI32, mpsc};
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn guest_respawn_keeps_world_information_distinct_from_personal_landing() {
+    check_respawn(false);
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn guest_respawn_reads_the_active_loaded_generator_sea_level() {
+    check_respawn(true);
+}
+
+fn check_respawn(check_sea_level: bool) {
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -102,41 +112,92 @@ fn guest_respawn_keeps_world_information_distinct_from_personal_landing() {
     guest.dead = true;
     let mut host = game.lan.take().unwrap();
     host.hub.guests.push(guest);
-    game.guest_respawn(&mut host, 2);
-    let guest = &host.hub.guests[0];
-    assert_eq!(guest.uuid, 330);
-    assert_eq!(guest.position, personal);
-    assert_eq!(guest.health, 20.0);
-    assert!(!guest.dead);
-    let mut packets = Vec::new();
-    for out in rx.try_iter() {
-        match out {
-            Out::Packet(body) => packets.push(body),
-            Out::Packets(bodies) => packets.extend(bodies),
-            Out::Disconnect(_) => panic!("unexpected disconnect"),
-        }
-    }
-    let mut sequence = Vec::new();
-    let mut points = Vec::new();
-    for body in packets {
-        let mut r = horizon_protocol::buf::Reader::new(&body);
-        let id = r.varint().unwrap();
-        match Clientbound::decode(id, r.rest()).unwrap() {
-            Clientbound::Respawn(_) => sequence.push(84),
-            Clientbound::SetDefaultSpawnPosition(p) => {
-                sequence.push(99);
-                points.push((
-                    p.pos.dimension,
-                    p.pos.pos,
-                    p.yaw.to_bits(),
-                    p.pitch.to_bits(),
-                ));
+    // Replacing the active generator between calls must not leave a cached
+    // value in the hub or its context. Both generators use real bundle data.
+    let variants: &[Option<bool>] = if check_sea_level {
+        &[Some(true), Some(false), Some(true)]
+    } else {
+        &[None]
+    };
+    for &flat in variants {
+        if let Some(flat) = flat {
+            use horizon_client::vanillagen::VanillaTerrain;
+            let terrain = if flat {
+                VanillaTerrain::for_flat(
+                    &root.join("worldgen"),
+                    &Default::default(),
+                    game.pack.assets.registry,
+                    game.res.biomes(),
+                    12345,
+                    &horizon_world::worldgen::generator::FlatSettings {
+                        layers: vec![("minecraft:stone".into(), 1)],
+                        biome: "minecraft:plains".into(),
+                        structure_overrides: Some(vec![]),
+                        features: false,
+                        lakes: false,
+                    },
+                    false,
+                )
+            } else {
+                VanillaTerrain::new(
+                    &root.join("worldgen"),
+                    game.pack.assets.registry,
+                    game.res.biomes(),
+                    12345,
+                )
             }
-            _ => {}
+            .unwrap();
+            game.end.set_locator(Some(Arc::new(terrain)));
         }
+        host.hub.guests[0].health = 0.0;
+        host.hub.guests[0].dead = true;
+        let clock = game.world.game_time;
+        game.guest_respawn(&mut host, 2);
+        assert_eq!(game.world.game_time, clock);
+        let guest = &host.hub.guests[0];
+        assert_eq!(guest.uuid, 330);
+        assert_eq!(guest.position, personal);
+        assert_eq!(guest.health, 20.0);
+        assert!(!guest.dead);
+        let mut packets = Vec::new();
+        for out in rx.try_iter() {
+            match out {
+                Out::Packet(body) => packets.push(body),
+                Out::Packets(bodies) => packets.extend(bodies),
+                Out::Disconnect(_) => panic!("unexpected disconnect"),
+            }
+        }
+        let mut sequence = Vec::new();
+        let mut points = Vec::new();
+        for body in packets {
+            let mut r = horizon_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            match Clientbound::decode(id, r.rest()).unwrap() {
+                Clientbound::Respawn(p) => {
+                    sequence.push(84);
+                    if let Some(flat) = flat {
+                        assert_eq!(
+                            p.spawn.sea_level,
+                            if flat { -63 } else { 63 },
+                            "actual guest respawn must use the active loaded generator"
+                        );
+                    }
+                }
+                Clientbound::SetDefaultSpawnPosition(p) => {
+                    sequence.push(99);
+                    points.push((
+                        p.pos.dimension,
+                        p.pos.pos,
+                        p.yaw.to_bits(),
+                        p.pitch.to_bits(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(sequence, [84, 99, 99]);
+        assert_eq!(points, vec![("minecraft:overworld".into(), world, 0, 0); 2]);
     }
-    assert_eq!(sequence, [84, 99, 99]);
-    assert_eq!(points, vec![("minecraft:overworld".into(), world, 0, 0); 2]);
     drop(host);
     drop(game);
     std::fs::remove_dir_all(scratch).unwrap();

@@ -92,15 +92,15 @@ fn hand_pose_rejects_invalid_components() {
 #[test]
 fn observed_overlay_prefers_first_open_screen() {
     assert_eq!(
-        super::observed_overlay_id(&[(false, "sign"), (false, "book")]),
+        super::screen_observer::observed_overlay_id(&[(false, "sign"), (false, "book")]),
         None
     );
     assert_eq!(
-        super::observed_overlay_id(&[(false, "sign"), (true, "book")]),
+        super::screen_observer::observed_overlay_id(&[(false, "sign"), (true, "book")]),
         Some("book")
     );
     assert_eq!(
-        super::observed_overlay_id(&[(true, "sign"), (true, "book")]),
+        super::screen_observer::observed_overlay_id(&[(true, "sign"), (true, "book")]),
         Some("sign")
     );
 }

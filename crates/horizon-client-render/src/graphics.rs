@@ -2,37 +2,50 @@
 //! `horizon-graphics.txt` next to `options.txt` so that file stays exactly
 //! vanilla's. Every default reproduces vanilla's rendering; only choices the
 //! player makes here depart from it.
-use std::{
-    fs,
-    path::Path,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::{fs, path::Path};
 
 pub const FILE: &str = "horizon-graphics.txt";
-/// Written beside it before HDR output is switched on and removed once the first HDR frame is
-/// presented. Found at the next start, it means HDR output took the game down, so HDR starts off.
+/// Written beside it before a window's HDR output is switched on, naming the graphics driver it
+/// starts on ([`hdr_marker_text`]), and removed once the first HDR frame is presented. Found at
+/// the next start, it means HDR output took the game down there: HDR output is held back on
+/// that driver ([`Graphics::hdr_failed_start`]), and the mode stays as the player chose it.
 pub const HDR_MARKER: &str = "horizon-hdr-pending";
+/// The marker's text for a window whose HDR output starts on `driver`
+/// (`gfx::output::window_driver`).
+pub fn hdr_marker_text(driver: &str) -> String {
+    format!("driver:{driver}\n")
+}
+/// The driver a marker names; empty for one written before markers named it.
+fn marker_driver(text: &str) -> &str {
+    text.lines()
+        .find_map(|line| line.strip_prefix("driver:"))
+        .unwrap_or_default()
+        .trim()
+}
 
 /// What the system reports for the display HDR output goes to, in nits in HDR output's
-/// scale: where its SDR white sits (the desktop's white) and the peak.
+/// scale: where its SDR white sits (the desktop's white) and the peak. Each renderer keeps its
+/// own display's (`gfx::DisplayReading`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reported {
     pub paper_white: u32,
     pub peak: u32,
+    /// The peak is the display's own claim (DXGI's `MaxLuminance`, mostly its EDID figure),
+    /// which often runs high: Auto still uses it, but the HDR page asks to calibrate.
+    pub peak_guessed: bool,
 }
 
-static REPORTED: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
-
-/// Sets what the system reports (the renderer, when it opens its surface).
-pub fn report(reported: Option<Reported>) {
-    let (paper_white, peak) = reported.map_or((0, 0), |r| (r.paper_white, r.peak));
-    REPORTED[0].store(paper_white, Ordering::Relaxed);
-    REPORTED[1].store(peak, Ordering::Relaxed);
-}
-/// What the system reports, if it does.
-pub fn reported() -> Option<Reported> {
-    let [paper_white, peak] = REPORTED.each_ref().map(|n| n.load(Ordering::Relaxed));
-    (peak > 0).then_some(Reported { paper_white, peak })
+/// Whether HDR is set up for the display, and whether the player kept the system's setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdrSetup {
+    /// The system says nothing: the player calibrates.
+    Unknown,
+    /// The system says, but only guesses the peak: the player calibrates.
+    Guessed,
+    /// Peak Brightness and Paper White follow the system.
+    Automatic,
+    /// The system said, and the player changed them anyway.
+    Changed,
 }
 
 /// The top of Peak Brightness's scale: `peak_nits_at(PEAK_STEPS)` is PQ's 10 000 nits.
@@ -54,6 +67,23 @@ pub fn peak_step_of(nits: f32) -> f32 {
         36.0 + (nits - 2000.0) / 500.0
     };
     step.clamp(0.0, PEAK_STEPS as f32)
+}
+/// The steps of Paper White's and UI Brightness's scale: Auto (0), then 10 to 480 nits by 10.
+pub const NITS_STEPS: u32 = 48;
+/// Paper White's or UI Brightness's setting at slider position `v`, 0 to 1 ([`NITS_STEPS`]).
+pub fn nits_at(v: f32) -> u32 {
+    (v * NITS_STEPS as f32).round() as u32 * 10
+}
+/// Where a Paper White or UI Brightness setting sits on its slider, 0 to 1.
+pub fn nits_position(nits: u32) -> f32 {
+    nits as f32 / (NITS_STEPS * 10) as f32
+}
+/// A saved Paper White or UI Brightness: Auto (0), or 10 to 480 nits.
+fn nits_setting(nits: u32) -> u32 {
+    match nits {
+        0 => 0,
+        n => n.clamp(10, 480),
+    }
 }
 
 /// Simple-level presets. `Custom` leaves every option as the player set it.
@@ -507,33 +537,8 @@ pub fn reduced_far_detail_suggested() -> bool {
     REDUCED_SUGGESTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The name the options screen waits on to bind `Graphics::hdr_key`.
-pub const HDR_KEY: &str = "horizon.hdrSettings";
 /// The Screenshot Quality choices, times the game's resolution.
 pub const SCREENSHOT_QUALITIES: [u32; 4] = [1, 2, 4, 8];
-static HDR_OFFERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Whether the display path offers HDR output (HDR10 or scRGB): set when the renderer
-/// opens its surface; the settings open HDR's screen only then.
-pub fn offer_hdr(on: bool) {
-    HDR_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-pub fn hdr_offered() -> bool {
-    HDR_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-static SYSTEM_HDR: AtomicU32 = AtomicU32::new(0);
-/// The window's current system HDR state, independent of swapchain availability.
-pub fn report_system_hdr(on: Option<bool>) {
-    SYSTEM_HDR.store(on.map_or(0, |on| if on { 2 } else { 1 }), Ordering::Relaxed);
-}
-pub fn system_hdr() -> Option<bool> {
-    match SYSTEM_HDR.load(Ordering::Relaxed) {
-        1 => Some(false),
-        2 => Some(true),
-        _ => None,
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum HdrMode {
     #[default]
@@ -565,15 +570,6 @@ impl HdrMode {
             _ => default,
         }
     }
-    /// On retains the old switch's intent even before a surface is opened; the renderer
-    /// still gates output on availability. Auto requires both availability and a live report.
-    fn wanted(self, offered: bool, system: Option<bool>) -> bool {
-        match self {
-            Self::Off => false,
-            Self::On => true,
-            Self::Auto => offered && system == Some(true),
-        }
-    }
 }
 
 static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
@@ -587,17 +583,6 @@ pub fn offer_translucent_batching(on: bool) {
 }
 pub fn translucent_batching_offered() -> bool {
     TRANSLUCENT_BATCHING_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-static SMOOTH_GRADIENTS_OFFERED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-/// Whether the device can draw, blend and filter the 16-bit frame (`Graphics::hdr_smooth_gradients`):
-/// set when the renderer starts. Where it can't, the settings grey its switch out.
-pub fn offer_smooth_gradients(on: bool) {
-    SMOOTH_GRADIENTS_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-pub fn smooth_gradients_offered() -> bool {
-    SMOOTH_GRADIENTS_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// GPU Culling's setting: off, on where it is offered, or Auto, which has it on only where the
@@ -861,14 +846,17 @@ pub struct Graphics {
     /// HDR black level: the display's darkest black, in hundredths of a nit; 0, the default,
     /// lifts nothing. Shadows are lifted onto it, and the HDR metadata says it.
     pub hdr_black_level: u32,
-    /// HDR brightness of the HUD and menus, in percent of paper white (25..=100); the
-    /// first-person hand stays at the world's.
-    pub hdr_ui_brightness: u32,
+    /// HDR brightness of the HUD and menus, in nits; 0 is Auto: at paper white
+    /// ([`Graphics::ui_nits`]). The first-person hand stays at the world's.
+    pub hdr_ui_nits: u32,
     /// HDR Lighting: Horizon's own HDR look, light sources, the sun and sunlight above paper
     /// white. Off, HDR output shows the same picture as SDR, for shader packs or the vanilla look.
     pub hdr_lighting: bool,
-    /// A vanilla key name (`HDR_KEY`): opens HDR's settings from the game. Unbound by default.
-    pub hdr_key: String,
+    /// The graphics driver whose last start ended before HDR output showed a frame (the
+    /// marker found, [`HDR_MARKER`]): a window on it stays SDR whatever the mode, until the
+    /// mode is changed or the window starts on another driver ([`Graphics::hdr_held`]).
+    /// Empty for a marker that named no driver: the first one seen holds it.
+    pub hdr_failed_start: Option<String>,
     /// Battery mode: at most 60 frames per second in a world and 30 in menus
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
@@ -888,8 +876,8 @@ pub struct Graphics {
     pub translucent_batching: bool,
     /// Smooth Gradients (HDR page, on by default): with HDR output on, the frame is drawn in
     /// 16 bits, so dark gradients don't band (`Renderer::frame_format`). Read when a renderer
-    /// is made (start, resource-pack reload), like `translucent_batching`, where it is offered
-    /// (`smooth_gradients_offered`).
+    /// is made (start, resource-pack reload), like `translucent_batching`, where the renderer's
+    /// device draws it (`EffectiveOutput::wide_frame_supported`).
     pub hdr_smooth_gradients: bool,
     /// The native `horizon:<manifest-id>` or classic filename picked in `shaderpacks/`; empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
@@ -941,9 +929,9 @@ impl Default for Graphics {
             hdr_paper_white: 0,
             hdr_peak: 0,
             hdr_black_level: 0,
-            hdr_ui_brightness: 100,
+            hdr_ui_nits: 0,
             hdr_lighting: true,
-            hdr_key: "key.keyboard.unknown".into(),
+            hdr_failed_start: None,
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
@@ -969,17 +957,54 @@ impl Graphics {
                 Vec::new()
             }
         };
-        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr != HdrMode::Off {
-            g.hdr = HdrMode::Off;
+        let marker = dir.join(HDR_MARKER);
+        if let Ok(text) = fs::read_to_string(&marker)
+            && fs::remove_file(&marker).is_ok()
+            && g.hdr != HdrMode::Off
+        {
+            g.hdr_failed_start = Some(marker_driver(&text).to_owned());
             g.save(dir);
             log::warn!(
-                "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
+                "the last start ended before HDR output showed a frame; HDR output stays off with that graphics driver until the HDR mode is changed (graphics option hdrFailedStart, in {FILE})"
             );
         }
         g
     }
+    /// Whether HDR output is held back on a window whose graphics driver is `driver`
+    /// (`gfx::output::window_driver`): the last start on it ended before HDR output
+    /// showed a frame ([`Graphics::hdr_failed_start`]).
+    pub fn hdr_held(&self, driver: &str) -> bool {
+        self.hdr_failed_start
+            .as_deref()
+            .is_some_and(|failed| failed.is_empty() || failed == driver)
+    }
+    /// The window's renderer runs on `driver`: a failed start that named no driver is this
+    /// one's now, and another driver's (a driver update, another GPU) is dropped, so HDR output
+    /// is tried again. True when it changed.
+    pub fn settle_failed_start(&mut self, driver: &str) -> bool {
+        match self.hdr_failed_start.as_deref() {
+            Some("") => self.hdr_failed_start = Some(driver.to_owned()),
+            Some(failed) if failed != driver => self.hdr_failed_start = None,
+            _ => return false,
+        }
+        true
+    }
+    /// `before`, as Undo brings it back, but never the hold on a driver HDR output failed to
+    /// start on: that stays as it is now, and goes when Undo changes the mode, as any change of
+    /// the mode drops it.
+    pub fn undone_to(&self, before: &Self) -> Self {
+        Self {
+            hdr_failed_start: self
+                .hdr_failed_start
+                .clone()
+                .filter(|_| self.hdr == before.hdr),
+            ..before.clone()
+        }
+    }
     pub fn parse(text: &str) -> Self {
         let mut g = Self::default();
+        // UI Brightness: `hdrUiNits`, else an older file's share of Paper White.
+        let (mut ui_nits, mut ui_share) = (None, None);
         for line in text.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -1069,12 +1094,9 @@ impl Graphics {
                 "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = HdrMode::parse(value, g.hdr),
                 "hdrLighting" => g.hdr_lighting = flag(g.hdr_lighting),
-                "hdrPaperWhite" => {
-                    g.hdr_paper_white = match number(g.hdr_paper_white) {
-                        0 => 0,
-                        n => n.clamp(10, 480),
-                    }
-                }
+                "hdrPaperWhite" => g.hdr_paper_white = nits_setting(number(g.hdr_paper_white)),
+                "hdrUiNits" => ui_nits = value.parse().ok().map(nits_setting),
+                "hdrUiBrightness" => ui_share = value.parse::<u32>().ok(),
                 "hdrPeak" => {
                     g.hdr_peak = match number(g.hdr_peak) {
                         0 => 0,
@@ -1082,10 +1104,7 @@ impl Graphics {
                     }
                 }
                 "hdrBlackLevel" => g.hdr_black_level = number(g.hdr_black_level).min(100),
-                "hdrUiBrightness" => {
-                    g.hdr_ui_brightness = number(g.hdr_ui_brightness).clamp(25, 100)
-                }
-                "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
+                "hdrFailedStart" => g.hdr_failed_start = Some(value.to_owned()),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
@@ -1102,11 +1121,20 @@ impl Graphics {
                 _ => {}
             }
         }
+        // The share was 25 to 100% of Paper White. 100% is Auto, and so is any share of an
+        // Auto Paper White, whose nits the file doesn't hold; another share of a Paper White set
+        // by hand is its nits, to the nearest step.
+        g.hdr_ui_nits = ui_nits.unwrap_or(match (ui_share, g.hdr_paper_white) {
+            (Some(share), paper) if share < 100 && paper != 0 => {
+                ((paper * share.max(25) + 500) / 1000).max(1) * 10
+            }
+            _ => 0,
+        });
         g
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1153,9 +1181,8 @@ impl Graphics {
             self.hdr_paper_white,
             self.hdr_peak,
             self.hdr_black_level,
-            self.hdr_ui_brightness,
+            self.hdr_ui_nits,
             bool_text(self.hdr_lighting),
-            self.hdr_key,
             bool_text(self.battery),
             bool_text(self.shadow_cache),
             self.api.name(),
@@ -1164,43 +1191,45 @@ impl Graphics {
             bool_text(self.hdr_smooth_gradients),
             self.gpu_culling.key(),
         );
+        if let Some(driver) = &self.hdr_failed_start {
+            text += &format!("hdrFailedStart:{driver}\n");
+        }
         text += &self.blue_map.serialize();
         text
-    }
-    /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
-    pub fn set_key(&mut self, name: &str, value: String) -> bool {
-        match name {
-            HDR_KEY => self.hdr_key = value,
-            _ => return false,
-        }
-        true
     }
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
     }
-    /// The single decision shared by rendering and the HDR settings page.
-    pub fn hdr_wanted(&self) -> bool {
-        self.hdr.wanted(hdr_offered(), system_hdr())
-    }
-    /// Whether a renderer made now draws its frame in 16 bits (`Renderer::new`'s `wide_frame`):
-    /// HDR on, with Smooth Gradients.
-    pub fn wide_frame(&self) -> bool {
-        self.hdr_wanted() && self.hdr_smooth_gradients
-    }
     /// Paper white, in nits: the player's, or on Auto the desktop's SDR white as the
-    /// system reports it, else 203 (BT.2408's reference white).
-    pub fn paper_white_nits(&self) -> u32 {
+    /// system `reported` it for the renderer's display, else 203 (BT.2408's reference white).
+    pub fn paper_white_nits(&self, reported: Option<Reported>) -> u32 {
         match self.hdr_paper_white {
-            0 => reported().map_or(203, |r| r.paper_white),
+            0 => reported.map_or(203, |r| r.paper_white),
+            n => n,
+        }
+    }
+    /// The HUD and menus' brightness, in nits: the player's, or on Auto paper white's.
+    pub fn ui_nits(&self, reported: Option<Reported>) -> u32 {
+        match self.hdr_ui_nits {
+            0 => self.paper_white_nits(reported),
             n => n,
         }
     }
     /// The peak the world's highlights reach, in nits: the player's, or on Auto
-    /// what the system reports, else 1000.
-    pub fn peak_nits(&self) -> u32 {
+    /// what the system `reported`, else 1000.
+    pub fn peak_nits(&self, reported: Option<Reported>) -> u32 {
         match self.hdr_peak {
-            0 => reported().map_or(1000, |r| r.peak),
+            0 => reported.map_or(1000, |r| r.peak),
             n => n,
+        }
+    }
+    /// How HDR is set up for the display the system `reported`.
+    pub fn hdr_setup(&self, reported: Option<Reported>) -> HdrSetup {
+        match reported {
+            None => HdrSetup::Unknown,
+            Some(_) if self.hdr_peak != 0 || self.hdr_paper_white != 0 => HdrSetup::Changed,
+            Some(r) if r.peak_guessed => HdrSetup::Guessed,
+            Some(_) => HdrSetup::Automatic,
         }
     }
     /// The black level, in nits. Not the system's: files from before saved 0 for that
@@ -1275,6 +1304,83 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
 mod tests {
     use super::*;
 
+    /// UI Brightness is saved in nits, 0 for Auto. An older file's share of Paper White reads
+    /// as Auto at 100% or with Paper White on Auto, else as that share of it to the nearest step.
+    #[test]
+    fn ui_brightness_round_trips_in_nits_and_reads_older_shares() {
+        for (file, nits) in [
+            ("", 0),
+            ("hdrUiNits:0\n", 0),
+            ("hdrUiNits:160\n", 160),
+            ("hdrUiNits:5\n", 10),
+            ("hdrUiNits:9000\n", 480),
+            ("hdrUiNits:x\n", 0),
+            // Older files: 100% is Auto,
+            ("hdrPaperWhite:200\nhdrUiBrightness:100\n", 0),
+            // any share of Paper White's Auto too,
+            ("hdrUiBrightness:60\n", 0),
+            ("hdrPaperWhite:0\nhdrUiBrightness:25\n", 0),
+            // and another share of a Paper White set by hand is its nits.
+            ("hdrPaperWhite:200\nhdrUiBrightness:60\n", 120),
+            ("hdrUiBrightness:50\nhdrPaperWhite:203\n", 100),
+            ("hdrPaperWhite:250\nhdrUiBrightness:75\n", 190),
+            ("hdrPaperWhite:10\nhdrUiBrightness:25\n", 10),
+            ("hdrPaperWhite:480\nhdrUiBrightness:10\n", 120),
+            // The new key wins over the old one.
+            (
+                "hdrPaperWhite:200\nhdrUiBrightness:60\nhdrUiNits:300\n",
+                300,
+            ),
+            ("hdrUiNits:0\nhdrPaperWhite:200\nhdrUiBrightness:60\n", 0),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_ui_nits, nits, "{file}");
+            let saved = g.serialize();
+            assert!(!saved.contains("hdrUiBrightness"), "{file}");
+            assert!(saved.contains(&format!("\nhdrUiNits:{nits}\n")), "{file}");
+            assert_eq!(Graphics::parse(&saved), g, "{file}");
+        }
+        let mut g = Graphics::default();
+        assert_eq!(g.ui_nits(None), 203);
+        let reported = Some(Reported {
+            paper_white: 300,
+            peak: 1000,
+            peak_guessed: false,
+        });
+        assert_eq!(g.ui_nits(reported), 300);
+        g.hdr_paper_white = 120;
+        assert_eq!(g.ui_nits(reported), 120);
+        g.hdr_ui_nits = 400;
+        assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
+
+    #[test]
+    fn hdr_setup_asks_to_calibrate_where_the_peak_is_guessed() {
+        let wayland = Reported {
+            paper_white: 203,
+            peak: 1015,
+            peak_guessed: false,
+        };
+        let windows = Reported {
+            paper_white: 400,
+            peak: 1000,
+            peak_guessed: true,
+        };
+        let mut g = Graphics::default();
+        assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
+        assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Automatic);
+        assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Guessed);
+        // Auto still takes the guess, over the 1000-nit default.
+        assert_eq!(g.peak_nits(Some(windows)), 1000);
+        assert_eq!(g.paper_white_nits(Some(windows)), 400);
+        for (peak, paper_white) in [(800, 0), (0, 240)] {
+            (g.hdr_peak, g.hdr_paper_white) = (peak, paper_white);
+            assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Changed);
+            assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Changed);
+            assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
+        }
+    }
+
     #[test]
     fn hdr_modes_keep_boolean_files_and_round_trip_auto() {
         assert_eq!(Graphics::parse("").hdr, HdrMode::Off);
@@ -1298,31 +1404,6 @@ mod tests {
     }
 
     #[test]
-    fn hdr_auto_needs_a_positive_system_report_and_an_output() {
-        for (offered, system, expected) in [
-            (false, None, false),
-            (false, Some(false), false),
-            (false, Some(true), false),
-            (true, None, false),
-            (true, Some(false), false),
-            (true, Some(true), true),
-        ] {
-            assert!(!HdrMode::Off.wanted(offered, system));
-            assert!(HdrMode::On.wanted(offered, system));
-            assert_eq!(
-                HdrMode::Auto.wanted(offered, system),
-                expected,
-                "{offered} {system:?}"
-            );
-        }
-        let readings = [Some(false), Some(true), Some(false), None, Some(true)];
-        assert_eq!(
-            readings.map(|r| HdrMode::Auto.wanted(true, r)),
-            [false, true, false, false, true]
-        );
-    }
-
-    #[test]
     fn the_api_choice_matches_the_system() {
         let choices = GraphicsApi::choices();
         if cfg!(windows) {
@@ -1335,6 +1416,85 @@ mod tests {
                 [GraphicsApi::Auto, GraphicsApi::Vulkan, GraphicsApi::OpenGl]
             );
         }
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A start that finds the marker (HDR output took the last one down) keeps the mode the
+    /// player chose and saves the driver the marker names; HDR Off saves nothing.
+    #[test]
+    fn a_marker_keeps_the_mode_and_holds_the_driver_it_names() {
+        let driver = "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57";
+        for mode in HdrMode::ALL {
+            let dir = scratch(&format!("hdr-marker-{mode:?}"));
+            let saved = Graphics {
+                hdr: mode,
+                ..Graphics::default()
+            };
+            saved.save(&dir);
+            fs::write(dir.join(HDR_MARKER), hdr_marker_text(driver)).unwrap();
+            let g = Graphics::load(&dir);
+            let failed = (mode != HdrMode::Off).then(|| driver.to_owned());
+            assert_eq!((g.hdr, &g.hdr_failed_start), (mode, &failed), "{mode:?}");
+            assert!(!dir.join(HDR_MARKER).exists(), "{mode:?}");
+            // Saved for good: the next start, without a marker, reads the same.
+            let again = Graphics::load(&dir);
+            assert_eq!((again.hdr, again.hdr_failed_start), (mode, failed));
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Today's marker names no driver: it holds whichever driver the window starts on first,
+    /// and is that driver's from then on.
+    #[test]
+    fn a_marker_without_a_driver_holds_the_first_one_seen() {
+        let dir = scratch("hdr-marker-legacy");
+        Graphics {
+            hdr: HdrMode::Auto,
+            ..Graphics::default()
+        }
+        .save(&dir);
+        fs::write(dir.join(HDR_MARKER), "HDR output was being switched on\n").unwrap();
+        let mut g = Graphics::load(&dir);
+        assert_eq!(
+            (g.hdr, g.hdr_failed_start.as_deref()),
+            (HdrMode::Auto, Some(""))
+        );
+        let (first, second) = (
+            "Vulkan 10de:2684 GPU; NVIDIA; 1",
+            "Dx12 1002:744c GPU; AMD; 2",
+        );
+        assert!(g.hdr_held(first) && g.hdr_held(second));
+        assert!(g.settle_failed_start(first));
+        assert!(g.hdr_held(first) && !g.hdr_held(second));
+        assert!(!g.settle_failed_start(first));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The window starting on another driver (an update, another GPU) drops the hold, so HDR
+    /// output is tried again; on the same driver it stays.
+    #[test]
+    fn another_driver_drops_the_hold() {
+        let held = "Vulkan 10de:2684 GPU; NVIDIA; 581.57";
+        let mut g = Graphics {
+            hdr: HdrMode::On,
+            hdr_failed_start: Some(held.into()),
+            ..Graphics::default()
+        };
+        assert!(!g.settle_failed_start(held));
+        assert!(g.hdr_held(held));
+        assert!(g.settle_failed_start("Vulkan 10de:2684 GPU; NVIDIA; 582.02"));
+        assert_eq!((g.hdr, g.hdr_failed_start), (HdrMode::On, None));
+        assert!(!Graphics::default().hdr_held(held));
     }
 
     #[test]
@@ -1386,9 +1546,11 @@ mod tests {
             hdr_paper_white: 240,
             hdr_peak: 1400,
             hdr_black_level: 12,
-            hdr_ui_brightness: 60,
+            hdr_ui_nits: 160,
             hdr_lighting: false,
-            hdr_key: "key.keyboard.h".into(),
+            hdr_failed_start: Some(
+                "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57".into(),
+            ),
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
@@ -1397,6 +1559,15 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        // A legacy marker's hold, which names no driver, round-trips too; none writes no line.
+        for failed in [Some(String::new()), None] {
+            let graphics = Graphics {
+                hdr_failed_start: failed,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+        }
+        assert!(!Graphics::default().serialize().contains("hdrFailedStart"));
         for mode in EntityCullingMode::ALL {
             let graphics = Graphics {
                 entity_culling: mode,
@@ -1435,10 +1606,9 @@ mod tests {
         // off by default, not a choice.
         assert!(Graphics::default().translucent_batching);
         assert!(!Graphics::parse("batchTranslucent:false\n").translucent_batching);
-        // Smooth Gradients is on, and draws a 16-bit frame only with HDR on.
-        assert!(Graphics::default().hdr_smooth_gradients && !Graphics::default().wide_frame());
-        assert!(Graphics::parse("hdr:true\n").wide_frame());
-        assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").wide_frame());
+        // Smooth Gradients is on; its 16-bit frame needs HDR on too (`output::resolve_frame`).
+        assert!(Graphics::default().hdr_smooth_gradients);
+        assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").hdr_smooth_gradients);
         assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
         // GPU Culling is opt-in: only the file or its switch turns it on.
         assert_eq!(Graphics::default().gpu_culling, GpuCullingMode::Off);
@@ -1482,7 +1652,7 @@ mod tests {
             assert_eq!(g.hdr_peak, peak, "{file}");
             assert_eq!(Graphics::parse(&g.serialize()).hdr_peak, peak, "{file}");
         }
-        assert_eq!(Graphics::parse("hdrPeak:3000\n").peak_nits(), 3000);
+        assert_eq!(Graphics::parse("hdrPeak:3000\n").peak_nits(None), 3000);
         // The black level is what's saved, in hundredths of a nit: 0 (Auto in older files)
         // lifts nothing, and the most is a nit.
         for (file, hundredths, nits) in [
@@ -1519,6 +1689,10 @@ mod tests {
             Graphics::parse("shaderPack:Pack.zip\n"),
             Graphics::default()
         );
+        // The HDR page's old shortcut key loads as nothing, and the next save drops it.
+        let old = Graphics::parse("hdr:true\nhdrKey:key.keyboard.h\nhdrPeak:1000\n");
+        assert_eq!((old.hdr, old.hdr_peak), (HdrMode::On, 1000));
+        assert!(!old.serialize().contains("hdrKey"));
         assert_eq!(
             Graphics::parse(
                 "workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\nleafCulling:maybe\n"

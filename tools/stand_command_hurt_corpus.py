@@ -15,7 +15,9 @@ equipment, `Fire` and `Health` are read apart from the command's feedback.
 
 Label classes, declared before any native run: `target-` rows read the
 state an explosion leaves (removal, the dropped helmet); `fire-` rows read
-the state `in_fire` and `on_fire` leave (`Fire`, `Health`); `diag-` rows are
+the state `in_fire` and `on_fire` leave (`Fire`, `Health`); `hit-` rows read
+the sources that return true (`arrow` breaks at once; two `player_attack`
+hits wobble, then break the stand and succeed); `diag-` rows are
 recorded diagnostics; every other row is a setup admission or a control
 that must hold (a refused `generic` hurt and an invisible stand's blast
 change nothing, `/kill` removes a stand, a pig takes an explosion's damage).
@@ -31,8 +33,13 @@ STANDS = [
     ('generic', 4, 11, ',equipment:{head:{id:"minecraft:iron_helmet",count:1}}', 'generic'),
     ('hidden', 5, 14, ',Invisible:1b,equipment:{head:{id:"minecraft:golden_helmet",count:1}}', 'explosion'),
     ('kill', 6, 17, ',equipment:{head:{id:"minecraft:leather_helmet",count:1}}', None),
+    # arrow is in #always_kills_armor_stands: hurtServer returns true.
+    ('arrow', 8, 23, ',equipment:{head:{id:"minecraft:chainmail_helmet",count:1}}', 'arrow'),
 ]
 PIG = ('pig', 7, 20)
+# can_break_armor_stand (player_attack) from a pig, twice: the first hit wobbles the
+# stand and succeeds, the second breaks it (brokenByPlayer) and succeeds.
+HIT = ('hit', 9, 26, ',equipment:{head:{id:"minecraft:diamond_helmet",count:1}}')
 
 
 def uuid(n):
@@ -67,6 +74,9 @@ def stand_command_hurt(full=False):
     for name, n, x, extra, _ in STANDS:
         cmd(f'/summon armor_stand {x + 0.5} {Y} {Z + 0.5} {{{still},UUID:[I;2773,0,0,{n}]{extra}}}',
             f'{name}-summon', admission=False)
+    name, n, x, extra = HIT
+    cmd(f'/summon armor_stand {x + 0.5} {Y} {Z + 0.5} {{{still},UUID:[I;2773,0,0,{n}]{extra}}}',
+        f'{name}-summon', admission=False)
     name, n, x = PIG
     cmd(f'/summon pig {x + 0.5} {Y} {Z + 0.5} {{{still},NoAI:1b,PersistenceRequired:1b,Silent:1b,Health:10f,'
         f'UUID:[I;2773,0,0,{n}]}}', 'pig-summon', admission=False)
@@ -84,7 +94,7 @@ def stand_command_hurt(full=False):
         admission=False, diagnostic=True)
 
     for name, n, x, extra, ty in STANDS:
-        prefix = {'blast': 'target-', 'ignite': 'fire-', 'burn': 'fire-'}.get(name, '')
+        prefix = {'blast': 'target-', 'ignite': 'fire-', 'burn': 'fire-', 'arrow': 'hit-'}.get(name, '')
         # One hurt per stand: its result and success stored as it runs.
         cmd(f'/scoreboard players set {name} h_s -1', f'{name}-success-fresh', admission=False)
         cmd(f'/scoreboard players set {name} h_r -1', f'{name}-result-fresh', admission=False)
@@ -100,6 +110,22 @@ def stand_command_hurt(full=False):
         cmd(f'/execute if entity {near}', f'{prefix}{name}-drops', admission=False)
         cmd(f'/data get entity {near.replace("]", ",limit=1]")} Item', f'{prefix}{name}-drop-item',
             admission=False)
+    name, n, x, _ = HIT
+    pig = uuid(PIG[1])
+    for hit in (1, 2):
+        label = f'hit-{hit}'
+        cmd(f'/scoreboard players set {name} h_s -1', f'{label}-success-fresh', admission=False)
+        cmd(f'/scoreboard players set {name} h_r -1', f'{label}-result-fresh', admission=False)
+        cmd(f'/execute store success score {name} h_s store result score {name} h_r run '
+            f'damage {uuid(n)} 1 minecraft:player_attack by {pig}', f'{label}-command', admission=False)
+        cmd(f'/scoreboard players get {name} h_s', f'{label}-success', admission=False)
+        cmd(f'/scoreboard players get {name} h_r', f'{label}-result', admission=False)
+        cmd(f'/execute if entity {uuid(n)}', f'{label}-alive-after', admission=False)
+        cmd(f'/data get entity {uuid(n)} equipment', f'{label}-equipment-after', admission=False)
+        near = f'@e[type=item,x={x + 0.5},y={Y + 1},z={Z + 0.5},distance=..1.5]'
+        cmd(f'/execute if entity {near}', f'{label}-drops', admission=False)
+    cmd(f'/execute if entity @e[type=item,nbt={{Item:{{id:"minecraft:armor_stand"}}}}]', 'hit-stand-item',
+        admission=False)
     name, n, x = PIG
     cmd(f'/scoreboard players set {name} h_s -1', f'{name}-success-fresh', admission=False)
     cmd(f'/scoreboard players set {name} h_r -1', f'{name}-result-fresh', admission=False)

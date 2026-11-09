@@ -2,6 +2,10 @@
 //! through the `mob_spawn_equipment` provider) and the raid buffs
 //! (`Raider.applyRaidBuffs`).
 use super::Game;
+
+#[cfg(test)]
+#[path = "drowned_spawn_tests.rs"]
+mod drowned_spawn_tests;
 use horizon_client::{
     mobs::{
         Species,
