@@ -855,9 +855,11 @@ pub fn texture(m: &Mob) -> String {
         "red",
         "black",
     ];
-    match COLORS.get(m.extra.color as usize) {
-        Some(c) => format!("entity/shulker/shulker_{c}"),
-        None => "entity/shulker/shulker".into(),
+    // Shulker.getColor: the saved byte is signed; 16 and above are undyed, and
+    // DyeColor.byId sends a negative id to white (OutOfBoundsStrategy.ZERO).
+    match m.extra.color as i8 {
+        16.. => "entity/shulker/shulker".into(),
+        c => format!("entity/shulker/shulker_{}", COLORS[c.max(0) as usize]),
     }
 }
 /// `attachFace.getOpposite().getRotation()` by attach face: the open
@@ -1180,5 +1182,6 @@ mod saved_bytes_tests {
         assert_eq!(m.extra.variant3, 1, "abs(7 % 6) is up");
         assert_eq!(m.extra.counter, -1, "the peek byte is kept");
         assert_eq!(m.extra.color, 255, "the color byte is kept");
+        assert_eq!(texture(&m), "entity/shulker/shulker_white", "DyeColor.byId(-1)");
     }
 }
