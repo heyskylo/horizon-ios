@@ -961,6 +961,18 @@ impl Graphics {
         }
         true
     }
+    /// `before`, as Undo brings it back, but never the hold on a driver HDR output failed to
+    /// start on: that stays as it is now, and goes when Undo changes the mode, as any change of
+    /// the mode drops it.
+    pub fn undone_to(&self, before: &Self) -> Self {
+        Self {
+            hdr_failed_start: self
+                .hdr_failed_start
+                .clone()
+                .filter(|_| self.hdr == before.hdr),
+            ..before.clone()
+        }
+    }
     pub fn parse(text: &str) -> Self {
         let mut g = Self::default();
         for line in text.lines() {

@@ -194,6 +194,7 @@ mod frame_gen;
 mod gpu_culling;
 mod hdr;
 mod hdr_icc;
+mod hdr_start;
 mod hdr_stats;
 pub(crate) mod hud_coverage;
 pub use hdr::{Calibration as HdrCalibration, Output as HdrOutput};
@@ -1536,9 +1537,7 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
-    /// The graphics driver this window's HDR output starts on (`output::window_driver`):
-    /// what the marker names, and what a failed start holds HDR output back on. `None`
-    /// offscreen, which never writes the marker or holds HDR back.
+    /// The window's graphics driver (`hdr_start`); `None` offscreen.
     hdr_driver: Option<String>,
     /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
     hdr_lighting_setting: bool,
@@ -7221,26 +7220,6 @@ impl Renderer {
             self.config.format,
         )
     }
-    /// What this renderer's destination offers for `settings`: HDR output held back on a window
-    /// whose graphics driver a start failed on (`output::held`).
-    fn caps_for(&self, settings: &crate::graphics::Graphics) -> output::OutputCapabilities {
-        output::OutputCapabilities {
-            held: output::held(settings, self.hdr_driver.as_deref()),
-            ..self.output_caps
-        }
-    }
-    /// The graphics driver this window's HDR output starts on (`output::window_driver`);
-    /// `None` offscreen.
-    pub fn hdr_driver(&self) -> Option<&str> {
-        self.hdr_driver.as_deref()
-    }
-    /// Removes this renderer's marker of an HDR output that hasn't presented a frame yet
-    /// (`graphics::HDR_MARKER`), for a clean exit: only a crash may leave it.
-    pub fn drop_hdr_marker(&mut self) {
-        if let Some(marker) = self.hdr_marker.take() {
-            let _ = std::fs::remove_file(marker);
-        }
-    }
     /// Follows the selected mode even when Auto currently wants SDR. Off never asks
     /// the system about the display; selecting On or Auto starts a fresh watch.
     fn watch_hdr(&mut self, mode: crate::graphics::HdrMode) {
@@ -7275,18 +7254,7 @@ impl Renderer {
         marker: &std::path::Path,
     ) {
         self.watch_hdr(settings.hdr);
-        self.output_caps = self.caps_for(settings);
-        if self.output_caps.held
-            && let Some(driver) = &self.hdr_driver
-        {
-            static LOGGED: std::sync::Once = std::sync::Once::new();
-            LOGGED.call_once(|| {
-                log::warn!(
-                    "Horizon renderer: HDR output is held back: the last start with this graphics driver ({driver}) ended before HDR output showed a frame. Choose an HDR mode on the HDR page to try again (or remove hdrFailedStart from {})",
-                    crate::graphics::FILE
-                )
-            });
-        }
+        self.hold_hdr_back(settings);
         let next = output::resolve_output(
             settings,
             self.output_caps,
@@ -7298,16 +7266,7 @@ impl Renderer {
         if next.encoding.is_some() != self.hdr.is_some() {
             // If the game dies before HDR output shows a frame, the marker is still there at
             // the next start, which then holds HDR output back on this driver.
-            if next.encoding.is_some() {
-                if self.surface.is_some()
-                    && let Some(driver) = &self.hdr_driver
-                {
-                    let _ = std::fs::write(marker, crate::graphics::hdr_marker_text(driver));
-                    self.hdr_marker = Some(marker.to_owned());
-                }
-            } else if let Some(marker) = self.hdr_marker.take() {
-                let _ = std::fs::remove_file(marker);
-            }
+            self.mark_hdr_start(next.encoding.is_some(), marker);
             let frame = self.output.frame;
             self.hdr = next.encoding.map(|output| {
                 hdr::Hdr::new(
