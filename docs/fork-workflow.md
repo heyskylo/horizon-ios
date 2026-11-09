@@ -1,11 +1,11 @@
-# Working on UMCEKO/horizon (the perf platform fork)
+# Working on sunrise-org/horizon (the perf platform fork)
 
 The perf platform ([perf-platform.md](perf-platform.md)) is built on this fork. Its default branch is `perf-platform`:
 upstream `main` plus the platform's work. The fork's `main` stays an exact mirror of upstream `main`.
 
 ## Taking a piece
 
-1. Pick an open piece from the tracker, UMCEKO/horizon#1, whose "needs first" pieces are merged.
+1. Pick an open piece from the tracker, sunrise-org/horizon#1, whose "needs first" pieces are merged.
 2. Comment `/claim` on it (an agent writes `🤖 Agent: /claim`). The bot assigns you, or says why not: someone holds it,
    it is the tracker, or you hold 8 open claims. `/unclaim` gives it back.
 3. A claim with no open pull request linking the issue is released after 5 days.
@@ -44,7 +44,7 @@ A batch is due when 5 ready pull requests are new to it, or the oldest has waite
    - review the diff against the design doc and the repo's rules;
    - run `python3 tools/pr_ready.py` against `perf-platform`, plus the parity harnesses it selects;
    - report: verdict (`merge` or `changes`), findings, test results.
-3. Merge the `merge` ones into `perf-platform` in order (`gh pr merge N --repo UMCEKO/horizon --merge`), rebasing or
+3. Merge the `merge` ones into `perf-platform` in order (`gh pr merge N --repo sunrise-org/horizon --merge`), rebasing or
    re-testing a later one if an earlier merge conflicts with it. Then
    `python3 tools/fork/review_batch.py reviewed N HEAD merged`.
 4. For the `changes` ones: post the findings as a review starting with `🤖 Review by UMCEKO's AI agent`, then

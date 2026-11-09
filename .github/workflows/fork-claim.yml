@@ -11,7 +11,7 @@ permissions:
 jobs:
   command:
     if: >-
-      github.repository == 'UMCEKO/horizon' && github.event_name == 'issue_comment' &&
+      github.repository == 'sunrise-org/horizon' && github.event_name == 'issue_comment' &&
       github.event.comment.user.type != 'Bot' && (
       startsWith(github.event.comment.body, '/claim') ||
       startsWith(github.event.comment.body, '/unclaim') ||
@@ -48,7 +48,7 @@ jobs:
           FORK_OWNER_ID: ${{ vars.FORK_OWNER_ID }}
         run: python3 tools/fork/claim.py command
   release:
-    if: github.repository == 'UMCEKO/horizon' && github.event_name != 'issue_comment'
+    if: github.repository == 'sunrise-org/horizon' && github.event_name != 'issue_comment'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -97,7 +97,7 @@ Two crates. The game ships the small one; everything that reads a capture lives 
                                          reader · follow reader · query · stats · summary · ids · diff · export
                                               │                    │                     │
                                        CLI subcommands      horizon-perf mcp     wasm32 build ──► web UI
-                                                                                                 (web/perf/)  
+                                                                                                 (horizon-site)
 ```
 
 ### 2.1 `crates/horizon-perf-format` (shipped)
@@ -147,7 +147,7 @@ known to build for wasm32. A dev-dependency test checks that a report written by
 | `horizon-client-lib`, `horizon-client` (game, dedicated server) | `horizon-perf-format` | triggers, the writer, the remote channel (§4.2) |
 | `horizon-threads` | nothing new | stays free of internal dependencies; it keeps producing its in-memory `Profile` |
 | `horizon-perf` | `horizon-perf-format` | never a dependency of anything shipped |
-| web UI (`web/perf/`) | `horizon_perf.wasm`, a build artifact of this repo | draws only |
+| web UI (`sunrise-org/horizon-site`) | `horizon_perf.wasm`, a build artifact of this repo | draws only |
 
 The conversion from `horizon_threads::Profile` to the `samples` message lives in horizon-client-render. It replaces
 `profile/viewer.rs`, which today builds the same columnar data inside horizon-threads
@@ -888,24 +888,11 @@ the load settle before stopping it.
 - Spec B's nightly regression rule (permutation test, MAD history) stays in its own tool. It is a CI policy over a
   history, not a question about two captures.
 
-## 7. The web UI (`web/perf/`, self-hosted)
+## 7. The web UI (`sunrise-org/horizon-site`)
 
 ### 7.1 What it is and where it lives
 
-- **Location and stack.** A separate app in this repo, `web/perf/`, so every volunteer can work on it, self-hosted at
-  `https://horizon-perf.umceko.com` on the umceko cluster. It is not part of the landing site. It is built to plug into
-  playhorizon.dev later without rewriting: the site is a Next.js App Router app on Railway (its responses carry
-  `vary: rsc, next-router-state-tree, …`, `server: railway-hikari`, JSON APIs under `/api/…` with
-  `cache-control: no-store`, e.g. `GET /api/releases/views`). So `web/perf/` is a Next.js App Router app with the same
-  shape:
-  - the UI under `app/perf/` (a client component; the wasm is loaded with a dynamic import, never during server
-    rendering), styles scoped to it (CSS modules, no global CSS), static assets under `public/perf/`;
-  - the upload API as route handlers under `app/api/perf/` (§7.3), JSON with `cache-control: no-store`, as the site's
-    own API does;
-  - configuration through env vars only (`PERF_PUBLIC_URL`, the storage settings), so moving `app/perf/` and
-    `app/api/perf/` into the site's repo is a copy plus env vars.
-  The game prints the UI's address from one constant, `PERF_UI_URL = "https://horizon-perf.umceko.com/perf"`; moving
-  to playhorizon.dev later changes that constant only.
+- **Location and stack.** The browser UI and upload API live in [sunrise-org/horizon-site](https://github.com/sunrise-org/horizon-site), a fork of the Next.js App Router website. The UI has its own root layout under `app/perf/`; helpers live under `lib/perf/`, translations under `messages/perf/`, and static assets under `public/perf/`. The routes are `/perf`, `/perf/c/<id>` and `/api/perf/captures`. It runs on the umceko cluster in namespace `sunrise`; configuration stays in environment variables.
 - **The wasm does the computing.** The page loads `horizon_perf.wasm`, the `horizon-perf` library built for
   `wasm32-unknown-unknown` with feature `wasm`, for reading, queries and statistics. The UI only draws, and every
   number it shows comes from a wasm call. So the web UI and the CLI cannot disagree, and no second implementation
@@ -924,10 +911,8 @@ the load settle before stopping it.
 
   A ~60-line `horizon_perf.js` shipped beside the wasm wraps these, so the UI does not manage wasm memory itself.
   The wasm returns data, ids and warning codes, never English sentences except `summary`. UI strings live in the
-  UI's own translation files (`web/perf/lang/`, translation-ready from the start).
-- **The build.** `cargo xtask perf-wasm` writes `target/perf-wasm/{horizon_perf.wasm,horizon_perf.js}`, and
-  `web/perf/`'s own build copies them in. A CI job builds both on every change to `crates/horizon-perf*` or `web/perf/`
-  and uploads the static bundle as an artifact the team deploys.
+  UI's own translation files (`messages/perf/` in the site repository, translation-ready from the start).
+- **The build.** `cargo xtask perf-wasm` writes `target/perf-wasm/{horizon_perf.wasm,horizon_perf.js}`. The `perf-wasm` workflow tests the ABI and uploads that bundle. The site imports the matching reader and wrapper with `npm run perf:import -- HORIZON_SOURCE_DIR PERF_WASM_DIR`, records their source revision and checksums, and checks them before every build. Normal site builds need Node only.
 - **Local first, upload by choice.** The page opens a `.hzperf` from a file picker or drag and drop and reads it in
   the browser; nothing leaves the machine unless the user presses **Share**, which uploads and pins it through §7.3
   after a one-line notice of what the file holds (§4.3) and returns a link `…/perf/c/<id>`. Opening a link fetches the capture
@@ -1065,7 +1050,7 @@ prints it, and adds a warning when a budget is exceeded.
 
 ## 11. Work pieces (for the tracker issue)
 
-One issue per piece, listed under one tracker issue (UMCEKO/horizon#1). PR size is not limited for this project; the line counts below are estimates only. Each PR carries `pr_ready.py`'s
+One issue per piece, listed under one tracker issue (sunrise-org/horizon#1). PR size is not limited for this project; the line counts below are estimates only. Each PR carries `pr_ready.py`'s
 block, the attribution lines, and docs for what it ships. Labels:
 
 - `feature` where players get something new (S1a, C1, R1b);
@@ -1106,7 +1091,7 @@ bd412b6d62.
 | W1 | `wasm` feature, the C-ABI exports, `horizon_perf.js`, `cargo xtask perf-wasm`, `web/perf/` skeleton (file open, wasm load, raw summary/query view), the CI job | Q1 | 400 | The **agreement test**: the C-ABI functions, called natively in a test, return byte-identical replies to `horizon-perf query --json` and `summary` on the fixture. CI builds `--target wasm32-unknown-unknown`. A malformed file gives an error reply, not a trap. |
 | L1 | Retire: slow-tick and slow-frame span lists leave the log; `pacing_bench.py` reads captures; docs (`hosting.md`, `graphics.md`, `benchmark.md`, `memory.md`, `agent-control.md`), regenerated ctl docs; this design doc as `docs/perf-platform.md` | S1a, C1, Q1 | 350 | 300 slow ticks in 10 s write no Horizon slow-tick line, and all 256 most recent ones are in the ring. "Can't keep up!" still prints the vanilla text at the vanilla rate (the existing test at `dedicated.rs:2519` passes unchanged). `pacing_bench.py`'s parse test runs on a fixture capture and finds the same slowest spans as its old log fixture. |
 
-The web UI pieces live in `web/perf/` in this repo, on the same tracker. Each needs W1:
+The web UI pieces live in `sunrise-org/horizon-site`, on the platform tracker. Each needs W1:
 
 - UI1: health bar and metadata panel;
 - UI2: call tree, group by, selection, detail panel and search;
@@ -1116,7 +1101,7 @@ The web UI pieces live in `web/perf/` in this repo, on the same tracker. Each ne
 - UI6: export and copy id;
 - UI7: Share button (notice, upload, link), opening `…/perf/c/<id>` links, compare by two links.
 
-Upload pieces (in `web/perf/app/api/perf/`):
+Upload pieces (in `sunrise-org/horizon-site/app/api/perf/`):
 
 - U1: the four route handlers of §7.3 with S3-compatible storage, validation through `horizon-perf`'s wasm, size cap,
   ids and delete tokens. Tests: a fixture uploads, reads back byte-identical with the immutable cache header, `meta`
@@ -1179,13 +1164,13 @@ None at the moment.
 | Q20 | `tools/bench_stats.py` is dropped. |
 | Q21 | The web UI loads `horizon-perf` as wasm for reading, queries and statistics; the UI only draws. |
 | Q22, Q24 | `horizon-ctl profile server\|client`; no side means both, in one capture. A dedicated or remote server needs operator level 4 (as vanilla's `/perf`; this refines Q22's "admin"). The capture is sent back in rate-limited chunks over a Horizon-only channel, a copy stays in the server's `reports/`, and the server logs who profiled and when. Non-Horizon servers: "this server isn't running Horizon". |
-| A | The web UI is a separate standalone UI in this repo (`web/perf/`), self-hosted by the team, easy to embed in the site later; not built into the landing site. (Supersedes Q15's "in horizon-site".) |
+| A | The web UI and upload API live in `sunrise-org/horizon-site`, integrated into the site and hosted in namespace `sunrise` on the umceko cluster. This supersedes the standalone `web/perf/` app. |
 | B | `horizon-perf` is built from source by whoever needs it (agents included); no published dev artifact. |
 | C | The `horizon-ctl profile` trigger is exposed over MCP (`mcp: true`). |
 | D | `ab_bench.py`'s relaunch mode calls `horizon-perf diff` instead of the dropped `bench_stats.py`. |
 | E | New dependencies `prost`, `prost-build`, `protox` accepted. |
-| F | Web UI and upload API self-hosted at `https://horizon-perf.umceko.com` (umceko cluster); `PERF_UI_URL` points there. |
+| F | Web UI and upload API self-hosted at `https://playsunrise.net` (umceko cluster); `PERF_UI_URL` points there. |
 | G | No CODEOWNERS: once merged, anyone can edit the contract (supersedes Q8's ownership after the contract lands). |
-| H | Both the UI and the upload layer are built compatible with playhorizon.dev's stack (Next.js App Router on Railway, JSON `/api/…`, `no-store`) so they plug in later: `web/perf/` is a Next.js App Router app with `app/perf/` and `app/api/perf/`. Upload and share links are now in scope on the self-hosted instance (supersedes Q5's "local files only"); sharing is an explicit user action. |
+| H | Both the UI and the upload layer are built compatible with playhorizon.dev's stack (Next.js App Router on Railway, JSON `/api/…`, `no-store`) so they plug in later: `sunrise-org/horizon-site` owns `app/perf/` and `app/api/perf/`. Upload and share links are now in scope on the self-hosted instance (supersedes Q5's "local files only"); sharing is an explicit user action. |
 | I | Upload storage: RustFS (S3-compatible) on the umceko cluster, 1 GiB PV on `local-path`; not Railway for now. Size cap 64 MiB; per-IP limit 20 uploads/hour. Retention: two states: temporary uploads are deleted after 1 h; Share pins a capture for 30 days or until deleted with its token; above 90 % volume use, new uploads get 507. |
 | J | `horizon-perf-format::files` (capture file naming, retention, the saved line, `is_complete`) lives in the format crate although §2.1 lists three things: `horizon-server` writes and finds captures too and cannot depend on `horizon-client`. Do not move it back. |

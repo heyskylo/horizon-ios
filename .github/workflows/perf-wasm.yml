@@ -1,0 +1,56 @@
+name: perf-wasm
+# The site consumes this reader bundle from sunrise-org/horizon-site.
+on:
+  push:
+    branches: [perf-platform, main]
+    paths:
+      - 'crates/horizon-perf/**'
+      - 'crates/horizon-perf-format/**'
+      - 'crates/horizon-bench/**'
+      - 'xtask/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.github/workflows/perf-wasm.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'crates/horizon-perf/**'
+      - 'crates/horizon-perf-format/**'
+      - 'crates/horizon-bench/**'
+      - 'xtask/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.github/workflows/perf-wasm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-wasm-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HORIZON_TELEMETRY_URL: "off"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-wasm
+      # The agreement test: the C ABI, called natively, must print the bytes the CLI prints.
+      - name: The wasm ABI agrees with the CLI
+        run: cargo test -p horizon-perf --features wasm --test wasm
+      - name: Build the wasm the page loads
+        run: cargo run -p xtask -- perf-wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-wasm
+          path: target/perf-wasm
+          if-no-files-found: error

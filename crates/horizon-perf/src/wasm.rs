@@ -20,7 +20,7 @@
 //! translates it, the message is for logs and agents.
 //!
 //! The interface returns data, ids and codes, never English sentences, except `hp_summary` (which
-//! is a sentence report by design). UI strings live in `web/perf/lang/`.
+//! is a sentence report by design). UI strings live in sunrise-org/horizon-site under `messages/perf/`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
