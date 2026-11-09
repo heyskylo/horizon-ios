@@ -173,7 +173,10 @@ impl MobWorld<'_> {
         }) {
             return out;
         }
-        out.modded = self.mod_fluid(lo, hi, (ex, ez), eye_y);
+        // A second pass over the box, only when a content root loaded mod fluids.
+        if horizon_world::fluid::mod_fluids_loaded() {
+            out.modded = self.mod_fluid(lo, hi, (ex, ez), eye_y);
+        }
         for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
             for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
                 for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
@@ -310,7 +313,12 @@ impl MobWorld<'_> {
                     } else {
                         continue;
                     };
-                    let surface = match self.mod_fluid_at(x, y, z) {
+                    let modded_top = if kind.is_vanilla() {
+                        None
+                    } else {
+                        self.mod_fluid_at(x, y, z)
+                    };
+                    let surface = match modded_top {
                         Some((_, top)) => top,
                         None => f64::from(y) + self.fluid_height(x, y, z).1,
                     };
