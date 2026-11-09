@@ -378,12 +378,13 @@ sounds.
 
 It is not water to the game (a zombie in it doesn't become a drowned, nor does it hydrate farmland): as NeoForge tracks
 each `FluidType`, an entity's immersion in it is its own. The player moves in it as in water, whatever its template,
-and its numbers decide the rest: its current pushes the player, dropped items, experience orbs, armour stands and boats
-by `motion_scale` when `can_push_entity`; the player swims and rises in it when `can_swim`, loses air with the eyes in
-it when `can_drown`, is put out when `can_extinguish`, and has the fall distance multiplied by
-`fall_distance_modifier` each tick in it (0 resets it, as water does). Left out, each is its template's: water's
-0.014, all true and 0; lava's 0.0023, only `can_push_entity`, and 0.5. Not yet: mobs and arrows swim and move in it as
-on land, boats don't float on it (`supports_boating`), and it is drawn as its template
+and so do mobs, and its numbers decide the rest: its current pushes the player, mobs, dropped items, experience orbs,
+armour stands and boats by `motion_scale` when `can_push_entity`; the player and mobs swim and rise in it (mobs float
+as in water) when `can_swim`, lose air with the eyes in it when `can_drown`, are put out when `can_extinguish`, and have
+the fall distance multiplied by `fall_distance_modifier` each tick in it (0 resets it, as water does). Left out, each is
+its template's: water's 0.014, all true and 0; lava's 0.0023, only `can_push_entity`, and 0.5. Arrows fly through it as
+through air (only water slows them). Not yet: boats don't float on it (`supports_boating`), and it is drawn as its
+template
 ([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these step by step).
 
 A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
