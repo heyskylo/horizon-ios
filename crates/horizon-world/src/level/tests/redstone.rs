@@ -1196,3 +1196,56 @@ fn sand_falls_through_what_is_free_and_rests_on_what_is_not() {
         );
     }
 }
+
+/// `NoteBlock.setInstrument`, run when it is placed: a mob head above it decides the
+/// instrument (`worksAboveNoteBlock`), else the block below does, except that a head
+/// below gives harp, and a block with no instrument is harp too. The pairs are
+/// `Blocks.java`'s `.instrument(...)` registrations.
+#[test]
+fn a_note_block_takes_its_instrument_from_the_block_below_or_a_head_above() {
+    // (the block below, the block above, the instrument)
+    let cases: [(&str, &str, &str); 24] = [
+        ("stone", "air", "basedrum"),
+        ("sand", "air", "snare"),
+        ("glass", "air", "hat"),
+        ("oak_planks", "air", "bass"),
+        ("clay", "air", "flute"),
+        ("gold_block", "air", "bell"),
+        ("packed_ice", "air", "chime"),
+        ("bone_block", "air", "xylophone"),
+        ("iron_block", "air", "iron_xylophone"),
+        ("soul_sand", "air", "cow_bell"),
+        ("pumpkin", "air", "didgeridoo"),
+        ("emerald_block", "air", "bit"),
+        ("hay_block", "air", "banjo"),
+        ("glowstone", "air", "pling"),
+        ("white_wool", "air", "guitar"),
+        ("dirt", "air", "harp"),
+        ("stone", "skeleton_skull", "skeleton"),
+        ("stone", "zombie_head", "zombie"),
+        ("stone", "creeper_head", "creeper"),
+        ("stone", "dragon_head", "dragon"),
+        ("stone", "wither_skeleton_skull", "wither_skeleton"),
+        ("stone", "piglin_head", "piglin"),
+        ("stone", "player_head", "custom_head"),
+        ("skeleton_skull", "air", "harp"),
+    ];
+    for (below, above, instrument) in cases {
+        let mut w = world!();
+        let support = BlockPos::new(0, 1, 0);
+        w.set(support, w.id(below, &[]));
+        if above != "air" {
+            w.set(BlockPos::new(0, 3, 0), w.id(above, &[]));
+        }
+        let placed = w.place("note_block", support, Direction::Up, 0.0, 0.0, 0.0);
+        assert!(
+            matches!(placed, PlaceOutcome::Placed { .. }),
+            "placed over {below}"
+        );
+        assert_eq!(
+            w.prop(BlockPos::new(0, 2, 0), "instrument"),
+            instrument,
+            "over {below} under {above}"
+        );
+    }
+}
