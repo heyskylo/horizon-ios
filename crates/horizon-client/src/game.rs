@@ -9010,7 +9010,7 @@ impl Game<'_> {
             // `player.awardStat(Stats.ITEM_USED.get(this))`,
             // `getPickupSound` and `level.gameEvent(player, FLUID_PICKUP)`.
             self.award_stat("used", "minecraft:bucket", 1);
-            let sound = if filled == "minecraft:lava_bucket" {
+            let sound = if horizon_world::level::is_lava_bucket(filled) {
                 "minecraft:item.bucket.fill_lava"
             } else {
                 "minecraft:item.bucket.fill"

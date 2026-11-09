@@ -366,8 +366,9 @@ blocks. Native mods' tanks hold them by these ids.
 Its block flows in the world as its template does, with the fluid's own `tick_rate`, `level_decrease_per_block`,
 `slope_find_distance` and `can_convert_to_source`, and leaves its own block where it spreads. It meets other fluids as
 NeoForge's `BaseFlowingFluid` does: lava's and water's conversions (stone, obsidian, cobblestone) stay theirs, a mod
-fluid copying lava neither fizzes nor turns water to stone, and no fluid replaces a mod fluid. Not yet: the bucket
-doesn't pour it, mobs don't swim in it, and it is drawn as its template
+fluid copying lava neither fizzes nor turns water to stone, and no fluid replaces a mod fluid. Its `bucket` pours the source and an empty bucket
+picks the source back up (a fluid without one can't be picked up), from a hand or a dispenser, with the template's
+sounds. Not yet: mobs don't swim in it, and it is drawn as its template
 ([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these step by step).
 
 A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
