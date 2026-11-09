@@ -1,14 +1,16 @@
-//! Where the game hands the player models to crates above the engine
-//! (`horizon_hooks::Hooks::frame` and `tick`, spec #14091): only a window's game calls them,
-//! never the integrated server's thread or a dedicated server. With no hook registered nothing is
-//! built.
+//! Where the game hands the player models to crates above the engine (`horizon_hooks::Hooks`'s
+//! `frame`, `tick`, `name_decoration`, `player_mark`, `camera`; spec #14091): only a window's
+//! game calls them, never the integrated server's thread or a dedicated server. With no hook
+//! registered nothing is built.
 
 use super::Game;
 use horizon_client::join_seq::JoinList;
 use horizon_client::mobs::Mob;
 use horizon_client::mobs::anim::BodyPose;
 use horizon_hooks::engine;
-use horizon_hooks::players::{Frame, Gear, Kind, PlayerModel, PlayerModels, SpriteStore};
+use horizon_hooks::players::{
+    CameraView, Frame, Gear, Kind, PlayerModel, PlayerModels, SpriteStore, Sprites,
+};
 use std::sync::Arc;
 
 /// Registers the hooks of the Horizon parts still in this crate (cosmetics: spec #14091 step 5
@@ -112,6 +114,20 @@ fn location(id: u64, buf: &mut [u8; 22]) -> &str {
     std::str::from_utf8(&buf[..len]).unwrap_or_default()
 }
 
+/// The crates' sprites in the GUI atlas, in the skin slots: read while drawing.
+struct HookSprites<'a, 'g>(&'a Game<'g>);
+
+impl Sprites for HookSprites<'_, '_> {
+    fn get(&self, id: u64) -> Option<[f32; 4]> {
+        let mut buf = [0; 22];
+        let at = location(id, &mut buf);
+        let r = self.0.gui.atlas.sprites.get(at)?;
+        // Kept this frame (`skin_slots.next_frame`).
+        self.0.skin_downloads.borrow_mut().drawn(at);
+        Some([r.u0, r.v0, r.u1, r.v1])
+    }
+}
+
 /// Where a crate's frame hook puts its sprites.
 struct HookStore<'a, 'g>(&'a mut Game<'g>);
 
@@ -166,6 +182,57 @@ impl Game<'_> {
             mobs: &mut self.mobs,
             remote,
         });
+    }
+
+    /// What goes by `m`'s name (`own`: the window's own player), from the hooks.
+    pub(super) fn hooks_name_marks(&self, m: &Mob, own: bool) -> super::names::Marks {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        let mut marks = super::names::Marks::default();
+        if !engine::any() {
+            return marks;
+        }
+        let model = match (own, kind(m)) {
+            (true, _) => model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile())),
+            (false, Some(kind)) => model(m, kind, self.remote_player_uuid(m.id)),
+            (false, None) => return marks,
+        };
+        if let Some(d) = engine::name_decoration(&model, &HookSprites(self)) {
+            marks.mark = d.mark;
+            marks.top = d.top;
+            marks.style = d.badge.map(|b| {
+                let [u0, v0, u1, v1] = b.uv;
+                super::names::TagStyle {
+                    mark: horizon_client::hud::Rect {
+                        u0,
+                        v0,
+                        u1,
+                        v1,
+                        w: 8,
+                        h: 8,
+                    },
+                    line: b.line,
+                }
+            });
+        }
+        marks
+    }
+
+    /// How far the third-person camera stands back, as a share of the usual distance: a hook's
+    /// (an emote pulls it back), else 1.
+    pub(super) fn hooks_camera_distance(&self, partial: f32) -> f32 {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        match &self.player_model {
+            Some(m) if engine::any() => {
+                engine::camera(&CameraView::new(m.age as f32 + partial)).map_or(1.0, |c| c.distance)
+            }
+            _ => 1.0,
+        }
     }
 }
 
