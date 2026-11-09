@@ -107,3 +107,61 @@ fn markers_are_listed_with_their_data() {
     assert_eq!(game.dim.id(), overworld);
     assert!(game.native_level_markers("minecraft:nowhere").is_empty());
 }
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_shared_lookup_finds_the_level_in_place_and_leaves_the_others() {
+    let mut game = game();
+    let nether = "minecraft:the_nether";
+    let overworld = game.dim.id();
+    let here = "[I;7,0,0,3]";
+    let here_number = (7u128 << 96) | 3;
+    assert!(game.run_command(&format!(
+        "execute in {nether} run summon cow 8.5 70 8.5 {{UUID:{UUID},NoAI:1b}}"
+    )));
+    assert!(game.run_command(&format!("summon cow 3.5 80 3.5 {{UUID:{here},NoAI:1b}}")));
+    let shared = &game;
+    // The level in place is read from `&self`; the nether level is not, and says so with None.
+    let (dimension, id, kind) = shared
+        .native_find_entity_by_uuid(here_number)
+        .expect("found");
+    assert_eq!(
+        (dimension.as_str(), kind.as_str()),
+        (overworld, "minecraft:cow")
+    );
+    assert_eq!(shared.native_find_entity_by_uuid(UUID_NUMBER), None);
+    // The `&mut` lookup still reaches the nether level, and the same entity answers the same way.
+    assert_eq!(
+        game.native_entity_by_uuid(here_number),
+        Some((overworld.to_owned(), id, kind))
+    );
+    assert_eq!(
+        game.native_entity_by_uuid(UUID_NUMBER).map(|f| f.0),
+        Some(nether.to_owned())
+    );
+    assert_eq!(game.dim.id(), overworld);
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn an_entity_in_another_level_has_its_data_read_in_place() {
+    let mut game = game();
+    let nether = "minecraft:the_nether";
+    let overworld = game.dim.id();
+    assert!(game.run_command(&format!(
+        "execute in {nether} run summon cow 8.5 70 8.5 {{UUID:{UUID},NoAI:1b}}"
+    )));
+    let (dimension, id, _) = game.native_entity_by_uuid(UUID_NUMBER).expect("found");
+    let nbt = game
+        .native_entity_nbt_in(&dimension, id)
+        .expect("read in its own level");
+    assert_eq!(nbt.get(&"NoAI".into()), Some(&Tag::Byte(1)));
+    assert!(
+        nbt.get(&"id".into()).is_none(),
+        "as native_entity_nbt: no id"
+    );
+    // The level in place is the overworld again, and the id names nothing there.
+    assert_eq!(game.dim.id(), overworld);
+    assert_eq!(game.native_entity_nbt_in(overworld, id), None);
+    assert_eq!(game.native_entity_nbt_in("minecraft:nowhere", id), None);
+}

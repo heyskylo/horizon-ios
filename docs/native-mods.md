@@ -3283,6 +3283,13 @@ that tick the other mobs of that level read as gone.
   handles](#entity-and-level-handles)) for any loaded level, as `execute in <dimension> run data merge entity` does,
   with the same refusals (a player, a kind Horizon can't reload yet, data that changes nothing). API
   @API:npc_entity_by_uuid@.
+- **`native_find_entity_by_uuid(uuid)`** is `native_entity_by_uuid` from a `&self` context, so a mod can make many
+  lookups from a read-only hook: the same `(dimension, id, kind)`, for a server's player and for the entities of the
+  level in place. A level not in place is read only by swapping it in, which needs `&mut`, so those stay with
+  `native_entity_by_uuid`. None on a client.
+- **`native_entity_nbt_in(dimension, id)`** is the entity's data as `native_entity_nbt` gives it, in any loaded level
+  (`/execute in <dimension> run data get entity`, without `id`): what a mod reads after finding an entity by UUID in
+  another level. None on a client, for a level not loaded, and for no such entity. API @API:npc_entity_lookup@.
 - **`native_level_markers(dimension)`** lists the `minecraft:marker` entities of a loaded level as `(id, position,
   data)`: the `data` compound is what `/data get entity <marker> data` shows (empty for a marker saved without data).
   It reads only the level's list of kept entities (displays, interactions, markers), not every entity, so it is the
