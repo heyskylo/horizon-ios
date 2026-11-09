@@ -276,8 +276,11 @@ fn concrete_powder_color(dye: &str) -> u32 {
         _ => 0x191919,
     }
 }
-/// `RedstoneWireBlock.COLORS`.
+/// `RedstoneWireBlock.COLORS`, or a pack's.
 fn redstone_color(power: u8) -> [f32; 3] {
+    if let Some(c) = crate::pack_palette::redstone(power) {
+        return [16, 8, 0].map(|shift| ((c >> shift) & 255) as f32 / 255.0);
+    }
     let f = f32::from(power) / 15.0;
     let r = f * 0.6 + if f > 0.0 { 0.4 } else { 0.3 };
     let g = (f * f * 0.7 - 0.5).clamp(0.0, 1.0);
