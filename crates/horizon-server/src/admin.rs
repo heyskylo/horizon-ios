@@ -189,7 +189,10 @@ fn stopped_command(action: Action, body: &Value) -> Option<(&'static str, Vec<&s
 }
 
 /// A list from its file in the server folder; missing or broken reads as empty, as the game would start.
-fn load<E: horizon_platform::server_files::user_lists::Entry>(dir: &Path, file: &str) -> UserList<E> {
+fn load<E: horizon_platform::server_files::user_lists::Entry>(
+    dir: &Path,
+    file: &str,
+) -> UserList<E> {
     let mut list = UserList::new(dir.join(file));
     let _ = list.load();
     list
@@ -313,7 +316,9 @@ fn uuid(id: u128) -> String {
 fn whitelist_on(dir: &Path) -> bool {
     std::fs::read(dir.join(crate::config::PROPERTIES))
         .ok()
-        .and_then(|b| horizon_platform::server_files::java_properties::Properties::load_file(&b).ok())
+        .and_then(|b| {
+            horizon_platform::server_files::java_properties::Properties::load_file(&b).ok()
+        })
         .and_then(|p| p.get("white-list").map(|v| v == "true"))
         .or_else(|| {
             crate::config::Config::load(dir)

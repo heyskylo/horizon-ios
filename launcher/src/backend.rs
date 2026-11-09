@@ -1923,9 +1923,21 @@ const COMPLETIONS: [Completion; 5] = [
     // A preparation that could not read the asset store keeps the client jar's 1x1 grey
     // placeholders, its English alone, and no sounds (#1867: Prism Launcher installs prepared
     // since 0.2.48).
-    ("The title panorama", "panorama", horizon_platform::prepare::panorama),
-    ("The Unifont glyphs", "fonts", horizon_platform::prepare::fonts),
-    ("The languages", "languages", horizon_platform::prepare::languages),
+    (
+        "The title panorama",
+        "panorama",
+        horizon_platform::prepare::panorama,
+    ),
+    (
+        "The Unifont glyphs",
+        "fonts",
+        horizon_platform::prepare::fonts,
+    ),
+    (
+        "The languages",
+        "languages",
+        horizon_platform::prepare::languages,
+    ),
     ("The sounds", "sounds", horizon_platform::prepare::sounds),
 ];
 
@@ -2459,7 +2471,8 @@ pub fn preparer(
     set_prepare_step(PrepareStep::Files);
     let version = game_version(tag);
     let dir = version_dir(tag);
-    let reused = horizon_platform::prepare::artifacts::reuse_imported(&dir, &|line| log(line.to_string()))?;
+    let reused =
+        horizon_platform::prepare::artifacts::reuse_imported(&dir, &|line| log(line.to_string()))?;
     let chosen = minecraft.to_path_buf();
     // Resolved even when the game files are reused: the assets still come from the install.
     let minecraft = {

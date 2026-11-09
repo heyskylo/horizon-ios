@@ -1099,7 +1099,8 @@ impl Lists<'_> {
     }
 
     fn allowlist(&self) -> Value {
-        let list: horizon_platform::server_files::user_lists::WhiteList = self.load("whitelist.json");
+        let list: horizon_platform::server_files::user_lists::WhiteList =
+            self.load("whitelist.json");
         list.entries()
             .iter()
             .map(|e| json!({ "id": uuid(e.user.id), "name": e.user.name }))
@@ -1121,7 +1122,8 @@ impl Lists<'_> {
     }
 
     fn bans(&self) -> Value {
-        let list: horizon_platform::server_files::user_lists::BanList = self.load("banned-players.json");
+        let list: horizon_platform::server_files::user_lists::BanList =
+            self.load("banned-players.json");
         list.entries()
             .iter()
             .map(|b| {
@@ -1132,7 +1134,8 @@ impl Lists<'_> {
     }
 
     fn ip_bans(&self) -> Value {
-        let list: horizon_platform::server_files::user_lists::IpBanList = self.load("banned-ips.json");
+        let list: horizon_platform::server_files::user_lists::IpBanList =
+            self.load("banned-ips.json");
         list.entries()
             .iter()
             .map(|b| ban(("ip", json!(b.user)), &b.reason, &b.source, b.expires))
