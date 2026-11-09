@@ -735,6 +735,20 @@ impl Game<'_> {
         self.player_drop(thrown);
     }
 
+    /// `ServerPlayer.drop(boolean)` for the guest `conn` (`gi` in the hub): the
+    /// drop key's throw, then `setRemoteSlot` on the selected slot so a pickup
+    /// that refills the stack is sent to the client that predicted the drop.
+    pub(super) fn guest_drop_held(
+        &mut self,
+        host: &mut super::lan::LanHost,
+        gi: usize,
+        conn: u32,
+        all: bool,
+    ) {
+        self.as_guest(host, conn, |g| g.drop_held(all));
+        host.hub.guests[gi].told_selected();
+    }
+
     /// `Player.createItemStackToDrop`: an item entity thrown from the eyes
     /// along the view direction. `thrown_from_hand` (`drop(stack, true)`, the
     /// drop key) names the player as the thrower; `drop(stack, false)`, for
