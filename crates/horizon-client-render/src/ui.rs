@@ -744,7 +744,9 @@ pub fn slider(
 }
 
 /// `AbstractSliderButton.extractWidgetRenderState`: track, 8px handle at `value` (0..1),
-/// with support for keyboard focus and `canChangeValue`.
+/// with support for keyboard focus. The `_can_change_value` flag is Horizon's
+/// own arrow-key editing and does not change the sprites; vanilla's
+/// `canChangeValue` is `dragging`.
 pub fn slider_ext(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -755,7 +757,7 @@ pub fn slider_ext(
     value: f32,
     hover: bool,
     focused: bool,
-    can_change_value: bool,
+    _can_change_value: bool,
     active: bool,
     dragging: bool,
 ) {
@@ -772,7 +774,7 @@ pub fn slider_ext(
         // A controller's D-pad can focus it (Horizon's controller support).
         crate::widgets::target_as([x, y, w, 20.0], kind);
     }
-    let (track, handle) = slider_sprites_ext(hover, active, focused, can_change_value, dragging);
+    let (track, handle) = slider_sprites_ext(hover, active, focused, dragging);
     nine_slice(batch, atlas, track, x, y, w, 20.0, u32::MAX);
     nine_slice(
         batch,
@@ -803,24 +805,28 @@ pub fn slider_ext(
 }
 #[cfg(test)]
 fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &'static str) {
-    slider_sprites_ext(hover, active, false, false, dragging)
+    slider_sprites_ext(hover, active, false, dragging)
 }
 
-/// Track and handle sprites: the track outline shows while dragged or focused with
-/// keyboard navigation (!can_change_value), hovering or editing highlights the handle.
+/// `AbstractSliderButton.getSprite` and `getHandleSprite`: the track outline
+/// lights while the slider is focused and its value cannot change
+/// (`isActive() && isFocused() && !canChangeValue`), the handle while it is
+/// hovered or its value can change (`isActive() && (isHovered || canChangeValue)`).
+/// `canChangeValue` is the mouse drag; a slider being dragged therefore keeps
+/// its plain track and lights its handle, which is the opposite of what
+/// Horizon drew.
 fn slider_sprites_ext(
     hover: bool,
     active: bool,
     focused: bool,
-    can_change_value: bool,
     dragging: bool,
 ) -> (&'static str, &'static str) {
-    let track = if dragging || (active && focused && !can_change_value) {
+    let track = if active && focused && !dragging {
         "gui/sprites/widget/slider_highlighted"
     } else {
         "gui/sprites/widget/slider"
     };
-    let handle = if active && (hover || can_change_value || dragging) {
+    let handle = if active && (hover || dragging) {
         "gui/sprites/widget/slider_handle_highlighted"
     } else {
         "gui/sprites/widget/slider_handle"
