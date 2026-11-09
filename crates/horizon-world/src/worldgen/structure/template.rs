@@ -11,7 +11,8 @@ use std::sync::{Arc, OnceLock};
 pub struct BlockInfo {
     pub pos: [i32; 3],
     pub state: BlockStateId,
-    pub nbt: Option<Compound>,
+    /// Boxed: nearly no block has any, and a template holds thousands of these for the session.
+    pub nbt: Option<Box<Compound>>,
 }
 #[derive(Clone, Debug)]
 pub struct JigsawInfo {
@@ -172,7 +173,7 @@ pub fn save_nbt(
         tag.insert("pos".into(), int_list(block.pos));
         tag.insert("state".into(), Tag::Int(index as i32));
         if let Some(nbt) = &block.nbt {
-            tag.insert("nbt".into(), Tag::Compound(nbt.clone()));
+            tag.insert("nbt".into(), Tag::Compound((**nbt).clone()));
         }
         block_list.push(Tag::Compound(tag));
     }
@@ -260,7 +261,7 @@ impl StructureTemplate {
                     .copied()
                     .unwrap_or(air);
                 let nbt = match get(block, "nbt") {
-                    Some(Tag::Compound(c)) => Some(c.clone()),
+                    Some(Tag::Compound(c)) => Some(Box::new(c.clone())),
                     _ => None,
                 };
                 let class = if nbt.is_some() {
@@ -543,7 +544,7 @@ mod save_tests {
             nbt: nbt.then(|| {
                 let mut c = Compound::new();
                 c.insert("id".into(), Tag::String("minecraft:chest".into()));
-                c
+                Box::new(c)
             }),
         };
         let blocks = vec![

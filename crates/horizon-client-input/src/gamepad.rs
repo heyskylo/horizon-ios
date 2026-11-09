@@ -1441,6 +1441,16 @@ pub enum Rumble {
     },
     Totem,
 }
+impl From<crate::input_source::Feedback> for Rumble {
+    fn from(event: crate::input_source::Feedback) -> Self {
+        use crate::input_source::Feedback;
+        match event {
+            Feedback::BlockBroken => Rumble::BlockBroken,
+            Feedback::Explosion { distance, radius } => Rumble::Explosion { distance, radius },
+            Feedback::Totem => Rumble::Totem,
+        }
+    }
+}
 /// A vibration: the heavy (low-frequency) and light motors, 0..1, and how
 /// long it lasts.
 #[derive(Clone, Copy, Debug, PartialEq)]

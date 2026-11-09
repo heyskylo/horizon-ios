@@ -117,7 +117,11 @@ impl GameCpuResources {
                 minecarts::CartModels::load(document)
             });
             let creative_screen = named_scope(scope, "game_cpu.creative", move || {
-                Creative::load(root).map_err(|error| error.to_string())
+                let mut creative = Creative::load(root).map_err(|error| error.to_string())?;
+                let tab_modifiers =
+                    horizon_client::polytone_creative_tabs::TabModifier::read_all(root);
+                creative.set_pack_modifiers(tab_modifiers);
+                Ok::<_, String>(creative)
             });
             (
                 painting_variants

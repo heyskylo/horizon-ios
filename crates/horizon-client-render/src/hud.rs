@@ -12,6 +12,7 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+mod animate;
 pub mod cit_glint;
 mod pack_text;
 pub mod pictures;
@@ -1427,32 +1428,7 @@ impl HudAtlas {
         }
         if full {
             // Official Recipes artwork from Just Enough Items, under MIT.
-            for (name, png) in [
-                (
-                    "button_enabled_v2",
-                    include_bytes!("jei_recipes/button_enabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_disabled_v2",
-                    include_bytes!("jei_recipes/button_disabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_highlight_v2",
-                    include_bytes!("jei_recipes/button_highlight_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_previous_v2",
-                    include_bytes!("jei_recipes/icons/arrow_previous_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_next_v2",
-                    include_bytes!("jei_recipes/icons/arrow_next_v2.png").as_slice(),
-                ),
-                (
-                    "search_background_v2",
-                    include_bytes!("jei_recipes/search_background_v2.png").as_slice(),
-                ),
-            ] {
+            for (name, png) in crate::jei_sprites::SPRITES {
                 let (width, height, rgba) = decode_bytes(png)?;
                 images.push((format!("horizon/jei/{name}"), width, height, rgba));
             }
@@ -2900,59 +2876,6 @@ impl HudRenderer {
         self.pack_text = shader.and_then(|shader| {
             pack_text::PackText::new(device, self.format, &self.atlas_view, shader, self.coverage)
         });
-    }
-    pub fn animate_sprites(
-        &mut self,
-        uploads: &mut crate::gfx::upload::Uploads,
-        encoder: &mut wgpu::CommandEncoder,
-        tick: u64,
-    ) {
-        let Some(texture) = &self.atlas_texture else {
-            return;
-        };
-        for (rect, animation, previous) in &mut self.sprite_animations {
-            // `SpriteContents.AnimationState`: the frame from the mcmeta's
-            // list, blended into the next one by the sub-frame's thousandths
-            // when the sprite interpolates.
-            let blend = animation.blend(tick);
-            let state = (blend.frame, blend.next, blend.millis);
-            if state == *previous {
-                continue;
-            }
-            let (w, h) = rect.texels((texture.width(), texture.height()));
-            let pixels = if blend.millis == 0 {
-                animation.resized_pixels(blend.frame, w, h)
-            } else {
-                let current = animation.resized_pixels(blend.frame, w, h);
-                let next = animation.resized_pixels(blend.next, w, h);
-                let millis = blend.millis;
-                current
-                    .iter()
-                    .zip(next)
-                    .map(|(&a, b)| {
-                        ((u32::from(a) * (1000 - millis) + u32::from(b) * millis + 500) / 1000)
-                            as u8
-                    })
-                    .collect()
-            };
-            uploads.texture(
-                encoder,
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: (rect.u0 * texture.width() as f32).round() as u32,
-                        y: (rect.v0 * texture.height() as f32).round() as u32,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                w,
-                h,
-                &pixels,
-            );
-            *previous = state;
-        }
     }
     /// Stage `patches` into the shared atlas texture.
     pub fn upload_patches(

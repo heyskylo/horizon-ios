@@ -382,8 +382,8 @@ impl RenderAssets {
         };
         // After the connected tiles: a tile identical to a block shares its layer, and the
         // overlays skip shared layers.
-        if draws {
-            emissive = crate::native_emissive::load_optifine(root, &mut sprites);
+        if draws && let Some(suffix) = crate::pack_hooks::formats().emissive_suffix(root) {
+            emissive = crate::native_emissive::load_overlays(root, &suffix, &mut sprites);
         }
         sprites.save_disk_cache();
         if draws {

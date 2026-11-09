@@ -107,9 +107,9 @@ impl Game<'_> {
                 state: ElementState::Pressed,
                 ..
             }
-        ) && !self.pad.menu.synthetic
+        ) && !self.input_made_pointer_event()
         {
-            self.pad.keyboard_took_over = true;
+            self.input_keyboard_used();
         }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
@@ -222,8 +222,10 @@ impl Game<'_> {
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.settle_after_run(event_loop);
         self.pause_if_inactive();
-        if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
-            self.error = Some("frame-limited run timed out".into());
+        if let Some(limit) = self.options.time_limit()
+            && self.started.elapsed() > limit
+        {
+            self.error = Some(format!("run timed out after {} s", limit.as_secs()).into());
             event_loop.exit();
             return;
         }
