@@ -20,7 +20,9 @@ pub mod outbox;
 pub mod payload;
 pub mod scrub;
 pub mod server_status;
-pub mod system;
+/// The machine's probes, from the platform (`horizon-system`). Kept at this path for the
+/// launcher and the benchmark.
+pub use horizon_platform::system;
 #[cfg(feature = "upload")]
 pub mod upload;
 
