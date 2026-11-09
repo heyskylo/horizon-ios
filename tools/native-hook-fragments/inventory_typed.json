@@ -1,0 +1,26 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "move_stack_typed",
+      "target": "horizon_client::game::native_inventories::Game<'_>::native_move_stack_typed"
+    },
+    {
+      "name": "set_inventory_typed",
+      "target": "horizon_client::game::native_inventories::Game<'_>::native_set_inventory_typed"
+    },
+    {
+      "name": "set_inventory_slot_typed",
+      "target": "horizon_client::game::native_inventories::Game<'_>::native_set_inventory_slot_typed"
+    },
+    {
+      "name": "take_stacks_typed",
+      "target": "horizon_client::game::native_inventories::Game<'_>::native_take_stacks_typed"
+    }
+  ],
+  "rust_summary": "typed-error variants of the inventory helpers (`NativeInventoryError`), beside the text-error ones (`native_move_stack_typed` and kin).",
+  "doc_summary": "`native_move_stack_typed`, `native_set_inventory_typed`, `native_set_inventory_slot_typed` and `native_take_stacks_typed` make the same checks and changes as their untyped helpers (`native_move_stack`, `native_set_inventory`, `native_set_inventory_slot`, `native_take_stacks`), but Err a `NativeInventoryError` (matchable: `InsidePlayerTurn`, `NotOnline`, `StackChanged`, `NoRoom`, ... `File(text)`) instead of text. Bundles need \"hooks\": @API:inventory_typed@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_inventories.rs"
+  ]
+}

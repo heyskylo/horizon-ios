@@ -209,12 +209,12 @@ impl Screen for RadialScreen {
                     name: all.name,
                     rows: all.rows.clone(),
                 };
-                Sheet {
-                    id: page,
-                    name: page_label(pages.page(page)),
-                    about: page_of(page, pages.len()),
-                    groups: vec![slots, changes, all],
-                }
+                Sheet::new(
+                    page,
+                    page_label(pages.page(page)),
+                    page_of(page, pages.len()),
+                    vec![slots, changes, all],
+                )
             })
             .collect()
     }
@@ -260,9 +260,10 @@ impl Screen for RadialScreen {
         true
     }
     /// The pages, and the opener's button, which its row binds.
-    fn undo(&mut self, s: &mut Settings, before: &Settings) {
+    fn undo(&mut self, s: &mut Settings, before: &Settings) -> Vec<Output> {
         s.controller.radial = before.controller.radial.clone();
         s.controller.bind(OPENER, before.controller.binding(OPENER));
+        Vec::new()
     }
 }
 
@@ -341,15 +342,15 @@ impl Screen for PickScreen {
             let name = slot_label(&action.into());
             rows.push(Row::new(id, name, value).about(about.clone()));
         }
-        vec![Sheet {
-            id: (),
-            name: named,
+        vec![Sheet::new(
+            (),
+            named,
             about,
-            groups: vec![Group {
+            vec![Group {
                 name: PICK_GROUP,
                 rows,
             }],
-        }]
+        )]
     }
     fn press(&mut self, s: &mut Settings, row: PickRow, _back: bool) -> Vec<Output> {
         let PickRow::Pick(action) = row else {

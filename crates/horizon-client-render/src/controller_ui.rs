@@ -510,6 +510,8 @@ impl Screen for ControllerScreen {
                         .collect(),
                 })
                 .collect(),
+            listed: true,
+            heading: None,
         };
         rows().into_iter().map(sheet).collect()
     }
@@ -565,10 +567,11 @@ impl Screen for ControllerScreen {
     }
     /// This player's controller settings, bindings included, as the screen found them. The
     /// radial menu's pages stay as they are: their own screen has its own Undo.
-    fn undo(&mut self, s: &mut Settings, before: &Settings) {
+    fn undo(&mut self, s: &mut Settings, before: &Settings) -> Vec<Output> {
         let radial = std::mem::take(&mut s.controller.radial);
         s.controller = before.controller.clone();
         s.controller.radial = radial;
+        Vec::new()
     }
     /// Undo is there exactly while the controller settings differ from what the screen opened
     /// with: a binding the game made while the row waited counts, a value stepped back doesn't,

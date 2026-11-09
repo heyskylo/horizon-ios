@@ -435,6 +435,7 @@ enum Apart {
     Cushion(usize),
     Painting(usize),
     Frame(usize),
+    Other(usize),
     Dragon,
 }
 
@@ -546,6 +547,9 @@ impl Game<'_> {
         for (i, f) in self.item_frames.iter().enumerate() {
             offer(Slot::Apart(Apart::Frame(i)), f.id);
         }
+        for (i, o) in self.others.iter().enumerate() {
+            offer(Slot::Apart(Apart::Other(i)), o.id);
+        }
         if let Some(d) = &self.dragon {
             offer(Slot::Apart(Apart::Dragon), d.id);
         }
@@ -583,6 +587,10 @@ impl Game<'_> {
                 };
                 (kind.into(), block(f.pos))
             }
+            Slot::Apart(Apart::Other(i)) => {
+                let o = &self.others[i];
+                (o.kind.clone().into(), o.position)
+            }
             Slot::Apart(Apart::Dragon) => (
                 "minecraft:ender_dragon".into(),
                 self.dragon.as_ref().map_or(Vec3::ZERO, |d| d.position),
@@ -597,6 +605,7 @@ impl Game<'_> {
             Slot::Apart(Apart::Cushion(i)) => drop(self.cushions.remove(i)),
             Slot::Apart(Apart::Painting(i)) => drop(self.paintings.remove(i)),
             Slot::Apart(Apart::Frame(i)) => drop(self.item_frames.remove(i)),
+            Slot::Apart(Apart::Other(i)) => drop(self.others.remove(i)),
             Slot::Apart(Apart::Dragon) => self.dragon = None,
         }
     }
@@ -657,6 +666,7 @@ impl Game<'_> {
         self.cushions.iter().for_each(|c| seen(c.id));
         self.paintings.iter().for_each(|p| seen(p.id));
         self.item_frames.iter().for_each(|f| seen(f.id));
+        self.others.iter().for_each(|o| seen(o.id));
         if let Some(d) = &self.dragon {
             seen(d.id);
         }

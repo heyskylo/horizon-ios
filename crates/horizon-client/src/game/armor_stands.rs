@@ -505,6 +505,8 @@ impl Game<'_> {
         // ArmorStandItem.useOn turns the stand to face the player.
         self.world.random.next_float();
         self.next_entity += 1;
+        let (_, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(stand.id, uuid);
         self.audio.play(
             "minecraft:entity.armor_stand.place",
             Some([foot.x, foot.y, foot.z]),
@@ -1611,13 +1613,10 @@ impl Game<'_> {
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, 1.0, 0.0))
                 * glam::Mat4::from_rotation_x(0.436_332_32)
                 * glam::Mat4::from_rotation_z(std::f32::consts::PI);
+        let glints = super::perspective::preview_glint_quads(&verts, gui, 0..0, self.glint_frame);
         let quads =
             super::perspective::player_preview_quads(verts, gui, None, &self.gui.atlas.sprites);
-        let start = batch.vertices.len();
-        for (_, p, uv, color) in quads {
-            batch.quad_3d(p, uv, color);
-        }
-        batch.depth_since(start, [x0, y0, x1, y1]);
+        super::perspective::emit_preview(batch, quads, glints, [x0, y0, x1, y1]);
     }
 }
 /// The stand's slot (`ArmorStand::SLOTS` order) for an item whose
