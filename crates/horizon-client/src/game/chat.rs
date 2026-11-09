@@ -2133,7 +2133,10 @@ mod tests {
         assert_ne!(first, second);
         // Unless the clock turned to the next second in between.
         let same_second = second.starts_with(first.trim_end_matches(".png"));
-        assert!(!same_second || second == first.replace(".png", "_2.png"), "{second}");
+        assert!(
+            !same_second || second == first.replace(".png", "_2.png"),
+            "{second}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
