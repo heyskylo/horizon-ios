@@ -14,6 +14,7 @@ use wgpu::util::DeviceExt;
 
 pub mod cit_glint;
 mod pack_text;
+pub(crate) mod sprite_modifiers;
 
 /// A sprite's atlas region, and its size in GUI pixels: the size of the
 /// default resources' texture of that name, whatever the resolution of the
@@ -104,6 +105,8 @@ pub struct HudAtlas {
     /// The packs' `core/sky` and `core/stars`, when a pack replaces them.
     pub sky_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     pub stars_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    /// The packs' Polytone screen sprite modifiers.
+    pub sprite_modifiers: std::sync::Arc<sprite_modifiers::SpriteModifiers>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
@@ -887,18 +890,11 @@ impl HudAtlas {
     /// mods holds none of them.
     pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
         let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
-        atlas.text_shader = pack_text::load(root, defaults);
-        atlas.lines_shader = pack_text::load_core(
+        pack_text::load_shaders(&mut atlas, root, defaults);
+        atlas.sprite_modifiers = std::sync::Arc::new(sprite_modifiers::SpriteModifiers::read(
             root,
-            defaults,
-            "rendertype_lines",
-            &[],
-            &crate::gfx::core_lines::GLUE,
-        );
-        let sky =
-            |name| pack_text::load_core(root, defaults, name, &[], &crate::gfx::core_sky::GLUE);
-        atlas.sky_shader = sky("sky");
-        atlas.stars_shader = sky("stars");
+            atlas.sprites.keys(),
+        ));
         Ok(atlas)
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
@@ -981,6 +977,7 @@ impl HudAtlas {
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
+            sprite_modifiers: Default::default(),
             random_textures: Default::default(),
             emissive: Arc::default(),
             blinks: Default::default(),
@@ -1048,6 +1045,7 @@ impl HudAtlas {
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
+            sprite_modifiers: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -1626,6 +1624,7 @@ impl HudAtlas {
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
+            sprite_modifiers: Default::default(),
             random_textures,
             emissive,
             blinks,
