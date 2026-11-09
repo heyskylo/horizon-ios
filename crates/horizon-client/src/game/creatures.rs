@@ -6514,6 +6514,14 @@ impl Game<'_> {
             .items()
             .get(&item)
             .is_some_and(|i| i.max_damage > 0);
+        // Wolf.mobInteract: the owner's #wolf_collar_dyes item only ever dyes the
+        // collar; one of the colour the collar already has does nothing.
+        let wolf_collar_dye = self
+            .res
+            .items()
+            .item_tags
+            .get("minecraft:wolf_collar_dyes")
+            .is_some_and(|t| t.contains(&*item));
         let parrot_poisonous = self
             .res
             .items()
@@ -6764,7 +6772,10 @@ impl Game<'_> {
             // grows a baby with the food; only when it did not does the owner
             // make the pet sit or stand.
             Species::Wolf
-                if m.extra.tame && m.extra.owner == Some(acting) && !(is_food && takes_food(m)) =>
+                if m.extra.tame
+                    && m.extra.owner == Some(acting)
+                    && !wolf_collar_dye
+                    && !(is_food && takes_food(m)) =>
             {
                 m.extra.sitting = !m.extra.sitting;
                 m.ai.jumping = false;
