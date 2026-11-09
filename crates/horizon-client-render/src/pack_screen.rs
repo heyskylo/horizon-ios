@@ -1618,6 +1618,12 @@ impl PackScreen {
                         let hover = hovered == Some(i)
                             && d::inside(mouse, bx, by, OPTIONS_SIZE, OPTIONS_SIZE);
                         Self::draw_options_button(out, bx, by, hover);
+                        // A control for a pad's crosshair to glide onto and its D-pad to hop to,
+                        // while the list shows it whole.
+                        let mark = crate::widgets::targets_mark();
+                        let size = OPTIONS_SIZE as f32;
+                        crate::widgets::target([bx as f32, by as f32, size, size]);
+                        crate::widgets::clip_targets(mark, l.y as f32, l.bottom() as f32);
                         if hover {
                             tooltip = Some(tr("horizon.pack.optionsInfo"));
                         }
@@ -1745,9 +1751,14 @@ mod icon_tests {
             .unwrap();
         assert_eq!(id, "file/Configurable");
         let (cx, cy) = (bx + OPTIONS_SIZE / 2, by + OPTIONS_SIZE / 2);
-        // Hovered, it explains itself.
+        // Hovered, it explains itself; a pad's crosshair reaches it as a control.
         let draws = screen.draw(&m, (cx, cy), 0, 0);
         assert!(draws.iter().any(|d| matches!(d, Draw::Tooltip { .. })));
+        crate::widgets::end_frame(crate::widgets::generation() + 1);
+        let size = OPTIONS_SIZE as f32;
+        let button = [bx as f32, by as f32, size, size];
+        let targets = crate::widgets::last_targets();
+        assert!(targets.iter().any(|t| t.rect == button), "{targets:?}");
         assert_eq!(
             screen.click(&m, cx as f64, cy as f64),
             Action::Options("file/Configurable".into())

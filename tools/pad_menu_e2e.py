@@ -1877,6 +1877,83 @@ def shader_screens(args, name):
     return check.failures
 
 
+# A resource pack with Polytone config entries (#11486): two sections, presets, a slider, a switch and a choice.
+PACK_ENTRIES = {
+    'fog_density': {'default_value': 0.5, 'min': 0, 'max': 1, 'step': 0.25, 'section': 'sky', 'section_order': 1,
+                    'performance_impact': 'medium', 'presets': {'fast': 0, 'pretty': 1}},
+    'clouds': {'default_value': True, 'section': 'sky'},
+    'rain_style': {'default_value': 'drops', 'allowed_values': ['drops', 'streaks', 'none'], 'section': 'weather',
+                   'section_order': 2, 'presets': {'fast': 'none', 'pretty': 'streaks'}},
+}
+PACK_LANG = {
+    'config.demo.section.sky': 'Sky', 'config.demo.section.weather': 'Weather',
+    'config.demo.fog_density': 'Fog density', 'config.demo.fog_density.tooltip': 'How thick the distant fog is.',
+    'config.demo.clouds': 'Clouds', 'config.demo.rain_style': 'Rain style',
+    'config.demo.rain_style.tooltip': 'How rain is drawn.',
+    'demo.presets.fast': 'Fast', 'demo.presets.pretty': 'Pretty',
+}
+# A card's options button (pack_screen's OPTIONS_SIZE), and the D-pad hops allowed to reach it.
+PACK_OPTIONS_SIZE = 16
+PACK_HOPS = 8
+
+
+def seed_pack_options(game_home):
+    pack = game_home / 'resourcepacks' / 'Configurable'
+    entries = pack / 'assets' / 'demo' / 'polytone' / 'config_entries'
+    entries.mkdir(parents=True)
+    (pack / 'assets' / 'demo' / 'lang').mkdir()
+    # Compatible with 26.3's resource pack format (97.1), so the card isn't marked incompatible.
+    (pack / 'pack.mcmeta').write_text(json.dumps({'pack': {'description': 'Pack options', 'min_format': 97,
+                                                           'max_format': 999}}))
+    for name, entry in PACK_ENTRIES.items():
+        (entries / f'{name}.json').write_text(json.dumps(entry))
+    (pack / 'assets' / 'demo' / 'lang' / 'en_us.json').write_text(json.dumps(PACK_LANG))
+    with (game_home / 'options.txt').open('a') as options:
+        options.write('resourcePacks:["vanilla","file/Configurable"]\n')
+
+
+def pack_options_button(game):
+    """The card's options button among the pack screen's targets: the only square of its size."""
+    return next((r for r in game.rects() if r[2] == r[3] == PACK_OPTIONS_SIZE), None)
+
+
+def on_pack_options_button(game, hops=PACK_HOPS):
+    """The D-pad hops the crosshair from control to control until it is on the options button."""
+    button = pack_options_button(game)
+    if button is None:
+        return False
+    for _ in range(hops):
+        pointer = game.menu()['pointer']
+        if pointer and button[0] <= pointer[0] < button[0] + button[2] and button[1] <= pointer[1] < button[1] + button[3]:
+            return True
+        game.pad('right')
+    return False
+
+
+def pack_card_options(args, name):
+    """A pad player reaches a pack card's options button as a control, and A opens its Pack Options."""
+    game = Game(args, name, seed=seed_pack_options)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'packs')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        check(game.menu()['mode'] == 'pointer', f"the pack screen left the crosshair: {game.menu()['mode']}")
+        check(pack_options_button(game) is not None, f'the options button is no target: {game.rects()}')
+        check(on_pack_options_button(game), f'the D-pad never reached it: {game.menu()["pointer"]}')
+        shot(game, 'pack_card_options_button')
+        game.pad('south')
+        game.wait_targets()
+        check(label_of(game, 'Presets') is not None, f'A did not open Pack Options: {labels(game)}')
+        game.pad('east')
+        game.wait_targets()
+        check(pack_options_button(game) is not None, f'B did not come back to the pack screen: {labels(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def check_has_targets(game, check, screen):
     """A focus-mode screen draws a target soon after it opens; pointer screens (packs) use the crosshair by design."""
     end = time.time() + TARGETS_WAIT
@@ -3303,6 +3380,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'graphics_shell': graphics_shell,
          'shell_choice_step': shell_choice_step,
          'shader_screens': shader_screens,
+         'pack_card_options': pack_card_options,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'nintendo_letters': nintendo_letters,
