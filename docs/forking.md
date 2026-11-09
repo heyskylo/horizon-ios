@@ -24,13 +24,13 @@ What changes in that build:
 | Cosmetics, emotes and the emote wheel, "Show me as a Horizon player" | `game/cosmetics.rs` (+ `cosmetics/fx.rs`, `cosmetics/emotes.rs`, `cosmetics/emote_wheel.rs`), crate `horizon-cosmetics` | `game::cosmetics::enabled()`: the service is never asked, nothing is drawn, B opens no wheel |
 | The official server added to the server list | `multiplayer.rs` (`add_official_server`) | their call at startup (`game.rs`, `fn run`) |
 | Horizon Settings (Extras, PvP & HUD, Splitscreen, Studio, AI Agent, Discord) and Mods (with the registry browser) | `options_ui.rs` (`Page::Horizon` and below), `extras_ui.rs`, `extras.rs`, `pvp.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_hud.rs` | the Options screen shows vanilla's greyed Telemetry Data instead (`options_ui::HORIZON_EXTRAS`, set in `entry.rs`) |
-| Discord Rich Presence | `discord_presence.rs`, `game/discord.rs` | the `discord` feature, which `horizon-extras` turns on |
+| Discord Rich Presence | crate `horizon-discord` | registered only by the official executable (`horizon-official`); horizon-client's own executable has none |
 | Play with Friends | `game/friends.rs`, `friends_screen.rs`, crate `horizon-friends` | the `friends` feature (`game/friends_off.rs` stands in) |
 | The anonymous "I'm playing" ping | crate `horizon-heartbeat` | not in horizon-client at all: only the official executable (`horizon-official`) registers it ([layers.md](layers.md#how-a-horizon-crate-plugs-in)) |
 
 Credits & Attribution then says where the official build is (`horizon.plain.official`).
 
-`grep -rn horizon-extras crates/` lists every gate. Apart from the three features above, the gates
+`grep -rn horizon-extras crates/` lists every gate. Apart from the `friends` feature above, the gates
 are `cfg!(feature = "horizon-extras")`: both sides compile in every build, so no stub has to follow
 the code it replaces. To remove an extra for good, delete its files from the table and the lines its
 gate guards.

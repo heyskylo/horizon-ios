@@ -119,13 +119,11 @@ audio = ["horizon-client-render/audio", "horizon-client-lib/audio"]
 controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
 # Horizon's own extras over the vanilla game, for a fork that wants them out (docs/forking.md):
 # cosmetics and emotes, the "Horizon player" presence, the official server added to
-# the server list, the Horizon Settings and Mods pages, Discord and Play with Friends. Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
+# the server list, the Horizon Settings and Mods pages and Play with Friends. Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
 # every place it gates. Without it (`--no-default-features --features audio,controllers`) the
 # client is best effort: CI builds only the default.
-horizon-extras = ["discord", "friends"]
-# Online extras a server or a port can leave out; the server build has none of them. "Playing Horizon"
-# on Discord (game/discord.rs).
-discord = ["horizon-client-lib/discord"]
+horizon-extras = ["friends"]
+# An online extra a server or a port can leave out; the server build has none.
 # Play with Friends: sharing a world behind an invite code (game/friends.rs) and joining one.
 friends = ["horizon-client-lib/friends", "dep:horizon-friends"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).

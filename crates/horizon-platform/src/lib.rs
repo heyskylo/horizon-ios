@@ -46,5 +46,7 @@ pub use horizon_server_files as server_files;
 /// [`hooks::register`] it before the game starts (docs/layers.md, "How a Horizon crate plugs
 /// in"). The engine's dispatch side is not part of the API.
 pub mod hooks {
-    pub use horizon_hooks::{Hooks, Started, TooLate, register};
+    pub use horizon_hooks::{
+        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register,
+    };
 }

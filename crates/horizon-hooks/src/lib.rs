@@ -31,6 +31,69 @@ pub trait Hooks: Sync {
 
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
+
+    /// A game window opened: once, before the first frame, for every run that has a window,
+    /// automated ones included ([`Client::automated`]); never for a dedicated server.
+    fn client_started(&self, _client: &Client) {}
+
+    /// What the player is doing, for a status shown outside the game (Discord's): called when it
+    /// changes, not every frame. Splitscreen: the first player's only.
+    fn activity(&self, _now: Activity) {}
+}
+
+/// What [`Hooks::client_started`] gets.
+#[non_exhaustive]
+pub struct Client {
+    /// A run nobody plays: offscreen, a benchmark, a run that quits by itself after some frames.
+    pub automated: bool,
+}
+
+impl Client {
+    pub fn new(automated: bool) -> Self {
+        Self { automated }
+    }
+}
+
+/// What the player is doing ([`Hooks::activity`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Activity {
+    /// The player keeps it to themselves: the Discord switch in Horizon Settings is off. (The
+    /// switch moves to the Discord crate's own settings with the settings store.)
+    Hidden,
+    /// On the title screen or another menu outside a world.
+    Menus,
+    World {
+        play: Play,
+        dimension: Dimension,
+        mode: GameMode,
+    },
+}
+
+/// How the player is in a world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Play {
+    Singleplayer,
+    /// A server or someone else's LAN world.
+    Multiplayer,
+    /// Their world is open to LAN or friends; `players` counts the host, `max` is how many may
+    /// join.
+    Hosting { players: usize, max: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dimension {
+    Overworld,
+    Nether,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameMode {
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
 }
 
 /// What [`Hooks::started`] gets.
@@ -113,6 +176,32 @@ pub mod engine {
         }
     }
 
+    /// [`Hooks::client_started`].
+    pub fn client_started(client: &Client) {
+        for hooks in all() {
+            hooks.client_started(client);
+        }
+    }
+
+    /// The activity at the last call (`None` before the first).
+    static ACTIVITY: Mutex<Option<Activity>> = Mutex::new(None);
+
+    /// [`Hooks::activity`], when `now` differs from the last call's. Cheap enough to call every
+    /// frame: with no hook registered it only loads the empty list.
+    pub fn activity(now: Activity) {
+        let hooks = all();
+        if hooks.is_empty() {
+            return;
+        }
+        let mut last = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner());
+        if last.replace(now) != Some(now) {
+            drop(last);
+            for h in hooks {
+                h.activity(now);
+            }
+        }
+    }
+
     /// [`Hooks::shutdown`].
     pub fn shutdown() {
         for hooks in all() {
@@ -140,6 +229,9 @@ mod tests {
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
         }
+        fn activity(&self, now: Activity) {
+            self.0.lock().unwrap().push(format!("{now:?}"));
+        }
     }
 
     /// Implements nothing: the defaults do nothing.
@@ -157,10 +249,19 @@ mod tests {
         for open in [false, true, true, true, false, false] {
             engine::published(open);
         }
+        for now in [Activity::Menus, Activity::Menus, Activity::Hidden, Activity::Hidden] {
+            engine::activity(now);
+        }
         engine::shutdown();
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
-            ["started 0.2.31", "published true", "published false"]
+            [
+                "started 0.2.31",
+                "published true",
+                "published false",
+                "Menus",
+                "Hidden"
+            ]
         );
         assert_eq!(register(&Silent), Err(TooLate));
     }
