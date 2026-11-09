@@ -49,6 +49,7 @@ fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOv
     }
 }
 
+mod activity;
 mod advancements;
 mod advancements_screen;
 mod agent;
@@ -128,8 +129,6 @@ mod decorated_pot;
 mod dedicated;
 mod deflect;
 mod dialogs;
-#[cfg(feature = "discord")]
-mod discord;
 mod dispense_fixture;
 mod dispenser;
 mod dragon;
@@ -1499,7 +1498,7 @@ impl LevelAccess for GameLevel<'_> {
             };
         }
         if let Some(signal) = books::lectern_signal(self.world, pos) {
-            return signal;
+            return signal * i32::from(books::has_book_state(self.registry, state));
         }
         if let Some(signal) =
             machines::shelf_signal(self.world, self.registry, state, pos, direction)
@@ -5833,7 +5832,7 @@ impl Game<'_> {
         self.draw_debug_overlay(&mut batch, size);
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
-        self.draw_pad_cursor(&mut batch);
+        self.draw_pad_over_hud(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -5964,6 +5963,7 @@ impl Game<'_> {
             if self.camera_type.first_person()
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
+                && !self.overlay_holds_view()
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -6093,6 +6093,7 @@ impl Game<'_> {
                     Some(draws) => draws,
                     None => self.health_hud.layout(&inputs, wi, hi),
                 };
+                self.keep_status_rows(&draws, wi, hi);
                 // The rows draw in one pass here, so a mod's `player_health`
                 // layer stands for the armor, food and air rows too.
                 self.gui_layer("minecraft:player_health", &mut batch, |g, batch| {
@@ -6192,7 +6193,9 @@ impl Game<'_> {
         if self.screen == Screen::Chat {
             self.draw_chat(&mut batch);
         } else if show_hud {
-            self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
+            if !self.overlay_holds_view() {
+                self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
+            }
             self.gui_layer("minecraft:tab_list", &mut batch, |g, batch| {
                 g.draw_tab_list(batch);
             });
@@ -6263,11 +6266,7 @@ impl Game<'_> {
         // after this point and so over what a mod drew.
         self.fire_screen_render_post(&mut batch);
         self.draw_saving_indicator(&mut batch);
-        // ToastManager.extractRenderState: F1 hides the toasts too.
-        self.draw_toasts(&mut batch, !show_hud);
-        self.draw_tutorial_toasts(&mut batch, !show_hud);
-        self.draw_pack_toasts(&mut batch, !show_hud);
-        self.draw_music_toast(&mut batch, !show_hud);
+        self.draw_every_toast(&mut batch, !show_hud);
         if self.server_packs.prompt.is_none() {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
@@ -6717,8 +6716,8 @@ impl Game<'_> {
                 .extend(out.drain(player_start..));
         }
         self.mark_motion(out.len(), 0);
-        // Companions in first person, trails and auras (game/cosmetics/fx.rs).
-        self.cosmetics_fx_geometry(camera, alpha, &mut out);
+        // What crates draw around players: first person, see-through (game/player_hooks.rs).
+        self.players_after_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
         self.fangs_geometry(camera, alpha, &mut out);
         self.block_item_display_geometry(camera, alpha, &mut out);
@@ -9425,6 +9424,7 @@ impl Game<'_> {
             self.camera_type.first_person(),
             self.ui.hide_gui,
             self.shows_panorama(),
+            self.overlay_holds_view(),
         ) {
             let scale = HudBatch::new(size).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
@@ -9980,10 +9980,8 @@ impl Game<'_> {
                 &mut self.toggles,
                 [self.settings.toggle_crouch, self.settings.toggle_sprint],
                 [
-                    self.pad
-                        .holds_action(&self.settings.controller, "key.sneak"),
-                    self.pad
-                        .holds_action(&self.settings.controller, "key.sprint"),
+                    self.pad.holds_action("key.sneak"),
+                    self.pad.holds_action("key.sprint"),
                 ],
             );
             self.sync_toggle(SNEAK);
@@ -11253,8 +11251,7 @@ impl Game<'_> {
                     self.heal_hold_latches();
                     // For the hooks above the engine (the "I'm playing" ping): said when it changes.
                     horizon_hooks::engine::published(self.is_published());
-                    #[cfg(feature = "discord")]
-                    self.update_discord_presence();
+                    self.report_activity();
                     let steps = self.clock.advance(elapsed);
                     for _ in 0..steps {
                         let started = Instant::now();
@@ -12529,15 +12526,8 @@ pub fn run_with() -> Result<()> {
     if options.execution_role.is_client() {
         narrator::start(&early_settings);
     }
-    // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
-    #[cfg(feature = "discord")]
-    if options.dedicated.is_none() {
-        let automated = options.benchmark.is_some()
-            || options.offscreen
-            || options.frames.is_some()
-            || options.world_frames.is_some();
-        horizon_client::discord_presence::start(early_settings.extras.discord_presence, automated);
-    }
+    // A game window's hooks (Discord's presence): never for a server.
+    activity::client_started(&options);
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));

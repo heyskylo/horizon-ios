@@ -869,6 +869,10 @@ pub enum Opt {
     PadNintendoButtons,
     PadKeyboard,
     PadGameplayGuide,
+    /// The radial menu's opener held or pressed once (`PadSettings::radial_mode`).
+    PadRadialMode,
+    /// The stick the radial menu selects with (`PadSettings::radial_stick`).
+    PadRadialStick,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
     ModelPart(usize),
     /// A slider of a page a crate registered (`horizon_hooks::pages`): (page, row).

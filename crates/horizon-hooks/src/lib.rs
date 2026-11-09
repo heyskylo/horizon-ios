@@ -77,12 +77,79 @@ pub trait Hooks: Sync {
     /// Draws on a player model, after its vanilla layers, each time it is drawn.
     fn player_layers(&self, _model: &players::PlayerModel, _draw: &mut dyn players::PlayerDraw) {}
 
+    /// Draws around the window's own model while its body is out of view (first person), once a
+    /// frame after the first-person model: [`players::Pass::FirstPerson`].
+    fn first_person(&self, _own: &players::PlayerModel, _draw: &mut dyn players::PlayerDraw) {}
+
     /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
     /// offers one is used. Asked on the network thread when joining and on the game thread when
     /// an address is shown, never per frame.
     fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
         None
     }
+
+    /// A game window opened: once, before the first frame, for every run that has a window,
+    /// automated ones included ([`Client::automated`]); never for a dedicated server.
+    fn client_started(&self, _client: &Client) {}
+
+    /// What the player is doing, for a status shown outside the game (Discord's): called when it
+    /// changes, not every frame. Splitscreen: the first player's only.
+    fn activity(&self, _now: Activity) {}
+}
+
+/// What [`Hooks::client_started`] gets.
+#[non_exhaustive]
+pub struct Client {
+    /// A run nobody plays: offscreen, a benchmark, a run that quits by itself after some frames.
+    pub automated: bool,
+}
+
+impl Client {
+    pub fn new(automated: bool) -> Self {
+        Self { automated }
+    }
+}
+
+/// What the player is doing ([`Hooks::activity`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Activity {
+    /// On the title screen or another menu outside a world.
+    Menus,
+    World {
+        play: Play,
+        dimension: Dimension,
+        mode: GameMode,
+    },
+}
+
+/// How the player is in a world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Play {
+    Singleplayer,
+    /// A server or someone else's LAN world.
+    Multiplayer,
+    /// Their world is open to LAN or friends; `players` counts the host, `max` is how many may
+    /// join.
+    Hosting {
+        players: usize,
+        max: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dimension {
+    Overworld,
+    Nether,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameMode {
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
 }
 
 /// What [`Hooks::started`] gets.
@@ -178,6 +245,32 @@ pub mod engine {
         }
     }
 
+    /// [`Hooks::client_started`].
+    pub fn client_started(client: &Client) {
+        for hooks in all() {
+            hooks.client_started(client);
+        }
+    }
+
+    /// The activity at the last call (`None` before the first).
+    static ACTIVITY: std::sync::Mutex<Option<Activity>> = std::sync::Mutex::new(None);
+
+    /// [`Hooks::activity`], when `now` differs from the last call's. Cheap enough to call every
+    /// frame: with no hook registered it only loads the empty list.
+    pub fn activity(now: Activity) {
+        let hooks = all();
+        if hooks.is_empty() {
+            return;
+        }
+        let mut last = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner());
+        if last.replace(now) != Some(now) {
+            drop(last);
+            for h in hooks {
+                h.activity(now);
+            }
+        }
+    }
+
     /// [`Hooks::shutdown`].
     pub fn shutdown() {
         for hooks in all() {
@@ -214,6 +307,13 @@ pub mod engine {
     pub fn player_layers(model: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
         for hooks in all() {
             hooks.player_layers(model, draw);
+        }
+    }
+
+    /// [`Hooks::first_person`].
+    pub fn first_person(own: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
+        for hooks in all() {
+            hooks.first_person(own, draw);
         }
     }
 
@@ -255,6 +355,9 @@ mod tests {
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
         }
+        fn activity(&self, now: Activity) {
+            self.0.lock().unwrap().push(format!("{now:?}"));
+        }
         fn frame(&self, frame: &players::Frame, sprites: &mut dyn players::SpriteStore) {
             self.0
                 .lock()
@@ -285,7 +388,14 @@ mod tests {
                 return;
             };
             let turn = draw.ticks() / 100.0;
-            draw.draw(&HAT, head, uv, &mut |p| p.pose("brim")[4] = turn);
+            let look = players::Look::new(uv);
+            draw.draw(&HAT, head, look, &mut |p| p.pose("brim")[4] = turn);
+        }
+        /// A spark at the eyes, as bright as the head turns.
+        fn first_person(&self, _: &players::PlayerModel, draw: &mut dyn players::PlayerDraw) {
+            let alpha = draw.motion().head_yaw / 90.0;
+            let spark = players::Particle::new([[0.0; 3]; 4], [[0.0; 2]; 4], alpha);
+            draw.particles([0.0; 4], &[spark], players::Light::Full);
         }
         fn tick(&self, models: &mut dyn players::PlayerModels) {
             let mut ids = Vec::new();
@@ -362,15 +472,25 @@ mod tests {
             ))
         });
 
-    /// A player drawn at age 50, its head where the camera is; logs each draw.
+    /// A player drawn at age 50, its head where the camera is, turned 45 degrees; logs each draw
+    /// and its particles' alphas.
     #[derive(Default)]
-    struct Canvas(Vec<(String, [[f32; 4]; 4], [f32; 4], f32)>);
+    struct Canvas(Vec<(String, [[f32; 4]; 4], [f32; 4], f32)>, Vec<f32>);
     impl players::PlayerDraw for Canvas {
         fn pass(&self) -> players::Pass {
             players::Pass::World
         }
         fn ticks(&self) -> f32 {
             50.0
+        }
+        fn base(&self) -> [[f32; 4]; 4] {
+            [[1.0, 0.0, 0.0, 0.0]; 4]
+        }
+        fn motion(&self) -> players::Motion {
+            players::Motion::new([0.0; 3], 45.0, 0.0)
+        }
+        fn view(&self) -> players::View {
+            players::View::default()
         }
         fn bone(&mut self, bone: players::Bone) -> Option<[[f32; 4]; 4]> {
             (bone == players::Bone::Head).then_some([[1.0, 0.0, 0.0, 0.0]; 4])
@@ -385,7 +505,7 @@ mod tests {
             &mut self,
             mesh: &std::sync::Arc<players::Mesh>,
             matrix: [[f32; 4]; 4],
-            uv: [f32; 4],
+            look: players::Look,
             pose: &mut dyn FnMut(&mut dyn players::PartPoses),
         ) {
             struct Rest([f32; 9]);
@@ -396,7 +516,10 @@ mod tests {
             }
             let mut brim = Rest(mesh.children[0].pose);
             pose(&mut brim);
-            self.0.push((mesh.name.clone(), matrix, uv, brim.0[4]));
+            self.0.push((mesh.name.clone(), matrix, look.uv, brim.0[4]));
+        }
+        fn particles(&mut self, _: [f32; 4], particles: &[players::Particle], _: players::Light) {
+            self.1.extend(particles.iter().map(|p| p.alpha));
         }
     }
 
@@ -414,6 +537,14 @@ mod tests {
         // Changes only: the same state every frame is said once.
         for open in [false, true, true, true, false, false] {
             engine::published(open);
+        }
+        let world = Activity::World {
+            play: Play::Singleplayer,
+            dimension: Dimension::Nether,
+            mode: GameMode::Creative,
+        };
+        for now in [Activity::Menus, Activity::Menus, world, world] {
+            engine::activity(now);
         }
         engine::shutdown();
         assert!(engine::any());
@@ -445,6 +576,8 @@ mod tests {
                 0.5
             )]
         );
+        engine::first_person(&model(players::Kind::Own), &mut canvas);
+        assert_eq!(canvas.1, [0.5]);
         let mut models = Two(Default::default());
         engine::tick(&mut models);
         assert!(models.body_pose(3).is_some() && models.body_pose(7).is_some());
@@ -454,6 +587,8 @@ mod tests {
                 "started 0.2.31",
                 "published true",
                 "published false",
+                "Menus",
+                "World { play: Singleplayer, dimension: Nether, mode: Creative }",
                 "frame 4"
             ]
         );
