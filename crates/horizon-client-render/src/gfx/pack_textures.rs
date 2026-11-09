@@ -1,8 +1,7 @@
 //! A shader pack's custom textures (`texture.<stage>.<name>`, `texture.noise`) on the GPU, and
 //! which of them a program's sampler reads.
 
-use horizon_render_pipeline::Kind;
-use horizon_shaders::{CustomTexture, Group, Texels, Texture, TextureDim, TextureSource};
+use horizon_shaders::{CustomTexture, Group, Kind, Texels, Texture, TextureDim, TextureSource};
 
 /// What a custom texture is once uploaded: an image of ours, or one the game already has.
 pub(super) enum Image {
@@ -119,12 +118,12 @@ pub(super) fn find(textures: &[PackTexture], group: Group, ty: &str, name: &str)
     } else {
         wgpu::TextureViewDimension::D2
     };
-    let buffer = horizon_render_pipeline::buffer_index(name);
+    let buffer = horizon_shaders::buffer_index(name);
     let staged = textures.iter().position(|t| {
         t.stage == stage(group)
             && t.dimension == dimension
             && (t.name == name
-                || buffer.is_some() && horizon_render_pipeline::buffer_index(&t.name) == buffer)
+                || buffer.is_some() && horizon_shaders::buffer_index(&t.name) == buffer)
     });
     staged.or_else(|| {
         textures.iter().position(|t| {

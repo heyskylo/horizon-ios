@@ -93,6 +93,7 @@ fn particle_tick_cost() {
         facts: &facts,
         collision: &collision,
         player: None,
+        cached_chunk: std::cell::Cell::new(None),
     };
     let ty = |name: &str| ParticleType::from_name(name).unwrap();
     let (fx, fy, fz) = (0.5, f64::from(FLOOR_Y + 5), 20.5);

@@ -226,6 +226,25 @@ impl Game<'_> {
         });
     }
 
+    /// `Entity.collide`'s `getEntityCollisions` for a body a piston or a
+    /// shulker lid pushes: the entities it can collide with
+    /// (`canCollideWith`, which for every mover but a vehicle is
+    /// `canBeCollidedWith`): a boat, a living shulker, a happy ghast held
+    /// still. A pushed boat or minecart collides by `canVehicleCollide`
+    /// instead, which this doesn't cover, and the player moves itself.
+    fn pushed_entity_colliders(&self, target: Target) -> Vec<Aabb> {
+        match target {
+            Target::Entity(EntityHandle::Boat(_) | EntityHandle::Cart(_)) => Vec::new(),
+            Target::Entity(handle) => {
+                let own = with_entity!(self, handle, entity => Entity::bounds(entity));
+                let mut boxes = self.item_entity_collisions();
+                boxes.retain(|b| *b != own);
+                boxes
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// The collision view of the moving piston at `pos` takes the progress
     /// its tick gave it. One no longer moving keeps its entry until
     /// `sync_moving_pistons`.
@@ -284,6 +303,7 @@ impl Game<'_> {
                 self.shulker_push_player(movement);
                 return;
             }
+            let entities = self.pushed_entity_colliders(target);
             let Ok(moved) = pushed_movement(
                 SceneCollisions {
                     world: &self.world,
@@ -298,6 +318,7 @@ impl Game<'_> {
                 body.step_height,
                 body.on_ground,
                 None,
+                &entities,
             ) else {
                 return;
             };
@@ -665,6 +686,7 @@ impl Game<'_> {
                 self.projectile_piston_block_effects(i, at);
             }
             self.piston_block_triggers(before, before);
+            self.release_after_block_move(target);
             return;
         }
         // `Entity.move`: a projectile a cobweb or powder snow holds stops dead
@@ -695,6 +717,7 @@ impl Game<'_> {
             }
             _ => None,
         };
+        let entities = self.pushed_entity_colliders(target);
         let resolved = with_piston_noclip(piston_direction, || {
             pushed_movement(
                 SceneCollisions {
@@ -709,6 +732,7 @@ impl Game<'_> {
                 step_height,
                 on_ground,
                 tnt.as_ref().map(|t| t.3),
+                &entities,
             )
             .unwrap_or(Vec3::ZERO)
         });
@@ -747,6 +771,9 @@ impl Game<'_> {
             || limited.length_squared() - resolved.length_squared() < 1.0e-7;
         if moved {
             self.apply_push(target, resolved);
+        } else {
+            // A move the collisions cut to nothing still ends in the check.
+            self.release_after_block_move(target);
         }
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
@@ -864,24 +891,35 @@ impl Game<'_> {
             }
             Target::Entity(handle) => {
                 with_entity_mut!(self, handle, entity => entity.move_by_piston(movement));
-                let Some(bounds) =
-                    with_entity!(self, handle, entity => entity.piston_release_bounds())
-                else {
-                    return;
-                };
-                let no_block_collision = {
-                    let mut scene = SceneCollisions {
-                        world: &self.world,
-                        binding: self.collision,
-                        subject: None,
-                    };
-                    no_collision_empty(&mut scene, bounds)
-                };
-                with_entity_mut!(self, handle, entity => {
-                    entity.release_after_piston(no_block_collision)
-                });
+                self.release_after_block_move(target);
             }
         }
+    }
+
+    /// `AbstractArrow.move` with a mover other than the arrow itself (a
+    /// piston, a shulker lid): after `Entity.move`, whether or not it went
+    /// anywhere, a stuck arrow or trident with nothing to collide with within
+    /// 0.06 starts falling (`shouldFall`, `startFalling`). Its own tick only
+    /// checks once the block at its position changes, a tick later.
+    fn release_after_block_move(&mut self, target: Target) {
+        let Target::Entity(handle) = target else {
+            return;
+        };
+        let Some(bounds) = with_entity!(self, handle, entity => entity.piston_release_bounds())
+        else {
+            return;
+        };
+        let no_block_collision = {
+            let mut scene = SceneCollisions {
+                world: &self.world,
+                binding: self.collision,
+                subject: None,
+            };
+            no_collision_empty(&mut scene, bounds)
+        };
+        with_entity_mut!(self, handle, entity => {
+            entity.release_after_piston(no_block_collision)
+        });
     }
 
     /// `causeBounce`: a slime block sets the velocity along the movement axis.
@@ -939,19 +977,16 @@ fn pushed_movement<W>(
     step_height: f32,
     on_ground: bool,
     context: Option<CollisionContext<'_>>,
+    entities: &[Aabb],
 ) -> horizon_client::Result<Vec3>
 where
     W: BlockCollisionWorld<Error = std::io::Error> + EntityMovementWorld<Error = std::io::Error>,
 {
     // Without the entity's own context, the one `resolve` reads at its feet.
     let context = context.unwrap_or_else(|| CollisionContext::position(before.min_position().y));
-    EntityCollisions::with_border(blocks, border, at).resolve_with_context(
-        before,
-        movement,
-        step_height,
-        on_ground,
-        context,
-    )
+    let mut collisions = EntityCollisions::with_border(blocks, border, at);
+    collisions.entities = entities;
+    collisions.resolve_with_context(before, movement, step_height, on_ground, context)
 }
 
 #[cfg(test)]
@@ -980,6 +1015,7 @@ mod tests {
             0.0,
             false,
             None,
+            &[],
         )
         .expect("the push resolves");
         // The wall stops the body 0.4 blocks short of the whole push.
@@ -1003,6 +1039,7 @@ mod tests {
             0.0,
             false,
             None,
+            &[],
         )
         .expect("the push resolves");
         assert!(
@@ -1521,6 +1558,48 @@ mod h255_mob_piston_ground_tests {
             Direction::East,
             &mut std::collections::HashMap::new(),
         );
+    }
+    /// `AbstractArrow.move` after a push the collisions cut to nothing: a stuck
+    /// arrow with nothing within 0.06 of it starts falling all the same.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_stuck_arrow_whose_push_a_wall_stops_falls_when_nothing_holds_it() {
+        with_game(|game| {
+            assert!(game.run_command("setblock 6 202 4 minecraft:stone"));
+            game.creatures.projectiles.clear();
+            assert!(game.run_command("summon minecraft:arrow 5.75 202.5 4.5 {NoGravity:0b}"));
+            let i = game
+                .creatures
+                .projectiles
+                .iter()
+                .position(|p| p.arrow.is_some())
+                .expect("the arrow");
+            {
+                let p = &mut game.creatures.projectiles[i];
+                p.velocity = Vec3::ZERO;
+                p.stuck = true;
+                p.arrow.as_mut().unwrap().in_ground = true;
+            }
+            let p = &game.creatures.projectiles[i];
+            let (bounds, at) = (p.bounds(), [p.position.x, p.position.z]);
+            let before = p.position;
+            game.move_pushed(
+                Target::Entity(EntityHandle::Projectile(i)),
+                bounds,
+                at,
+                0.0,
+                false,
+                Vec3::new(0.3, 0.0, 0.0),
+                Direction::East,
+                &mut std::collections::HashMap::new(),
+            );
+            let p = &game.creatures.projectiles[i];
+            assert_eq!(p.position, before, "the stone stops the push");
+            assert!(
+                !p.arrow.as_ref().unwrap().in_ground,
+                "nothing holds it, so it falls"
+            );
+        });
     }
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
