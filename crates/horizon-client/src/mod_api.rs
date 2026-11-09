@@ -440,6 +440,25 @@ pub struct NativeStack {
     pub components: String,
 }
 
+/// One item a loot table can drop and its odds (`native_loot_odds`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeLootOdds {
+    /// The item (`minecraft:flint`).
+    pub item: String,
+    /// Its components beyond the item's own, in vanilla's item syntax, or "".
+    pub components: String,
+    /// The chance at least one comes from one roll of the whole table.
+    pub chance: f64,
+    /// How many come when it does: the fewest one drop gives, and the most
+    /// the table can give at once.
+    pub min: u32,
+    pub max: u32,
+    /// The conditions on its way that could not be judged here (a tool when
+    /// none was named, the weather, a killer), as short lines; they were
+    /// taken as met.
+    pub conditions: Vec<String>,
+}
+
 /// What the player did on a native mod's panel (`native_panel_event`).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]

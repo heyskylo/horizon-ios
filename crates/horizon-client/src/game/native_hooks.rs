@@ -1005,6 +1005,7 @@ use super::{
 use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
+pub(crate) use horizon_client::mod_api::NativeLootOdds;
 use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
     self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
@@ -11797,6 +11798,24 @@ impl Game<'_> {
     /// hotbar, then the inventory. The count is cut to one stack.
     pub(super) fn native_give(&mut self, item: &str, count: u32) -> Result<(), String> {
         self.recipe_give(item, count)
+    }
+    /// The items loot table `table` (`minecraft:blocks/gravel`) can drop and
+    /// their odds from one roll, from the world's tables (its data packs
+    /// merged): each item's chance to come at least once, how many come, and
+    /// the conditions on its way this could not judge, taken as met. Weights,
+    /// rolls, nested entries and tables, random chances and set counts count;
+    /// luck and enchantments are none. With `tool` (`minecraft:brush`),
+    /// `match_tool` conditions are judged with that tool in hand; without, they
+    /// are taken as met and named in `conditions`. None for a table that isn't
+    /// there. For a recipe viewer that lists a mod's chance outputs:
+    /// a server works them out and sends them to its players. Server-side
+    /// (any side with the world's data). API @API:loot_odds@.
+    pub(super) fn native_loot_odds(
+        &mut self,
+        table: &str,
+        tool: Option<&str>,
+    ) -> Option<Vec<NativeLootOdds>> {
+        self.loot_odds(table, tool)
     }
 }
 

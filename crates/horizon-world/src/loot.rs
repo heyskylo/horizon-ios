@@ -608,6 +608,9 @@ fn overlay_map(overlay: &PackOverlay, kind: &str, out: &mut HashMap<String, Valu
     }
 }
 
+mod odds;
+pub use odds::LootOdds;
+
 /// Loot tables by id. Each is kept as its JSON text and read into a [`Value`]
 /// the first time it is rolled: of vanilla's ~1,450 tables a game rolls a
 /// few, and as `Value`s they took ~7 MB for 0.6 MB of JSON. Every table was
