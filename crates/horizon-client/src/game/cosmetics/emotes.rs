@@ -20,7 +20,8 @@ pub(in crate::game) struct Emotes {
     /// The emotes the wheel offers, in order.
     pub(in crate::game) owned: Vec<Arc<Item>>,
     /// Their names by locale, by id (the service's), when known.
-    pub(in crate::game) names: std::collections::HashMap<String, std::collections::BTreeMap<String, String>>,
+    pub(in crate::game) names:
+        std::collections::HashMap<String, std::collections::BTreeMap<String, String>>,
     /// The account's emotes on their way from the service, and when they last came.
     pub(in crate::game) loading: Option<std::sync::mpsc::Receiver<Result<Vec<OwnedEmote>, String>>>,
     pub(in crate::game) loaded: Option<std::time::Instant>,
