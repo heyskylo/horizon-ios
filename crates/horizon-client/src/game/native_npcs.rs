@@ -443,3 +443,7 @@ impl Game<'_> {
         Some(out)
     }
 }
+
+#[cfg(test)]
+#[path = "native_lookup_tests.rs"]
+mod lookup_tests;

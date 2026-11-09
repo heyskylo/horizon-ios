@@ -1,6 +1,6 @@
 //! Finding entities across levels for native mods: an entity by UUID in another level (gone once
 //! removed) and the markers of a level with their data.
-use super::*;
+use super::super::*;
 use horizon_client::mod_api::NativeAuthority;
 use horizon_world::nbt::Tag;
 
