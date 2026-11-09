@@ -91,10 +91,11 @@ impl Game<'_> {
         // with infinite materials, the hand when emptied, else the inventory
         // (ServerPlayer.handleExtraItemsCreatedOnUse) or a drop.
         self.consume_held();
-        if let Some(remainder) = &info.use_remainder
+        if let Some(remainder) =
+            horizon_client::item_sync::use_remainder(stack, info.use_remainder.clone())
             && !self.creative
         {
-            let remainder = ItemStack::new(remainder, 1);
+            let remainder = ItemStack::new(&remainder, 1);
             if self.held().is_none() {
                 *self.held_mut() = Some(remainder);
             } else if let Some(rest) = self.give(remainder) {

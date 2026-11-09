@@ -160,6 +160,20 @@ pub fn consumable_seconds(stack: &ItemStack) -> Option<f32> {
             horizon_world::datafix::dynamic::as_float(consumable.get("consume_seconds"), 1.6)
         })
 }
+/// `UseRemainder` from the stack's `use_remainder` component.
+pub fn use_remainder(stack: &ItemStack, default: Option<String>) -> Option<String> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:use_remainder").is_some()) {
+        return None;
+    }
+    if let Some(remainder) = data.and_then(|d| d.other("minecraft:use_remainder")) {
+        return match remainder.get("id") {
+            Some(Tag::String(id)) => Some(id.to_string_lossy()),
+            _ => None,
+        };
+    }
+    default
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -1013,6 +1027,30 @@ mod tests {
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
         assert_eq!(consumable_seconds(&stack), None);
+    }
+
+    #[test]
+    fn use_remainder_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:mushroom_stew", 1);
+        stack.data_mut().set_other(
+            "minecraft:use_remainder",
+            Some(Tag::compound([(
+                "id",
+                Tag::String("minecraft:bowl".into()),
+            )])),
+        );
+        assert_eq!(
+            use_remainder(&stack, None).as_deref(),
+            Some("minecraft:bowl")
+        );
+        stack.data_mut().set_other(
+            "!minecraft:use_remainder",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            use_remainder(&stack, Some("minecraft:glass_bottle".into())),
+            None
+        );
     }
 
     #[test]
