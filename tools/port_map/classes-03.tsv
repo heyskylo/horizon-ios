@@ -79,7 +79,7 @@ BarrelBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs::Sim:
 BarrierBlock.canPlaceLiquid	port	crates/horizon-world/src/level/fluids.rs::Sim::can_place_liquid	
 BarrierBlock.getFluidState	port	crates/horizon-world/src/registry_fluid.rs::RegistryFluidWorld::fluid_state	
 BarrierBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	
-BarrierBlock.pickupBlock	port	crates/horizon-world/src/level/fluids.rs::Sim::pickup_block	gap: minor: vanilla lets only a creative player pick it up; that rule is not checked here
+BarrierBlock.pickupBlock	port	crates/horizon-world/src/level/fluids.rs::Sim::pickup_block	a waterlogged barrier drains only for a creative player (`Sim::pickup_block` takes the breaker's creative flag); any other call leaves the water in it
 BarrierBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
 BaseCoralWallFanBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	
 BaseCoralWallFanBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)

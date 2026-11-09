@@ -771,26 +771,9 @@ fn swim(p: &mut Poses, pos: f32, h: &Hum) {
         lerp(amount, x, 0.3 * (pos * 0.333_333_34).mcos()),
     );
 }
-/// The player model's parts a [`BodyPose`] poses, in its order.
-pub const BODY_PARTS: [&str; 6] = [
-    "head",
-    "body",
-    "right_arm",
-    "left_arm",
-    "right_leg",
-    "left_leg",
-];
-
-/// A pose a higher layer lays over the player model's body after its vanilla animation (Horizon's
-/// emotes, docs/cosmetics.md), handed to the model through [`Mob::emote`]. The engine names no
-/// type of that layer (docs/layers.md); it downcasts its own back through [`std::any::Any`].
-pub trait BodyPose: std::any::Any + std::fmt::Debug + Send + Sync {
-    /// Poses the [`BODY_PARTS`] at `age` (the mob's ticks): `at_rest` holds each part before the
-    /// animation, `poses` as the animation left it; a part the model lacks holds the identity in
-    /// both and is not written back. False when it poses nothing at `age` (`poses` is then
-    /// ignored).
-    fn pose(&self, age: f32, at_rest: &[[f32; 9]; 6], poses: &mut [[f32; 9]; 6]) -> bool;
-}
+/// A pose laid over the player model's body after its vanilla animation, and the parts it poses:
+/// the hook's own types (`horizon_hooks::players`), kept here under their old path.
+pub use horizon_hooks::players::{BODY_PARTS, BodyPose};
 
 /// Apply the mob's model animation to `p` (at rest), then the pose laid over it, if any.
 pub fn setup(

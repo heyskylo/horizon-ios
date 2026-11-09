@@ -101,7 +101,7 @@ impl Game<'_> {
             };
             // A controller's stick click acts as the key without setting the modifier: it is held
             // while the pad holds it (or its release waits for a tick), not when the keyboard says.
-            let pad = self.pad.holds_action(&self.settings.controller, mapping);
+            let pad = self.input_holds(mapping);
             if !held && !pad {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
@@ -180,7 +180,7 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
-        if self.screen == Screen::Playing && self.studio_replay.is_some() {
+        if self.screen == Screen::Playing && self.studio.replay.is_some() {
             if !pressed {
                 self.keys.release(&key, source);
                 return Ok(());
@@ -191,7 +191,7 @@ impl Game<'_> {
                 }
                 return Ok(());
             }
-            if !studio_freecam_movement_key(key) || !self.studio_freecam.active {
+            if !studio_freecam_movement_key(key) || !self.studio.freecam.active {
                 return Ok(());
             }
         }
@@ -352,9 +352,7 @@ impl Game<'_> {
             _ => return false,
         };
         match source {
-            Source::Keyboard | Source::Agent => {
-                self.pad.holds_action(&self.settings.controller, mapping)
-            }
+            Source::Keyboard | Source::Agent => self.input_holds(mapping),
             Source::Pad => {
                 let keys = &self.settings.keys;
                 self.physical_buttons
@@ -447,6 +445,79 @@ impl Game<'_> {
             _ => {}
         }
         Ok(())
+    }
+}
+
+/// The input source (docs/layers.md, "Controllers, splitscreen, replays and UI pages"): what
+/// gameplay asks of a device beyond the keyboard and mouse, and tells it. Gameplay calls these,
+/// never the controller modules; today `pad` answers.
+impl Game<'_> {
+    /// The analog move vector (`[left, forward]`, -1..1) while a device moves the player.
+    pub(super) fn input_move(&self) -> Option<[f32; 2]> {
+        self.pad_move()
+    }
+
+    /// Whether a device holds the key mapping named `mapping` (`key.use`).
+    pub(super) fn input_holds(&self, mapping: &str) -> bool {
+        self.pad.holds_action(&self.settings.controller, mapping)
+    }
+
+    /// Turns the view by what the devices give this frame (`Entity.turn`).
+    pub(super) fn input_look(&mut self, seconds: f32) {
+        self.pad_look(seconds);
+    }
+
+    /// The keyboard or mouse acted in play (a key or button pressed): it has control again, though
+    /// only moving the mouse takes a pad out of use.
+    pub(super) fn input_keyboard_used(&mut self) {
+        self.pad.keyboard_took_over = true;
+    }
+
+    /// Whether the pointer event being handled is one a device made (a pad's menu cursor
+    /// clicking), not the mouse's.
+    pub(super) fn input_made_pointer_event(&self) -> bool {
+        self.pad.menu.synthetic
+    }
+
+    /// A new player entity took over (spawn, respawn, a server joined, a dimension change).
+    pub(super) fn input_player_replaced(&mut self) {
+        self.pad.player_replaced();
+    }
+
+    /// Whether the drop about to happen is a device's whole-stack drop (it has no Control key to
+    /// hold). Asking answers once.
+    pub(super) fn input_takes_stack_drop(&mut self) -> bool {
+        std::mem::take(&mut self.pad.drop_stack)
+    }
+
+    /// The HUD starts a frame: what a device drew on the last one is gone.
+    pub(super) fn input_hud_begin(&mut self) {
+        self.pad.guide_shown.clear();
+    }
+
+    /// Something happened to the player that a device may let them feel.
+    pub(super) fn input_feedback(&mut self, event: horizon_client::input_source::Feedback) {
+        self.pad_rumble(event.into());
+    }
+
+    /// Whether `key` is held, a movement key by the analog move vector too: as the keys it holds
+    /// (`eight_direction_keys`), whatever moves the player. For readers of the keys that aren't
+    /// the movement itself.
+    pub(super) fn movement_key_held(&self, key: KeyCode) -> bool {
+        if self.keys.raw(&key) {
+            return true;
+        }
+        let Some(stick) = self.input_move() else {
+            return false;
+        };
+        let [forward, backward, left, right] = horizon_client::gamepad::eight_direction_keys(stick);
+        match key {
+            KeyCode::KeyW => forward,
+            KeyCode::KeyS => backward,
+            KeyCode::KeyA => left,
+            KeyCode::KeyD => right,
+            _ => false,
+        }
     }
 }
 

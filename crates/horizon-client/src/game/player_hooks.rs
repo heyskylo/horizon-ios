@@ -1,0 +1,250 @@
+//! Where the game hands the player models to crates above the engine (`horizon_hooks::Hooks`'s
+//! `frame`, `tick`, `name_decoration`, `player_mark`, `camera`; spec #14091): only a window's
+//! game calls them, never the integrated server's thread or a dedicated server. With no hook
+//! registered nothing is built.
+
+use super::Game;
+use horizon_client::join_seq::JoinList;
+use horizon_client::mobs::Mob;
+use horizon_client::mobs::anim::BodyPose;
+use horizon_hooks::engine;
+use horizon_hooks::players::{
+    CameraView, Frame, Gear, Kind, PlayerModel, PlayerModels, SpriteStore, Sprites,
+};
+use std::sync::Arc;
+
+/// Registers the hooks of the Horizon parts still in this crate (cosmetics: spec #14091 step 5
+/// moves them out). Before the hooks are sealed.
+pub(crate) fn register() {
+    if super::cosmetics::enabled()
+        && let Err(e) = horizon_hooks::register(&super::cosmetics::HOOKS)
+    {
+        log::error!("Cosmetics: their hooks came too late: {e}");
+    }
+}
+
+/// The models of the world a window shows: its own first, then the other players and mannequins.
+struct Models<'a> {
+    own: Option<&'a mut Mob>,
+    mobs: &'a mut JoinList<Mob>,
+    remote: &'a super::remote::Remote,
+}
+
+impl Models<'_> {
+    fn find(&mut self, id: u32) -> Option<&mut Mob> {
+        match self.own.as_deref_mut() {
+            Some(m) if m.id == id => Some(m),
+            _ => self
+                .mobs
+                .iter_mut()
+                .find(|m| m.id == id && kind(m).is_some()),
+        }
+    }
+}
+
+/// What kind of player model `m` is, if it is one (the window's own model aside).
+fn kind(m: &Mob) -> Option<Kind> {
+    match &*m.kind.id {
+        "minecraft:player" => Some(Kind::Player),
+        "minecraft:mannequin" => Some(Kind::Mannequin),
+        _ => None,
+    }
+}
+
+/// What `m` wears where a crate may draw: a helmet or head item, a chestplate, a cape or elytra.
+pub(super) fn gear(m: &Mob) -> Gear {
+    let elytra = m.extra.chest.as_deref() == Some("minecraft:elytra");
+    Gear::new(
+        m.extra.head.is_some(),
+        m.extra.chest.is_some() && !elytra,
+        m.cape.is_some() || elytra,
+    )
+}
+
+fn model(m: &Mob, kind: Kind, uuid: Option<u128>) -> PlayerModel {
+    let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
+    PlayerModel::new(m.id, kind, uuid, m.age, dx * dx + dz * dz > 1e-4)
+        .looks(gear(m), horizon_client::mobs::trader::is_invisible(m))
+}
+
+impl PlayerModels for Models<'_> {
+    fn connection(&self) -> u64 {
+        self.remote.session.serial()
+    }
+
+    fn for_each(&self, f: &mut dyn FnMut(PlayerModel)) {
+        if let Some(m) = self.own.as_deref() {
+            f(model(m, Kind::Own, Some(self.remote.profile())));
+        }
+        for m in self.mobs.iter() {
+            if let Some(kind) = kind(m) {
+                let uuid = (kind == Kind::Player)
+                    .then(|| self.remote.player_uuid(m.id))
+                    .flatten();
+                f(model(m, kind, uuid));
+            }
+        }
+    }
+
+    fn body_pose(&self, id: u32) -> Option<&Arc<dyn BodyPose>> {
+        match self.own.as_deref() {
+            Some(m) if m.id == id => m.emote.as_ref(),
+            _ => self
+                .mobs
+                .iter()
+                .find(|m| m.id == id && kind(m).is_some())?
+                .emote
+                .as_ref(),
+        }
+    }
+
+    fn set_body_pose(&mut self, id: u32, pose: Option<Arc<dyn BodyPose>>) {
+        if let Some(m) = self.find(id) {
+            m.emote = pose;
+        }
+    }
+}
+
+/// Sprite `id`'s place in the atlas's names (`hooks/<hex>`), written into `buf`: no allocation.
+fn location(id: u64, buf: &mut [u8; 22]) -> &str {
+    use std::io::Write;
+    let mut out = std::io::Cursor::new(&mut buf[..]);
+    let _ = write!(out, "hooks/{id:x}");
+    let len = out.position() as usize;
+    std::str::from_utf8(&buf[..len]).unwrap_or_default()
+}
+
+/// The crates' sprites in the GUI atlas, in the skin slots: read while drawing.
+struct HookSprites<'a, 'g>(&'a Game<'g>);
+
+impl Sprites for HookSprites<'_, '_> {
+    fn get(&self, id: u64) -> Option<[f32; 4]> {
+        let mut buf = [0; 22];
+        let at = location(id, &mut buf);
+        let r = self.0.gui.atlas.sprites.get(at)?;
+        // Kept this frame (`skin_slots.next_frame`).
+        self.0.skin_downloads.borrow_mut().drawn(at);
+        Some([r.u0, r.v0, r.u1, r.v1])
+    }
+}
+
+/// Where a crate's frame hook puts its sprites.
+struct HookStore<'a, 'g>(&'a mut Game<'g>);
+
+impl SpriteStore for HookStore<'_, '_> {
+    fn has(&self, id: u64) -> bool {
+        self.0
+            .gui
+            .atlas
+            .sprites
+            .contains_key(location(id, &mut [0; 22]))
+    }
+
+    fn put(&mut self, id: u64, rgba: Vec<u8>) {
+        let at = location(id, &mut [0; 22]).to_owned();
+        self.0.store_skin(at, rgba);
+    }
+}
+
+impl Game<'_> {
+    /// Once a frame, before drawing.
+    pub(super) fn client_hooks_frame(&mut self) {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        if !engine::any() {
+            return;
+        }
+        self.cosmetics_say();
+        let connection = self.remote.as_ref().map_or(0, |r| r.session.serial());
+        let frame = Frame::new(connection, self.integrated.is_some());
+        engine::frame(&frame, &mut HookStore(self));
+        self.cosmetics_frame();
+    }
+
+    /// Once a client tick in a world: the player's own emote, then the hooks.
+    pub(super) fn client_hooks_tick(&mut self) {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        self.tick_emotes();
+        if !engine::any() {
+            return;
+        }
+        self.cosmetics_say();
+        let Some(remote) = self.remote.as_ref() else {
+            return;
+        };
+        engine::tick(&mut Models {
+            own: self.player_model.as_mut(),
+            mobs: &mut self.mobs,
+            remote,
+        });
+    }
+
+    /// What goes by `m`'s name (`own`: the window's own player), from the hooks.
+    pub(super) fn hooks_name_marks(&self, m: &Mob, own: bool) -> super::names::Marks {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        let mut marks = super::names::Marks::default();
+        if !engine::any() {
+            return marks;
+        }
+        let model = match (own, kind(m)) {
+            (true, _) => model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile())),
+            (false, Some(kind)) => model(m, kind, self.remote_player_uuid(m.id)),
+            (false, None) => return marks,
+        };
+        if let Some(d) = engine::name_decoration(&model, &HookSprites(self)) {
+            marks.mark = d.mark;
+            marks.top = d.top;
+            marks.style = d.badge.map(|b| {
+                let [u0, v0, u1, v1] = b.uv;
+                super::names::TagStyle {
+                    mark: horizon_client::hud::Rect {
+                        u0,
+                        v0,
+                        u1,
+                        v1,
+                        w: 8,
+                        h: 8,
+                    },
+                    line: b.line,
+                }
+            });
+        }
+        marks
+    }
+
+    /// How far the third-person camera stands back, as a share of the usual distance: a hook's
+    /// (an emote pulls it back), else 1.
+    pub(super) fn hooks_camera_distance(&self, partial: f32) -> f32 {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        match &self.player_model {
+            Some(m) if engine::any() => {
+                engine::camera(&CameraView::new(m.age as f32 + partial)).map_or(1.0, |c| c.distance)
+            }
+            _ => 1.0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sprite_locations_fit_the_buffer_and_differ_by_id() {
+        let mut a = [0; 22];
+        let mut b = [0; 22];
+        assert_eq!(location(u64::MAX, &mut a), "hooks/ffffffffffffffff");
+        assert_eq!(location(10, &mut b), "hooks/a");
+    }
+}
