@@ -537,7 +537,8 @@ impl Game<'_> {
         Some((height, f.fluid_level == 8 && !f.fluid_falling))
     }
     /// `getWaterLevelAbove`: the top of the water column the hull is in.
-    fn water_level_above(&self, b: &Boat) -> f64 {
+    /// A float, as vanilla's: the block's y plus its water height in float.
+    fn water_level_above(&self, b: &Boat) -> f32 {
         let bb = b.bounds();
         let (lo, hi) = (bb.min_position(), bb.max_position());
         let (y0, y1) = (hi.y.floor() as i32, hi.y.ceil() as i32);
@@ -554,10 +555,10 @@ impl Game<'_> {
                 }
             }
             if height < 1.0 {
-                return f64::from(y) + f64::from(height);
+                return y as f32 + height;
             }
         }
-        f64::from(y1 + 1)
+        (y1 + 1) as f32
     }
     fn boat_status(&self, b: &mut Boat) -> Status {
         let bb = b.bounds();
@@ -569,7 +570,7 @@ impl Game<'_> {
             for y in hi.y.floor() as i32..max_y.ceil() as i32 {
                 for z in lo.z.floor() as i32..hi.z.ceil() as i32 {
                     if let Some((h, source)) = self.fluid_height(x, y, z)
-                        && max_y < f64::from(y) + f64::from(h)
+                        && max_y < f64::from(y as f32 + h)
                     {
                         if !source {
                             b.water_level = hi.y;
@@ -591,7 +592,8 @@ impl Game<'_> {
             for y in lo.y.floor() as i32..(lo.y + 0.001).ceil() as i32 {
                 for z in lo.z.floor() as i32..hi.z.ceil() as i32 {
                     if let Some((h, _)) = self.fluid_height(x, y, z) {
-                        let level = f64::from(y) + f64::from(h);
+                        // `float height = y + getHeight`: summed in float.
+                        let level = f64::from(y as f32 + h);
                         b.water_level = b.water_level.max(level);
                         in_water |= lo.y < level;
                     }
@@ -742,8 +744,10 @@ impl Game<'_> {
             && b.status != Status::InAir
             && b.status != Status::OnLand
         {
-            b.water_level = b.position.y;
-            let target = self.water_level_above(&b) - HEIGHT + 0.101;
+            // getY(1.0): the top of its box.
+            b.water_level = b.position.y + HEIGHT;
+            // getWaterLevelAbove() - getBbHeight(): a float subtraction.
+            let target = f64::from(self.water_level_above(&b) - HEIGHT as f32) + 0.101;
             let moved = Aabb::new(
                 Vec3::new(
                     b.bounds().min_position().x,
