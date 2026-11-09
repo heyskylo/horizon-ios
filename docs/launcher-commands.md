@@ -188,48 +188,13 @@ MCP: `account_sign_out`, needs `confirm: true`.
 
 ## `horizon-launcher account select`
 
-Play as this account, or as one of your offline names.
+Play as this account.
 
     horizon-launcher account select <WHO>
 
 - `WHO`
 
 MCP: `account_select`.
-
-## `horizon-launcher account offline`
-
-Play offline (LAN, offline-mode servers) beside a signed-in account that owns the game: as NAME (kept to switch back to; 3 to 16 letters, digits or _), or as the name the game made up.
-
-    horizon-launcher account offline [NAME]
-
-- `NAME`
-
-MCP: `account_offline`.
-
-## `horizon-launcher account forget-offline`
-
-Forget one of your offline names; its skin and cape go with it.
-
-    horizon-launcher account forget-offline <NAME>
-
-- `NAME`
-
-MCP: `account_forget_offline`.
-
-## `horizon-launcher account skin`
-
-Show or set an offline name's skin and cape: a 64x64 (or 64x32) skin PNG, a 64x32 cape PNG, the model. Kept by the launcher and given to the game when that name plays.
-
-    horizon-launcher account skin <NAME> [FILE]
-
-- `NAME`
-- `FILE`: The skin's PNG
-- `--model`: classic or slim arms
-- `--cape`: The cape's PNG
-- `--no-skin`: Back to the default skin
-- `--no-cape`: Take the cape off
-
-MCP: `account_skin`.
 
 ## `horizon-launcher settings`
 

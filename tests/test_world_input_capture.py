@@ -57,7 +57,7 @@ class WorldInputCaptureTests(unittest.TestCase):
                         ready.index("self.capture_loaded_world()"))
         level = remote[remote.index("    fn tick_remote_level("):]
         self.assertLess(level.index("self.tick_client_load()"),
-                        level.index("let stick = self.pad_move()"))
+                        level.index("let stick = self.input_move()"))
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_capture_lifecycle(self):

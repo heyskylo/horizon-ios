@@ -230,19 +230,10 @@ fn is_animal(id: &str) -> bool {
             | "zombie_nautilus"
     )
 }
-/// The `NeutralMob`s whose anger is `Extra::anger`: they write and read
-/// `anger_end_time` and `angry_at`. The bee keeps its own anger, and a
-/// piglin's is a brain memory, not `NeutralMob`'s.
-fn persistent_anger(s: crate::mobs::Species) -> bool {
-    use crate::mobs::Species as S;
-    matches!(
-        s,
-        S::Wolf | S::IronGolem | S::PolarBear | S::Enderman | S::ZombifiedPiglin
-    )
-}
+use crate::mobs::persistent_anger;
 /// The single player's UUID (`offline_uuid("Player")`): the entity the
 /// neutral mobs are angry at.
-fn player_uuid() -> [i32; 4] {
+pub(crate) fn player_uuid() -> [i32; 4] {
     let u = horizon_protocol::crypto::offline_uuid("Player");
     [
         (u >> 96) as u32 as i32,
@@ -621,14 +612,9 @@ pub fn mob_to_nbt(
         ("Air", Tag::Short(m.air as i16)),
         ("Health", Tag::Float(m.health.max(0.0).to_bits())),
         ("AbsorptionAmount", Tag::Float(m.absorption.to_bits())),
-        (
-            "HurtTime",
-            Tag::Short(m.hurt_time.clamp(0, i32::from(i16::MAX)) as i16),
-        ),
-        (
-            "DeathTime",
-            Tag::Short(m.death_time.clamp(0, i32::from(i16::MAX)) as i16),
-        ),
+        // LivingEntity.addAdditionalSaveData: (short) casts, nothing clamped.
+        ("HurtTime", Tag::Short(m.hurt_time as i16)),
+        ("DeathTime", Tag::Short(m.death_time as i16)),
         // Mob.addAdditionalSaveData writes the current virtual getter, not raw input.
         ("CanPickUpLoot", Tag::Byte(i8::from(m.can_pick_up_loot()))),
         ("PersistenceRequired", Tag::Byte(i8::from(m.persistent))),
@@ -676,17 +662,8 @@ pub fn mob_to_nbt(
         put(
             &mut tag,
             "anger_end_time",
-            Tag::Long(
-                if (m.species() == crate::mobs::Species::Enderman && m.no_ai)
-                    || m.extra.anger_end > 0
-                {
-                    // NeutralMob saves the actual absolute value, including zero
-                    // and past values, while this Enderman's AI is disabled.
-                    m.extra.anger_end
-                } else {
-                    -1
-                },
-            ),
+            // The absolute value as it is, also zero or one already past.
+            Tag::Long(m.extra.anger_end),
         );
         // `angry_at` only while there is an anger target: the UUID of the one
         // the level has (`uuid_of`). A mob target read from the save that is
@@ -1320,7 +1297,7 @@ pub fn mob_to_nbt(
             crate::mobs::nautilus::to_nbt(m, map);
         }
         "minecraft:sulfur_cube" => crate::mobs::sulfur_cube::to_nbt(m, map),
-        "minecraft:bee" => crate::mobs::bee::to_nbt(m, map),
+        "minecraft:bee" => crate::mobs::bee::to_nbt(m, map, &mut uuid_of),
         "minecraft:sniffer" => crate::mobs::sniffer::to_nbt(m, map),
         "minecraft:wither" => {
             map.insert("Invul".into(), Tag::Int(m.extra.counter));
@@ -2689,9 +2666,9 @@ pub fn mob_from_nbt_with_random(
         m.extra.counter = number(tag.get("still_timeout")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Shulker {
-        m.extra.variant3 = number(tag.get("AttachFace")).unwrap_or(0).clamp(0, 5) as u8;
-        m.extra.counter = number(tag.get("Peek")).unwrap_or(0).clamp(0, 100) as i32;
-        m.extra.color = number(tag.get("Color")).map_or(16, |c| c.clamp(0, 16) as u8);
+        m.extra.variant3 = (number(tag.get("AttachFace")).unwrap_or(0) % 6).unsigned_abs() as u8;
+        m.extra.counter = number(tag.get("Peek")).map_or(0, |v| v as i8 as i32);
+        m.extra.color = number(tag.get("Color")).map_or(16, |v| v as i8 as u8);
         m.anim.v[0] = m.extra.counter as f32 * 0.01;
         m.anim.vo[0] = m.anim.v[0];
         // Shulker.setPos: square on its block.
@@ -3681,6 +3658,8 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
 
 mod trident;
 pub use trident::{TRIDENT_HIT_GROUND, TridentNbt, TridentSave, trident_from_nbt, trident_to_nbt};
+mod hanging;
+pub use hanging::*;
 
 /// `FallingBlockEntity`: BlockState, Time, DropItem, HurtEntities.
 #[allow(clippy::too_many_arguments)]
@@ -3752,50 +3731,6 @@ pub fn falling_block_flags(tag: &Tag) -> (bool, bool) {
     )
 }
 
-/// Painting.addAdditionalSaveData: `facing`, `variant` and `block_pos`.
-pub fn painting_to_nbt(p: &Painting, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
-    let (lo, hi) = p.bounds();
-    let base = Base {
-        id: "minecraft:painting",
-        uuid,
-        position: Vec3::new(
-            (lo[0] + hi[0]) / 2.0,
-            (lo[1] + hi[1]) / 2.0,
-            (lo[2] + hi[2]) / 2.0,
-        ),
-        motion: Vec3::ZERO,
-        rotation: [f32::from(p.facing) * 90.0, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
-    };
-    let mut tag = base.tag(raw);
-    put(&mut tag, "facing", Tag::Byte(p.facing as i8));
-    put(&mut tag, "variant", string(&p.variant));
-    put(&mut tag, "block_pos", Tag::IntArray(p.pos.to_vec()));
-    tag
-}
-/// `BlockAttachedEntity.readAdditionalSaveData`: `block_pos` when saved; a
-/// summoned one has none, and `setPos` puts its block at the block holding
-/// the summon position.
-fn attached_block_pos(tag: &Tag) -> Option<[i32; 3]> {
-    match tag.get("block_pos") {
-        Some(Tag::IntArray(v)) if v.len() == 3 => Some([v[0], v[1], v[2]]),
-        _ => {
-            let at = position(tag)?;
-            Some([
-                at.x.floor() as i32,
-                at.y.floor() as i32,
-                at.z.floor() as i32,
-            ])
-        }
-    }
-}
-/// The block position, facing and variant (if saved) of a painting.
-pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, Option<String>)> {
-    let pos = attached_block_pos(tag)?;
-    let facing = (number(tag.get("facing")).unwrap_or(0) & 3) as u8;
-    Some((pos, facing, text(tag.get("variant"))))
-}
 /// `Cushion.addAdditionalSaveData`: the block it sits on and its colour.
 pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     // A block-attached cushion does not update these: they stay as loaded.
@@ -3851,68 +3786,6 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
 #[cfg(test)]
 #[path = "cushion_tests.rs"]
 mod cushion_tests;
-/// ItemFrame.addAdditionalSaveData.
-pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
-    let (lo, hi) = f.bounds();
-    let base = Base {
-        id: f.kind(),
-        uuid,
-        position: Vec3::new(
-            (lo[0] + hi[0]) / 2.0,
-            (lo[1] + hi[1]) / 2.0,
-            (lo[2] + hi[2]) / 2.0,
-        ),
-        motion: Vec3::ZERO,
-        rotation: [0.0, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
-    };
-    let mut tag = base.tag(raw);
-    // `Entity.saveWithoutId`: `CustomName` before the frame's own fields.
-    if let Some(name) = &f.custom_name {
-        put(&mut tag, "CustomName", name.clone());
-    } else if let Tag::Compound(map) = &mut tag {
-        map.remove(&"CustomName".into());
-    }
-    put(&mut tag, "Facing", Tag::Byte(f.facing as i8));
-    put(&mut tag, "block_pos", Tag::IntArray(f.pos.to_vec()));
-    put(&mut tag, "ItemRotation", Tag::Byte(f.rotation as i8));
-    put(
-        &mut tag,
-        "ItemDropChance",
-        Tag::Float(f.drop_chance.to_bits()),
-    );
-    put(&mut tag, "Invisible", Tag::Byte(i8::from(f.invisible)));
-    put(&mut tag, "Fixed", Tag::Byte(i8::from(f.fixed)));
-    if let Tag::Compound(map) = &mut tag {
-        map.remove(&horizon_world::nbt::JavaString::from("Item"));
-    }
-    if let Some(item) = &f.item {
-        put(&mut tag, "Item", item_to_nbt(item));
-    }
-    tag
-}
-/// `ItemFrame.readAdditionalSaveData`: an absent Facing defaults to Direction.DOWN.
-pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
-    let pos = attached_block_pos(tag)?;
-    Some(ItemFrame {
-        id,
-        pos,
-        facing: number(tag.get("Facing")).unwrap_or(0).clamp(0, 5) as u8,
-        glow: kind(tag).as_deref() == Some("minecraft:glow_item_frame"),
-        item: tag
-            .get("Item")
-            .and_then(item_from_nbt)
-            .map(|s| crate::items::ItemStack { count: 1, ..s }),
-        rotation: (number(tag.get("ItemRotation")).unwrap_or(0) & 7) as u8,
-        drop_chance: float(tag.get("ItemDropChance")).map_or(1.0, |v| v as f32),
-        fixed: flag(tag, "Fixed"),
-        invisible: flag(tag, "Invisible"),
-        check_interval: 0,
-        custom_name: tag.get("CustomName").cloned(),
-        random: crate::random_source::entity(),
-    })
-}
 /// ArmorStand.addAdditionalSaveData with LivingEntity's `equipment`.
 pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let base = Base {

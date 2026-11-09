@@ -877,6 +877,16 @@ public final class VanillaCommandExecOracle {
                             mob.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
                             net.minecraft.world.phys.Vec3.ZERO, false));
                     }
+                    case "player_command" -> {
+                        // The player's real ServerboundPlayerCommandPacket, through its handler.
+                        var action = switch (op.get("action").getAsString()) {
+                            case "start_riding_jump" -> net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket.Action.START_RIDING_JUMP;
+                            case "stop_riding_jump" -> net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket.Action.STOP_RIDING_JUMP;
+                            default -> throw new IllegalStateException("player command: unknown action");
+                        };
+                        player.connection.handlePlayerCommand(new net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket(
+                            player, action, op.get("data").getAsInt()));
+                    }
                     case "use_item" -> {
                         if (!op.has("sequence")) {
                             player.gameMode.useItem(player, player.level(), player.getMainHandItem(),
