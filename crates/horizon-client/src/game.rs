@@ -403,6 +403,7 @@ mod remote_vehicles;
 mod render_control;
 mod render_settings;
 mod render_tick;
+mod replay;
 mod repro;
 mod resource_load;
 mod resource_loader;
@@ -2883,7 +2884,8 @@ struct Game<'a> {
     /// The open connection joined from Realms: `ServerData.isRealm` for the friends
     /// service's presence status.
     realm_session: bool,
-    /// Horizon Studio: replay playback, its free camera, timeline and top bar (game/studio.rs).
+    /// Replay playback (game/replay.rs), and Horizon Studio's editor on it (game/studio.rs).
+    pub(super) replay: replay::Replay,
     pub(super) studio: studio::Studio,
     /// This world is open to the network (game/lan.rs).
     lan: Option<lan::LanHost>,
@@ -5932,8 +5934,7 @@ impl Game<'_> {
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
-        let in_studio = self.studio.replaying();
-        let show_hud = !self.ui.hide_gui && !in_studio;
+        let show_hud = !self.ui.hide_gui && !self.replay.playing();
         // Hud.extractRenderState asks `Screen.isInGameUi` twice: such a screen
         // defers the subtitles over itself, and keeps them while F1 hides the
         // rest of the HUD.
@@ -6707,11 +6708,7 @@ impl Game<'_> {
         self.mark_player(out.len(), !self.own_body_in_view());
         let player_start = out.len();
         self.mark_motion(player_start, Self::MOTION_OWN_PLAYER);
-        let player_alpha = if self.studio.replaying() {
-            (self.studio.virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
-        } else {
-            self.clock.camera_fraction()
-        };
+        let player_alpha = self.own_player_alpha();
         self.player_model_geometry(camera, player_alpha, &mut out);
         // A native pack's shadow pass alone gets the first-person model (no per-entity draws).
         if self.pack_ids.is_none() && !self.own_body_in_view() {
@@ -10479,7 +10476,7 @@ impl Game<'_> {
                     }
                 }
                 WindowEvent::MouseWheel { .. }
-                    if self.screen == Screen::Playing && self.studio.replaying() => {}
+                    if self.screen == Screen::Playing && self.replay.playing() => {}
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (raw_x, raw_y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
@@ -12003,6 +12000,7 @@ impl<'a> Game<'a> {
             entity_attachments: Default::default(),
             remote: None,
             realm_session: false,
+            replay: Default::default(),
             studio: Default::default(),
             lan: None,
             integrated: None,

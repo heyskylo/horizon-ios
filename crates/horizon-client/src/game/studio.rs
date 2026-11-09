@@ -15,38 +15,22 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Studio's state in a `Game`: the replay playing, its free camera, timeline and top bar. Studio is
-/// a Horizon extra (docs/layers.md: the replay editor); the engine only asks it whether a replay
-/// plays or the free camera flies.
+/// Studio's state in a `Game`: the replay editor's free camera, timeline and top bar. Studio is a
+/// Horizon extra (docs/layers.md: the replay editor) on top of the platform's replay
+/// (`replay.rs`); the engine only asks it whether the free camera flies.
 #[derive(Default)]
 pub(super) struct Studio {
-    /// The packet replay playing, if any.
-    pub(super) replay: Option<ReplayDriver>,
     pub(super) freecam: horizon_client::studio::StudioFreecam,
     pub(super) timeline: horizon_client::studio::TimelineUi,
     pub(super) topbar: horizon_client::studio::TopBarUi,
     pub(super) rmb_down: bool,
     pub(super) camera_track_dirty: bool,
-    /// Camera perspective to restore after leaving replay playback.
-    pub(super) replay_previous_camera_type: Option<super::perspective::CameraType>,
-    /// Replay opened from the title screen owns the synthetic remote session.
-    pub(super) replay_standalone: bool,
-    pub(super) last_replay_tick: Option<std::time::Instant>,
-    pub(super) virtual_tick_ms: f32,
 }
 
 impl Studio {
-    /// A replay plays: the world shown is the recording's.
-    pub(super) fn replaying(&self) -> bool {
-        self.replay.is_some()
-    }
     /// The free camera flies, apart from the player.
     pub(super) fn flying(&self) -> bool {
         self.freecam.active
-    }
-    /// Studio is up (its bars, its camera path, its mouse): a replay plays or the free camera flies.
-    pub(super) fn active(&self) -> bool {
-        self.replaying() || self.flying()
     }
 }
 
@@ -83,6 +67,11 @@ pub(super) fn studio_screen_opens(screen: Screen, blocked: bool) -> Option<bool>
 }
 
 impl Game<'_> {
+    /// Studio is up (its bars, its camera path, its mouse): a replay plays or the free camera flies.
+    pub(super) fn studio_up(&self) -> bool {
+        self.replay.playing() || self.studio.flying()
+    }
+
     /// Opens the Studio script screen (`Screen::Studio`) over the world.
     ///
     /// Horizon Studio script windows (`ui.open`) use this slot instead of the
@@ -144,7 +133,7 @@ impl Game<'_> {
         match words[0] {
             "freecam" => match words.get(1).copied() {
                 Some("on") => {
-                    if self.studio.replay.is_none() {
+                    if self.replay.driver.is_none() {
                         self.system_message(Text::translate(
                             "horizon.studio.freecam.replay_required",
                             &[],
@@ -173,7 +162,7 @@ impl Game<'_> {
                 _ => self.system_message(Text::translate("horizon.studio.freecam.usage", &[])),
             },
             "keyframe" => {
-                let Some(driver) = self.studio.replay.as_ref() else {
+                let Some(driver) = self.replay.driver.as_ref() else {
                     self.system_message(Text::translate("horizon.studio.replay.inactive", &[]));
                     return true;
                 };
@@ -334,7 +323,7 @@ impl Game<'_> {
                     }
                 }
                 Some("pause") => {
-                    if let Some(r) = self.studio.replay.as_mut() {
+                    if let Some(r) = self.replay.driver.as_mut() {
                         r.set_paused(true);
                         self.system_message(Text::translate("horizon.studio.replay.paused", &[]));
                     } else {
@@ -342,7 +331,7 @@ impl Game<'_> {
                     }
                 }
                 Some("resume") => {
-                    if let Some(r) = self.studio.replay.as_mut() {
+                    if let Some(r) = self.replay.driver.as_mut() {
                         r.set_paused(false);
                         self.system_message(Text::translate("horizon.studio.replay.resumed", &[]));
                     } else {
@@ -358,7 +347,7 @@ impl Game<'_> {
                         return true;
                     };
                     if let Ok(spd) = spd_str.parse::<f64>() {
-                        let new_speed = if let Some(r) = self.studio.replay.as_mut() {
+                        let new_speed = if let Some(r) = self.replay.driver.as_mut() {
                             r.set_speed(spd);
                             Some(r.speed())
                         } else {
@@ -392,12 +381,12 @@ impl Game<'_> {
                         return true;
                     };
                     if let Ok(ms) = ms_str.parse::<u32>() {
-                        if self.studio.replay.is_some() {
+                        if self.replay.driver.is_some() {
                             match self.seek_studio_replay(ms) {
                                 Ok(()) => {
                                     let actual_ms = self
-                                        .studio
                                         .replay
+                                        .driver
                                         .as_ref()
                                         .map_or(ms, |replay| ms.min(replay.duration_ms()));
                                     let ms_text = actual_ms.to_string();
@@ -436,7 +425,7 @@ impl Game<'_> {
                     }
                 }
                 Some("status") => {
-                    if let Some(r) = self.studio.replay.as_ref() {
+                    if let Some(r) = self.replay.driver.as_ref() {
                         let position = r.position_ms().to_string();
                         let duration = r.duration_ms().to_string();
                         let progress = format!("{:.1}", r.progress() * 100.0);
@@ -471,7 +460,7 @@ impl Game<'_> {
 
     /// Reset playback tick accumulator and align positions on seek.
     pub(super) fn reset_studio_playback_ticks(&mut self) {
-        self.studio.virtual_tick_ms = 0.0;
+        self.replay.virtual_tick_ms = 0.0;
         if let Some(player) = &self.player {
             self.previous_position = player.position;
             if let Some(m) = self.player_model.as_mut() {
@@ -488,14 +477,14 @@ impl Game<'_> {
     /// forward because its pre-replay world must remain intact.
     pub(super) fn seek_studio_replay(&mut self, target_ms: u32) -> std::io::Result<()> {
         let current_ms = self
-            .studio
             .replay
+            .driver
             .as_ref()
             .map_or(0, ReplayDriver::position_ms);
-        let packets = if self.studio.replay_standalone {
+        let packets = if self.replay.standalone {
             let packets = self
-                .studio
                 .replay
+                .driver
                 .as_mut()
                 .expect("replay checked by caller")
                 .seek_and_collect(target_ms)?;
@@ -509,8 +498,8 @@ impl Game<'_> {
                     "backward seek requires a standalone replay",
                 ));
             }
-            self.studio
-                .replay
+            self.replay
+                .driver
                 .as_mut()
                 .expect("replay checked by caller")
                 .seek_forward(target_ms)?
@@ -518,7 +507,7 @@ impl Game<'_> {
 
         self.dispatch_studio_replay_packets(packets);
         self.reset_studio_playback_ticks();
-        self.studio.last_replay_tick = Some(std::time::Instant::now());
+        self.replay.last_tick = Some(std::time::Instant::now());
         Ok(())
     }
 
@@ -549,19 +538,19 @@ impl Game<'_> {
 
     /// Advance active replay playback by elapsed frame time and dispatch ready packets.
     pub(super) fn advance_studio_replay(&mut self) -> Result<()> {
-        let Some(driver) = self.studio.replay.as_mut() else {
-            self.studio.last_replay_tick = None;
+        let Some(driver) = self.replay.driver.as_mut() else {
+            self.replay.last_tick = None;
             return Ok(());
         };
 
         let now = std::time::Instant::now();
-        let delta = match self.studio.last_replay_tick {
+        let delta = match self.replay.last_tick {
             Some(last) => now
                 .saturating_duration_since(last)
                 .min(Duration::from_millis(250)),
             None => Duration::from_millis(16),
         };
-        self.studio.last_replay_tick = Some(now);
+        self.replay.last_tick = Some(now);
 
         let ready_packets = match driver.advance(delta) {
             Ok(pkts) => pkts,
@@ -574,16 +563,16 @@ impl Game<'_> {
         self.dispatch_studio_replay_packets(ready_packets);
         if self.studio.freecam.locked_to_path
             && let Some(position) = self
-                .studio
                 .replay
+                .driver
                 .as_ref()
                 .map(|replay| replay.position_ms())
         {
             self.studio.freecam.update_spline_playback(position);
         }
         let paused = self
-            .studio
             .replay
+            .driver
             .as_ref()
             .is_some_and(|replay| replay.is_paused());
         if self.player_model.is_none() {
@@ -591,14 +580,14 @@ impl Game<'_> {
         }
         if !paused {
             let speed = self
-                .studio
                 .replay
+                .driver
                 .as_ref()
                 .map_or(1.0, |r| r.speed() as f32)
                 .max(0.1);
-            self.studio.virtual_tick_ms += delta.as_secs_f32() * 1000.0 * speed;
-            while self.studio.virtual_tick_ms >= 50.0 {
-                self.studio.virtual_tick_ms -= 50.0;
+            self.replay.virtual_tick_ms += delta.as_secs_f32() * 1000.0 * speed;
+            while self.replay.virtual_tick_ms >= 50.0 {
+                self.replay.virtual_tick_ms -= 50.0;
                 if let Some(player) = &self.player {
                     let current_pos = player.position;
                     let (dx, dz) = (
@@ -649,7 +638,7 @@ impl Game<'_> {
             m.previous_limb_speed = m.limb_speed;
         }
         if let Some((position, duration, paused, markers)) =
-            self.studio.replay.as_ref().map(|replay| {
+            self.replay.driver.as_ref().map(|replay| {
                 (
                     replay.position_ms(),
                     replay.duration_ms(),
@@ -681,7 +670,7 @@ impl Game<'_> {
                 self.capture(false);
             }
             TopBarAction::ExitStudio => {
-                if self.studio.replay.is_some() {
+                if self.replay.driver.is_some() {
                     self.close_studio_replay();
                 } else {
                     self.studio.freecam.deactivate();
@@ -763,17 +752,17 @@ impl Game<'_> {
         match action {
             TimelineAction::PauseForSeek => {
                 self.studio.timeline.playing = false;
-                if let Some(replay) = self.studio.replay.as_mut() {
+                if let Some(replay) = self.replay.driver.as_mut() {
                     replay.set_paused(true);
                 }
             }
             TimelineAction::Seek(time_ms) => {
-                let time_ms = if self.studio.replay_standalone {
+                let time_ms = if self.replay.standalone {
                     time_ms
                 } else {
                     let current =
-                        self.studio
-                            .replay
+                        self.replay
+                            .driver
                             .as_ref()
                             .map_or(0, ReplayDriver::position_ms) as u64;
                     time_ms.max(current)
@@ -785,7 +774,7 @@ impl Game<'_> {
             }
             TimelineAction::TogglePlay => {
                 self.studio.timeline.playing = !self.studio.timeline.playing;
-                if let Some(replay) = self.studio.replay.as_mut() {
+                if let Some(replay) = self.replay.driver.as_mut() {
                     replay.set_paused(!self.studio.timeline.playing);
                 }
             }
@@ -810,7 +799,7 @@ impl Game<'_> {
             )),
             TimelineAction::SetSpeed(speed) => {
                 self.studio.timeline.speed = speed;
-                if let Some(replay) = self.studio.replay.as_mut() {
+                if let Some(replay) = self.replay.driver.as_mut() {
                     replay.set_speed(speed);
                 }
             }
@@ -852,7 +841,7 @@ impl Game<'_> {
 
     /// Add a bookmark at the replay playhead and save it in the `.mcpr` archive.
     pub(super) fn add_studio_marker(&mut self) {
-        let Some(replay) = self.studio.replay.as_mut() else {
+        let Some(replay) = self.replay.driver.as_mut() else {
             return;
         };
         let label = Text::translate(
@@ -895,7 +884,7 @@ impl Game<'_> {
                     Ok(Some(res))
                 }
                 Some("pause") => {
-                    if let Some(r) = self.studio.replay.as_mut() {
+                    if let Some(r) = self.replay.driver.as_mut() {
                         r.set_paused(true);
                         Ok(Some(json!({ "ok": true, "paused": true })))
                     } else {
@@ -903,7 +892,7 @@ impl Game<'_> {
                     }
                 }
                 Some("resume") => {
-                    if let Some(r) = self.studio.replay.as_mut() {
+                    if let Some(r) = self.replay.driver.as_mut() {
                         r.set_paused(false);
                         Ok(Some(json!({ "ok": true, "paused": false })))
                     } else {
@@ -913,7 +902,7 @@ impl Game<'_> {
                 Some("speed") => {
                     let spd_str = words.get(3).ok_or("missing speed value")?;
                     let spd: f64 = spd_str.parse().map_err(|_| "invalid speed")?;
-                    if let Some(r) = self.studio.replay.as_mut() {
+                    if let Some(r) = self.replay.driver.as_mut() {
                         r.set_speed(spd);
                         Ok(Some(json!({ "ok": true, "speed": r.speed() })))
                     } else {
@@ -923,7 +912,7 @@ impl Game<'_> {
                 Some("seek") => {
                     let ms_str = words.get(3).ok_or("missing seek timestamp")?;
                     let ms: u32 = ms_str.parse().map_err(|_| "invalid timestamp")?;
-                    let pos = if let Some(r) = self.studio.replay.as_mut() {
+                    let pos = if let Some(r) = self.replay.driver.as_mut() {
                         r.seek(ms).map_err(|e| format!("{e}"))?;
                         Some(r.position_ms())
                     } else {
@@ -937,7 +926,7 @@ impl Game<'_> {
                     }
                 }
                 Some("status") => {
-                    if let Some(r) = self.studio.replay.as_ref() {
+                    if let Some(r) = self.replay.driver.as_ref() {
                         Ok(Some(json!({
                             "ok": true,
                             "active": true,
@@ -1050,7 +1039,7 @@ impl Game<'_> {
 
     pub(super) fn open_studio_replay(&mut self, path: &str) -> Result<Value> {
         if self.studio.camera_track_dirty
-            && let Some(active) = self.studio.replay.as_mut()
+            && let Some(active) = self.replay.driver.as_mut()
         {
             if let Err(error) = active.save_camera_track(&self.studio.freecam.track) {
                 return Ok(json!({ "ok": false, "error": error.to_string() }));
@@ -1078,7 +1067,7 @@ impl Game<'_> {
             }
         };
 
-        let standalone = self.studio.replay.is_none() && self.remote.is_none();
+        let standalone = self.replay.driver.is_none() && self.remote.is_none();
         if self.remote.is_none()
             && let Err(error) = self.init_remote_for_replay()
         {
@@ -1094,11 +1083,11 @@ impl Game<'_> {
         self.studio.timeline.markers = driver.markers().to_vec();
         self.studio.freecam.track = driver.camera_track().cloned().unwrap_or_default();
         self.studio.camera_track_dirty = false;
-        if self.studio.replay.is_none() {
-            self.studio.replay_previous_camera_type = Some(self.camera_type);
-            self.studio.replay_standalone = standalone;
+        if self.replay.driver.is_none() {
+            self.replay.previous_camera_type = Some(self.camera_type);
+            self.replay.standalone = standalone;
         }
-        self.studio.replay = Some(driver);
+        self.replay.driver = Some(driver);
         self.camera_type = super::perspective::CameraType::FirstPerson;
         self.title = None;
         self.screen = Screen::Playing;
@@ -1117,13 +1106,13 @@ impl Game<'_> {
     }
     pub(super) fn close_studio_replay(&mut self) -> bool {
         if self.studio.camera_track_dirty
-            && let Some(driver) = self.studio.replay.as_mut()
+            && let Some(driver) = self.replay.driver.as_mut()
             && let Err(error) = driver.save_camera_track(&self.studio.freecam.track)
         {
             log::warn!("Studio: could not save camera path: {error}");
         }
         self.studio.camera_track_dirty = false;
-        let closed = self.studio.replay.take().is_some();
+        let closed = self.replay.driver.take().is_some();
         if !closed {
             return false;
         }
@@ -1131,23 +1120,23 @@ impl Game<'_> {
         // A standalone replay owns a synthetic Remote connection. Treat that
         // connection as replay state even if the saved origin flag was lost;
         // sending it through leave_server() opens the Multiplayer screen.
-        let standalone = self.studio.replay_standalone
+        let standalone = self.replay.standalone
             || self
                 .remote
                 .as_ref()
                 .is_some_and(|remote| remote.brand == "horizon-studio");
-        self.studio.replay_standalone = false;
-        if let Some(camera_type) = self.studio.replay_previous_camera_type.take() {
+        self.replay.standalone = false;
+        if let Some(camera_type) = self.replay.previous_camera_type.take() {
             self.camera_type = camera_type;
         }
-        self.studio.last_replay_tick = None;
+        self.replay.last_tick = None;
         self.studio.timeline.current_time_ms = 0;
         self.studio.timeline.playing = false;
         self.studio.timeline.markers.clear();
         self.studio.timeline.split_points.clear();
         self.studio.timeline.selected_keyframe = None;
         self.studio.freecam.deactivate();
-        self.studio.virtual_tick_ms = 0.0;
+        self.replay.virtual_tick_ms = 0.0;
         self.capture(false);
         if standalone {
             if let Some(mut remote) = self.remote.take() {
@@ -1298,7 +1287,7 @@ impl Game<'_> {
 impl Game<'_> {
     /// The top bar and the timeline over the HUD, while Studio is up in play.
     pub(super) fn draw_studio_bars(&mut self, batch: &mut super::HudBatch) {
-        if self.ui.hide_gui || self.screen != Screen::Playing || !self.studio.active() {
+        if self.ui.hide_gui || self.screen != Screen::Playing || !self.studio_up() {
             return;
         }
         self.studio.topbar.render(
@@ -1314,7 +1303,7 @@ impl Game<'_> {
 
     /// The camera path among the debug lines, while Studio is up.
     pub(super) fn studio_camera_path(&self, gizmos: &mut horizon_client::gizmos::Gizmos) {
-        if self.studio.active() {
+        if self.studio_up() {
             horizon_client::studio::render_camera_path(
                 &self.studio.freecam.track,
                 gizmos,
@@ -1355,7 +1344,7 @@ impl Game<'_> {
                 self.handle_studio_timeline_action(action);
             }
         }
-        if (self.studio.freecam.active || self.studio.replay.is_some())
+        if (self.studio.freecam.active || self.replay.driver.is_some())
             && button == winit::event::MouseButton::Right
         {
             if let Some(renderer) = &self.renderer {
@@ -1394,7 +1383,7 @@ impl Game<'_> {
         if pressed
             && button == winit::event::MouseButton::Left
             && self.screen == Screen::Playing
-            && (self.studio.replay.is_some() || self.studio.freecam.active)
+            && (self.replay.driver.is_some() || self.studio.freecam.active)
         {
             let size = self
                 .renderer
@@ -1430,7 +1419,7 @@ impl Game<'_> {
                 }
             }
         }
-        if self.screen == Screen::Playing && self.studio.replay.is_some() {
+        if self.screen == Screen::Playing && self.replay.driver.is_some() {
             return true;
         }
         false
