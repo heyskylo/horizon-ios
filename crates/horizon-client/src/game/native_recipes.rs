@@ -484,6 +484,33 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
+    /// `native_loot_odds`: the odds of the world's loot table `table`.
+    pub(super) fn loot_odds(
+        &mut self,
+        table: &str,
+        tool: Option<&str>,
+    ) -> Option<Vec<horizon_client::mod_api::NativeLootOdds>> {
+        let loot = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        )?;
+        let odds = loot.odds(table, tool)?;
+        Some(
+            odds.into_iter()
+                .map(|o| horizon_client::mod_api::NativeLootOdds {
+                    item: o.item,
+                    components: String::new(),
+                    chance: o.chance,
+                    min: o.min,
+                    max: o.max,
+                    conditions: o.conditions,
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Game<'_> {
     /// The recipe lookups mods asked for since the last frame
     /// (`native_show_recipes`), heard by the recipe viewers.
     pub(super) fn recipe_lookups_now(&mut self) {
