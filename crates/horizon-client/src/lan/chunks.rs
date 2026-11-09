@@ -1267,13 +1267,18 @@ pub fn entity_tag(entity: &BlockEntity) -> Option<Tag> {
         }
         // VaultBlockEntity.getUpdateTag: the shared data, which holds the display item.
         BlockEntity::Vault(v) => Some(v.update_tag()),
-        // TrialSpawnerStateData.getUpdateTag: the spawn data the mob is drawn from.
-        // next_mob_spawns_at (ACTIVE only) is left out: nothing in the client
-        // reads it, and the block state it depends on is not known here.
-        BlockEntity::TrialSpawner(t) => t
-            .next_spawn_data
-            .as_ref()
-            .map(|d| Tag::compound([("spawn_data", d.encode())])),
+        // TrialSpawnerStateData.getUpdateTag: next_mob_spawns_at (ACTIVE only)
+        // and the spawn data the mob is drawn from.
+        BlockEntity::TrialSpawner(t) => {
+            let mut entries = Vec::with_capacity(2);
+            if t.next_mob_spawns_at > 0 {
+                entries.push(("next_mob_spawns_at", Tag::Long(t.next_mob_spawns_at)));
+            }
+            if let Some(d) = &t.next_spawn_data {
+                entries.push(("spawn_data", d.encode()));
+            }
+            (!entries.is_empty()).then(|| Tag::compound(entries))
+        }
         // SkullBlockEntity: the profile is the whole reason a head differs.
         BlockEntity::Skull(s) => {
             let mut entries = Vec::new();
@@ -2345,5 +2350,17 @@ mod tests {
             lone,
             Some(Tag::Compound(horizon_world::nbt::Compound::new()))
         );
+    }
+
+    #[test]
+    fn trial_spawner_update_tag_includes_countdown_when_active() {
+        let mut s = crate::chunk::block_entity::TrialSpawner {
+            next_mob_spawns_at: 1234,
+            ..Default::default()
+        };
+        let tag = entity_tag(&BlockEntity::TrialSpawner(Box::new(s.clone()))).unwrap();
+        assert_eq!(tag.get("next_mob_spawns_at"), Some(&Tag::Long(1234)));
+        s.next_mob_spawns_at = 0;
+        assert_eq!(entity_tag(&BlockEntity::TrialSpawner(Box::new(s))), None);
     }
 }

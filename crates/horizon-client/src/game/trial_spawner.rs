@@ -249,11 +249,23 @@ impl Game<'_> {
                 }
                 TrialEvent::TrialOmen(uuid) => self.bad_omen_to_trial_omen(uuid),
                 TrialEvent::Discard(uuid) => {
-                    let id = self.persist.uuids.iter().find(|(_, u)| **u == uuid);
-                    if let Some((id, _)) = id
-                        && let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id)
-                    {
-                        m.removed = true;
+                    let (at, dropped) = {
+                        let id = self.persist.uuids.iter().find(|(_, u)| **u == uuid);
+                        if let Some((id, _)) = id
+                            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id)
+                        {
+                            let at = m.position;
+                            let dropped = horizon_client::mobs::drops::drop_preserved_equipment(m);
+                            m.removed = true;
+                            (Some(at), dropped)
+                        } else {
+                            (None, Vec::new())
+                        }
+                    };
+                    if let Some(at) = at {
+                        for stack in dropped {
+                            self.spawn_at_location(at, 0.0, stack);
+                        }
                     }
                 }
                 TrialEvent::SoundAt(name, at, pitch) => self.audio.play(
