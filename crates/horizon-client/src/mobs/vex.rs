@@ -289,6 +289,52 @@ pub fn texture(m: &Mob) -> &'static str {
     }
 }
 
+/// `Vex.addAdditionalSaveData`: the bound origin, the limited life and the
+/// owner reference's UUID (`EntityReference.store`, left out when there is no
+/// owner). The level answers for an owner still in it; a reference the vex was
+/// loaded with stands when the owner is gone.
+pub fn write_nbt(
+    m: &Mob,
+    map: &mut horizon_world::nbt::Compound,
+    uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>,
+) {
+    use horizon_world::nbt::Tag;
+    if let Some(h) = m.extra.home {
+        map.insert("bound_pos".into(), Tag::IntArray(h.to_vec()));
+    }
+    if m.extra.egg_time > 0 {
+        map.insert("life_ticks".into(), Tag::Int(m.extra.egg_time));
+    }
+    let resolved = if m.extra.counter2 != 0 {
+        crate::entity_nbt::who_uuid(Who::Mob(m.extra.counter2 as u32), uuid_of)
+    } else {
+        None
+    };
+    match resolved.or(m.extra.owner) {
+        Some(uuid) => {
+            map.insert("owner".into(), Tag::IntArray(uuid.to_vec()));
+        }
+        None => {
+            map.remove(&"owner".into());
+        }
+    }
+}
+
+/// `Vex.readAdditionalSaveData`: the bound origin, the life left (-1 when
+/// absent) and the owner's UUID, kept as the UUID it is - an id would name
+/// whatever mob has it now - and resolved through the level when the vex asks
+/// for its owner (`owner`).
+pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
+    use horizon_world::nbt::Tag;
+    if let Some(Tag::IntArray(v)) = tag.get("bound_pos")
+        && v.len() == 3
+    {
+        m.extra.home = Some([v[0], v[1], v[2]]);
+    }
+    m.extra.egg_time = crate::save::number(tag.get("life_ticks")).map_or(-1, |v| v as i32);
+    m.extra.owner = crate::save::uuid_from_tag(tag.get("owner"));
+}
+
 #[cfg(test)]
 mod owner_save_tests {
     use super::*;

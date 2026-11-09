@@ -1362,31 +1362,7 @@ pub fn mob_to_nbt(
             map.insert("StunTick".into(), Tag::Int(m.extra.counter2));
             map.insert("RoarTick".into(), Tag::Int(m.extra.anim_ticks));
         }
-        "minecraft:vex" => {
-            if let Some(h) = m.extra.home {
-                map.insert("bound_pos".into(), Tag::IntArray(h.to_vec()));
-            }
-            if m.extra.egg_time > 0 {
-                map.insert("life_ticks".into(), Tag::Int(m.extra.egg_time));
-            }
-            // Vex.addAdditionalSaveData: the owner reference's UUID, which
-            // `EntityReference.store` leaves out when there is no owner. The
-            // level answers for an owner still in it; a reference the vex was
-            // loaded with stands when the owner is gone.
-            let resolved = if m.extra.counter2 != 0 {
-                who_uuid(Who::Mob(m.extra.counter2 as u32), &mut uuid_of)
-            } else {
-                None
-            };
-            match resolved.or(m.extra.owner) {
-                Some(uuid) => {
-                    map.insert("owner".into(), Tag::IntArray(uuid.to_vec()));
-                }
-                None => {
-                    map.remove(&"owner".into());
-                }
-            }
-        }
+        "minecraft:vex" => crate::mobs::vex::write_nbt(m, map, &mut uuid_of),
         "minecraft:endermite" => {
             map.insert("Lifetime".into(), Tag::Int(m.extra.counter));
         }
@@ -2732,17 +2708,7 @@ pub fn mob_from_nbt_with_random(
         m.extra.counter = number(tag.get("Lifetime")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Vex {
-        if let Some(Tag::IntArray(v)) = tag.get("bound_pos")
-            && v.len() == 3
-        {
-            m.extra.home = Some([v[0], v[1], v[2]]);
-        }
-        m.extra.egg_time = number(tag.get("life_ticks")).map_or(-1, |v| v as i32);
-        // Vex.readAdditionalSaveData: `EntityReference.read("owner")`, kept as
-        // the UUID it is - an id would name whatever mob has it now - and
-        // resolved through the level when the vex asks for its owner
-        // (`mobs::vex::owner`).
-        m.extra.owner = uuid_from_tag(tag.get("owner"));
+        crate::mobs::vex::read_nbt(&mut m, tag);
     }
     // Bogged.readAdditionalSaveData: unsheared when absent.
     if m.species() == crate::mobs::Species::Bogged {
