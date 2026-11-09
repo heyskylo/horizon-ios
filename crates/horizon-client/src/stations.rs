@@ -539,7 +539,10 @@ fn remove_non_curses(e: &Enchantments, mut item: ItemStack) -> ItemStack {
     for _ in 0..n {
         cost = increased_repair_cost(cost);
     }
-    item.data_mut().repair_cost = cost;
+    // `set(REPAIR_COST, cost)` replaces a removal marker the input carried.
+    let data = item.data_mut();
+    data.set_other("!minecraft:repair_cost", None);
+    data.repair_cost = cost;
     item.tidy();
     item
 }
@@ -1672,6 +1675,26 @@ mod tests {
         );
         assert_eq!(increased_repair_cost(0), 1);
         assert_eq!(increased_repair_cost(3), 7);
+    }
+
+    /// Grindstone: `set(REPAIR_COST, cost)` replaces a removal marker the
+    /// input carried, whether the result keeps a curse or none.
+    #[test]
+    fn grindstone_replaces_a_removed_repair_cost() {
+        let e = sample();
+        let items = sample_items();
+        let mut book = book(&[("minecraft:sharpness", 1)]);
+        book.data_mut().set_other(
+            "!minecraft:repair_cost",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        let out = grindstone_result(&e, &items, Some(&book), None).unwrap();
+        assert_eq!(out.repair_cost(), 0);
+        assert!(
+            out.data()
+                .and_then(|d| d.other("!minecraft:repair_cost"))
+                .is_none()
+        );
     }
 
     /// Checks against the prepared vanilla resources when they are present.
