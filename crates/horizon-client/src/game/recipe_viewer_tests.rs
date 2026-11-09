@@ -1,5 +1,5 @@
 //! Needs private prepared resources: installs process-wide trait mods, so it runs in a process of its
-//! own (`in_own_process`) and passes whatever else runs beside it.
+//! own (`mod_api::in_own_process`) and passes whatever else runs beside it.
 use super::super::*;
 use crate::mod_api::{
     self, Hooks, Host, NativeRecipeCategory, NativeRecipeLookup, NativeStack,
@@ -45,36 +45,11 @@ fn stack(item: &str) -> NativeStack {
     }
 }
 
-/// Runs `body` in a fresh process of this test binary: `mod_api::MODS` is set once per process, and
-/// another test that set it first would make this one's `set` fail. The parent starts the binary again
-/// for just this test (`--exact`, `--ignored`) and requires that exactly one test ran and passed; the
-/// child sees `OWN_PROCESS` and runs `body` itself.
-fn in_own_process(name: &str, body: impl FnOnce()) {
-    const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
-    if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
-        return body();
-    }
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([name, "--exact", "--ignored", "--test-threads=1"])
-        .env(OWN_PROCESS, name)
-        .output()
-        .unwrap();
-    let report = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        out.status.success() && report.contains("test result: ok. 1 passed;"),
-        "{name} failed in its own process:\n{report}"
-    );
-}
-
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn lookups_wait_for_the_next_frame_and_stop_at_the_viewer_that_takes_them() {
     const NAME: &str = "game::native_recipes::recipe_viewer_tests::lookups_wait_for_the_next_frame_and_stop_at_the_viewer_that_takes_them";
-    in_own_process(NAME, lookups_wait_for_the_next_frame);
+    mod_api::in_own_process(NAME, lookups_wait_for_the_next_frame);
 }
 
 fn lookups_wait_for_the_next_frame() {

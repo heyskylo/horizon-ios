@@ -575,14 +575,14 @@ fn classify(name: &str, prop: &dyn Fn(&str) -> Option<String>) -> Kind {
             "banner" => {
                 let segment: f32 = prop("rotation").and_then(|r| r.parse().ok()).unwrap_or(0.0);
                 return Kind::Banner {
-                    color: crate::pack_dyes::diffuse(dye),
+                    color: crate::pack_palette::diffuse(dye),
                     wall: false,
                     angle: segment * 22.5,
                 };
             }
             "wall_banner" => {
                 return Kind::Banner {
-                    color: crate::pack_dyes::diffuse(dye),
+                    color: crate::pack_palette::diffuse(dye),
                     wall: true,
                     angle: y_rot(facing()),
                 };

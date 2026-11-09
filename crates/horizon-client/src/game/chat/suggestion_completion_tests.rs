@@ -7,8 +7,15 @@ use std::sync::{Arc, Mutex};
 
 /// Exercise the actual Game keyboard/mouse handlers and generated mod dispatch.
 #[test]
-#[ignore = "needs prepared resources and a fresh HORIZON_HOME; run in isolation"]
+#[ignore = "needs prepared resources and a fresh HORIZON_HOME"]
 fn chat_completion_reaches_mods_from_keyboard_and_mouse() {
+    crate::mod_api::in_own_process(
+        "game::chat::suggestion_completion_tests::chat_completion_reaches_mods_from_keyboard_and_mouse",
+        chat_completion_reaches_mods_from_keyboard_and_mouse_in_own_process,
+    );
+}
+
+fn chat_completion_reaches_mods_from_keyboard_and_mouse_in_own_process() {
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let scratch = PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("suggestion-game");
     std::fs::create_dir_all(&scratch).unwrap();
