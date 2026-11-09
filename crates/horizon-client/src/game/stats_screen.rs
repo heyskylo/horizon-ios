@@ -329,9 +329,18 @@ impl Game<'_> {
         });
         if let Some((col, order)) = self.stats_ui.sort {
             let ty = COLUMNS[col].0;
-            let ids = &self.res.items().registry_order;
+            // `Item.getId`: one pass over the registry, not a scan per row
+            // (the screen asks for its rows several times a frame).
+            let ids: std::collections::HashMap<&str, usize> = self
+                .res
+                .items()
+                .registry_order
+                .iter()
+                .enumerate()
+                .map(|(n, id)| (&**id, n))
+                .collect();
             sort_rows(&mut items, order, |i| {
-                let id = ids.iter().position(|x| **x == *i).unwrap_or(usize::MAX);
+                let id = ids.get(i).copied().unwrap_or(usize::MAX);
                 (self.stat_item(ty, i).unwrap_or(-1), id)
             });
         }
