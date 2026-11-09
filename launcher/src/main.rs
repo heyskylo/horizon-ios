@@ -391,6 +391,11 @@ struct Launcher {
     friend_focus: FocusHandle,
     /// The window's width at the last frame: Home's head lays out by it, as the mockup's `xl`.
     window_width: f32,
+    /// The window's height at the last frame: the Version menu's list is as tall as the room
+    /// under its button.
+    window_height: f32,
+    /// The Version menu's rows scroll (Home's picker).
+    picker_scroll: Scrollbar,
     /// The window's longer side in points, and the screen's pixels per point: the size pictures
     /// are made at (`picture_cache`).
     window_long_side: f32,
@@ -692,6 +697,8 @@ impl Launcher {
             friend_code: line_edit::LineEdit::new(String::new(), 256, 32),
             friend_focused: false,
             window_width: 0.,
+            window_height: 0.,
+            picker_scroll: Scrollbar::default(),
             window_long_side: 0.,
             scale_factor: 1.,
             friend_focus: cx.focus_handle(),
@@ -5282,6 +5289,7 @@ impl Render for Launcher {
         self.proxy_focused = self.proxy_focus.is_focused(window);
         let size = window.viewport_size();
         self.window_width = f32::from(size.width);
+        self.window_height = f32::from(size.height);
         self.window_long_side = f32::from(size.width).max(f32::from(size.height));
         self.scale_factor = window.scale_factor();
         let content = match self.page {
