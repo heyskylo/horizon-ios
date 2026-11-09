@@ -9,7 +9,6 @@ use std::{
     path::PathBuf,
     sync::OnceLock,
 };
-
 struct Fixture {
     registry: BlockRegistry,
     behaviours: Behaviours,
@@ -4172,4 +4171,5 @@ fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
     }
 }
 
+mod barrel;
 mod trigger_tests;

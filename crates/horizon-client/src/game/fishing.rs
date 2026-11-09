@@ -2192,6 +2192,7 @@ mod tests {
             on_ground: true,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
