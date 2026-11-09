@@ -344,8 +344,8 @@ impl Game<'_> {
                 let at = Vec3::new(eye[0], eye[1] - f64::from(0.15f32), eye[2]);
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
                 shot.shoot(&mut random_source::entity(), dir.to_array(), power, 1.0);
+                // Its first tick posts the shot (Projectile.tick).
                 self.launch_angled_rocket(at, shot.velocity, ammo, Some(Who::Player));
-                self.player_projectile_shot();
             }
             if !rocket {
                 let effect = super::dispenser::tipped_effect(ammo).or_else(|| {

@@ -22,6 +22,7 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{collections::HashMap, sync::Arc};
+mod saved_attributes;
 
 /// Saved data carried by `ConversionType.convertCommon` outside the modelled
 /// mob fields. The converted entity has its own identity and type-specific data;
@@ -1488,6 +1489,9 @@ pub fn mob_to_nbt(
         }
         _ => {}
     }
+    if m.species() == S::Frog {
+        crate::mobs::brain::write_frog(m, map);
+    }
     // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
     if m.species() == S::Bogged {
         map.insert("sheared".into(), Tag::Byte(i8::from(m.extra.sheared)));
@@ -1786,6 +1790,7 @@ fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attrib
             })
             .collect();
         if modifiers.is_empty() && !a.bases.iter().any(|(b, _)| *b == attr) {
+            saved_attributes::forget_stale_modifiers(&mut list, attr);
             continue;
         }
         let id = format!("minecraft:{}", attr.name());
@@ -1870,42 +1875,6 @@ fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
     }
 }
 /// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
-pub fn put_brain(map: &mut Compound, m: &Mob, dimension: &str) {
-    if m.extra.memories.is_empty() {
-        return;
-    }
-    let mut memories = match map.get(&"Brain".into()).and_then(|b| b.get("memories")) {
-        Some(Tag::Compound(c)) => c.clone(),
-        _ => Compound::new(),
-    };
-    for &(name, value, ttl) in &m.extra.memories {
-        let value = match name {
-            "hunted_recently" => Tag::Byte(value as i8),
-            // `Unit` memories save an empty compound.
-            "is_pregnant" => Tag::Compound(Compound::new()),
-            "home" => match m.extra.home {
-                Some(p) => Tag::compound([
-                    ("dimension", string(dimension)),
-                    ("pos", Tag::IntArray(p.to_vec())),
-                ]),
-                None => continue,
-            },
-            _ => Tag::Int(value as i32),
-        };
-        let mut memory = vec![("value", value)];
-        if ttl != i64::MAX {
-            memory.push(("ttl", Tag::Long(ttl)));
-        }
-        memories.insert(
-            format!("minecraft:{name}").as_str().into(),
-            Tag::compound(memory),
-        );
-    }
-    map.insert(
-        "Brain".into(),
-        Tag::compound([("memories", Tag::Compound(memories))]),
-    );
-}
 /// `CustomName`: a text component saved as a string or a `{text: ..}` compound.
 fn custom_name(tag: &Tag) -> Option<String> {
     match tag.get("CustomName")? {
@@ -1918,22 +1887,6 @@ fn custom_name(tag: &Tag) -> Option<String> {
     }
 }
 pub use horizon_client_core::component::name_text;
-/// Mob.finalizeSpawn's follow range bonus in the saved attributes.
-pub(crate) fn spawn_bonus(tag: &Tag) -> Option<f64> {
-    let Some(Tag::List(attrs)) = tag.get("attributes") else {
-        return None;
-    };
-    let range = attrs
-        .iter()
-        .find(|a| text(a.get("id")).as_deref() == Some("minecraft:follow_range"))?;
-    let Some(Tag::List(modifiers)) = range.get("modifiers") else {
-        return None;
-    };
-    let bonus = modifiers
-        .iter()
-        .find(|x| text(x.get("id")).as_deref() == Some("minecraft:random_spawn_bonus"))?;
-    float(bonus.get("amount"))
-}
 /// `Mob.readAdditionalSaveData`: negative radii retain the live homePosition.
 /// Used after the command adapter restores runtime AI, as well as fresh load.
 pub fn read_mob_home(m: &mut Mob, tag: &Tag) {
@@ -2083,11 +2036,7 @@ pub fn mob_from_nbt_with_random(
             }
         }
     }
-    if let Some(bonus) = spawn_bonus(tag) {
-        use crate::mobs::finalize::{Attr, Op, add_modifier};
-        let id = "minecraft:random_spawn_bonus";
-        add_modifier(&mut m, Attr::FollowRange, id, bonus, Op::AddMultipliedBase);
-    }
+    saved_attributes::read_attribute_modifiers(&mut m, tag);
     m.health = float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
     m.absorption = float(tag.get("AbsorptionAmount"))
         .map_or(0.0, |h| h as f32)
@@ -2790,10 +2739,10 @@ pub fn mob_from_nbt_with_random(
         crate::mobs::phantom::set_size(&mut m, number(tag.get("size")).unwrap_or(0) as i32);
         m.extra.home = home_block_pos(tag.get("anchor_pos"));
     }
-    // Zombie, Piglin and Zoglin.readAdditionalSaveData: IsBaby (the baby
-    // zombies of trial spawners).
-    if !crate::mobs::finalize::ageable(m.species()) && flag(tag, "IsBaby") {
-        crate::mobs::finalize::set_baby(&mut m, true);
+    // Zombie, Piglin and Zoglin.readAdditionalSaveData: setBaby(IsBaby), after the
+    // saved modifiers, so it also removes a saved permanent `minecraft:baby`.
+    if !crate::mobs::finalize::ageable(m.species()) {
+        crate::mobs::finalize::set_baby(&mut m, flag(tag, "IsBaby"));
     }
     // Zombie.readAdditionalSaveData: setCanBreakDoors.
     if crate::mobs::doors::is_zombie(m.species()) {
@@ -3694,6 +3643,12 @@ pub struct RocketNbt {
     pub owner: Option<Who>,
     pub left_owner: bool,
     pub on_ground: bool,
+    /// `Entity.load`'s Rotation.
+    pub rotation: [f32; 2],
+    /// `Projectile.hasBeenShot`: false until its first tick posts `projectile_shoot`.
+    pub has_been_shot: bool,
+    /// `Entity.isSilent`: no launch sound.
+    pub silent: bool,
 }
 pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<RocketNbt> {
     let owner = uuid_from_tag(tag.get("Owner"));
@@ -3707,6 +3662,9 @@ pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<R
         owner: (player.is_some() && owner == player).then_some(Who::Player),
         left_owner: flag(tag, "LeftOwner"),
         on_ground: flag(tag, "OnGround"),
+        rotation: rotation(tag),
+        has_been_shot: flag(tag, "HasBeenShot"),
+        silent: flag(tag, "Silent"),
     })
 }
 
@@ -3724,6 +3682,7 @@ pub struct RocketSave<'a> {
     pub left_owner: bool,
     /// `Entity.onGround`, from the rocket's last `Entity.move`.
     pub on_ground: bool,
+    pub has_been_shot: bool,
 }
 pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = Base {
@@ -3741,7 +3700,7 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
         ("LifeTime", Tag::Int(r.lifetime)),
         ("FireworksItem", item_to_nbt(r.item)),
         ("ShotAtAngle", Tag::Byte(i8::from(r.angled))),
-        ("HasBeenShot", Tag::Byte(1)),
+        ("HasBeenShot", Tag::Byte(i8::from(r.has_been_shot))),
     ] {
         put(&mut tag, key, value);
     }
@@ -3984,8 +3943,8 @@ pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, Option<String>)> {
 }
 /// `Cushion.addAdditionalSaveData`: the block it sits on and its colour.
 pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
-    // A block-attached cushion does not update these movement flags.
-    let on_ground = raw.is_some_and(|tag| flag(tag, "OnGround"));
+    // A block-attached cushion does not update these: they stay as loaded.
+    let (on_ground, fall_distance) = raw.map_or((false, 0.0), ground_from_nbt);
     let base = Base {
         id: "minecraft:cushion",
         uuid,
@@ -3993,7 +3952,7 @@ pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         motion: Vec3::ZERO,
         rotation: [c.yaw, 0.0],
         on_ground,
-        fall_distance: 0.0,
+        fall_distance,
     };
     let mut tag = base.tag(raw);
     put(&mut tag, "block_pos", Tag::IntArray(c.pos.to_vec()));
@@ -5290,7 +5249,7 @@ mod tests {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let tag = firework_rocket_to_nbt(
             &RocketSave {
-                rotation: [0.0, 0.0],
+                rotation: [90.0, 10.0],
                 position: Vec3::new(1.5, 70.0, -3.25),
                 motion: Vec3::new(0.0, 0.5, 0.0),
                 life: 7,
@@ -5300,16 +5259,18 @@ mod tests {
                 owner: None,
                 left_owner: false,
                 on_ground: true,
+                has_been_shot: false,
             },
             [1, 2, 3, 4],
             None,
         );
         let r = firework_rocket_from_nbt(&tag, None).unwrap();
         assert_eq!(
-            (r.life, r.lifetime, r.angled, r.on_ground),
-            (7, 31, true, true)
+            (r.life, r.lifetime, r.angled, r.on_ground, r.has_been_shot),
+            (7, 31, true, true, false)
         );
         assert_eq!(r.position, Vec3::new(1.5, 70.0, -3.25));
+        assert_eq!(r.rotation, [90.0, 10.0]);
         let trident = ItemStack::new("minecraft:trident", 1);
         let tag = trident_to_nbt(
             &TridentSave {
@@ -9362,52 +9323,8 @@ mod shulker_bullet_nbt_tests {
 }
 
 #[cfg(test)]
-mod spectral_duration_nbt_tests {
-    use super::*;
-
-    #[test]
-    fn spectral_duration_uses_live_identity_and_preserves_saved_values() {
-        let mut model = Projectile::new(
-            ProjectileKind::Arrow {
-                base_damage: 2.0,
-                critical: false,
-                effect: None,
-            },
-            Vec3::new(0.5, 200.0, 0.5),
-            None,
-        );
-        model.arrow.as_mut().unwrap().spectral = true;
-        let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, None).unwrap();
-        assert_eq!(kind(&saved).as_deref(), Some("minecraft:spectral_arrow"));
-        assert_eq!(saved.get("Duration"), Some(&Tag::Int(200)));
-        for supplied in [None, Some(77), Some(0), Some(-1), Some(200), Some(i32::MAX)] {
-            let mut source = Tag::compound([
-                ("id", string("minecraft:spectral_arrow")),
-                ("Pos", doubles(&[0.5, 200.0, 0.5])),
-                ("Motion", doubles(&[0.0; 3])),
-            ]);
-            if let Some(value) = supplied {
-                put(&mut source, "Duration", Tag::Int(value));
-            }
-            let (loaded, _) = arrow_from_nbt(&source, None, |_| None).unwrap();
-            assert!(loaded.arrow.as_ref().unwrap().spectral);
-            let saved = arrow_to_nbt(&loaded, [7, 8, 9, 10], None, None, None).unwrap();
-            assert_eq!(
-                saved.get("Duration"),
-                Some(&Tag::Int(supplied.unwrap_or(200)))
-            );
-        }
-        model.arrow.as_mut().unwrap().spectral = false;
-        for raw in [
-            None,
-            Some(Tag::compound([("id", string("minecraft:spectral_arrow"))])),
-        ] {
-            let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, raw.as_ref()).unwrap();
-            assert_eq!(kind(&saved).as_deref(), Some("minecraft:arrow"));
-            assert!(saved.get("Duration").is_none());
-        }
-    }
-}
+#[path = "spectral_duration_nbt_tests.rs"]
+mod spectral_duration_nbt_tests;
 
 #[cfg(test)]
 mod mod_thrown_nbt_tests {
