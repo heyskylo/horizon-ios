@@ -43,6 +43,11 @@ pub fn enter_native_mod(call: NativeModCall) -> NativeModGuard {
     }
 }
 
+/// The native mod call this thread is currently inside, if any.
+pub fn current_native_mod() -> Option<NativeModCall> {
+    IN_NATIVE_MOD.with(Cell::get)
+}
+
 /// Puts back the call that `enter_native_mod` found.
 #[must_use]
 pub struct NativeModGuard {
@@ -244,7 +249,7 @@ fn arch_label(build: &str, machine: &str) -> String {
 }
 
 /// `PRETTY_NAME` of /etc/os-release and the kernel, or the system's own version string.
-fn operating_system() -> String {
+pub(crate) fn operating_system() -> String {
     let arch = arch_label(std::env::consts::ARCH, machine_arch());
     let version = if cfg!(target_os = "linux") {
         let name = read("/etc/os-release").and_then(|t| {

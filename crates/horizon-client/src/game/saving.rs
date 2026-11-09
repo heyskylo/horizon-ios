@@ -285,4 +285,84 @@ impl Game<'_> {
         renderer.render(&loading_frame(&hud))?;
         Ok(())
     }
+
+    /// Save the level in place: its changed chunks, its entities and its raids.
+    pub(super) fn save_level(&mut self, wait: bool) -> Result<()> {
+        self.save_border();
+        self.save.save_attachments(&self.world.attachments)?;
+        self.save
+            .save_chunk_tickets(&self.streaming.forced, self.tickets.portal_tickets())?;
+        self.streaming.save(&mut self.world, wait);
+        let now = Instant::now();
+        let keys: Vec<_> = self.world.modified.drain().collect();
+        let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
+        self.save
+            .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
+        // Prepare entities while the chunk writer runs, then use one barrier.
+        if !wait {
+            self.world.modified.autosaved(&keys, now);
+        }
+        self.save_entities(false)?;
+        self.save_raids();
+        if wait {
+            self.save.flush()?;
+        }
+        Ok(())
+    }
+
+    /// `GameRenderer.tryTakeScreenshotIfNeeded`: while a local world without a
+    /// saved icon is on the screen, grab the rendered frame once a second until
+    /// the save has one. The Select World list shows it as the world's preview.
+    pub(super) fn tick_world_icon(&mut self) {
+        // Its grab would take a sequence's frame.
+        if self.screenshot_sequence.is_some() {
+            return;
+        }
+        let Some(icon) = self.world_icon.as_ref() else {
+            return;
+        };
+        if icon
+            .last_attempt
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        if icon.path.is_file() {
+            // tryTakeScreenshotIfNeeded's hasWorldScreenshot: it has one, stop asking.
+            self.world_icon = None;
+            return;
+        }
+        // takeAutoScreenshot only saves with every loaded section rendered, or
+        // the icon would picture the holes the streamer has not filled yet.
+        if self.streaming.pending() != 0
+            || !self.pending_uploads.is_empty()
+            || self.remote_backlog() != 0
+        {
+            return;
+        }
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        // countRenderedSections() > 10: a client that joined its server
+        // thread has nothing pending before the first chunks arrive, and the
+        // icon would be only sky.
+        if renderer.drawn_sections <= 10 {
+            return;
+        }
+        if renderer.screenshot.is_some() {
+            // F2's or an agent's screenshot owns the frame this time; ours
+            // comes around again with the next attempt.
+            return;
+        }
+        let path = icon.path.clone();
+        if let Some(icon) = self.world_icon.as_mut() {
+            icon.last_attempt = Some(Instant::now());
+        }
+        renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
+            path,
+            size: Some([64, 64]),
+            scaled: false,
+            background: true,
+        });
+    }
 }
