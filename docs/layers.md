@@ -307,7 +307,8 @@ horizon-client`, the harnesses and horizon-plain build, has none either. The fir
 
 The spec for the three registries that let a platform or Horizon crate add settings, pages and HUD drawing without
 an engine file naming it. Controllers, splitscreen, replays (M6) and Horizon's extras (M5) move out on them.
-Status: spec. Each registry lands in its own PR (layer plan M5, seam).
+Status: spec; each registry lands in its own PR (layer plan M5, seam): the settings store (#14036), pages v1
+(#14070: `HorizonSettings`, every row but `Slider`; v2 adds `Slider`, `Title`, `Pause`), the HUD hook.
 
 **One shape for all three.** As with `Hooks` above:
 
@@ -323,6 +324,10 @@ Status: spec. Each registry lands in its own PR (layer plan M5, seam).
   no allocation, no draw call and no file. A vanilla build (horizon-client, horizon-plain) is unchanged.
 - Visible text is a translation key the registrant ships in its lang files, never English in code. Values a
   player typed (a name, a path) are the exception.
+- Splitscreen players are one process, one thread, each `Game` in turn (`game/split.rs`), so a crate's statics
+  are shared by them. Every call (stores, pages, layers, hooks) happens on one player's turn, and
+  `horizon_platform::hooks::seat()` (0 for P1) says whose: a crate keeps per-player state indexed by it.
+- The enums are `#[non_exhaustive]`: a new row, act or place is an addition, not a break.
 
 ### Settings store (`horizon_platform::settings`)
 
@@ -398,8 +403,9 @@ pub trait Canvas {
     fn text_width(&self, text: &str) -> f32;
     fn text(&mut self, x: f32, y: f32, text: &str, argb: u32, shadow: bool);
     fn fill(&mut self, x: f32, y: f32, w: f32, h: f32, argb: u32);
-    /// A box of `w` × `h` in `corner`, stacked with the minimap, PvP widgets and mods' boxes.
-    fn place(&mut self, corner: Corner, w: f32, h: f32) -> (f32, f32);
+    /// A box of `w` × `h` in `corner`, stacked with the minimap, PvP widgets and mods' boxes;
+    /// `None` while the debug screen covers that corner.
+    fn place(&mut self, corner: Corner, w: f32, h: f32) -> Option<(f32, f32)>;
 }
 pub trait Layer: Sync {
     fn draw(&self, canvas: &mut dyn Canvas);
@@ -407,8 +413,8 @@ pub trait Layer: Sync {
 ```
 
 - Layers draw in the HUD pass where the extras do (`game/extras.rs`, `draw_extras`, beside the native mods' HUD
-  boxes), in the order they registered. They are hidden with F1, and the top-left corner gives way to the
-  debug screen, as for the extras.
+  boxes), in the order they registered. They are hidden with F1, and a corner the debug screen covers is
+  `None`, as for mods' boxes.
 - With no layer registered the engine builds no canvas.
 - A layer reads its own state, which its crate keeps up to date through `Hooks` or its own threads. It never
   reads the engine's.
