@@ -97,20 +97,3 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 ## Java comparison profiling
 
 - [JFR analysis for Java comparisons](profiling.md).
-
-## Benchmarks and results
-
-- [Animated sprite mip cache](animated-sprite-mips-benchmark.md): caching full mip chains for displayed source frames cut repeated tick cost by 53.34% (3.627 to 1.692 ms) and repeated render by 53.33%, within an 8 MiB budget.
-- [Generation scan gate benchmark](generation-scan-benchmark.md): reusing an exhausted generation scan made the stationary case 1,528.99x faster (15,441.3 to 10.1 ns/frame) and a dynamic remove/load cycle 14.72x faster.
-- [Bulk density and noise generation benchmark](noise-aquifer-benchmark.md): one-time dispatch, kernel reuse and X-column reuse cut Overworld terrain time by 20.62% with one worker (12.685 to 10.069 ms/input chunk) and 16.96% with four.
-- [Nether-portal section-scan benchmark](portal-scan-benchmark.md): a resident portal-section cache made the steady dense scan 11.19x faster (244.610 to 21.869 us/tick) and dense_portal 12.19x faster, while rescans after every-chunk edits were slower.
-- [Random-tick eligibility benchmark](random-tick-eligibility-benchmark.md): caching section eligibility made the steady dense selection 298.37x faster (1,311.924 to 4.397 us/tick) and 1% edits 141.74x faster.
-- [Shared model library benchmark](shared-model-library-benchmark.md): sharing one loaded model library cut combined asset and item preparation by 18.50 ms (3.47%), with item preparation down from 83.12 to 36.30 ms, for 1,578 KiB more peak RSS.
-- [Constant surface-rule specialization benchmark](surface-generation-benchmark.md): specializing constant surface rules improved primary Overworld terrain by 3.43% with one worker (10.664 to 10.298 ms/input chunk).
-- [Section visibility shortcuts](visibility-benchmark.md): the shortcut helper was 3.05x to 3.44x faster on random 1-50% opaque sections (27,657.9 to 9,061.1 ns at 1%) and no case regressed.
-- [Entity culling benchmark](media/entity-culling-benchmark.md): asynchronous entity culling raised average FPS by 19.2% (83.59 to 99.67) and synchronous culling by 15.9% in a 300-armor-stand wall scene.
-- [Lighting worker result packaging](performance/lighting-worker-results.md): moving light results instead of cloning them cut packaging and application from 63.948 to 44.397 us/column (1.44x) when sections are uniquely owned and from 65.332 to 53.025 us/column (1.23x) with a retained snapshot.
-- [Paletted container access](performance/paletted-container-access-results.md): one-pass section validation and per-palette unpack dispatch made `BlockSection::set` 1.44x faster (13.15 to 9.12 ns/write), `get` 1.61x faster (2.33 to 1.45 ns/read) and bulk `unpack` 1.04x faster.
-- [Uniform chunk sections when saving](performance/paletted-pack-uniform.md): answering a one-value section from its stored words instead of unpacking 4,096 cells made `pack` 116x faster on a single-value section (3.85 to 0.03 us) and 22x on a global-palette one, with no change for mixed sections, and cut a 256-column save batch from 205,375 to 180,162 us (1.14x).
-- [Item components in one pass](performance/item-components-one-pass.md): finding a stack's modelled components in one walk of the saved compound instead of one map lookup per ID made `decode_components` 2.6x faster on a one-component stack (0.93 to 0.36 us) and cut the decode stage of a 256-column village batch from 106 to 81 ms (1.31x).
-- [Progressive world resources](performance/startup-stage-3.md): stage 3 makes the title screens interactive before core resources finish; an unblocked launch reached core at 4,776 ms, renderer at 5,260 ms and rest at 6,282 ms, with progressive-title RSS about 11% higher in a warm run.
