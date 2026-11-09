@@ -2170,12 +2170,13 @@ impl Goal for Tempt {
             return false;
         }
         let Some(p) = &cx.w.player else { return false };
-        // Attributes.TEMPT_RANGE default 10; `TargetingConditions.forNonCombat`
-        // never picks a spectator.
+        // Attributes.TEMPT_RANGE default 10, scaled by the player's
+        // visibility (`TargetingConditions.forNonCombat`, floor 2).
+        let range = (10.0 * p.visibility_percent(Some(m.kind.id.as_str()), cx.w.items)).max(2.0);
         p.alive
             && !p.spectator
             && (self.wants(&p.main_hand) || self.wants(&p.off_hand))
-            && m.distance_sqr(p.position) <= 100.0
+            && m.distance_sqr(p.position) <= range * range
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.can_scare
@@ -3232,6 +3233,46 @@ mod avoid_entity_targeting_tests {
             assert!(in_range, "the player is inside the plain distance range");
             assert!(picked, "the rabbit ignored a player in the open");
         }
+    }
+
+    /// `TemptGoal` scales its range by the player's visibility, with a floor
+    /// of two blocks: an invisible player five blocks away does not tempt.
+    #[test]
+    fn an_invisible_player_tempts_only_within_two_blocks() {
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            for (invisible, x) in [(false, 5.5), (true, 5.5), (true, 1.5)] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(x, 64.0, 0.5));
+                p.main_hand = Some("minecraft:wheat".into());
+                p.invisible = invisible;
+                world.player = Some(p);
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(
+                    3,
+                    Tempt::new(1.25, Arc::from(vec!["minecraft:wheat".to_string()]), false),
+                );
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("Tempt"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false, true],
+            "visible at five, invisible at five, invisible at one and a half"
+        );
     }
 
     /// `TemptGoal` finds its player with `TargetingConditions.forNonCombat()`,
