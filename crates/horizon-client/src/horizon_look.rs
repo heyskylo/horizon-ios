@@ -1,8 +1,9 @@
 //! Horizon's look, given to the engine's extension points at startup (docs/layers.md): the
-//! windows' icon and the colours of the menus vanilla doesn't have (`docs/design-system.md`).
+//! windows' icon and the colours, sizes and fonts of the menus vanilla doesn't have
+//! (`docs/design-system.md`).
 //! Its own module so it can leave the engine crate as a pure file move, for the official
 //! executable to call.
-use horizon_client::menu_style::{MenuStyle, OverlayColours, SettingsColours};
+use horizon_client::menu_style::{Fonts, MenuStyle, OverlayColours, SettingsColours, Sizes};
 use horizon_theme as theme;
 
 /// Give the engine Horizon's look; call it once, before the first window opens.
@@ -27,6 +28,29 @@ pub(crate) fn give() {
         overlay: OverlayColours {
             page: dark.page,
             backdrop_muted: theme::BACKDROP_MUTED,
+            ink: dark.ink,
+            ink_soft: dark.ink_soft,
+            rule: dark.rule,
+            accent: dark.accent,
+            on_accent: dark.on_accent,
         },
+        sizes: Sizes {
+            caption: theme::CAPTION.px,
+            label: theme::LABEL.px,
+            ui: theme::UI.px,
+            body: theme::BODY.px,
+            title: theme::TITLE.px,
+            display: theme::DISPLAY.px,
+            micro: theme::MICRO.px,
+            radius: theme::RADIUS,
+            radius_plate: theme::RADIUS_PLATE,
+            control_large: theme::CONTROL_LARGE,
+        },
+        fonts: Some(Fonts {
+            regular: theme::fonts::GEIST_REGULAR,
+            medium: theme::fonts::GEIST_MEDIUM,
+            semibold: theme::fonts::GEIST_SEMIBOLD,
+            mono: theme::fonts::GEIST_MONO,
+        }),
     });
 }

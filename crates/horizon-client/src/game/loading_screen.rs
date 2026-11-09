@@ -129,22 +129,25 @@ impl Loading {
         // redraw the same design when they start. GDI is unsafe:
         // horizon-threads holds it (this crate forbids unsafe code).
         #[cfg(target_os = "windows")]
-        let boot_paint_stop = hwnd(&window).map(|hwnd| {
-            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let repaint_stop = stop.clone();
-            std::thread::spawn(move || {
-                while !repaint_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    horizon_threads::boot_paint::paint(
-                        hwnd,
-                        horizon_theme::fonts::GEIST_SEMIBOLD,
-                        horizon_theme::fonts::GEIST_MONO,
-                        &horizon_client::logging::recent_lines(),
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                }
+        // In the fonts given to `menu_style`; with none, the window stays as it is.
+        let boot_paint_stop = hwnd(&window)
+            .zip(horizon_client::menu_style::get().fonts)
+            .map(|(hwnd, fonts)| {
+                let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let repaint_stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !repaint_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        horizon_threads::boot_paint::paint(
+                            hwnd,
+                            fonts.semibold,
+                            fonts.mono,
+                            &horizon_client::logging::recent_lines(),
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                    }
+                });
+                stop
             });
-            stop
-        });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         let boot_step = startup::step("renderer.boot");
         match loading_renderer(
