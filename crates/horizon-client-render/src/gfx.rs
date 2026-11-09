@@ -233,6 +233,7 @@ pub mod pack_uniforms;
 mod pack_weather;
 mod page_runs;
 pub mod panorama;
+mod ray_query;
 mod readback;
 mod resident;
 mod reuse;
