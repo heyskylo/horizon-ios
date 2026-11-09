@@ -15,6 +15,7 @@ pub mod ocean_ruin;
 pub mod piece_limited;
 pub mod processor;
 pub mod ruined_portal;
+pub(crate) mod saved_legacy;
 pub(crate) mod saved_templates;
 pub mod simple;
 pub mod start;
