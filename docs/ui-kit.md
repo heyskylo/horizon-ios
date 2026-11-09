@@ -220,10 +220,12 @@ in one priority order:
 | `Prompt` | a prompt is over the world (a server dialog, the code of conduct, a link, command or resource pack prompt) |
 | `Radial` | the radial menu is held open |
 
-Code that routes the pad's presses and sticks, and HUD pieces that give way (the crosshair, the
-controller guide), ask `pad_radial_captures()` or `pad_keyboard_captures()` rather than the
-overlays themselves. A new overlay that takes the pad adds its variant here, in its place in the
-order. Screens are not overlays: `pad_in_menu` says when one has the pad.
+Code that routes the pad's presses and sticks (`pad.rs`, `pad_actions.rs`, `pad_menu.rs`,
+`window_handler.rs`), and the controller guide, which gives way to the keyboard, ask
+`pad_radial_captures()` or `pad_keyboard_captures()` rather than the overlays themselves. A new
+overlay that takes the pad adds its variant here, in its place in the order, and a check that asks
+about it gets a `pad_<overlay>_captures()` beside these. Screens are not overlays: `pad_in_menu`
+says when one has the pad.
 
 One change came with it: a prompt that arrives while the radial menu is open owns the pad from that
 poll, so a B in the same poll answers the prompt instead of cancelling the menu (which the prompt
