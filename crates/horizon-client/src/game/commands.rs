@@ -6086,3 +6086,31 @@ mod global_selector_order_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod inventory_mode_tests {
+    use super::{Screen, inventory_after_mode};
+
+    /// `InventoryScreen.containerTick`: the survival inventory becomes the
+    /// creative one when the player gets infinite materials, and any other
+    /// screen is left where it is.
+    #[test]
+    fn a_survival_inventory_becomes_the_creative_one() {
+        assert!(inventory_after_mode(Screen::Inventory, true, false) == Screen::Creative);
+        let stays = inventory_after_mode(Screen::Inventory, false, false);
+        assert!(stays == Screen::Inventory, "survival keeps its inventory");
+        // A spectator's inventory is closed, which is what Horizon did for
+        // both before; vanilla has no spectator branch and leaves it open.
+        let closed = inventory_after_mode(Screen::Inventory, false, true);
+        assert!(closed == Screen::Playing);
+        for screen in [
+            Screen::Playing,
+            Screen::Creative,
+            Screen::Paused,
+            Screen::Stats,
+            Screen::Advancements,
+        ] {
+            assert!(inventory_after_mode(screen, true, false) == screen);
+        }
+    }
+}
