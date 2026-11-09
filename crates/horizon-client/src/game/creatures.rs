@@ -3068,6 +3068,12 @@ impl Game<'_> {
                         && m.saddle_item().is_none()
                     {
                         m.set_saddle(Some(ItemStack::new(item, 1)));
+                        // OfferFlowerGoal.stop: Mob.setGuaranteedDrop(antenna).
+                        horizon_client::mobs::finalize::set_drop_chance(
+                            m,
+                            horizon_client::mobs::finalize::SADDLE,
+                            2.0,
+                        );
                     }
                 }
                 MobEvent::HurtSelf { mob, kind, amount } => {
