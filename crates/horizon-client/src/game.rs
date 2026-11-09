@@ -3910,27 +3910,14 @@ impl Game<'_> {
         });
         self.dropped.push(ItemEntity {
             rotation: [yaw, 0.0],
-            join: Default::default(),
-            no_gravity: false,
-            health: 5,
-            fire_ticks: 0,
-            thrower: None,
-            target: None,
-            id: self.next_entity,
-            stack,
-            position: p,
-            previous: p,
-            velocity: Vec3::new(velocity[0], velocity[1], velocity[2]),
-            on_ground: false,
-            vertical_collision: false,
-            horizontal_collision: false,
-            age: 0,
             pickup_delay: i64::from(pickup_delay),
-            bob_offset: bob,
-            ticks: 0,
-            needs_sync: false,
-            stuck: Vec3::ZERO,
-            was_touching_water: false,
+            ..ItemEntity::new(
+                self.next_entity,
+                stack,
+                p,
+                Vec3::new(velocity[0], velocity[1], velocity[2]),
+                bob,
+            )
         });
         // ServerLevel.addFreshEntity.
         if self.native_joins_flush(false, self.next_entity) {

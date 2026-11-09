@@ -6259,30 +6259,8 @@ impl Game<'_> {
         let bob_offset = horizon_client::mobs::entity_random(id as u32, at).next_float()
             * std::f32::consts::PI
             * 2.0;
-        self.dropped.push(ItemEntity {
-            rotation: [0.0, 0.0],
-            join: Default::default(),
-            no_gravity: false,
-            health: 5,
-            fire_ticks: 0,
-            thrower: None,
-            target: None,
-            id: id as u32,
-            stack,
-            position: at,
-            previous: at,
-            velocity,
-            on_ground: false,
-            vertical_collision: false,
-            horizontal_collision: false,
-            age: 0,
-            pickup_delay: 0,
-            bob_offset,
-            ticks: 0,
-            needs_sync: false,
-            stuck: Vec3::ZERO,
-            was_touching_water: false,
-        });
+        self.dropped
+            .push(ItemEntity::new(id as u32, stack, at, velocity, bob_offset));
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
     /// entities whose own tick moves them on a client: dropped items, experience

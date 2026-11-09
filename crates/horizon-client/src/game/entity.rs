@@ -592,6 +592,7 @@ impl Game<'_> {
         let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
         // Entity.baseTick splashes before moving, except on the first tick.
         item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
+        item.lava_fall(heights.1 > 0.0);
         let step = item.tick_move_before_block_effects(
             &self.world,
             self.res.facts(),
@@ -603,6 +604,9 @@ impl Game<'_> {
             Some(self.border.geometry()),
             Some(&self.res.motion().blocks),
         );
+        item.check_fall(&step, |fall, from, moved| {
+            self.vehicle_fall_reset(fall, from, moved)
+        });
         if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
