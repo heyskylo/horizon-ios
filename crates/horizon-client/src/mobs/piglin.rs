@@ -825,38 +825,38 @@ fn hoglin_hurt(
         m.ai.last_hurt_by = None;
     } else {
         for &mob in &m.extra.piglin.adults {
-            events.push(MobEvent::HoglinAttackTarget { mob, target: by });
+            events.push(MobEvent::HoglinAttackTarget {
+                mob,
+                from: m.id,
+                target: by,
+            });
         }
     }
 }
 /// `HoglinAi.setAttackTargetIfCloserThanCurrent` for a hoglin that received a
 /// broadcast: nothing while pacified; otherwise `BehaviorUtils.getNearestTarget`,
 /// the new target unless the current one is strictly nearer
-/// (`getTargetNearestMe`). `position` gives a live mob target's place; a
-/// current target it cannot place counts as absent. A player on either side
-/// is not compared (`Who::Player` is each mob's own player): the current
-/// target stays.
-pub fn receive_attack_target(m: &mut Mob, target: Who, position: impl Fn(Who) -> Option<Vec3>) {
+/// (`getTargetNearestMe`). The caller places both: `current_at` is where the
+/// current target is (none counts as absent), `target_at` the new one (none
+/// keeps the current one). Whether the new target was taken.
+pub fn receive_attack_target(
+    m: &mut Mob,
+    target: Who,
+    current_at: Option<Vec3>,
+    target_at: Option<Vec3>,
+) -> bool {
     if m.extra.ints[0] > 0 {
-        return;
+        return false;
     }
-    let Some(current) = m.ai.target else {
-        m.ai.target = Some(target);
-        return;
+    let take = match (m.ai.target, current_at, target_at) {
+        (None, ..) | (Some(_), None, _) => true,
+        (Some(_), Some(_), None) => false,
+        (Some(_), Some(now), Some(new)) => m.distance_sqr(now) >= m.distance_sqr(new),
     };
-    if current == Who::Player || target == Who::Player {
-        return;
-    }
-    let Some(now) = position(current) else {
-        m.ai.target = Some(target);
-        return;
-    };
-    let Some(new) = position(target) else {
-        return;
-    };
-    if m.distance_sqr(now) >= m.distance_sqr(new) {
+    if take {
         m.ai.target = Some(target);
     }
+    take
 }
 /// `PiglinAi.stopHoldingOffHandItem` without bartering (`wasHurtBy`): a gold
 /// ingot is not bartered and is gone; anything else ends its admiring next
