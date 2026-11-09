@@ -1264,5 +1264,7 @@
   "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Tehtud Horizon {pin} jaoks: käivitaja ehitab selle sinu mängitavale {yours}-le ja {pin}-le ainult siis, kui see seal ei kompileeru",
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} ei ehitunud sinu mängitaval Horizonil: ehitatakse sellel, mille jaoks need tehti",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Viimases ehituses Horizon {commit} peal {mods} pärast, mitte {horizon} peal",
-  "In the last build, on {horizon}": "Viimases ehituses {horizon} peal"
+  "In the last build, on {horizon}": "Viimases ehituses {horizon} peal",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }
