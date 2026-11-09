@@ -180,7 +180,7 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
-        if self.screen == Screen::Playing && self.studio.replaying() {
+        if self.screen == Screen::Playing && self.replay.playing() {
             if !pressed {
                 self.keys.release(&key, source);
                 return Ok(());

@@ -10,7 +10,7 @@ impl Game<'_> {
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         self.direct_craft_stop();
-        if self.screen == Screen::Playing && self.studio.replaying() {
+        if self.screen == Screen::Playing && self.replay.playing() {
             self.studio_key(key);
             return Ok(());
         }
@@ -46,7 +46,7 @@ impl Game<'_> {
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
-                    if self.studio.replaying() && self.captured {
+                    if self.replay.playing() && self.captured {
                         self.capture(false);
                         return Ok(());
                     }
@@ -181,7 +181,7 @@ impl Game<'_> {
             // key.toggleGui is a KeyMapping: it clicks only with no screen open.
             KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
             KeyCode::F11 => self.toggle_fullscreen(),
-            KeyCode::F5 if self.screen == Screen::Playing && !self.studio.replaying() => {
+            KeyCode::F5 if self.screen == Screen::Playing && !self.replay.playing() => {
                 self.cycle_camera()
             }
             KeyCode::KeyE
