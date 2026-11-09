@@ -1008,14 +1008,13 @@ use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 pub(crate) use horizon_client::mod_api::NativeLootOdds;
-use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
-    self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
-    NativeFishingMedium, NativeFluidAction, NativeFluidDrain, NativeFluidStack,
-    NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer,
-    RecipeBookCategory, ServerTickPhase, TickSpan, WorldPhase,
+    self, AttachmentResult, Attachments, BlockProperties, Holder, HudMode, LayerDefinition,
+    NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFishingMedium,
+    NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
+    NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory,
+    ServerTickPhase, Suggestion, TickSpan, WorldHold, WorldPhase,
 };
-use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
     ClientboundPlayPacket, NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap,
     NativeMod, NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
@@ -2243,6 +2242,7 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {
+        self.native_process_tasks();
         mod_api::dispatch_tick(self, mod_api::mods());
     }
     /// Before an eligible targeted block's selection outline is built.

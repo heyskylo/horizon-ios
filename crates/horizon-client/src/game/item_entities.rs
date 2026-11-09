@@ -205,17 +205,34 @@ impl Game<'_> {
             self.spawn_destroyed_contents(destroyed);
             return;
         }
+        // Player.aiStep: standing, the pickup area is the player's box
+        // inflated by (1, 0.5, 1); riding, the union with the vehicle's box
+        // inflated by (1, 0, 1).
         let w = f64::from(p.dimensions.width) / 2.0;
+        let own_box = Aabb::new(
+            Vec3::new(p.position.x - w, p.position.y, p.position.z - w),
+            Vec3::new(
+                p.position.x + w,
+                p.position.y + f64::from(p.dimensions.height),
+                p.position.z + w,
+            ),
+        );
+        let area = match self.riding_box() {
+            Some(vehicle) => own_box
+                .union_bounds(vehicle)
+                .inflate(Vec3::new(1.0, 0.0, 1.0)),
+            None => own_box.inflate(Vec3::new(1.0, 0.5, 1.0)),
+        };
         let (min, max) = (
             [
-                p.position.x - w - 1.0,
-                p.position.y - 0.5,
-                p.position.z - w - 1.0,
+                area.min_position().x,
+                area.min_position().y,
+                area.min_position().z,
             ],
             [
-                p.position.x + w + 1.0,
-                p.position.y + f64::from(p.dimensions.height) + 0.5,
-                p.position.z + w + 1.0,
+                area.max_position().x,
+                area.max_position().y,
+                area.max_position().z,
             ],
         );
         let feet = [p.position.x, p.position.y, p.position.z];
@@ -259,8 +276,13 @@ impl Game<'_> {
                         continue;
                     }
                     Some(rest) => {
+                        // ItemEntity.playerTouch: `Inventory.add` is true once any
+                        // of the stack went in, so a partial pickup still takes
+                        // (animation and sound) and awards the stat with the
+                        // count the stack had before it (`take(this, count)`,
+                        // `awardStat(..., count)`).
                         if rest.count < before {
-                            self.award_stat("picked_up", &kind, (before - rest.count) as i32);
+                            self.award_stat("picked_up", &kind, before as i32);
                             if let Some(thrower) = thrower {
                                 self.trigger_thrown_picked_up_by_player(&rest, thrower);
                             }

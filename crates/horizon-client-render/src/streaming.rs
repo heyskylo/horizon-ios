@@ -549,6 +549,9 @@ pub struct Streaming {
     pub mod_forced: HashSet<(i32, i32)>,
     /// No work is scheduled while paused (title screen).
     pub paused: bool,
+    /// Finished meshes the renderer has not taken yet (the game's pending
+    /// uploads): they count against the meshing room as the jobs do.
+    pub upload_backlog: usize,
     /// Dimension flags: sky light, Nether face shading.
     pub sky_light: bool,
     pub nether_shading: bool,
@@ -1062,7 +1065,9 @@ pub struct WorkerContext {
     pub biomes: Arc<crate::biome::Biomes>,
     pub light: Arc<LightTables>,
 }
+mod bounded;
 mod relight_now;
+use bounded::nearest_first;
 impl Streaming {
     pub fn new<G: ChunkGenerator>(
         generator: Arc<G>,
@@ -1147,6 +1152,7 @@ impl Streaming {
             forced: HashSet::new(),
             mod_forced: HashSet::new(),
             paused: false,
+            upload_backlog: 0,
             sky_light: true,
             nether_shading: false,
             shader_pack_lighting: false,
@@ -2083,7 +2089,10 @@ impl Streaming {
         // jobs went stale long before a worker reached them (#3629). What
         // stays dirty is asked for again, from the current centre, as
         // capacity frees; `requeue` then has a small queue to keep close.
-        let room = (self.workers * 32).saturating_sub(self.meshing.len());
+        // Meshes waiting for upload count too: when uploads fall behind (a
+        // low frame rate at a wide distance), meshing on held gigabytes of
+        // them until the system swapped.
+        let room = (self.workers * 32).saturating_sub(self.meshing.len() + self.upload_backlog);
         nearest_first(&mut candidates, room);
         for (_, x, z, sections) in candidates.drain(..) {
             let Some(region) = Self::region(world, x, z) else {
@@ -3021,19 +3030,6 @@ fn light_region_ready(
     }
     true
 }
-/// The nearest `room` of the `candidates`, ordered: the light and mesh
-/// stages submit bounded work, chosen from everything that is ready each
-/// `update`, so what runs is always the nearest of what is left — chosen
-/// again, from the current centre, as capacity frees, the way vanilla's
-/// chunk task queues follow the current ticket levels. The selection is
-/// O(n); the sort orders only what is submitted.
-fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
-    if candidates.len() > room {
-        candidates.select_nth_unstable(room);
-        candidates.truncate(room);
-    }
-    candidates.sort_unstable();
-}
 /// What `keep_unchanged_sections` found changed.
 #[derive(Debug, Default, PartialEq)]
 struct Resent {
@@ -3584,37 +3580,6 @@ mod tests {
         let all: FxHashSet<(i32, i32)> = [(0, 0), (1, 0), (9, 9)].into_iter().collect();
         assert_eq!(release_columns(&mut queue, &all), 4);
         assert_eq!(pops(queue), [None]);
-    }
-
-    /// The light and mesh stages submit bounded work, the nearest first:
-    /// what exceeds the room stays dirty, to be chosen again — from the
-    /// current centre — as capacity frees. Submitted whole, the queue once
-    /// held every ready column's jobs and grew with the render distance
-    /// (#3629); ties break by position, so the choice is deterministic.
-    #[test]
-    fn bounded_submission_takes_the_nearest_first() {
-        let candidates: Vec<(i64, i32, i32, u32)> = (0..40i32)
-            .map(|i| {
-                let (x, z) = (i / 8 - 2, i % 8 - 3);
-                (
-                    i64::from((x - 3).pow(2) + (z - 2).pow(2)),
-                    x,
-                    z,
-                    1 << (i % 24),
-                )
-            })
-            .collect();
-        let mut expected = candidates.clone();
-        expected.sort_unstable();
-        let mut none = candidates.clone();
-        nearest_first(&mut none, 0);
-        assert!(none.is_empty());
-        let mut nearest = candidates;
-        nearest_first(&mut nearest, 5);
-        assert_eq!(nearest, expected[..5]);
-        let mut past = expected.clone();
-        nearest_first(&mut past, expected.len() + 10);
-        assert_eq!(past, expected);
     }
 
     /// What the scheduler counts as ready to light: every neighbour a

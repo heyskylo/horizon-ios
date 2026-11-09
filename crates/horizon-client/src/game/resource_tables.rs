@@ -190,7 +190,7 @@ impl PackResources {
                 let clouds = named_scope(scope, "pack.clouds", || load_clouds(root));
                 let forcefield = named_scope(scope, "pack.forcefield", || load_forcefield(root));
                 let custom_sky = named_scope(scope, "pack.custom_sky", || {
-                    horizon_client::custom_sky::CustomSky::load(root)
+                    horizon_client::custom_sky::load(root)
                 });
                 let environments =
                     named_scope(scope, "pack.environments", || pack_environments(root));
@@ -246,7 +246,7 @@ impl PackResources {
             names: Arc::new(names),
             clouds: Arc::new(clouds),
             forcefield: Arc::new(forcefield),
-            custom_sky: Arc::new(custom_sky),
+            custom_sky,
             environments,
             polytone_particles,
             polytone_post,
@@ -295,6 +295,7 @@ fn pack_particles(
 fn read_colors(root: &std::path::Path) -> horizon_client::polytone_colors::PackColors {
     let colors = horizon_client::polytone_colors::PackColors::read(root);
     horizon_client::pack_palette::set(&colors);
+    horizon_client::pack_palette::set_item_bars(root);
     horizon_client::brewing::set_pack_colors(colors.effects());
     colors
 }
