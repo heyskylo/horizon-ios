@@ -402,6 +402,33 @@ pub(super) fn named_mob_pickable(
 /// camera-relative bounds (`cull_skinned`).
 pub(super) type Skinned = Option<((usize, usize, u32), Option<(glam::Vec3, glam::Vec3)>)>;
 
+/// What a block's `onProjectileHit` reads of the projectile that struck it:
+/// a thrown projectile ([`ProjectileHitter::of`]) or a fishing bobber
+/// (`FishingHook.onHitBlock` calls `Projectile.onHitBlock` too).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ProjectileHitter {
+    /// `Projectile.getOwner`.
+    pub(super) owner: Option<Who>,
+    /// On a server, the guest (by connection) who owns it.
+    pub(super) guest: Option<u32>,
+    /// An `AbstractArrow` (a target block resets after 20 ticks, not 8).
+    pub(super) arrow: bool,
+    /// Its entity type, for `target_hit`'s projectile predicate.
+    pub(super) kind: &'static str,
+    pub(super) position: Vec3,
+}
+impl ProjectileHitter {
+    pub(super) fn of(p: &Projectile) -> Self {
+        Self {
+            owner: p.owner,
+            guest: p.guest,
+            arrow: p.arrow.is_some(),
+            kind: p.entity_type(),
+            position: p.position,
+        }
+    }
+}
+
 /// How a new mob's yaw is chosen, as its vanilla spawn path chooses it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum SpawnYaw {
@@ -651,7 +678,12 @@ impl Game<'_> {
             }
             SpawnYaw::Fixed(yaw) => yaw,
         };
-        let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), yaw);
+        // The mob's own random (Entity.random): its UUID first, then LivingEntity's
+        // yaw draw, apart from the spawn yaw above, which comes from the level's.
+        let (own, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(self.next_entity, uuid);
+        let position = Vec3::new(at[0], at[1], at[2]);
+        let mut mob = Mob::with_random(self.next_entity, t, position, yaw, own);
         mob.persistent = persistent;
         if finalize {
             let facts = self.biome_facts(
@@ -1114,8 +1146,8 @@ impl Game<'_> {
             border: Some(self.border.geometry()),
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
-                self.level_players()
-                    .first()
+                self.level_players_iter()
+                    .next()
                     .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]),
             ),
         }
@@ -5044,7 +5076,13 @@ impl Game<'_> {
     }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
     /// rings it, and a player's shot counts as the player's ring.
-    fn bell_projectile_hit(&mut self, p: &Projectile, pos: [i32; 3], at: Vec3, face: [i32; 3]) {
+    fn bell_projectile_hit(
+        &mut self,
+        p: &ProjectileHitter,
+        pos: [i32; 3],
+        at: Vec3,
+        face: [i32; 3],
+    ) {
         let Some(face) = Direction::ALL.into_iter().find(|d| d.normal() == face) else {
             return;
         };
@@ -5329,9 +5367,9 @@ impl Game<'_> {
     /// `TargetBlock.onProjectileHit`: a target block takes its power from
     /// where the projectile landed and resets after 20 ticks for an arrow, 8
     /// for any other projectile. A player's shot counts as a target hit.
-    fn target_block_hit(&mut self, p: &Projectile, pos: [i32; 3], at: Vec3, face: [i32; 3]) {
+    fn target_block_hit(&mut self, p: &ProjectileHitter, pos: [i32; 3], at: Vec3, face: [i32; 3]) {
         let block = BlockPos::new(pos[0], pos[1], pos[2]);
-        let arrow = p.arrow.is_some();
+        let arrow = p.arrow;
         let location = [at.x, at.y, at.z];
         let hit = self.with_level(|b, level, ticks| {
             b.target_projectile_hit(level, ticks, block, location, face, arrow)
@@ -5341,15 +5379,44 @@ impl Game<'_> {
             self.native_target_hit(self.dim.id(), pos, strength);
             if p.owner == Some(Who::Player) && (p.guest.is_none() || p.guest == self.lan_acting) {
                 self.award_custom_stat("target_hit", 1);
-                let kind = p.entity_type();
                 let projectile = horizon_client::advancements::EntityView {
-                    kind: kind.to_owned(),
+                    kind: p.kind.to_owned(),
                     position: [p.position.x, p.position.y, p.position.z],
                     ..Default::default()
                 };
                 self.trigger_target_hit(&projectile, strength);
             }
         }
+    }
+    /// `Projectile.onHitBlock`, which a fishing bobber's override calls before it
+    /// rebounds: the struck block's `onProjectileHit` for the acting player's
+    /// bobber at `position`, which hit
+    /// `pos` on `face` at `at`. A bell rings, a target block is powered (8
+    /// ticks: a bobber is no arrow), amethyst chimes and a big dripleaf tilts.
+    /// The bobber is no `#impact_projectiles` and never burns, so the blocks it
+    /// breaks or lights take no part.
+    pub(super) fn fishing_hook_block_hit(
+        &mut self,
+        position: Vec3,
+        pos: [i32; 3],
+        at: Vec3,
+        face: [i32; 3],
+    ) {
+        let hook = ProjectileHitter {
+            owner: Some(Who::Player),
+            guest: self.lan_acting,
+            arrow: false,
+            kind: "minecraft:fishing_bobber",
+            position,
+        };
+        self.bell_projectile_hit(&hook, pos, at, face);
+        self.amethyst_projectile_hit(pos);
+        if self.with_level(|b, level, ticks| {
+            b.big_dripleaf_projectile_hit(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
+        }) {
+            let _ = self.process_level_events();
+        }
+        self.target_block_hit(&hook, pos, at, face);
     }
     pub(super) fn projectile_hit(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
         let result = self.projectile_hit_inner(p, hit);
@@ -5366,7 +5433,7 @@ impl Game<'_> {
         if let Hit::Block { pos, at, face } = hit
             && face != [0; 3]
         {
-            self.bell_projectile_hit(p, pos, at, face);
+            self.bell_projectile_hit(&ProjectileHitter::of(p), pos, at, face);
             self.amethyst_projectile_hit(pos);
             if self.with_level(|b, level, ticks| {
                 b.big_dripleaf_projectile_hit(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
@@ -5394,7 +5461,7 @@ impl Game<'_> {
         if let Hit::Block { pos, face, .. } = hit
             && face != [0; 3]
         {
-            self.target_block_hit(p, pos, at, face);
+            self.target_block_hit(&ProjectileHitter::of(p), pos, at, face);
         }
         if let Hit::Entity {
             who: Who::Mob(id),

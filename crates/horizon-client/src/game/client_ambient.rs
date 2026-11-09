@@ -191,7 +191,8 @@ impl Game<'_> {
             z = z.clamp(f64::from(at[2]), f64::from(at[2]) + 1.0);
         }
         self.particles.add(
-            &ParticleOptions::block(ParticleType::Block, sprite, tint),
+            &ParticleOptions::block(ParticleType::Block, sprite, tint)
+                .with_source(&self.res.facts().get(state).name),
             [x, position.y + 0.1, z],
             [movement.x * -4.0, 1.5, movement.z * -4.0],
         );

@@ -1025,28 +1025,27 @@ def teleport_lands():
     ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in (20, 21) for z in (20, 21)]}]
     ops += setup('/tick freeze', '/summon marker 340.5 230 340.5 {Tags:["tp_dest"]}')
     motion = 'Motion:[0.25d,0.5d,-0.125d],OnGround:0b,NoGravity:1b'
-    # (kind, NBT, whether its save writes the live OnGround here: boats and minecarts write it once
-    # #12824 lands; falling blocks and arrows always write 0b).
     cases = (
-        ('zombie', f'{{NoAI:1b,{motion}}}', True),
-        ('zombie', f'{{NoAI:1b,FallFlying:1b,{motion}}}', True),
-        ('armor_stand', f'{{{motion}}}', True),
-        ('item', f'{{Item:{{id:"minecraft:stone",count:1}},PickupDelay:32767,Age:-32768,{motion}}}', True),
-        ('experience_orb', f'{{Value:3,{motion}}}', True),
-        ('oak_boat', f'{{{motion}}}', False),
-        ('minecart', f'{{{motion}}}', False),
-        ('tnt', f'{{fuse:32767,{motion}}}', True),
-        ('falling_block', f'{{BlockState:{{Name:"minecraft:sand"}},Time:1,{motion}}}', False),
-        ('arrow', f'{{pickup:0b,{motion}}}', False),
+        ('zombie', f'{{NoAI:1b,{motion}}}'),
+        ('zombie', f'{{NoAI:1b,FallFlying:1b,{motion}}}'),
+        ('armor_stand', f'{{{motion}}}'),
+        ('item', f'{{Item:{{id:"minecraft:stone",count:1}},PickupDelay:32767,Age:-32768,{motion}}}'),
+        ('experience_orb', f'{{Value:3,{motion}}}'),
+        ('oak_boat', f'{{{motion}}}'),
+        ('minecart', f'{{{motion}}}'),
+        ('tnt', f'{{fuse:32767,{motion}}}'),
+        ('falling_block', f'{{BlockState:{{Name:"minecraft:sand"}},Time:1,{motion}}}'),
+        ('arrow', f'{{pickup:0b,{motion}}}'),
+        ('trident', f'{{pickup:0b,{motion}}}'),
+        ('firework_rocket', f'{{LifeTime:32767,{motion}}}'),
     )
-    for i, (kind, nbt, ground) in enumerate(cases):
+    for i, (kind, nbt) in enumerate(cases):
         tag = f'tp_land_{i}'
         ops += setup(f'/summon {kind} {322 + i * 2}.5 230 322.5 {{Tags:["{tag}"],{nbt[1:-1]}}}')
         dest = f'{322 + i * 2}.5 240 324.5' if i % 2 == 0 else '@e[tag=tp_dest,limit=1]'
         ops += [cmd(f'/tp @e[tag={tag},limit=1] {dest}'),
-                cmd(f'/data get entity @e[tag={tag},limit=1] Motion')]
-        if ground:
-            ops += [cmd(f'/data get entity @e[tag={tag},limit=1] OnGround')]
+                cmd(f'/data get entity @e[tag={tag},limit=1] Motion'),
+                cmd(f'/data get entity @e[tag={tag},limit=1] OnGround')]
     # The dragon's own flight builds on its motion: /tp stops it too.
     ops += setup(f'/summon ender_dragon 344.5 230 344.5 {{Tags:["tp_dragon"],NoAI:1b,{motion}}}')
     ops += [cmd('/tp @e[tag=tp_dragon,limit=1] 344.5 236 344.5'),
@@ -6817,6 +6816,78 @@ ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
 ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
 
 
+def vehicle_fall_clip():
+    """#13005: `Entity.move` resets a fall when a move of a block or more passes a
+    `fall_damage_resetting` block (a full block for the ray) or water, before the move's own
+    drop counts. Boats and minecarts fall fast past a vine on a wall; one column has no vine. A boat
+    falls through one block of water and ends the move below it, out of the water's own reset.
+    """
+    x0, y0, z0 = 3648, 260, 3648
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    subjects = [('oak_boat', 'vine'), ('minecart', 'vine'), ('command_block_minecart', 'vine'),
+                ('oak_boat', None), ('minecart', None), ('oak_boat', 'water')]
+    for n, (kind, block) in enumerate(subjects, 1):
+        x, z = x0 + 1 + (n - 1) * 3 % 15, z0 + 4 + (n - 1) // 5 * 6
+        ops.append(cmd(f'/fill {x - 1} {y0 + 10} {z} {x - 1} {y0 + 30} {z} stone', expect_result=21))
+        if block == 'vine':
+            ops.append(cmd(f'/setblock {x} {y0 + 18} {z} vine[west=true]', expect_result=1))
+        y, dy = y0 + 20, '-1.2d'
+        if block == 'water':
+            ops.append(cmd(f'/setblock {x} {y0 + 19} {z} water', expect_result=1))
+            y, dy = y0 + 21, '-2.5d'
+        ops.append(cmd(f'/summon {kind} {x}.7 {y} {z}.5 {{UUID:[I;13005,0,{n},1],'
+                       f'fall_distance:5d,Motion:[0d,{dy},0d]}}', expect_result=1))
+
+    def reads():
+        # The water boat floats after it: only its fall is read.
+        for n, (_, block) in enumerate(subjects, 1):
+            for key in ('fall_distance',) if block == 'water' else ('fall_distance', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 000032cd-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(4):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def boat_float_height():
+    """#13022: `AbstractBoat.checkInWater` and `isUnderwater` sum a block's y and its water height
+    in float (`y + FluidState.getHeight`), and `floatBoat` lands a falling boat at the float
+    `getWaterLevelAbove() - getBbHeight()`, with `waterLevel = getY(1.0)`. Boats fall into a
+    single water block in the air, a pool two deep and a flowing edge, high up where a float is
+    coarse, and are read for 10 ticks.
+    """
+    x0, y0, z0 = 3776, 279, 3776
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False)]
+    # (x, water blocks to set, boat y, motion y)
+    cases = [(1, [f'{x0 + 1} {y0} {z0 + 4} water'], y0 + 2, '-2.5d'),
+             (5, [f'{x0 + 4} {y0 - 2} {z0 + 3} {x0 + 6} {y0 - 3} {z0 + 5} stone',
+                  f'{x0 + 4} {y0 - 1} {z0 + 3} {x0 + 6} {y0} {z0 + 5} water'], y0 + 3, '0d'),
+             (9, [f'{x0 + 8} {y0 - 1} {z0 + 3} {x0 + 10} {y0 - 1} {z0 + 5} stone',
+                  f'{x0 + 9} {y0} {z0 + 4} water[level=3]'], y0 + 2, '0d')]
+    for n, (dx, waters, y, dy) in enumerate(cases, 1):
+        for w in waters:
+            ops.append(cmd(f'/fill {w}' if w.count(' ') > 4 else f'/setblock {w}', False))
+        ops.append(cmd(f'/summon oak_boat {x0 + dx}.5 {y} {z0 + 4}.5 {{UUID:[I;13022,0,{n},1],'
+                       f'Motion:[0d,{dy},0d]}}', expect_result=1))
+    for _ in range(10):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        for n in range(1, len(cases) + 1):
+            for key in ('Pos[1]', 'Motion[1]'):
+                ops.append(cmd(f'/data get entity 000032de-0000-0000-0000-{n:04x}00000001 {key}'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/fill {x0} {y0 - 4} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7089,6 +7160,8 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
+        ('boat float height', boat_float_height()),
+        ('vehicle fall clip', vehicle_fall_clip()),
         ('projectile saved ground', projectile_saved_ground()),
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
