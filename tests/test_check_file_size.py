@@ -95,6 +95,7 @@ class TestModuleTests(unittest.TestCase):
                      "#[cfg(test)]\nmod tests {\nfn a() {}\n}\n",
                      "#[cfg(test)]\nmod tests {\n    fn a() {}\n    }\nfn real() {\n}\n",
                      "#[cfg(test)]\nmod tests { fn a() {} }\nfn real() {\n}\n",
+                     "#[cfg(test)]\nmod tests {\n    fn a() {}\n    } mod live { pub fn real() {}\n}\n",
                      "#[cfg(test)]\nmod tests {\n    fn a() {}\n"):
             self.assertEqual(skipped(text), 0, text)
 

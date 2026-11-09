@@ -35,6 +35,7 @@ TEST_MOD = re.compile(r"([ \t]*)(?:pub(?:\([a-z]+\))? )?mod \w+ \{\s*")
 # Where code may stop: a newline, a comment, a raw string (with its b or c prefix), a string, a quote.
 TOKEN = re.compile(r"\n|//|/\*|(?<!\w)[bc]?r(#*)\"|\"|'")
 COMMENT_EDGE = re.compile(r"/\*|\*/")
+BRACE = re.compile(r"[{}]")
 STRING_REST = re.compile(r'(?:[^"\\]|\\.)*"', re.S)
 
 
@@ -47,22 +48,29 @@ def lines(text):
 
 
 def lex(text):
-    """For each line of `text`: whether it starts in code rather than inside a string or a comment, and the `{` minus
-    the `}` in its code."""
-    starts, braces, pos, end = [True], [0], 0, len(text)
+    """For each line of `text`: whether it starts in code rather than inside a string or a comment, the `{` minus the
+    `}` in its code, and the lowest that count reaches along the line (`} mod live {` is 0 but dips to -1)."""
+    starts, braces, lows, pos, end = [True], [0], [0], 0, len(text)
+
+    def code(stop):
+        for brace in BRACE.finditer(text, pos, stop):
+            braces[-1] += 1 if brace.group() == "{" else -1
+            lows[-1] = min(lows[-1], braces[-1])
 
     def skip_to(stop):
         newlines = text.count("\n", pos, stop)
         starts.extend([False] * newlines)
         braces.extend([0] * newlines)
+        lows.extend([0] * newlines)
         return stop
 
     while token := TOKEN.search(text, pos):
-        braces[-1] += text.count("{", pos, token.start()) - text.count("}", pos, token.start())
+        code(token.start())
         kind, pos = token.group(), token.end()
         if kind == "\n":
             starts.append(True)
             braces.append(0)
+            lows.append(0)
         elif kind == "//":
             stop = text.find("\n", pos)
             pos = end if stop < 0 else stop
@@ -84,30 +92,31 @@ def lex(text):
         else:
             stop = text.find('"' + token.group(1), pos)
             pos = skip_to(end if stop < 0 else stop + 1 + len(token.group(1)))
-    braces[-1] += text.count("{", pos) - text.count("}", pos)
-    return starts, braces
+    code(end)
+    return starts, braces, lows
 
 
-def test_module_end(rows, starts, braces, i):
+def test_module_end(rows, starts, braces, lows, i):
     """The last line of the test module whose `#[cfg(test)]` is on line `i`, or None where the readings disagree."""
-    indent, depth = TEST_MOD.fullmatch(rows[i + 1]).group(1), 0
-    for j in range(i + 1, len(rows)):
+    indent, depth = TEST_MOD.fullmatch(rows[i + 1]).group(1), 1  # `mod name {` opens the one brace
+    for j in range(i + 2, len(rows)):
+        closed = depth + lows[j] <= 0
         depth += braces[j]
-        if j > i + 1 and starts[j] and rows[j].strip() and len(rows[j]) - len(rows[j].lstrip()) <= len(indent):
+        if starts[j] and rows[j].strip() and len(rows[j]) - len(rows[j].lstrip()) <= len(indent):
             return j if depth == 0 and rows[j].rstrip() == indent + "}" else None
-        if depth <= 0:
+        if closed:
             return None
     return None
 
 
 def test_module_lines(text):
     """How many lines of `text` are inline `#[cfg(test)] mod name { ... }` modules (see the module docstring)."""
-    rows, (starts, braces) = text.split("\n"), lex(text)
+    rows, (starts, braces, lows) = text.split("\n"), lex(text)
     skipped, i = 0, 0
     while i + 1 < len(rows):
         cfg, module = CFG_TEST.fullmatch(rows[i]), TEST_MOD.fullmatch(rows[i + 1])
         if cfg and module and cfg.group(1) == module.group(1) and starts[i] and starts[i + 1]:
-            end = test_module_end(rows, starts, braces, i)
+            end = test_module_end(rows, starts, braces, lows, i)
             if end is not None:
                 skipped += end - i + 1
                 i = end + 1
