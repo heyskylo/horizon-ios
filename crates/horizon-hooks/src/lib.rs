@@ -184,7 +184,7 @@ pub mod engine {
     }
 
     /// The activity at the last call (`None` before the first).
-    static ACTIVITY: Mutex<Option<Activity>> = Mutex::new(None);
+    static ACTIVITY: std::sync::Mutex<Option<Activity>> = std::sync::Mutex::new(None);
 
     /// [`Hooks::activity`], when `now` differs from the last call's. Cheap enough to call every
     /// frame: with no hook registered it only loads the empty list.
