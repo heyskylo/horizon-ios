@@ -17,6 +17,8 @@ Strider.StriderPathNavigation.createPathFinder	port	crates/horizon-client/src/mo
 Strider.StriderPathNavigation.isStableDestination	port	crates/horizon-client/src/mobs/nav.rs::Mob::stable_destination	lava counts as stable for lava walkers
 Vex.registerGoals	port	crates/horizon-client/src/mobs/vex.rs::register	float, charge, random move, look goals, owner and player targets
 Vex.restoreFrom	missing		no mob `restoreFrom`: a vex that changes dimension keeps no owner link
+Vex.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	owner is written as the owner's UUID, nothing when the vex has no owner; bound_pos only when bound, life_ticks only with a limited life
+Vex.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	bound_pos, life_ticks (no limit when absent) and owner, kept as the UUID the save names
 Vex.getVexFlag	inline	crates/horizon-client/src/mobs/vex.rs::Charge::can_continue	the charging bit is the plain extra.flag; there is no flags byte
 Vex.setVexFlag	inline	crates/horizon-client/src/mobs/vex.rs::Charge::start	start sets extra.flag; stop and tick clear it
 Vex.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	Vex arm: populate (sword) then enchant
@@ -130,8 +132,8 @@ Hoglin.checkHoglinSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs:
 Hoglin.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	20 percent start as babies
 Hoglin.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	gap: minor: a fed hoglin does not become persistent
 Hoglin.finishConversion	port	crates/horizon-client/src/mobs/piglin.rs::ai_step	zombification turns it into a zoglin with nausea
-Hoglin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	gap: minor: CannotBeHunted is not written
-Hoglin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: CannotBeHunted is not read
+Hoglin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	CannotBeHunted is always written for a hoglin, with the zombie-conversion fields; a bastion hoglin stays no piglin's prey
+Hoglin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	CannotBeHunted is read into extra.cannot_be_hunted, which Hoglin.canBeHunted reads (a saved bastion hoglin is no prey)
 Hoglin.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	gap: minor: the hoglin child is not made persistent
 HoglinAi.initCoreActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	gap: minor: look-at-target and move-to-target sinks are not separate; the goal set stands in for them
 HoglinAi.initIdleActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	gap: player: hoglins do not walk away from adult piglins within 8 blocks; the rest of the idle is there

@@ -69,10 +69,10 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         GraphicsApi::Vulkan,
         false,
-        false,
         true,
-        false,
-        false,
+        &horizon_client_render::graphics::Graphics::default(),
+        Default::default(),
+        Default::default(),
     ))?;
     assert!(!renderer.pack_entity_shadows(), "no selected pack");
     renderer.set_shader_pack(0, None, &[]).unwrap();

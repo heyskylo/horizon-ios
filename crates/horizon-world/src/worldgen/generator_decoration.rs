@@ -872,8 +872,9 @@ impl World<'_> {
             for t in &ticks {
                 let at = [t.pos.x, t.pos.y, t.pos.z];
                 if t.fluid {
-                    let fluid = crate::fluid::FluidKind::ALL[t.kind as usize];
-                    self.schedule_fluid_tick(at, fluid, t.delay)?;
+                    if let Some(fluid) = crate::fluid::FluidKind::from_index(t.kind as usize) {
+                        self.schedule_fluid_tick(at, fluid, t.delay)?;
+                    }
                 } else {
                     let state = behaviours
                         .table

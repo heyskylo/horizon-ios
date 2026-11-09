@@ -272,6 +272,11 @@ pub(super) trait Entity: EntityRules {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    /// Bounds for `AbstractArrow.shouldFall` after a non-SELF piston move.
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        None
+    }
+    fn release_after_piston(&mut self, _no_block_collision: bool) {}
     /// `setOnGroundWithMovement` at the end of a piston's or shulker lid's
     /// `Entity.move`, for the kinds that keep the flag: on a server it runs
     /// for every push, sideways ones and those the collision turned away included.
@@ -592,6 +597,7 @@ impl Game<'_> {
         let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
         // Entity.baseTick splashes before moving, except on the first tick.
         item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
+        item.lava_fall(heights.1 > 0.0);
         let step = item.tick_move_before_block_effects(
             &self.world,
             self.res.facts(),
@@ -603,6 +609,9 @@ impl Game<'_> {
             Some(self.border.geometry()),
             Some(&self.res.motion().blocks),
         );
+        item.check_fall(&step, |fall, from, moved| {
+            self.vehicle_fall_reset(fall, from, moved)
+        });
         if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
@@ -1812,12 +1821,16 @@ impl Entity for Projectile {
         Projectile::bounds(self)
     }
     fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        self.needs_sync = true;
+        Projectile::move_by_piston(self, movement);
+    }
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        Projectile::piston_release_bounds(self)
+    }
+    fn release_after_piston(&mut self, no_block_collision: bool) {
+        Projectile::release_after_piston(self, no_block_collision);
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
-        self.velocity = piston_push::bounce_velocity(movement, self.velocity);
-        self.needs_sync = true;
+        Projectile::piston_slime_bounce(self, movement);
     }
 }
 
@@ -1959,6 +1972,18 @@ impl Entity for ThrownTrident {
             Vec3::new(p.x - 0.25, p.y, p.z - 0.25),
             Vec3::new(p.x + 0.25, p.y + 0.5, p.z + 0.25),
         )
+    }
+    fn move_by_piston(&mut self, movement: Vec3) {
+        ThrownTrident::move_by_piston(self, movement);
+    }
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        ThrownTrident::piston_release_bounds(self)
+    }
+    fn release_after_piston(&mut self, no_block_collision: bool) {
+        ThrownTrident::release_after_piston(self, no_block_collision);
+    }
+    fn piston_slime_bounce(&mut self, movement: Direction) {
+        ThrownTrident::piston_slime_bounce(self, movement);
     }
     /// `GameLevel::tick_blocks` sweeps tridents itself.
     fn sweeps_blocks_inside(&self) -> bool {

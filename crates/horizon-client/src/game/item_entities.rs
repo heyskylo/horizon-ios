@@ -65,10 +65,6 @@ impl Game<'_> {
             {
                 continue;
             }
-            // ItemEntity.tick's noPhysics (servers only): out of a block
-            // placed on it, towards the closest open side (#1252).
-            let no_physics = merging && item.inside_block(&self.world, self.collision);
-            let escape_speed = no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
             // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
             // where the item can reach this tick (a block of slack for the next velocity).
             let reach = Vec3::new(
@@ -77,6 +73,17 @@ impl Game<'_> {
                 item.velocity.z.abs() + 1.0,
             );
             obstacles.near(item.bounds().inflate(reach), &mut nearby);
+            // ItemEntity.tick's noPhysics (servers only): out of a block, a solid entity
+            // or the border, placed or closed on it, towards the closest open side (#1252).
+            let no_physics = merging
+                && item.inside_block(
+                    &self.world,
+                    self.collision,
+                    &nearby,
+                    Some(self.border.geometry()),
+                );
+            // `moveTowardsClosestSpace` draws the speed from the item's own random.
+            let escape_speed = no_physics.then(|| item.random.next_float() * 0.2 + 0.1);
             let mut entered = Vec::new();
             let (alive, discarded) = self.tick_item_with_block_contacts(
                 item,
@@ -565,5 +572,302 @@ impl Game<'_> {
         if gained > 0 {
             self.give_orb_points(gained);
         }
+    }
+
+    /// `Player.dropEquipment` for the player who died: unless keep_inventory
+    /// is on, `destroyVanishingCursedItems`, then `Inventory.dropAll` from
+    /// `at` (the eyes less 0.3): slots 0..36, armor feet to head (36..39),
+    /// the off hand (40), each thrown in a random direction. The mods
+    /// (`native_loot_drops`, the dying player `who`: uuid and entity id)
+    /// may add to, change or take out the stacks before they are thrown.
+    pub(super) fn drop_inventory(&mut self, at: [f64; 3], who: (u128, i32)) {
+        if self.ui.rules.bool("keep_inventory") {
+            return;
+        }
+        let mut stacks = death_drops(&mut self.inventory, &mut self.offhand, &mut self.armor);
+        self.apply_equipment();
+        let context = horizon_client::mod_api::NativeLootDrops {
+            table: "",
+            dimension: self.dim.id(),
+            origin: at,
+            block: None,
+            entity: Some((who.1 as u32, "minecraft:player")),
+            player: Some(who.0),
+            tool: None,
+            explosion: None,
+            used: false,
+        };
+        self.native_loot_drops(&context, &mut stacks);
+        stacks.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
+        for stack in stacks {
+            let r = &mut self.world.random;
+            let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, true);
+            self.spawn_item(stack, at, v, 40);
+        }
+    }
+
+    /// Item entity `i` leaves the level (`Entity.discard`); mods hear it.
+    pub(super) fn remove_dropped(&mut self, i: usize) -> ItemEntity {
+        let e = self.dropped.remove(i);
+        self.native_entity_left(e.id);
+        e
+    }
+
+    /// Experience orb `i` leaves the level (`Entity.discard`); mods hear it.
+    pub(super) fn remove_orb(&mut self, i: usize) -> ExperienceOrb {
+        let o = self.orbs.remove(i);
+        self.native_entity_left(o.id);
+        o
+    }
+
+    /// The item entity `spawn_item` just added, unless a native mod kept it
+    /// out of the level (`native_entity_join_level`).
+    pub(super) fn just_spawned_item(&mut self) -> Option<&mut ItemEntity> {
+        let id = self.next_entity;
+        self.dropped.last_mut().filter(|d| d.id == id)
+    }
+
+    /// `new ItemEntity(level, x, y, z, stack, dx, dy, dz)`.
+    pub(super) fn spawn_item(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: [f64; 3],
+        pickup_delay: u32,
+    ) {
+        self.add_item_entity(stack, position, Some(velocity), pickup_delay);
+    }
+
+    /// `new ItemEntity(level, x, y, z, stack)`: the item leaves with its own
+    /// random's motion, which this returns.
+    pub(super) fn spawn_item_own(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        pickup_delay: u32,
+    ) -> [f64; 3] {
+        self.add_item_entity(stack, position, None, pickup_delay)
+    }
+
+    pub(super) fn add_item_entity(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: Option<[f64; 3]>,
+        pickup_delay: u32,
+    ) -> [f64; 3] {
+        let (item, count) = (stack.item.clone(), stack.count as i32);
+        self.next_entity += 1;
+        let p = Vec3::new(position[0], position[1], position[2]);
+        // The item's own random, in vanilla's order: Entity's UUID, ItemEntity's
+        // bobOffs and yaw, then (without a given motion) the constructor's motion.
+        let mut own = random_source::entity();
+        let uuid = horizon_client::save::insecure_uuid(&mut own);
+        self.persist.uuids.insert(self.next_entity, uuid);
+        let bob = own.next_float() * std::f32::consts::PI * 2.0;
+        let yaw = own.next_float() * 360.0;
+        let velocity = velocity.unwrap_or_else(|| {
+            let x = own.next_double() * 0.2 - 0.1;
+            [x, 0.2, own.next_double() * 0.2 - 0.1]
+        });
+        self.dropped.push(ItemEntity {
+            rotation: [yaw, 0.0],
+            pickup_delay: i64::from(pickup_delay),
+            random: own,
+            ..ItemEntity::new(
+                self.next_entity,
+                stack,
+                p,
+                Vec3::new(velocity[0], velocity[1], velocity[2]),
+                bob,
+            )
+        });
+        // ServerLevel.addFreshEntity.
+        if self.native_joins_flush(false, self.next_entity) {
+            self.native_item_spawn(self.next_entity, &item, count, position);
+        }
+        velocity
+    }
+
+    /// Block.popResource
+    pub(super) fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
+        self.pending.attach(pos, &mut stack);
+        // Block.popResource: Mth.nextDouble offsets from the level random; the
+        // motion is `new ItemEntity(..)`'s own, from the item's random.
+        let p = spill::pop_position(&mut self.world.random, pos);
+        // Block.popResource draws its offsets before the private overload checks the gamerule.
+        if !self.ui.rules.bool("block_drops") {
+            return;
+        }
+        self.spawn_item_own(stack, p, 10);
+    }
+
+    /// `Block.popResourceFromFace`: the loot leaves the clicked face with the
+    /// face's own motion instead of the item's random one.
+    pub(super) fn pop_resource_from_face(
+        &mut self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        mut stack: ItemStack,
+    ) {
+        self.pending.attach(pos, &mut stack);
+        let (p, v) = spill::pop_position_from_face(&mut self.world.random, pos, face);
+        // The private overload checks the gamerule after the offsets are drawn.
+        if !self.ui.rules.bool("block_drops") {
+            return;
+        }
+        self.spawn_item(stack, p, v, 10);
+    }
+
+    /// Player.drop: thrown from the eyes along the view direction.
+    pub(super) fn drop_held(&mut self, all: bool) {
+        if self.eye_position().is_none() {
+            return;
+        }
+        let spectator = self.spectator();
+        let Some(thrown) = horizon_client::items::take_held_drop(
+            &mut self.inventory[self.selected],
+            all,
+            spectator,
+        ) else {
+            return;
+        };
+        self.player_drop(thrown);
+    }
+
+    /// `Player.createItemStackToDrop`: an item entity thrown from the eyes
+    /// along the view direction. `thrown_from_hand` (`drop(stack, true)`, the
+    /// drop key) names the player as the thrower; `drop(stack, false)`, for
+    /// what no longer fits in the inventory, does not.
+    pub(super) fn throw_from_eyes(
+        &mut self,
+        thrown: ItemStack,
+        eye: [f64; 3],
+        thrown_from_hand: bool,
+    ) {
+        let r = &mut self.world.random;
+        let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, false);
+        // `getEyeY() - 0.3F`.
+        let y = eye[1] - f64::from(0.3f32);
+        self.spawn_item(thrown, [eye[0], y, eye[2]], v, 40);
+        // A native mod can keep the item out of the level (native_entity_join_level).
+        if thrown_from_hand {
+            let uuid = self.acting_player_uuid();
+            if let Some(item) = self.just_spawned_item() {
+                item.thrower = Some(uuid);
+            }
+        }
+    }
+
+    /// DropExperienceBlock / RedStoneOreBlock / SculkBlock experience ranges.
+    pub(super) fn block_experience(&mut self, name: &str) -> u32 {
+        let (min, max) = match name.trim_start_matches("minecraft:") {
+            "coal_ore" | "deepslate_coal_ore" => (0, 2),
+            "nether_gold_ore" => (0, 1),
+            "lapis_ore" | "deepslate_lapis_ore" | "nether_quartz_ore" => (2, 5),
+            "diamond_ore" | "deepslate_diamond_ore" | "emerald_ore" | "deepslate_emerald_ore" => {
+                (3, 7)
+            }
+            "redstone_ore" | "deepslate_redstone_ore" => (1, 5),
+            "sculk" => (1, 1),
+            "sculk_catalyst" | "sculk_sensor" | "calibrated_sculk_sensor" | "sculk_shrieker" => {
+                (5, 5)
+            }
+            // SpawnerBlock.spawnAfterBreak: 15 + nextInt(15) + nextInt(15).
+            "spawner" => {
+                let r = &mut self.world.random;
+                let a = r.next_int_bound(15).unwrap_or(0);
+                return (15 + a + r.next_int_bound(15).unwrap_or(0)) as u32;
+            }
+            _ => (0, 0),
+        };
+        // ConstantInt.sample (sculk) does not advance the level random.
+        if min == max {
+            return min as u32;
+        }
+        (min + self.world.random.next_int_bound(max - min + 1).unwrap_or(0)) as u32
+    }
+
+    /// `FurnaceResultSlot.checkTakeAchievements`: the player took from the output of the
+    /// furnace at `pos`, which pops the experience of what it made at them
+    /// (`awardUsedRecipesAndPopExperience`) and forgets it.
+    pub(super) fn award_furnace_recipes(&mut self, pos: (i32, i32, i32), at: [f64; 3]) {
+        let used = match self.world.block_entities.get_mut(&pos) {
+            Some(BlockEntity::Furnace(f)) => {
+                let used = f.recipe_experience(world_recipes!(self));
+                f.recipes_used.clear();
+                used
+            }
+            _ => return,
+        };
+        for (count, experience) in used {
+            let xp = horizon_client::containers::create_experience(
+                count,
+                experience,
+                &mut self.world.random,
+            );
+            self.spawn_orbs(at, xp);
+        }
+    }
+
+    /// `Player.giveExperiencePoints`, and `giveExperienceLevels`' level-up
+    /// sound every fifth level (at most every 100 ticks).
+    pub(super) fn give_orb_points(&mut self, gained: u32) {
+        let Some(gained) = self.xp_change(gained as i32) else {
+            return;
+        };
+        let gained = gained.max(0);
+        let old_level = self.experience.level;
+        let gave = self.experience.give(gained);
+        self.native_player_level_changed(old_level);
+        // Player.giveExperienceLevels runs per level, so the first multiple of 5
+        // crossed plays the sound (and starts the cooldown for the rest).
+        if let Some(level) = gave {
+            self.play_level_up(1, level);
+        }
+    }
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::chunk::Chunk;
+    use horizon_client::items::ItemStack;
+    use horizon_core::random::RandomSource;
+    use std::sync::Arc;
+
+    /// `Entity.moveTowardsClosestSpace` takes an item's escape speed from the
+    /// item's own random, the one its constructor drew from, and leaves the
+    /// level's random as it was (#13043).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_item_escapes_a_block_at_its_own_randoms_speed() {
+        let mut game = server_game();
+        let feet = horizon_core::geometry::Vec3::new(8.5, 70.0, 8.5);
+        game.player = Some(horizon_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.update_chunk_tickets();
+        assert!(game.entity_ticking_area()(8, 8));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(8, 64, 8, stone).unwrap();
+        let stack = ItemStack::new("minecraft:stone", 2);
+        game.spawn_item(stack, [8.5, 64.4, 8.5], [0.0, 0.0, 0.0], 10);
+        let item = game.dropped.last().unwrap();
+        let expected = f64::from(item.random.clone().next_float() * 0.2 + 0.1);
+        let mut level = game.world.random.clone();
+        game.ticked_entities_through = u32::MAX;
+        game.tick_items();
+        let item = game.dropped.last().unwrap();
+        // Up is the nearest open side from the middle of the block.
+        // The push replaces the fall's velocity; then the 0.98 drag.
+        assert_eq!(item.velocity.y, expected * 0.98);
+        assert_eq!(game.world.random.next_float(), level.next_float());
     }
 }

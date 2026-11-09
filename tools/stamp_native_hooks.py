@@ -34,16 +34,16 @@ def stamp(check, only=None):
     result = subprocess.run(
         ["git", "log", "--first-parent", "--reverse", "--diff-merges=first-parent",
          "--format=", "--name-only", "--diff-filter=A", "--", str(FRAGMENTS)],
-        cwd=ROOT, check=True, text=True, capture_output=True,
+        cwd=ROOT, check=True, encoding="utf-8", capture_output=True,
     )
     pending = {p.relative_to(ROOT).as_posix(): p for p in paths}
     ordered = [pending.pop(line) for line in result.stdout.splitlines() if line in pending]
     # A developer can stamp uncommitted fragments for a local test.
     ordered.extend(pending[name] for name in sorted(pending))
 
-    source = (ROOT / SOURCE).read_text()
-    docs = (ROOT / DOCS).read_text()
-    catalog = json.loads((ROOT / CATALOG).read_text())
+    source = (ROOT / SOURCE).read_text(encoding="utf-8")
+    docs = (ROOT / DOCS).read_text(encoding="utf-8")
+    catalog = json.loads((ROOT / CATALOG).read_text(encoding="utf-8"))
     match = re.search(r"^pub\(crate\) const NATIVE_HOOKS_API: u32 = (\d+);$", source, re.M)
     if not match:
         raise ValueError("missing numeric NATIVE_HOOKS_API")
@@ -53,7 +53,7 @@ def stamp(check, only=None):
     extra = {}
     # Append the selected entries in filename order, as the build-time generator reads fragments.
     for path in sorted(ordered):
-        fragment = json.loads(path.read_text())
+        fragment = json.loads(path.read_text(encoding="utf-8"))
         for hook in fragment["hooks"]:
             if hook["name"] in names:
                 raise ValueError(f"duplicate hook: {hook['name']}")
@@ -68,7 +68,7 @@ def stamp(check, only=None):
             helper_names.add(helper["name"])
             catalog.setdefault("helpers", []).append(helper)
     for path in ordered:
-        fragment = json.loads(path.read_text())
+        fragment = json.loads(path.read_text(encoding="utf-8"))
         version += 1
         marker = f"@API:{path.stem}@"
         rust_summary = fragment["rust_summary"].replace(marker, str(version))
@@ -87,7 +87,7 @@ def stamp(check, only=None):
             file = Path(filename)
             if file.is_absolute() or ".." in file.parts or file in (SOURCE, DOCS, CATALOG, MOD_API):
                 raise ValueError(f"invalid comment path: {filename}")
-            text = extra.get(file, (ROOT / file).read_text())
+            text = extra.get(file, (ROOT / file).read_text(encoding="utf-8"))
             if marker not in text:
                 raise ValueError(f"missing {marker} in {filename}")
             extra[file] = text.replace(marker, str(version))
@@ -95,17 +95,17 @@ def stamp(check, only=None):
         source = source.replace(marker, str(version))
         docs = docs.replace(marker, str(version))
         if (ROOT / MOD_API).exists():
-            text = extra.get(MOD_API, (ROOT / MOD_API).read_text())
+            text = extra.get(MOD_API, (ROOT / MOD_API).read_text(encoding="utf-8"))
             extra[MOD_API] = text.replace(marker, str(version))
 
     source = re.sub(
         r"^(pub\(crate\) const NATIVE_HOOKS_API: u32 = )\d+;$",
         lambda m: f"{m.group(1)}{version};", source, count=1, flags=re.M)
-    (ROOT / SOURCE).write_text(source)
-    (ROOT / DOCS).write_text(docs)
-    (ROOT / CATALOG).write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n")
+    (ROOT / SOURCE).write_text(source, encoding="utf-8")
+    (ROOT / DOCS).write_text(docs, encoding="utf-8")
+    (ROOT / CATALOG).write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for file, content in extra.items():
-        (ROOT / file).write_text(content)
+        (ROOT / file).write_text(content, encoding="utf-8")
     for path in ordered:
         path.unlink()
     print(f"Stamped {len(ordered)} fragment(s), through API {version}")
