@@ -21,6 +21,11 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
+    // The "I'm playing" ping plugs in through the hooks, as a Horizon crate does; the official
+    // executable registers its own before calling this. No hook registers after this point.
+    #[cfg(feature = "heartbeat")]
+    let _ = horizon_hooks::register(&horizon_client::heartbeat::HOOKS);
+    horizon_hooks::engine::seal();
     horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -303,6 +308,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             game::exit_code::ERROR
         });
     }
+    horizon_hooks::engine::shutdown();
     logging::flush();
 }
 

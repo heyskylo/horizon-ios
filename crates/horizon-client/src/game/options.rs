@@ -551,6 +551,14 @@ impl Game<'_> {
             self.reload_packs();
         }
         self.apply_fullscreen();
+        // A failed HDR start that named no driver becomes the window's driver's, and another
+        // driver's is dropped, so HDR output is tried again.
+        if let Some(driver) = self.renderer.as_ref().and_then(|r| r.hdr_driver())
+            && self.settings.horizon.settle_failed_start(driver)
+            && let Some(dir) = Self::options_path().parent()
+        {
+            self.settings.horizon.save(dir);
+        }
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma;

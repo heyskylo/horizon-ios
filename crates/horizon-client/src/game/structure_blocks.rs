@@ -223,7 +223,7 @@ impl Game<'_> {
                     blocks.push(BlockInfo {
                         pos: [x, y, z],
                         state,
-                        nbt,
+                        nbt: nbt.map(Box::new),
                     });
                 }
             }

@@ -156,6 +156,13 @@ impl Game<'_> {
 
     /// The loop ended: close the pads' output, save the world, write the perf report.
     pub(super) fn shut_down(&mut self) {
+        // Closing without an error before HDR output showed a frame (the window minimized, say)
+        // isn't HDR output taking the game down: the next start mustn't hold it back.
+        if self.error.is_none()
+            && let Some(renderer) = &mut self.renderer
+        {
+            renderer.drop_hdr_marker();
+        }
         self.end_screenshot_sequence(Err("cancelled: the game is closing".into()));
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
