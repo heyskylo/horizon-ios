@@ -581,10 +581,8 @@ impl Game<'_> {
                 }
                 let p = g.position;
                 Some(Body {
-                    bounds: Aabb::new(
-                        Vec3::new(p[0] - 0.3, p[1], p[2] - 0.3),
-                        Vec3::new(p[0] + 0.3, p[1] + 1.8, p[2] + 0.3),
-                    ),
+                    // `EntityDimensions.makeBoundingBox`: the width is halved as a float.
+                    bounds: g.dimensions().bounds(Vec3::new(p[0], p[1], p[2])),
                     position: Vec3::new(p[0], p[1], p[2]),
                     on_ground: g.on_ground,
                     step_height: steps.guests.get(&conn).copied().unwrap_or(0.6),
