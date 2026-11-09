@@ -232,3 +232,35 @@ mod tests {
         assert!((m.anim.flapping - 0.81).abs() < 1.0e-6);
     }
 }
+
+#[cfg(test)]
+mod sheep_colour_save_tests {
+    use super::*;
+    use horizon_world::nbt::Tag;
+
+    /// `Sheep.readAdditionalSaveData` reads `Color` with
+    /// `DyeColor.LEGACY_ID_CODEC`, whose out-of-bounds strategy is white;
+    /// the `& 15` wrapped 99 to light blue (3).
+    #[test]
+    fn an_unknown_sheep_colour_reads_white() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:sheep".into();
+        k.species = Species::Sheep;
+        let types = [("minecraft:sheep".into(), kind)].into();
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:sheep".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.0f64.to_bits()),
+                    Tag::Double(64.0f64.to_bits()),
+                    Tag::Double(0.0f64.to_bits()),
+                ]),
+            ),
+            ("Color", Tag::Byte(99)),
+        ]);
+        let m = crate::entity_nbt::mob_from_nbt(&tag, &types, 1, None).unwrap();
+        assert_eq!(m.extra.color, 0, "an unknown dye id is white");
+    }
+}
