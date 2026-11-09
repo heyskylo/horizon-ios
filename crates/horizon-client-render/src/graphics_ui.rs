@@ -598,7 +598,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::HdrBlackLevel,
                             None,
-                            "Your display's darkest black. 0 for OLED; LCDs glow a little.",
+                            "Lifts shadows onto your display's darkest black. 0: true black, no lift.",
                         ),
                         h(
                             H::HdrPeak,
@@ -608,7 +608,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::HdrPaperWhite,
                             None,
-                            "How bright white paper and menus look. Auto: your desktop's white.",
+                            "How bright white looks in the world. Auto: your desktop's white.",
                         ),
                         h(
                             H::HdrUiBrightness,
@@ -780,6 +780,9 @@ fn labelled_percent(caption: &str, percent: u32) -> Text {
     )
 }
 
+/// Peak Brightness's slider: Auto, then each step of the peak's scale.
+const PEAK_POSITIONS: u32 = crate::graphics::PEAK_STEPS + 1;
+
 impl H {
     fn slider(self, s: &Settings) -> Option<f32> {
         let g = &s.horizon;
@@ -805,10 +808,10 @@ impl H {
             H::UpscalingSharpness => Some(g.upscaling_sharpness as f32 / 100.0),
             // Auto, then 10..480 by 10.
             H::HdrPaperWhite => Some(g.hdr_paper_white as f32 / 480.0),
-            // Auto, then 200..2000 by 50.
+            // Auto, then the peak's scale.
             H::HdrPeak => Some(match g.hdr_peak {
                 0 => 0.0,
-                n => (n as f32 - 150.0) / 1850.0,
+                n => (1.0 + crate::graphics::peak_step_of(n as f32)) / PEAK_POSITIONS as f32,
             }),
             H::HdrBlackLevel => Some(g.hdr_black_level as f32 / 100.0),
             H::HdrUiBrightness => Some((g.hdr_ui_brightness as f32 - 25.0) / 75.0),
@@ -823,8 +826,8 @@ impl H {
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
             H::UpscalingSharpness => Some(20),
-            H::HdrPaperWhite => Some(41),
-            H::HdrPeak => Some(37),
+            H::HdrPaperWhite => Some(48),
+            H::HdrPeak => Some(PEAK_POSITIONS),
             H::HdrBlackLevel => Some(100),
             H::HdrUiBrightness => Some(15),
             _ => None,
@@ -941,13 +944,7 @@ impl H {
                 0 => labelled("Peak Brightness", lang::tr("Auto (%s)", &[&g.peak_nits()])),
                 n => labelled("Peak Brightness", n.to_string()),
             },
-            H::HdrBlackLevel => match g.hdr_black_level {
-                0 => labelled(
-                    "Black Level",
-                    lang::tr("Auto (%s)", &[&format!("{:.2}", g.black_level_nits())]),
-                ),
-                n => labelled("Black Level", format!("{:.2}", n as f32 / 100.0)),
-            },
+            H::HdrBlackLevel => labelled("Black Level", format!("{:.2}", g.black_level_nits())),
             H::HdrUiBrightness => labelled_percent("UI Brightness", g.hdr_ui_brightness),
             H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
             H::HdrKey => {
@@ -995,9 +992,9 @@ impl H {
             H::UpscalingSharpness => g.upscaling_sharpness = (v * 20.0).round() as u32 * 5,
             H::HdrPaperWhite => g.hdr_paper_white = (v * 48.0).round() as u32 * 10,
             H::HdrPeak => {
-                g.hdr_peak = match (v * 37.0).round() as u32 {
+                g.hdr_peak = match (v * PEAK_POSITIONS as f32).round() as u32 {
                     0 => 0,
-                    step => 150 + step * 50,
+                    step => crate::graphics::peak_nits_at(step - 1),
                 }
             }
             H::HdrBlackLevel => g.hdr_black_level = (v * 100.0).round() as u32,
@@ -2796,6 +2793,81 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn hdr_sliders_step_through_every_value_they_can_be_set_to() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
+        let value = |h: H, s: &Settings| match h {
+            H::HdrPaperWhite => s.horizon.hdr_paper_white,
+            H::HdrPeak => s.horizon.hdr_peak,
+            H::HdrBlackLevel => s.horizon.hdr_black_level,
+            H::HdrUiBrightness => s.horizon.hdr_ui_brightness,
+            _ => unreachable!(),
+        };
+        let fresh = || {
+            let mut s = Settings::default();
+            s.horizon.hdr = HdrMode::On;
+            s
+        };
+        for h in [
+            H::HdrPaperWhite,
+            H::HdrPeak,
+            H::HdrBlackLevel,
+            H::HdrUiBrightness,
+        ] {
+            // Everything a drag can land on, each read back where the slider puts it.
+            let mut set = std::collections::BTreeSet::new();
+            for i in 0..=10_000 {
+                let mut s = fresh();
+                h.set_slider(&mut s, i as f32 / 10_000.0);
+                let v = value(h, &s);
+                set.insert(v);
+                let mut again = fresh();
+                h.set_slider(&mut again, h.slider(&s).unwrap());
+                assert_eq!(value(h, &again), v, "{h:?} round trip");
+            }
+            // Everything a key or the controller reaches, from the bottom to the top.
+            let mut s = fresh();
+            h.set_slider(&mut s, 0.0);
+            let mut stepped = std::collections::BTreeSet::from([value(h, &s)]);
+            for _ in 0..h.slider_steps().unwrap() {
+                Item::Horizon(h).step_slider(&mut s, true, 200.0);
+                stepped.insert(value(h, &s));
+            }
+            assert_eq!(stepped, set, "{h:?}");
+        }
+        // Auto, then 10..480 by 10; Auto, then 200..2000 by 50 and 2500..10 000 by 500;
+        // 0..1 nit by 0.01 with 0 no lift.
+        let mut s = fresh();
+        let reach = |h: H, s: &mut Settings| {
+            h.set_slider(s, 0.0);
+            let mut all = vec![value(h, s)];
+            for _ in 0..h.slider_steps().unwrap() {
+                Item::Horizon(h).step_slider(s, true, 200.0);
+                all.push(value(h, s));
+            }
+            all
+        };
+        let paper: Vec<u32> = std::iter::once(0).chain((10..=480).step_by(10)).collect();
+        assert_eq!(reach(H::HdrPaperWhite, &mut s), paper);
+        let peak: Vec<u32> = std::iter::once(0)
+            .chain((200..=2000).step_by(50))
+            .chain((2500..=10_000).step_by(500))
+            .collect();
+        assert_eq!(reach(H::HdrPeak, &mut s), peak);
+        assert_eq!(
+            reach(H::HdrBlackLevel, &mut s),
+            (0..=100).collect::<Vec<u32>>()
+        );
+    }
+    #[test]
+    fn black_level_reads_as_its_lift() {
+        let mut s = Settings::default();
+        let label = |s: &Settings| Item::Horizon(H::HdrBlackLevel).label(s).plain();
+        assert_eq!(label(&s), "Black Level: 0.00");
+        s.horizon.hdr_black_level = 5;
+        assert_eq!(label(&s), "Black Level: 0.05");
     }
     /// Horizon's graphics captions are English sentences that the language table keys by
     /// themselves, so a caption, description or value that is not in `en_us.json` shows in
