@@ -6452,6 +6452,31 @@ def piston_push_ground():
     return ops
 
 
+def falling_block_in_moving_piston():
+    """#13793: `FallingBlockEntity.tick` neither places, drops nor discards a block that comes down
+    where a piston is extending (the block there `is(Blocks.MOVING_PISTON)`), before its `cancelDrop`
+    check: it stays a falling block, the piston pushes it on, and it lands a block further a tick
+    later. The piston fires in the tick's block events, before the entity lands. A sideways motion
+    shows the landing's slowdown (0.7) and the air drag it keeps."""
+    ops = []
+    selector = '@e[type=minecraft:falling_block,tag=piston_falling,limit=1]'
+    for piston, fields in (('sticky_piston', ''), ('piston', ''), ('sticky_piston', ',CancelDrop:1b'),
+                           ('piston', ',Motion:[0.0d,0.0d,0.05d]')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
+                     '/fill 28 209 28 36 209 34 stone', f'/setblock 31 210 31 {piston}[facing=east]',
+                     '/summon minecraft:falling_block 32.5 210 31.5 '
+                     f'{{BlockState:{{Name:"minecraft:sand"}},Tags:["piston_falling"]{fields}}}',
+                     '/setblock 30 210 31 redstone_block')
+        for _ in range(3):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {selector} Pos'))
+            ops.append(cmd(f'/data get entity {selector} Motion'))
+            ops.append(cmd('/execute if block 33 210 31 minecraft:sand'))
+            ops.append(cmd('/execute if entity @e[type=minecraft:item,x=28,y=208,z=28,dx=8,dy=10,dz=6]'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
 def primed_tnt_box():
     """#12020: `EntityTypes.TNT` is sized 0.98F, so its box is half 0.49F wide
     and 0.98F tall, both widened from float: TNT stopped by a wall ends 0.49F
@@ -7130,7 +7155,8 @@ ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
 ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
+ISOLATED_POT_HOPPER = frozenset({'hopper pot saved slot'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER
 
 
 def vehicle_fall_clip():
@@ -7246,6 +7272,10 @@ def groups():
     except ImportError:
         from guest_close_event_corpus import cases as guest_close_events
     try:
+        from .pot_hopper_corpus import cases as pot_hopper_cases
+    except ImportError:
+        from pot_hopper_corpus import cases as pot_hopper_cases
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -7305,6 +7335,7 @@ def groups():
         ('vehicle container saved fields', vehicle_containers(cmd)),
         ('vehicle boolean save flags', vehicle_boolean_flags(cmd)),
         ('other entity boolean save flags', other_entity_boolean_flags(cmd)),
+        ('hopper pot saved slot', pot_hopper_cases(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
@@ -7403,6 +7434,7 @@ def groups():
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
+        ('falling block in a moving piston', falling_block_in_moving_piston()),
         ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),

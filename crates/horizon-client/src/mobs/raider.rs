@@ -376,12 +376,22 @@ fn close_to_center(p: [i32; 3], at: Vec3, distance: f64) -> bool {
 pub struct ObtainBanner {
     path_to_banner: Option<super::path::Path>,
 }
+impl ObtainBanner {
+    /// `ObtainRaidLeaderBannerGoal.cannotPickUpBanner`, less the head-banner
+    /// and living-leader checks.
+    fn can_pick_up_banner(m: &Mob) -> bool {
+        state(m).is_some_and(|s| s.active_raid && !s.raid_over && can_be_leader(m.species()))
+    }
+}
 impl Goal for ObtainBanner {
     goal_clone!();
     fn flags(&self) -> u8 {
         MOVE
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if !Self::can_pick_up_banner(m) {
+            return false;
+        }
         let Some((at, item)) = state(m).and_then(|s| s.banner_at.map(|at| (at, s.banner_item)))
         else {
             return false;
@@ -399,7 +409,10 @@ impl Goal for ObtainBanner {
         false
     }
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
-        !m.ai.nav.is_done() && state(m).is_some_and(|s| s.banner_at.is_some())
+        !m.ai.nav.is_done()
+            && state(m).is_some_and(|s| {
+                s.banner_at.is_some() && s.active_raid && !s.raid_over && can_be_leader(m.species())
+            })
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to_path(cx.w, self.path_to_banner.take(), 1.15);
@@ -828,5 +841,81 @@ mod tests {
             assert!(jumped(seed, false));
             assert!(!jumped(seed, true));
         });
+    }
+
+    /// `ObtainRaidLeaderBannerGoal.canContinueToUse` ends with
+    /// `!cannotPickUpBanner()`: a raid that is over stops the banner chase.
+    #[test]
+    fn a_banner_chase_stops_when_the_raid_ends() {
+        use crate::mobs::world::with_built_test_world;
+        use std::sync::Arc;
+        let mut outcomes = Vec::new();
+        if !with_built_test_world(
+            &[],
+            |world, registry| {
+                for (cx, cz) in [
+                    (-1, -1),
+                    (-1, 0),
+                    (-1, 1),
+                    (0, -1),
+                    (0, 0),
+                    (0, 1),
+                    (1, -1),
+                    (1, 0),
+                    (1, 1),
+                ] {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                for x in -16..32 {
+                    for z in -16..32 {
+                        world.set(x, 0, z, stone).unwrap();
+                    }
+                }
+            },
+            |w, types| {
+                let mut m = Mob::new(
+                    1,
+                    Arc::new(types.types["minecraft:pillager"].clone()),
+                    Vec3::new(0.5, 1.0, 0.5),
+                    0.0,
+                );
+                m.on_ground = true;
+                m.extra.raider = Some(Box::default());
+                let s = state_mut(&mut m);
+                s.active_raid = true;
+                s.banner_at = Some([5.5, 1.0, 0.5]);
+                s.banner_item = 9;
+                m.ai.goals.add(
+                    1,
+                    ObtainBanner {
+                        path_to_banner: None,
+                    },
+                );
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("ObtainBanner"));
+                state_mut(&mut m).raid_over = true;
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("ObtainBanner"));
+                m.ai.goals = goals;
+            },
+        ) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "the raid ending stops the chase"
+        );
     }
 }
