@@ -159,3 +159,19 @@ fn the_other_species_stay_as_they_were() {
         &[(SPEED, 0.230_000_004_172_325_13)],
     );
 }
+
+#[test]
+fn a_wolf_with_a_health_modifier_keeps_its_taming_base() {
+    // Wolf.applyTamingSideEffects owns the base (8 wild, 40 tame); a max_health
+    // modifier changes the value, never the saved base, save after save.
+    let d = [(HEALTH, 8.0)];
+    for (extra, base) in [("", 8.0), (",Owner:[I;1,2,3,4]", 40.0)] {
+        let (mut m, mut tag) = loaded("minecraft:wolf", Species::Wolf, &d, extra);
+        add_modifier(&mut m, Attr::MaxHealth, "test:boost", 10.0, Op::AddValue);
+        for _ in 0..2 {
+            assert_eq!(saved(&m, &tag), [(HEALTH.to_owned(), base)], "{extra}");
+            tag = mob_to_nbt(&m, [1, 2, 3, 4], Some(&tag), None, |_| None);
+            m = mob_from_nbt(&tag, &types("minecraft:wolf", Species::Wolf, &d), 1, None).unwrap();
+        }
+    }
+}

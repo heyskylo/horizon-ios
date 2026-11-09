@@ -562,8 +562,11 @@ pub fn made_at_load(m: &Mob) -> Vec<Attr> {
 /// The base of an instance `made_at_load` lists, as `AttributeMap.pack` writes it.
 pub fn made_base(m: &Mob, a: Attr) -> f64 {
     match (m.species(), a) {
-        // `TamableAnimal` sets 40 for a tame wolf and 8 for the others, outside the model.
-        (Species::Wolf, Attr::MaxHealth) => f64::from(m.attrs.max_health),
+        // `Wolf.applyTamingSideEffects` sets 40 for a tame wolf and 8 for the others;
+        // `attrs.max_health` is the value (modifiers included), never the base.
+        (Species::Wolf, Attr::MaxHealth) => {
+            base_value_with(m, a, || Some(super::tame::wolf_health_base(m.extra.tame)))
+        }
         (s @ (Species::Goat | Species::Hoglin), Attr::AttackDamage) => {
             base_value_with(m, a, || age_attack_damage(s, m.is_baby()))
         }
