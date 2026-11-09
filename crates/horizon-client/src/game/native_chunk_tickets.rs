@@ -5,19 +5,11 @@
 //! nor releases it and it isn't saved.
 use super::{Dim, Game};
 
-/// How far a chunk a mod asked for with `native_chunk_load_request` is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeChunkLoad {
-    /// Asked for and not loaded yet (generating, loading from disk, or its
-    /// level opening); ask again after a tick.
-    Pending,
-    /// Loaded and ticking, as a `/forceload`ed chunk is.
-    Loaded,
-    /// Not asked for by this owner: the request was refused (off a server,
-    /// no namespace, past the world's edge, a dimension Horizon lacks) or
-    /// has been released.
-    Failed,
-}
+use crate::mod_api::NativeChunkLoad;
+
+#[cfg(test)]
+#[path = "native_chunk_load_tests.rs"]
+mod native_chunk_load_tests;
 
 // Native mods use these; nothing in Horizon does.
 impl Game<'_> {

@@ -22,7 +22,6 @@ pub use crate::first_person::Hand;
 pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
 pub use crate::game::NativeAttributeModifier;
-pub use crate::game::NativeChunkLoad;
 pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
 pub use crate::game::NativeEffectV2;
@@ -119,6 +118,21 @@ use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
 pub use winit::keyboard::KeyCode;
+
+/// How far a chunk a mod asked for with `native_chunk_load_request` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeChunkLoad {
+    /// Asked for and not loaded yet (generating, loading from disk, or its
+    /// level opening); ask again after a tick.
+    Pending,
+    /// Loaded: its blocks can be read and written (the mod's ticket keeps
+    /// it loaded, as a `/forceload`ed chunk is).
+    Loaded,
+    /// Not asked for by this owner: the request was refused (off a server,
+    /// no namespace, past the world's edge, a dimension Horizon lacks) or
+    /// has been released.
+    Failed,
+}
 
 /// An owned fluid payload. Component additions and removals are preserved exactly;
 /// the amount is in millibuckets. Empty/negative stacks are not transferable.
