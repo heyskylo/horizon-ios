@@ -2792,9 +2792,9 @@ struct Game<'a> {
     mod_chunk_tickets: HashMap<Dim, HashMap<(i32, i32), std::collections::BTreeSet<String>>>,
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
-    /// The item columns for one pass of the players' pickups
-    /// (`tick_guests`), rebuilt after any write to the items (a pickup, a
-    /// command, an explosion): see `item_columns`.
+    /// Item columns for the players' pickups (`tick_guests`) and hopper carts
+    /// (`tick_carts`), exact at any time: any write to the items (a move, a
+    /// pickup, a command) makes them scan, then rebuild (`StampedItemColumns`).
     pickup_columns: Option<machines::StampedItemColumns>,
     /// Where the mobs are, while the block entities tick (potent sulfur gas).
     pass_mobs: Option<potent_sulfur::PassMobs>,
