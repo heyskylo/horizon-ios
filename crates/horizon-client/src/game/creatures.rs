@@ -6331,7 +6331,13 @@ impl Game<'_> {
         {
             let item = self.held().map(|h| h.item.to_string()).unwrap_or_default();
             let used = self.held().cloned();
-            if self.interact_leash(index, &item) {
+            if let Some(context) = self.interact_leash_with_item_context(index, &item) {
+                let used = match context {
+                    super::leads::LeashInteraction::WithItem => used,
+                    super::leads::LeashInteraction::WithoutItem => {
+                        Some(ItemStack::new("minecraft:air", 0))
+                    }
+                };
                 if let Some(stack) = &used {
                     let target = self.mob_entity(&self.mobs[index]);
                     self.trigger_item_entity(
@@ -10649,5 +10655,183 @@ mod h169_glide_travel_tests {
             assert_eq!(source_damage_type(damage), "minecraft:fly_into_wall");
             assert_eq!(game.uuid_for(id), [169, 0, 0, 4]);
         });
+    }
+}
+
+#[cfg(test)]
+mod leash_without_item_criterion_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::motion::PlayerMotion;
+    use horizon_core::{geometry::Vec3, position::BlockPos};
+
+    #[test]
+    #[ignore = "needs prepared resources and isolated scratch homes/cwd"]
+    fn actual_holder_detach_does_not_reaward_the_held_lead_criterion() {
+        let mut game = server_game();
+        game.options.dedicated = None;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 100.0, 4.5)).unwrap());
+        game.level.player_uuid = Some([413, 0, 0, 1]);
+        game.level.health = 20.0;
+        game.creative = false;
+        game.world_root = std::env::current_dir()
+            .unwrap()
+            .join("leash-criterion-world");
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("reload"));
+        const ADV: &str = "minecraft:husbandry/leash_all_frog_variants";
+        const CRITERION: &str = "minecraft:temperate";
+        let advancement = game
+            .adv
+            .tree
+            .get(ADV)
+            .expect("actual built-in advancement loaded");
+        assert!(advancement.criteria.iter().any(|c| c.name == CRITERION));
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 99 0 15 99 15 stone"));
+        assert!(game.world.loaded(4, 6));
+        assert_eq!(
+            &*game.res.facts().get(game.world.block(4, 99, 6)).name,
+            "minecraft:stone"
+        );
+        assert!(game.run_command("execute if entity @s[type=player,nbt={UUID:[I;413,0,0,1],Health:20f,playerGameType:0,Pos:[4.5d,100d,4.5d]}]"));
+        assert!(game.run_command(
+            "summon frog 4.5 100 6.5 {UUID:[I;9,9,9,9],NoAI:1b,variant:\"minecraft:temperate\"}"
+        ));
+        assert!(game.run_command("execute if entity @e[type=frog,nbt={UUID:[I;9,9,9,9],Health:10f,NoAI:1b,variant:\"minecraft:temperate\",Pos:[4.5d,100d,6.5d]}]"));
+        let id = game.mob_by_uuid([9, 9, 9, 9]).unwrap();
+        let index = game.mobs.iter().position(|m| m.id == id).unwrap();
+        assert!(game.run_command("item replace entity @s hotbar.0 with lead 4"));
+        assert!(!game.adv.progress.has(ADV, CRITERION));
+        // Actual modeled frog and player are authoritative; no replayed source tag.
+        game.persist.raw.remove(&id);
+        let clock = game.world.game_time;
+        let target = || {
+            Some(InteractTarget {
+                id: id as i32,
+                location: [0.0; 3],
+            })
+        };
+        assert!(game.interact_mob(target()).unwrap());
+        assert_eq!(
+            game.mobs[index].extra.leash,
+            Some(horizon_client::mobs::leash::Holder::Player)
+        );
+        assert_eq!(game.mobs[index].extra.leash_player, Some([413, 0, 0, 1]));
+        assert_eq!(game.held().unwrap().count, 3);
+        assert!(
+            game.adv.progress.has(ADV, CRITERION),
+            "positive attach reaches the actual player criterion"
+        );
+        assert!(game.run_command(&format!("advancement revoke @s only {ADV} {CRITERION}")));
+        assert!(!game.adv.progress.has(ADV, CRITERION));
+        assert!(game.interact_mob(target()).unwrap());
+        assert!(game.mobs[index].extra.leash.is_none());
+        eprintln!(
+            "inert holder metadata after active detach: {:?}",
+            game.mobs[index].extra.leash_player
+        );
+        assert_eq!(game.held().unwrap().item.as_ref(), "minecraft:lead");
+        assert_eq!(game.held().unwrap().count, 3);
+        assert_eq!(game.level.player_uuid, Some([413, 0, 0, 1]));
+        assert_eq!(game.world.game_time, clock);
+        assert!(!game.persist.raw.contains_key(&id));
+        assert!(
+            !game.adv.progress.has(ADV, CRITERION),
+            "holder detach is a without-item success, not a second held-lead use"
+        );
+    }
+}
+
+#[cfg(test)]
+mod leash_without_item_postbaseline_controls {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::motion::PlayerMotion;
+    use horizon_core::{geometry::Vec3, position::BlockPos};
+
+    /// Added after baseline: an item-unconstrained interaction still dispatches
+    /// on detach. This prevents suppressing the whole trigger to pass the lead test.
+    #[test]
+    #[ignore = "needs prepared resources and isolated scratch homes/cwd"]
+    fn holder_detach_still_dispatches_the_actual_interaction_criterion() {
+        let mut game = server_game();
+        game.options.dedicated = None;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 100.0, 4.5)).unwrap());
+        game.level.player_uuid = Some([413, 0, 0, 2]);
+        game.level.health = 20.0;
+        game.creative = false;
+        game.world_root = std::env::current_dir()
+            .unwrap()
+            .join("leash-context-control-world");
+        let pack = game.world_root.join("datapacks/leash_context");
+        let dir = pack.join("data/leash_context/advancement");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = horizon_core::version::DATA_PACK_FORMAT;
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            serde_json::json!({"pack": {
+            "description":"Postbaseline actual interaction context control", "pack_format":f.0,
+            "min_format":[f.0,f.1],"max_format":[f.0,f.1]}})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("interaction.json"),
+            serde_json::json!({"criteria": {
+            "used":{"trigger":"minecraft:player_interacted_with_entity"}}})
+            .to_string(),
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("reload"));
+        assert!(game.adv.tree.get("leash_context:interaction").is_some());
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 99 0 15 99 15 stone"));
+        assert!(game.world.loaded(4, 6));
+        assert!(game.run_command(
+            "summon frog 4.5 100 6.5 {UUID:[I;9,9,9,8],NoAI:1b,variant:\"minecraft:temperate\"}"
+        ));
+        let id = game.mob_by_uuid([9, 9, 9, 8]).unwrap();
+        let index = game.mobs.iter().position(|m| m.id == id).unwrap();
+        assert!(game.run_command("item replace entity @s hotbar.0 with lead 4"));
+        game.persist.raw.remove(&id);
+        let target = || {
+            Some(InteractTarget {
+                id: id as i32,
+                location: [0.0; 3],
+            })
+        };
+        let clock = game.world.game_time;
+        assert!(game.interact_mob(target()).unwrap());
+        assert!(game.adv.progress.has("leash_context:interaction", "used"));
+        assert!(game.adv.progress.has(
+            "minecraft:husbandry/leash_all_frog_variants",
+            "minecraft:temperate"
+        ));
+        assert_eq!(game.mobs[index].extra.leash_player, Some([413, 0, 0, 2]));
+        assert!(game.run_command("advancement revoke @s only leash_context:interaction used"));
+        assert!(game.run_command("advancement revoke @s only minecraft:husbandry/leash_all_frog_variants minecraft:temperate"));
+        assert!(game.interact_mob(target()).unwrap());
+        assert!(
+            game.adv.progress.has("leash_context:interaction", "used"),
+            "without-item success still dispatches the actual trigger"
+        );
+        assert!(!game.adv.progress.has(
+            "minecraft:husbandry/leash_all_frog_variants",
+            "minecraft:temperate"
+        ));
+        assert!(game.mobs[index].extra.leash.is_none());
+        assert_eq!(game.held().unwrap().count, 3);
+        assert_eq!(game.level.player_uuid, Some([413, 0, 0, 2]));
+        assert_eq!(game.world.game_time, clock);
     }
 }
