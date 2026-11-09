@@ -6556,6 +6556,23 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def jigsaw_default_joint():
+    """#13654: `JigsawBlockEntity.loadAdditional` reads `joint`, else `StructureTemplate.getDefaultJointType`:
+    `aligned` when the block's front faces sideways, `rollable` when it faces up or down."""
+    x0, y0, z0 = 4096 - 32, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    cases = [('north_up', '{selection_priority:0}'), ('up_east', '{selection_priority:0}'),
+             ('down_south', '{}'), ('west_up', '{joint:"rollable"}'), ('east_up', '{}')]
+    for n, (orientation, data) in enumerate(cases):
+        x = x0 + 2 + 2 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 4} jigsaw[orientation={orientation}]{data}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 4} joint')]
+    # /data merge without joint loads the block's data again.
+    ops += [cmd(f'/data merge block {x0 + 2} {y0} {z0 + 4} {{selection_priority:3}}'),
+            cmd(f'/data get block {x0 + 2} {y0} {z0 + 4} joint')]
+    return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def command_block_auto_load():
     """#13075: `CommandBlockEntity.loadAdditional` ends with `setAutomatic`, which (with a level:
     `/setblock`, `/data merge block`) schedules the first tick of a block that turned automatic,
@@ -7210,6 +7227,7 @@ def groups():
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('jigsaw default joint', jigsaw_default_joint()),
         ('command block auto load', command_block_auto_load()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),

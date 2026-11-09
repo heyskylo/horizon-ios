@@ -781,7 +781,7 @@ impl Game<'_> {
                 }
             }
         }
-        let Some((_, mut new)) = horizon_client::save::decode_block_entity(&tag) else {
+        let Some((_, mut new)) = self.decode_block_entity_at(key, &tag) else {
             return false;
         };
         let rolled = self.take_loot_table(key, &tag, &mut new);
@@ -1056,7 +1056,7 @@ impl Game<'_> {
                     self.mark_block_entity_updated(key);
                     return Ok(());
                 }
-                if let Some((_, mut new)) = save::decode_block_entity(&tag) {
+                if let Some((_, mut new)) = self.decode_block_entity_at(key, &tag) {
                     let was_auto = self.command_block_auto(key);
                     if self.data_block_name(*p) == "minecraft:hopper" {
                         self.hoppers
