@@ -14,6 +14,11 @@ pub enum Place {
     /// A full-width button of the pause menu, above Options (under Splitscreen's settings). The
     /// pause menu has it only when a page registered there.
     Pause,
+    /// A section of Horizon Settings' Extras page, with no entry: its rows join the page's group
+    /// its title names when the page has one (`horizon.extras.header.multiplayer`), else they
+    /// start a group of their own after the page's. A [`Row::Heading`] starts another group. A
+    /// [`Row::Key`] shows its key there, without changing it: give a page of its own to a key.
+    Extras,
 }
 
 /// One page. Its values live in the crate (statics, often its settings [`crate::settings::Store`]);
