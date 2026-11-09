@@ -327,6 +327,10 @@ impl Game<'_> {
                 }
             });
         }
+        let offers_refreshed = session
+            .events
+            .iter()
+            .any(|event| matches!(event, merchant::Event::OffersRefreshed));
         let (session, traded) = self.merchant_apply(session, gm.merchant.mob);
         gm.merchant.session = session;
         if !traded.is_empty() {
@@ -342,7 +346,7 @@ impl Game<'_> {
         self.drop_guest_items(host, gi, dropped);
         // Vanilla sends offers on opening and updateSpecialPrices, not on
         // a normal result take. Trade reputation refreshes on the AI phase.
-        if refresh_offers {
+        if refresh_offers || offers_refreshed {
             self.lan_send_offers(host, conn, &mut gm, true);
         }
         self.lan_send_merchant_content(host, conn, &mut gm);
