@@ -542,6 +542,62 @@ fn finish_ram(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.extra.goat.phase = Phase::Done;
 }
 
+/// `Goat.addAdditionalSaveData` and the `GoatAi` brain memory Horizon writes
+/// with it: the screaming flag, the missing horns and the long jump cooldown
+/// (`LONG_JUMP_COOLDOWN_TICKS`, an integer memory in the brain).
+pub fn write_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
+    use horizon_world::nbt::Tag;
+    map.insert(
+        "IsScreamingGoat".into(),
+        Tag::Byte(i8::from(m.extra.screaming)),
+    );
+    let [left, right] = m.extra.lost_horns;
+    map.insert("HasLeftHorn".into(), Tag::Byte(i8::from(!left)));
+    map.insert("HasRightHorn".into(), Tag::Byte(i8::from(!right)));
+    let brain = map
+        .entry("Brain".into())
+        .or_insert_with(|| Tag::Compound(Default::default()));
+    if !matches!(brain, Tag::Compound(_)) {
+        *brain = Tag::Compound(Default::default());
+    }
+    let Tag::Compound(brain) = brain else { return };
+    let memories = brain
+        .entry("memories".into())
+        .or_insert_with(|| Tag::Compound(Default::default()));
+    if !matches!(memories, Tag::Compound(_)) {
+        *memories = Tag::Compound(Default::default());
+    }
+    let Tag::Compound(memories) = memories else {
+        return;
+    };
+    match crate::mobs::frog::jump_cooldown(m) {
+        Some(ticks) => {
+            memories.insert(
+                "minecraft:long_jump_cooling_down".into(),
+                Tag::compound([("value", Tag::Int(ticks as i32))]),
+            );
+        }
+        None => {
+            memories.remove(&"minecraft:long_jump_cooling_down".into());
+        }
+    }
+}
+
+/// `Goat.readAdditionalSaveData` and `Brain.Packed`'s memory: the three own
+/// fields and the ticks left of the long jump cooldown.
+pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
+    m.extra.screaming = crate::entity_nbt::flag(tag, "IsScreamingGoat");
+    let horn = |key| crate::save::number(tag.get(key)).is_some_and(|v| v == 0);
+    m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
+    let cooldown = tag
+        .get("Brain")
+        .and_then(|b| b.get("memories"))
+        .and_then(|b| b.get("minecraft:long_jump_cooling_down"))
+        .and_then(|m| m.get("value"))
+        .and_then(crate::save::number);
+    crate::mobs::frog::set_jump_cooldown(m, cooldown);
+}
+
 #[cfg(test)]
 mod long_jump_save_tests {
     use super::*;
