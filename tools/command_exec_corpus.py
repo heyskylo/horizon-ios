@@ -6827,6 +6827,38 @@ def vehicle_fall_clip():
                        f'/forceload remove {x0} {z0}')
 
 
+def boat_float_height():
+    """#13022: `AbstractBoat.checkInWater` and `isUnderwater` sum a block's y and its water height
+    in float (`y + FluidState.getHeight`), and `floatBoat` lands a falling boat at the float
+    `getWaterLevelAbove() - getBbHeight()`, with `waterLevel = getY(1.0)`. Boats fall into a
+    single water block in the air, a pool two deep and a flowing edge, high up where a float is
+    coarse, and are read for 10 ticks.
+    """
+    x0, y0, z0 = 3776, 279, 3776
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False)]
+    # (x, water blocks to set, boat y, motion y)
+    cases = [(1, [f'{x0 + 1} {y0} {z0 + 4} water'], y0 + 2, '-2.5d'),
+             (5, [f'{x0 + 4} {y0 - 2} {z0 + 3} {x0 + 6} {y0 - 3} {z0 + 5} stone',
+                  f'{x0 + 4} {y0 - 1} {z0 + 3} {x0 + 6} {y0} {z0 + 5} water'], y0 + 3, '0d'),
+             (9, [f'{x0 + 8} {y0 - 1} {z0 + 3} {x0 + 10} {y0 - 1} {z0 + 5} stone',
+                  f'{x0 + 9} {y0} {z0 + 4} water[level=3]'], y0 + 2, '0d')]
+    for n, (dx, waters, y, dy) in enumerate(cases, 1):
+        for w in waters:
+            ops.append(cmd(f'/fill {w}' if w.count(' ') > 4 else f'/setblock {w}', False))
+        ops.append(cmd(f'/summon oak_boat {x0 + dx}.5 {y} {z0 + 4}.5 {{UUID:[I;13022,0,{n},1],'
+                       f'Motion:[0d,{dy},0d]}}', expect_result=1))
+    for _ in range(10):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        for n in range(1, len(cases) + 1):
+            for key in ('Pos[1]', 'Motion[1]'):
+                ops.append(cmd(f'/data get entity 000032de-0000-0000-0000-{n:04x}00000001 {key}'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/fill {x0} {y0 - 4} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7099,6 +7131,7 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
+        ('boat float height', boat_float_height()),
         ('vehicle fall clip', vehicle_fall_clip()),
         ('projectile saved ground', projectile_saved_ground()),
         ('teleport lands', teleport_lands()),
