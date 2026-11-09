@@ -339,6 +339,7 @@ impl Opt {
             Opt::SharePresence => "options.sharePresence",
             Opt::DirectionalAudio => "options.directionalAudio",
             Opt::MusicToast => "options.musicToast",
+            Opt::Page(page, row) => pages::slider_caption(page, row),
         }
     }
     pub(crate) fn kind(self, s: &Settings) -> Kind {
@@ -402,6 +403,7 @@ impl Opt {
             Opt::PadLookDeadzone => unit(s.controller.look_deadzone, 0.0, 0.5),
             Opt::PadTriggerThreshold => unit(s.controller.trigger_threshold, 0.1, 0.9),
             Opt::SprintWindow => unit(s.sprint_window as f32, 0.0, 10.0),
+            Opt::Page(page, row) => pages::slider_kind(page, row),
             _ => Kind::Cycle,
         }
     }
@@ -878,6 +880,7 @@ impl Opt {
                 gamepad::TextKeyboard::Horizon => "horizon.options.keyboard.horizon",
                 gamepad::TextKeyboard::Steam => "horizon.options.keyboard.steam",
             }),
+            Opt::Page(page, row) => pages::slider_text(page, row),
             _ => Text::empty(),
         }
     }
@@ -952,6 +955,7 @@ impl Opt {
             Opt::PadLookDeadzone => s.controller.look_deadzone = step(0.0, 50.0) / 100.0,
             Opt::PadTriggerThreshold => s.controller.trigger_threshold = step(10.0, 90.0) / 100.0,
             Opt::SprintWindow => s.sprint_window = step(0.0, 10.0) as i32,
+            Opt::Page(page, row) => pages::slide(page, row, v),
             _ => {}
         }
         if self.affects_preset() {
@@ -1331,6 +1335,8 @@ pub enum Page {
     ModProject,
     /// A native mod's settings page: its index in `mods.installed`.
     NativeMod(usize),
+    /// A page a crate registered (`horizon_hooks::pages`): its index in `OptionsUi::pages`.
+    Added(usize),
     /// Horizon's shader packs, either kind (`shader_pack_list`).
     ShaderPacks,
     /// The picked pack's options: the shader screen (`shader_ui`) at the pack's main screen.
@@ -1390,6 +1396,8 @@ enum Act {
     /// A native mod's key (mod, key) waits for a key; a button of its page.
     NativeKey(usize, usize),
     NativeButton(usize, usize),
+    /// A registered page's row: (page, row).
+    PageRow(usize, usize),
     OpenModFolder,
     /// Browse mods: the page of listing `.0` of `mod_browser`.
     ModProject(usize),
@@ -1617,7 +1625,8 @@ pub struct OptionsUi {
     /// Key Binds: the mapping waiting for a key ([`NATIVE_KEY`]: a native
     /// mod's, `selected_native_key`).
     pub selected_key: Option<&'static str>,
-    /// The native mod's key waiting: (mod, key) in `mods.installed`.
+    /// The native mod's key waiting: (mod, key) in `mods.installed`, or a registered page's
+    /// (page, row) ([`pages::PAGE_KEY`]).
     selected_native_key: Option<(usize, usize)>,
     /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
@@ -1861,25 +1870,6 @@ fn wide_extras(s: &Settings, width: impl Fn(&str) -> f32) -> Vec<crate::extras::
         })
         .collect()
 }
-/// What a button opening one of Horizon's pages says on hover.
-fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
-    Some(match page {
-        Page::Horizon => "horizon.pages.settings.tooltip",
-        Page::Studio => "horizon.pages.studio.tooltip",
-        Page::Graphics => "horizon.pages.graphics.tooltip",
-        Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
-        Page::Controller => "horizon.pages.controller.tooltip",
-        Page::Extras => "horizon.pages.extras.tooltip",
-        Page::Pvp => "horizon.pages.pvp.tooltip",
-        Page::Agent => "horizon.pages.agent.tooltip",
-        Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
-        Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
-        Page::Mods => "horizon.pages.mods.tooltip",
-        Page::SplitSetup => "horizon.pages.split_setup.tooltip",
-        Page::Music => "horizon.pages.music.tooltip",
-        _ => return None,
-    })
-}
 /// Rows of an OptionsList: (big?, options) or a header.
 enum Row {
     Big(Opt),
@@ -1899,14 +1889,17 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
             return None;
         };
         let key = opt.tooltip_key(s);
-        return lang::has(&key).then(|| tr(&key));
+        let Opt::Page(page, row) = opt else {
+            return lang::has(&key).then(|| tr(&key));
+        };
+        return pages::tooltip(*page, *row);
     };
     let mut tip = None;
     if let Act::Extra(item) = act {
         tip = Some(Text::literal(item.description_text()));
     }
     if let Act::Push(page) = act
-        && let Some(text) = horizon_page_tooltip(*page)
+        && let Some(text) = pages::horizon_page_tooltip(*page)
     {
         tip = Some(tr(text));
     }
@@ -1926,6 +1919,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
     }
     match act {
         Act::Cycle(opt) if !opt.available() => Some(tr("horizon.options.unavailable")),
+        Act::PageRow(page, row) => pages::tooltip(*page, *row),
         Act::ToggleMod(i) => match s.mods.installed.get(*i) {
             Some(installed) => {
                 let description = installed
@@ -2367,6 +2361,7 @@ impl OptionsUi {
             Page::ModBrowser => "horizon.mods.browse.title",
             Page::ModProject => "horizon.mods.browse.project",
             Page::NativeMod(_) => "Mod Settings",
+            Page::Added(i) => pages::title(i),
             Page::ShaderPacks => "horizon.pages.shader_packs",
             Page::ShaderOptions => "horizon.pages.shader_options",
             Page::PackOptions => "horizon.pack.options.title",
@@ -2647,47 +2642,7 @@ impl OptionsUi {
                 flush(&mut rows, &mut section);
                 rows
             }
-            Page::Horizon => {
-                // Two to a row, as vanilla's OptionsList.addSmall lays out
-                // buttons; each opens one of Horizon's settings pages. Each page has
-                // one way in: graphics and shader packs are Video Settings' (the graphics
-                // screen), the controller is Controls', mods are the Options screen's.
-                let open =
-                    |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
-                vec![
-                    Row::Buttons(
-                        open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
-                    ),
-                    Row::Buttons(
-                        open(
-                            "horizon.pages.open.split_setup",
-                            if self.split_guest {
-                                Page::SplitProfiles
-                            } else {
-                                Page::SplitSetup
-                            },
-                        ),
-                        Some(open("horizon.pages.open.studio", Page::Studio)),
-                    ),
-                    // No AI hides the AI Agent page and everything AI.
-                    Row::Buttons(
-                        self.extra_button(s, crate::extras::Item::DiscordPresence),
-                        Some(if s.extras.no_ai {
-                            self.extra_button(s, crate::extras::Item::NoAi)
-                        } else {
-                            open("horizon.pages.open.agent", Page::Agent)
-                        }),
-                    ),
-                ]
-                .into_iter()
-                .chain(
-                    (!s.extras.no_ai).then(|| {
-                        Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
-                    }),
-                )
-                .collect()
-            }
+            Page::Horizon => self.horizon_rows(s),
             Page::Agent => {
                 let mut rows = vec![Row::Buttons(
                     self.extra_button(s, crate::extras::Item::AgentControl),
@@ -2970,6 +2925,7 @@ impl OptionsUi {
             Page::ModBrowser => self.mod_browser_rows(),
             Page::ModProject => self.mod_project_rows(s),
             Page::NativeMod(i) => self.native_rows(s, i),
+            Page::Added(i) => self.added_rows(i),
             _ => {
                 let _ = s;
                 Vec::new()
@@ -4238,6 +4194,7 @@ impl OptionsUi {
                         }
                         Act::NativeKey(i, k) => self.wait_native_key(i, k),
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
+                        Act::PageRow(p, r) => events.extend(self.page_act(p, r, self.shift)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
                         Act::ModProject(i) => {
                             if let Some(listing) = self.mod_browser.listings.get(i) {
@@ -4741,8 +4698,8 @@ impl OptionsUi {
         let Some(name) = self.selected_key.take() else {
             return Vec::new();
         };
-        if name == NATIVE_KEY {
-            return self.bind_native_key(s, value);
+        if name == NATIVE_KEY || name == pages::PAGE_KEY {
+            return self.bind_native_key(s, name, value);
         }
         if !s.extras.set_key(name, value.clone()) {
             s.keys.set(name, &value);
@@ -5126,6 +5083,7 @@ impl OptionsUi {
                         }
                         Act::NativeKey(i, k) => self.wait_native_key(i, k),
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
+                        Act::PageRow(p, r) => events.extend(self.page_act(p, r, shift)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
                         Act::ModProject(i) => {
                             if let Some(listing) = self.mod_browser.listings.get(i) {
