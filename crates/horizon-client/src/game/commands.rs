@@ -2201,14 +2201,14 @@ impl Game<'_> {
     }
     /// `ServerClockManager.getInstance`: commands address clock-keyed state.
     /// Keep the existing Overworld clock tied to the world's canonical day time.
-    fn command_clock_time(&self, clock: &str) -> i64 {
+    pub(super) fn command_clock_time(&self, clock: &str) -> i64 {
         if clock == "minecraft:overworld" {
             self.world.day_time
         } else {
             self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
         }
     }
-    fn set_command_clock_time(&mut self, clock: &str, total: i64) {
+    pub(super) fn set_command_clock_time(&mut self, clock: &str, total: i64) {
         if clock == "minecraft:overworld" {
             self.world.day_time = total;
         } else {
@@ -2219,7 +2219,7 @@ impl Game<'_> {
                 .0 = total;
         }
     }
-    fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
+    pub(super) fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
         if clock == "minecraft:overworld" {
             &mut self.ui.clock
         } else {
@@ -2254,12 +2254,7 @@ impl Game<'_> {
                 if total == t {
                     return Err(err("commands.time.set.already_at_time", &[&clock, &t]));
                 }
-                let mut cancel = false;
-                self.native_time_skip(self.dim.id(), total, t, "command", &mut cancel);
-                if !cancel {
-                    self.set_command_clock_time(&clock, t);
-                    self.command_clock_state(&clock).partial = 0.0;
-                }
+                self.jump_clock(&clock, total, t, "command");
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &t]));
                 Ok(t as i32)
             }
@@ -2417,41 +2412,7 @@ impl Game<'_> {
                 true,
             )
         };
-        let previous = (
-            self.world.weather.clear_time,
-            self.world.weather.rain_time,
-            self.world.weather.thunder_time,
-            self.world.weather.raining,
-            self.world.weather.thundering,
-        );
-        let mut cancel = false;
-        self.native_weather_change(self.dim.id(), raining, thundering, &mut cancel);
-        let old_thundering = self.world.weather.thundering;
-        let old_thunder_time = self.world.weather.thunder_time;
-        let mut cancel_thunder = false;
-        self.native_thunder_change(self.dim.id(), thundering, &mut cancel_thunder);
-        if cancel {
-            let w = &mut self.world.weather;
-            (
-                w.clear_time,
-                w.rain_time,
-                w.thunder_time,
-                w.raining,
-                w.thundering,
-            ) = previous;
-        } else {
-            // ServerLevel.setWeatherParameters.
-            let w = &mut self.world.weather;
-            w.clear_time = clear;
-            w.rain_time = time;
-            w.thunder_time = time;
-            w.raining = raining;
-            w.thundering = thundering;
-            if cancel_thunder {
-                w.thunder_time = old_thunder_time;
-                w.thundering = old_thundering;
-            }
-        }
+        self.apply_weather(clear, time, raining, thundering);
         self.feedback(Text::translate(key, &[]));
         Ok(duration.unwrap_or(-1))
     }
@@ -3012,59 +2973,6 @@ impl Game<'_> {
         });
         self.process_level_events()
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
-    }
-    /// The block entity part of `BlockInput.place`: load the block entity
-    /// from the argument's tag; true when its saved data changed.
-    pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
-        use horizon_world::nbt::Tag;
-        if self.pot_data(pos).is_some() {
-            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-                return false;
-            };
-            return self.set_pot_data(pos, &tag).unwrap_or(false);
-        }
-        let key = (pos[0], pos[1], pos[2]);
-        let Some(e) = self.world.block_entities.get(&key) else {
-            return false;
-        };
-        let name = self.data_block_name(pos);
-        let before = horizon_client::save::encode_block_entity(key, e, &name);
-        let Ok((mut tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-            return false;
-        };
-        if let Tag::Compound(c) = &mut tag {
-            for k in ["id", "x", "y", "z"] {
-                if let Some(v) = before.get(k) {
-                    c.insert(k.into(), v.clone());
-                }
-            }
-        }
-        let Some((_, mut new)) = horizon_client::save::decode_block_entity(&tag) else {
-            return false;
-        };
-        let rolled = self.take_loot_table(key, &tag, &mut new);
-        let after = horizon_client::save::encode_block_entity(key, &new, &name);
-        // The lock is outside the model: a tag that only changes it still
-        // changes the block entity.
-        let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        // So is the custom name.
-        let name_changed = self.load_block_name(key, &new, &tag);
-        let cooldown_changed = if name == "minecraft:hopper" {
-            let state = super::machines::HopperState::load(&tag);
-            let changed = self.hoppers.get(&key).map_or(-1, |s| s.cooldown) != state.cooldown;
-            self.hoppers.insert(key, state);
-            changed
-        } else {
-            false
-        };
-        if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
-            return false;
-        }
-        self.world.block_entities.insert(key, new);
-        self.world.set_block_lock(key, &tag);
-        self.update_spawner_display(key);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        true
     }
     /// `RandomizableContainer.unpackLootTable` for a player who opens a
     /// container: a roll the container still holds fires

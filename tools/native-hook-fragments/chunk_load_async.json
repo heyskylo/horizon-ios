@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "chunk_load_request", "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_chunk_load_request"},
+    {"name": "chunk_load_state", "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_chunk_load_state"},
+    {"name": "chunk_is_loaded", "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_chunk_is_loaded"},
+    {"name": "chunk_load_release", "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_chunk_load_release"}
+  ],
+  "rust_summary": "asking for a chunk to load without blocking (`native_chunk_load_request`, `native_chunk_load_state`, `native_chunk_is_loaded`, `native_chunk_load_release`).",
+  "doc_summary": "`native_chunk_load_request(owner, dimension, chunk)` asks for a chunk to load without blocking, `native_chunk_load_state` polls it (`NativeChunkLoad`), `native_chunk_is_loaded` checks a chunk without loading it and `native_chunk_load_release` lets it unload again. Bundles need \"hooks\": @API:chunk_load_async@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_chunk_tickets.rs"
+  ]
+}

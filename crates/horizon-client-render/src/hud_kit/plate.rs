@@ -2,8 +2,9 @@
 //! overlays that mean the same thing look the same.
 //!
 //! A plate is drawn first, then the overlay's text and glyphs over it. Only the kinds the
-//! overlays use today are here; each keeps the colours its overlay always had. Today that is
-//! one, shared by the controller notice and splitscreen's prompts.
+//! overlays use today are here; each keeps the colours its overlay always had: the notice's,
+//! shared by the controller notice and splitscreen's prompts, and the text backing the gameplay
+//! guide's rows sit on.
 //!
 //! ```
 //! use horizon_client_render::hud_kit::plate::Plate;
@@ -23,6 +24,9 @@ pub enum Plate {
     /// Something to read now: controller notices and splitscreen's prompts. A dark fill with a
     /// faint edge.
     Notice,
+    /// Behind a hint that sits on the world, the gameplay guide's rows: black at `alpha`, the
+    /// player's Text Background Opacity (`Settings::text_background`), with no edge.
+    Backing { alpha: u8 },
 }
 
 impl Plate {
@@ -30,6 +34,7 @@ impl Plate {
     pub fn fill(self) -> u32 {
         match self {
             Self::Notice => 0xD200_0000,
+            Self::Backing { alpha } => u32::from(alpha) << 24,
         }
     }
 
@@ -37,6 +42,7 @@ impl Plate {
     pub fn edge(self) -> Option<u32> {
         match self {
             Self::Notice => Some(0x5AFF_FFFF),
+            Self::Backing { .. } => None,
         }
     }
 }

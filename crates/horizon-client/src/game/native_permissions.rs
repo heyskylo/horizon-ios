@@ -23,6 +23,19 @@ impl Game<'_> {
     ) -> bool {
         self.has_permission_at(player, node, default_level, self.permission_level(player))
     }
+    /// The permission node `node` as the mods set it, three-valued as Bukkit's
+    /// `Permissible.isPermissionSet` and `hasPermission` tell apart: Some(true)
+    /// when a permissions mod sets it, Some(false) when one sets it to false,
+    /// None when none does (not set), so a mod applies its own default and
+    /// parent nodes where nothing is set. `native_permission_check` answers it,
+    /// asked with a `default_level` of 0 (the operator level is not applied
+    /// here; read it with `native_player_permission`). Works for a player on
+    /// the server or not. Server-side. API @API:permission_value@.
+    pub(super) fn native_player_permission_value(&self, player: u128, node: &str) -> Option<bool> {
+        let mut result = None;
+        self.native_permission_check(player, node, 0, &mut result);
+        result
+    }
     /// A player's primary group: the first permission group the mods name for them
     /// (`native_permission_groups`), or None when none names one. Server-side.
     /// API @API:permission_groups@.
