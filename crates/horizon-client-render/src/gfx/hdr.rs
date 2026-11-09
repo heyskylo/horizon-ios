@@ -1592,8 +1592,15 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         let near = |got: f32, want: f32| (got - want).abs() <= 0.005 * want.max(1.0);
         // A display at or above the mastering one (T >= S): every stored value up to S comes
         // out exactly as it went in, grey or coloured, and light above S is held at S with its
-        // hue, so 1500 and 10 000 nits show what 1000 does.
-        for (paper, peak) in [(203.0, 1000.0), (203.0, 1500.0), (203.0, 10000.0)] {
+        // hue, so 1500 and 10 000 nits show what 1000 does; so do the settings' extremes (Paper
+        // White 10 to 480 nits, Peak up to 10 000) wherever T reaches S.
+        for (paper, peak) in [
+            (203.0, 1000.0),
+            (203.0, 1500.0),
+            (203.0, 10000.0),
+            (480.0, 10000.0),
+            (10.0, 200.0),
+        ] {
             (hdr.paper_white, hdr.peak) = (paper, peak);
             for i in 0..=64 {
                 let g = f64::from((scene_peak * i as f32 / 64.0).powf(1.0 / 2.2));
