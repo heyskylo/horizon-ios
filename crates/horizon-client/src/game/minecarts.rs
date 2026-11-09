@@ -2031,8 +2031,6 @@ impl Game<'_> {
         // By id: an exploding cart can destroy or prime others mid-loop.
         let ids: Vec<u32> = self.carts.iter().map(|c| c.id).collect();
         let mut index = CartIndex::default();
-        // Hopper carts' item columns, rebuilt whenever the items are written.
-        self.cart_item_columns = Some(Default::default());
         let mut hint = 0;
         for &id in &ids {
             let Some(i) = cart_at(&self.carts, id, hint) else {
@@ -2085,7 +2083,6 @@ impl Game<'_> {
             // After the ticked cart is stored: a mod reads and changes the cart as it is now.
             self.native_tick_post_one(&round, id, kind);
         }
-        self.cart_item_columns = None;
         // On the server for every cart, the ridden ones too.
         let mut hint = 0;
         for id in ids {
