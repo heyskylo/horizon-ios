@@ -542,3 +542,53 @@ fn a_torch_toggled_eight_times_in_sixty_ticks_burns_out_and_relights_after_160()
         "eight toggles spread over 96 ticks never burn it out"
     );
 }
+/// `RepeaterBlock.isLocked` is `getAlternateSignal > 0` with `sideInputDiodesOnly`:
+/// only a diode beside it that is powered and outputs into it locks a repeater. An
+/// unpowered one does not, and neither does a redstone block, which does feed a
+/// comparator's side input.
+#[test]
+fn a_repeater_is_locked_only_by_a_powered_diode_pointing_into_its_side() {
+    // (what stands beside the repeater, is it fed, is the repeater locked). The
+    // repeater is at z = 0 and the diode at z = 1; a diode faces the side it reads
+    // from and outputs the other way, so facing south it outputs north, into it.
+    let cases = [
+        ("repeater", true, true),
+        ("comparator", true, true),
+        ("repeater", false, false),
+        ("comparator", false, false),
+    ];
+    for (name, fed, locked) in cases {
+        let mut w = world!();
+        w.floor(4, 4, "stone");
+        let repeater = BlockPos::new(0, 5, 0);
+        w.set(repeater, w.id("repeater", &[("facing", "west")]));
+        w.set(BlockPos::new(0, 5, 1), w.id(name, &[("facing", "south")]));
+        if fed {
+            w.set(BlockPos::new(0, 5, 2), w.id("redstone_block", &[]));
+        }
+        for _ in 0..10 {
+            w.full_tick();
+        }
+        assert_eq!(
+            w.prop(repeater, "locked"),
+            if locked { "true" } else { "false" },
+            "a {} {name} beside it",
+            if fed { "powered" } else { "unpowered" }
+        );
+    }
+
+    // A redstone block right beside the repeater is not a diode: no lock.
+    let mut w = world!();
+    w.floor(4, 4, "stone");
+    let repeater = BlockPos::new(0, 5, 0);
+    w.set(repeater, w.id("repeater", &[("facing", "west")]));
+    w.set(BlockPos::new(0, 5, 1), w.id("redstone_block", &[]));
+    for _ in 0..10 {
+        w.full_tick();
+    }
+    assert_eq!(
+        w.prop(repeater, "locked"),
+        "false",
+        "a redstone block beside it"
+    );
+}
