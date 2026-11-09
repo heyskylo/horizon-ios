@@ -959,12 +959,13 @@ impl Game<'_> {
             is_singleplayer,
             horizon_core::release::VERSION.into(),
         );
-        match r
-            .session
-            .start_recording_with_init(&path, meta, |recorder| {
-                self.dump_world_snapshot_to_recorder(recorder);
-            }) {
-            Ok(()) => Ok(json!({ "ok": true, "path": path.display().to_string() })),
+        match horizon_client::studio::StudioRecorder::start(path.clone(), meta) {
+            Ok(recorder) => {
+                r.session.start_recording(recorder, |recorder| {
+                    self.dump_world_snapshot_to_recorder(recorder);
+                });
+                Ok(json!({ "ok": true, "path": path.display().to_string() }))
+            }
             Err(e) => Ok(json!({ "ok": false, "error": e.to_string() })),
         }
     }

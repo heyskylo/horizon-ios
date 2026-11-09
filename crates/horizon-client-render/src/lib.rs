@@ -38,6 +38,7 @@ pub mod command_block;
 pub mod connected;
 pub mod containers;
 pub mod controller_ui;
+pub mod core_shader;
 pub mod crash;
 pub mod custom_sky;
 pub mod datapack;
