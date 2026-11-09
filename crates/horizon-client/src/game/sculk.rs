@@ -1954,15 +1954,7 @@ impl Game<'_> {
             return;
         }
         self.sculk_prepare();
-        // mainSupportingBlockPos, or the block's state at getOnPosLegacy.
-        let state = match self.supporting_block(position, bounds) {
-            Some(support) => self.world.block(support.x, support.y, support.z),
-            None => self.world.block(
-                position.x.floor() as i32,
-                (position.y - 0.2).floor() as i32,
-                position.z.floor() as i32,
-            ),
-        };
+        let state = self.landing_state(position, bounds);
         let mut context = self.who_context(None, Some(state));
         context.living = living;
         self.post_game_event(
