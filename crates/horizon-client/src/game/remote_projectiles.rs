@@ -344,6 +344,7 @@ impl Game<'_> {
                 portal: Default::default(),
                 drop_item: false,
                 fall_distance: 0.0,
+                on_ground: false,
                 stuck: Vec3::ZERO,
                 damage: Default::default(),
                 saved: None,
@@ -539,8 +540,11 @@ impl Game<'_> {
                     (_, 0, Value::Byte(flags)) => {
                         if let Some(a) = p.arrow.as_mut() {
                             a.synced_fire = flags & 1 != 0;
+                        } else {
+                            p.synced_fire = flags & 1 != 0;
                         }
                     }
+                    (_, 1, Value::Int(air_supply)) => p.air_supply = *air_supply,
                     // AbstractArrow.ID_FLAGS (critical) and IN_GROUND.
                     (ProjectileKind::Arrow { critical, .. }, 8, Value::Byte(flags)) => {
                         *critical = flags & 1 != 0;

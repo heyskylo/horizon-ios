@@ -32,6 +32,8 @@ Credits:
 - **arismoko:** the mod API owns its types and a CI property check keeps engine types out of it
   ([arismoko/horizon](https://github.com/arismoko/horizon), arismoko/horizon#1608). Also the idea of shipping
   Horizon's own parts from another repository as a launcher plugin.
+- **Martipops** (controllers, splitscreen): the compositor's place in the engine, and where controllers,
+  splitscreen, Replay Studio, PvP & HUD and a UI page API go.
 - **Contributors at the 2026-11-08 stage:** the file-size rule, the single list of addresses, sponsors in the
   Horizon layer, a platform that exposes what vanilla already uses, and extras as native mods.
 
@@ -59,6 +61,11 @@ Vanilla Minecraft: Java Edition 26.3, and nothing else.
 - **Belongs:** gameplay, world data and generation, block behaviour, mobs, items, commands, the network
   protocol, rendering, sound, vanilla's screens, saves, the integrated and dedicated servers. It also holds
   optimizations that keep vanilla's behaviour, and the extension points the platform plugs into.
+- **Also the render pipeline's own capabilities that vanilla's path doesn't use**, when a higher layer could only
+  get them by rebuilding the pipeline. The one today is the **compositor**: drawing a view into an offscreen target
+  and composing several targets into a window's views. With one view (vanilla, and splitscreen with one player)
+  the renderer takes vanilla's path and the compositor does nothing, so the engine still plays 1:1 vanilla.
+  Splitscreen, the feature that uses it, is platform (below).
 - **Examples:** `horizon-world` (`worldgen/`, `level/redstone.rs`), `horizon-protocol` (`packets/`),
   `horizon-items`, `horizon-command`, `horizon-core`, `game/creatures.rs`, `game/integrated.rs`, `gfx.rs`,
   `mesher.rs`, `streaming.rs`, `lan/`.
@@ -82,8 +89,9 @@ What makes vanilla nicer to change, port and run, with no Horizon branding and n
 public API that mods, desktop-class ports and the Horizon layer build on.
 
 - **Belongs:** the mod API and mod formats, the native mod host, the shader API and pack formats beyond vanilla
-  (OptiFine, Polytone, `shaders/`), HDR, controllers, the settings system, agent control (`horizon-ctl`, MCP),
-  the dedicated server's anticheat and chat filter, modpack porting, the design tokens of non-vanilla screens.
+  (OptiFine, Polytone, `shaders/`), HDR, controllers, splitscreen, Replay Studio, the HUD widget framework, UI
+  pages and the settings system, agent control (`horizon-ctl`, MCP), the dedicated server's anticheat and chat
+  filter, modpack porting, the design tokens of non-vanilla screens.
 - **Exposes what vanilla already uses.** FOV changes, potion effects, the player's state, screens, rendering
   hooks and so on become public API with stable types (arismoko/horizon#1608's patterns). Then a mod, a port or a
   Horizon feature builds on them instead of editing or copying engine code.
@@ -95,12 +103,53 @@ public API that mods, desktop-class ports and the Horizon layer build on.
   a Horizon crate, cosmetics, the shop, official or partner servers, uploads to playhorizon.dev.
 - **Network:** allowed, but never to a built-in address.
 
+### Controllers, splitscreen, replays and UI pages
+
+Vanilla has none of these, and the engine stays 1:1 vanilla, so they are platform features on hooks the engine
+exposes. Ports to consoles and handhelds need them, and other projects can build on them.
+
+- **Controllers:** the pad backend (gilrs), bindings, deadzones and the look curve, button glyphs, the pad's menu
+  navigation and cursor, the controller settings, DualSense output. Today in `horizon-client-input/src/gamepad.rs`,
+  `game/pad.rs`, `game/pad_*.rs` and `game/pad/`, `pad_cursor.rs`, `pad_glyph.rs`, `controller_ui.rs`, and
+  `horizon-dualsense`. The engine's hooks:
+  - **Actions.** Every input the game reads is an `Action`, vanilla's key mappings (`horizon-client-input/src/actions.rs`),
+    and code asks whether an action is held (`held.rs`), never a key. A pad presses and holds actions like a
+    keyboard does. This hook exists today.
+  - **Movement and look.** An analog move vector and a look delta that the player's movement reads instead of
+    keys (today `game/pad.rs` calls `gamepad::move_vector` and `Game::look_turn` itself).
+  - **Menu focus.** Screens say which widget has focus and take "move focus" and "press" (today the pad's
+    cursor drives vanilla's screens through mouse events).
+
+  The last two become a registered input source, a trait in the engine that the platform's pad code implements,
+  in M6. Until then the pad code stays in its own modules, so that move is a pure file move.
+- **Splitscreen:** more local players, each its own `Game` joined to P1's server thread through memory; which
+  device drives which player; the setup screen, window layouts and profiles. Today in `game/split.rs` and
+  `game/split/`, `split_layout.rs`, `split_map.rs`, `split_profiles.rs`, `split_ui.rs`. It draws through the
+  engine's compositor (see [Engine](#engine)), and its input comes through the input hooks above, one input
+  source per player.
+
+  The compositor stays in the engine, as Martipops (who builds splitscreen) and duckybertduck argued: it is part
+  of how the renderer presents a frame (targets, submission, pacing, present). Moving it above the engine would
+  mean exposing the whole frame pipeline as API or rebuilding it up there, for a feature that on vanilla's path
+  costs nothing. What the engine must not hold is the feature: the router, the screens, the layouts.
+- **Replay Studio:** recording the session's packets as `.mcpr` (the format other replay tools read), playing
+  them back, and its camera paths and timeline (`studio/`, `studio_ui.rs`). It uses no address and carries no
+  branding, and mods and tools can build on the recordings. It reads the network and rendering through the
+  platform, and stays off by default.
+- **UI pages:** a general API for pages a mod, a port or the Horizon layer adds (the settings shell, its rows,
+  search and undo, today `settings_shell.rs` and `extras_ui.rs`'s pages). The engine exposes screens: open one, draw on
+  the GUI layer, take input and focus. The platform gives the page API stable types (as #1608 does for the mod
+  API). Horizon Settings, the controller pages and the PvP & HUD page all become clients of it.
+- **PvP & HUD:** the HUD widget framework (placing, sizing and toggling HUD elements, `hud_layout.rs`) is
+  platform. The PvP presets and Horizon's own widgets (keystrokes, CPS, reach readout, `pvp.rs`, `pvp_hud.rs`)
+  are Horizon extras, and candidates to become native mods.
+
 ## Horizon
 
 Horizon's own extras and its product, and every built-in address of an outside service vanilla doesn't contact.
 
-- **Belongs:** Horizon's extras (zoom, Mouse Tweaks, sorting, smooth chat, PvP & HUD, splitscreen, the music page,
-  keystrokes, auto-reconnect, Replay Studio...), cosmetics, emotes, the wardrobe and the shop, sponsors, the official
+- **Belongs:** Horizon's extras (zoom, Mouse Tweaks, sorting, smooth chat, the PvP & HUD presets and widgets, the
+  music page, keystrokes, auto-reconnect...), cosmetics, emotes, the wardrobe and the shop, sponsors, the official
   and partner servers in the list, Play with Friends and its relay, Discord, the "I'm playing" ping, telemetry and
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
@@ -119,6 +168,13 @@ Developer tools that no player runs: `xtask`, `horizon-bots`, `horizon-mod-api-g
 
 ## Where a new feature goes
 
+The rule, in order (duckybertduck's):
+
+1. Vanilla has it: **engine**. Hooks into it are fine there.
+2. It is Horizon's own (an address, the website, the name or branding): **Horizon**.
+3. It helps others build on the project (mods, ports, other clients, tools): **platform**.
+4. Anything else: **Horizon**, or a native mod that players add themselves.
+
 | I add... | Layer | Where |
 |---|---|---|
 | A vanilla behaviour, block, mob, packet, command or screen | engine | the crate that owns the area ([CLAUDE.md](../CLAUDE.md) crate table) |
@@ -128,6 +184,10 @@ Developer tools that no player runs: `xtask`, `horizon-bots`, `horizon-mod-api-g
 | A mod hook, host method or mod format | platform | `horizon-mods`, the mod API (today: `game/mod_api_host.rs`, `game/native_*.rs`) |
 | A shader or resource pack format vanilla doesn't read | platform | `horizon-shaders`, `horizon-optifine`, `horizon-polytone`, or a new platform crate |
 | A dedicated server option (anticheat, chat filter) | platform | `horizon-anticheat`, `horizon-chat-filter` |
+| Controller support: a device, bindings, glyphs, pad menus | platform | the pad modules, on the engine's input hooks ([Controllers](#controllers-splitscreen-replays-and-ui-pages)) |
+| Splitscreen or more players on one machine | platform | the `split` modules, on the engine's compositor |
+| A render pipeline capability vanilla's path doesn't use but a higher layer can't add without rebuilding the pipeline (the compositor) | engine | `gfx.rs` and `gfx/`, doing nothing on vanilla's path |
+| A UI page others can add to, a HUD widget framework, a replay format | platform | the page API, `hud_layout.rs`, `studio/` |
 | A Horizon extra (a setting, screen or HUD element vanilla doesn't have) | Horizon | its own module behind `horizon-extras`, built on platform API; or an optional native mod that players add themselves |
 | Anything that talks to playhorizon.dev, a partner or a third-party service by itself | Horizon | a Horizon crate, its address in `horizon-addresses` |
 | Cosmetics, emotes, the shop, sponsors, Discord, telemetry, official servers | Horizon | `horizon-cosmetics`, `horizon-telemetry`..., behind `horizon-extras` |
@@ -144,7 +204,7 @@ also goes behind `horizon-extras`. That keeps each later move a pure file move.
 The target, after the split. It is not built yet: nothing moves before the split below is done.
 
 **What a build of this repository gives.** A complete game: vanilla play, the platform (mods, shader packs,
-controllers, HDR, the dedicated server) and no Horizon layer. That means no extras, cosmetics, shop, telemetry,
+controllers, splitscreen, Replay Studio, HDR, the dedicated server) and no Horizon layer. That means no extras, cosmetics, shop, telemetry,
 sponsors or official server, no built-in outside address, and no launcher. Forks and builds from source get exactly
 that. horizon-plain becomes a plain build of this repository.
 
@@ -184,12 +244,13 @@ themselves, or stays a cfg-gated module linked into the official build. None mov
 - zoom (OptiFine-style), keystrokes and FPS overlays, own name tag;
 - Mouse Tweaks controls, sorting, scroll-wheel settings, smooth chat;
 - auto-reconnect, UI-sound channels, the music page;
-- splitscreen, PvP & HUD presets, Replay Studio, the AI agent page;
+- the PvP & HUD presets and widgets, the AI agent page;
 - the Horizon Settings menu itself, the advanced menu that hosts them;
 - the renderer's extras: fullbright, dynamic lights, hidden block-break particles;
 - chunk pregeneration.
 
-The minimap already moved to a native mod ([extras.md](extras.md#moved-to-native-mods)).
+The minimap already moved to a native mod ([extras.md](extras.md#moved-to-native-mods)). Splitscreen, Replay
+Studio and controllers are not extras: they are platform ([above](#controllers-splitscreen-replays-and-ui-pages)).
 
 ## File size
 
@@ -303,16 +364,16 @@ mechanical steps (checks, M1–M4) continue meanwhile. M5 and M6 wait for that r
 | Step | What | Removes | State |
 |---|---|---|---|
 | 1 | This page, first version | | #12979, merged |
-| 2 | Layer check in CI and pr_ready, with the PR template's checklist | | #12983 |
-| 3 | Address check in CI and pr_ready | | #12990 |
-| 4 | File-size check in CI and pr_ready | | #13015 |
-| 2b | The portable crates' rule in the layer check ([Portable crates](#portable-crates)) | | #13002 (NikitaMGrimm) |
-| M1 | `horizon-addresses`, the address list file; the Horizon crates read it | 7 address entries | #12993 |
-| M2 | `horizon-system` (engine): the hardware probes leave `horizon-telemetry`, and the crash report and GPU info read them there | prepares M3 | |
-| M3 | The renderer's telemetry and benchmark modules leave `horizon-client-render` for a Horizon crate, through a stats and crash-report extension point | render → telemetry, bench | |
-| M4 | Cosmetics leave `horizon-client-render`: their settings lines through a registered settings section, the tab list's mark through a name-decoration callback | render → cosmetics | |
+| 2 | Layer check in CI and pr_ready, with the PR template's checklist | | #12983, merged |
+| 3 | Address check in CI and pr_ready | | #12990, merged |
+| 4 | File-size check in CI and pr_ready | | #13015, merged |
+| 2b | The portable crates' rule in the layer check ([Portable crates](#portable-crates)) | | #13002 (NikitaMGrimm), merged |
+| M1 | `horizon-addresses`, the address list file; the Horizon crates read it | 7 address entries | #12993, merged |
+| M2 | `horizon-system` (engine): the hardware probes leave `horizon-telemetry`, and the crash report and GPU info read them there; `horizon-platform`, the platform's public API, re-exports them for the Horizon layer | prepares M3 | #13058, merged |
+| M3 | The renderer's telemetry module leaves `horizon-client-render` for `horizon-client-lib`, with Horizon's other in-game parts; the renderer offers the adapter (`gfx::adapter`) and a crash-report hook (`crash::on_report`) | render → telemetry, bench | #13060 |
+| M4 | Cosmetics leave `horizon-client-render`: the tab list's mark through a name-decoration callback (#13094); the settings lines leave with `extras.rs` and `extras_ui.rs` in M5, as clients of the UI page API | render → cosmetics | #13094, then M5 |
 | M5 | Horizon's in-game parts (extras, cosmetics, emotes, Discord, Friends, ping, benchmark upload, official server) leave `horizon-client` for Horizon crates linked into the official build through platform hooks | client, client-lib → cosmetics, friends, telemetry, bench | after review |
-| M6 | The engine crates stop depending on platform crates: the renderer's shader-pack, pack-format, HDR and theme code moves behind engine extension points; the mod host and agent control move to platform crates; the launcher and `horizon-server` reach the engine through platform API | the 29 engine → platform and 7 Horizon → engine exceptions | after review; HDR's part with NikitaMGrimm, below |
+| M6 | The engine crates stop depending on platform crates: the renderer's shader-pack, pack-format, HDR and theme code moves behind engine extension points; the mod host and agent control move to platform crates; controllers, splitscreen, Replay Studio and the UI page API move to platform crates on the engine's input-source, compositor and screen hooks; the launcher and `horizon-server` reach the engine through platform API | the 29 engine → platform and 7 Horizon → engine exceptions | after review; HDR's part with NikitaMGrimm, below |
 | P | Optional, longer: gameplay into the portable crates. `Game` holds the world and its presentation (renderer, screens, particles, sound): split its state module by module, turn gameplay's direct particle and sound calls into level events as vanilla's server sends them, then move each clean module into a portable crate | | any time, small PRs |
 | R | The Horizon layer moves to its own repository and ships in every official download (the table above) | | after the split, Ludovic's call |
 

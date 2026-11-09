@@ -6,7 +6,7 @@ SectionStorage.prefetch	skip:java		async prefetch of POI files; nothing is loade
 SectionStorage.unpackChunk	missing		minor: POI region files are never read back; POI come from blocks (poi_sections.rs), so saved POI claims are not restored
 SectionStorage.tryRead	missing		minor: POI region files are never read back; POI come from blocks (poi_sections.rs), so saved POI claims are not restored
 SectionStorage.writeChunk	port	crates/horizon-client/src/save.rs::SaveDir::save_poi	queues the chunk's POI records to the region writer; claims kept by resolve_poi
-SectionStorage.setDirty	inline	crates/horizon-client/src/game.rs::Game::update_world	the chunk modified list marks chunks to save together with their POI
+SectionStorage.setDirty	inline	crates/horizon-client/src/game/world_update.rs::Game::update_world	the chunk modified list marks chunks to save together with their POI
 SectionStorage.PackedChunk.parse	missing		minor: POI region files are never read back, so POI ticket claims are not restored on load
 SerializableChunkData.parse	port	crates/horizon-client/src/save.rs::decode_column	gap: minor: entity tags are read by Persistent::load (load_entities), not here
 SerializableChunkData.logErrors	skip:debug		logs load problems; Horizon warns with log::warn where a problem is found

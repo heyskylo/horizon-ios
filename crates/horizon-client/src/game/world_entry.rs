@@ -187,7 +187,7 @@ impl Game<'_> {
     }
     /// The enchantments item names and tooltips read: a server's, with the
     /// entries its data packs add, else the world's.
-    pub(super) fn enchantments(&self) -> &horizon_client::enchant::Enchantments {
+    pub(super) fn enchantments(&self) -> &Arc<horizon_client::enchant::Enchantments> {
         match self.remote.as_ref().and_then(|r| r.enchantments.as_ref()) {
             Some(e) => e,
             None => &self.stations().enchantments,
