@@ -1072,8 +1072,6 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 #[path = "native_screen_observer.rs"]
 mod screen_observer;
 pub(super) use screen_observer::ObservedScreen;
-#[cfg(test)]
-use screen_observer::observed_overlay_id;
 
 /// `Level.setBlock`'s flags, for the `native_set_block_property` helpers:
 /// `flags::UPDATE_CLIENTS` as a vanilla crop grows, `flags::UPDATE_ALL` as a
