@@ -8,6 +8,7 @@ pub mod animate_tick;
 pub mod arrows;
 pub mod bed_geometry;
 pub mod block_contact;
+pub mod parallel;
 pub mod powder_snow;
 pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, autotune, ban_notice, bidi, biome, block_edit,

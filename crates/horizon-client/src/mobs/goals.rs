@@ -21,7 +21,7 @@ pub struct Cx<'a, 'w> {
     pub lr: &'a mut LegacyRandom,
     pub events: &'a mut Vec<MobEvent>,
 }
-pub trait Goal: std::fmt::Debug {
+pub trait Goal: std::fmt::Debug + Send + Sync {
     fn flags(&self) -> u8;
     /// A goal that draws its first start delay in its constructor (a schooling fish's
     /// `FollowFlockLeaderGoal`): the delay again, when the mob's random is seeded afterwards.
