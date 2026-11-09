@@ -259,9 +259,28 @@ pub enum ItemSplash {
         velocity: [f64; 3],
     },
 }
-/// `Entity.doWaterSplashEffect` for a dropped item.
+/// `Entity.doWaterSplashEffect` of an entity with no rider, `width` wide, at
+/// `position` moving at `velocity` (a dropped item, a firework rocket).
+pub fn water_splash_effect(
+    position: Vec3,
+    velocity: Vec3,
+    width: f32,
+    random: &mut horizon_core::random::LegacyRandom,
+    splash: &mut impl FnMut(ItemSplash),
+) {
+    let mut water = ItemWater {
+        position,
+        velocity,
+        width,
+        random,
+        splash,
+    };
+    let _ = horizon_world::water_splash::water_splash(&mut water, 1_000_000);
+}
 struct ItemWater<'a, F> {
-    item: &'a mut ItemEntity,
+    position: Vec3,
+    velocity: Vec3,
+    width: f32,
     random: &'a mut horizon_core::random::LegacyRandom,
     splash: &'a mut F,
 }
@@ -274,7 +293,7 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
         Ok(None)
     }
     fn velocity(&mut self, _: ()) -> Result<Vec3, Self::Error> {
-        Ok(self.item.velocity)
+        Ok(self.velocity)
     }
     fn splash_sound(&mut self, _: bool) -> Result<(), Self::Error> {
         Ok(())
@@ -286,19 +305,15 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
         Ok(self.random.next_double())
     }
     fn play_sound(&mut self, _: (), volume: f32, pitch: f32) -> Result<(), Self::Error> {
-        let at = [
-            self.item.position.x,
-            self.item.position.y,
-            self.item.position.z,
-        ];
+        let at = [self.position.x, self.position.y, self.position.z];
         (self.splash)(ItemSplash::Sound { at, volume, pitch });
         Ok(())
     }
     fn position(&self) -> Vec3 {
-        self.item.position
+        self.position
     }
     fn width(&self) -> f32 {
-        ItemEntity::WIDTH as f32
+        self.width
     }
     fn particle(
         &mut self,
@@ -393,8 +408,9 @@ impl ItemEntity {
         border: Option<&BorderGeometry>,
         blocks: Option<&BoundMovementProperties>,
     ) -> bool {
+        let before = self.velocity;
         let (water, lava) = self.update_fluids(world, fluids);
-        self.water_entry(water > 0.0, self.ticks == 0, &mut |_| {});
+        self.water_entry(water > 0.0, self.ticks == 0, before, &mut |_| {});
         self.lava_fall(lava > 0.0);
         let step = self.tick_move(
             world,
@@ -415,8 +431,9 @@ impl ItemEntity {
             &mut self.velocity,
         );
         let alive = self.tick_settle(world, facts, no_physics, step);
+        let before = self.velocity;
         let (water, _) = self.update_fluids(world, fluids);
-        self.water_entry(water > 0.0, false, &mut |_| {});
+        self.water_entry(water > 0.0, false, before, &mut |_| {});
         alive
     }
 }
@@ -560,11 +577,13 @@ impl ItemEntity {
         )
     }
     /// `Entity.updateFluidInteraction`: water resets the fall, and entering
-    /// it after the first tick runs `doWaterSplashEffect`.
+    /// it after the first tick runs `doWaterSplashEffect` at `velocity`, the
+    /// motion before the fluids' currents push it.
     pub fn water_entry<F: FnMut(ItemSplash)>(
         &mut self,
         in_water: bool,
         first_tick: bool,
+        velocity: Vec3,
         splash: &mut F,
     ) {
         if in_water {
@@ -576,14 +595,8 @@ impl ItemEntity {
                     .wrapping_mul(0x5DEECE66D)
                     .wrapping_add(self.ticks as i64),
             );
-            let _ = horizon_world::water_splash::water_splash(
-                &mut ItemWater {
-                    item: self,
-                    random: &mut random,
-                    splash,
-                },
-                1_000_000,
-            );
+            let width = Self::WIDTH as f32;
+            water_splash_effect(self.position, velocity, width, &mut random, splash);
         }
         self.was_touching_water = in_water;
     }

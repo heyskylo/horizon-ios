@@ -150,10 +150,41 @@ pub fn apply_effects_from_blocks(
     velocity: &mut Vec3,
     fall_distance: &mut f64,
     surfaces: &mut Vec<BlockPos>,
+    block: impl FnMut(BlockPos) -> Inside,
+) -> Option<Vec3> {
+    let effects = Effects {
+        bounds,
+        from,
+        to,
+        original,
+    };
+    apply_effects_from_blocks_of(effects, velocity, fall_distance, surfaces, block)
+}
+/// A move [`apply_effects_from_blocks_of`] reads the blocks of: an entity of
+/// `bounds` (its box at a position) from `from` to `to`, `original` as there.
+pub struct Effects<B> {
+    pub bounds: B,
+    pub from: Vec3,
+    pub to: Vec3,
+    pub original: Option<Vec3>,
+}
+/// [`apply_effects_from_blocks`] for an entity of any size.
+pub fn apply_effects_from_blocks_of(
+    move_: Effects<impl Fn(Vec3) -> Aabb + Copy>,
+    velocity: &mut Vec3,
+    fall_distance: &mut f64,
+    surfaces: &mut Vec<BlockPos>,
     mut block: impl FnMut(BlockPos) -> Inside,
 ) -> Option<Vec3> {
+    let Effects {
+        bounds,
+        from,
+        to,
+        original,
+    } = move_;
     let mut stuck = None;
     inside_blocks(
+        bounds,
         from,
         to,
         original,
@@ -203,6 +234,7 @@ pub fn apply_effects_from_blocks(
 /// block's `getEntityInsideCollisionShape`; only a block it was inside is not
 /// visited again.
 fn inside_blocks(
+    bounds: impl Fn(Vec3) -> Aabb,
     from: Vec3,
     to: Vec3,
     original: Option<Vec3>,

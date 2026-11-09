@@ -1,6 +1,6 @@
 //! Firework rockets: `Projectile` and `FireworkRocketEntity` save data.
 use super::{
-    Base, Tag, Vec3, Who, flag, item_from_nbt, item_to_nbt, motion, number, position, put,
+    Base, Tag, Vec3, Who, flag, float, item_from_nbt, item_to_nbt, motion, number, position, put,
     rotation, uuid_from_tag,
 };
 
@@ -23,6 +23,8 @@ pub struct RocketNbt {
     pub has_been_shot: bool,
     /// `Entity.isSilent`: no launch sound.
     pub silent: bool,
+    /// `Entity.load`'s fall_distance.
+    pub fall_distance: f64,
 }
 pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<RocketNbt> {
     let owner = uuid_from_tag(tag.get("Owner"));
@@ -39,6 +41,7 @@ pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<R
         rotation: rotation(tag),
         has_been_shot: flag(tag, "HasBeenShot"),
         silent: flag(tag, "Silent"),
+        fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
     })
 }
 
@@ -57,6 +60,8 @@ pub struct RocketSave<'a> {
     /// `Entity.onGround`, from the rocket's last `Entity.move`.
     pub on_ground: bool,
     pub has_been_shot: bool,
+    /// `Entity.fallDistance`.
+    pub fall_distance: f64,
 }
 pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = Base {
@@ -66,7 +71,7 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
         motion: r.motion,
         rotation: r.rotation,
         on_ground: r.on_ground,
-        fall_distance: 0.0,
+        fall_distance: r.fall_distance,
     }
     .tag(raw);
     for (key, value) in [
