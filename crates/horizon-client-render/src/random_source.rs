@@ -33,9 +33,11 @@ thread_local! {
 /// left out too and each thread steps a uniquifier of its own, as the parity
 /// oracles' agent makes vanilla do (docs/parity-workflow.md, "Randoms that
 /// repeat"): the client's draws then don't shift the server thread's.
+static UNIQUIFIER: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(UNIQUIFIER_START);
+
 pub fn unique_seed() -> i64 {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    static UNIQUIFIER: AtomicI64 = AtomicI64::new(UNIQUIFIER_START);
+    use std::sync::atomic::Ordering;
     if test_seeds() {
         return THREAD_UNIQUIFIER.with(|u| {
             u.set(u.get().wrapping_mul(UNIQUIFIER_STEP));
@@ -50,7 +52,7 @@ pub fn unique_seed() -> i64 {
             Err(v) => current = v,
         }
     };
-    if still() {
+    if still() || PINNED.load(Ordering::Relaxed) {
         return next;
     }
     let nanos = std::time::SystemTime::now()
@@ -78,6 +80,28 @@ fn test_seeds() -> bool {
         on
     })
 }
+
+/// Whether `HORIZON_TEST_SEEDS` is on: unseeded randoms repeat, in the order each thread takes
+/// them (the parallel mob loop then stays on one thread, so the order holds).
+pub fn repeating_per_thread() -> bool {
+    test_seeds()
+}
+
+/// The shared uniquifier, to take it back after work that is run twice to compare (the parallel
+/// mob loop's verify mode): with `HORIZON_STILL` both runs then take the same seeds.
+pub fn uniquifier() -> i64 {
+    UNIQUIFIER.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Put the shared uniquifier back to what [`uniquifier`] read.
+pub fn restore_uniquifier(value: i64) {
+    UNIQUIFIER.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+/// Leave the clock out of new seeds while `on` (a comparison of two runs of the same work, as
+/// under `HORIZON_STILL`, without holding the game's clock).
+pub fn pin_seeds(on: bool) {
+    PINNED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+static PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// A harness's sync step: the calling thread's uniquifier from now on. Only
 /// under `HORIZON_TEST_SEEDS`, where the clock is left out.

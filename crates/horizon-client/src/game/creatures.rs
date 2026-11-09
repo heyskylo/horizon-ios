@@ -4,6 +4,7 @@
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
 mod mob_geometry;
 mod mob_group;
+mod mob_islands;
 mod prep;
 mod projectile_world;
 mod pufferfish_player;
@@ -181,6 +182,33 @@ fn pickable_projectile_hitboxes_into(
             .filter(|(j, q)| *j != skip && alive[*j] && super::deflect::redirectable(q))
             .map(|(j, q)| (Who::Mob(PICKABLE_PROJECTILE_IDS + j as u32), q.aabb())),
     );
+}
+
+/// `ServerLevel.getCurrentDifficultyAt`, reading only the world: also on the mob tick's helper
+/// threads.
+fn difficulty_reader(
+    world: &horizon_client::world::World,
+) -> impl Fn([f64; 3]) -> spawning::LocalDifficulty + Sync + '_ {
+    move |at| {
+        use horizon_world::food::Difficulty;
+        let base = match world.health_rules.difficulty {
+            Difficulty::Peaceful => 0,
+            Difficulty::Easy => 1,
+            Difficulty::Normal => 2,
+            Difficulty::Hard => 3,
+        };
+        let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
+        let (inhabited, moon) = if world.chunks.contains_key(&key) {
+            let phase = world.day_time.div_euclid(24000).rem_euclid(8) as usize;
+            (
+                world.inhabited.get(&key).copied().unwrap_or(0),
+                spawning::MOON_BRIGHTNESS[phase],
+            )
+        } else {
+            (0, 0.0)
+        };
+        spawning::LocalDifficulty::new(base, world.day_time, inhabited, moon)
+    }
 }
 
 #[cfg(test)]
@@ -1072,24 +1100,7 @@ impl Game<'_> {
     }
     /// `ServerLevel.getCurrentDifficultyAt`.
     pub(super) fn local_difficulty(&self, at: [f64; 3]) -> spawning::LocalDifficulty {
-        use horizon_world::food::Difficulty;
-        let base = match self.world.health_rules.difficulty {
-            Difficulty::Peaceful => 0,
-            Difficulty::Easy => 1,
-            Difficulty::Normal => 2,
-            Difficulty::Hard => 3,
-        };
-        let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
-        let (inhabited, moon) = if self.world.chunks.contains_key(&key) {
-            let phase = self.world.day_time.div_euclid(24000).rem_euclid(8) as usize;
-            (
-                self.world.inhabited.get(&key).copied().unwrap_or(0),
-                spawning::MOON_BRIGHTNESS[phase],
-            )
-        } else {
-            (0, 0.0)
-        };
-        spawning::LocalDifficulty::new(base, self.world.day_time, inhabited, moon)
+        difficulty_reader(&self.world)(at)
     }
     /// Generation's animals for the chunks generated since, once lit: chunk
     /// generation places them whether the level ticks or not.
@@ -1234,8 +1245,6 @@ impl Game<'_> {
                 players.iter().map(|p| (p.position, p.spectator)),
             );
             let nearest = prep::MobsNearest::new(&nearest, &mobs, single_player.is_none());
-            let mut despawn_w = base.despawn_view();
-            let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             let shared = mob_group::Shared {
                 uuid,
                 level_id,
@@ -1253,45 +1262,36 @@ impl Game<'_> {
                 ticked,
                 targets,
             };
-            let mut group = mob_group::Group::new(mobs.into(), snapshot, start);
-            for i in 0..group.mobs.len() {
-                let position = group.mobs[i].position;
-                let (bx, bz) = (position.x.floor() as i32, position.z.floor() as i32);
-                let seen_guest = group.bind_guest(i);
-                if !base.world.loaded(bx, bz) {
-                    group.unloaded(i);
-                    continue;
+            let difficulty = difficulty_reader(&self.world);
+            let mut turns = mob_group::Turns {
+                base: &base,
+                despawn: base.despawn_view(),
+                ticking: &ticking,
+                nearest: &nearest,
+                single_player,
+                canceled: &|id| round.canceled(id),
+                difficulty: &difficulty,
+                cached_difficulty: None,
+            };
+            // The mobs in islands on several threads (creatures/mob_islands.rs), or all of them
+            // in one group, in order, on this one.
+            let islands = mob_islands::Islands {
+                uuid: self
+                    .player
+                    .is_some()
+                    .then_some(self.level.player_uuid)
+                    .flatten(),
+                mods: round.listening() || !horizon_client::mod_api::mods().is_empty(),
+                ticking: &|| Box::new(self.entity_ticking_area()),
+            };
+            let mut group = match islands.plan(&mobs, &snapshot, &turns) {
+                Some(plan) => islands.run(plan, mobs.into(), snapshot, start, &mut turns, &shared),
+                None => {
+                    let mut group = mob_group::Group::new(mobs.into(), snapshot, start);
+                    group.run(&mut turns, &shared, None);
+                    group
                 }
-                let nearest_player = single_player.unwrap_or_else(|| nearest.at(i, position));
-                // ServerLevel.tick: every loaded entity checks despawning, but
-                // only those in entity-ticking chunks (within the simulation
-                // distance) tick.
-                if !ticking(bx, bz) {
-                    despawn_w.nearest_player = nearest_player;
-                    group.rest(i, &despawn_w);
-                    continue;
-                }
-                let controlling = group.controlling(i);
-                // A mod canceled its tick: it stays as it is.
-                if round.canceled(group.mobs[i].id) {
-                    group.keep.push(true);
-                    continue;
-                }
-                // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
-                // not the local player's (a server thread has no player).
-                let chunk_key = (bx >> 4, bz >> 4);
-                let difficulty = match cached_difficulty {
-                    Some((key, difficulty)) if key == chunk_key => difficulty,
-                    _ => {
-                        let difficulty =
-                            self.local_difficulty([position.x, position.y, position.z]);
-                        cached_difficulty = Some((chunk_key, difficulty));
-                        difficulty
-                    }
-                };
-                let player = (seen_guest, nearest_player, controlling);
-                group.tick(i, player, difficulty, &base, &shared);
-            }
+            };
             // Targets changed after the mob's own tick (another mob's alert):
             // heard now, and a cancel puts the old one back before its next tick.
             for (i, m) in group.mobs.iter_mut().enumerate() {
