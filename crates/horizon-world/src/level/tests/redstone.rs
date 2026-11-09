@@ -667,3 +667,51 @@ fn a_redstone_lamp_lights_at_once_and_goes_dark_exactly_four_ticks_after_its_pow
         "power returned before the delay ran out"
     );
 }
+
+/// `HopperBlock.checkPoweredState`: `ENABLED` is `!hasNeighborSignal`, so power at
+/// any of the hopper's six sides switches it off at once, and removing the power
+/// switches it back on. Unlike a piston, power diagonally above does nothing.
+#[test]
+fn a_hopper_is_disabled_by_power_on_any_of_its_six_sides_and_nothing_else() {
+    let sides: [((i32, i32, i32), bool, &str); 8] = [
+        ((0, 1, 0), false, "above"),
+        ((0, -1, 0), false, "below"),
+        ((1, 0, 0), false, "east"),
+        ((-1, 0, 0), false, "west"),
+        ((0, 0, 1), false, "south"),
+        ((0, 0, -1), false, "north"),
+        (
+            (1, 1, 0),
+            true,
+            "diagonally above: a hopper has no quasi-connectivity",
+        ),
+        ((1, 0, 1), true, "diagonally beside"),
+    ];
+    for ((dx, dy, dz), enabled, what) in sides {
+        let mut w = world!();
+        let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(dx, 5 + dy, dz));
+        w.set(at, w.id("hopper", &[("facing", "down")]));
+        assert_eq!(w.prop(at, "enabled"), "true", "unpowered hopper");
+        w.set(source, w.id("redstone_block", &[]));
+        assert_eq!(
+            w.prop(at, "enabled"),
+            if enabled { "true" } else { "false" },
+            "power {what}"
+        );
+        w.set(source, w.b().air());
+        assert_eq!(w.prop(at, "enabled"), "true", "power gone ({what})");
+    }
+
+    // Placed beside power, `onPlace` runs the same check.
+    let mut w = world!();
+    w.set(BlockPos::new(1, 5, 0), w.id("redstone_block", &[]));
+    w.set(
+        BlockPos::new(0, 5, 0),
+        w.id("hopper", &[("facing", "down")]),
+    );
+    assert_eq!(
+        w.prop(BlockPos::new(0, 5, 0), "enabled"),
+        "false",
+        "placed beside power"
+    );
+}
