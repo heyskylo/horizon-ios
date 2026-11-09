@@ -104,7 +104,7 @@ fn placements(
             NativeStructureBlock {
                 pos: std::array::from_fn(|i| relative[i] + at[i]),
                 state: transforms.rotate(transforms.mirror(block.state, mirror), rotation),
-                nbt: block.nbt.clone(),
+                nbt: block.nbt.as_deref().cloned(),
             }
         })
         .collect();
