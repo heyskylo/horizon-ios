@@ -275,9 +275,42 @@ def vehicle_cases(states, seed, only):
         yield case
 
 
+def egg_and_pickup_cases(states, only):
+    if not only or only in 'minecraft:pig_spawn_egg':
+        for facing in DIRECTIONS:
+            dx, dy, dz = STEP[facing]
+            for patch, spawned, count in [(None, 'pig', 2), ('"minecraft:entity_data":{id:"minecraft:cow"}', 'cow', 2),
+                                          ('"minecraft:entity_data":{id:"minecraft:sheep"}', 'sheep', 2),
+                                          ('"minecraft:entity_data":{id:"cow"}', 'cow', 1),
+                                          ('"!minecraft:entity_data":{}', None, 2)]:
+                item = plain('pig_spawn_egg', count) if patch is None else (
+                    '{id:"minecraft:pig_spawn_egg",count:%d,components:{%s}}' % (count, patch))
+                cells = [[0, 0, 0, states.get('dispenser', facing=facing, triggered='false')]]
+                if (dx, dy - 1, dz) != (0, 0, 0):
+                    cells.append([dx, dy - 1, dz, states.get('stone')])
+                yield dict(seed=1, time=0, mode='dispense', pos=[0, 0, 0], cells=cells,
+                           items=[[0, 0, 0, 0, item]],
+                           expected_spawn=['minecraft:' + spawned] if spawned else ['minecraft:item'])
+    if not only or only in 'minecraft:shears mooshroom_pickup':
+        for kind, brown in [('mooshroom', False), ('mooshroom', True), ('sheep', False)]:
+            for baby in (False, True):
+                entity = dict(type='minecraft:' + kind, pos=[0.5, 0.0, -0.5], yaw=0.0)
+                if baby:
+                    entity['baby'] = True
+                if brown:
+                    entity['brown'] = True
+                yield dict(seed=1, time=0, mode='dispense', pos=[0, 0, 0],
+                           cells=[[0, 0, 0, states.get('dispenser', facing='north', triggered='false')]],
+                           items=[[0, 0, 0, 0, plain('shears')]], pickup_delay=True,
+                           expected_pickups=0 if baby else (5 if kind == 'mooshroom' else -1),
+                           expected_pickup_delay=0 if kind == 'mooshroom' else 10,
+                           entities=[entity])
+
+
 def cases(facts, count, seed, only):
     rng = random.Random(seed)
     states = States(facts)
+    yield from egg_and_pickup_cases(states, only)
     dragon_egg = plain('ender_dragon_spawn_egg')
     if not only or only in dragon_egg:
         # Both the unobstructed position and a fractional collision height must
@@ -380,9 +413,13 @@ FINALIZED = ('_spawn_egg', 'salmon_bucket', 'cod_bucket', 'pufferfish_bucket', '
 
 
 def finalizes(case):
+    if 'expected_spawn' in case:
+        return any(kind != 'minecraft:item' for kind in case['expected_spawn'])
     return any(any(tag in i[4] for tag in FINALIZED) for i in case['items'] if i[:3] == [0, 0, 0])
 
 def spawned_type(case):
+    if case.get('expected_spawn'):
+        return case['expected_spawn'][0]
     item = next(i[4] for i in case['items'] if i[:3] == [0, 0, 0]).split('"')[1].split(':')[1]
     return 'minecraft:' + item.removesuffix('_spawn_egg').removesuffix('_bucket')
 
@@ -481,6 +518,16 @@ def main():
         if a and a[0].startswith('error'):
             errors.setdefault(a[0], []).append(case)
             continue
+        for side, lines in [('vanilla', a), ('horizon', b)]:
+            if 'expected_spawn' in case:
+                spawned = [line.split()[1] for line in lines if line.startswith('N ')]
+                assert spawned == case['expected_spawn'], (side, case, spawned)
+            if case.get('pickup_delay'):
+                pickups = [line for line in lines if line.startswith('pickup ')]
+                expected = case['expected_pickups']
+                assert (len(pickups) == expected if expected >= 0 else bool(pickups)), (side, case, pickups)
+                assert all(int(line.rsplit(' ', 1)[1]) == case['expected_pickup_delay']
+                           for line in pickups), (side, case, pickups)
         if finalizes(case):
             unseeded += 1
             # Riders finalizeSpawn adds (a baby zombie's chicken, a spider's
