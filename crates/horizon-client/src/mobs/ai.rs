@@ -815,6 +815,9 @@ pub fn tick(
     if m.species() == Species::Panda {
         super::panda::tick(m, w, events);
     }
+    if m.species() == Species::Villager {
+        super::villager::tick(m, w.game_time);
+    }
     aquatic::school_tick(m, w, level_random);
     // Dolphin.tick: after super.tick, NoAI restores the species maximum.
     if m.no_ai && m.species() == Species::Dolphin {

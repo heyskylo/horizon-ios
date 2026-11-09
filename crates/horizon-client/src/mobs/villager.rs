@@ -196,17 +196,18 @@ pub fn sleep_pose(m: &Mob) -> Option<(f32, [f32; 2])> {
         _ => return None,
     })
 }
-/// `Villager.tick`: the unhappy counter and the gossip decay; a hurt
-/// sleeper wakes up (`LivingEntity.hurtServer`; the `checkBedExists` wake
-/// runs earlier in `LivingEntity.tick`, for AI-less mobs too), and lies the
-/// way its bed faces (`getBedOrientation`). The brain does the rest.
-pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+/// `Villager.tick` after `super.tick()`, with or without AI: the unhappy
+/// counter counts down and the gossip decays once a day.
+pub fn tick(m: &mut Mob, now: i64) {
     if m.extra.ints[0] > 0 {
         m.extra.ints[0] -= 1;
     }
-    if m.species() == Species::Villager {
-        ext_mut(m).maybe_decay(w.game_time);
-    }
+    ext_mut(m).maybe_decay(now);
+}
+/// A hurt sleeper wakes up (`LivingEntity.hurtServer`; the `checkBedExists`
+/// wake runs earlier in `LivingEntity.tick`, for AI-less mobs too), and lies
+/// the way its bed faces (`getBedOrientation`). The brain does the rest.
+pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if sleeping(m) {
         let bed = sleeping_pos(m).filter(|p| w.block_name(p[0], p[1], p[2]).ends_with("_bed"));
         if let Some(p) = bed {

@@ -4539,6 +4539,37 @@ def cube_saved_age():
 
 
 
+def villager_gossip_decay():
+    """Villager.tick decays gossip with or without AI (#13619)."""
+    # A negative LastGossipDecay is due on the first tick at any game time.
+    cases = [
+        ('noai_new', 'NoAI:1b', None),
+        ('noai_pos', 'NoAI:1b,LastGossipDecay:-30000L', ('minor_positive', 25, 24)),
+        ('noai_neg', 'NoAI:1b,LastGossipDecay:-30000L', ('minor_negative', 100, 80)),
+        ('ai_pos', 'LastGossipDecay:-30000L', ('minor_positive', 25, 24)),
+    ]
+    ops = setup('/scoreboard objectives add h13619 dummy')
+    for i, (name, fields, gossip) in enumerate(cases):
+        if gossip:
+            fields += f',Gossips:[{{Target:[I;1,2,3,4],Type:"{gossip[0]}",Value:{gossip[1]}}}]'
+        ops += setup(f'/summon villager {2.5 + 3 * i} 200 2.5 {{UUID:[I;13619,0,0,{i + 1}],'
+                     f'Tags:["h13619_{name}"],NoGravity:1b,PersistenceRequired:1b,{fields}}}')
+    ops.append({'op': 'tick', 'n': 1})
+    for name, fields, gossip in cases:
+        target = f'@e[tag=h13619_{name},limit=1]'
+        ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+        # maybeDecayGossip stamps this tick's game time.
+        ops += setup('/execute store result score #now h13619 run time query gametime',
+                     f'/execute store result score #decay h13619 run data get entity {target} LastGossipDecay')
+        ops.append(cmd('/execute if score #now h13619 = #decay h13619', expect_result=1))
+        if gossip:
+            ops.append(cmd(f'/data get entity {target} Gossips'))
+            ops.append(cmd(f'/execute if entity @e[tag=h13619_{name},nbt={{Gossips:[{{Type:"{gossip[0]}",Value:{gossip[2]}}}]}}]',
+                           expect_result=1))
+    ops += setup('/kill @e[type=villager]', '/scoreboard objectives remove h13619')
+    return ops
+
+
 def villager_wake_rotation():
     """Use the occupied bed through the live player route, then observe pose."""
     ops = setup('/fill 0 199 3 6 199 9 stone', '/gamemode survival', '/tp @s 4.5 200 4.5', '/time set noon')
@@ -7080,6 +7111,7 @@ def groups():
         ('summoned eye of ender', summoned_eye_of_ender()),
         ('awake villager saved position', awake_villager_saved_position()),
         ('villager wake rotation', villager_wake_rotation()),
+        ('villager gossip decay', villager_gossip_decay()),
         ('cube saved Age', cube_saved_age()),
         ('mob baby attribute reads', mob_baby_attribute_reads()),
         ('mob partial block suffocation', mob_partial_block_suffocation()),
