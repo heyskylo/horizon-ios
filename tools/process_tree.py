@@ -10,8 +10,8 @@ A harness that crashes, is killed or times out used to leave its games running: 
 - Windows: the process starts suspended, joins its own Job Object, then resumes, so whatever it starts joins the
   job too. When it exits, or is killed, the job ends the rest. The job is closed on exit
   (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE), so a runner that dies takes its harnesses' processes with it. A process
-  started with CREATE_BREAKAWAY_FROM_JOB (a build cache's server, say) may leave the job, as such a process
-  asks to outlive whoever started it.
+  started with CREATE_BREAKAWAY_FROM_JOB may leave the job. sccache's server doesn't ask to, so the runner starts
+  it first (start_build_server).
 
 Only the process and what it started are ever killed: nothing is found by name, and a process started elsewhere
 (a player's game, another runner's harness) is never in the group or job.
@@ -187,6 +187,32 @@ def ended(process):
         return False
     _release(process)
     return True
+
+
+BUILD_SERVERS = []  # their jobs stay open until this process ends, and end the servers then
+
+
+def start_build_server():
+    """Windows, with RUSTC_WRAPPER=sccache: start sccache's server now, in a job of this process's own.
+
+    Started by a harness's build instead, the server would join that harness's job and end with it, failing other
+    harnesses' builds midway ("forcibly closed", os error 10054). This one never idles out, so no build restarts it
+    inside a harness's job during the run, and ends with the runner. A server already running is used as it is
+    (it can still idle out mid-run). POSIX needs none of this: the server leaves the group (setsid) by itself.
+    """
+    wrapper = os.environ.get("RUSTC_WRAPPER", "")
+    if os.name != "nt" or os.path.splitext(os.path.basename(wrapper))[0].lower() != "sccache":
+        return
+    try:
+        starter = popen([wrapper, "--start-server"], env=dict(os.environ, SCCACHE_IDLE_TIMEOUT="0"),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return
+    starter.wait()
+    if getattr(starter, "job", None):
+        BUILD_SERVERS.append(starter)
+    elif starter.returncode == 0:  # it started one (exit 0), but no job would end it
+        subprocess.run([wrapper, "--stop-server"], capture_output=True)
 
 
 def _release(process):

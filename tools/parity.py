@@ -1208,6 +1208,7 @@ def worker_main(shared_local):
         return 0
     state = load_state()
     hasher = Hasher(state["hashes"])
+    process_tree.start_build_server()  # before any build here: the probe build's would start it otherwise
     built, errors = prebuild(first["prebuild"], default_build_jobs()) if first["prebuild"] else (True, "")
     executor = LocalExecutor(MACHINE_JOBS, int(memory_available() * 0.75), first["timeout"])
     send({"hello": {"jobs": MACHINE_JOBS, "memory": executor.memory_budget, "built": built, "errors": errors[-4000:]}})
@@ -1695,6 +1696,7 @@ def main():
     local = None
     try:
         if jobs:
+            process_tree.start_build_server()  # before any build here: the probe build's would start it otherwise
             print("Building probes...", flush=True)
             started = time.monotonic()
             built, errors = prebuild(artifacts, default_build_jobs())

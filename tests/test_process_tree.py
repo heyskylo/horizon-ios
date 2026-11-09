@@ -1,10 +1,13 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import unittest
+from unittest import mock
 
 from tools import process_tree
 
@@ -120,6 +123,39 @@ class ProcessTreeTests(unittest.TestCase):
             threading.Event().wait(0.05)
         runner.kill()  # TerminateProcess: no cleanup runs in the runner
         self.assertTrue(output.closed(30), "the runner's harness or its child outlived it")
+
+    @unittest.skipUnless(os.name == "nt", "POSIX: sccache's server leaves the group by itself")
+    def test_the_runner_starts_sccaches_server_in_a_job_of_its_own(self):
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        # A stand-in sccache: --start-server leaves a server running, as the real one does, and exits.
+        (directory / "server.py").write_text(textwrap.dedent("""
+            import os, pathlib, time
+            pathlib.Path(__file__).with_name("server.txt").write_text(f"{os.getpid()} {os.environ['SCCACHE_IDLE_TIMEOUT']}")
+            time.sleep(60)
+        """))
+        (directory / "sccache.cmd").write_text(f'@start "" /b "{sys.executable}" "%~dp0server.py"\n')
+        with mock.patch.dict(os.environ, {"RUSTC_WRAPPER": str(directory / "sccache.cmd")}):
+            process_tree.start_build_server()
+        starter = process_tree.BUILD_SERVERS.pop()
+        self.addCleanup(process_tree._release, starter)
+        for _ in range(600):
+            if (directory / "server.txt").exists() and (directory / "server.txt").read_text():
+                break
+            threading.Event().wait(0.05)
+        pid, idle = (directory / "server.txt").read_text().split()
+        self.assertEqual(idle, "0")  # it never idles out, so no harness's build restarts it in its own job
+        server = kernel32.OpenProcess(0x00100000, False, int(pid))  # SYNCHRONIZE
+        self.assertTrue(server)
+        self.addCleanup(kernel32.CloseHandle, server)
+        self.assertEqual(kernel32.WaitForSingleObject(server, 500), 0x102, "the server ended with its starter")
+        process_tree._release(starter)  # as when the runner ends
+        self.assertEqual(kernel32.WaitForSingleObject(server, 30000), 0, "the server outlived the runner's job")
 
 
 if __name__ == "__main__":
