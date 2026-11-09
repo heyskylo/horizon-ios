@@ -2821,7 +2821,7 @@ tick later with a command.
   `kind` its type) that fell `fall_distance` onto the farmland at `pos` is about to turn it to dirt, past vanilla's
   chance and checks (NeoForge's `FarmlandTrampleEvent`, Bukkit's `PlayerInteractEvent` `PHYSICAL` and
   `EntityInteractEvent`). Set `cancel` and the farmland and its crop stay; the fall damage is taken either way. Pressure
-  plates, tripwires and other blocks a player sets off by touching them are not heard yet. No `self`. Server-side.
+  plates and tripwires are `native_player_physical_trigger`. No `self`. Server-side.
 - **`native_projectile_world_border(dimension, entity, kind, pos, velocity, collide)`**: a thrown projectile (pearl,
   snowball, egg, potion...) inside the world border whose next step would end outside it, before 26.3 stops it on the
   border like a wall (MC-310476). A mod may change `pos` and `velocity`, or set `collide` false and it flies through
@@ -3592,6 +3592,12 @@ while no mod asks for it.
   sound when punched, used, or powered. Set `cancel` to silence it; when used to tune it, the note remains unchanged.
 - **`native_bell_ring(dimension, player, pos, cancel)`** (on `GameLevel`): a bell is about to ring. Set `cancel` to
   stop the ring and its raider reveal.
+- **`native_player_physical_trigger(dimension, player, pos, block, cancel)`** (on `GameLevel`): a player stands in a
+  pressure plate (wooden, stone, weighted) or a tripwire `block` at `pos` and would set it off (Bukkit's
+  `PlayerInteractEvent` with `Action.PHYSICAL`). Asked each time the block counts what is inside it, before the
+  effect, for every player in it. Set `cancel` and that player is not counted: the plate stays unpowered and the wire
+  untripped for them, while another player or mob still sets it off. Farmland and turtle eggs a player lands on are
+  `native_trample` and `native_entity_change_block_v2`; redstone ore, big dripleaf and sculk are not heard yet.
 - **`native_cauldron_level_changed(dimension, player, pos, from_level, to_level, reason, cancel)`** (on `GameLevel`):
   precipitation, dripstone, or a burning player being extinguished is about to change a cauldron's level. Set `cancel`
   to leave it as it was.

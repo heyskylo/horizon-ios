@@ -769,6 +769,10 @@ struct GameLevel<'w> {
     player_box: Option<([f64; 3], [f64; 3])>,
     /// The LAN guests in this level who trigger blocks (not spectators).
     guest_boxes: Vec<([f64; 3], [f64; 3])>,
+    /// Whose `guest_boxes` are, in order.
+    guest_box_uuids: Vec<u128>,
+    /// Whose `player_box` is: the acting player (`native_player_physical_trigger`).
+    player_box_uuid: u128,
     /// Other players that block placement during a guest turn, whose hub is
     /// borrowed out; None outside one, where `guest_boxes` are those players.
     building_player_boxes: Option<Vec<([f64; 3], [f64; 3])>>,
@@ -914,6 +918,52 @@ impl GameLevel<'_> {
     /// `LilyPadBlock.entityInside`: the boxes of the boats that can break a pad.
     fn boat_trigger_boxes(&self) -> impl Iterator<Item = Aabb> + '_ {
         self.entities.boats.iter().map(boats::Boat::bounds)
+    }
+    fn count_entities_for(
+        &self,
+        area: Aabb,
+        query: EntityQuery,
+        player_counts: impl Fn(u128) -> bool,
+    ) -> usize {
+        let hit = |(lo, hi): &([f64; 3], [f64; 3])| {
+            area.intersects(Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            ))
+        };
+        let carts = || self.cart_boxes.iter().filter(|b| hit(b)).count();
+        let others = || {
+            self.crystals
+                .iter()
+                .map(dragon::Crystal::bounds)
+                .chain(self.trigger_hooks.iter().map(|&(bounds, _)| bounds))
+                .chain(self.trigger_extras.iter().copied())
+                .filter(|b| area.intersects(*b))
+                .count()
+        };
+        let arrows = || self.arrow_boxes.iter().filter(|b| hit(b)).count();
+        let players = || {
+            let host = self.player_box.iter().map(|b| (self.player_box_uuid, b));
+            let guests = self.guest_box_uuids.iter().copied().zip(&self.guest_boxes);
+            host.chain(guests)
+                .filter(|(_, b)| hit(b))
+                .filter(|&(uuid, _)| player_counts(uuid))
+                .count()
+        };
+        match query {
+            EntityQuery::Minecart => carts(),
+            EntityQuery::Arrows => arrows(),
+            EntityQuery::Mobs => players() + self.count_triggers::<true>(area),
+            EntityQuery::Everything => players() + self.count_triggers::<false>(area) + others(),
+        }
+    }
+    /// Whether the mods let `player` physically set off the block `block` at `pos`.
+    fn allow_physical_trigger(&self, player: u128, pos: BlockPos, block: &str) -> bool {
+        let mut cancel = false;
+        if self.native_authoritative {
+            self.native_player_physical_trigger(self.dimension, player, pos, block, &mut cancel);
+        }
+        !cancel
     }
     /// How many entities in `area` press plates and tripwires, or with
     /// `LIVING` only the living ones; a constant so a list of other kinds
@@ -1685,36 +1735,20 @@ impl LevelAccess for GameLevel<'_> {
     /// the minecarts and the other entities that don't ignore block triggers,
     /// and for `EntityQuery::Arrows` the arrows.
     fn count_entities(&self, area: Aabb, query: EntityQuery) -> usize {
-        let hit = |(lo, hi): &([f64; 3], [f64; 3])| {
-            area.intersects(Aabb::new(
-                Vec3::new(lo[0], lo[1], lo[2]),
-                Vec3::new(hi[0], hi[1], hi[2]),
-            ))
-        };
-        let carts = || self.cart_boxes.iter().filter(|b| hit(b)).count();
-        let others = || {
-            self.crystals
-                .iter()
-                .map(dragon::Crystal::bounds)
-                .chain(self.trigger_hooks.iter().map(|&(bounds, _)| bounds))
-                .chain(self.trigger_extras.iter().copied())
-                .filter(|b| area.intersects(*b))
-                .count()
-        };
-        let arrows = || self.arrow_boxes.iter().filter(|b| hit(b)).count();
-        let players = || {
-            self.player_box
-                .iter()
-                .chain(&self.guest_boxes)
-                .filter(|b| hit(b))
-                .count()
-        };
-        match query {
-            EntityQuery::Minecart => carts(),
-            EntityQuery::Arrows => arrows(),
-            EntityQuery::Mobs => players() + self.count_triggers::<true>(area),
-            EntityQuery::Everything => players() + self.count_triggers::<false>(area) + others(),
-        }
+        self.count_entities_for(area, query, |_| true)
+    }
+    /// The plate or tripwire `block` at `pos` is set off by a player only when
+    /// the mods let them (`native_player_physical_trigger`).
+    fn count_entities_at(
+        &self,
+        pos: BlockPos,
+        block: &str,
+        area: Aabb,
+        query: EntityQuery,
+    ) -> usize {
+        self.count_entities_for(area, query, |player| {
+            self.allow_physical_trigger(player, pos, block)
+        })
     }
     fn emit(&mut self, event: LevelEvent) {
         match event {
@@ -4603,7 +4637,9 @@ impl Game<'_> {
                 (b.min_position().components(), b.max_position().components())
             })
             .collect();
-        let guest_boxes = self.lan_block_trigger_boxes();
+        let (guest_box_uuids, guest_boxes): (Vec<_>, Vec<_>) =
+            self.lan_block_trigger_boxes().into_iter().unzip();
+        let player_box_uuid = horizon_client::lan::playerdata::ints_uuid(self.acting_uuid());
         let building_player_boxes = self
             .lan_acting
             .is_some()
@@ -4698,6 +4734,8 @@ impl Game<'_> {
             thundering: thunder > 0.9,
             player_box,
             guest_boxes,
+            guest_box_uuids,
+            player_box_uuid,
             building_player_boxes,
             player_collision,
             biomes: world_biomes!(self),
@@ -5036,7 +5074,7 @@ impl Game<'_> {
         // and the arrows (the mobs and other entities are added in `with_level`
         // below).
         scratch.inside.clear();
-        let guests = self.lan_block_trigger_boxes();
+        let guests = self.lan_block_trigger_boxes().into_iter().map(|(_, b)| b);
         let boxes = self
             .player
             .iter()

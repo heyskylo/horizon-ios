@@ -75,6 +75,10 @@ pub(crate) struct TestLevel {
     pub shulker_closed: HashMap<BlockPos, bool>,
     /// The containers `container_open` reports as open.
     pub opened: HashSet<BlockPos>,
+    /// Players standing in every plate and tripwire, by UUID.
+    pub occupants: Vec<u128>,
+    /// Occupants a mod's physical-trigger hook cancels.
+    pub spared: HashSet<u128>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -99,10 +103,24 @@ impl TestLevel {
             opener_rechecks: Vec::new(),
             shulker_closed: HashMap::new(),
             opened: HashSet::new(),
+            occupants: Vec::new(),
+            spared: HashSet::new(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn count_entities_at(
+        &self,
+        _pos: BlockPos,
+        _block: &str,
+        _area: Aabb,
+        _query: EntityQuery,
+    ) -> usize {
+        self.occupants
+            .iter()
+            .filter(|p| !self.spared.contains(p))
+            .count()
+    }
     fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
         self.block_events_ready
     }
@@ -4177,5 +4195,43 @@ fn fresh_chunk_sculk_charge_does_not_wait_for_ticking_readiness() {
             if ticketed { 1 } else { 2 },
             "ticketed={ticketed}, ticking={ready}"
         );
+    }
+}
+
+/// A player the mods spare (`native_player_physical_trigger` cancelled) does not
+/// power a plate or trip a wire; any other occupant still does.
+#[test]
+fn a_cancelled_physical_trigger_leaves_plates_and_wires_unset() {
+    let pos = BlockPos::new(0, 1, 0);
+    for (name, props) in [
+        ("stone_pressure_plate", vec![("powered", "false")]),
+        ("oak_pressure_plate", vec![("powered", "false")]),
+        ("heavy_weighted_pressure_plate", vec![("power", "0")]),
+        ("tripwire", vec![("powered", "false")]),
+    ] {
+        let set = |w: &World<'_>| {
+            let state = w.get(pos);
+            let b = w.b();
+            if name.contains("weighted") {
+                b.table.int(state, b.props.power) > 0
+            } else {
+                b.table.bool(state, b.props.powered)
+            }
+        };
+        for (occupants, spared, expected) in [
+            (vec![1], vec![1], false),
+            (vec![1], vec![], true),
+            (vec![1, 2], vec![1], true),
+            (vec![], vec![], false),
+        ] {
+            // A fresh level each time: a tripped wire keeps a scheduled tick.
+            let mut w = world!();
+            let off = w.id(name, &props);
+            w.put(pos, off);
+            w.level.occupants = occupants.clone();
+            w.level.spared = spared.iter().copied().collect();
+            w.b().entity_inside(&mut w.level, &mut w.ticks, pos);
+            assert_eq!(set(&w), expected, "{name}: {occupants:?} minus {spared:?}");
+        }
     }
 }

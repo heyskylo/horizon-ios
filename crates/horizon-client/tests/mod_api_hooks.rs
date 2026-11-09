@@ -734,3 +734,57 @@ fn wind_burst_filter_preserves_order_and_context() {
     );
     assert_eq!(blocks, vec![[3, 70, -2], [2, 70, -2]]);
 }
+
+#[test]
+fn a_physical_trigger_hook_cancels_for_the_player_it_names() {
+    use horizon_client::mod_api::{
+        Flow, LevelHost, PlayerPhysicalTriggerEvent, dispatch_player_physical_trigger,
+    };
+    use horizon_core::position::BlockPos;
+    use horizon_world::{level::Dimension, registry::BlockStateId};
+    struct TestLevel;
+    impl LevelHost for TestLevel {
+        fn block_state(&self, _pos: [i32; 3]) -> BlockStateId {
+            BlockStateId(0)
+        }
+        fn is_client_side(&self) -> bool {
+            false
+        }
+        fn state_with_property(&self, _: BlockStateId, _: &str, _: &str) -> Option<BlockStateId> {
+            None
+        }
+    }
+    struct Claims;
+    impl Hooks for Claims {
+        fn player_physical_trigger(
+            &self,
+            _level: &dyn LevelHost,
+            event: &mut PlayerPhysicalTriggerEvent<'_>,
+        ) -> Flow {
+            assert_eq!(event.pos, BlockPos::new(3, 64, -2));
+            assert_eq!(event.block, "minecraft:stone_pressure_plate");
+            if event.player == 7 {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Claims)];
+    let ask = |mods: &[Box<dyn Hooks>], player| {
+        let mut cancel = false;
+        dispatch_player_physical_trigger(
+            &TestLevel,
+            mods,
+            Dimension::Overworld,
+            player,
+            BlockPos::new(3, 64, -2),
+            "minecraft:stone_pressure_plate",
+            &mut cancel,
+        );
+        cancel
+    };
+    assert!(ask(&mods, 7), "the named player does not set it off");
+    assert!(!ask(&mods, 8), "another player still does");
+    assert!(!ask(&[], 7), "without mods nothing is cancelled");
+}
