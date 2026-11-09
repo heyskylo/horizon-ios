@@ -1218,8 +1218,13 @@ impl Goal for Wander {
 pub fn stable_destination(w: &MobWorld, p: [i32; 3]) -> bool {
     !w.facts.is_air(w.world.block(p[0], p[1] - 1, p[2]))
 }
-/// `Bee.addAdditionalSaveData` (and NeutralMob's `anger_end_time`).
-pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
+/// `Bee.addAdditionalSaveData` (and NeutralMob's `anger_end_time` and
+/// `angry_at`).
+pub fn to_nbt(
+    m: &Mob,
+    map: &mut horizon_world::nbt::Compound,
+    uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>,
+) {
     use horizon_world::nbt::Tag;
     let b = get(m).cloned().unwrap_or_default();
     for (key, pos) in [("hive_pos", b.hive), ("flower_pos", b.flower)] {
@@ -1241,6 +1246,20 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     map.insert("CannotEnterHiveTicks".into(), Tag::Int(b.stay_out_of_hive));
     map.insert("CropsGrownSincePollination".into(), Tag::Int(b.crops_grown));
     map.insert("anger_end_time".into(), Tag::Long(b.anger_end));
+    // `NeutralMob.addPersistentAngerSaveData`: `storeNullable`, nothing when
+    // the bee has no target. A mob target read from the save but not in the
+    // level (`Who::Mob(0)`) keeps the loaded UUID.
+    match b.angry_at {
+        Some(Who::Mob(0)) => {}
+        target => match target.and_then(|who| crate::entity_nbt::who_uuid(who, uuid_of)) {
+            Some(uuid) => {
+                map.insert("angry_at".into(), Tag::IntArray(uuid.to_vec()));
+            }
+            None => {
+                map.remove(&"angry_at".into());
+            }
+        },
+    }
 }
 /// `Bee.readAdditionalSaveData`.
 pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
@@ -1260,6 +1279,13 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         Some(Tag::Long(v)) => *v,
         _ => -1,
     };
+    // `EntityReference.read`: the player's UUID is the player, any other one a
+    // mob the level may not have loaded (`Who::Mob(0)`).
+    let angry_at = match crate::save::uuid_from_tag(tag.get("angry_at")) {
+        Some(uuid) if uuid == crate::entity_nbt::player_uuid() => Some(Who::Player),
+        Some(_) => Some(Who::Mob(0)),
+        None => None,
+    };
     let b = st(m);
     b.ticks_without_nectar = int("TicksSincePollination").unwrap_or(0);
     b.stay_out_of_hive = int("CannotEnterHiveTicks").unwrap_or(0);
@@ -1267,6 +1293,7 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     b.hive = pos("hive_pos");
     b.flower = pos("flower_pos");
     b.anger_end = anger_end;
+    b.angry_at = angry_at;
 }
 
 #[cfg(test)]
