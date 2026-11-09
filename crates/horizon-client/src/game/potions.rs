@@ -3397,7 +3397,7 @@ mod arrow_contents {
                 None,
             );
             let st = arrow.arrow.as_mut().unwrap();
-            st.pickup_item = stack(&row);
+            st.pickup_item = stack(row);
             st.in_ground = true;
             st.in_ground_time = 598;
             st.last_state = Some(stone);
