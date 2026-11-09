@@ -771,6 +771,18 @@ pub trait LevelAccess {
     fn count_entities(&self, _area: Aabb, _query: EntityQuery) -> usize {
         0
     }
+    /// [`LevelAccess::count_entities`] for the pressure plate or tripwire
+    /// `block` at `pos`: a server lets its mods spare players there (a
+    /// player's physical trigger of a block can be cancelled).
+    fn count_entities_at(
+        &self,
+        _pos: BlockPos,
+        _block: &str,
+        area: Aabb,
+        query: EntityQuery,
+    ) -> usize {
+        self.count_entities(area, query)
+    }
     /// `ServerLevel.shouldTickBlocksAt`: ticket range, independent of chunk ticking readiness.
     fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
         true
