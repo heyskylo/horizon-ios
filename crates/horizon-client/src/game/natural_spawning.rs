@@ -46,6 +46,22 @@ pub(super) struct SpawnScratch {
     /// dx/dz order, that no earlier player's square holds.
     segments: Vec<Vec<(i32, i32)>>,
     stale: Vec<bool>,
+    /// Reusable buffer for spawn players across ticks to avoid heap allocation.
+    pub(super) spawn_players: Vec<SpawnPlayer>,
+    /// Player positions and spectator status at the last spawning pass: (x, z, spectator).
+    last_players: Vec<(f64, f64, bool)>,
+    /// Cached candidate chunk coordinates from the last spawning pass.
+    cached_candidates: Vec<(i32, i32)>,
+    /// Number of chunks in the union at the last spawning pass.
+    cached_union_count: i32,
+    /// World chunk count when cached_candidates / cached_sp_ticking were computed.
+    cached_world_chunks: usize,
+    /// Singleplayer: ticking chunks in the player's 17x17 segment.
+    cached_sp_ticking: Vec<(i32, i32)>,
+    /// Singleplayer: player's chunk at last cached_sp_ticking.
+    cached_sp_chunk: (i32, i32),
+    /// Singleplayer: whether cached_sp_ticking is valid.
+    cached_sp_ticking_valid: bool,
 }
 impl SpawnScratch {
     fn chunk(p: &LevelPlayer) -> (i32, i32) {
@@ -127,7 +143,23 @@ impl SpawnScratch {
     ) -> i32 {
         self.prepare(players);
         self.candidates.clear();
+        self.last_players.clear();
+        self.cached_sp_ticking_valid = false;
         let mut count = 0;
+        if players.len() == 1 {
+            let p = &players[0];
+            count = self.segments.first().map_or(0, |s| s.len());
+            if !p.spectator
+                && let Some(segment) = self.segments.first()
+            {
+                for &c in segment {
+                    if close_enough_for_spawning(p, c) && keep(c) {
+                        self.candidates.push(c);
+                    }
+                }
+            }
+            return count as i32;
+        }
         for (i, segment) in self.segments.iter().enumerate() {
             count += segment.len();
             let near = &self.neighbours[i];
@@ -650,8 +682,10 @@ fn spawn_cost_types(biomes: &horizon_client::biome::Biomes) -> Vec<&str> {
     types
 }
 impl<'a> Game<'a> {
-    pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
-        let players = self.level_players();
+    pub(super) fn natural_level_with_players(
+        &self,
+        players: Vec<LevelPlayer>,
+    ) -> GameLevel<'_, 'a> {
         let nearest = players
             .iter()
             .filter(|p| !p.spectator)
@@ -669,6 +703,9 @@ impl<'a> Game<'a> {
             box_queries: Default::default(),
             costed: spawn_cost_types(world_biomes!(self)),
         }
+    }
+    pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
+        self.natural_level_with_players(self.level_players())
     }
     /// Creates a mob the spawner accepted, finalized the game's way; the
     /// caller adds it with [`Game::add_spawned`].
@@ -755,10 +792,110 @@ impl<'a> Game<'a> {
         players: &[LevelPlayer],
         scratch: &mut SpawnScratch,
     ) -> i32 {
+        if players.is_empty() {
+            scratch.candidates.clear();
+            return 0;
+        }
+
+        let world_chunks = self.world.chunks.len();
+
+        // 1. Idle state fast-path (singleplayer or multiplayer):
+        // When player positions (x, z) and spectator states are identical to the previous
+        // check and the world chunk table is unchanged, candidate coordinates and union count
+        // are identical.
+        let same_players = scratch.last_players.len() == players.len()
+            && players
+                .iter()
+                .zip(&scratch.last_players)
+                .all(|(p, &(x, z, spec))| {
+                    p.position.x == x && p.position.z == z && p.spectator == spec
+                });
+        if same_players && scratch.cached_world_chunks == world_chunks {
+            scratch.candidates.clear();
+            scratch
+                .candidates
+                .extend_from_slice(&scratch.cached_candidates);
+            return scratch.cached_union_count;
+        }
+
         let levels = self.tickets.levels();
-        scratch.collect(players, |(cx, cz)| {
+
+        // 2. Singleplayer fast-path:
+        if players.len() == 1 {
+            let p = &players[0];
+            let pc = SpawnScratch::chunk(p);
+            scratch.prepare(players);
+            let union_count = scratch.segments.first().map_or(0, |s| s.len()) as i32;
+            scratch.candidates.clear();
+
+            if p.spectator {
+                scratch.last_players.clear();
+                scratch
+                    .last_players
+                    .push((p.position.x, p.position.z, p.spectator));
+                scratch.cached_candidates.clear();
+                scratch.cached_union_count = union_count;
+                scratch.cached_world_chunks = world_chunks;
+                return union_count;
+            }
+
+            // When singleplayer player stays in the same chunk and chunk count is unchanged,
+            // reuse cached_sp_ticking chunks and only recheck proximity.
+            if scratch.cached_sp_ticking_valid
+                && scratch.cached_sp_chunk == pc
+                && scratch.cached_world_chunks == world_chunks
+            {
+                for &c in &scratch.cached_sp_ticking {
+                    if close_enough_for_spawning(p, c) {
+                        scratch.candidates.push(c);
+                    }
+                }
+            } else if let Some(segment) = scratch.segments.first() {
+                scratch.cached_sp_ticking.clear();
+                scratch.cached_sp_chunk = pc;
+                scratch.cached_sp_ticking_valid = true;
+                for &c in segment {
+                    let ticking = levels.loaded_ticking(c.0, c.1)
+                        && super::ticking_chunk(&self.world, c.0, c.1);
+                    if ticking {
+                        scratch.cached_sp_ticking.push(c);
+                        if close_enough_for_spawning(p, c) {
+                            scratch.candidates.push(c);
+                        }
+                    }
+                }
+            }
+
+            scratch.last_players.clear();
+            scratch
+                .last_players
+                .push((p.position.x, p.position.z, p.spectator));
+            scratch.cached_candidates.clear();
+            scratch
+                .cached_candidates
+                .extend_from_slice(&scratch.candidates);
+            scratch.cached_union_count = union_count;
+            scratch.cached_world_chunks = world_chunks;
+            return union_count;
+        }
+
+        // 3. Multiplayer general path:
+        let count = scratch.collect(players, |(cx, cz)| {
             levels.loaded_ticking(cx, cz) && super::ticking_chunk(&self.world, cx, cz)
-        })
+        });
+        scratch.last_players.clear();
+        scratch.last_players.extend(
+            players
+                .iter()
+                .map(|p| (p.position.x, p.position.z, p.spectator)),
+        );
+        scratch.cached_candidates.clear();
+        scratch
+            .cached_candidates
+            .extend_from_slice(&scratch.candidates);
+        scratch.cached_union_count = count;
+        scratch.cached_world_chunks = world_chunks;
+        count
     }
     /// `ServerChunkCache.tickChunks`: the spawn state over the loaded mobs,
     /// the categories under their global caps (creatures every 400 ticks),
@@ -787,51 +924,48 @@ impl<'a> Game<'a> {
         let mut pending = Vec::new();
         let last_state;
         {
-            let level = self.natural_level();
+            let level = self.natural_level_with_players(players);
             laps.lap("sn_level");
-            let counted: Vec<Counted> = self
-                .mobs
-                .iter()
-                .map(|m| Counted {
-                    entity: &m.kind.id,
-                    category: Category::from_name(&m.kind.category),
-                    block: [
-                        m.position.x.floor() as i32,
-                        m.position.y.floor() as i32,
-                        m.position.z.floor() as i32,
-                    ],
-                    is_mob: true,
-                    persistent: m.persistent
-                        || horizon_client::mobs::ai::requires_custom_persistence(m),
-                })
-                .collect();
-            let players = players
-                .iter()
-                .map(|p| SpawnPlayer {
+            let counted = self.mobs.iter().map(|m| Counted {
+                entity: &m.kind.id,
+                category: Category::from_name(&m.kind.category),
+                block: [
+                    m.position.x.floor() as i32,
+                    m.position.y.floor() as i32,
+                    m.position.z.floor() as i32,
+                ],
+                is_mob: true,
+                persistent: m.persistent
+                    || horizon_client::mobs::ai::requires_custom_persistence(m),
+            });
+            scratch.spawn_players.clear();
+            scratch
+                .spawn_players
+                .extend(level.players.iter().map(|p| SpawnPlayer {
                     position: [p.position.x, p.position.y, p.position.z],
                     spectator: p.spectator,
-                })
-                .collect();
+                }));
+            let spawn_players = std::mem::take(&mut scratch.spawn_players);
             laps.lap("sn_materialize");
-            let mut state = SpawnState::new(&level, spawnable, players, &counted, |cx, cz| {
+            let mut state = SpawnState::new(&level, spawnable, spawn_players, counted, |cx, cz| {
                 self.world.chunks.contains_key(&(cx, cz))
             });
             laps.lap("sn_state");
             last_state = state.counts();
-            let categories = if spawn_mobs {
+            let categories = if spawn_mobs && !scratch.candidates.is_empty() {
                 state.filtered_categories(spawn_enemies, self.world.game_time % 400 == 0)
             } else {
                 Vec::new()
             };
             laps.lap("sn_categories");
-            // Util.shuffle.
-            for i in (1..scratch.candidates.len()).rev() {
-                let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
-                scratch.candidates.swap(i, j);
-            }
-            laps.lap("sn_shuffle");
-            spawn_selection::attempt_counters(false);
-            if !categories.is_empty() {
+            if !categories.is_empty() && !scratch.candidates.is_empty() {
+                // Util.shuffle.
+                for i in (1..scratch.candidates.len()).rev() {
+                    let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
+                    scratch.candidates.swap(i, j);
+                }
+                laps.lap("sn_shuffle");
+                spawn_selection::attempt_counters(false);
                 for chunk in scratch.candidates.drain(..) {
                     // ServerChunkCache.tickSpawningChunk gates the initial chunk too.
                     if !level.can_spawn_in_chunk(chunk.0, chunk.1) {
@@ -854,10 +988,13 @@ impl<'a> Game<'a> {
                         &mut |_| {},
                     );
                 }
+                spawn_selection::attempt_counters(true);
+                laps.lap("sn_attempts");
+            } else {
+                scratch.candidates.clear();
             }
+            scratch.spawn_players = state.into_players();
         }
-        spawn_selection::attempt_counters(true);
-        laps.lap("sn_attempts");
         self.world.random = random;
         // ServerChunkCache.lastSpawnState, for the debug overlay.
         self.spawn_counts.insert(self.dim, last_state);
