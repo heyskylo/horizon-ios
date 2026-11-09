@@ -61,7 +61,7 @@ EnderDragon.findClosestNode	port	crates/horizon-client/src/game/dragon.rs::Game:
 EnderDragon.findPath	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_path	
 EnderDragon.reconstructPath	inline	crates/horizon-client/src/game/dragon.rs::Game::dragon_path	path list built inside the A* search
 EnderDragon.addAdditionalSaveData	port	crates/horizon-client/src/game/dragon.rs::Dragon::to_nbt	
-EnderDragon.readAdditionalSaveData	port	crates/horizon-client/src/game/dragon.rs::Dragon::from_nbt	gap: minor: sitting_damage_received is not read back
+EnderDragon.readAdditionalSaveData	port	crates/horizon-client/src/game/dragon.rs::Dragon::from_nbt	health, phase, death time, NoAI and sitting_damage_received (getFloatOr, 0 when absent)
 EnderDragon.getHeadLookVector	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_look	
 EnderDragon.onSyncedDataUpdated	port	crates/horizon-client/src/game/dragon.rs::Game::remote_dragon_data	phase set on guests from synced data
 EnderDragon.recreateFromPacket	port	crates/horizon-client/src/game/dragon.rs::Game::spawn_remote_dragon	gap: minor: part entity ids are not assigned; parts are indexes
