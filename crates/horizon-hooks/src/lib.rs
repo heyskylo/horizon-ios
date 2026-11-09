@@ -13,9 +13,11 @@
 //! does the matching thing.
 //!
 //! The platform registries (docs/layers.md, "Platform registries") have the same shape:
-//! [`settings`] for the settings each crate keeps in its own lines.
+//! [`settings`] for the settings each crate keeps in its own lines, [`pages`] for its settings
+//! pages.
 #![forbid(unsafe_code)]
 
+pub mod pages;
 mod registry;
 pub mod settings;
 
@@ -87,6 +89,7 @@ pub mod engine {
     pub fn seal() {
         all();
         crate::settings::all();
+        crate::pages::engine::all();
     }
 
     /// [`Hooks::started`].

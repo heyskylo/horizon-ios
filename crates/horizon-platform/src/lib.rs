@@ -22,3 +22,8 @@ pub mod hooks {
 pub mod settings {
     pub use horizon_hooks::settings::{Store, register};
 }
+
+/// Settings pages a crate adds to the options screens (docs/layers.md, "Platform registries").
+pub mod pages {
+    pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, register};
+}
