@@ -575,6 +575,10 @@ impl Game<'_> {
             wanted.y >= -0.03125 && !rested && !allow_flight && !no_gravity && no_blocks;
         g.vehicle_gravity = gravity;
         if let Some(i) = mount {
+            // Entity.move: a long move through water or a reset block resets
+            // the fall first.
+            self.mobs[i].fall_distance =
+                self.vehicle_fall_reset(self.mobs[i].fall_distance, old, resolved);
             let mut m = self.mobs[i].clone();
             let mut events = Vec::new();
             {
@@ -935,12 +939,21 @@ mod controller_tests {
             .default_state("minecraft:stone")
             .unwrap()
             .0;
+        let cobweb = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:cobweb")
+            .unwrap()
+            .0;
         let mut chunk = Chunk::empty(0, 0);
         for x in 0..16 {
             for z in 0..16 {
                 chunk.set(x, 199, z, stone);
             }
         }
+        // Off the fall's line: only the long move at the end crosses it.
+        chunk.set(6, 205, 4, cobweb);
         game.world.chunks.insert((0, 0), Arc::new(chunk));
         game.block_ticks
             .add_empty_chunk(ChunkPos::new(0, 0))
@@ -1031,5 +1044,27 @@ mod controller_tests {
             _ => false,
         });
         assert!(dust, "the guest sees the landing dust");
+
+        // Entity.move in `vehicle.move`: a move of a block or more casts along
+        // it (FALLDAMAGE_RESETTING, WATER), and the cobweb it crosses resets
+        // the fall (a fall loaded from its save, here) before the move counts.
+        game.guest_move_vehicle(&mut host, 2, &move_to(205.5, false));
+        assert_eq!(game.mobs[0].position.y, 205.5, "the guest lifts the horse");
+        game.mobs[0].fall_distance = 4.0;
+        game.guest_move_vehicle(
+            &mut host,
+            2,
+            &play::MoveVehicleRequest {
+                position: [6.5, 205.5, 4.5],
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: false,
+            },
+        );
+        assert_eq!(game.mobs[0].position.x, 6.5, "the guest moves the horse on");
+        assert_eq!(
+            game.mobs[0].fall_distance, 0.0,
+            "a long move through a cobweb resets the fall"
+        );
     }
 }

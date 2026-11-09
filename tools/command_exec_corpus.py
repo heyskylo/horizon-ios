@@ -7144,9 +7144,8 @@ def vehicle_fall_clip():
                        f'fall_distance:5d,Motion:[0d,{dy},0d]}}', expect_result=1))
 
     def reads():
-        # The water boat floats after it: only its fall is read.
-        for n, (_, block) in enumerate(subjects, 1):
-            for key in ('fall_distance',) if block == 'water' else ('fall_distance', 'Pos[1]'):
+        for n, _ in enumerate(subjects, 1):
+            for key in ('fall_distance', 'Pos[1]'):
                 ops.append(cmd(f'/data get entity 000032cd-0000-0000-0000-{n:04x}00000001 {key}'))
 
     reads()
