@@ -1345,6 +1345,7 @@ mod tests {
         let reported = Some(Reported {
             paper_white: 300,
             peak: 1000,
+            peak_guessed: false,
         });
         assert_eq!(g.ui_nits(reported), 300);
         g.hdr_paper_white = 120;
