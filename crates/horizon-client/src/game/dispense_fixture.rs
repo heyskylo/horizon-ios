@@ -671,6 +671,7 @@ impl Game<'_> {
         // Reload the stack just as a player inventory does between sessions.
         let saved = horizon_client::item_nbt::item_to_nbt(&stack);
         self.inventory[self.selected] = horizon_client::item_nbt::item_from_nbt(&saved);
+        let (creative, mode) = (self.creative, self.mode);
         self.creative = op["creative"].as_bool().unwrap_or(false);
         self.mode = if self.creative {
             GameMode::Creative
@@ -695,6 +696,11 @@ impl Game<'_> {
             let (count, damage) = stack.map_or((0, 0), |stack| (stack.count, stack.damage));
             lines.push(format!("blocking wear {count} {damage}"));
         }
+        self.player = None;
+        self.using = None;
+        self.inventory[self.selected] = None;
+        self.creative = creative;
+        self.mode = mode;
         Ok(lines)
     }
 
