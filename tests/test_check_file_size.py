@@ -39,6 +39,13 @@ class ProblemsTests(unittest.TestCase):
         self.assertEqual(check_file_size.problems([entry("third_party/naga/src/x.rs", 8000, 9000),
                                                    entry("a.rs", 4000, 4100, generated=True)]), [])
 
+    def test_test_files_are_not_checked(self):
+        self.assertEqual(check_file_size.problems([entry("crates/a/src/mod_content_tests.rs", 5268, 5300),
+                                                   entry("crates/b/src/level/tests.rs", 4175, 4200),
+                                                   entry("tests.rs", 0, 3500)]), [])
+        for path in ("crates/a/src/contests.rs", "crates/a/src/tests_util.rs", "crates/a/src/tests.rs.in"):
+            self.assertEqual(len(check_file_size.problems([entry(path, 3100, 3101)])), 1, path)
+
 
 TEST_MODULE = """#[cfg(test)]
 mod tests {

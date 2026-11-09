@@ -1848,7 +1848,10 @@ mod tests {
         if !root.join("items.json").exists() {
             return;
         }
-        let items = Items::tags_only(&root, &PackOverlay::NONE).unwrap();
+        // The full table: the anvil reads the items' max damage.
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let items = Items::load(&root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
         let data = StationData::load(&root, &items, &PackOverlay::NONE);
         let e = &data.enchantments;
         assert_eq!(e.list.len(), 43);
