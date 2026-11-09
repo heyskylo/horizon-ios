@@ -513,9 +513,6 @@ pub fn base_value(m: &Mob, a: Attr) -> f64 {
 /// [`base_value`] with the type's default given (`default_value`), for a
 /// caller that already looked it up for the mob's type.
 pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) -> f64 {
-    if a == Attr::MovementSpeed && m.species() == Species::Ravager {
-        return m.attrs.speed;
-    }
     m.extra
         .attributes
         .as_ref()
