@@ -1,5 +1,5 @@
 BlockDestructionProgress.equals	skip:java		identity by breaker id; Horizon keys cracks by breaker id in a map
-BlockDestructionProgress.compareTo	inline	crates/horizon-client/src/game.rs::Game::cracks	the furthest progress on a block wins (max per position)
+BlockDestructionProgress.compareTo	inline	crates/horizon-client/src/game/frame_geometry.rs::Game::cracks	the furthest progress on a block wins (max per position)
 ChunkGenerationTask.create	inline	crates/horizon-client-render/src/streaming.rs::Streaming::schedule_generation	a Job::Generate per column; neighbours are held as protos, not a claimed holder cache
 ChunkGenerationTask.runUntilWait	inline	crates/horizon-client-render/src/streaming.rs::Streaming::update	stages advance as worker results come back, not by waiting on futures
 ChunkGenerationTask.scheduleNextLayer	inline	crates/horizon-client-render/src/streaming.rs::Streaming::update	next stage is generate, then decorate, then finish

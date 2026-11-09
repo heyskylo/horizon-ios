@@ -37,6 +37,17 @@ impl Clone for Box<dyn Controller> {
     }
 }
 
+impl super::ParticleOptions {
+    /// A native mod's `SimpleParticleType`: the sprite set of
+    /// `assets/<namespace>/particles/<path>.json`, drawn as a plain billboard.
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            mod_particle: Some(name.into()),
+            ..Self::simple(super::ParticleType::Smoke)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::*;
