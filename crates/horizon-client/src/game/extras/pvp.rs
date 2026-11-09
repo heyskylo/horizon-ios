@@ -6,7 +6,8 @@ use horizon_client::{
     extras_hud::Corners,
     hud::{HudBatch, rgba},
     mesher::Vertex,
-    pvp::{Colour, CrosshairCache},
+    particles::ParticleType,
+    pvp::{ChatOptions, Colour, CrosshairCache, Frame},
     pvp_hud::{self, Combo, Durability, Icon, Key, Line, Widget},
     text::Text,
 };
@@ -199,6 +200,64 @@ impl Game<'_> {
             Some(w) if self.own_view() && self.can_have_weather() => w.levels(),
             _ => self.weather_levels(partial),
         }
+    }
+    // What the engine reads from PvP & HUD. Every engine use goes through these, so each becomes
+    // one engine knob or hook (vanilla's value when nothing is registered) when PvP & HUD leaves
+    // the engine (docs/layers.md, plan M5). The HUD editor (`hud_editor.rs`) reads the widgets.
+
+    /// Combat feel Legacy's pictures: 1.8.9's sword block, flat item pose and hand swing.
+    pub(in crate::game) fn pvp_legacy_look(&self) -> bool {
+        self.settings.extras.pvp.combat.legacy
+    }
+    /// Combat feel Legacy hides the attack indicator unless the player keeps it.
+    pub(in crate::game) fn pvp_hides_attack_indicator(&self) -> bool {
+        let combat = self.settings.extras.pvp.combat;
+        combat.legacy && !combat.indicator
+    }
+    /// Legacy rules: the hits a server resolves follow 1.8.9 (`legacy_rules.rs`).
+    pub(in crate::game) fn pvp_legacy_rules(&self) -> bool {
+        self.settings.extras.pvp.combat.rules
+    }
+    /// The server's legacy rules, from server.toml or the window's options.
+    pub(in crate::game) fn set_pvp_legacy_rules(&mut self, on: bool) {
+        self.settings.extras.pvp.combat.rules = on;
+    }
+    /// A sound Combat feel Legacy keeps quiet.
+    pub(in crate::game) fn pvp_mutes_sound(&self, name: &str) -> bool {
+        self.settings.extras.pvp.combat.mutes_sound(name)
+    }
+    /// A particle Combat feel Legacy doesn't draw (sweeps, damage hearts).
+    pub(in crate::game) fn pvp_hides_particle(&self, ty: ParticleType) -> bool {
+        self.settings.extras.pvp.combat.hides_particle(ty)
+    }
+    /// The block outline, hurt overlay and glint colours the renderer draws with.
+    pub(in crate::game) fn pvp_render_frame(&self) -> Frame {
+        self.settings.extras.pvp.frame()
+    }
+    /// The enchantment glint's colour texel, 0 for vanilla's.
+    pub(in crate::game) fn pvp_glint_texel(&self) -> u32 {
+        self.settings.extras.pvp.tweaks.glint_texel()
+    }
+    /// The held shield's size in percent (100 is vanilla's).
+    pub(in crate::game) fn pvp_shield_size(&self) -> u8 {
+        self.settings.extras.pvp.tweaks.shield_size
+    }
+    /// The totem animation's scale (1 is vanilla's).
+    pub(in crate::game) fn pvp_totem_scale(&self) -> f32 {
+        f32::from(self.settings.extras.pvp.tweaks.totem_size) / 100.0
+    }
+    /// How far the first-person fire overlay is lowered, as a fraction (0 is vanilla's).
+    pub(in crate::game) fn pvp_fire_lower(&self) -> f32 {
+        f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0
+    }
+    /// Lava's fog as with fire resistance, and water's as fully adapted.
+    pub(in crate::game) fn pvp_clear_fluids(&self) -> (bool, bool) {
+        let tweaks = self.settings.extras.pvp.tweaks;
+        (tweaks.clear_lava, tweaks.clear_water)
+    }
+    /// The chat's options: Ctrl+F search, copy on click, and the rest (`ChatOptions::qol`).
+    pub(in crate::game) fn pvp_chat(&self) -> ChatOptions {
+        self.settings.extras.pvp.chat
     }
     /// This player attacked entity `id`, `distance` from the eyes to where the crosshair's
     /// ray met its box (the combo counter waits for the server's report; the reach widget

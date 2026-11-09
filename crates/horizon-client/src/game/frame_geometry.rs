@@ -238,7 +238,7 @@ impl Game<'_> {
         let off_hand_empty = items[1].is_none();
         // Combat feel Legacy: a sword is held up while use is held, as 1.8.9's block looked.
         // Only the picture changes: the clicks and what they send stay 26.3's.
-        let legacy_block = self.settings.extras.pvp.combat.legacy
+        let legacy_block = self.pvp_legacy_look()
             && self.right
             && self.screen == Screen::Playing
             && items[0]
@@ -426,7 +426,7 @@ impl Game<'_> {
             let mut m = to_world
                 * horizon_client::first_person::item_pose(left, inverse_height, attack, pose);
             // PvP & HUD's shield size (100% is vanilla's), toward the hand holding it.
-            let shield_size = self.settings.extras.pvp.tweaks.shield_size;
+            let shield_size = self.pvp_shield_size();
             if shield_size != 100 && &*stack.item == "minecraft:shield" {
                 m *= glam::Mat4::from_scale(glam::Vec3::splat(f32::from(shield_size) / 100.0));
             }
@@ -449,7 +449,7 @@ impl Game<'_> {
             };
             let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, cit_hand);
             // Combat feel Legacy: 1.8.9's pose for a flat item drawn with vanilla's display.
-            if self.settings.extras.pvp.combat.legacy
+            if self.pvp_legacy_look()
                 && !state.layers.is_empty()
                 && state
                     .layers

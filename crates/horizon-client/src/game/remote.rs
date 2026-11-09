@@ -3873,7 +3873,7 @@ impl Game<'_> {
             C::Explode(p) => self.remote_explode(&p),
             C::Sound(p) => {
                 if let Some(name) = self.remote_sound_name(&p.sound)
-                    && !self.settings.extras.pvp.combat.mutes_sound(&name)
+                    && !self.pvp_mutes_sound(&name)
                 {
                     let at = [
                         f64::from(p.x) / 8.0,
@@ -3895,7 +3895,7 @@ impl Game<'_> {
             }
             C::SoundEntity(p) => {
                 if let Some(name) = self.remote_sound_name(&p.sound)
-                    && !self.settings.extras.pvp.combat.mutes_sound(&name)
+                    && !self.pvp_mutes_sound(&name)
                     && let Some(state) = self.remote_sound_entity_state(p.id)
                 {
                     let source = usize::try_from(p.source)
