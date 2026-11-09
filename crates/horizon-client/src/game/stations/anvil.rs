@@ -42,6 +42,7 @@ mod tests {
         // AnvilScreen.init: no input yet, so the box is read-only but focused.
         let station_box = rename_box();
         assert!(station_box.focused && !station_box.editable);
+        assert!(!station_box.invert_highlighted_text_color);
 
         // slotChanged with an item: editable, and it shows the item's name.
         let mut station = Station::new_kind(Kind::Anvil, [0; 3]);
