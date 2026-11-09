@@ -1754,6 +1754,10 @@ impl Game<'_> {
         if player {
             self.trigger_loot_table(&table);
         }
+        // Advancement rewards can remove the boat or shift its index.
+        let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+            return;
+        };
         if let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) {
             map.remove(&"LootTable".into());
             map.remove(&"LootTableSeed".into());
