@@ -3,6 +3,7 @@
     {
       "name": "world_primitives",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_world_primitives",
+      "neoforge": "RenderLevelStageEvent (lines, boxes, beams and text drawn at the end of the world pass, before the hand)",
       "side": "client",
       "cancellable": false,
       "mod_api": {"contract": "collect", "out": "primitives"}

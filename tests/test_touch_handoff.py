@@ -45,7 +45,7 @@ struct Game { emote_wheel:EmoteWheel,pad:Pad,touch: TouchInput, last_input: Inst
     actions: Vec<Out>, buttons: Vec<bool>, menu_calls: usize }
 mod horizon_gamecontroller { pub fn keyboard_connected() -> bool { true } }
 impl Game {
- fn reload_blocks_input(&self)->bool{false}
+ fn menu_input_blocked(&self)->bool{false}
  fn cancel_touch_for_reload(&mut self){panic!("no reload in handoff fixture");}
     fn new(playing: bool, pressed: bool) -> Self {
         let mut gesture=MenuGesture::new((0.0,0.0),MenuMode::Drag);

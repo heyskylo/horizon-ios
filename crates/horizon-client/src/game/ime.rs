@@ -112,7 +112,7 @@ impl Game<'_> {
     pub(super) fn ime_commit(&mut self, text: &str) {
         // Software-key character callbacks can arrive before the ordinary
         // window-event overlay fence. They must obey the same reload boundary.
-        if self.reload_blocks_input() {
+        if self.menu_input_blocked() {
             return;
         }
         preedit::set_preedit(None);

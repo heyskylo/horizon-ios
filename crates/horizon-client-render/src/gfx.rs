@@ -194,6 +194,8 @@ mod pack_images;
 mod pack_lines;
 mod pack_loader;
 mod pack_post;
+#[cfg(feature = "test-support")]
+pub use pack_post::ResizeAckGate;
 mod pack_shadow;
 mod pack_sky;
 mod pack_textures;
@@ -1100,6 +1102,11 @@ pub struct Renderer {
     /// The last frame went to the submit thread; whether it had no window surface.
     /// The next frame takes it in ([`Self::land_frame`]).
     deferred: Option<bool>,
+    presentation_generation: u64,
+    presented_generation: Option<u64>,
+    deferred_presentation_generation: Option<u64>,
+    #[cfg(feature = "test-support")]
+    resize_ack_gate: Option<std::sync::Arc<pack_post::ResizeAckGate>>,
     /// Set by the device's lost callback. wgpu reports nothing else when an
     /// operation fails on a lost device (no error scope sees it).
     device_lost: Arc<std::sync::atomic::AtomicBool>,
@@ -4670,6 +4677,11 @@ impl Renderer {
             reuse,
             queue: submit::Queue::new(queue, submit::wanted()),
             deferred: None,
+            presentation_generation: 1,
+            presented_generation: None,
+            deferred_presentation_generation: None,
+            #[cfg(feature = "test-support")]
+            resize_ack_gate: None,
             device_lost,
             config,
             solid,
@@ -5049,6 +5061,9 @@ impl Renderer {
             .take();
         let key = |t: &Option<(u64, _)>| t.as_ref().map_or(0, |(id, _)| *id);
         let (from, to) = (key(&self.target), key(&target));
+        if from != to {
+            self.invalidate_presentation();
+        }
         if let Some(surface) = self.surface.take() {
             self.parked.retain(|(id, _)| *id != from);
             self.parked.push((from, surface));
@@ -5165,6 +5180,12 @@ impl Renderer {
     /// Follows the window to `width` x `height`. A size the swapchain can't take
     /// ([`drawable_size`]) keeps the last one and draws nothing until the next.
     pub fn resize(&mut self, width: u32, height: u32) {
+        if [width, height] != [self.config.width, self.config.height]
+            || self.suspended
+            || self.offscreen.is_some()
+        {
+            self.invalidate_presentation();
+        }
         let max = self.device.limits().max_texture_dimension_2d;
         self.suspended = !drawable_size(width, height, max);
         if self.suspended {
@@ -6061,6 +6082,31 @@ impl Renderer {
                 blocks.iter().map(move |block| (block, fully_inside))
             })
     }
+    /// The block entities of the sections a shader pack's shadow pass drew in the last frame
+    /// (`shadow_visible`), within the 64 blocks `visible_block_entities_in_frustum` keeps.
+    /// Our probe packs' Iris 1.11.7 shadow maps hold a block entity wherever the shadow pass
+    /// draws its section's terrain, whether or not the camera's view takes it in (#8464).
+    pub fn shadow_pass_block_entities(
+        &self,
+        camera: DVec3,
+    ) -> impl Iterator<Item = &([i32; 3], u32)> + '_ {
+        block_entities_within_reach(
+            self.shadow_visible.iter().map(|v| v.key),
+            &self.block_entities,
+            camera,
+            self.layout.min_y(),
+        )
+    }
+    /// Whether a shader pack's shadow pass drew the section holding block `pos` in the last
+    /// frame (`shadow_pass_block_entities`).
+    pub fn shadow_pass_drew(&self, pos: [i32; 3]) -> bool {
+        let key = (
+            pos[0] >> 4,
+            (pos[1] - self.layout.min_y()) >> 4,
+            pos[2] >> 4,
+        );
+        self.shadow_visible.iter().any(|v| v.key == key)
+    }
     /// Milliseconds since `key` was uploaded; a section not in `section_uploaded` is old.
     fn section_elapsed_ms(&self, key: SectionKey, now: std::time::Instant) -> u64 {
         self.section_uploaded.get(&key).map_or(u64::MAX, |t| {
@@ -6629,6 +6675,15 @@ impl Renderer {
     }
     /// `upscale`: output pixels per rendered pixel, for TAA to rebuild (1: native).
     pub fn set_world_post(&mut self, scale: f32, antialias: bool, taa: bool, upscale: f32) {
+        let picture_size = |scale: f32| {
+            [self.config.width, self.config.height]
+                .map(|side| ((side as f32 * scale).round() as u32).clamp(1, 8192))
+        };
+        let before = picture_size(self.world_post.scale);
+        let after = picture_size(scale.clamp(0.25, 2.0));
+        if before != after {
+            self.invalidate_presentation();
+        }
         let taa = taa && self.world_post.supports_taa();
         self.world_post.scale = scale.clamp(0.25, 2.0);
         self.world_post.antialias = antialias && !taa;
@@ -6929,17 +6984,11 @@ impl Renderer {
             if let Some(atlas) = &mut atlas {
                 atlas.separate_ao = self.separate_ao;
             }
-            self.pack_material_atlases = atlas.as_ref().and_then(|_| {
+            self.pack_material_atlases = atlas.as_ref().and_then(|colour| {
                 let maps = self.pbr_maps.as_ref()?;
                 let make = |kind: usize, encoder: &mut wgpu::CommandEncoder| {
                     let arrays: Vec<_> = maps.iter().map(|pair| pair[kind].clone()).collect();
-                    pack_atlas::PackAtlas::material(
-                        &self.device,
-                        encoder,
-                        &arrays,
-                        self.sprite_split,
-                        layers,
-                    )
+                    colour.material_for(&self.device, encoder, &arrays, layers)
                 };
                 Some(Box::new([make(0, &mut encoder)?, make(1, &mut encoder)?]))
             });
@@ -7229,6 +7278,31 @@ impl Renderer {
             );
         }
     }
+    fn invalidate_presentation(&mut self) {
+        self.presentation_generation = self.presentation_generation.wrapping_add(1);
+        self.presented_generation = None;
+    }
+    /// The owner calls this after an actual GUI coordinate/layout change (for
+    /// example GUI scale), even when the drawable dimensions stayed the same.
+    pub fn mark_gui_geometry_changed(&mut self) {
+        self.invalidate_presentation();
+    }
+    /// Changes synchronously when display geometry or the rendering target changes.
+    pub fn presentation_generation(&self) -> u64 {
+        self.presentation_generation
+    }
+    /// The actual target has received a frame for its current geometry.
+    pub fn presentation_current(&self) -> bool {
+        !self.suspended
+            && !self.device_lost()
+            && self.presented_generation == Some(self.presentation_generation)
+    }
+    #[cfg(feature = "test-support")]
+    pub fn hold_resize_ack_for_test(&mut self) -> std::sync::Arc<pack_post::ResizeAckGate> {
+        let gate = std::sync::Arc::new(pack_post::ResizeAckGate::default());
+        self.resize_ack_gate = Some(gate.clone());
+        gate
+    }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
         // A lost device cannot accept uploads either. Leave recovery to the
         // owner instead of submitting atlas patches to the invalid device.
@@ -7245,10 +7319,20 @@ impl Renderer {
             ),
         };
         let size = picture.map(|side| ((side as f32 * scale).round() as u32).clamp(1, 8192));
+        let was_pending = self.pack_resize_pending;
         self.pack_resize_pending = false;
         if let Some((_, Some(post))) = &mut self.pack_post {
-            self.pack_resize_pending =
-                post.resize(&self.device, &self.queue, size)? == pack_post::ResizeState::Pending;
+            #[cfg(feature = "test-support")]
+            let state = match &self.resize_ack_gate {
+                Some(gate) => post.resize_gated(&self.device, &self.queue, size, gate.clone())?,
+                None => post.resize(&self.device, &self.queue, size)?,
+            };
+            #[cfg(not(feature = "test-support"))]
+            let state = post.resize(&self.device, &self.queue, size)?;
+            self.pack_resize_pending = state == pack_post::ResizeState::Pending;
+        }
+        if self.pack_resize_pending && !was_pending {
+            self.invalidate_presentation();
         }
         let rendered = if self.pack_resize_pending {
             // No drawable/screenshot target has been acquired. The display keeps
@@ -7290,7 +7374,17 @@ impl Renderer {
             self.queue.submit([copies]);
         }
         // A scaled screenshot's frame never reached the window.
-        rendered.map(|drawn| drawn && scaled.is_none())
+        rendered.map(|drawn| {
+            let actual = drawn && scaled.is_none();
+            if actual {
+                if self.deferred.is_some() {
+                    self.deferred_presentation_generation = Some(self.presentation_generation);
+                } else {
+                    self.presented_generation = Some(self.presentation_generation);
+                }
+            }
+            actual
+        })
     }
     /// A deferred GPU target retirement, not a completed/presented frame. The
     /// owner may request another redraw; queued capture requests are retained.
@@ -11516,6 +11610,11 @@ impl Renderer {
             return;
         };
         let submission = self.queue.landed();
+        if submission.is_some()
+            && self.deferred_presentation_generation.take() == Some(self.presentation_generation)
+        {
+            self.presented_generation = Some(self.presentation_generation);
+        }
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);
             timer.collect(&self.device, &mut self.gpu_times);
@@ -11810,6 +11909,28 @@ impl Cull for ShadowCull {
     fn tight(&self) -> bool {
         self.casters.is_none()
     }
+}
+/// The block entities of `sections` whose box, a block wider on every side, comes within the
+/// 64 blocks block entities are drawn to (`Renderer::visible_block_entities_in_frustum`).
+fn block_entities_within_reach<'a>(
+    sections: impl Iterator<Item = SectionKey> + 'a,
+    block_entities: &'a FxHashMap<SectionKey, Vec<([i32; 3], u32)>>,
+    camera: DVec3,
+    min_y: i32,
+) -> impl Iterator<Item = &'a ([i32; 3], u32)> + 'a {
+    sections
+        .filter_map(move |key| {
+            let min = (DVec3::new(
+                f64::from(key.0 * 16 - 1),
+                f64::from(min_y + key.1 * 16 - 1),
+                f64::from(key.2 * 16 - 1),
+            ) - camera)
+                .as_vec3();
+            let max = min + Vec3::splat(18.0);
+            let near = Vec3::ZERO.max(min).min(max).length_squared() <= 64.0 * 64.0;
+            near.then(|| block_entities.get(&key)).flatten()
+        })
+        .flatten()
 }
 /// The shadow camera's box that the shadow pass draws terrain in: the sides of `view.cull`, and
 /// its near and far planes only with `depth_planes`.
@@ -13831,6 +13952,24 @@ mod shadow_face_tests {
 #[cfg(test)]
 mod shadow_caster_tests {
     use super::*;
+
+    #[test]
+    fn the_shadow_pass_takes_the_block_entities_of_its_sections_within_64_blocks() {
+        // Sections 64 to 79 high (the world from -64): a chest in each of three. The shadow
+        // pass drew `near` and `far`; `left_out` lies as near but the pass didn't draw it, and
+        // `far`'s nearest block is 78.5 blocks away.
+        let (near, left_out, far) = ((0, 8, 0), (1, 8, 0), (5, 8, 0));
+        let mut block_entities = FxHashMap::default();
+        block_entities.insert(near, vec![([3, 70, 3], 7)]);
+        block_entities.insert(left_out, vec![([20, 70, 3], 7)]);
+        block_entities.insert(far, vec![([85, 70, 3], 7)]);
+        let camera = DVec3::new(0.5, 70.0, 0.5);
+        let drawn = [near, far].into_iter();
+        let taken: Vec<_> = block_entities_within_reach(drawn, &block_entities, camera, -64)
+            .copied()
+            .collect();
+        assert_eq!(taken, vec![([3, 70, 3], 7)]);
+    }
 
     /// What the shadow pass keeps of a camera-relative section at `min`, the camera at the
     /// origin looking along -X (yaw 90) with the scenes' 70 degree, 16:9 view, and the light in

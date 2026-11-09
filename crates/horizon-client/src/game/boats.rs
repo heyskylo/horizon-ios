@@ -854,6 +854,11 @@ impl Game<'_> {
     }
     /// Every boat but the ridden one (which ticks with its rider).
     pub(super) fn tick_boats(&mut self) {
+        self.vehicles_ticking(true);
+        self.tick_boats_now();
+        self.vehicles_ticking(false);
+    }
+    fn tick_boats_now(&mut self) {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         let mut round = self.native_tick_round();
@@ -1437,6 +1442,13 @@ impl Game<'_> {
             self.screen = super::Screen::Inventory;
             self.capture(false);
             self.right = false;
+        } else {
+            // Preserve the refusal's native action bar in the acting
+            // player's turn, without rolling loot after the guest swap.
+            self.send_overlay_message(
+                horizon_client::text::Text::translate("container.spectatorCantOpen", &[])
+                    .with_color(horizon_client::text::RED),
+            );
         }
         // interactWithContainerVehicle consumes the interaction even when a
         // spectator's createMenu returned null, so its events still occur.

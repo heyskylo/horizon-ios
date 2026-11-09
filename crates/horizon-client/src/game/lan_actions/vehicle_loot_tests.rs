@@ -218,6 +218,8 @@ fn pending_boat_loot_cannot_be_consumed_by_a_spectator() {
     let (mut game, mut host) = fixture();
     pending(&mut game);
     host.hub.guests[0].game_mode = 3;
+    let (sender, received) = std::sync::mpsc::channel();
+    host.hub.guests[0].sender = PlayerSender::new(sender, Arc::default());
     open(&mut game, &mut host, 1);
     assert!(host.hub.guests[0].menu.is_none());
     assert!(game.boat_loot_pending(100));
@@ -226,6 +228,31 @@ fn pending_boat_loot_cannot_be_consumed_by_a_spectator() {
         "rejected spectator creates no orphan live inventory"
     );
     assert!(!host.hub.guests[0].advancements.has(ADV, "opened"));
+    let overlays: Vec<_> = received
+        .try_iter()
+        .filter_map(|out| {
+            let horizon_client::lan::Out::Packet(bytes) = out else {
+                return None;
+            };
+            let mut reader = horizon_protocol::buf::Reader::new(&bytes);
+            let id = reader.varint().unwrap();
+            match horizon_protocol::packets::play::Clientbound::decode(id, reader.rest()).ok()? {
+                horizon_protocol::packets::play::Clientbound::SystemChat(packet)
+                    if packet.overlay =>
+                {
+                    Some(horizon_client::scoreboard::tag_to_json(&packet.content))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(
+        overlays.len(),
+        1,
+        "only the acting spectator receives the refusal"
+    );
+    assert_eq!(overlays[0]["translate"], "container.spectatorCantOpen");
+    assert_eq!(overlays[0]["color"], "red");
     host.hub.guests[0].game_mode = 0;
     open(&mut game, &mut host, 1);
     assert!(contents(&game, &host, 1).iter().any(Option::is_some));

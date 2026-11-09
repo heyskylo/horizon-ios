@@ -222,6 +222,8 @@
   "horizon.extras.no_ai": "Keine KI",
   "horizon.extras.agent_control": "Agentensteuerung",
   "horizon.extras.discord_presence": "Discord Rich Presence",
+  "horizon.extras.zoom": "Zoom",
+  "horizon.extras.zoom_mod_install": "Zoom: über Mods installieren",
   "horizon.extras.fullbright.tooltip": "Zeigt Blöcke und Objekte bei vollem Licht, selbst an dunklen Orten.",
   "horizon.extras.dynamic_lights.tooltip": "Fackeln und andere Lichtquellen, die gehalten, fallen gelassen werden oder brennen, beleuchten die Blöcke um sich herum.",
   "horizon.extras.own_name_tag.tooltip": "Zeigt deinen Namen in der dritten Person über deinem Kopf an, so wie andere Spieler ihn sehen. Versteckt, wenn der Server die Namen deines Teams verbirgt oder du unsichtbar bist.",

@@ -463,16 +463,22 @@ pub fn hurt_server(m: &mut Mob) {
     set_dark_ticks(m, 100);
 }
 
+/// `GlowSquid.aiStep`: its positive dark timer runs after the parent step,
+/// including when NoAI skips server AI. This upkeep consumes no random draws.
+pub(super) fn glow_squid_dark_tick(m: &mut Mob) {
+    let ticks = dark_ticks(m);
+    if ticks > 0 {
+        set_dark_ticks(m, ticks - 1);
+    }
+}
+
 /// `GlowSquid.aiStep` after `super.aiStep()`: the dark timer counts down, and
 /// a `glow` particle appears at `getRandomX(0.6)`, `getRandomY()`,
 /// `getRandomZ(0.6)` (drawn in that order). A window that simulates the world
 /// and a client of a server both draw it, so the server's own `ai_step` pushes
 /// the event as well (as the nautilus bubbles do).
 fn glow_squid_ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
-    let ticks = dark_ticks(m);
-    if ticks > 0 {
-        set_dark_ticks(m, ticks - 1);
-    }
+    glow_squid_dark_tick(m);
     let (w, h) = (f64::from(m.width()), f64::from(m.height()));
     let r = &mut m.random;
     let x = m.position.x + w * ((2.0 * r.next_double() - 1.0) * 0.6);
@@ -1605,3 +1611,6 @@ mod pufferfish_sting_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod countdown_tests;

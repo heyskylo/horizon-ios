@@ -205,7 +205,7 @@ pub fn can_host(tag: &str) -> Result<(), String> {
             "Horizon {tag} has no server program. Install a newer version on the Versions page."
         ));
     }
-    if !backend::is_prepared(tag) {
+    if !backend::check_prepared(tag) {
         return Err(format!(
             "Horizon {tag} isn't prepared yet: press Prepare on the Play page (it uses your own Minecraft {})",
             backend::game_version(tag)

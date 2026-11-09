@@ -119,8 +119,17 @@ fn can_see_sky_from_below_water<L: SpawnLevel>(l: &L, x: i32, y: i32, z: i32) ->
     }
     ((y + 1)..sea).all(|yy| {
         let f = l.facts().get(l.state(x, yy, z));
-        f.dampening == 0 || f.fluid != Fluid::None
+        // `BlockState.liquid()` is water, lava and the bubble column. Kelp,
+        // seagrass and waterlogged blocks hold water and still stop the scan.
+        f.dampening == 0 || liquid_block(&f.name)
     })
+}
+/// `BlockState.liquid()`: the three blocks whose property is set.
+fn liquid_block(name: &str) -> bool {
+    matches!(
+        name,
+        "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
+    )
 }
 
 /// `EntityType.fireImmune`.
@@ -616,5 +625,87 @@ impl SpawnLevel for super::MobWorld<'_> {
                 + (p.position.z - z).powi(2);
             p.alive && !p.creative && !p.spectator && d < distance * distance
         })
+    }
+}
+
+#[cfg(test)]
+mod underwater_sky_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use horizon_core::random::LegacyRandom;
+    use horizon_world::{block_state_properties::BlockProperties, chunk::BlockState};
+
+    fn with_props(
+        registry: &horizon_world::registry::BlockRegistry,
+        name: &str,
+        props: &[(&str, &str)],
+    ) -> horizon_world::registry::BlockStateId {
+        let mut properties = BlockProperties::new();
+        for (key, value) in props {
+            properties.insert((*key).to_owned(), (*value).to_owned());
+        }
+        registry
+            .resolve(&BlockState {
+                name: format!("minecraft:{name}"),
+                properties,
+            })
+            .unwrap()
+    }
+
+    /// `Guardian.checkGuardianSpawnRules`: below sea level the 1-in-20 roll is
+    /// skipped when `canSeeSkyFromBelowWater` is false. Kelp (dampening 1, not
+    /// `liquid()`) makes it false. A bubble column is `liquid()`, so the scan
+    /// continues and the roll is still required.
+    #[test]
+    fn kelp_hides_the_sky_from_a_guardian_and_a_bubble_column_does_not() {
+        let ran = with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let water = registry.default_state("minecraft:water").unwrap();
+                let kelp = with_props(registry, "kelp", &[("age", "0")]);
+                let column = with_props(registry, "bubble_column", &[("drag", "true")]);
+                for x in [0, 1] {
+                    world.set(x, 49, 0, water).unwrap();
+                    world.set(x, 50, 0, water).unwrap();
+                }
+                world.set(0, 55, 0, kelp).unwrap();
+                world.set(1, 55, 0, column).unwrap();
+            },
+            |w, _| {
+                // Sea level in this world is 63, so y=55 sits in the scan.
+                assert_eq!(w.sea_level(), 63);
+                let mut probe = LegacyRandom::new(1);
+                assert_ne!(
+                    probe.next_int_bound(20).unwrap(),
+                    0,
+                    "seed 1 must miss the 1-in-20"
+                );
+                let mut random = LegacyRandom::new(1);
+                assert!(
+                    check_spawn_rules(Species::Guardian, w, Reason::Natural, &mut random, 0, 50, 0),
+                    "kelp between the guardian and the sea hides the sky"
+                );
+                let mut random = LegacyRandom::new(1);
+                assert!(
+                    !check_spawn_rules(
+                        Species::Guardian,
+                        w,
+                        Reason::Natural,
+                        &mut random,
+                        1,
+                        50,
+                        0
+                    ),
+                    "a bubble column is liquid(), so the sky still shows"
+                );
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
     }
 }

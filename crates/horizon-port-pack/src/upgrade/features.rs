@@ -78,7 +78,12 @@ fn nested(v: &mut Value, report: &mut Report) {
             if let Some(t) = kind(&Value::Object(o.clone())) {
                 if let Some(to) = provider(t) {
                     if t == "simple_state_provider" {
-                        *v = o.get("state").cloned().unwrap_or_default();
+                        // A direct provider is a state object: a bare string
+                        // would name a provider in its registry instead.
+                        *v = match o.get("state").cloned().unwrap_or_default() {
+                            id @ Value::String(_) => json!({"id": id}),
+                            state => state,
+                        };
                         return;
                     }
                     o.insert("type".into(), vanilla(to));

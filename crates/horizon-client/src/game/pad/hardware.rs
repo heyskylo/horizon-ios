@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 mod face_buttons;
+mod hid_layout;
 mod triggers;
 
 /// The controllers gilrs sees and the DualSense's output.
@@ -262,7 +263,11 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
         sdl_mapped,
     );
     state.left = left;
-    state.right = right;
+    state.right = if hid_layout::right_stick_on_z(pad) {
+        hid_layout::right_stick([axis(A::LeftZ), axis(A::RightZ)])
+    } else {
+        right
+    };
     state.triggers = triggers::triggers(pad);
     state
 }

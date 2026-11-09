@@ -60,6 +60,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
+      - path: TouchControlsTests.swift
       - path: FormattingTests.swift
       - path: AccountTests.swift
     dependencies:

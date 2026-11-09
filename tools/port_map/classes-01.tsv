@@ -1,6 +1,7 @@
+Squid.hurtServer	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with_player_context	after shared parent damage, require last living attacker for true; retain health loss and existing ink guard
 GlowSquid.aiStep	port	crates/horizon-client/src/mobs/aquatic.rs::glow_squid_ai_step	
 GlowSquid.checkGlowSquidSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::GlowSquid arm: 33 blocks below sea level, dark, in water
-GlowSquid.hurtServer	port	crates/horizon-client/src/mobs/aquatic.rs::hurt_server	
+GlowSquid.hurtServer	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with_player_context	inherited Squid acceptance is returned after parent health effects; existing dim guard calls aquatic::hurt_server
 WolfSoundVariants	skip:data		registry bootstrap of the wolf sound sets; sounds are in species.rs and finalize.rs
 AbstractDragonPhaseInstance.getTurnSpeed	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_dragon	0.7 / dist / rot turn for every phase but Landing; only applied while a fly target is set
 DragonChargePlayerPhase.doServerTick	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_phase	Charging arm: 10-tick countdown once close; gap: minor: no collision re-target

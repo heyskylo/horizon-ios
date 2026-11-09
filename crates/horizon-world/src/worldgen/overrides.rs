@@ -7,7 +7,7 @@
 //! The prepared bundles are the built-in pack, so the packs above it are
 //! entries that replace or join a bundle's (`GeneratorData::load_with`).
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// The bundle of `dimension/<id>.json` level stems. Nothing prepared has
 /// it: a pack's level stem stands in for the world preset's.
@@ -44,7 +44,13 @@ const TAG_KINDS: [(&str, &str); 3] = [
     ("tags/worldgen/biome", "biome_tags"),
 ];
 /// The pack folders `add_file` looks at, in walk order.
-pub const PACK_KINDS: [&str; 4] = ["dimension", "dimension_type", "tags", "worldgen"];
+pub const PACK_KINDS: [&str; 5] = [
+    "dimension",
+    "dimension_type",
+    "structure",
+    "tags",
+    "worldgen",
+];
 
 /// `ns:path` for a pack file `data/<ns>/<kind>/<path>.json`.
 fn resource_id(file: &str, kind: &str) -> Option<String> {
@@ -53,6 +59,13 @@ fn resource_id(file: &str, kind: &str) -> Option<String> {
         .strip_prefix(kind)?
         .strip_prefix('/')?
         .strip_suffix(".json")?;
+    Some(format!("{ns}:{path}"))
+}
+
+/// `ns:path` for a pack's structure template `data/<ns>/structure/<path>.nbt`.
+pub fn template_id(file: &str) -> Option<String> {
+    let (ns, rest) = file.strip_prefix("data/")?.split_once('/')?;
+    let path = rest.strip_prefix("structure/")?.strip_suffix(".nbt")?;
     Some(format!("{ns}:{path}"))
 }
 
@@ -143,10 +156,21 @@ pub struct WorldgenOverrides {
     entries: BTreeMap<String, BTreeMap<String, String>>,
     /// Tag bundle name → (tag id, pack id, tag file text), lowest pack first.
     tags: BTreeMap<String, Vec<(String, String, String)>>,
+    /// Template id → the highest pack's `.nbt` file.
+    templates: BTreeMap<String, Arc<[u8]>>,
 }
 impl WorldgenOverrides {
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.tags.is_empty()
+        self.entries.is_empty() && self.tags.is_empty() && self.templates.is_empty()
+    }
+    /// A pack's structure template: called for packs from the lowest to the
+    /// highest, so the last call for an id wins.
+    pub fn set_template(&mut self, id: &str, nbt: Vec<u8>) {
+        self.templates.insert(id.to_owned(), nbt.into());
+    }
+    /// The structure templates packs give, by id.
+    pub fn templates(&self) -> &BTreeMap<String, Arc<[u8]>> {
+        &self.templates
     }
     /// A pack's file for `id` in `bundle`: called for packs from the lowest
     /// to the highest, so the last call for an id wins.
@@ -319,6 +343,15 @@ impl WorldgenOverrides {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_template_id_comes_from_a_structure_nbt_file_only() {
+        assert_eq!(
+            template_id("data/p/structure/room/a.nbt").as_deref(),
+            Some("p:room/a")
+        );
+        assert_eq!(template_id("data/p/structure/a.json"), None);
+        assert_eq!(template_id("data/p/worldgen/structure/a.nbt"), None);
+    }
 
     #[test]
     fn the_highest_pack_wins_and_others_join() {

@@ -184,6 +184,7 @@ pub fn row_plain(row: &Row) -> String {
         "Pack tooling or a game feature that Horizon already has, so there is nothing to port." => tr("Pack tooling or a game feature that Horizon already has, so there is nothing to port."),
         "Built into Horizon already, so there is nothing to port." => tr("Built into Horizon already, so there is nothing to port."),
         "Nothing to port." => tr("Nothing to port."),
+        "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later." => tr("Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later."),
         "Shader packs are not converted yet." => tr("Shader packs are not converted yet."),
         "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen." => tr("Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen."),
         "Not downloaded yet; Port gets it." => tr("Not downloaded yet; Port gets it."),
@@ -235,6 +236,16 @@ pub fn load(work: &Path) -> Result<Imported, String> {
         .iter()
         .filter(|f| f.kind() == "resourcepacks" && f.client != "unsupported")
         .count();
+    // A mod the carry found made for 1.20 or older is not one the port step can carry over.
+    let old: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter(|r| r.old_layout)
+        .map(|r| r.key.as_str())
+        .collect();
+    let portable = records
+        .iter()
+        .filter(|r| pipeline::portable(r) && !old.contains(r.key.as_str()))
+        .count();
     Ok(Imported {
         resourcepacks,
         indexed_resources,
@@ -248,7 +259,7 @@ pub fn load(work: &Path) -> Result<Imported, String> {
         fetched,
         mods,
         left_off,
-        portable: records.iter().filter(|r| pipeline::portable(r)).count(),
+        portable,
     })
 }
 
@@ -554,6 +565,51 @@ mod tests {
         assert!(!p.can_play());
         assert_eq!(p.portable, 0);
         assert_eq!(p.indexed_resources, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Prominence II (Fabric 1.20.1): of its 29 data-tier content mods the port found 24 made
+    /// for 1.20 or older. Those are not carried, so the pack does not list them as portable.
+    #[test]
+    fn mods_made_for_1_20_are_not_portable() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-launcher-old-layout-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        pipeline::write_json(&root.join("pack.json"), &Pack::default()).unwrap();
+        let record = |key: &str| horizon_port_pack::inventory::Record {
+            key: key.into(),
+            class: "content".into(),
+            tier: "data".into(),
+            ..Default::default()
+        };
+        pipeline::write_json(
+            &root.join("inventory.json"),
+            &vec![record("old"), record("new")],
+        )
+        .unwrap();
+        let row = |key: &str, old_layout: bool| Row {
+            key: key.into(),
+            name: key.into(),
+            class: "content".into(),
+            tier: "data".into(),
+            license: String::new(),
+            license_kind: "unknown".into(),
+            status: Status::NotYet,
+            reason: String::new(),
+            plain: String::new(),
+            waiting: 0,
+            old_layout,
+        };
+        pipeline::write_json(
+            &root.join("coverage.json"),
+            &vec![row("old", true), row("new", false)],
+        )
+        .unwrap();
+        let p = load(&root).unwrap();
+        assert_eq!(p.portable, 1);
+        assert!(p.can_port());
         fs::remove_dir_all(root).unwrap();
     }
 }

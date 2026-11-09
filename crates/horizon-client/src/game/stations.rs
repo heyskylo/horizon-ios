@@ -2737,6 +2737,11 @@ impl Game<'_> {
         y: f32,
         after_name: Vec<(horizon_client::text::Text, u32)>,
     ) {
+        let mut cancel = false;
+        self.native_tooltip_render_pre(stack, batch, x, y, &mut cancel);
+        if cancel {
+            return;
+        }
         let mut lines = self.stack_tooltip_lines(stack, false, creative);
         if lines.is_empty() {
             return;

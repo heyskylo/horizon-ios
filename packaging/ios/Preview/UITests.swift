@@ -19,6 +19,86 @@ final class LauncherLayoutTests: XCTestCase {
         XCTAssertTrue(app.buttons["launcher-play-button"].waitForExistence(timeout: 15))
         return app
     }
+    func testTouchEditorLandscapeSaveCancelResetAndPortraitReturn() {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launch(signedIn: false)
+        app.tabBars.buttons["Settings"].tap()
+        let edit = app.buttons["touch-edit-layout"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5)); edit.tap()
+        let save = app.buttons["touch-editor-save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        expectation(for: NSPredicate { _, _ in
+            let frame = app.windows.firstMatch.frame
+            return frame.width > frame.height
+        }, evaluatedWith: app)
+        waitForExpectations(timeout: 5)
+        let jump = app.images["touch-layout-5"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        app.buttons["touch-editor-reset"].tap()
+        app.buttons["Reset Layout"].tap()
+        let original = jump.frame
+        let editorShot = XCTAttachment(screenshot: app.screenshot()); editorShot.name = "Landscape touch editor"; editorShot.lifetime = .keepAlways; add(editorShot)
+        let target = app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.72, dy: 0.72))
+        jump.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1, thenDragTo: target)
+        XCTAssertEqual(jump.frame.midX, app.windows.firstMatch.frame.width * 0.72, accuracy: 10)
+        save.tap()
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        expectation(for: NSPredicate { _, _ in
+            let frame = app.windows.firstMatch.frame
+            return frame.height > frame.width
+        }, evaluatedWith: app)
+        waitForExpectations(timeout: 5)
+        edit.tap(); XCTAssertTrue(save.waitForExistence(timeout: 5))
+        let stored = jump.frame
+        XCTAssertGreaterThan(abs(stored.midX - original.midX), 40)
+        jump.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1, thenDragTo: app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)))
+        app.buttons["touch-editor-cancel"].tap()
+        XCTAssertTrue(edit.waitForExistence(timeout: 5)); edit.tap()
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        XCTAssertEqual(jump.frame.midX, stored.midX, accuracy: 5)
+        app.buttons["touch-editor-reset"].tap()
+        app.buttons["Reset Layout"].tap()
+        XCTAssertEqual(jump.frame.midX, original.midX, accuracy: 5)
+        save.tap()
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "Touch settings"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    func testTabletTouchEditorKeepsToolbarOutsideCanvasAndRestoresOrientation() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch(signedIn: false)
+        let settings = app.buttons.matching(NSPredicate(format: "label == %@", "Settings")).firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+        let edit = app.buttons["touch-edit-layout"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5)); edit.tap()
+        let save = app.buttons["touch-editor-save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        app.buttons["touch-editor-reset"].tap(); app.buttons["Reset Layout"].tap()
+        let jump = app.images["touch-layout-5"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        let original = jump.frame
+        let oldSave = save.frame
+        let handle = app.images["touch-toolbar-handle"]
+        XCTAssertTrue(handle.isHittable)
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.45)))
+        XCTAssertGreaterThan(abs(save.frame.midX - oldSave.midX), 40)
+        XCTAssertEqual(jump.frame, original, "Moving toolbar must not resize or reposition game controls")
+        jump.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.72)))
+        let moved = jump.frame
+        XCTAssertGreaterThan(abs(moved.midX - original.midX), 40)
+        XCTAssertGreaterThan(moved.minY, save.frame.maxY)
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "Tablet landscape touch editor"; shot.lifetime = .keepAlways; add(shot)
+        save.tap()
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(app.windows.firstMatch.frame.width, app.windows.firstMatch.frame.height)
+        edit.tap(); XCTAssertTrue(save.waitForExistence(timeout: 5))
+        XCTAssertEqual(jump.frame.midX, moved.midX, accuracy: 5)
+        XCTAssertEqual(jump.frame.midY, moved.midY, accuracy: 5)
+        app.buttons["touch-editor-reset"].tap(); app.buttons["Reset Layout"].tap(); save.tap()
+    }
+
     func testFirstRunAutomaticallyDownloadsAndEnablesPlay() throws {
         guard let url = ProcessInfo.processInfo.environment["HORIZON_DOWNLOAD_FIXTURE_URL"] else {
             throw XCTSkip("Requires the loopback download fixture")

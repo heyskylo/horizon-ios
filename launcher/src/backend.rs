@@ -1332,6 +1332,7 @@ pub fn remove(tag: &str) -> Result<(), String> {
 }
 
 fn remove_in(dir: &Path) -> Result<(), String> {
+    forget_prepared();
     let installed = dir.join(COMPLETE).is_file();
     // The marker goes first: a version counted as installed until its folder is gone comes back
     // into `installed` when an overlapping removal re-reads the list mid-delete.
@@ -1400,8 +1401,85 @@ fn resources_at(dir: &Path) -> PathBuf {
 
 const RESOURCES_MANIFEST: &str = "horizon-resources.json";
 
+/// How long a drawn page believes an answer of [`is_prepared`] without looking at the disk again.
+/// What the launcher itself changes (a preparation, an install, a removal) drops it at once
+/// ([`forget_prepared`]); this only bounds how late a change made by another process shows.
+const PREPARED_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The answers of [`is_prepared`]: version folder, whether it was prepared, when that was checked.
+#[derive(Default)]
+struct PreparedCache(Vec<(PathBuf, bool, std::time::Instant)>);
+
+impl PreparedCache {
+    fn get(&self, dir: &Path, now: std::time::Instant) -> Option<bool> {
+        let (_, prepared, at) = self.0.iter().find(|(d, ..)| d == dir)?;
+        (now.saturating_duration_since(*at) < PREPARED_TTL).then_some(*prepared)
+    }
+
+    fn put(&mut self, dir: &Path, prepared: bool, now: std::time::Instant) {
+        self.0.retain(|(d, ..)| d != dir);
+        self.0.push((dir.to_path_buf(), prepared, now));
+    }
+}
+
+static PREPARED: Mutex<PreparedCache> = Mutex::new(PreparedCache(Vec::new()));
+
+fn lock_prepared(cache: &Mutex<PreparedCache>) -> std::sync::MutexGuard<'_, PreparedCache> {
+    cache.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The answer kept for `dir`, else `check()` (run without the lock held), kept.
+fn cached_prepared(
+    cache: &Mutex<PreparedCache>,
+    dir: &Path,
+    now: std::time::Instant,
+    check: impl FnOnce() -> bool,
+) -> bool {
+    if let Some(known) = lock_prepared(cache).get(dir, now) {
+        return known;
+    }
+    let prepared = check();
+    lock_prepared(cache).put(dir, prepared, now);
+    prepared
+}
+
+/// Whether `tag` is prepared, as a page being drawn asks it (every frame, for each version it
+/// shows): an answer stands for [`PREPARED_TTL`], so a frame does no file reads. Anything that
+/// must not act on a stale answer (starting the game or a server) calls [`check_prepared`].
 pub fn is_prepared(tag: &str) -> bool {
-    prepared_at(&resources(tag))
+    cached_prepared(
+        &PREPARED,
+        &version_dir(tag),
+        std::time::Instant::now(),
+        || prepared_at(&resources(tag)),
+    )
+}
+
+/// Whether `tag` is prepared, checked on the disk now: `research-lock.json`, the manifest and
+/// every prepared table are read. The answer replaces the one [`is_prepared`] keeps.
+pub fn check_prepared(tag: &str) -> bool {
+    checked_prepared(
+        &PREPARED,
+        &version_dir(tag),
+        &resources(tag),
+        std::time::Instant::now(),
+    )
+}
+
+fn checked_prepared(
+    cache: &Mutex<PreparedCache>,
+    dir: &Path,
+    resources: &Path,
+    now: std::time::Instant,
+) -> bool {
+    let prepared = prepared_at(resources);
+    lock_prepared(cache).put(dir, prepared, now);
+    prepared
+}
+
+/// Drops what [`is_prepared`] remembers: a preparation, install or removal changed the disk.
+pub fn forget_prepared() {
+    lock_prepared(&PREPARED).0.clear();
 }
 
 /// Whether the prepared folder `resources` is usable: its manifest is a JSON
@@ -1704,6 +1782,7 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
 pub(crate) fn reuse_prepared_for(tag: &str) {
     reuse_prepared(&versions_dir(), tag);
     complete_assets(tag);
+    forget_prepared();
 }
 
 /// `reuse_prepared` for every installed version that is not prepared, oldest first, so a
@@ -1714,6 +1793,7 @@ pub(crate) fn reuse_prepared_for(tag: &str) {
 pub fn reuse_prepared_everywhere() -> Vec<(String, String)> {
     let versions = versions_dir();
     let reused = reuse_prepared_in(&versions);
+    forget_prepared();
     for tag in installed_in(&versions) {
         // Here, on the start-up thread, and not in `complete_assets`, which Play also runs: a
         // download of thousands of files is not for the moment the game is waited for.
@@ -2997,7 +3077,7 @@ pub fn server_dir(requested: Option<PathBuf>) -> PathBuf {
 
 /// Whether `tag` is prepared, with the run-time reports it needs completed when another copy has them.
 pub fn need_prepared(tag: &str) -> Result<(), String> {
-    if is_prepared(tag) {
+    if check_prepared(tag) {
         complete_reports(&versions_dir(), tag);
         Ok(())
     } else {
@@ -6168,6 +6248,76 @@ pub fn {f}("
         );
         // A key this launcher does not know is ignored.
         assert_eq!(Links::parse(r#"{"mastodon": "https://x.y/z"}"#), defaults);
+    }
+
+    #[test]
+    fn a_drawn_page_asks_the_disk_once_and_the_launch_check_asks_again() {
+        use std::time::{Duration, Instant};
+        let dir =
+            std::env::temp_dir().join(format!("horizon-launcher-cached-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(RESOURCES_MANIFEST), "{}").unwrap();
+        fs::write(dir.join("items.json"), "{}").unwrap();
+        let version = dir.join("version-folder");
+        let cache = Mutex::new(PreparedCache::default());
+        let t0 = Instant::now();
+        // The page's question: without the cache each of these would run the check.
+        let disk_reads = std::cell::Cell::new(0);
+        let draw = |now| {
+            cached_prepared(&cache, &version, now, || {
+                disk_reads.set(disk_reads.get() + 1);
+                prepared_at(&dir)
+            })
+        };
+        assert!(draw(t0), "a complete folder is prepared");
+
+        // A table is emptied behind the cache (a killed export): a frame still answers from
+        // memory, without touching the disk, for hundreds of frames.
+        fs::write(dir.join("items.json"), "").unwrap();
+        for frame in 1..=500 {
+            assert!(draw(t0 + Duration::from_millis(frame)), "frame {frame}");
+        }
+        assert_eq!(disk_reads.get(), 1, "500 frames read the disk once");
+
+        // Before a launch the folder is checked on the disk, and finds the empty table.
+        assert!(
+            !checked_prepared(&cache, &version, &dir, t0),
+            "an empty table is caught"
+        );
+        // ... and the pages then show it without checking again.
+        assert!(!draw(t0 + Duration::from_secs(1)));
+        assert_eq!(disk_reads.get(), 1);
+
+        // Repaired, the folder is believed prepared again once the answer is dropped or old.
+        fs::write(dir.join("items.json"), "{}").unwrap();
+        assert!(!draw(t0 + Duration::from_secs(2)), "still the old answer");
+        cache.lock().unwrap().0.clear();
+        assert!(draw(t0 + Duration::from_secs(2)));
+        assert_eq!(disk_reads.get(), 2);
+        fs::write(dir.join("items.json"), "").unwrap();
+        assert!(draw(t0 + Duration::from_secs(3)), "answer is a second old");
+        assert!(
+            !draw(t0 + Duration::from_secs(2) + PREPARED_TTL),
+            "past the time limit a change made by another process shows"
+        );
+        assert_eq!(disk_reads.get(), 3);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn each_version_keeps_its_own_prepared_answer() {
+        let now = std::time::Instant::now();
+        let cache = Mutex::new(PreparedCache::default());
+        let (a, b) = (Path::new("versions/a"), Path::new("versions/b"));
+        assert!(cached_prepared(&cache, a, now, || true));
+        assert!(!cached_prepared(&cache, b, now, || false));
+        assert!(cached_prepared(&cache, a, now, || unreachable!(
+            "a is known"
+        )));
+        assert!(!cached_prepared(&cache, b, now, || unreachable!(
+            "b is known"
+        )));
     }
 
     #[test]

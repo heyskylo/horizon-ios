@@ -298,6 +298,11 @@ impl Game<'_> {
             // The anvil's rename box, while it has an input to name.
             Screen::Inventory if self.station_typing() => self.station_text(Some(text), false),
             Screen::Creative if self.creative_screen.tab().search => {
+                // CreativeModeInventoryScreen.charTyped: the chat key that
+                // opened the tab does not type its letter.
+                if std::mem::take(&mut self.creative_ignore_text) {
+                    return Ok(());
+                }
                 // As typed: replaces a selected query, keeps the length limit.
                 self.creative_search_edit(Some(text))
             }
@@ -443,6 +448,27 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
             }
+            // Every thread's spans as a timeline Perfetto opens (`spans::trace`).
+            "trace" => match words.get(1).copied() {
+                None => Ok(Some(
+                    json!({ "ok": true, "tracing": horizon_client::spans::trace::on() }),
+                )),
+                Some("stop") => Ok(Some(
+                    json!({ "ok": true, "events": horizon_client::spans::trace::stop() }),
+                )),
+                Some(file) => {
+                    let seconds = match words.get(2) {
+                        None => None,
+                        Some(s) => Some(
+                            s.parse::<u32>()
+                                .map_err(|_| "trace [FILE [SECONDS] | stop]")?,
+                        ),
+                    };
+                    horizon_client::spans::trace::start(std::path::Path::new(file), seconds)
+                        .map_err(|e| format!("trace {file}: {e}"))?;
+                    Ok(Some(json!({ "ok": true, "tracing": true, "file": file })))
+                }
+            },
             "render-capture" => match words.get(1).copied() {
                 None => {
                     let r = self.renderer.as_ref().ok_or("no renderer")?;

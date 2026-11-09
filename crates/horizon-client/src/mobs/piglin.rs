@@ -2563,7 +2563,8 @@ mod guarded_memory_tick_tests {
                     "combat countdown at {tick}"
                 );
                 for base in [None, Some(&raw)] {
-                    let saved = crate::entity_nbt::mob_to_nbt(&m, [42, 43, 44, 45], base, None);
+                    let saved =
+                        crate::entity_nbt::mob_to_nbt(&m, [42, 43, 44, 45], base, None, |_| None);
                     let memory = saved
                         .get("Brain")
                         .and_then(|b| b.get("memories"))

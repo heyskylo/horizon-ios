@@ -51,6 +51,7 @@ impl Game<'_> {
         }
         // BaseContainerBlockEntity.canOpen: a spectator opens no container that still
         // has a loot table to unpack (it clears while it rolls, on first open).
+        // ServerPlayer.openMenu sends the refused spectator a red action bar.
         if self
             .world
             .chunks
@@ -58,6 +59,10 @@ impl Game<'_> {
             .and_then(|c| c.saved.as_ref())
             .is_some_and(|s| s.rolled_loot.iter().any(|r| r.pos == key))
         {
+            self.send_overlay_message(
+                Text::translate("container.spectatorCantOpen", &[])
+                    .with_color(horizon_client::text::RED),
+            );
             return;
         }
         let Some(entity) = BlockEntity::for_block(&name) else {

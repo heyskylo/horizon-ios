@@ -383,6 +383,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let short = short.replacen("wall_", "", 1);
                     let _ = writeln!(result, "D minecraft:blocks/{short}");
                 }
+                // Block updates place no templates.
+                LevelEvent::ContainerLootTable { .. } => {}
                 LevelEvent::FallingBlock { .. } => {
                     let _ = writeln!(result, "E minecraft:falling_block");
                 }

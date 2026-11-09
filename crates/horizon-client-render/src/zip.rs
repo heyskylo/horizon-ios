@@ -254,7 +254,11 @@ fn normalize_end(data: &mut [u8]) {
     }
     let disk = u16_at(data, end + 4);
     let with_directory = u16_at(data, end + 6);
-    if disk == with_directory && u16_at(data, end + 8) == count && u16_at(data, end + 10) == count {
+    if disk == 0
+        && with_directory == 0
+        && u16_at(data, end + 8) == count
+        && u16_at(data, end + 10) == count
+    {
         return;
     }
     data[end + 4..end + 10].fill(0);
@@ -308,6 +312,14 @@ mod tests {
         bytes[end + 4..end + 6].fill(0xFF);
         bytes[end + 8..end + 12].fill(0);
         let zip = opened("end-counts", &bytes).unwrap();
+        assert_eq!(zip.read("a/b.txt").unwrap(), b"hello hello hello hello");
+    }
+    #[test]
+    fn a_file_is_opened_with_equal_nonzero_disk_numbers() {
+        let mut bytes = archive();
+        let end = bytes.len() - END_HEADER;
+        bytes[end + 4..end + 8].fill(0xFF);
+        let zip = opened("end-disks", &bytes).unwrap();
         assert_eq!(zip.read("a/b.txt").unwrap(), b"hello hello hello hello");
     }
     #[test]

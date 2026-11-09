@@ -1289,6 +1289,17 @@ impl Game<'_> {
         if pos.1 == super::minecarts::CART_KEY_Y {
             return self.lan_open_vehicle_container(host, conn, pos);
         }
+        // `RandomizableContainer.unpackLootTable`: a guest opening a block
+        // container rolls the table it still holds, as the host's own open does
+        // (`unpack_opened_loot` no-ops when there is no roll), and the stat
+        // fires for the acting guest.
+        let opened = self
+            .res
+            .facts()
+            .get(self.world.block(pos.0, pos.1, pos.2))
+            .name
+            .to_string();
+        self.unpack_opened_loot(pos, &opened);
         let name = &self
             .res
             .facts()
@@ -3666,12 +3677,10 @@ impl Game<'_> {
         let world = self
             .level
             .world_spawn
-            .map(|[x, y, z]| [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]);
-        let spawn = host.hub.guests[i]
-            .spawn
-            .or(world)
+            .map(|[x, y, z]| [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5])
             .or(self.spawn.map(|s| [s.x, s.y, s.z]))
             .unwrap_or([0.5, 80.0, 0.5]);
+        let spawn = host.hub.guests[i].spawn.unwrap_or(world);
         if !host.hub.guests[i].dead {
             return;
         }
@@ -3766,7 +3775,9 @@ impl Game<'_> {
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
-            spawn,
+            // PlayerList.respawn / sendLevelInfo send level respawn data,
+            // independently of the personal destination passed to Hub::respawn.
+            spawn: world,
             difficulty: i32::from(self.ui.difficulty),
             difficulty_locked: self.level.difficulty_locked,
             clock_rate,
@@ -4715,8 +4726,10 @@ impl Game<'_> {
             let mut events = std::mem::take(&mut w.player.events);
             // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
             for event in &events {
-                if let MotionEvent::CauldronExtinguish { pos } = event {
-                    game.cauldron_extinguish(*pos);
+                match event {
+                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
+                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
+                    _ => {}
                 }
             }
             // Entity.baseTick: rain puts out a burning player.
@@ -4870,7 +4883,10 @@ impl Game<'_> {
                         host.hub.entity_event(id, event as i8, at);
                     }
                 }
-                MotionEvent::Fall(event) => self.landing_block_updates(&event),
+                MotionEvent::Fall(event) => {
+                    let player = host.hub.guest(conn).map(|g| g.uuid);
+                    self.landing_block_updates(player, &event)
+                }
                 // PowderSnowBlock.entityInside: every player around sees the
                 // snowflake (`ServerLevel.sendParticles`).
                 MotionEvent::Snowflake { position, velocity } => {
@@ -4888,6 +4904,11 @@ impl Game<'_> {
                             .entity_event(g.entity_id, super::combat::DROWN_EVENT, at);
                     }
                     self.drown_particles(at, [0.0; 3]);
+                }
+                // ServerPlayer.onInsideBlock: the enter_block trigger, for the
+                // player who moved.
+                MotionEvent::EnterBlock { state } => {
+                    self.as_guest(host, conn, |game| game.trigger_enter_block(state));
                 }
                 // HoneyBlock.maybeDoSlideEffects: the sound reaches the
                 // others (Player.playSound excludes the player, whose client
@@ -6003,3 +6024,149 @@ mod spin_target_tests {
 #[cfg(test)]
 #[path = "lan_actions/vehicle_loot_tests.rs"]
 pub(super) mod vehicle_loot_tests;
+
+#[cfg(test)]
+mod respawn_world_point_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::geometry::Vec3;
+    use horizon_protocol::packets::{configuration::ClientInformation, play::Clientbound};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    /// PlayerList.respawn sends world respawn data, independently of the personal landing.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn guest_respawn_keeps_world_information_distinct_from_personal_landing() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let scratch = std::env::temp_dir().join(format!(
+            "horizon-respawn-point-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        game.world_root = scratch.clone();
+        let world = [0, 100, 0];
+        let personal = [5.5, 101.0, 5.5];
+        game.level.world_spawn = Some(world);
+        game.spawn = Some(Vec3::new(0.5, 100.0, 0.5));
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "respawn-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 330,
+                name: "RespawnGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+            },
+            2,
+            [0.5, 100.0, 0.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.spawn = Some(personal);
+        guest.health = 0.0;
+        guest.dead = true;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        game.guest_respawn(&mut host, 2);
+        let guest = &host.hub.guests[0];
+        assert_eq!(guest.uuid, 330);
+        assert_eq!(guest.position, personal);
+        assert_eq!(guest.health, 20.0);
+        assert!(!guest.dead);
+        let mut packets = Vec::new();
+        for out in rx.try_iter() {
+            match out {
+                Out::Packet(body) => packets.push(body),
+                Out::Packets(bodies) => packets.extend(bodies),
+                Out::Disconnect(_) => panic!("unexpected disconnect"),
+            }
+        }
+        let mut sequence = Vec::new();
+        let mut points = Vec::new();
+        for body in packets {
+            let mut r = horizon_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            match Clientbound::decode(id, r.rest()).unwrap() {
+                Clientbound::Respawn(_) => sequence.push(84),
+                Clientbound::SetDefaultSpawnPosition(p) => {
+                    sequence.push(99);
+                    points.push((
+                        p.pos.dimension,
+                        p.pos.pos,
+                        p.yaw.to_bits(),
+                        p.pitch.to_bits(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(sequence, [84, 99, 99]);
+        assert_eq!(points, vec![("minecraft:overworld".into(), world, 0, 0); 2]);
+        drop(host);
+        drop(game);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+}

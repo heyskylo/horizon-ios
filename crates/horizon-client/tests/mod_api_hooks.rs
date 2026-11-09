@@ -209,6 +209,74 @@ fn client_packet_hands_a_mod_the_decoded_packet() {
     );
 }
 
+/// #9036, part of #9873: a landing's block change (farmland trampled into
+/// dirt, a turtle egg broken) goes through a hook a mod can cancel, before its
+/// neighbour updates - so a claims mod can keep the crop above standing.
+#[test]
+fn a_landing_change_a_mod_cancels_keeps_the_block_as_it_was() {
+    use horizon_client::mod_api::{
+        EntityChangeBlockV2Event, Flow, Hooks, Host, dispatch_entity_change_block_v2,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Claims;
+    impl Hooks for Claims {
+        fn entity_change_block_v2(
+            &self,
+            _host: &mut dyn Host,
+            event: &mut EntityChangeBlockV2Event<'_>,
+        ) -> Flow {
+            // A guest's landing: who trampled, the position and both states.
+            assert_eq!(event.player, Some(7));
+            assert_eq!(event.entity, None);
+            assert_eq!(event.kind, "minecraft:player");
+            assert_eq!(event.pos, [0, 64, 0]);
+            assert_eq!(event.from, "minecraft:farmland");
+            assert_eq!(event.to, "minecraft:dirt");
+            Flow::Cancel
+        }
+    }
+    struct Unreached;
+    impl Hooks for Unreached {
+        fn entity_change_block_v2(
+            &self,
+            _host: &mut dyn Host,
+            _event: &mut EntityChangeBlockV2Event<'_>,
+        ) -> Flow {
+            panic!("a cancelled change is not offered to later mods");
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Claims), Box::new(Unreached)];
+    let mut host = TestHost;
+    let mut cancel = false;
+    dispatch_entity_change_block_v2(
+        &mut host,
+        &mods,
+        Some(7),
+        None,
+        "minecraft:player",
+        [0, 64, 0],
+        "minecraft:farmland",
+        "minecraft:dirt",
+        &mut cancel,
+    );
+    assert!(cancel, "the farmland stays");
+    // No mods: the change goes ahead.
+    let mut cancel = false;
+    dispatch_entity_change_block_v2(
+        &mut host,
+        &[],
+        Some(7),
+        None,
+        "minecraft:player",
+        [0, 64, 0],
+        "minecraft:farmland",
+        "minecraft:dirt",
+        &mut cancel,
+    );
+    assert!(!cancel);
+}
+
 #[test]
 fn a_tank_hook_can_refuse_a_fluid() {
     use horizon_client::mod_api::{
@@ -261,4 +329,117 @@ fn a_tank_hook_can_refuse_a_fluid() {
         &mut cancel,
     );
     assert!(!cancel, "the water tank takes water");
+}
+
+#[test]
+fn tooltip_render_pre_intercepts_rendering_and_draws_gui_items() {
+    use horizon_client::hud::HudBatch;
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{
+        Flow, KeyCode, TooltipRenderPreEvent, dispatch_tooltip_render_pre,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    struct TestHost {
+        draw_count: AtomicU32,
+        with_text_seen: AtomicBool,
+    }
+    impl Host for TestHost {
+        fn gui_draw_item(&self, _batch: &mut HudBatch, stack: &ItemStack, at: [f32; 2]) {
+            if &*stack.item == "minecraft:shulker_box" && at == [16.0, 32.0] {
+                self.draw_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        fn gui_draw_item_with(
+            &self,
+            _batch: &mut HudBatch,
+            stack: &ItemStack,
+            at: [f32; 2],
+            text: Option<&str>,
+        ) {
+            if &*stack.item == "minecraft:diamond" && at == [20.0, 40.0] && text == Some("5") {
+                self.with_text_seen.store(true, Ordering::SeqCst);
+            }
+        }
+        fn has_shift_down(&self) -> bool {
+            true
+        }
+        fn has_control_down(&self) -> bool {
+            false
+        }
+        fn has_alt_down(&self) -> bool {
+            false
+        }
+        fn is_key_down(&self, key: KeyCode) -> bool {
+            key == KeyCode::ShiftLeft
+        }
+    }
+
+    struct ShulkerPreviewMod;
+    impl Hooks for ShulkerPreviewMod {
+        fn tooltip_render_pre(
+            &self,
+            host: &mut dyn Host,
+            event: &mut TooltipRenderPreEvent<'_>,
+        ) -> Flow {
+            if &*event.stack.item == "minecraft:shulker_box"
+                && host.has_shift_down()
+                && host.is_key_down(KeyCode::ShiftLeft)
+            {
+                host.gui_draw_item(event.batch, event.stack, [event.x, event.y]);
+                let inner = ItemStack::new("minecraft:diamond", 5);
+                host.gui_draw_item_with(event.batch, &inner, [20.0, 40.0], Some("5"));
+                return Flow::Cancel;
+            }
+            Flow::Continue
+        }
+    }
+
+    let mut host = TestHost {
+        draw_count: AtomicU32::new(0),
+        with_text_seen: AtomicBool::new(false),
+    };
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(ShulkerPreviewMod)];
+    let shulker = ItemStack::new("minecraft:shulker_box", 1);
+    assert_eq!(shulker.container().len(), 0);
+    assert!(shulker.custom_data().is_none());
+
+    let mut batch = HudBatch::new([800, 600]);
+    let mut cancel = false;
+    dispatch_tooltip_render_pre(
+        &mut host,
+        &mods,
+        &shulker,
+        &mut batch,
+        16.0,
+        32.0,
+        &mut cancel,
+    );
+
+    assert!(cancel, "tooltip_render_pre cancelled vanilla tooltip");
+    assert_eq!(
+        host.draw_count.load(Ordering::SeqCst),
+        1,
+        "gui_draw_item was called"
+    );
+    assert!(
+        host.with_text_seen.load(Ordering::SeqCst),
+        "gui_draw_item_with was called"
+    );
+
+    let stone = ItemStack::new("minecraft:stone", 64);
+    let mut cancel_stone = false;
+    dispatch_tooltip_render_pre(
+        &mut host,
+        &mods,
+        &stone,
+        &mut batch,
+        16.0,
+        32.0,
+        &mut cancel_stone,
+    );
+    assert!(
+        !cancel_stone,
+        "unhandled stack continues to vanilla tooltip"
+    );
 }

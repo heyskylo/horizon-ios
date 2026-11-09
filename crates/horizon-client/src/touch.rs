@@ -51,7 +51,7 @@ const MARGIN: f32 = 14.0;
 const HOTBAR_REACH: f32 = 8.0;
 
 /// Where every button is on a `w` x `h` GUI-pixel screen.
-pub fn layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
+fn default_layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
     let s = button_size(h);
     let small = (s * 0.65).round();
     // The D-pad's centre cell, high enough that its bottom row clears the screen's edge.
@@ -89,6 +89,53 @@ pub fn layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
     v
 }
 
+/// Stable order shared with the app's layout editor; hotbar slots remain on the HUD.
+const EDITABLE: [Control; 10] = [
+    Control::Forward,
+    Control::Back,
+    Control::Left,
+    Control::Right,
+    Control::Sneak,
+    Control::Jump,
+    Control::Perspective,
+    Control::Chat,
+    Control::Pause,
+    Control::Inventory,
+];
+
+/// Apply normalized centres to the same rectangles used by paint and hit tests.
+/// Missing/non-finite coordinates use the original position; valid centres are
+/// clamped by the actual button size, including after resizing or a GUI scale change.
+pub fn layout_with_positions(w: f32, h: f32, positions: &[f32; 20]) -> Vec<(Control, Rect)> {
+    let mut buttons = default_layout(w, h);
+    for (control, rect) in &mut buttons {
+        let Some(i) = EDITABLE.iter().position(|c| c == control) else {
+            continue;
+        };
+        let (x, y) = (positions[i * 2], positions[i * 2 + 1]);
+        if x.is_finite() && y.is_finite() {
+            rect[0] = (x * w - rect[2] / 2.0).clamp(0.0, (w - rect[2]).max(0.0));
+            rect[1] = (y * h - rect[3] / 2.0).clamp(0.0, (h - rect[3]).max(0.0));
+        }
+    }
+    buttons
+}
+
+pub fn layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
+    #[cfg(target_os = "ios")]
+    return layout_with_positions(w, h, &horizon_ios_launcher::touch_preferences().0);
+    #[cfg(not(target_os = "ios"))]
+    default_layout(w, h)
+}
+
+/// Paint can disappear for a clean capture without disabling the touch regions.
+pub fn controls_visible() -> bool {
+    #[cfg(target_os = "ios")]
+    return !horizon_ios_launcher::touch_preferences().1;
+    #[cfg(not(target_os = "ios"))]
+    true
+}
+
 /// The close button over a screen that has none of its own (an inventory, chat, a sign): the top right.
 pub fn close_rect(w: f32, h: f32) -> Rect {
     let s = (button_size(h) * 0.75).round();
@@ -113,9 +160,13 @@ fn contains(r: Rect, (x, y): (f32, f32)) -> bool {
 
 /// The button under a point.
 pub fn hit(layout: &[(Control, Rect)], at: (f32, f32)) -> Option<Control> {
+    // Movable controls paint after the hotbar HUD, with later buttons on top.
+    // Match that order even when a user deliberately overlaps two controls.
     layout
         .iter()
-        .find(|(_, r)| contains(*r, at))
+        .rev()
+        .find(|(c, r)| !matches!(c, Control::Hotbar(_)) && contains(*r, at))
+        .or_else(|| layout.iter().find(|(_, r)| contains(*r, at)))
         .map(|(c, _)| *c)
 }
 
@@ -357,5 +408,80 @@ mod tests {
         let mut all = t.release_all();
         all.sort_by_key(|o| format!("{o:?}"));
         assert_eq!(all, [Out::Release(Control::Forward)]);
+    }
+}
+
+#[cfg(test)]
+mod custom_layout_tests {
+    use super::*;
+    #[test]
+    fn unset_reset_and_invalid_positions_preserve_defaults() {
+        for (w, h) in [(844.0, 390.0), (1024.0, 768.0), (390.0, 844.0)] {
+            assert_eq!(
+                layout_with_positions(w, h, &[f32::NAN; 20]),
+                default_layout(w, h)
+            );
+            assert_eq!(
+                layout_with_positions(w, h, &[f32::INFINITY; 20]),
+                default_layout(w, h)
+            );
+        }
+    }
+    #[test]
+    fn moved_jump_uses_identical_paint_and_hit_rectangle_after_resize() {
+        let mut positions = [f32::NAN; 20];
+        positions[10] = 0.65;
+        positions[11] = 0.35;
+        for (w, h) in [(844.0, 390.0), (1194.0, 834.0), (390.0, 844.0)] {
+            let layout = layout_with_positions(w, h, &positions);
+            let r = layout.iter().find(|(c, _)| *c == Control::Jump).unwrap().1;
+            let centre = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+            assert_eq!(hit(&layout, centre), Some(Control::Jump));
+            let mut fingers = Touches::default();
+            assert_eq!(
+                fingers.start(7, centre, 0.0, &layout),
+                vec![Out::Press(Control::Jump)]
+            );
+            assert_eq!(fingers.end(7), vec![Out::Release(Control::Jump)]);
+            assert!((centre.0 / w - 0.65).abs() < 0.0001);
+            assert!((centre.1 / h - 0.35).abs() < 0.0001);
+        }
+    }
+    #[test]
+    fn overlapping_controls_hit_the_button_painted_on_top_of_other_buttons_and_hotbar() {
+        let mut positions = [f32::NAN; 20];
+        let default = default_layout(650.0, 300.0);
+        let forward = default
+            .iter()
+            .find(|(c, _)| *c == Control::Forward)
+            .unwrap()
+            .1;
+        positions[10] = (forward[0] + forward[2] / 2.0) / 650.0;
+        positions[11] = (forward[1] + forward[3] / 2.0) / 300.0;
+        let buttons = layout_with_positions(650.0, 300.0, &positions);
+        assert_eq!(
+            hit(&buttons, (positions[10] * 650.0, positions[11] * 300.0)),
+            Some(Control::Jump)
+        );
+        positions[10] = 0.5;
+        positions[11] = 0.95;
+        let buttons = layout_with_positions(650.0, 300.0, &positions);
+        assert_eq!(hit(&buttons, (325.0, 285.0)), Some(Control::Jump));
+    }
+
+    #[test]
+    fn offscreen_centres_clamp_without_moving_hotbar_or_other_buttons() {
+        let mut positions = [f32::NAN; 20];
+        positions[10] = -20.0;
+        positions[11] = 30.0;
+        let layout = layout_with_positions(844.0, 390.0, &positions);
+        for ((c, r), (_, default)) in layout.iter().zip(default_layout(844.0, 390.0)) {
+            if *c == Control::Jump {
+                assert_eq!(r[0], 0.0);
+                assert_eq!(r[1] + r[3], 390.0);
+            } else {
+                assert_eq!(*r, default);
+            }
+        }
     }
 }

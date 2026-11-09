@@ -324,6 +324,22 @@ pub fn present_download() -> bool {
     false
 }
 
+/// Snapshot ABI shared with TouchControls.swift: ten normalized button centres,
+/// NaN for the built-in placement, and bit zero to hide paint only (never input).
+/// An older/missing launcher keeps the original layout and visibility.
+pub fn touch_preferences() -> ([f32; 20], bool) {
+    let positions = [f32::NAN; 20];
+    #[cfg(target_os = "ios")]
+    let (positions, hidden) = {
+        let mut positions = positions;
+        let hidden = ios::touch_preferences(&mut positions);
+        (positions, hidden)
+    };
+    #[cfg(not(target_os = "ios"))]
+    let hidden = false;
+    (positions, hidden)
+}
+
 #[cfg(target_os = "ios")]
 mod ios {
     use std::ffi::{CStr, CString, c_char, c_void};
@@ -366,6 +382,30 @@ mod ios {
         framework
             .exists()
             .then(|| CString::new(framework.into_os_string().into_encoded_bytes()).ok())?
+    }
+
+    pub fn touch_preferences(positions: &mut [f32; 20]) -> bool {
+        // Resolve once, retaining the framework handle for the process lifetime.
+        // No disk reads or dlopen calls in subsequent input/render frames.
+        type Snapshot = extern "C" fn(*mut f32, u32) -> u32;
+        static SNAPSHOT: std::sync::OnceLock<Option<Snapshot>> = std::sync::OnceLock::new();
+        let snapshot = SNAPSHOT.get_or_init(|| {
+            let path = framework()?;
+            // SAFETY: this bundled Swift C export accepts exactly 20 writable
+            // floats and a capacity, keeps no pointer and uses a locked snapshot.
+            unsafe {
+                let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
+                if handle.is_null() {
+                    return None;
+                }
+                let symbol = libc::dlsym(handle, c"horizon_touch_preferences_v1".as_ptr());
+                if symbol.is_null() {
+                    return None;
+                }
+                Some(std::mem::transmute::<*mut c_void, Snapshot>(symbol))
+            }
+        });
+        snapshot.is_some_and(|call| call(positions.as_mut_ptr(), 20) & 1 != 0)
     }
 
     pub fn present() -> bool {

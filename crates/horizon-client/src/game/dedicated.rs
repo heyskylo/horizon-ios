@@ -408,6 +408,19 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
         horizon_client::command::vanilla::set_horizon_commands(true);
     }
     props.store(&settings)?;
+    // `RegionFileVersion.configure`: the compression every region file this
+    // server writes uses, from `region-file-compression`. An unknown name is
+    // logged with the ones there are, and the default (deflate) stays.
+    if !horizon_world::compression::Compression::configure(&props.region_file_compression) {
+        log(
+            "ERROR",
+            &format!(
+                "Invalid `region-file-compression` value `{}` in server.properties. Please use one of: {}",
+                props.region_file_compression,
+                horizon_world::compression::REGION_FILE_NAMES.join(",")
+            ),
+        );
+    }
     let eula_file = PathBuf::from("eula.txt");
     let agreed = match eula::agreed(&eula_file) {
         Ok(a) => a,
@@ -1127,6 +1140,11 @@ impl Game<'_> {
                 .raw
                 .get(horizon_client::lan::HORIZON_CLIENTS_ONLY)
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+            accept_older_clients: props
+                .raw
+                .get(horizon_client::lan::ACCEPT_OLDER_CLIENTS)
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+            older_clients_play: false,
             lod_distance: horizon_client::lod_net::distance_property(
                 props.raw.get(horizon_client::lod_net::PROPERTY),
             ),
@@ -1345,6 +1363,14 @@ impl Game<'_> {
                 && let Some(recording) = state.report.take()
             {
                 self.finish_report(recording, state.view, state.max_players);
+            }
+            if horizon_client::spans::trace::due()
+                && let Some(events) = horizon_client::spans::trace::stop()
+            {
+                log(
+                    "INFO",
+                    &format!("Trace written: {events} events (reports/)"),
+                );
             }
             // DedicatedServer.sendLowDiskSpaceWarning: the operators hear of it
             // (no window drains the toasts here).
@@ -1646,6 +1672,38 @@ impl Game<'_> {
                             &format!("Recording a performance report for {seconds} s (reports/)"),
                         );
                     }
+                }
+            }
+            // Horizon's own, on the console only: every thread's spans as a timeline (report.rs).
+            "horizon-trace" if rest.first() == Some(&"stop") => {
+                match horizon_client::spans::trace::stop() {
+                    Some(events) => log("INFO", &format!("Trace stopped: {events} events written")),
+                    None => log("INFO", "No trace is being written"),
+                }
+            }
+            "horizon-trace" => {
+                let seconds = match rest.first().map(|s| s.parse::<u32>()) {
+                    None => Some(30),
+                    Some(Ok(s)) if (1..=report::TRACE_MAX_SECONDS).contains(&s) => Some(s),
+                    Some(_) => None,
+                };
+                match seconds.map(report::start_trace) {
+                    None => log(
+                        "INFO",
+                        &format!(
+                            "horizon-trace [SECONDS | stop]: 1 to {} seconds, 30 by default",
+                            report::TRACE_MAX_SECONDS
+                        ),
+                    ),
+                    Some(Ok(path)) => log(
+                        "INFO",
+                        &format!(
+                            "Writing a trace for {} s to {} (open it in ui.perfetto.dev)",
+                            seconds.unwrap_or_default(),
+                            path.display()
+                        ),
+                    ),
+                    Some(Err(e)) => log("ERROR", &format!("Could not start a trace: {e}")),
                 }
             }
             "save-all" => {

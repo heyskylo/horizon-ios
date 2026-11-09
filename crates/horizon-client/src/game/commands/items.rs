@@ -642,9 +642,9 @@ impl Game<'_> {
                 }
                 true
             }
-            Slot::Frame(id) => match self.item_frames.iter_mut().find(|f| f.id == *id) {
-                Some(f) => {
-                    f.item = stack;
+            Slot::Frame(id) => match self.item_frames.iter().position(|f| f.id == *id) {
+                Some(i) => {
+                    self.set_frame_item(i, stack);
                     true
                 }
                 None => false,

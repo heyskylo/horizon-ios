@@ -21,12 +21,30 @@ def program():
     else:
         extra += 'pub fn render_cache_len(_: &Resolver)->usize{0}\n'
     extra += STUBS + '\npub ' + method(source, 'head_skin') + '\n'
-    return lifetime.program().replace(lifetime.CACHE_ENDPOINTS, lifetime.CACHE_ENDPOINTS + extra).replace(lifetime.CASES, CASES)
+    # Run the real value/resolved-texture cache methods. Only the profile/texture
+    # codec is an endpoint, as in the shared mannequin probe; its real URL and
+    # signature checks remain covered by skins.rs's in-crate tests.
+    cache = source[source.index('impl HeadProfiles {'):]
+    head_start = source.index('#[derive(Debug, PartialEq)]\nstruct HeadProfile')
+    head_end = source.index('\nfn prepare_head(', head_start)
+    typed_cache = HEAD_CACHE + source[head_start:head_end]
+    typed_cache += method(source, 'prepare_head') + method(source, 'prepare_head_info')
+    typed_cache += 'impl HeadProfiles {' + method(cache, 'get') + method(cache, 'get_resolved') + '}\n'
+    return lifetime.program().replace('#[derive(Default)]struct HeadProfiles;', typed_cache).replace(lifetime.CACHE_ENDPOINTS, lifetime.CACHE_ENDPOINTS + extra).replace(lifetime.CASES, CASES).replace('#[derive(Clone,Copy,PartialEq)]pub enum Signature', '#[derive(Clone,Copy,Debug,PartialEq)]pub enum Signature')
+
+
+HEAD_CACHE = r'''
+const MAX_HEAD_PROFILES:usize=4096;
+#[derive(Default)]struct HeadProfiles {
+ entries:std::collections::HashMap<crate::serde_json::Value, std::sync::Arc<HeadProfile>>,
+ resolved:[std::collections::HashMap<String,std::sync::Arc<HeadProfile>>;2],
+}
+'''
 
 
 STUBS = r'''
 use crate::serde_json;
-pub struct ProfileInfo {pub textures:Option<(String,Signature)>,pub dynamic:Option<NameOrId>,pub id:u128}
+#[derive(Debug,Default,PartialEq)]pub struct ProfileInfo {pub textures:Option<(String,Signature)>,pub dynamic:Option<NameOrId>,pub id:u128}
 fn parse_profile(p:&serde_json::Value)->ProfileInfo{ProfileInfo{textures:None,dynamic:Some(NameOrId::Name(p.0.clone())),id:0}}
 pub struct Downloader;
 #[derive(PartialEq)]enum Download{Ready}
@@ -38,7 +56,7 @@ fn skin_location(hash:&str)->String{format!("skins/{hash}")}
 '''
 
 CASES = r'''
-mod serde_json{pub struct Value(pub String);impl Value{pub fn get(&self,_:&str)->Option<&Self>{None}pub fn as_str(&self)->Option<&str>{Some(&self.0)}}}
+mod serde_json{#[derive(Clone,Hash,PartialEq,Eq)]pub struct Value(pub String);impl Value{pub fn get(&self,_:&str)->Option<&Self>{None}pub fn as_str(&self)->Option<&str>{Some(&self.0)}}}
 mod tab_list{pub fn default_skin(_:u128)->&'static str{"fallback"}}
 fn draw(resolver:&mut skins::Resolver,name:&str)->String{skins::head_skin(&serde_json::Value(name.into()),resolver,&mut skins::Downloader,|_|true)}
 fn main(){

@@ -370,6 +370,8 @@ impl ArrowScene<'_, '_> {
             binding: self.collision,
             subject: None,
         };
+        // CollisionContext.of(arrow): scaffolding is open from below.
+        let context = horizon_world::collision_context::CollisionContext::position(from.y);
         let hit = horizon_core::geometry::traverse_blocks(from, to, 1024, |p: BlockPos| {
             if Some(p) == ignored {
                 return None;
@@ -380,7 +382,7 @@ impl ArrowScene<'_, '_> {
             }
             let shape = self
                 .collision
-                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+                .collision_shape_with_context(&mut scene, state, p, &context)
                 .ok()?;
             shape.clip(from, to, p)
         });
@@ -447,13 +449,15 @@ pub fn clip_block_hit(
         binding: collision,
         subject: None,
     };
+    // CollisionContext.of(projectile): scaffolding is open from below.
+    let context = horizon_world::collision_context::CollisionContext::position(from.y);
     let hit = horizon_core::geometry::traverse_blocks(from, to, 1024, |p: BlockPos| {
         let state = world.block(p.x, p.y, p.z);
         if facts.is_air(state) {
             return None;
         }
         let shape = collision
-            .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+            .collision_shape_with_context(&mut scene, state, p, &context)
             .ok()?;
         shape.clip(from, to, p)
     })

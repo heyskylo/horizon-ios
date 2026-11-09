@@ -3710,7 +3710,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
-                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend());
+                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend(true));
                 Action::None
             }
             (Mode::Onboarding(_), Some(onboarding::SOUNDS)) => Action::Sounds,

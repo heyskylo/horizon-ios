@@ -2,7 +2,9 @@
 //! small mixer standing in for OpenAL: one channel per source with its gain,
 //! pitch, linear distance attenuation (`AL_LINEAR_DISTANCE`, reference 0,
 //! rolloff 1), looping, relative flag and source state, Ogg/Vorbis decoding
-//! (streams on a worker thread) and OpenAL Soft's stereo panning.
+//! (streams on a worker thread) and OpenAL Soft's mixing: mono sources panned
+//! and attenuated, multi-channel buffers (stereo music and records) played
+//! direct as OpenAL does.
 use crate::Result;
 use crate::sound_engine::{
     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
@@ -30,7 +32,7 @@ enum State {
 }
 /// An OpenAL source.
 struct Channel {
-    samples: Option<(Arc<Vec<f32>>, u32)>,
+    samples: Option<(Arc<Vec<f32>>, u32, u16)>,
     position: f64,
     state: State,
     gain: f32,
@@ -239,8 +241,8 @@ fn poll_retired_for(owner: Option<&Arc<()>>) -> bool {
 static SHARED_CHANNELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Two players' copies of one sound: started within this of each other.
 const SAME_SOUND: std::time::Duration = std::time::Duration::from_millis(150);
-/// Decoded samples and their rate (`None`: the file did not load).
-type Samples = Option<(Arc<Vec<f32>>, u32)>;
+/// Decoded interleaved samples, their rate and channel count (`None`: the file did not load).
+type Samples = Option<(Arc<Vec<f32>>, u32, u16)>;
 /// Decoded static sounds (`SoundBufferLibrary`'s buffers), dropped least
 /// recently used first past `CACHE_BYTES`: kept forever, every sound heard in
 /// a session stayed (up to 1.4 GiB of samples, villages playing hundreds).
@@ -281,7 +283,7 @@ impl SoundCache {
     fn size(samples: &Samples) -> usize {
         samples
             .as_ref()
-            .map_or(0, |(s, _)| s.len() * std::mem::size_of::<f32>())
+            .map_or(0, |(s, _, _)| s.len() * std::mem::size_of::<f32>())
     }
 }
 /// A static sound to decode for a channel waiting on it.
@@ -294,7 +296,7 @@ struct Decode {
 }
 impl Decode {
     fn load(&self) -> Samples {
-        decode(&self.file).map(|(samples, rate)| (Arc::new(samples), rate))
+        decode(&self.file).map(|(samples, rate, channels)| (Arc::new(samples), rate, channels))
     }
 }
 /// Give a channel waiting on its sound the decoded samples and start it, as
@@ -370,7 +372,7 @@ pub struct Audio {
     #[cfg(feature = "audio")]
     device_ticks: u32,
 }
-fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
+fn decode(path: &Path) -> Option<(Vec<f32>, u32, u16)> {
     use symphonia::core::{
         audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
         meta::MetadataOptions, probe::Hint,
@@ -394,7 +396,8 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .ok()?;
-    let mut mono = Vec::new();
+    let mut samples = Vec::new();
+    let mut channels = 0u16;
     while let Ok(packet) = format.next_packet() {
         if packet.track_id() != id {
             continue;
@@ -403,14 +406,34 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
             continue;
         };
         let spec = *buffer.spec();
-        let channels = spec.channels.count().max(1);
-        let mut samples = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
-        samples.copy_interleaved_ref(buffer);
-        for frame in samples.samples().chunks(channels) {
-            mono.push(frame.iter().sum::<f32>() / channels as f32);
+        let frame_channels = spec.channels.count().max(1);
+        let mut decoded = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
+        decoded.copy_interleaved_ref(buffer);
+        if channels == 0 {
+            channels = frame_channels.min(2) as u16;
+        }
+        if frame_channels <= 2 {
+            samples.extend_from_slice(decoded.samples());
+        } else {
+            // OpenAL plays multi-channel buffers direct; a stereo output hears the odd/even split.
+            for frame in decoded.samples().chunks(frame_channels) {
+                let (mut left, mut right) = (0.0, 0.0);
+                let (mut lefts, mut rights) = (0.0f32, 0.0f32);
+                for (i, sample) in frame.iter().enumerate() {
+                    if i % 2 == 0 {
+                        left += sample;
+                        lefts += 1.0;
+                    } else {
+                        right += sample;
+                        rights += 1.0;
+                    }
+                }
+                samples.push(left / lefts.max(1.0));
+                samples.push(right / rights.max(1.0));
+            }
         }
     }
-    Some((mono, rate))
+    (channels != 0).then_some((samples, rate, channels))
 }
 /// A sound file without its variant number (`mob/creeper/say2.ogg` is `mob/creeper/say`): each
 /// player's game picks its own variant of the same event.
@@ -560,7 +583,7 @@ impl Backend for MixerBackend {
                     if cancelled(&cancel) {
                         return;
                     }
-                    let samples = decode(&file).map(|(s, r)| (Arc::new(s), r));
+                    let samples = decode(&file).map(|(s, r, c)| (Arc::new(s), r, c));
                     if !cancelled(&cancel) {
                         attach(&mixer, channel, samples, looping);
                     }
@@ -727,9 +750,13 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
     let mut voices = std::mem::take(&mut mixer.voices);
     voices.clear();
     for (id, c) in &mixer.channels {
-        let Some((_, source_rate)) = &c.samples else {
+        let Some((_, source_rate, source_channels)) = &c.samples else {
             continue;
         };
+        // OpenAL plays a multi-channel buffer direct: no panning and no distance attenuation
+        // (`CalcVoiceParams`' non-spatialized path, vanilla's HRTF-off stereo context). Vanilla's
+        // music and records are stereo. A mono buffer is the positional one.
+        let direct = *source_channels > 1;
         if c.state != State::Playing {
             continue;
         }
@@ -754,24 +781,33 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         let d = if c.relative { at } else { away(listener) };
         let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
         let gain = if camera.is_some() {
-            c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance)
+            c.gain.clamp(0.0, 1.0)
+                * if direct {
+                    1.0
+                } else {
+                    distance_gain(c.linear, distance)
+                }
         } else {
             0.0
         };
-        // Relative sources are already in OpenAL's listener space (-Z ahead).
-        let [mut left, mut right] = if c.relative {
-            stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
+        let [left, right] = if direct {
+            [gain, gain]
         } else {
-            stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
+            // Relative sources are already in OpenAL's listener space (-Z ahead).
+            let [mut left, mut right] = if c.relative {
+                stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
+            } else {
+                stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
+            };
+            if shared {
+                // Several players on the speakers: half the stereo width, as left and right are
+                // nobody's in particular.
+                let middle = (left + right) / 2.0;
+                left = middle + (left - middle) / 2.0;
+                right = middle + (right - middle) / 2.0;
+            }
+            [left * gain, right * gain]
         };
-        if shared {
-            // Several players on the speakers: half the stereo width, as left and right are
-            // nobody's in particular.
-            let middle = (left + right) / 2.0;
-            left = middle + (left - middle) / 2.0;
-            right = middle + (right - middle) / 2.0;
-        }
-        let [left, right] = [left, right].map(|pan| gain * pan);
         let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
         voices.push((*id, [left, right, gain], step));
     }
@@ -779,13 +815,15 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
         };
-        let Some((samples, _)) = c.samples.clone() else {
+        let Some((samples, _, source_channels)) = c.samples.clone() else {
             continue;
         };
+        let source_channels = source_channels as usize;
+        let frames = samples.len() / source_channels;
         for frame in data.chunks_mut(channels) {
             let mut i = c.position as usize;
-            if i + 1 >= samples.len() {
-                if c.looping && samples.len() > 1 {
+            if i + 1 >= frames {
+                if c.looping && frames > 1 {
                     c.position = 0.0;
                     i = 0;
                 } else {
@@ -794,13 +832,24 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 }
             }
             let t = (c.position - i as f64) as f32;
-            let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
-            if channels >= 2 {
-                frame[0] += s * left;
-                frame[1] += s * right;
+            if source_channels > 1 {
+                let l = samples[i * 2] * (1.0 - t) + samples[(i + 1) * 2] * t;
+                let r = samples[i * 2 + 1] * (1.0 - t) + samples[(i + 1) * 2 + 1] * t;
+                if channels >= 2 {
+                    frame[0] += l * left;
+                    frame[1] += r * right;
+                } else {
+                    frame[0] += (l + r) * 0.5 * gain;
+                }
             } else {
-                // A mono output has no panning: the source's own gain.
-                frame[0] += s * gain;
+                let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
+                if channels >= 2 {
+                    frame[0] += s * left;
+                    frame[1] += s * right;
+                } else {
+                    // A mono output has no panning: the source's own gain.
+                    frame[0] += s * gain;
+                }
             }
             c.position += step;
         }
@@ -1855,7 +1904,7 @@ mod tests {
 
     fn channel(samples: Vec<f32>, linear: Option<f32>, at: [f32; 3], looping: bool) -> Channel {
         Channel {
-            samples: Some((Arc::new(samples), 48_000)),
+            samples: Some((Arc::new(samples), 48_000, 1)),
             position: 0.0,
             state: State::Playing,
             gain: 1.0,
@@ -1870,11 +1919,23 @@ mod tests {
         }
     }
 
+    /// A channel whose buffer is interleaved stereo.
+    fn stereo_channel(
+        samples: Vec<f32>,
+        linear: Option<f32>,
+        at: [f32; 3],
+        looping: bool,
+    ) -> Channel {
+        let mut c = channel(Vec::new(), linear, at, looping);
+        c.samples = Some((Arc::new(samples), 48_000, 2));
+        c
+    }
+
     #[test]
     fn decoded_sounds_stay_within_the_budget_least_recently_used_out() {
         let mut cache = SoundCache::default();
         let quarter = CACHE_BYTES / 4 / std::mem::size_of::<f32>();
-        let sound = || Some((Arc::new(vec![0.0f32; quarter]), 44100));
+        let sound = || Some((Arc::new(vec![0.0f32; quarter]), 44100, 1));
         for key in ["a", "b", "c", "d"] {
             cache.insert(key.into(), sound());
         }
@@ -1998,6 +2059,32 @@ mod tests {
             for (g, e) in gains.into_iter().zip(expected) {
                 assert!((g - e).abs() < 1e-4, "{right} {up} {forward}: {gains:?}");
             }
+        }
+    }
+
+    #[test]
+    fn stereo_sounds_play_direct_without_panning_or_distance() {
+        // OpenAL Soft plays a multi-channel buffer direct (its non-spatialized path), so vanilla's
+        // stereo music and records keep their own left/right mix at full volume whichever way the
+        // camera faces and however far it is. Only mono buffers are panned and attenuated.
+        let wave = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6]; // three stereo frames
+        let expected = [wave[0], wave[1], wave[2], wave[3]];
+        for (yaw, at, linear, listener) in [
+            (0.0, [100.0, 0.0, 0.0], Some(16.0), [0.0; 3]),
+            (180.0, [0.0, 0.0, -100.0], Some(16.0), [0.0; 3]),
+            (90.0, [2.0, 1.0, -3.0], Some(16.0), [5.0, 60.0, 5.0]),
+            (0.0, [0.0, 0.0, 0.0], None, [0.0; 3]),
+        ] {
+            let mut m = Mixer {
+                listener,
+                listener_yaw: yaw,
+                ..Mixer::default()
+            };
+            m.channels
+                .insert(1, stereo_channel(wave.to_vec(), linear, at, false));
+            let mut data = [0.0; 4];
+            mix(&mut m, &mut data, 2, 48_000);
+            assert_eq!(data, expected, "yaw {yaw}, source {at:?}");
         }
     }
 

@@ -261,12 +261,13 @@ impl Game<'_> {
             osk: self.pad.menu.osk.is_some(),
             dialog: self.dialog_open() || self.code_of_conduct.is_some(),
             enabled: self.settings.controller.enabled,
-            reloading: self.reload_blocks_input(),
+            reloading: self.menu_input_blocked(),
         }
     }
 
     /// Once per loop iteration: read the pads and act on button changes.
     pub(super) fn poll_pads(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.sync_presentation_input(event_loop);
         self.pad.virtual_input = self.pad.injected != PadState::default();
         let context = self.pad_context();
         if let Some(old) = self.pad.context.filter(|old| *old != context) {
@@ -282,7 +283,7 @@ impl Game<'_> {
             self.pad_cancel_inputs(event_loop);
             self.pad.state = PadState::default();
             self.pad.in_use = false;
-            if self.reload_blocks_input() {
+            if self.menu_input_blocked() {
                 self.finish_reload_input_disarm(event_loop);
                 return;
             }
@@ -394,7 +395,7 @@ impl Game<'_> {
 
     /// Sample hardware even while loading, suppressing holds until released.
     fn pad_reload_sample(&mut self, event_loop: &dyn EventLoopCtl, state: PadState) -> bool {
-        if !self.reload_blocks_input() {
+        if !self.menu_input_blocked() {
             return false;
         }
         self.pad
@@ -436,7 +437,7 @@ impl Game<'_> {
     }
 
     /// End held actions and captures before another context receives input.
-    fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
+    pub(super) fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
         // Before the releases below: a cancelled press must not click.
         self.pad.menu.armed = None;
         let held_sticks = [
@@ -491,7 +492,7 @@ impl Game<'_> {
         button: Button,
         down: bool,
     ) -> Result<()> {
-        if down && (self.reload_blocks_input() || !self.pad_focused()) {
+        if down && (self.menu_input_blocked() || !self.pad_focused()) {
             return Ok(());
         }
         let playing = !self.pad_in_menu();
@@ -499,7 +500,7 @@ impl Game<'_> {
             // Like a click into the window: take the pointer.
             self.capture(true);
         }
-        if !playing && !self.reload_blocks_input() {
+        if !playing && !self.menu_input_blocked() {
             self.pad_menu_button(event_loop, button, down)?;
             if down {
                 return Ok(());
@@ -529,7 +530,7 @@ impl Game<'_> {
     /// A bound action: a vanilla mapping acts as its default key or mouse
     /// button, like a rebound keyboard key.
     fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
-        if down && self.reload_blocks_input() {
+        if down && self.menu_input_blocked() {
             return Ok(());
         }
         let Some(route) = gamepad::route(action) else {
@@ -618,7 +619,7 @@ impl Game<'_> {
 
     /// Each poll: a held drop button, as a held Q's key repeats reach the mapping.
     fn pad_drop_frame(&mut self) {
-        if self.reload_blocks_input() || self.pad_in_menu() || self.screen_over_playing() {
+        if self.menu_input_blocked() || self.pad_in_menu() || self.screen_over_playing() {
             return;
         }
         let interval = Duration::from_secs_f32(self.settings.controller.repeat_interval);
@@ -665,7 +666,7 @@ impl Game<'_> {
     /// The left stick as the move vector, while playing.
     pub(super) fn pad_move(&self) -> Option<[f32; 2]> {
         let settings = &self.settings.controller;
-        if self.reload_blocks_input()
+        if self.menu_input_blocked()
             || !settings.enabled
             || self.pad_in_menu()
             || !self.pad_focused()
@@ -698,7 +699,7 @@ impl Game<'_> {
     /// The right stick turns the view, once per frame (`Entity.turn`).
     pub(super) fn pad_look(&mut self, seconds: f32) {
         let settings = &self.settings.controller;
-        if self.reload_blocks_input()
+        if self.menu_input_blocked()
             || !settings.enabled
             || self.pad_in_menu()
             || self.player.is_none()

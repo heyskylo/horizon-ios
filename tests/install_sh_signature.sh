@@ -91,7 +91,9 @@ edit() {  # sed-expression file
   sed "$1" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
 }
 mkdir -p "$W/home"
-P="$(dirname "$(command -v openssl)"):/usr/bin:/bin"
+# The cases get the OpenSSL 3 checked above, wherever it is: macOS's /usr/bin has LibreSSL.
+mkdir "$W/ssl"; ln -s "$(command -v openssl)" "$W/ssl/openssl"
+P=$W/ssl:/usr/bin:/bin
 
 # 1. Good signature, a Nightly: SHA256SUMS.v2.sig signed for the version its title names.
 NIGHTLY=nightly-2026-11-03-0c02067

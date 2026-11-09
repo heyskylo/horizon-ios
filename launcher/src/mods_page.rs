@@ -416,8 +416,14 @@ impl Launcher {
             }
         }
         // `HORIZON_LAUNCHER_PROJECT=<slug>` (with `HORIZON_LAUNCHER_PAGE=mods`): opens that
-        // project's page once a search finds it, for screenshots.
-        if self.mods.browse.open.is_none() {
+        // project's page once a search finds it, for screenshots. Once per run, kept in a flag
+        // rather than by removing the variable: `remove_var` races `getenv` on the download, check
+        // and keyring threads running by now (unsound, and `unsafe` from edition 2024).
+        static PROJECT_OPENED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if self.mods.browse.open.is_none()
+            && !PROJECT_OPENED.load(std::sync::atomic::Ordering::Relaxed)
+        {
             if let Ok(want) = std::env::var("HORIZON_LAUNCHER_PROJECT") {
                 if let Some(p) = self
                     .mods
@@ -426,7 +432,7 @@ impl Launcher {
                     .find(|p| p.id == want || p.slug == want)
                     .cloned()
                 {
-                    std::env::remove_var("HORIZON_LAUNCHER_PROJECT");
+                    PROJECT_OPENED.store(true, std::sync::atomic::Ordering::Relaxed);
                     self.mods_open(p);
                 }
             }

@@ -3,6 +3,7 @@
 //! (flint and steel / fire charge).
 use super::{Game, entity::Entity};
 use horizon_client::entity_rules::EntityRules;
+use horizon_client::lan::playerdata::uuid_ints;
 use horizon_client::{
     Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex, mobs::Who, text::Text,
 };
@@ -285,7 +286,13 @@ impl Game<'_> {
                 t.position.z,
             ];
             let bounds = t.bounds();
-            let (owner, guest, power) = (t.owner, t.guest, t.power);
+            let (id, owner, guest, power) = (t.id, t.owner, t.guest, t.power);
+            let (owner, guest) = match owner {
+                Some(_) => (owner, guest),
+                None => self
+                    .loaded_tnt_owner(id)
+                    .map_or((None, None), |(w, g)| (Some(w), g)),
+            };
             let in_water = self.bounds_in_water(bounds);
             self.tnts.remove(i);
             // PrimedTnt.tick: with `tnt_explodes` off it goes away without exploding.
@@ -315,6 +322,57 @@ impl Game<'_> {
             result?;
         }
         Ok(())
+    }
+    /// The saved compound of primed TNT `i`: chunk saves, `/data get`, portals.
+    pub(super) fn tnt_nbt(&mut self, i: usize) -> horizon_world::nbt::Tag {
+        let id = self.tnts[i].id;
+        let uuid = self.uuid_for(id);
+        let owner = self.tnt_owner_uuid(self.tnts[i].owner, self.tnts[i].guest);
+        let t = &self.tnts[i];
+        horizon_client::entity_nbt::tnt_to_nbt(
+            t.position,
+            t.velocity,
+            t.on_ground,
+            t.fuse,
+            t.power,
+            t.block_state_nbt(self.pack.assets.registry),
+            t.rotation,
+            uuid,
+            owner,
+            self.persist.raw.get(&id),
+        )
+    }
+    /// `EntityReference.of(owner)`: the UUID of the player or mob that lit it.
+    fn tnt_owner_uuid(&mut self, owner: Option<Who>, guest: Option<u32>) -> Option<[i32; 4]> {
+        match owner? {
+            Who::Player => match guest {
+                Some(conn) => self
+                    .lan
+                    .as_ref()?
+                    .hub
+                    .guest(conn)
+                    .map(|g| uuid_ints(g.uuid)),
+                None => self.level.player_uuid,
+            },
+            Who::Mob(id) if self.mobs.iter().any(|m| m.id == id) => Some(self.uuid_for(id)),
+            Who::Mob(id) => self.persist.uuids.get(&id).copied(),
+        }
+    }
+    /// `PrimedTnt.getOwner` for TNT loaded with an `owner`: looked up when
+    /// asked, so a player who joined or a mob loaded since is found.
+    fn loaded_tnt_owner(&self, id: u32) -> Option<(Who, Option<u32>)> {
+        let uuid = horizon_client::entity_nbt::tnt_owner(self.persist.raw.get(&id)?)?;
+        let guest = self.lan.as_ref().and_then(|host| {
+            let mut guests = host.hub.guests.iter();
+            guests.find(|g| uuid_ints(g.uuid) == uuid).map(|g| g.conn)
+        });
+        if guest.is_some() {
+            return Some((Who::Player, guest));
+        }
+        if self.level.player_uuid == Some(uuid) {
+            return Some((Who::Player, None));
+        }
+        self.mob_by_uuid(uuid).map(|m| (Who::Mob(m), None))
     }
     /// `TntBlock.useItemOn`: flint and steel or a fire charge primes TNT.
     pub(super) fn ignite_tnt(&mut self, stack: &ItemStack) -> Result<bool> {
@@ -487,17 +545,18 @@ impl Game<'_> {
 impl Game<'_> {
     /// `positionRider` for the mobs riding primed TNT: the passenger attachment
     /// (the top of its 0.98 box), less the rider's own vehicle attachment.
-    pub(super) fn seat_tnt_mobs(&mut self) {
+    pub(super) fn seat_tnt_mobs(&mut self, riders: &super::passengers::Riders) {
         for i in 0..self.tnts.len() {
             let (id, pos, prev) = (
                 self.tnts[i].id,
                 self.tnts[i].position,
                 self.tnts[i].previous,
             );
-            if id == 0 {
+            let Some(js) = riders.get(&id).filter(|_| id != 0) else {
                 continue;
-            }
-            for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(id)) {
+            };
+            for &j in js {
+                let m = &mut self.mobs[j];
                 // Primed TNT's box is 0.98 wide.
                 let offset = horizon_client::mobs::riders::vehicle_attachment(m, 0.98);
                 m.position = tnt_seat(pos, offset);
@@ -596,6 +655,7 @@ mod tests {
                 tnt.block_state_nbt(&registry),
                 [0.0, 0.0],
                 [221, 0, 0, 1],
+                None,
                 Some(&raw),
             );
             assert_eq!(saved.get("block_state"), Some(&expected));
@@ -1074,6 +1134,126 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    /// A server's game on the prepared resources with the chunk at the origin
+    /// loaded, as `native_machines`' tests make one; None without them.
+    fn server_game() -> Option<Game<'static>> {
+        use crate::game::*;
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return None;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.options.dedicated = Some(Vec::new());
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.streaming.forced.insert((0, 0));
+        Some(game)
+    }
+
+    /// #10063: TNT lit between level ticks (flint and steel, a command) has its
+    /// first tick in the next level tick, so its fuse reads 79 after it, and it
+    /// explodes on the 80th (`PrimedTnt.tick`). Horizon held every TNT that
+    /// joined during a tick back one more: the late pass compared its join
+    /// against an `announced` already raised past it.
+    #[test]
+    fn lit_tnt_ticks_on_the_next_level_tick_and_explodes_on_the_80th() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 80, None, None);
+        // Hang it in the empty chunk, so it neither falls out nor lands.
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        game.tick_world(true).unwrap();
+        assert_eq!(game.tnts.len(), 1);
+        assert_eq!(
+            game.tnts[0].fuse, 79,
+            "its first tick is the next level tick"
+        );
+        let mut exploded_on = None;
+        for tick in 2..=90 {
+            game.tick_world(true).unwrap();
+            if game.tnts.is_empty() {
+                exploded_on = Some(tick);
+                break;
+            }
+        }
+        assert_eq!(exploded_on, Some(80), "explodes on the 80th tick");
+    }
+    /// TNT a blast primes joins while the entities tick (vanilla's
+    /// `EntityTickList` loop) and waits for the next tick. The fix for #10063
+    /// must not tick it in the tick it joined.
+    #[test]
+    fn tnt_primed_by_a_blast_waits_for_the_next_tick() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        let block = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:tnt")
+            .unwrap();
+        game.world.set(9, 64, 8, block).unwrap();
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 1, None, None);
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        let first = game.tnts[0].id;
+        for _ in 0..3 {
+            game.tick_world(true).unwrap();
+            if game.tnts.iter().all(|t| t.id != first) {
+                break;
+            }
+        }
+        assert!(
+            game.tnts.iter().all(|t| t.id != first),
+            "the first TNT went off"
+        );
+        assert_eq!(game.tnts.len(), 1, "its blast primed the TNT block");
+        let primed = &game.tnts[0];
+        assert_eq!(
+            primed.position, primed.previous,
+            "not ticked in the tick the blast primed it"
+        );
+        game.tick_world(true).unwrap();
+        let primed = &game.tnts[0];
+        assert_ne!(primed.position, primed.previous, "ticked on the next tick");
     }
 }
 horizon_client::impl_joined!(PrimedTnt);

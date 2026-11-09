@@ -560,6 +560,20 @@ fn process_limits() -> Value {
     })
 }
 
+/// The longest `horizon-trace` writes for.
+pub(super) const TRACE_MAX_SECONDS: u32 = 300;
+
+/// `horizon-trace SECONDS`: every thread's spans for `seconds`, to `reports/trace-<time>.json`
+/// (Perfetto opens it).
+pub(super) fn start_trace(seconds: u32) -> std::io::Result<PathBuf> {
+    let dir = Path::new("reports");
+    std::fs::create_dir_all(dir)?;
+    let stamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%SZ");
+    let path = dir.join(format!("trace-{stamp}.json"));
+    spans::trace::start(&path, Some(seconds))?;
+    Ok(path)
+}
+
 fn write_report(dir: &Path, report: &Value, text: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let stamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%SZ");

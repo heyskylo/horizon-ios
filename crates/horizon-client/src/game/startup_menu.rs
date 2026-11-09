@@ -45,6 +45,10 @@ pub(super) struct StartupMenu {
     key_synthetic: bool,
     /// The screen the keyboard's focus is on (`key_screen`).
     key_screen: u64,
+    /// The screen (`Self::key_screen`) the title's click focus belongs to:
+    /// another one in front drops it, as `Gui.setScreen` drops the focus of
+    /// the screen it leaves (`Screen.clearFocus`).
+    focus_screen: u64,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
     /// Browse mods' worker (`mod_browser`).
@@ -1235,6 +1239,16 @@ impl Loading {
             horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
             return;
         };
+        // `Gui.setScreen` clears the focus of the screen it leaves
+        // (`Screen.clearFocus`): the title behind the options, and the one
+        // that comes back, start with no button highlighted.
+        let screen = self.menu.key_screen();
+        if super::pad_menu::another_screen_is_front(&mut self.menu.focus_screen, screen) {
+            self.menu.options.clear_click_focus();
+            if let Some(title) = self.menu.title.as_mut() {
+                title.focused_button = None;
+            }
+        }
         if self.menu.pending.is_some() {
             horizon_client::level_loading::draw_loading_overlay(
                 batch,

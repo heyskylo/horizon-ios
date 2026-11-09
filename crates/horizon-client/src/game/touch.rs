@@ -126,7 +126,7 @@ impl Game<'_> {
 
     /// The world is under the fingers, with no screen over it.
     pub(super) fn touch_playing(&self) -> bool {
-        !self.reload_blocks_input()
+        !self.menu_input_blocked()
             && self.title.is_none()
             && self.screen == Screen::Playing
             && self.sign_edit.is_none()
@@ -173,7 +173,7 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
         touch: Touch,
     ) -> Result<()> {
-        if self.reload_blocks_input() {
+        if self.menu_input_blocked() {
             self.cancel_touch_for_reload();
             return Ok(());
         }
@@ -235,7 +235,7 @@ impl Game<'_> {
     /// Once a frame: a held finger starts mining, held-back clicks release, and a screen that opened over the
     /// game lets go of every finger on it.
     pub(super) fn touch_frame(&mut self, event_loop: &dyn EventLoopCtl) {
-        if self.reload_blocks_input() {
+        if self.menu_input_blocked() {
             self.cancel_touch_for_reload();
             return;
         }
@@ -317,7 +317,7 @@ impl Game<'_> {
     }
 
     fn touch_act(&mut self, out: Vec<Out>, scale: f32) -> Result<()> {
-        if self.reload_blocks_input() {
+        if self.menu_input_blocked() {
             self.cancel_touch_for_reload();
             return Ok(());
         }
@@ -672,7 +672,8 @@ impl Game<'_> {
     /// The buttons over the HUD while playing: vanilla's button, a little see-through as Pocket Edition's
     /// were, lit while held, with white marks shadowed like Minecraft's text.
     pub(super) fn draw_touch_controls(&self, batch: &mut HudBatch) {
-        if !self.touch_shown()
+        if !touch::controls_visible()
+            || !self.touch_shown()
             || self.hardware_hides_touch()
             || !self.touch_playing()
             || self.touch_on_phone()
@@ -694,7 +695,7 @@ impl Game<'_> {
     /// The buttons over a screen: ✕ where the screen has no way out of its own on a touch screen
     /// (`touch_close_shown`), and ⌨ beside it while a text field has focus.
     pub(super) fn draw_touch_close(&mut self, batch: &mut HudBatch) {
-        if self.hardware_hides_touch() || self.touch_on_phone() {
+        if !touch::controls_visible() || self.hardware_hides_touch() || self.touch_on_phone() {
             return;
         }
         let held = self
@@ -753,6 +754,9 @@ impl Game<'_> {
         let Some(batch) = self.touch_batch().filter(|_| self.touch_shown()) else {
             return Vec::new();
         };
+        if !touch::controls_visible() {
+            return Vec::new();
+        }
         let focused = self.field_focused();
         let px = |r: touch::Rect| r.map(|v| v * batch.scale);
         let mut buttons = Vec::new();

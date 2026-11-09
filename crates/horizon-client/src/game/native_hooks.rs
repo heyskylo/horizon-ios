@@ -2194,8 +2194,24 @@ impl Game<'_> {
         mod_api::dispatch_client_start(self, mod_api::mods());
     }
     /// Before an actual connection is discarded, not on a dimension change.
+    /// NeoForge's `ClientPlayerNetworkEvent.LoggingOut`, told here after
+    /// `native_client_level_unload` and only when a connection ends.
     pub(super) fn native_client_disconnecting(&self) {
         mod_api::dispatch_client_disconnecting(self, mod_api::mods());
+    }
+    /// The window's player logs in to a server (NeoForge's
+    /// `ClientPlayerNetworkEvent.LoggingIn`, in
+    /// `ClientPacketListener.handleLogin`), single player's own server or a
+    /// remote one: once per login packet, after the new client level
+    /// (`native_client_level_load`). Respawns and dimension changes don't log
+    /// in again; a server that sends its player back through configuration
+    /// does, without a `native_client_disconnecting` between. Horizon makes
+    /// the player with the server's first position, so `native_player` is
+    /// None here. A mod may send the server its own packets
+    /// (`native_send_packet`). Client only.
+    /// API @API:client_player_network_logging_in@.
+    pub(super) fn native_client_player_network_logging_in(&mut self) {
+        mod_api::dispatch_client_player_network_logging_in(self, mod_api::mods());
     }
     /// Once before this client's final save/exit. A mod can flush and join its worker here.
     pub(super) fn native_client_stopping(&self) {
@@ -2501,6 +2517,21 @@ impl Game<'_> {
     pub(super) fn native_level_tick_post(&mut self, dimension: &str) {
         mod_api::dispatch_level_tick_post(self, mod_api::mods(), dimension);
     }
+    /// A client tick of the window starts (NeoForge's `ClientTickEvent.Pre`,
+    /// at the top of `Minecraft.tick`), before any of its work. The window
+    /// ticks 20 times a second on the title screen, while paused and in a
+    /// world alike, and runs the ticks a slow frame owes back to back. Never
+    /// on a server, single player's own included: it ticks on its own thread.
+    /// Client only. API @API:client_tick@.
+    pub(super) fn native_client_tick_pre(&mut self) {
+        mod_api::dispatch_client_tick_pre(self, mod_api::mods());
+    }
+    /// The same client tick ends (`ClientTickEvent.Post`): the world's tick,
+    /// the chat queue, music and sounds are done. A tick that errors ends
+    /// before it. Client only. API @API:client_tick@.
+    pub(super) fn native_client_tick_post(&mut self) {
+        mod_api::dispatch_client_tick_post(self, mod_api::mods());
+    }
     /// The HUD (not drawn under F1), after the minimap: place a box with
     /// `corners.place` (boxes stack away from their edge) and draw it with
     /// `native_fill` and `native_text`. Skip a corner `native_corner_shown`
@@ -2586,6 +2617,30 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         mod_api::dispatch_left_click_block(self, mod_api::mods(), pos, face, state, canceled);
+    }
+    /// NeoForge's `PlayerEvent.BreakSpeed`: how fast the player digs the block
+    /// `state` at `pos`, where `Player.getDestroySpeed` ends. `speed` starts as
+    /// vanilla's, `original` (the tool, mining efficiency, Haste and Mining
+    /// Fatigue, the block break speed attribute, the slowdowns under water and
+    /// off the ground), and a mod may change it; every mod is called in turn,
+    /// and `original` stays vanilla's. `BlockBehaviour.getDestroyProgress` then
+    /// divides the speed by the block's hardness and by 30, or 100 without the
+    /// right tool, for each tick of the dig: a speed of 0 makes no progress, so
+    /// the block isn't broken, not even one that breaks at once. Not asked for
+    /// an unbreakable block (hardness -1) nor in creative mode. Fires on the
+    /// `Game` that works out the dig: single player's, a LAN or dedicated
+    /// host's for each guest (the helpers read that player), and a remote
+    /// client's own prediction, so a mod changes the speed alike on both sides
+    /// to keep the crack in step with the server. It is asked every tick of a
+    /// dig, on each side, so it should only compute. API @API:break_speed@.
+    pub(super) fn native_break_speed(
+        &self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        original: f32,
+        speed: &mut f32,
+    ) {
+        mod_api::dispatch_break_speed(self, mod_api::mods(), pos, state, original, speed);
     }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,
@@ -6281,6 +6336,36 @@ impl Game<'_> {
         mod_api::dispatch_entity_break_door(self, mod_api::mods(), entity, kind, pos);
     }
 
+    /// A mob or a player is about to change the block at `pos`: a landing's
+    /// trampling (farmland to dirt, a turtle egg breaking), before its
+    /// neighbour updates and events. `player` is the player whose landing it
+    /// was, `entity` and `kind` the mob for a mob's landing (`None` and the
+    /// player's type here). `from` and `to` are the block names. Set `cancel`
+    /// and the block stays as it was and nothing the change would have caused
+    /// happens, as Bukkit's `EntityChangeBlockEvent` (@API:entity_change_block_v2@).
+    pub(super) fn native_entity_change_block_v2(
+        &mut self,
+        player: Option<u128>,
+        entity: Option<u32>,
+        kind: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_entity_change_block_v2(
+            self,
+            mod_api::mods(),
+            player,
+            entity,
+            kind,
+            pos,
+            from,
+            to,
+            cancel,
+        );
+    }
+
     /// A mob changed a block at `pos`, after the new state was applied.
     /// 214.
     pub(super) fn native_entity_change_block(
@@ -6589,6 +6674,18 @@ impl Game<'_> {
         size: [f32; 2],
     ) {
         mod_api::dispatch_tooltip_component_draw(self, mod_api::mods(), stack, batch, origin, size);
+    }
+    /// Intercept item tooltip rendering before geometry calculation and drawing.
+    /// Setting `cancel` to true suppresses vanilla tooltip rendering.
+    pub(super) fn native_tooltip_render_pre(
+        &mut self,
+        stack: &ItemStack,
+        batch: &mut HudBatch,
+        x: f32,
+        y: f32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_tooltip_render_pre(self, mod_api::mods(), stack, batch, x, y, cancel);
     }
 
     /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
@@ -7867,6 +7964,63 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// `LivingEntity.actuallyHurt` is about to take `amount` from entity
+    /// `entity`'s health (NeoForge's `LivingDamageEvent.Pre`), once armour
+    /// (already worn down by the hit), enchantment protection, effects
+    /// (Resistance) and absorption have taken their part. The other arguments
+    /// are `native_living_incoming_damage`'s. Change `amount` to change what
+    /// the health loses: a negative or NaN amount takes nothing, an infinite
+    /// one `Float.MAX_VALUE`. The hit can't be canceled here (that is
+    /// `native_living_incoming_damage`): its invulnerable time, hurt sound and
+    /// knockback follow whatever the amount. Not told when no hit reaches
+    /// `actuallyHurt` (refused, canceled, or within the cooldown and no
+    /// stronger than the last hit) nor when a wolf's armour takes it.
+    /// Players, mobs and the ender dragon. It runs on the thread that ticks
+    /// the world (the server thread): state shared with render thread hooks
+    /// needs synchronising. No `self`: the game is in the middle of the hit.
+    /// API @API:living_damage@.
+    pub(super) fn native_living_damage_pre(
+        entity: i32,
+        kind: &str,
+        damage_type: &str,
+        causing: i32,
+        direct: i32,
+        amount: &mut f32,
+    ) {
+        mod_api::dispatch_living_damage_pre(
+            mod_api::mods(),
+            entity,
+            kind,
+            damage_type,
+            causing,
+            direct,
+            amount,
+        );
+    }
+    /// The end of `LivingEntity.actuallyHurt` (NeoForge's
+    /// `LivingDamageEvent.Post`): `amount` came off entity `entity`'s health,
+    /// 0 when nothing did (absorption took it all, or a mod made it 0), after
+    /// the combat tracker. The arguments are
+    /// `native_living_damage_pre`'s. It only hears, on the server thread, with
+    /// no `self`. API @API:living_damage@.
+    pub(super) fn native_living_damage_post(
+        entity: i32,
+        kind: &str,
+        damage_type: &str,
+        causing: i32,
+        direct: i32,
+        amount: f32,
+    ) {
+        mod_api::dispatch_living_damage_post(
+            mod_api::mods(),
+            entity,
+            kind,
+            damage_type,
+            causing,
+            direct,
+            amount,
+        );
+    }
     /// A player's weapon hit on a mob, before `Mob::damage_with` borrows the
     /// victim: melee, sweep and spear hits, including LAN guests. Unlike v1,
     /// this has a host and snapshots of the weapon, victim position/view and
@@ -8246,7 +8400,33 @@ pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
     );
     canceled
 }
-/// `native_living_incoming_damage`'s entity, entity type and source for a hit.
+/// `native_living_damage_pre` for the damage code (`health::DAMAGE_PRE`). Its
+/// one caller.
+pub(super) fn damage_pre(hurting: Hurting<'_>, amount: &mut f32) {
+    let (entity, kind, source) = hurt_server_args(hurting);
+    Game::native_living_damage_pre(
+        entity,
+        kind,
+        source.damage_type,
+        source.causing,
+        source.direct,
+        amount,
+    );
+}
+/// `native_living_damage_post` for the damage code (`health::DAMAGE_POST`).
+/// Its one caller.
+pub(super) fn damage_post(hurting: Hurting<'_>, amount: f32) {
+    let (entity, kind, source) = hurt_server_args(hurting);
+    Game::native_living_damage_post(
+        entity,
+        kind,
+        source.damage_type,
+        source.causing,
+        source.direct,
+        amount,
+    );
+}
+/// The damage hooks' entity, entity type and source for a hit.
 fn hurt_server_args(hurting: Hurting<'_>) -> (i32, &str, HurtSource<'_>) {
     match hurting {
         Hurting::Player(entity, source) => (entity, "minecraft:player", source),

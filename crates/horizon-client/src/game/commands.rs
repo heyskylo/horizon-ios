@@ -2812,6 +2812,18 @@ impl Game<'_> {
         horizon_client::save::consume_container_loot(&mut extras, key);
         chunk.saved = Some(std::sync::Arc::new(extras));
         self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        // `ChestBlock.getMenuProvider` unpacks both halves of a double chest:
+        // the other half's table, if it still holds one, rolls too. The own roll
+        // is consumed above, so the partner's call does not come back here.
+        if let Some((other, _)) = self.chest_partner(key) {
+            let other_name = self
+                .res
+                .facts()
+                .get(self.world.block(other.0, other.1, other.2))
+                .name
+                .to_string();
+            self.unpack_opened_loot(other, &other_name);
+        }
     }
     /// RandomizableContainer.tryLoadLootTable for a tag a command gives a
     /// container (`setblock`, `data`): an empty container with a `LootTable`

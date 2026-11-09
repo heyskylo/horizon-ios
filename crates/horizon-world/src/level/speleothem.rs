@@ -1,7 +1,7 @@
 //! `SpeleothemBlock` growth (pointed dripstone, sulfur spikes) and
 //! `PointedDripstoneBlock` fluid transfer into cauldrons and mud.
 use super::{
-    LevelAccess, Sim,
+    LevelAccess, LevelEvent, Sim,
     classes::Class,
     states::BlockId,
     update::{above, below, rel},
@@ -296,6 +296,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return;
         };
         if b.is_block(source_state, b.named.mud) && fluid == FluidKind::Water {
+            self.emit(LevelEvent::BlockEvent {
+                pos: source_pos,
+                state: source_state,
+                kind: "push_entities_up",
+            });
             self.set_block_and_update(source_pos, b.default_of(b.named.clay));
             self.game_event(source_pos, "minecraft:block_change");
             self.level_event(1504, tip, 0);

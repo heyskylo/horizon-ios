@@ -32,6 +32,9 @@ impl Game<'_> {
         self.using = Some((self.held_slot(), 0));
         self.use_duration = duration;
         self.use_ticks_set = ticks_set;
+        // `LivingEntity.startUsingItem`: `causeUseVibration(ITEM_INTERACT_START)`
+        // when the use effects of the stack ask for interaction vibrations.
+        self.use_vibration(&stack, "minecraft:item_interact_start");
         // A new charge hears the crossbow's loading sounds again
         // (`game/crossbow.rs`).
         self.crossbow_sounds = [false; 2];
@@ -100,7 +103,7 @@ impl Game<'_> {
         // a potion is drunk (no last tick of its own: a mod's tick ran it out).
         if self.finish_drinking(slot, stack) {
             self.use_item_finished(stack);
-            self.use_vibration(stack);
+            self.use_vibration(stack, "minecraft:item_interact_finish");
             return;
         }
         self.using = None;
@@ -115,7 +118,7 @@ impl Game<'_> {
         self.apply_use_cooldown(stack);
         self.use_item_finished(stack);
         // `LivingEntity.completeUsingItem` ends with `stopUsingItem`.
-        self.use_vibration(stack);
+        self.use_vibration(stack, "minecraft:item_interact_finish");
     }
     /// `LivingEntityUseItemEvent.Finish` after `finishUsingItem` of `stack`
     /// (no ticks left): the hand holds what a mod made the result.
@@ -449,5 +452,89 @@ mod tests {
         ] {
             assert!(matches!(pose(animation), ItemPose::Using));
         }
+    }
+}
+
+#[cfg(test)]
+mod interact_vibration_tests {
+    use super::*;
+
+    /// Runs `f` on a windowless game built from the prepared resources with
+    /// `held` in the main hand and returns the game events it posted;
+    /// `None` without the resources.
+    fn with_game(held: &str, f: impl FnOnce(&mut Game<'_>)) -> Option<Vec<String>> {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES")?);
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .ok()?;
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                &game.motion,
+                horizon_core::geometry::Vec3::new(10.5, 64.0, -3.25),
+            )
+            .unwrap(),
+        );
+        *game.held_mut() = Some(ItemStack::new(held, 1));
+        crate::game::dispense_fixture::start_recording();
+        f(&mut game);
+        Some(crate::game::dispense_fixture::stop_recording())
+    }
+
+    /// `LivingEntity.startUsingItem` ends with
+    /// `this.useItem.causeUseVibration(this, GameEvent.ITEM_INTERACT_START)`,
+    /// and `ItemStack.causeUseVibration` posts only when the stack's use effects
+    /// ask for interaction vibrations (the default). `stopUsingItem` posts the
+    /// finish the same way, which Horizon already did, so a use is a pair of
+    /// vibrations and an item that turns them off is neither.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_use_start_is_an_item_interact_start_vibration() {
+        let bow = || ItemStack::new("minecraft:bow", 1);
+        let Some(lines) = with_game("minecraft:bow", |game| {
+            assert!(game.start_using_item(), "the bow's use starts");
+            game.stop_using_item(&bow());
+        }) else {
+            return;
+        };
+        assert_eq!(
+            lines,
+            vec![
+                "G 10,64,-4 minecraft:item_interact_start".to_owned(),
+                "G 10,64,-4 minecraft:item_interact_finish".to_owned(),
+            ]
+        );
+        // A spear's use effects set `interact_vibrations` false: no vibration.
+        let spear = || ItemStack::new("minecraft:iron_spear", 1);
+        let Some(lines) = with_game("minecraft:iron_spear", |game| {
+            assert!(game.start_using_item(), "the spear's use starts");
+            game.stop_using_item(&spear());
+        }) else {
+            return;
+        };
+        assert!(lines.is_empty(), "{lines:?}");
     }
 }

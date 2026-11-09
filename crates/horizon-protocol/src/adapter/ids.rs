@@ -90,9 +90,10 @@ pub struct Quirks {
     /// `pot_decorations` is a list of up to four item ids, a brick for an undecorated side, instead of four
     /// optional item stack templates (26.2).
     pub pot_decorations_are_items: bool,
-    /// `jukebox_playable` is an EitherHolder (a flag, then a song's key or holder) instead of a holder, and
-    /// `damage_resistant` a bare damage type tag instead of a HolderSet (1.21.11).
-    pub either_holder_song_and_tag_resistance: bool,
+    /// `damage_type`, `instrument`, `provides_trim_material`, `jukebox_playable`, `chicken/variant` and
+    /// `zombie_nautilus/variant` are EitherHolders (a flag, then an entry's holder or key) instead of
+    /// holders, and `damage_resistant` a bare damage type tag instead of a HolderSet (1.21.11).
+    pub either_holders_and_tag_resistance: bool,
     /// `use_remainder` holds an ItemStack and `container` a list of optional ones (a count first, 0 for
     /// none) instead of item stack templates (1.21.11).
     pub stacks_in_components: bool,
@@ -101,7 +102,7 @@ impl Quirks {
     pub const NONE: Self = Self {
         tag_slot_display_is_id: false,
         pot_decorations_are_items: false,
-        either_holder_song_and_tag_resistance: false,
+        either_holders_and_tag_resistance: false,
         stacks_in_components: false,
     };
 }
@@ -348,6 +349,53 @@ mod tests {
         let mut sent = vec![1, 0xbf, 0x02, 1, 0, 62, 0, 13];
         sent.extend(b"minecraft:cat");
         assert_eq!(read(&sent).added, []);
+    }
+
+    #[test]
+    fn registry_entries_in_1_21_11_components_are_either_holders() {
+        use crate::buf::{Codec, Reader};
+        use crate::item::{Component, Slot, component as k};
+        let ids = crate::adapter::ServerVersion::V1_21_11.ids().unwrap();
+        let older = |kind: i32| {
+            let id = ids.data_component_type.down(kind).unwrap();
+            assert!((0..128).contains(&id));
+            id as u8
+        };
+        let read = |sent: &[u8]| {
+            let _up = renumbering(ids, Way::Up);
+            let mut r = Reader::new(sent);
+            let stack = Slot::read(&mut r).unwrap().unwrap();
+            assert_eq!(r.remaining(), 0);
+            stack
+        };
+        // Stone (1 in both) as a 1.21.11 server sends a stack whose instrument, provides_trim_material,
+        // damage_type, chicken/variant and zombie_nautilus/variant are held: the flag set, then the
+        // holder as 26.3 reads it (an id plus one, or a registry id).
+        let mut sent = vec![1, 1, 5, 0];
+        sent.extend([older(k::INSTRUMENT), 1, 2]);
+        sent.extend([older(k::PROVIDES_TRIM_MATERIAL), 1, 5]);
+        sent.extend([older(k::DAMAGE_TYPE), 1, 3]);
+        sent.extend([older(k::CHICKEN_VARIANT), 1, 2]);
+        sent.extend([older(k::ZOMBIE_NAUTILUS_VARIANT), 1, 0]);
+        let stack = read(&sent);
+        let kinds: Vec<i32> = stack.added.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                k::INSTRUMENT,
+                k::PROVIDES_TRIM_MATERIAL,
+                k::DAMAGE_TYPE,
+                k::CHICKEN_VARIANT,
+                k::ZOMBIE_NAUTILUS_VARIANT,
+            ]
+        );
+        assert_eq!(stack.added[0].1, Component::Instrument(1));
+        // An instrument named by its key has no pinned holder: the component goes, the rest reads on.
+        let mut sent = vec![1, 1, 2, 0, older(k::INSTRUMENT), 0, 26];
+        sent.extend(b"minecraft:ponder_goat_horn");
+        sent.extend([older(k::CHICKEN_VARIANT), 1, 2]);
+        let kinds: Vec<i32> = read(&sent).added.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(kinds, [k::CHICKEN_VARIANT]);
     }
 
     #[test]

@@ -229,6 +229,11 @@ pub enum MotionEvent {
     CauldronExtinguish {
         pos: BlockPos,
     },
+    /// `PowderSnowBlock.entityInside` (runBefore EXTINGUISH): a burning
+    /// player in powder snow destroys the block, without drops.
+    PowderSnowMelt {
+        pos: BlockPos,
+    },
     /// `WitherRoseBlock.entityInside`: the player's box swept through a
     /// wither rose; the server adds its Wither unless peaceful.
     InsideWitherRose,
@@ -374,6 +379,8 @@ pub struct PlayerMotion {
     /// move.
     pub nudge: [Option<f64>; 2],
     pub last_climbable: Option<BlockPos>,
+    /// Result of the latest `LivingEntity.onClimbable` query.
+    pub on_climbable: bool,
     /// `Entity.moveDist`, `flyDist` and `nextStep`: footsteps come once per
     /// metre walked, not once per move.
     pub steps: MovementDistances,
@@ -433,9 +440,6 @@ pub struct PlayerMotion {
     /// `Entity.applyEffectsFromBlocks` runs after travel (always in the game;
     /// differential fixtures turn it off where their reference does).
     pub block_effects: bool,
-    /// The powder snow blocks this tick's movement went into: the game
-    /// destroys them if the player is burning, then puts the fire out.
-    pub powder_snow_entered: Vec<BlockPos>,
     /// The last hurts taken (`hurt_blocking`), newest last, for tests and
     /// the control socket's `hurtlog`.
     pub hurt_log: Vec<crate::health::HurtRecord>,
@@ -602,6 +606,7 @@ impl PlayerMotion {
             item_use_slows_sprint: false,
             nudge: [None; 2],
             last_climbable: None,
+            on_climbable: false,
             steps: MovementDistances {
                 next_step: 1.0,
                 ..MovementDistances::default()
@@ -628,7 +633,6 @@ impl PlayerMotion {
             entity_id: 0,
             client_loaded: true,
             block_effects: true,
-            powder_snow_entered: Vec::new(),
             hurt_log: Vec::new(),
             attack_log: Vec::new(),
             border: None,
@@ -1096,10 +1100,15 @@ impl MotionWorld<'_, '_, '_> {
     /// matching ladder. It remembers the block.
     pub fn climbable(&mut self) -> Result<bool> {
         if self.player.flying {
+            self.player.on_climbable = false;
             return Ok(false);
         }
         let resources = self.resources;
-        climbing::on_climbable(self, &resources.climbing).map_err(|e| e.to_string().into())
+        let found: Result<bool> =
+            climbing::on_climbable(self, &resources.climbing).map_err(|e| e.to_string().into());
+        let climbable = found?;
+        self.player.on_climbable = climbable;
+        Ok(climbable)
     }
     pub fn travel_in_air(&mut self, input: Vec3) -> Result<()> {
         living_air::travel_in_air(self, input)
@@ -1670,10 +1679,16 @@ impl MotionWorld<'_, '_, '_> {
                 groups += 1;
                 last_step = step;
             }
-            if groups == 1 && !damage_only {
-                // A later group finds the fire already out.
-                self.player.powder_snow_entered.push(p);
+            // A later group finds the fire already out.
+            if groups == 1 && self.player.fire_ticks > 0 && !self.player.spectator {
+                self.player
+                    .events
+                    .push(MotionEvent::PowderSnowMelt { pos: p });
             }
+        }
+        if groups > 0 {
+            // InsideBlockEffectType.EXTINGUISH: Entity.clearFire.
+            self.player.fire_ticks = self.player.fire_ticks.min(0);
         }
         for _ in 0..groups {
             if self.player.health.dead_or_dying() {
@@ -1905,6 +1920,9 @@ impl MotionWorld<'_, '_, '_> {
                     }
                     _ => {}
                 }
+                // ServerPlayer.onInsideBlock: the server's pass reports it too,
+                // as the enter_block trigger is the server's to fire.
+                self.player.events.push(MotionEvent::EnterBlock { state });
                 if damage_only {
                     continue;
                 }
@@ -1925,8 +1943,6 @@ impl MotionWorld<'_, '_, '_> {
                         .push(MotionEvent::InsidePortal { pos: p }),
                     _ => {}
                 }
-                // ServerPlayer.onInsideBlock
-                self.player.events.push(MotionEvent::EnterBlock { state });
             }
         }
         Ok(iterations + 1)
@@ -3575,6 +3591,62 @@ mod tests {
         let mut dry = PlayerMotion::new(&resources, Vec3::new(20.5, 4.25, 20.5)).unwrap();
         tick(&mut dry);
         assert_eq!(asks(&dry), 0);
+    }
+
+    /// `PowderSnowBlock.entityInside`: a burning player in powder snow asks
+    /// for the block to be destroyed, and EXTINGUISH puts the fire out.
+    #[test]
+    fn a_burning_player_melts_powder_snow() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        let snow = assets
+            .registry
+            .default_state("minecraft:powder_snow")
+            .unwrap();
+        scene.set(20, 4, 20, snow).unwrap();
+        let mut run = |fire: i32| {
+            let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 4.0, 20.5)).unwrap();
+            player.fire_ticks = fire;
+            MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+                health: &resources.health,
+            }
+            .controlled_simulation_tick(Default::default())
+            .unwrap();
+            player
+        };
+        let burning = run(100);
+        assert!(burning.fire_ticks <= 0, "powder snow must put the fire out");
+        assert!(
+            burning
+                .events
+                .iter()
+                .any(|e| matches!(e, MotionEvent::PowderSnowMelt { .. }))
+        );
+        let dry = run(-20);
+        assert!(
+            !dry.events
+                .iter()
+                .any(|e| matches!(e, MotionEvent::PowderSnowMelt { .. }))
+        );
     }
 
     #[test]

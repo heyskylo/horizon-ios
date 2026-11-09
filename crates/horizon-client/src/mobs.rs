@@ -1317,6 +1317,39 @@ impl Extra {
     }
 }
 
+/// How far the boxes of a set of mobs reach from their positions: the widest half width and the
+/// tallest height among them. A box query over many mobs (a vehicle's, against every mob of the
+/// level) tests each mob's position against this first, and works out the box ([`Mob::bounds`],
+/// which reads the mob's whole size) only for the mobs whose position comes close.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BoxReach {
+    half_width: f64,
+    height: f64,
+}
+impl BoxReach {
+    pub fn of(mobs: &[Mob]) -> Self {
+        mobs.iter().fold(Self::default(), |r, m| {
+            let (width, height, _) = m.dims();
+            Self {
+                half_width: r.half_width.max(width / 2.0),
+                height: r.height.max(height),
+            }
+        })
+    }
+    /// Whether the box of `m`, one of the mobs this was worked out for, can meet `area`: a
+    /// superset, the caller still tests the box.
+    #[inline]
+    pub fn may_meet(self, m: &Mob, area: Aabb) -> bool {
+        let (lo, hi, p) = (area.min_position(), area.max_position(), m.position);
+        p.x - self.half_width <= hi.x
+            && p.x + self.half_width >= lo.x
+            && p.z - self.half_width <= hi.z
+            && p.z + self.half_width >= lo.z
+            && p.y <= hi.y
+            && p.y + self.height >= lo.y
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Mob {
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
@@ -1404,6 +1437,9 @@ pub struct Mob {
     /// way it was travelling. None for any other direct entity.
     pub projectile_motion: Option<[f64; 2]>,
     pub climbing: bool,
+    /// `LivingEntity.onClimbable` as of the last mob tick, for `isPushable`
+    /// checks made outside the mob world (minecarts, boats).
+    pub on_climbable: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
     pub glowing: bool,
@@ -3081,6 +3117,7 @@ impl Mob {
             attacker_aim: None,
             projectile_motion: None,
             climbing: false,
+            on_climbable: false,
             fire_ticks: 0,
             ticks_frozen: 0,
             glowing: false,
@@ -3316,6 +3353,25 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
+        // Enderman.hurtServer: past `isInvulnerableTo`, the teleport draw
+        // follows `super.hurtServer` whatever it answered (a hurt cooldown, a
+        // dead enderman), its hurt sound's pitch included.
+        let enderman = self.species() == Species::Enderman
+            && !self.removed
+            && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
+        let hurt = self.hurt_server(amount, source, armor_effectiveness, player_uuid);
+        if enderman {
+            enderman::after_hurt(self, &source);
+        }
+        hurt
+    }
+    fn hurt_server(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
+        player_uuid: Option<[i32; 4]>,
+    ) -> bool {
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
         // SulfurCube.hurtServer: the priming and a block's immune knockback
@@ -3446,6 +3502,8 @@ impl Mob {
         // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
         let absorbed = self.wolf_armor_absorbs(&source);
         let mut knock = true;
+        // What came off the health, for `LivingDamageEvent.Post`.
+        let mut taken = 0.0;
         let dealt = if self.invulnerable as f32 > 10.0 {
             if amount <= self.last_hurt {
                 return false;
@@ -3454,8 +3512,8 @@ impl Mob {
             if absorbed {
                 self.hurt_wolf_armor(dealt);
             } else {
-                let dealt = self.soak_hit(dealt, &source);
-                self.health -= dealt;
+                let through = self.soak_hit(dealt, &source);
+                taken = self.hurt_health(through, &source);
             }
             self.last_hurt = amount;
             knock = false;
@@ -3467,7 +3525,7 @@ impl Mob {
                 self.hurt_wolf_armor(amount);
             } else {
                 let through = self.soak_hit(amount, &source);
-                self.health -= through;
+                taken = self.hurt_health(through, &source);
             }
             self.hurt_time = 10;
             amount
@@ -3477,6 +3535,11 @@ impl Mob {
         // Wolf.actuallyHurt keeps a hit its armor takes out of it.
         if !absorbed && dealt != 0.0 {
             self.record_damage(source, dealt);
+        }
+        // The end of `actuallyHurt`: a native mod's `LivingDamageEvent.Post`.
+        // `Wolf.actuallyHurt` never gets there when the armour takes the hit.
+        if !absorbed {
+            crate::health::damage_post(crate::health::Hurting::Mob(self, &source), taken);
         }
         // LivingEntity.hurtArmor: `Horse` is the only mob that overrides it, and
         // it hands `doHurtEquipment` the body slot alone. A wolf's armour has
@@ -3576,12 +3639,24 @@ impl Mob {
         if self.species() == Species::GlowSquid && self.ai.last_hurt_by.is_some() {
             aquatic::hurt_server(self);
         }
-        true
+        // Squid.hurtServer (also GlowSquid's result): parent health damage has
+        // happened, but without a last living attacker the subclass returns false.
+        !matches!(self.species(), Species::Squid | Species::GlowSquid)
+            || self.ai.last_hurt_by.is_some()
     }
     /// `damage` by a source whose direct entity is `direct` (an entity type id), which `source`
     /// cannot carry: `DamageSources.indirectMagic(potion or cloud, owner)`.
     pub fn damage_by(&mut self, amount: f32, source: Damage, direct: &'static str) -> bool {
+        // Enderman.hurtServer: only a thrown potion skips the teleport draw;
+        // a lingering cloud's `indirect_magic` goes through it.
+        let cloud = self.species() == Species::Enderman
+            && direct == "minecraft:area_effect_cloud"
+            && !self.removed
+            && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
         let hurt = self.damage(amount, source);
+        if cloud {
+            enderman::teleport_chance(self, &source);
+        }
         if hurt {
             self.last_direct = Some(direct);
         }
@@ -3834,6 +3909,15 @@ impl Mob {
             && (before != after
                 || present_ambient != self.extra.ambient_effects.contains(&effect)
                 || was_visible != visible)
+    }
+    /// `LivingEntity.actuallyHurt`'s last step: what got past absorption goes to
+    /// a native mod's `LivingDamageEvent.Pre`, which may change it, then comes
+    /// off the health. What came off.
+    fn hurt_health(&mut self, through: f32, source: &Damage) -> f32 {
+        let mut through = through;
+        crate::health::damage_pre(crate::health::Hurting::Mob(self, source), &mut through);
+        self.health -= through;
+        through
     }
     /// [`Mob::soak_absorption`] for a hit from `source`: `LivingEntity.actuallyHurt`
     /// credits a `ServerPlayer` attacker with the absorbed damage in tenths.
@@ -5546,6 +5630,70 @@ mod effect_refusal_tests {
         );
     }
 
+    fn check_squid_damage_result(id: &str) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let types = MobTypes::load_for_server(&root).unwrap();
+        let mut attacker = mob(&types, "minecraft:cow");
+        attacker.id = 2;
+        attacker.position = Vec3::new(4.0, 64.0, 4.0);
+        assert!(attacker.alive());
+        let by_cow = Damage {
+            kind: DamageKind::Generic,
+            ..Damage::mob(attacker.id, [4.0, 64.0, 4.0]).with_species(Species::Cow)
+        };
+        // An unrelated parent's generic acceptance remains true.
+        let mut cow = mob(&types, "minecraft:cow");
+        assert!(cow.damage(1.0, Damage::of(DamageKind::Generic)));
+        assert_eq!(cow.health, 9.0);
+        // A parent's existing rejection never reaches the subclass aftermath.
+        let mut protected = mob(&types, id);
+        protected.invulnerable_flag = true;
+        assert!(!protected.damage(1.0, by_cow));
+        assert_eq!(protected.health, 10.0);
+        if protected.species() == Species::GlowSquid {
+            assert_eq!(aquatic::dark_ticks(&protected), 0);
+        }
+        for no_ai in [false, true] {
+            for attributed in [true, false] {
+                let mut victim = mob(&types, id);
+                victim.no_ai = no_ai;
+                assert_eq!(victim.health, 10.0);
+                assert!(victim.ai.last_hurt_by.is_none());
+                let source = if attributed {
+                    by_cow
+                } else {
+                    Damage::of(DamageKind::Generic)
+                };
+                let accepted = victim.damage(1.0, source);
+                // Check the parent's state first: false must not roll back damage.
+                assert_eq!(victim.health, 9.0);
+                assert_eq!(
+                    victim.ai.last_hurt_by,
+                    attributed.then_some(Who::Mob(attacker.id))
+                );
+                if victim.species() == Species::GlowSquid {
+                    assert_eq!(
+                        aquatic::dark_ticks(&victim),
+                        if attributed { 100 } else { 0 }
+                    );
+                }
+                assert_eq!(accepted, attributed, "{id} NoAI={no_ai}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared entity types in HORIZON_TEST_RESOURCES"]
+    fn glow_squid_damage_result_keeps_parent_health_side_effect() {
+        check_squid_damage_result("minecraft:glow_squid");
+    }
+
+    #[test]
+    #[ignore = "needs prepared entity types in HORIZON_TEST_RESOURCES"]
+    fn squid_damage_result_keeps_parent_health_side_effect() {
+        check_squid_damage_result("minecraft:squid");
+    }
+
     /// Squid.hurtServer reports a hit only when a living entity dealt it, so
     /// environmental damage leaves a glow squid glowing; a mob's blow dims it.
     #[test]
@@ -5559,11 +5707,13 @@ mod effect_refusal_tests {
         let types = MobTypes::load_for_server(&root).unwrap();
         let mut burned = mob(&types, "minecraft:glow_squid");
         burned.health = 10.0;
-        assert!(burned.damage(1.0, Damage::of(DamageKind::Campfire)));
+        assert!(!burned.damage(1.0, Damage::of(DamageKind::Campfire)));
+        assert_eq!(burned.health, 9.0);
         assert_eq!(aquatic::dark_ticks(&burned), 0);
         let mut struck = mob(&types, "minecraft:glow_squid");
         struck.health = 10.0;
         assert!(struck.damage(1.0, Damage::mob(2, [0.0, 64.0, 0.0])));
+        assert_eq!(struck.health, 9.0);
         assert_eq!(aquatic::dark_ticks(&struck), 100);
     }
 }

@@ -392,6 +392,17 @@ impl ItemStack {
     pub fn custom_name(&self) -> Option<String> {
         self.data()?.custom_name_plain()
     }
+    /// Non-empty slots of a `minecraft:container` component.
+    pub fn container(&self) -> &[(u8, ItemStack)] {
+        self.data().map_or(&[], |d| &d.container)
+    }
+    /// The `minecraft:custom_data` compound if present.
+    pub fn custom_data(&self) -> Option<&horizon_world::nbt::Compound> {
+        match self.data()?.other("minecraft:custom_data")? {
+            Tag::Compound(map) => Some(map),
+            _ => None,
+        }
+    }
     /// `ResolvableProfile.name`: a bare profile string or its `name` field.
     pub fn profile_name(&self) -> Option<String> {
         let profile = self.data()?.other("minecraft:profile")?;
@@ -758,11 +769,31 @@ fn canonical_other_component(id: &str, tag: &Tag) -> Tag {
 /// A filled map's empty decorations equal its prototype (`Items.mapProperties`).
 pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
     let mut components = components_tag(stack.damage, stack.data())?;
+    // LodestoneTracker.CODEC: optionalFieldOf("tracked", true).
+    if let Some(Tag::Compound(tracker)) = components.get_mut("minecraft:lodestone_tracker")
+        && tracker.get(&JavaString::from("tracked")) == Some(&Tag::Byte(1))
+    {
+        tracker.remove(&JavaString::from("tracked"));
+    }
     if &*stack.item == "minecraft:filled_map"
         && matches!(components.get("minecraft:map_decorations"), Some(Tag::Compound(entries)) if entries.is_empty())
         && let Tag::Compound(entries) = &mut components
     {
         entries.remove(&JavaString::from("minecraft:map_decorations"));
+        if entries.is_empty() {
+            return None;
+        }
+    }
+    // Items.BEEHIVE/BEE_NEST use this whole block-state map as their prototype.
+    // Empty maps and maps with extra properties are distinct, nondefault patches.
+    if matches!(&*stack.item, "minecraft:beehive" | "minecraft:bee_nest")
+        && matches!(components.get("minecraft:block_state"), Some(Tag::Compound(state))
+            if state.len() == 1
+                && matches!(state.get(&JavaString::from("honey_level")),
+                    Some(Tag::String(level)) if level.to_string_lossy() == "0"))
+        && let Tag::Compound(entries) = &mut components
+    {
+        entries.remove(&JavaString::from("minecraft:block_state"));
         if entries.is_empty() {
             return None;
         }
@@ -1187,6 +1218,102 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 mod tests {
     use super::*;
 
+    fn check_lodestone_saved_default(decoded: bool) {
+        const TRACKER: &str = "minecraft:lodestone_tracker";
+        const CUSTOM: &str = "minecraft:custom_data";
+        let target = Tag::compound([
+            ("dimension", Tag::String("minecraft:overworld".into())),
+            ("pos", Tag::IntArray(vec![12, 200, 12])),
+        ]);
+        let custom = Tag::compound([("keep", Tag::Int(17))]);
+        assert_eq!(
+            encode_components(&ItemStack::new("minecraft:compass", 1)),
+            None
+        );
+        let mut only_custom = ItemStack::new("minecraft:compass", 1);
+        only_custom
+            .data_mut()
+            .set_other(CUSTOM, Some(custom.clone()));
+        assert_eq!(
+            encode_components(&only_custom),
+            Some(Tag::compound([(CUSTOM, custom.clone())]))
+        );
+        // The valid false and absent controls precede the old true-default failure.
+        for (tracked, has_target) in [
+            (Some(false), true),
+            (None, true),
+            (Some(true), true),
+            (Some(true), false),
+        ] {
+            let mut fields = Vec::new();
+            let mut expected_fields = Vec::new();
+            if has_target {
+                fields.push(("target", target.clone()));
+                expected_fields.push(("target", target.clone()));
+            }
+            if let Some(value) = tracked {
+                fields.push(("tracked", Tag::Byte(i8::from(value))));
+                if !value {
+                    expected_fields.push(("tracked", Tag::Byte(0)));
+                }
+            }
+            let source = Tag::compound(fields);
+            let input = Tag::compound([(TRACKER, source.clone()), (CUSTOM, custom.clone())]);
+            let expected = Tag::compound([
+                (TRACKER, Tag::compound(expected_fields)),
+                (CUSTOM, custom.clone()),
+            ]);
+            let stack = if decoded {
+                let (damage, extra) = decode_components(Some(&input));
+                ItemStack {
+                    damage,
+                    extra,
+                    ..ItemStack::new("minecraft:compass", 1)
+                }
+            } else {
+                let mut fresh = ItemStack::new("minecraft:compass", 1);
+                assert!(fresh.extra.is_none());
+                fresh.data_mut().set_other(TRACKER, Some(source.clone()));
+                fresh.data_mut().set_other(CUSTOM, Some(custom.clone()));
+                fresh
+            };
+            {
+                assert_eq!(stack.data().unwrap().other(TRACKER), Some(&source));
+                assert_eq!(encode_components(&stack), Some(expected.clone()));
+                assert_eq!(components_tag(0, stack.data()), Some(input.clone()));
+                let saved = crate::item_nbt::item_to_nbt(&stack);
+                assert_eq!(saved.get("components"), Some(&expected));
+                assert_eq!(
+                    saved.get("id"),
+                    Some(&Tag::String("minecraft:compass".into()))
+                );
+                assert_eq!(saved.get("count"), Some(&Tag::Int(1)));
+                assert_eq!(stack.data().unwrap().other(TRACKER), Some(&source));
+            }
+        }
+        let mut targetless = ItemStack::new("minecraft:compass", 1);
+        targetless
+            .data_mut()
+            .set_other(TRACKER, Some(Tag::compound([("tracked", Tag::Byte(1))])));
+        assert_eq!(
+            encode_components(&targetless),
+            Some(Tag::compound([(
+                TRACKER,
+                Tag::Compound(Default::default())
+            )]))
+        );
+    }
+
+    #[test]
+    fn lodestone_tracker_saved_default_decoded() {
+        check_lodestone_saved_default(true);
+    }
+
+    #[test]
+    fn lodestone_tracker_saved_default_fresh_model() {
+        check_lodestone_saved_default(false);
+    }
+
     #[test]
     fn durability_reads_follow_component_overrides_removals_and_clamping() {
         let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
@@ -1374,6 +1501,73 @@ mod tests {
                 crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&stack)).unwrap();
             assert_eq!(encode_components(&back), Some(components.clone()), "{item}");
         }
+    }
+
+    fn check_hive_saved_patch(decoded: bool) {
+        let parse = |text| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        let zero = parse(r#"{"minecraft:block_state":{honey_level:"0"}}"#);
+        let keep = parse(
+            r#"{"minecraft:block_state":{honey_level:"0"},"minecraft:custom_data":{keep:34}}"#,
+        );
+        let custom = parse(r#"{"minecraft:custom_data":{keep:34}}"#);
+        let one = parse(r#"{"minecraft:block_state":{honey_level:"1"}}"#);
+        let empty = parse(r#"{"minecraft:block_state":{}}"#);
+        let extra = parse(r#"{"minecraft:block_state":{honey_level:"0",facing:"south"}}"#);
+        let removed = parse(r#"{"!minecraft:block_state":{},"minecraft:custom_data":{keep:34}}"#);
+        for item in ["minecraft:beehive", "minecraft:bee_nest", "minecraft:stone"] {
+            assert!(encode_components(&ItemStack::new(item, 1)).is_none());
+            for source in [&zero, &keep, &one, &empty, &extra, &removed] {
+                let mut stack = ItemStack::new(item, 1);
+                if decoded {
+                    (stack.damage, stack.extra) = decode_components(Some(source));
+                } else {
+                    // A fresh model, without retained source NBT.
+                    assert!(stack.extra.is_none());
+                    let Tag::Compound(entries) = source else {
+                        unreachable!()
+                    };
+                    for (id, value) in entries {
+                        stack
+                            .data_mut()
+                            .set_other(&id.to_string_lossy(), Some(value.clone()));
+                    }
+                }
+                let before = stack.data().cloned();
+                assert_eq!(
+                    components_tag(stack.damage, stack.data()),
+                    Some(source.clone())
+                );
+                let saved = encode_components(&stack);
+                // Saved patch canonicalization must not change live/unsaved values.
+                assert_eq!(stack.data(), before.as_ref());
+                assert_eq!(
+                    components_tag(stack.damage, stack.data()),
+                    Some(source.clone())
+                );
+                let expected = if item != "minecraft:stone" && source == &zero {
+                    None
+                } else if item != "minecraft:stone" && source == &keep {
+                    Some(custom.clone())
+                } else {
+                    Some(source.clone())
+                };
+                assert_eq!(saved, expected, "{item}, decoded={decoded}, {source:?}");
+                let tag = crate::item_nbt::item_to_nbt(&stack);
+                assert_eq!(tag.get("components"), expected.as_ref());
+                let back = crate::item_nbt::item_from_nbt(&tag).unwrap();
+                assert_eq!(encode_components(&back), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn decoded_hive_saved_patch_uses_whole_prototype() {
+        check_hive_saved_patch(true);
+    }
+
+    #[test]
+    fn fresh_hive_saved_patch_uses_whole_prototype() {
+        check_hive_saved_patch(false);
     }
 
     #[test]

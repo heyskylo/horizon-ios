@@ -983,11 +983,32 @@ impl TextField {
     }
 }
 
+/// `ScreenRectangle.intersection`: the part of both rectangles, or
+/// `ScreenRectangle.empty()` (`0, 0, 0, 0`, which clips everything) when they
+/// do not overlap.
+fn intersect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
+    let rect = [
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+        a[2].min(b[2]),
+        a[3].min(b[3]),
+    ];
+    if rect[0] < rect[2] && rect[1] < rect[3] {
+        rect
+    } else {
+        [0, 0, 0, 0]
+    }
+}
+
 /// Draws the calls with the HUD batch: sprites nine-sliced, textures from
 /// the atlas (`textures/gui/x.png` is `gui/x`; tiled textures from their
 /// corner), scissor clipping, and the tooltip at the mouse.
 pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) {
-    let mut clip: Option<(usize, [i32; 4])> = None;
+    // `GuiGraphicsExtractor.ScissorStack`: a scissor clips what is drawn since
+    // it opened, cut to the screen while none is open and to the one around it
+    // otherwise; closing it puts the enclosing one back.
+    let screen = [0, 0, batch.width as i32, batch.height as i32];
+    let mut clips: Vec<(usize, [i32; 4])> = Vec::new();
     let mut tooltip = None;
     for d in draws {
         match d {
@@ -1091,10 +1112,11 @@ pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) {
                 );
             }
             Draw::Scissor { x0, y0, x1, y1 } => {
-                clip = Some((batch.vertices.len(), [*x0, *y0, *x1, *y1]))
+                let outer = clips.last().map_or(screen, |&(_, rect)| rect);
+                clips.push((batch.vertices.len(), intersect(outer, [*x0, *y0, *x1, *y1])));
             }
             Draw::NoScissor => {
-                if let Some((start, [x0, y0, x1, y1])) = clip.take() {
+                if let Some((start, [x0, y0, x1, y1])) = clips.pop() {
                     batch.clip_since(start, x0 as f32, y0 as f32, x1 as f32, y1 as f32);
                 }
             }
@@ -1288,5 +1310,128 @@ mod button_label_tests {
         sprite(&mut out, "widget/button", 10, 20, w, 20);
         paint(&mut batch, atlas, &out);
         batch.vertices.len()
+    }
+}
+
+#[cfg(test)]
+mod scissor_tests {
+    use super::*;
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+
+    /// The bounds of every quad's six vertices, in draw order.
+    fn quads(batch: &HudBatch) -> Vec<[f32; 4]> {
+        batch
+            .vertices
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|q| {
+                let (mut x0, mut y0) = (f32::MAX, f32::MAX);
+                let (mut x1, mut y1) = (f32::MIN, f32::MIN);
+                for v in q {
+                    x0 = x0.min(v.pos[0]);
+                    y0 = y0.min(v.pos[1]);
+                    x1 = x1.max(v.pos[0]);
+                    y1 = y1.max(v.pos[1]);
+                }
+                [x0, y0, x1, y1]
+            })
+            .collect()
+    }
+
+    fn fill(x0: i32, y0: i32, x1: i32, y1: i32) -> Draw {
+        Draw::Fill {
+            x0,
+            y0,
+            x1,
+            y1,
+            color: -1,
+        }
+    }
+
+    fn scissor(x0: i32, y0: i32, x1: i32, y1: i32) -> Draw {
+        Draw::Scissor { x0, y0, x1, y1 }
+    }
+
+    /// `GuiGraphicsExtractor.ScissorStack.push`: a scissor inside another is
+    /// intersected with it (`ScreenRectangle.intersection`), and the outer one
+    /// still clips what is drawn after the inner one closes.
+    #[test]
+    fn a_nested_scissor_is_intersected_with_the_one_around_it() {
+        let atlas = atlas();
+        let mut batch = HudBatch::new([320, 240]);
+        paint(
+            &mut batch,
+            &atlas,
+            &[
+                scissor(10, 10, 100, 100),
+                fill(0, 0, 200, 200),
+                scissor(50, 50, 300, 300),
+                fill(0, 0, 400, 400),
+                Draw::NoScissor,
+                fill(0, 0, 200, 200),
+                Draw::NoScissor,
+            ],
+        );
+        assert_eq!(
+            quads(&batch),
+            [
+                [10.0, 10.0, 100.0, 100.0],
+                [50.0, 50.0, 100.0, 100.0],
+                [10.0, 10.0, 100.0, 100.0],
+            ]
+        );
+    }
+
+    /// A scissor with no scissor around it is cut to the screen, as
+    /// `ScissorStack.push` intersects with the screen while the stack is empty.
+    #[test]
+    fn a_scissor_wider_than_the_screen_is_cut_to_it() {
+        let atlas = atlas();
+        let mut batch = HudBatch::new([320, 240]);
+        paint(
+            &mut batch,
+            &atlas,
+            &[
+                scissor(-50, -50, 500, 500),
+                fill(-100, -100, 600, 600),
+                Draw::NoScissor,
+            ],
+        );
+        assert_eq!(quads(&batch), [[0.0, 0.0, 320.0, 240.0]]);
+    }
+
+    /// A scissor that misses the one around it intersects to
+    /// `ScreenRectangle.empty()`: nothing inside it is drawn, and the outer
+    /// scissor takes over again when it closes.
+    #[test]
+    fn a_scissor_outside_the_one_around_it_draws_nothing() {
+        let atlas = atlas();
+        let mut batch = HudBatch::new([320, 240]);
+        paint(
+            &mut batch,
+            &atlas,
+            &[
+                scissor(10, 10, 50, 50),
+                fill(0, 0, 200, 200),
+                scissor(60, 60, 90, 90),
+                fill(0, 0, 200, 200),
+                Draw::NoScissor,
+                fill(0, 0, 200, 200),
+                Draw::NoScissor,
+                fill(0, 0, 200, 200),
+            ],
+        );
+        assert_eq!(
+            quads(&batch),
+            [
+                [10.0, 10.0, 50.0, 50.0],
+                [10.0, 10.0, 50.0, 50.0],
+                [0.0, 0.0, 200.0, 200.0],
+            ]
+        );
     }
 }

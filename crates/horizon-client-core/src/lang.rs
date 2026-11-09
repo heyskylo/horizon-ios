@@ -394,7 +394,7 @@ pub fn apply_deprecated(map: &mut HashMap<String, String>, json: &[u8]) {
 /// characters in strings, `=` or `=>` and `;`), which vanilla reads lang files with (expected
 /// from `Language.loadFromJson`, Gson). A file that is not JSON even so adds nothing; a value
 /// that is not a string, number or boolean (`GsonHelper.convertToString`) ends the file there.
-fn read_lang_file(bytes: &[u8], map: &mut HashMap<String, String>) {
+pub fn read_lang_file(bytes: &[u8], map: &mut HashMap<String, String>) {
     use horizon_world::datafix::json::{Json, parse_lenient};
     if let Ok(entries) = serde_json::from_slice::<HashMap<String, String>>(bytes) {
         map.extend(entries);

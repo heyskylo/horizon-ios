@@ -982,7 +982,9 @@ impl Game<'_> {
             if in_water {
                 a.enchantment_fall_distance = 0.0;
             } else {
-                a.enchantment_fall_distance += (a.previous.y - a.position.y).max(0.0);
+                // Entity.checkFallDamage narrows each movement before adding to the double.
+                a.enchantment_fall_distance +=
+                    f64::from((a.previous.y - a.position.y).max(0.0) as f32);
             }
             let landed = a.on_ground && a.enchantment_fall_distance > 0.0;
             if a.on_ground {
@@ -1180,12 +1182,13 @@ impl Game<'_> {
                 )
                 * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0));
-            let light = self.world.light(
-                at.x.floor() as i32,
-                (at.y + 0.5).floor() as i32,
-                at.z.floor() as i32,
-            );
-            let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
+            // `EntityRenderer.getPackedLightCoords`: the block
+            // `ArmorStand.getLightProbePosition` gives - the brightest cell of a
+            // marker's own box, else the stand's eye - at 15 block light while
+            // it burns.
+            let probe = a.light_probe(alpha, |x, y, z| self.world.light(x, y, z));
+            let light = self.world.light(probe[0], probe[1], probe[2]);
+            let packed = a.render_light(light);
             let skinned = if skinning {
                 let mut models = self.skin_models.borrow_mut();
                 let mut frame = self.skin_frame.borrow_mut();
@@ -1719,8 +1722,8 @@ impl Game<'_> {
                 .extra
                 .as_deref()
                 .and_then(|d| d.other.iter().find(|(k, _)| k == "minecraft:profile"))
-                .map(|(_, t)| horizon_client::scoreboard::tag_to_json(t))
-                .unwrap_or(serde_json::Value::Null);
+                .map(|(_, t)| self.skin_profiles.borrow_mut().head_profile_nbt(t))
+                .unwrap_or_else(|| std::sync::Arc::new(serde_json::Value::Null));
             self.pack.item_renderer.submit_special(
                 &special,
                 &profile,

@@ -129,6 +129,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
+# Private main-thread GPU/input regression probes; absent from shipping builds.
+test-support = ["horizon-client-render/test-support"]
 default = ["audio", "controllers"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
@@ -181,3 +183,8 @@ horizon-client-render = { path = "../horizon-client-render", features = ["test-s
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
+
+[[example]]
+name = "presentation_input_probe"
+path = "examples/presentation_input_probe.rs"
+required-features = ["test-support"]

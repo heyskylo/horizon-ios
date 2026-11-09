@@ -301,6 +301,16 @@ impl Game<'_> {
         Some(position)
     }
 
+    /// AbstractBoat.getControllingPassenger: only the first player steers a boat.
+    /// A non-remote world retains its existing local movement ownership.
+    pub(super) fn controls_boat(&self, id: u32) -> bool {
+        if self.remote.is_some() {
+            self.remote_controls_boat(id)
+        } else {
+            self.riding == Some(id)
+        }
+    }
+
     /// The local player's tick in its vehicle, in place of its own movement:
     /// false when it rides nothing.
     pub(super) fn remote_ride(&mut self, keys: Keys, sprint_window: i32) -> Result<bool> {

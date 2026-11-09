@@ -141,7 +141,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.empty_sound(pos, sound, mob);
             return Some(pos);
         }
-        if may_replace && !b.instance_of(state, Class::Liquid) {
+        // `BlockState.liquid()`: water, lava and the bubble column. A bubble
+        // column is not a `LiquidBlock`, and breaking it first spills break
+        // particles and a `block_destroy` a sculk sensor hears.
+        if may_replace && !b.liquid(state) {
             self.destroy_block(pos, true, super::flags::UPDATE_LIMIT);
         }
         let source = FluidState::new(

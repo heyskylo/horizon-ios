@@ -8,6 +8,7 @@ struct HeldDecoration {
     release: Mutex<mpsc::Receiver<()>>,
     stone: u32,
     saved: Mutex<Vec<u64>>,
+    release_timeout: Duration,
 }
 impl ChunkGenerator for HeldDecoration {
     type Worker = ();
@@ -20,7 +21,7 @@ impl ChunkGenerator for HeldDecoration {
         self.release
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(self.release_timeout)
             .unwrap();
         for proto in region {
             *proto.downcast_mut::<u64>().unwrap() += 100;
@@ -62,6 +63,89 @@ fn context() -> crate::Result<Arc<WorkerContext>> {
     }))
 }
 
+/// This deliberately crosses the production 30-second synchronous-save
+/// deadline. A late decoration owns dirty proto chunks outside World.
+#[test]
+#[ignore = "requires HORIZON_TEST_RESOURCES; holds an actual worker for 32 seconds"]
+fn synchronous_save_cannot_acknowledge_before_late_owned_decoration_is_saved() -> crate::Result<()>
+{
+    let context = context()?;
+    let stone = context
+        .assets
+        .registry
+        .default_state("minecraft:stone")
+        .unwrap();
+    let (entered, started) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel(1);
+    let generator = Arc::new(HeldDecoration {
+        entered,
+        release: Mutex::new(held),
+        stone: stone.0,
+        saved: Mutex::new(Vec::new()),
+        release_timeout: Duration::from_secs(45),
+    });
+    let mut streaming = Streaming::new(generator.clone(), context, 1);
+    let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+    let final_chunk = Chunk::empty(0, 0);
+    world.chunks.insert((0, 0), Arc::new(final_chunk.clone()));
+    streaming.decorating = 1;
+    streaming.decorating_finals.insert((0, 0));
+    for z in -1..=1 {
+        for x in -1..=1 {
+            if (x, z) != (0, 0) {
+                streaming.protos.insert((x, z), None);
+            }
+        }
+    }
+    streaming.submit(
+        Some((0, 0)),
+        1,
+        Job::Decorate(
+            0,
+            0,
+            Box::new(std::array::from_fn(|_| Box::new(7u64) as Proto)),
+            vec![(4, final_chunk)],
+        ),
+    );
+    started
+        .recv_timeout(Duration::from_secs(10))
+        .expect("worker did not start");
+    streaming.abort_generation();
+    let (ack, acknowledgement) = mpsc::channel();
+    let saver = std::thread::spawn(move || {
+        streaming.save(&mut world, true);
+        ack.send(()).unwrap();
+        (streaming, world)
+    });
+    let held_until = std::time::Instant::now() + Duration::from_secs(32);
+    let early_ack = acknowledgement
+        .recv_timeout(Duration::from_secs(32))
+        .is_ok();
+    // Keep the actual worker held for the full interval even when RED
+    // acknowledges early; always release it before asserting below.
+    std::thread::sleep(held_until.saturating_duration_since(std::time::Instant::now()));
+    // Always release the real worker before an assertion, including on RED.
+    release.send(()).unwrap();
+    let (streaming, world) = saver.join().expect("save owner panicked");
+    let saved = generator.saved.lock().unwrap().clone();
+    drop(streaming);
+    assert!(
+        !early_ack,
+        "save(true) falsely acknowledged while decoration still owned dirty protos"
+    );
+    assert_eq!(
+        saved,
+        vec![107; 8],
+        "late owned proto writes must be persisted before ACK"
+    );
+    assert_eq!(
+        world.block(1, 70, 1),
+        stone,
+        "late final writes must reach the authoritative world before its chunk save"
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
 fn closing_stream_preserves_owned_generation_before_ack() -> crate::Result<()> {
@@ -85,6 +169,7 @@ fn closing_stream_preserves_owned_generation_before_ack() -> crate::Result<()> {
             release: Mutex::new(held),
             stone: stone.0,
             saved: Mutex::new(Vec::new()),
+            release_timeout: Duration::from_secs(10),
         });
         let mut streaming = Streaming::new(generator.clone(), context.clone(), 1);
         let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
@@ -225,6 +310,7 @@ fn queued_checkouts_survive_abort(context: Arc<WorkerContext>) {
             release: Mutex::new(held),
             stone: 1,
             saved: Mutex::new(Vec::new()),
+            release_timeout: Duration::from_secs(10),
         });
         let mut streaming = Streaming::new(generator.clone(), context.clone(), 1);
         let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);

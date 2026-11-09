@@ -283,6 +283,13 @@ mod tests {
         }
     }
     #[test]
+    fn a_muted_octave_decodes_to_a_silent_noise() {
+        let noise = decode_noise(r#"{"base_octave":0,"amplitude_modifiers":[0.0]}"#).unwrap();
+        assert!(noise.octaves().is_empty());
+        assert_eq!(noise.normalization_factor(), 0.0);
+        assert_eq!(noise.range(), [0.0, 0.0]);
+    }
+    #[test]
     fn codec_defaults_and_empty_modifiers_match_explicit_parameters() {
         let a = decode_noise(r#"{"base_octave":-7}"#).unwrap();
         let b = decode_noise(r#"{"base_octave":-7,"base_amplitude":1,"octave_count":1,"normalize":true,"amplitude_modifiers":[],"unknown":42}"#).unwrap();

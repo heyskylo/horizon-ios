@@ -262,7 +262,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::{
         Audio, Options, Progress, Settings,
         boats::Boat,
@@ -278,7 +278,7 @@ mod tests {
 
     /// A server's game on the prepared resources: nobody is playing, and the
     /// chunk at the origin is loaded.
-    fn server_game() -> Game<'static> {
+    pub(crate) fn server_game() -> Game<'static> {
         let root = std::path::PathBuf::from(
             std::env::var_os("HORIZON_TEST_RESOURCES")
                 .expect("set HORIZON_TEST_RESOURCES to prepared resources"),

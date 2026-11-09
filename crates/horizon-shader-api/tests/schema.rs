@@ -828,3 +828,64 @@ fn the_0_2_keys_are_refused_under_0_1_and_checked_under_0_2() {
         assert!(e.contains(needle), "{needle:?} not in {e:?}");
     }
 }
+
+fn float_option_manifest(fields: &str) -> String {
+    format!(
+        "schema = 1\nid = \"finite_options\"\nname = \"Finite options\"\nversion = \"1.0\"\napi = \"0.1\"\n[sky]\nfile = \"sky.wgsl\"\n[[options]]\nid = \"gain\"\nname = \"Gain\"\ntype = \"float\"\n{fields}"
+    )
+}
+
+#[test]
+fn finite_toml_numbers_cannot_overflow_float_option_storage() {
+    for fields in [
+        "min = 0.0\nmax = 1e300\ndefault = 1e300\nstep = 1e300\n",
+        "min = -1e300\nmax = 1.0\ndefault = 0.0\nstep = 1.0\n",
+        "min = -3e38\nmax = 3e38\ndefault = 0.0\nstep = 1e300\n",
+    ] {
+        assert!(
+            Manifest::parse(&float_option_manifest(fields)).is_err(),
+            "{fields}"
+        );
+    }
+}
+
+#[test]
+fn wide_finite_float_option_ranges_keep_a_finite_default_step() {
+    for bound in ["3e38", "3.4028234663852886e38"] {
+        let text =
+            float_option_manifest(&format!("min = -{bound}\nmax = {bound}\ndefault = 0.0\n"));
+        let manifest = Manifest::parse(&text).unwrap();
+        let OptionKind::Float {
+            min,
+            max,
+            default,
+            step,
+        } = manifest.options[0].kind
+        else {
+            panic!("expected float option");
+        };
+        assert!(min.is_finite() && max.is_finite() && default.is_finite());
+        assert!(step.is_finite() && step > 0.0);
+        assert!(f64::from(step) <= f64::from(max) - f64::from(min));
+        assert!(manifest.options[0].kind.default_constant().is_finite());
+    }
+}
+
+#[test]
+fn ordinary_float_options_and_invalid_non_finite_values_keep_their_contract() {
+    let fields = "min = 0.0\nmax = 1.0\ndefault = 0.5\nstep = 0.01\n";
+    let manifest = Manifest::parse(&float_option_manifest(fields)).unwrap();
+    assert_eq!(manifest.options[0].kind.default_constant(), 0.5);
+    for (key, old) in [
+        ("min", "0.0"),
+        ("max", "1.0"),
+        ("default", "0.5"),
+        ("step", "0.01"),
+    ] {
+        for invalid in ["nan", "inf", "-inf"] {
+            let invalid_fields =
+                fields.replace(&format!("{key} = {old}"), &format!("{key} = {invalid}"));
+            assert!(Manifest::parse(&float_option_manifest(&invalid_fields)).is_err());
+        }
+    }
+}

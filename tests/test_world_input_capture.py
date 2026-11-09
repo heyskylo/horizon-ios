@@ -109,6 +109,7 @@ struct Options { offscreen: bool }
 #[derive(Default)]
 struct ServerPacks { prompt: Option<()> }
 struct Game {
+    stale: bool,
     splitscreen: SplitScreen, left: bool, right: bool,
     focused: bool, agent_pointer: bool, window: Option<Window>, mouse: Mouse,
     keyboard_mouse: bool, split_window: bool, view_at: [u32; 2],
@@ -119,7 +120,7 @@ struct Game {
 }
 impl Default for Game {
     fn default() -> Self {
-        Self { splitscreen: SplitScreen::default(), left: false, right: false,
+        Self { stale: false, splitscreen: SplitScreen::default(), left: false, right: false,
             focused: true, agent_pointer: false, window: Some(Window::default()),
             keyboard_mouse: true, split_window: false, view_at: [0, 0],
             mouse: Mouse::default(), captured: false, capture_mode: None, regrab_on_refocus: false, title: None,
@@ -130,6 +131,7 @@ impl Default for Game {
 }
 HELPER
 impl Game {
+    fn presentation_stale(&self)->bool{self.stale}
     fn stop_mining(&mut self) { self.mining = false; }
     fn reset_inventory_clicks(&mut self) {}
     fn restore_held_keys(&mut self) {}
@@ -137,6 +139,9 @@ impl Game {
 METHODS
 }
 fn main() {
+    // A pending presentation must not recapture an unseen menu or world.
+    { let mut game=Game::default();game.stale=true;game.capture(true);
+      assert!(!game.captured);game.stale=false;game.capture(true);assert!(game.captured); }
     // The server pack prompt keeps the pointer: nothing grabs it while it is open.
     {
         let mut game = Game::default();

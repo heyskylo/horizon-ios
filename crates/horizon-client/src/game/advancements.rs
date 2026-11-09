@@ -692,7 +692,9 @@ impl Game<'_> {
             let uuid = self.persist.uuids.get(&m.id).copied().unwrap_or_default();
             let raw = self.persist.raw.get(&m.id);
             let registry = Some(self.pack.assets.registry);
-            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry);
+            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry, |other| {
+                self.persist.uuid_of(other)
+            });
             let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
             super::persist::add_passengers(&mut tag, riders);
             tag

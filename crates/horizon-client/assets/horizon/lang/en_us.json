@@ -323,6 +323,8 @@
   "horizon.extras.no_ai": "No AI",
   "horizon.extras.agent_control": "Agent Control",
   "horizon.extras.discord_presence": "Discord Rich Presence",
+  "horizon.extras.zoom": "Zoom",
+  "horizon.extras.zoom_mod_install": "Zoom: install from Mods",
   "horizon.extras.splitscreen": "Splitscreen",
   "horizon.extras.chat_animation": "Smooth chat",
   "horizon.extras.chat_indicator": "Message indicator",

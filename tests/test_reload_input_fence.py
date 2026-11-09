@@ -21,6 +21,8 @@ def program():
     end=pad.index('        for button in std::mem::take',start)
     sticks='fn apply_sticks(&mut self,state:&mut PadState){'+pad[start:end]+'}'
     methods = sticks + method(game,'reload_blocks_input') + '\n' + method(touch,'cancel_touch_for_reload')
+    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'menu_input_blocked')
+    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'presentation_stale')
     for name in ['pad_reload_sample','finish_reload_input_disarm','pad_cancel_inputs','pad_button']:
         methods += '\n' + method(pad,name)
     return STUBS + '\nmod gamepad {\n' + buttons + '\npub '+radial+'\n'+length+'\n}\n' + f'#[path="{ROOT / "crates/horizon-client/src/touch.rs"}"]mod touch;\n' + '\nimpl Game {\n'+methods+'\n}\n'+CASES
@@ -42,9 +44,10 @@ impl Keys{fn release_source(&mut self,_:Source){self.touch=false;}}
 struct Controller{move_deadzone:f32,look_deadzone:f32,trigger_threshold:f32}
 impl Controller{fn actions_of(&self,_:Button)->Vec<&'static str>{vec!["key.jump"]}}
 struct Settings{controller:Controller}
-struct Game{screen:Screen,captured:bool,focused:bool,menu_calls:usize,pad:Pad,touch:Touch,keys:Keys,pack_reload:Option<()>,transaction:bool,settings:Settings,releases:Vec<Button>,actions:Vec<(&'static str,bool)>,ime:bool,emote:bool}
+struct Renderer{current:bool} impl Renderer{fn presentation_current(&self)->bool{self.current}}
+struct Game{renderer:Option<Renderer>,screen:Screen,captured:bool,focused:bool,menu_calls:usize,pad:Pad,touch:Touch,keys:Keys,pack_reload:Option<()>,transaction:bool,settings:Settings,releases:Vec<Button>,actions:Vec<(&'static str,bool)>,ime:bool,emote:bool}
 impl Game{
- fn new()->Self{Self{screen:Screen::Playing,captured:false,focused:true,menu_calls:0,pad:Pad::default(),touch:Touch::default(),keys:Keys::default(),pack_reload:None,transaction:false,settings:Settings{controller:Controller{move_deadzone:0.2,look_deadzone:0.2,trigger_threshold:0.5}},releases:vec![],actions:vec![],ime:true,emote:true}}
+ fn new()->Self{Self{renderer:None,screen:Screen::Playing,captured:false,focused:true,menu_calls:0,pad:Pad::default(),touch:Touch::default(),keys:Keys::default(),pack_reload:None,transaction:false,settings:Settings{controller:Controller{move_deadzone:0.2,look_deadzone:0.2,trigger_threshold:0.5}},releases:vec![],actions:vec![],ime:true,emote:true}}
  fn pad_focused(&self)->bool{true}
  fn pad_in_menu(&self)->bool{true}
  fn capture(&mut self,on:bool){self.captured=on;}
@@ -62,8 +65,8 @@ impl Game{
 '''
 CASES = r'''
 #[test]fn all_reload_phases_disarm_real_holds_and_require_release(){
- for phase in 0..3 {
- let mut g=Game::new();match phase{0=>g.pack_reload=Some(()),1=>g.transaction=true,_=>g.pad.reload_pending=true};
+ for phase in 0..4 {
+ let mut g=Game::new();match phase{0=>g.pack_reload=Some(()),1=>g.transaction=true,2=>g.pad.reload_pending=true,_=>g.renderer=Some(Renderer{current:false})};
  g.pad_button(&Loop,Button::Start,true).unwrap();g.pad_button(&Loop,Button::South,true).unwrap();
  assert!(!g.captured);assert_eq!(g.menu_calls,0);assert!(g.actions.is_empty());
  g.pad.actions[Button::South as usize].push("key.use");g.pad_button(&Loop,Button::South,false).unwrap();
@@ -78,7 +81,7 @@ CASES = r'''
  assert_eq!(g.actions,vec![("key.jump",false)]);assert!(!g.ime);assert!(!g.emote);assert!(!g.keys.touch);assert!(g.touch.holding.is_none());assert!(g.touch.late.is_empty());assert!(!g.touch.fingers.held(touch::Control::Forward));
  assert!(g.touch.fingers.frame(20.).is_empty());assert!(g.touch.fingers.end(1).is_empty());
  assert!(!g.touch.fingers.start(2,(r[0]+r[2]/2.,r[1]+r[3]/2.),21.,&touch::layout(1000.,600.)).is_empty());
- g.pack_reload=None;g.transaction=false;assert!(!g.pad_reload_sample(&Loop,state));
+ g.pack_reload=None;g.transaction=false;g.renderer=None;assert!(!g.pad_reload_sample(&Loop,state));
  let mut held=state;g.apply_sticks(&mut held);assert_eq!(held.left,[0.;2]);assert_eq!(held.right,[0.;2]);
  let mut neutral=PadState::default();g.apply_sticks(&mut neutral);assert_eq!(g.pad.blocked_sticks,[false;2]);
  let mut fresh=state;g.apply_sticks(&mut fresh);assert_eq!(fresh.left,state.left);assert_eq!(fresh.right,state.right);

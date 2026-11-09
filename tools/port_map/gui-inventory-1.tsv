@@ -122,9 +122,11 @@ CreativeModeInventoryScreen.tryRebuildTabContents	port	crates/horizon-client/src
 CreativeModeInventoryScreen.refreshCurrentTabContents	inline	crates/horizon-client/src/creative.rs::Creative::items	the grid is worked out again when the tab, search or language changed
 CreativeModeInventoryScreen.containerTick	port	crates/horizon-client/src/game.rs::Game::tick	refresh_creative_tabs each tick, then a player without infinite materials gets the survival inventory
 CreativeModeInventoryScreen.init	port	crates/horizon-client/src/creative.rs::Creative::reopen	fresh search box and scrollbar when the screen opens
+CreativeModeInventoryScreen.selectTab	port	crates/horizon-client/src/creative.rs::Creative::select	the search box is focused only on the search tab, its query empties when the tab changes, the scrollbar goes to the top and the tab's page shows
 CreativeModeInventoryScreen.resize	skip:ui		re-init on window resize keeping search text and scroll row
 CreativeModeInventoryScreen.removed	skip:other		unregisters the slot listener; Horizon sends the creative slots to the server from its own tick
 CreativeModeInventoryScreen.charTyped	port	crates/horizon-client/src/game/clipboard.rs::Game::creative_search_edit	
+CreativeModeInventoryScreen.keyPressed	port	crates/horizon-client/src/creative.rs::Creative::search_tab	the chat key on a tab that is not the search selects the search tab, quick-craft clicks cleared as selectTab does, and drops the letter it carries (ignoreTextInput); the rest is AbstractContainerScreen.keyPressed
 CreativeModeInventoryScreen.preeditUpdated	inline	crates/horizon-client/src/game/ime.rs::Game::ime_preedit	the search box is a focused field, so the composition shows under its caret
 CreativeModeInventoryScreen.isInputCaptured	inline	crates/horizon-client/src/game/debug_keys.rs::Game::debug_key	typing gate for the search tab; vanilla only uses it to stop the friends hotkey
 CreativeModeInventoryScreen.updateVisibleTags	port	crates/horizon-client/src/creative.rs::Creative::search_tag_lines	the tags the text after # matches, each as a #namespace:path line

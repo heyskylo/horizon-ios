@@ -36,7 +36,7 @@ struct Pad{in_use:bool,held:Vec<&'static str>,released:Vec<&'static str>}
 struct EmoteWheel{controller:Option<()>}
 struct Game{emote_wheel:EmoteWheel,touch:TouchInput,pad:Pad,last_input:Instant,dispatched:Vec<(bool,Vec<touch::Out>)>}
 impl Game{
- fn reload_blocks_input(&self)->bool{false}
+ fn menu_input_blocked(&self)->bool{false}
  fn cancel_touch_for_reload(&mut self){panic!("no reload in handoff fixture");}
  fn new()->Self{Self{emote_wheel:EmoteWheel{controller:Some(())},touch:TouchInput{seen:false,hardware:Hardware,fingers:touch::Touches::default(),menu:None},pad:Pad{in_use:true,held:vec!["key.forward","key.attack"],released:vec![]},last_input:Instant::now(),dispatched:vec![]}}
  fn touch_batch(&self)->Option<Batch>{Some(Batch{width:1000.,height:600.,scale:2.})}

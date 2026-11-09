@@ -120,7 +120,13 @@ mod drop_motion_tests {
                 [
                     -4627867408251048793,
                     4597245257657090048,
-                    4597448471913462163,
+                    // Vanilla's `Math.sin` is HotSpot's intrinsic, which rounds this
+                    // one a bit lower on AArch64 than on x86-64 (`jmath`).
+                    if cfg!(target_arch = "aarch64") {
+                        4597448471913462162
+                    } else {
+                        4597448471913462163
+                    },
                 ],
             ),
             (
@@ -409,6 +415,29 @@ impl ItemEntity {
 }
 impl ItemEntity {
     pub const WIDTH: f64 = 0.25;
+    /// `EntityType.ITEM` declares `eyeHeight(0.2125)`: an item is lit from the
+    /// block its eye is in, most of a block above the one its base rests in.
+    pub const EYE_HEIGHT: f64 = 0.2125;
+    /// `Entity.getLightProbePosition(partialTick)` for a dropped item: the eye
+    /// position (`getEyePosition`) over the position drawn this frame
+    /// (`getPosition(partialTick)`), not this tick's own.
+    pub fn light_probe(&self, partial: f64) -> [f64; 3] {
+        [
+            self.previous.x + (self.position.x - self.previous.x) * partial,
+            self.previous.y + (self.position.y - self.previous.y) * partial + Self::EYE_HEIGHT,
+            self.previous.z + (self.position.z - self.previous.z) * partial,
+        ]
+    }
+    /// `EntityRenderer.getPackedLightCoords` for a dropped item: the level's
+    /// sky light over the block light of the cell it is lit from, which
+    /// `EntityRenderer.getBlockLightLevel` puts at 15 while the item
+    /// `isOnFire`. `light` is the level's packed light (sky high, block low);
+    /// `environment_tick` clears the fire ticks of a fire-immune stack, as
+    /// `ItemEntity.fireImmune` makes it never on fire.
+    pub fn render_light(&self, light: u8) -> u32 {
+        let block = if self.fire_ticks > 0 { 15 } else { light & 15 };
+        (u32::from(light >> 4) * 16) | ((u32::from(block) * 16) << 8)
+    }
     pub fn bounds(&self) -> Aabb {
         let h = Self::WIDTH / 2.0;
         Aabb::new(
@@ -1769,7 +1798,8 @@ pub struct ArmorStand {
     pub disabled_slots: i32,
     /// Server-only `LivingEntity.lastPos` for location-based enchantments.
     pub enchantment_block: Option<BlockPos>,
-    /// Travel accumulated for `LivingEntity.checkFallDamage`'s landing callback.
+    /// `Entity.fallDistance`, also used by `LivingEntity.checkFallDamage`'s landing callback.
+    /// Each downward movement is narrowed to float before adding to this double.
     pub enchantment_fall_distance: f64,
     /// Last equipment seen by `collectEquipmentChanges`; not saved to NBT.
     pub enchantment_equipment: [Option<ItemStack>; 6],
@@ -1894,6 +1924,84 @@ impl ArmorStand {
     /// (`EntityRenderer`'s `Mth.lerp(partialTick, xo, x)` and so on).
     pub fn render_position(&self, alpha: f64) -> Vec3 {
         self.previous.lerp(self.position, alpha)
+    }
+    /// `ArmorStand.getDimensionsMarker(false)`: the width, height and eye
+    /// height of the box a stand has without the marker flag, which is the box
+    /// a marker's light probe walks (`MARKER_DIMENSIONS` itself is empty, and
+    /// `isBaby()` is `isSmall()`).
+    pub fn probe_dimensions(&self) -> (f64, f64, f64) {
+        if self.small {
+            (0.25, 0.9875, 0.9875)
+        } else {
+            (0.5, 1.975, 1.7775)
+        }
+    }
+    /// `ArmorStand.getLightProbePosition` as the cell the renderer reads
+    /// (`BlockPos.containing` of the position it returns): a marker walks
+    /// `BlockPos.betweenClosed` of its non-marker box at `position()` - it
+    /// takes no partial tick - and returns the first cell whose brightness
+    /// `max(block, sky)` is 15, else the brightest, ties going to the first
+    /// cell walked; every other stand is lit from its eye
+    /// (`Entity.getLightProbePosition` is `getEyePosition(partialTick)`).
+    /// `light` is the level's packed light.
+    pub fn light_probe(
+        &self,
+        partial: f64,
+        mut light: impl FnMut(i32, i32, i32) -> u8,
+    ) -> [i32; 3] {
+        let (width, height, eye) = self.probe_dimensions();
+        if !self.marker {
+            let at = self.render_position(partial);
+            return [
+                at.x.floor() as i32,
+                (at.y + eye).floor() as i32,
+                at.z.floor() as i32,
+            ];
+        }
+        let half = width / 2.0;
+        let (lo_x, hi_x) = (
+            (self.position.x - half).floor() as i32,
+            (self.position.x + half).floor() as i32,
+        );
+        let (lo_z, hi_z) = (
+            (self.position.z - half).floor() as i32,
+            (self.position.z + half).floor() as i32,
+        );
+        let (lo_y, hi_y) = (
+            self.position.y.floor() as i32,
+            (self.position.y + height).floor() as i32,
+        );
+        // `BlockPos.betweenClosed` walks x fastest, then y, then z; the stand's
+        // own cell is what it falls back to when the box is empty.
+        let mut best = [
+            self.position.x.floor() as i32,
+            self.position.y.floor() as i32,
+            self.position.z.floor() as i32,
+        ];
+        let mut brightest = i32::MIN;
+        for cell_z in lo_z..=hi_z {
+            for cell_y in lo_y..=hi_y {
+                for cell_x in lo_x..=hi_x {
+                    let level = light(cell_x, cell_y, cell_z);
+                    let brightness = i32::from((level & 15).max(level >> 4));
+                    if brightness == 15 {
+                        return [cell_x, cell_y, cell_z];
+                    }
+                    if brightness > brightest {
+                        brightest = brightness;
+                        best = [cell_x, cell_y, cell_z];
+                    }
+                }
+            }
+        }
+        best
+    }
+    /// `EntityRenderer.getPackedLightCoords` for the cell `light_probe` chose:
+    /// the level's sky light over the cell's block light, at 15 block light
+    /// while the stand `isOnFire`. `light` is the level's packed light.
+    pub fn render_light(&self, light: u8) -> u32 {
+        let block = if self.fire_ticks > 0 { 15 } else { light & 15 };
+        (u32::from(light >> 4) * 16) | ((u32::from(block) * 16) << 8)
     }
     /// The body's yaw `alpha` of the way through the tick
     /// (`LivingEntityRenderer.solveBodyRot`: `Mth.rotLerp(partialTick,
@@ -2569,6 +2677,113 @@ mod armor_stand_render_tests {
         stand.snap(Vec3::new(200.5, 64.0, 0.5), 90.0);
         assert_eq!(stand.render_position(0.5), Vec3::new(200.5, 64.0, 0.5));
         assert_eq!(stand.render_yaw(0.5), 90.0);
+    }
+}
+#[cfg(test)]
+mod armor_stand_light_tests {
+    use super::*;
+
+    fn stand(x: f64, y: f64, z: f64) -> ArmorStand {
+        ArmorStand::new(1, Vec3::new(x, y, z), 0.0)
+    }
+
+    /// `ArmorStand.getLightProbePosition` for a stand that is not a marker is
+    /// `Entity.getEyePosition`: `EntityType.ARMOR_STAND` declares
+    /// `eyeHeight(1.7775)`, and a small stand (`isBaby()`) is the same type
+    /// scaled by 0.5 with `withEyeHeight(0.9875)`. Horizon read
+    /// `floor(base + 0.5)` for every stand, so a stand standing on a lit floor
+    /// took the floor's light instead of the light at its head.
+    #[test]
+    fn a_stand_is_lit_from_the_block_its_eye_is_in() {
+        let dark = |_: i32, _: i32, _: i32| 0u8;
+        // Full stand on y = 64: eye 65.7775, cell 65 (the old 64.5 was 64).
+        assert_eq!(stand(0.5, 64.0, 0.5).light_probe(1.0, dark), [0, 65, 0]);
+        assert_eq!((64.0_f64 + 0.5).floor() as i32, 64);
+        // Small stand: eye 0.9875 above its base, so y = 64.2 is 65.1875.
+        let mut small = stand(0.5, 64.2, 0.5);
+        small.small = true;
+        assert_eq!(small.light_probe(1.0, dark), [0, 65, 0]);
+        assert_eq!((64.2_f64 + 0.5).floor() as i32, 64);
+        // A small stand at y = 64.0 stays in its own cell: eye 64.9875.
+        let mut low = stand(0.5, 64.0, 0.5);
+        low.small = true;
+        assert_eq!(low.light_probe(1.0, dark), [0, 64, 0]);
+    }
+
+    /// `getEyePosition(partialTick)` interpolates: a stand falling from 70 to
+    /// 69 is probed 0.5 down at the middle of the frame, 69.5 + 1.7775 in the
+    /// cell at 71, while its feet's cell is 69.
+    #[test]
+    fn a_stand_probe_follows_the_frame() {
+        let dark = |_: i32, _: i32, _: i32| 0u8;
+        let mut falling = stand(0.5, 70.0, 0.5);
+        falling.interpolate(Some((Vec3::new(0.5, 69.0, 0.5), 0.0)));
+        assert_eq!(falling.light_probe(0.0, dark), [0, 71, 0]);
+        assert_eq!(falling.light_probe(0.5, dark), [0, 71, 0]);
+        assert_eq!(falling.light_probe(1.0, dark), [0, 70, 0]);
+        assert_eq!(falling.position.y.floor() as i32, 69);
+    }
+
+    /// A marker walks `BlockPos.betweenClosed` of its own box - the size it has
+    /// without the marker flag, 0.5 by 1.975 - from `position()`, taking the
+    /// first cell at brightness 15 and else the brightest. Horizon used the
+    /// stand's own cell, so a marker (a hologram on a dark ceiling) was lit by
+    /// its feet's block.
+    #[test]
+    fn a_marker_scans_the_cells_of_its_own_box() {
+        let at = |want: [i32; 3], level: u8| {
+            move |x: i32, y: i32, z: i32| {
+                if [x, y, z] == want { level } else { 0 }
+            }
+        };
+        let mut marker = stand(0.5, 64.0, 0.5);
+        marker.marker = true;
+        // The box is x/z 0.25..0.75 - the cell at 0 - and y 64..65.975.
+        assert_eq!(marker.light_probe(1.0, at([0, 65, 0], 15)), [0, 65, 0]);
+        assert_eq!(marker.light_probe(1.0, at([0, 65, 0], 9)), [0, 65, 0]);
+        // Nothing lit: the first cell walked, x fastest then y then z.
+        assert_eq!(marker.light_probe(1.0, |_, _, _| 0u8), [0, 64, 0]);
+        // The cell above the box is not scanned, so its 15 does not win.
+        assert_eq!(marker.light_probe(1.0, at([0, 66, 0], 15)), [0, 64, 0]);
+        // 15 wins over a brighter-looking neighbour, and y is walked before z:
+        // (0, 65, 0) comes before (0, 64, 1) though both are at 15.
+        let mut wide = stand(0.5, 64.0, 0.9);
+        wide.marker = true;
+        let two = |x: i32, y: i32, z: i32| {
+            if (x, y, z) == (0, 65, 0) || (x, y, z) == (0, 64, 1) {
+                15
+            } else {
+                0
+            }
+        };
+        assert_eq!(wide.light_probe(1.0, two), [0, 65, 0]);
+        // `getLightProbePosition`'s marker branch reads `position()`, not the
+        // partial-tick position: falling does not move the scan.
+        let mut moving = stand(0.5, 64.0, 0.5);
+        moving.marker = true;
+        moving.interpolate(Some((Vec3::new(0.5, 70.0, 0.5), 0.0)));
+        assert_eq!(moving.light_probe(0.0, |_, _, _| 0u8), [0, 70, 0]);
+        assert_eq!(moving.light_probe(0.5, |_, _, _| 0u8), [0, 70, 0]);
+    }
+
+    /// `EntityRenderer.getBlockLightLevel`: a stand `isOnFire` is drawn at 15
+    /// block light whatever the level says, and the sky light is the probe
+    /// cell's own.
+    #[test]
+    fn a_burning_stand_is_drawn_at_full_block_light() {
+        let light = |sky: u8, block: u8| (sky << 4) | block;
+        let cold = stand(0.5, 64.0, 0.5);
+        assert_eq!(cold.render_light(light(15, 0)), (15 * 16) as u32);
+        assert_eq!(cold.render_light(light(0, 9)), ((9 * 16) << 8) as u32);
+        let burning = ArmorStand {
+            fire_ticks: 100,
+            ..stand(0.5, 64.0, 0.5)
+        };
+        assert_eq!(
+            burning.render_light(light(15, 0)),
+            ((15 * 16) | ((15 * 16) << 8)) as u32
+        );
+        assert_eq!(burning.render_light(light(0, 0)), ((15 * 16) << 8) as u32);
     }
 }
 #[cfg(test)]
@@ -4249,6 +4464,104 @@ mod render_light_tests {
             assert!((got[0] - want[0]).abs() < 1e-6, "{got:?} vs {want:?}");
             assert!((got[1] - want[1]).abs() < 1e-6, "{got:?} vs {want:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod dropped_item_light_tests {
+    use super::*;
+
+    fn item(previous_y: f64, y: f64) -> ItemEntity {
+        ItemEntity {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 1,
+            thrower: None,
+            target: None,
+            stack: ItemStack {
+                item: std::sync::Arc::from("minecraft:stone"),
+                count: 1,
+                damage: 0,
+                extra: None,
+            },
+            health: 5,
+            fire_ticks: 0,
+            position: Vec3::new(0.5, y, 0.5),
+            previous: Vec3::new(0.5, previous_y, 0.5),
+            velocity: Vec3::ZERO,
+            on_ground: false,
+            vertical_collision: false,
+            horizontal_collision: false,
+            age: 0,
+            pickup_delay: 0,
+            bob_offset: 0.0,
+            ticks: 0,
+            needs_sync: false,
+            stuck: Vec3::ZERO,
+            was_touching_water: false,
+        }
+    }
+
+    /// `Entity.getLightProbePosition` is the eye position, and `EntityType.ITEM`
+    /// declares `eyeHeight(0.2125)`. The item used to be lit from the cell of
+    /// `base + 0.1`, so a falling item at y = 64.85 read the cell at 64 (block
+    /// light of the floor) while its eye at 65.0625 is in the cell at 65.
+    #[test]
+    fn a_dropped_item_is_lit_from_the_block_its_eye_is_in() {
+        let falling = item(64.85, 64.85);
+        let probe = falling.light_probe(1.0);
+        assert!((probe[1] - 65.062_5).abs() < 1e-9);
+        assert_eq!(probe[1].floor(), 65.0);
+        // The old probe, `(y + 0.1).floor()`, and the base cell itself.
+        assert_eq!((64.85_f64 + 0.1).floor(), 64.0);
+        assert_eq!(64.85_f64.floor(), 64.0);
+        // Resting on a block top the two agree: the eye is 0.2125 up.
+        let resting = item(64.0, 64.0);
+        assert_eq!(resting.light_probe(1.0)[1].floor(), 64.0);
+        assert!((resting.light_probe(1.0)[1] - 64.212_5).abs() < 1e-9);
+    }
+
+    /// `Entity.getLightProbePosition(partialTick)` follows `getPosition(partialTick)`:
+    /// an item falling a block in one tick is probed halfway between the two
+    /// positions in the middle of the frame. The old code read the tick's own
+    /// position, so the light jumped a frame early.
+    #[test]
+    fn an_item_probe_follows_the_frame() {
+        let falling = item(64.0, 65.0);
+        let mid = falling.light_probe(0.5);
+        assert!((mid[1] - 64.712_5).abs() < 1e-9);
+        assert_eq!(mid[1].floor(), 64.0);
+        assert_eq!(falling.light_probe(1.0)[1].floor(), 65.0);
+        // Across x and z too, not just down.
+        let sliding = ItemEntity {
+            position: Vec3::new(1.5, 64.0, 0.5),
+            previous: Vec3::new(0.5, 64.0, 0.5),
+            ..item(64.0, 64.0)
+        };
+        assert!((sliding.light_probe(0.5)[0] - 1.0).abs() < 1e-9);
+    }
+
+    /// `EntityRenderer.getBlockLightLevel` is `isOnFire() ? 15 : the level's
+    /// block light`, and the sky light is never overridden. A dropped item was
+    /// drawn at the level's block light while it burned.
+    #[test]
+    fn a_burning_item_is_drawn_at_full_block_light() {
+        let light = |sky: u8, block: u8| (sky << 4) | block;
+        let cold = item(64.0, 64.0);
+        assert_eq!(cold.render_light(light(15, 0)), (15 * 16) as u32);
+        assert_eq!(cold.render_light(light(0, 9)), ((9 * 16) << 8) as u32);
+        let burning = ItemEntity {
+            fire_ticks: 160,
+            ..item(64.0, 64.0)
+        };
+        // Daylight, dark block: the block light goes to 15, the sky stays.
+        assert_eq!(
+            burning.render_light(light(15, 0)),
+            ((15 * 16) | ((15 * 16) << 8)) as u32
+        );
+        // A dark cave: 15 block light, still no invented sky light.
+        assert_eq!(burning.render_light(light(0, 0)), ((15 * 16) << 8) as u32);
     }
 }
 crate::impl_joined!(ItemEntity, ExperienceOrb, ArmorStand);

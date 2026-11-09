@@ -559,11 +559,18 @@ impl<'a> Context<'a> {
                     // Don't try to generate `AccessIndex` if in a LHS position, since it
                     // wouldn't produce a pointer.
                     ExprPos::Lhs => None,
-                    _ => self
-                        .module
-                        .to_ctx()
-                        .get_const_val_from(index, &self.expressions)
-                        .ok(),
+                    // A global initializer's index is in the global arena, not the function's.
+                    _ => {
+                        let arena = if self.is_const {
+                            &self.module.global_expressions
+                        } else {
+                            &self.expressions
+                        };
+                        self.module
+                            .to_ctx()
+                            .get_const_val_from(index, arena)
+                            .ok()
+                    }
                 };
 
                 let base = self
@@ -1045,6 +1052,12 @@ impl<'a> Context<'a> {
                     }
 
                     var.expr
+                }
+                // In a constant expression (a global initializer) the access is folded in the
+                // global arena: its base is the constant itself, not the function's handle.
+                ExprPos::AccessBase { .. } if self.is_const && var.constant.is_some() => {
+                    let (constant, _) = var.constant.unwrap();
+                    self.add_expression(Expression::Constant(constant), meta)?
                 }
                 ExprPos::AccessBase { constant_index } => {
                     // If the index isn't constant all accesses backed by a constant base need

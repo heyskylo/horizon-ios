@@ -5,7 +5,7 @@
 
 use crate::{api::Client, config, engine};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 /// `config [--json]` and `config set KEY=VALUE... [--json]`.
 pub fn command(dir: &Path, args: &[String]) -> Result<(), String> {
@@ -218,10 +218,16 @@ pub fn apply(
     live: Option<&dyn Fn(&str) -> bool>,
 ) -> Result<Outcome, String> {
     let current = toml::Table::try_from(config::Config::load(dir)?).map_err(|e| e.to_string())?;
-    let parsed = changes
+    let mut parsed = changes
         .iter()
         .map(|c| parse_change(&current, c))
         .collect::<Result<Vec<_>, _>>()?;
+    // The file keeps the last value for each key. Send only those same final values to the game,
+    // retaining their order, rather than applying superseded intermediate values.
+    let mut seen = BTreeSet::new();
+    parsed.reverse();
+    parsed.retain(|(section, field, _)| seen.insert((section.clone(), field.clone())));
+    parsed.reverse();
     config::update_all(dir, &parsed)?;
     let mut outcome = Outcome {
         saved: parsed.iter().map(|(s, f, _)| format!("{s}.{f}")).collect(),
@@ -411,6 +417,107 @@ mod tests {
         let outcome = apply(&dir, &["server.motd=Closed"], Some(&refuses)).unwrap();
         assert_eq!(outcome.restart, ["server.motd"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_arguments_apply_only_the_committed_final_values() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-duplicate-settings-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cases: &[(&str, &[&str], &str, &[&str], &[&str])] = &[
+            (
+                "restore",
+                &["world.difficulty=hard", "world.difficulty=normal"],
+                "normal",
+                &[],
+                &["world.difficulty"],
+            ),
+            (
+                "last",
+                &["world.difficulty=hard", "world.difficulty=easy"],
+                "easy",
+                &["console difficulty easy"],
+                &["world.difficulty"],
+            ),
+            (
+                "other",
+                &[
+                    "world.difficulty=hard",
+                    "server.whitelist=on",
+                    "world.difficulty=easy",
+                ],
+                "easy",
+                &["console whitelist on", "console difficulty easy"],
+                &["server.whitelist", "world.difficulty"],
+            ),
+        ];
+        for &(name, changes, difficulty, lines, saved) in cases {
+            let home = dir.join(name);
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join(config::FILE), config::TEMPLATE).unwrap();
+            config::update(&home, "server", "whitelist", toml::Value::Boolean(false)).unwrap();
+            config::update(
+                &home,
+                "world",
+                "difficulty",
+                toml::Value::String("normal".into()),
+            )
+            .unwrap();
+            assert_eq!(
+                config::Config::load(&home).unwrap().world.difficulty,
+                "normal"
+            );
+            let sent = std::cell::RefCell::new(Vec::new());
+            let live = |line: &str| {
+                sent.borrow_mut().push(line.to_owned());
+                true
+            };
+            let outcome = apply(&home, changes, Some(&live)).unwrap();
+            let committed = config::Config::load(&home).unwrap();
+            assert_eq!(committed.world.difficulty, difficulty);
+            assert_eq!(
+                sent.borrow().as_slice(),
+                lines,
+                "{name}: live changes must match the final file"
+            );
+            assert_eq!(
+                outcome.saved, saved,
+                "{name}: report each committed key once"
+            );
+            assert_eq!(outcome.applied.len(), lines.len());
+            assert!(outcome.restart.is_empty());
+            assert_eq!(committed.server.whitelist, name == "other");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_duplicate_argument_batches_change_neither_file_nor_game() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-invalid-duplicates-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(config::FILE);
+        std::fs::write(&path, config::TEMPLATE).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let sent = std::cell::RefCell::new(Vec::new());
+        let live = |line: &str| {
+            sent.borrow_mut().push(line.to_owned());
+            true
+        };
+        for changes in [
+            &["world.difficulty=hard", "world.difficulty=impossible"][..],
+            &["server.max_players=bad", "server.max_players=5"][..],
+        ] {
+            assert!(apply(&dir, changes, Some(&live)).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert!(sent.borrow().is_empty());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

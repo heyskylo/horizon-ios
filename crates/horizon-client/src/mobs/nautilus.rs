@@ -276,7 +276,12 @@ fn check_restriction(m: &mut Mob) {
 /// `AbstractNautilus.tick` and the brains' memories: the rider's breath, the
 /// dash clock, bubbles, and choosing whom to charge at
 /// (`NautilusAi.findNearestValidAttackTarget`).
-pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+pub fn ai_step(
+    m: &mut Mob,
+    w: &MobWorld,
+    level_random: &mut horizon_core::random::LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
     // customServerAiStep: the home is kept before the rest of the step.
     check_restriction(m);
     if m.extra.scratch[1] != 0 {
@@ -321,7 +326,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         m.extra.anger -= 1;
     }
     if m.ai.target.is_none() && m.alive() && !m.no_ai {
-        m.ai.target = find_target(m, w);
+        m.ai.target = find_target(m, w, level_random);
     }
 }
 /// `spawnBubbles`: more as it swims faster, from behind its mouth.
@@ -375,7 +380,11 @@ pub fn aggravated(m: &Mob) -> bool {
 }
 /// `NautilusAi.findNearestValidAttackTarget`: whoever it is angry at, else
 /// now and then (a coin flip every 2400 to 3600 ticks) the nearest pufferfish.
-fn find_target(m: &mut Mob, w: &MobWorld) -> Option<Who> {
+fn find_target(
+    m: &mut Mob,
+    w: &MobWorld,
+    level_random: &mut horizon_core::random::LegacyRandom,
+) -> Option<Who> {
     if m.extra.in_love > 0 || !m.fluids.in_water || m.is_baby() || m.extra.tame {
         return None;
     }
@@ -391,15 +400,26 @@ fn find_target(m: &mut Mob, w: &MobWorld) -> Option<Who> {
     if m.extra.counter > 0 {
         return None;
     }
-    m.extra.counter = 2400 + m.random.next_int_bound(1201).unwrap_or(0);
-    if m.random.next_float() < 0.5 {
+    // The cooldown and the coin come from the level's random (`level.getRandom()`).
+    m.extra.counter = 2400 + level_random.next_int_bound(1201).unwrap_or(0);
+    if level_random.next_float() < 0.5 {
         return None;
     }
-    w.nearby(m.position, 16.0, |s| {
-        s.species == Species::Pufferfish && in_water_at(w, s.position)
-    })
-    .next()
-    .map(|s| Who::Mob(s.id))
+    // NEAREST_VISIBLE_LIVING_ENTITIES.findClosest(isHostileTarget): the
+    // nearest #nautilus_hostiles in water that the nautilus can see
+    // (`Sensor.isEntityTargetable`: line of sight).
+    let mut near: Vec<(f64, u32)> = w
+        .nearby(m.position, 16.0, |s| {
+            s.species == Species::Pufferfish && in_water_at(w, s.position)
+        })
+        .map(|s| (s.position.distance_squared(m.position), s.id))
+        // TargetingConditions.range(16): feet to feet.
+        .filter(|&(d, _)| d <= 16.0 * 16.0)
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    near.into_iter()
+        .map(|(_, id)| Who::Mob(id))
+        .find(|&who| m.sees(w, who))
 }
 /// `hurtServer`: `NautilusAi.setAngerTarget` for 400 ticks.
 pub fn after_hurt(m: &mut Mob, source: &super::Damage) {
@@ -681,11 +701,13 @@ mod tests {
                     assert_eq!(m.extra.owner, owner);
                     assert_eq!(m.extra.sitting, expected, "{id} {owner:?} {sitting:?}");
                     // No raw compound: this must come from the modeled flag.
-                    let saved = crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], None, None);
+                    let saved =
+                        crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], None, None, |_| None);
                     assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(expected))));
                     // A stale raw flag must not override a later model change.
                     m.extra.sitting = !expected;
-                    let saved = crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], Some(&raw), None);
+                    let saved =
+                        crate::entity_nbt::mob_to_nbt(&m, [5, 6, 7, 8], Some(&raw), None, |_| None);
                     assert_eq!(saved.get("Sitting"), Some(&Tag::Byte(i8::from(!expected))));
                 }
             }
@@ -788,5 +810,85 @@ mod tests {
         m.extra.saddled = false;
         assert!(!on_player_jump(&mut m, 50));
         assert_eq!(m.rider.expect("the rider stays on").jump, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod hostile_target_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A pool from x -8 to 8, with a stone wall at x = 3 when `wall`.
+    fn pool(
+        wall: bool,
+    ) -> impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry) {
+        move |world, registry| {
+            let water = registry.default_state("minecraft:water").unwrap();
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for cx in -1..2 {
+                for cz in -1..1 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            for x in -8..=18 {
+                for y in 60..=66 {
+                    for z in -4..=4 {
+                        let block = if wall && x == 3 { stone } else { water };
+                        world.set(x, y, z, block).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    /// `NautilusAi.findNearestValidAttackTarget`: past the cooldown and the
+    /// level random's 1 in 2, the target is the closest #nautilus_hostiles in
+    /// water among NEAREST_VISIBLE_LIVING_ENTITIES, so not a pufferfish behind
+    /// stone. Each seed is a fresh level random.
+    fn targets(wall: bool, fish_at: Vec3) -> Option<Vec<Option<Who>>> {
+        let mut out = None;
+        let mut fish = None;
+        crate::mobs::world::with_built_test_world(
+            &[],
+            |_, _| {},
+            |_, types| {
+                let kind = Arc::new(types.types["minecraft:pufferfish"].clone());
+                fish = Some(Mob::new(2, kind, fish_at, 0.0).seen(None));
+            },
+        );
+        let fish = fish?;
+        crate::mobs::world::with_built_test_world(&[fish], pool(wall), |w, types| {
+            let kind = Arc::new(types.types["minecraft:nautilus"].clone());
+            let picks = (0..16)
+                .map(|seed| {
+                    let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 62.0, 0.5), 270.0);
+                    m.fluids.in_water = true;
+                    let mut level = horizon_core::random::LegacyRandom::new(seed);
+                    find_target(&mut m, w, &mut level)
+                })
+                .collect();
+            out = Some(picks);
+        });
+        out
+    }
+
+    #[test]
+    fn a_nautilus_only_targets_a_pufferfish_it_sees() {
+        let near = Vec3::new(6.5, 62.0, 0.5);
+        // 16 out on x and 3 on z: inside the sensor's box, past range(16).
+        let far = Vec3::new(16.5, 62.0, 3.5);
+        let (Some(open), Some(walled), Some(beyond)) = (
+            targets(false, near),
+            targets(true, near),
+            targets(false, far),
+        ) else {
+            return;
+        };
+        assert!(open.contains(&Some(Who::Mob(2))), "{open:?}");
+        assert!(open.iter().all(|t| t.is_none() || *t == Some(Who::Mob(2))));
+        assert!(walled.iter().all(Option::is_none), "{walled:?}");
+        assert!(beyond.iter().all(Option::is_none), "{beyond:?}");
     }
 }

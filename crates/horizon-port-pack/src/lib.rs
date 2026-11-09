@@ -9,6 +9,7 @@ pub mod carry;
 pub mod check;
 pub mod classes;
 pub mod classify;
+pub mod entry;
 pub mod fetch;
 pub mod import;
 pub mod inventory;

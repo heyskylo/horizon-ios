@@ -18,13 +18,20 @@ fn scratch(label: &str) -> PathBuf {
 
 fn silence(path: &Path) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(
-        path,
-        base64::engine::general_purpose::STANDARD
-            .decode(SILENCE)
-            .unwrap(),
-    )
-    .unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(SILENCE)
+        .unwrap();
+    // Read the original Vorbis identification packet independently of the
+    // decoder: this fixture has always been 8 kHz stereo, not mono.
+    assert_eq!(&bytes[..4], b"OggS");
+    let packet = 27 + usize::from(bytes[26]);
+    assert_eq!(&bytes[packet..packet + 7], b"\x01vorbis");
+    assert_eq!(bytes[packet + 11], 2);
+    assert_eq!(
+        u32::from_le_bytes(bytes[packet + 12..packet + 16].try_into().unwrap()),
+        8000
+    );
+    fs::write(path, bytes).unwrap();
 }
 
 fn wait_owner(owner: &Arc<()>) {
@@ -82,15 +89,16 @@ fn delayed_decode_keeps_both_overlay_and_source_after_reload() {
             // Model preemption after the cancellation check, before decode opens its file.
             entered.send(()).unwrap();
             proceed.recv_timeout(Duration::from_secs(5)).unwrap();
-            let (samples, rate) = job.load().expect("the old linked source is still readable");
-            result.send((samples.len(), rate)).unwrap();
+            let (samples, rate, channels) =
+                job.load().expect("the old linked source is still readable");
+            result.send((samples.len(), rate, channels)).unwrap();
         },
     ));
     ready.recv_timeout(Duration::from_secs(5)).unwrap();
     audio.reload_with(&home.join("replacement"), SoundRegistry::default());
     old_cache.lock().unwrap().insert(
         "test:sounds/late.ogg".into(),
-        Some((Arc::new(vec![1.0]), 8000)),
+        Some((Arc::new(vec![1.0]), 8000, 1)),
     );
     assert!(
         audio
@@ -114,9 +122,15 @@ fn delayed_decode_keeps_both_overlay_and_source_after_reload() {
     assert!(RootLease::try_exclusive(&root).unwrap().is_none());
     assert!(RootLease::try_exclusive(&source).unwrap().is_none());
     release.send(()).unwrap();
-    let (samples, rate) = decoded.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (samples, rate, channels) = decoded.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(samples > 0);
     assert_eq!(rate, 8000);
+    assert_eq!(channels, 2, "preserve the fixture header’s stereo channels");
+    assert_eq!(
+        samples % usize::from(channels),
+        0,
+        "complete interleaved frames"
+    );
     wait_owner(&owner);
     assert!(RootLease::try_exclusive(&root).unwrap().is_some());
     assert!(RootLease::try_exclusive(&source).unwrap().is_some());
@@ -141,9 +155,9 @@ fn stream_read_from_prepared_base_finishes_before_the_retirement_gate_opens() {
             assert!(!cancelled(&cancel));
             entered.send(()).unwrap();
             proceed.recv_timeout(Duration::from_secs(5)).unwrap();
-            let (samples, rate) =
+            let (samples, rate, channels) =
                 decode(&read_file).expect("base is not replaced until this reader retires");
-            result.send((samples.len(), rate)).unwrap();
+            result.send((samples.len(), rate, channels)).unwrap();
         },
     ));
     ready.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -158,9 +172,15 @@ fn stream_read_from_prepared_base_finishes_before_the_retirement_gate_opens() {
         "dropping Audio must not detach its stream reader"
     );
     release.send(()).unwrap();
-    let (samples, rate) = decoded.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (samples, rate, channels) = decoded.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(samples > 0);
     assert_eq!(rate, 8000);
+    assert_eq!(channels, 2, "preserve the fixture header’s stereo channels");
+    assert_eq!(
+        samples % usize::from(channels),
+        0,
+        "complete interleaved frames"
+    );
     wait_owner(&owner);
     // This is the boundary at which the app may give an importer the prepared base.
     fs::write(&file, b"replacement generation").unwrap();

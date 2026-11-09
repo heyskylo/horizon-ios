@@ -2550,6 +2550,49 @@ fn dispenser_buckets_pick_up_and_empty() {
 }
 
 #[test]
+fn a_bucket_replaces_a_bubble_column_and_breaks_a_flower() {
+    let mut w = world!();
+    let at = BlockPos::new(0, 10, 0);
+    let sound = "minecraft:item.bucket.empty";
+    let water = BucketContent::Fluid(crate::fluid::FluidKind::Water);
+    let pour = |w: &mut World| {
+        w.f.behaviours.bucket_empty(
+            &mut w.level,
+            &mut w.ticks,
+            at,
+            None,
+            water,
+            sound,
+            false,
+            false,
+        )
+    };
+    let broke = |w: &World| {
+        w.level.events.iter().any(|e| {
+            matches!(
+                e,
+                LevelEvent::GameEvent {
+                    event: "minecraft:block_destroy",
+                    ..
+                } | LevelEvent::LevelEvent { id: 2001, .. }
+            )
+        })
+    };
+    // `BlockState.liquid()` is true: the column is replaced, not broken.
+    w.put(at, w.id("bubble_column", &[("drag", "true")]));
+    w.level.events.clear();
+    assert_eq!(pour(&mut w), Some(at));
+    assert_eq!(w.name(at), "water[level=0]");
+    assert!(!broke(&w), "a bubble column is liquid()");
+    // A replaceable plant is not `liquid()`: the bucket breaks it first.
+    w.put(at, w.id("dandelion", &[]));
+    w.level.events.clear();
+    assert_eq!(pour(&mut w), Some(at));
+    assert_eq!(w.name(at), "water[level=0]");
+    assert!(broke(&w), "a flower is broken before the water goes in");
+}
+
+#[test]
 fn clicked_bucket_pours_beside_a_refusing_block() {
     let mut w = world!();
     let at = BlockPos::new(0, 10, 0);

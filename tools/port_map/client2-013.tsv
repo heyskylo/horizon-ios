@@ -54,7 +54,7 @@ ScreenRectangle.getBorder	port	crates/horizon-client/src/game/key_focus.rs::edge
 ScreenRectangle.overlaps	inline	crates/horizon-client-input/src/gamepad.rs::focus_step_strict	a target overlapping the strip on the other axis is the next one
 ScreenRectangle.overlapsInAxis	inline	crates/horizon-client-input/src/gamepad.rs::focus_step_strict	the per-axis half of the overlap test
 ScreenRectangle.getCenterInAxis	inline	crates/horizon-client-input/src/gamepad.rs::focus_step_vague	the second pass picks the nearest facing edge's centre when nothing overlaps
-ScreenRectangle.intersection	missing		minor: a nested GUI clip is not intersected with the outer one; paint (screen_draw.rs) replaces the clip on each Scissor draw
+ScreenRectangle.intersection	port	crates/horizon-client-render/src/screen_draw.rs::intersect	paint's scissor stack cuts each clip to the screen, or to the clip around it, and to ScreenRectangle.empty() when they miss; closing a clip puts the enclosing one back
 ScreenRectangle.intersects	skip:other		no caller in the 26.3 client GUI code; pure geometry predicate
 ScreenRectangle.encompasses	skip:other		used by GuiRenderState for element batching bounds; Horizon appends quads to the HUD batch without it
 ScreenRectangle.containsPoint	port	crates/horizon-client-render/src/screen_draw.rs::inside	the same half-open point-in-rectangle test

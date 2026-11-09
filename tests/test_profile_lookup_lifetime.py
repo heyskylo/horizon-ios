@@ -64,6 +64,9 @@ SKIN_ENDPOINTS = r'''
 mod skins {
 use crate::std;
 use crate::real_std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+// Head/NBT parsing is outside this mannequin-future probe. The head probe
+// replaces this endpoint with the production cache and its codec endpoints.
+#[derive(Default)]struct HeadProfiles;
 mod workers {
  use super::*;
  pub struct Pool;

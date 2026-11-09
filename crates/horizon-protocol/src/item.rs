@@ -88,6 +88,10 @@ pub mod component {
     pub const WRITTEN_BOOK_CONTENT: i32 = 57;
     pub const TRIM: i32 = 58;
     pub const INSTRUMENT: i32 = 63;
+    pub const PROVIDES_TRIM_MATERIAL: i32 = 64;
+    pub const DAMAGE_TYPE: i32 = 8;
+    pub const CHICKEN_VARIANT: i32 = 104;
+    pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 106;
     pub const LODESTONE_TRACKER: i32 = 69;
     pub const FIREWORK_EXPLOSION: i32 = 70;
     pub const FIREWORKS: i32 = 71;
@@ -799,10 +803,17 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
     use component::*;
     let quirks = ids::quirks();
     Ok(match kind {
-        // EitherHolder.streamCodec: ByteBufCodecs.either(the song's holder, its ResourceKey), a flag set
-        // for the holder. A key names a song of the server's registry that the pinned holder can't point
-        // to without its numbering.
-        JUKEBOX_PLAYABLE if quirks.either_holder_song_and_tag_resistance => {
+        // EitherHolder.streamCodec: ByteBufCodecs.either(the holder, its ResourceKey), a flag set for the
+        // holder, which then reads as the pinned one does. A key names an entry of the server's registry
+        // that the pinned holder can't point to without its numbering.
+        DAMAGE_TYPE
+        | INSTRUMENT
+        | PROVIDES_TRIM_MATERIAL
+        | JUKEBOX_PLAYABLE
+        | CHICKEN_VARIANT
+        | ZOMBIE_NAUTILUS_VARIANT
+            if quirks.either_holders_and_tag_resistance =>
+        {
             if r.bool()? {
                 Older::Pinned
             } else {
@@ -811,7 +822,7 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
             }
         }
         // TagKey.streamCodec: the tag's id. A HolderSet names a tag behind a 0.
-        DAMAGE_RESISTANT if quirks.either_holder_song_and_tag_resistance => {
+        DAMAGE_RESISTANT if quirks.either_holders_and_tag_resistance => {
             let tag = r.string(32767)?;
             let mut w = Writer::new();
             w.varint(0);

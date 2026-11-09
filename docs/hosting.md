@@ -157,6 +157,7 @@ view_distance = 10
 simulation_distance = 10
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
+accept_older_clients = false # true: 26.2 clients join too (see below; work in progress)
 
 [world]
 name = "world"
@@ -205,6 +206,17 @@ On by default, as vanilla: when an operator runs a command that reports to admin
 the other operators read `[name: ...]` in gray, and the console logs it. Players who aren't operators never see it
 either way. `false` keeps it to the console's log (`logs/latest.log`): nobody in game sees an operator's commands,
 while each operator still reads their own command's answer.
+
+### Older clients: `accept_older_clients`
+
+Off by default, a Horizon setting with no vanilla equivalent: a vanilla server, and Horizon's, turn away a client of
+any other release. With `accept_older_clients = true` a 26.2 client may join too: Horizon renumbers its packets both
+ways, with no proxy in between, and the server list shows the server as joinable for 26.2.
+
+This is work in progress (#10404): the ids inside packets and the packets whose layout changed between 26.2 and
+26.3 aren't translated yet, so for now a 26.2 player gets through the login and is then told that 26.2 can't be
+translated yet, before the server sends anything it would misread. 26.3 clients are served exactly as before,
+whatever the setting.
 
 ### Seeing further: `max_view_distance`
 
@@ -352,6 +364,10 @@ a player sends and receives, and what recording cost the tick (measured, usually
 hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
 `horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
 it is. Nothing restarts: the report runs beside the game.
+
+To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
+steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
+thread. `horizon-trace stop` ends it early. It holds step names and times only.
 
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than

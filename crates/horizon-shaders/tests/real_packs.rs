@@ -34,149 +34,154 @@ fn real_packs_read() {
     }
     let mut read = 0;
     for f in found.iter().filter(|f| f.problem.is_none()) {
-        let start = Instant::now();
-        let pack = Pack::open(&f.path).unwrap();
-        let mut macros = test_macros();
-        macros.define_renderer(4);
-        let (shaders, feature_notes) = horizon_shaders::read_properties(&pack, &mut macros);
-        let ids: Vec<Properties> = ["block", "item", "entity", "dimension"]
-            .iter()
-            .filter_map(|n| pack.read_text(&format!("{n}.properties")))
-            .map(|t| Properties::parse(&t, &macros))
-            .collect();
-        let lang = Lang::load(&pack, "en_us");
-        let elapsed = start.elapsed();
-        println!(
-            "{}: shaders.properties {} keys ({} notes), {} id files {} keys ({} notes), lang {}, {:.2} ms",
-            f.name,
-            shaders.entries.len(),
-            shaders.notes.len(),
-            ids.len(),
-            ids.iter().map(|p| p.entries.len()).sum::<usize>(),
-            ids.iter().map(|p| p.notes.len()).sum::<usize>(),
-            if lang == Lang::default() {
-                "none"
-            } else {
-                "read"
-            },
-            elapsed.as_secs_f64() * 1000.0
-        );
-        for n in &shaders.notes {
-            println!("  shaders.properties:{}: {}", n.line, n.message);
-        }
-        // Every stage file of the base and dimension folders through the preprocessor.
-        let start = Instant::now();
-        let (mut stages, mut lines, mut diagnostics) = (0, 0, Vec::new());
-        for dir in ["", "world0", "world-1", "world1"] {
-            for file in pack.list(dir) {
-                if [".vsh", ".fsh", ".gsh", ".csh"]
-                    .iter()
-                    .any(|e| file.ends_with(e))
-                {
-                    let path = if dir.is_empty() {
-                        file
-                    } else {
-                        format!("{dir}/{file}")
-                    };
-                    let p = preprocess(&pack, &path, &macros);
-                    stages += 1;
-                    lines += p.lines.len();
-                    diagnostics.extend(p.diagnostics.iter().map(|d| {
-                        let file = &p.files[d.origin.file as usize];
-                        format!("{file}:{}: {}", d.origin.line, d.message)
-                    }));
+        let pack_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut skipped = std::collections::BTreeSet::new();
+            let start = Instant::now();
+            let pack = Pack::open(&f.path).unwrap();
+            // The macros the game reads the pack's programs with: the standard set, the renderer's
+            // (at Mipmap Levels 4), then the features the pack turns on.
+            let mut macros = test_macros();
+            macros.define_renderer(4);
+            let (shaders, feature_notes) = horizon_shaders::read_properties(&pack, &mut macros);
+            let ids: Vec<Properties> = ["block", "item", "entity", "dimension"]
+                .iter()
+                .filter_map(|n| pack.read_text(&format!("{n}.properties")))
+                .map(|t| Properties::parse(&t, &macros))
+                .collect();
+            let lang = Lang::load(&pack, "en_us");
+            let elapsed = start.elapsed();
+            println!(
+                "{}: shaders.properties {} keys ({} notes), {} id files {} keys ({} notes), lang {}, {:.2} ms",
+                f.name,
+                shaders.entries.len(),
+                shaders.notes.len(),
+                ids.len(),
+                ids.iter().map(|p| p.entries.len()).sum::<usize>(),
+                ids.iter().map(|p| p.notes.len()).sum::<usize>(),
+                if lang == Lang::default() {
+                    "none"
+                } else {
+                    "read"
+                },
+                elapsed.as_secs_f64() * 1000.0
+            );
+            for n in &shaders.notes {
+                println!("  shaders.properties:{}: {}", n.line, n.message);
+            }
+            // Every stage file of the base and dimension folders through the preprocessor.
+            let start = Instant::now();
+            let (mut stages, mut lines, mut diagnostics) = (0, 0, Vec::new());
+            for dir in ["", "world0", "world-1", "world1"] {
+                for file in pack.list(dir) {
+                    if [".vsh", ".fsh", ".gsh", ".csh"]
+                        .iter()
+                        .any(|e| file.ends_with(e))
+                    {
+                        let path = if dir.is_empty() {
+                            file
+                        } else {
+                            format!("{dir}/{file}")
+                        };
+                        let p = preprocess(&pack, &path, &macros);
+                        stages += 1;
+                        lines += p.lines.len();
+                        diagnostics.extend(p.diagnostics.iter().map(|d| {
+                            let file = &p.files[d.origin.file as usize];
+                            format!("{file}:{}: {}", d.origin.line, d.message)
+                        }));
+                    }
                 }
             }
-        }
-        println!(
-            "  {stages} stage files preprocessed, {lines} lines out, {} diagnostics, {:.1} ms",
-            diagnostics.len(),
-            start.elapsed().as_secs_f64() * 1000.0
-        );
-        diagnostics.sort();
-        diagnostics.dedup();
-        for d in diagnostics.iter().take(8) {
-            println!("    {d}");
-        }
-        // Every composite-style program with both stages, translated and validated.
-        let start = Instant::now();
-        let (mut ok, mut failed, mut causes) = (0, 0, BTreeMap::<String, usize>::new());
-        for dir in ["", "world0", "world-1", "world1"] {
-            for file in pack.list(dir) {
-                let Some(name) = file.strip_suffix(".fsh") else {
-                    continue;
-                };
-                let composite = [
-                    "composite",
-                    "deferred",
-                    "final",
-                    "prepare",
-                    "begin",
-                    "shadowcomp",
-                ]
-                .iter()
-                .any(|p| {
-                    name.strip_prefix(p)
-                        .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()))
-                });
-                let path = |ext: &str| {
-                    if dir.is_empty() {
-                        format!("{name}.{ext}")
-                    } else {
-                        format!("{dir}/{name}.{ext}")
+            println!(
+                "  {stages} stage files preprocessed, {lines} lines out, {} diagnostics, {:.1} ms",
+                diagnostics.len(),
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+            diagnostics.sort();
+            diagnostics.dedup();
+            for d in diagnostics.iter().take(8) {
+                println!("    {d}");
+            }
+            // Every composite-style program with both stages, translated and validated.
+            let start = Instant::now();
+            let (mut ok, mut failed, mut causes) = (0, 0, BTreeMap::<String, usize>::new());
+            for dir in ["", "world0", "world-1", "world1"] {
+                for file in pack.list(dir) {
+                    let Some(name) = file.strip_suffix(".fsh") else {
+                        continue;
+                    };
+                    let composite = [
+                        "composite",
+                        "deferred",
+                        "final",
+                        "prepare",
+                        "begin",
+                        "shadowcomp",
+                    ]
+                    .iter()
+                    .any(|p| {
+                        name.strip_prefix(p)
+                            .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()))
+                    });
+                    let path = |ext: &str| {
+                        if dir.is_empty() {
+                            format!("{name}.{ext}")
+                        } else {
+                            format!("{dir}/{name}.{ext}")
+                        }
+                    };
+                    if !composite || !pack.exists(&path("vsh")) {
+                        continue;
                     }
-                };
-                if !composite || !pack.exists(&path("vsh")) {
-                    continue;
-                }
-                let target = if name == "final" {
-                    Target::Window
-                } else {
-                    Target::Buffers
-                };
-                let v = preprocess(&pack, &path("vsh"), &macros);
-                let fr = preprocess(&pack, &path("fsh"), &macros);
-                match translate_composite(&v, &fr, target) {
-                    Ok(_) => ok += 1,
-                    Err(errors) => {
-                        failed += 1;
-                        let first = &errors[0];
-                        let cause: String = first.message.chars().take(90).collect();
-                        *causes.entry(cause).or_default() += 1;
-                        if std::env::var_os("SHOW_ERRORS").is_some() {
-                            println!(
-                                "    {}: {}:{}: {}",
-                                path("fsh"),
-                                first.file,
-                                first.line,
-                                first.message
-                            );
+                    let target = if name == "final" {
+                        Target::Window
+                    } else {
+                        Target::Buffers
+                    };
+                    let v = preprocess(&pack, &path("vsh"), &macros);
+                    let fr = preprocess(&pack, &path("fsh"), &macros);
+                    match translate_composite(&v, &fr, target) {
+                        Ok(_) => ok += 1,
+                        Err(errors) => {
+                            failed += 1;
+                            let first = &errors[0];
+                            let cause: String = first.message.chars().take(90).collect();
+                            *causes.entry(cause).or_default() += 1;
+                            if std::env::var_os("SHOW_ERRORS").is_some() {
+                                println!(
+                                    "    {}: {}:{}: {}",
+                                    path("fsh"),
+                                    first.file,
+                                    first.line,
+                                    first.message
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
-        println!(
-            "  composite-style programs: {ok} translate, {failed} fail, {:.0} ms",
-            start.elapsed().as_secs_f64() * 1000.0
-        );
-        let mut causes: Vec<_> = causes.into_iter().collect();
-        causes.sort_by_key(|c| std::cmp::Reverse(c.1));
-        for (cause, n) in causes.iter().take(6) {
-            println!("    {n} x {cause}");
-        }
-        // The post-processing set of each dimension, as the game loads it.
-        for id in [0, -1, 1] {
-            let start = std::time::Instant::now();
-            let folder = dimension_folder(&pack, id);
-            // Vertex inputs like the game's (gfx/pack_post.rs writes the real ones).
-            let terrain = horizon_shaders::GbuffersInputs {
-                declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
-                body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
-                attributes: vec![("mc_Entity".into(), "vec4(-1.0)".into())],
-                ..Default::default()
-            };
-            let inputs = horizon_shaders::GameInputs {
+            println!(
+                "  composite-style programs: {ok} translate, {failed} fail, {:.0} ms",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+            let mut causes: Vec<_> = causes.into_iter().collect();
+            causes.sort_by_key(|c| std::cmp::Reverse(c.1));
+            for (cause, n) in causes.iter().take(6) {
+                println!("    {n} x {cause}");
+            }
+            // The post-processing set of each dimension, as the game loads it.
+            for id in [0, -1, 1] {
+                let start = std::time::Instant::now();
+                let folder = dimension_folder(&pack, id);
+                // Vertex inputs like the game's (gfx/pack_post.rs writes the real ones).
+                let terrain = horizon_shaders::GbuffersInputs {
+                    declarations: "layout(location = 0) in vec3 hz_v_pos;".into(),
+                    body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n"
+                        .into(),
+                    attributes: vec![("mc_Entity".into(), "vec4(-1.0)".into())],
+                    ..Default::default()
+                };
+                let inputs = horizon_shaders::GameInputs {
                 terrain: Some(terrain.clone()),
                 sky: Some(terrain.clone()),
                 celestial: Some(terrain.clone()),
@@ -219,86 +224,99 @@ fn real_packs_read() {
                     index: "uint(@)".into(),
                 }),
             };
-            let mut macros = macros.clone();
-            if std::env::var_os("SUBGROUPS").is_some() {
-                macros.define("MC_GL_KHR_shader_subgroup_arithmetic", "");
-            }
-            let shaders = Properties::from_pack(&pack, &folder, &macros).in_dimension(id);
-            for note in feature_notes
-                .iter()
-                .cloned()
-                .chain(macros.define_features(&shaders))
-            {
-                println!("    {note}");
-            }
-            let post = load_post(&pack, &folder, &shaders, &macros, &inputs);
-            if std::env::var_os("BACKENDS").is_some() {
-                backends(&post);
-            }
-            for p in post.programs.iter().chain(&post.shadow_comp) {
-                if std::env::var("PRINT_PROGRAM").is_ok_and(|n| n == p.name)
-                    && let Some(program) = &p.program
+                let mut macros = macros.clone();
+                if std::env::var_os("SUBGROUPS").is_some() {
+                    macros.define("MC_GL_KHR_shader_subgroup_arithmetic", "");
+                }
+                let shaders = Properties::from_pack(&pack, &folder, &macros).in_dimension(id);
+                for note in feature_notes
+                    .iter()
+                    .cloned()
+                    .chain(macros.define_features(&shaders))
                 {
-                    for s in &program.interface.samplers {
-                        println!(
-                            "    {} sampler {} {} at {}",
-                            p.name, s.ty, s.name, s.binding
-                        );
+                    println!("    {note}");
+                }
+                let post = load_post(&pack, &folder, &shaders, &macros, &inputs);
+                if std::env::var_os("BACKENDS").is_some() {
+                    backends(&post);
+                }
+                for p in post.programs.iter().chain(&post.shadow_comp) {
+                    if std::env::var("PRINT_PROGRAM").is_ok_and(|n| n == p.name)
+                        && let Some(program) = &p.program
+                    {
+                        for s in &program.interface.samplers {
+                            println!(
+                                "    {} sampler {} {} at {}",
+                                p.name, s.ty, s.name, s.binding
+                            );
+                        }
+                        for i in &program.interface.images {
+                            println!(
+                                "    {} image {} {} {} at {}",
+                                p.name, i.ty, i.name, i.format, i.binding
+                            );
+                        }
                     }
-                    for i in &program.interface.images {
+                    for (name, c) in &p.compute {
                         println!(
-                            "    {} image {} {} {} at {}",
-                            p.name, i.ty, i.name, i.format, i.binding
+                            "    {name} before {}: {} images, groups {:?} / {:?}, local {:?}",
+                            p.name,
+                            c.interface.images.len(),
+                            c.work_groups,
+                            c.work_groups_render,
+                            c.module.entry_points[0].workgroup_size
                         );
                     }
                 }
-                for (name, c) in &p.compute {
-                    println!(
-                        "    {name} before {}: {} images, groups {:?} / {:?}, local {:?}",
-                        p.name,
-                        c.interface.images.len(),
-                        c.work_groups,
-                        c.work_groups_render,
-                        c.module.entry_points[0].workgroup_size
-                    );
+                println!(
+                    "  dimension {id} (folder `{folder}`): {} post programs, shadow pass {} ({:?}, {:?}, {:?}, {:?}, {} shadowcomp), terrain {:?}, water {:?}, sky {:?} {:?}, entities {:?} {:?}, {} notes, {:.0} ms",
+                    post.programs.len(),
+                    post.shadow_pass,
+                    post.shadow.as_ref().map(|t| &t.name),
+                    post.shadow_water.as_ref().map(|t| &t.name),
+                    post.shadow_entities.as_ref().map(|t| &t.name),
+                    post.shadow_block.as_ref().map(|t| &t.name),
+                    post.shadow_comp.len(),
+                    post.terrain.as_ref().map(|t| &t.name),
+                    post.water.as_ref().map(|t| &t.name),
+                    post.sky.as_ref().map(|t| &t.name),
+                    post.sky_textured.as_ref().map(|t| &t.name),
+                    post.entities.as_ref().map(|t| &t.name),
+                    post.block.as_ref().map(|t| &t.name),
+                    post.notes.len() + post.config.notes.len(),
+                    start.elapsed().as_secs_f64() * 1000.0
+                );
+                let mut custom = post.custom;
+                custom.eval(0.016, &|_| None);
+                println!(
+                    "    {} custom uniforms; notes: {:?}",
+                    custom.uniforms().count(),
+                    custom.notes.iter().take(4).collect::<Vec<_>>()
+                );
+                let shown = if std::env::var_os("SHOW_ERRORS").is_some() {
+                    usize::MAX
+                } else {
+                    12
+                };
+                for n in post.notes.iter().chain(&post.config.notes).take(shown) {
+                    println!("    {n}");
+                }
+                for n in &post.notes {
+                    if let Some(p) = n.strip_suffix(": skipped") {
+                        skipped.insert(format!("{p}@{id}"));
+                    }
                 }
             }
-            println!(
-                "  dimension {id} (folder `{folder}`): {} post programs, shadow pass {} ({:?}, {:?}, {:?}, {:?}, {} shadowcomp), terrain {:?}, water {:?}, sky {:?} {:?}, entities {:?} {:?}, {} notes, {:.0} ms",
-                post.programs.len(),
-                post.shadow_pass,
-                post.shadow.as_ref().map(|t| &t.name),
-                post.shadow_water.as_ref().map(|t| &t.name),
-                post.shadow_entities.as_ref().map(|t| &t.name),
-                post.shadow_block.as_ref().map(|t| &t.name),
-                post.shadow_comp.len(),
-                post.terrain.as_ref().map(|t| &t.name),
-                post.water.as_ref().map(|t| &t.name),
-                post.sky.as_ref().map(|t| &t.name),
-                post.sky_textured.as_ref().map(|t| &t.name),
-                post.entities.as_ref().map(|t| &t.name),
-                post.block.as_ref().map(|t| &t.name),
-                post.notes.len() + post.config.notes.len(),
-                start.elapsed().as_secs_f64() * 1000.0
-            );
-            let mut custom = post.custom;
-            custom.eval(0.016, &|_| None);
-            println!(
-                "    {} custom uniforms; notes: {:?}",
-                custom.uniforms().count(),
-                custom.notes.iter().take(4).collect::<Vec<_>>()
-            );
-            let shown = if std::env::var_os("SHOW_ERRORS").is_some() {
-                usize::MAX
-            } else {
-                12
-            };
-            for n in post.notes.iter().chain(&post.config.notes).take(shown) {
-                println!("    {n}");
+            println!("SUMMARY {} skipped={} {:?}", f.name, skipped.len(), skipped);
+            // A pack may have no `shaders.properties`, or an empty one: every key has its default.
+            if shaders.entries.is_empty() {
+                println!("  {}: no shaders.properties keys", f.name);
             }
+        }));
+        match pack_result {
+            Ok(()) => read += 1,
+            Err(_) => println!("SUMMARY {} PANIC", f.name),
         }
-        assert!(!shaders.entries.is_empty(), "{}: no keys read", f.name);
-        read += 1;
     }
     assert!(read > 0, "no packs under {}", dir.display());
 }

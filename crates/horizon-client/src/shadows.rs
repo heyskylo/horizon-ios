@@ -130,6 +130,36 @@ fn shadow_gates(radius: f32, strength: f32, dist_sq: f64) -> Option<(f32, f32)> 
     (pow > 0.0).then_some((radius, pow))
 }
 
+/// Whether a blob shadow can meet the view, independently of its caster's
+/// model bounds. Keep the distance/strength gate before the frustum test: most
+/// entities are too far away to cast a shadow at all.
+pub fn in_view(
+    view: &crate::gfx::Frustum,
+    camera: DVec3,
+    pos: DVec3,
+    radius: f32,
+    strength: f32,
+) -> bool {
+    let Some((radius, _)) = shadow_gates(radius, strength, pos.distance_squared(camera)) else {
+        return false;
+    };
+    let (min, max) = bounds(camera, pos, radius);
+    view.intersects(min, max)
+}
+
+/// Conservative camera-relative bounds of the shadow's quads, independent of
+/// the caster's model bounds. The scan reaches at most `radius` below the feet;
+/// include its bottom block too. Every quad is clipped to the horizontal square
+/// and block tops above the feet are rejected by [`shadow`].
+fn bounds(camera: DVec3, pos: DVec3, radius: f32) -> (glam::Vec3, glam::Vec3) {
+    let r = f64::from(radius.clamp(0.0, 32.0));
+    let min = DVec3::new(pos.x - r, (pos.y - r).floor() - 1.0, pos.z - r) - camera;
+    let max = DVec3::new(pos.x + r, pos.y + 1e-6, pos.z + r) - camera;
+    // Cover rounding when the camera-relative vertices are converted to f32.
+    let margin = glam::Vec3::splat(1e-4);
+    (min.as_vec3() - margin, max.as_vec3() + margin)
+}
+
 /// Shadow quads for an entity at `pos` (interpolated feet position).
 #[allow(clippy::too_many_arguments)]
 pub fn shadow(
@@ -231,6 +261,86 @@ pub fn shadow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn culling_bounds_contain_the_generated_shadow_quads() {
+        use crate::chunk::Chunk;
+        use horizon_core::geometry::{Aabb, Vec3};
+        use horizon_world::level::data;
+        use std::{path::PathBuf, sync::Arc};
+        let root = std::env::var_os("HORIZON_RESOURCES")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("gameplay-facts.json").exists() {
+            eprintln!(
+                "skipping resource-backed shadow bounds check: {}",
+                root.display()
+            );
+            return;
+        }
+        let registry = data::load_registry(&root).unwrap();
+        let facts = BlockFacts::load(&root, &registry).unwrap();
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let mut world = World::new(facts.air, 0);
+        world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        for x in 0..16 {
+            for z in 0..16 {
+                // Steps exercise shadows projected below the caster's model box.
+                world.set(x, 60 + x / 4, z, stone).unwrap();
+            }
+        }
+        let sprite = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        let mut checked = 0;
+        for pos in [
+            DVec3::new(8.0, 64.0, 8.0),
+            DVec3::new(8.5, 64.001, 8.5),
+            DVec3::new(8.99999, 64.8, 8.99999),
+        ] {
+            for radius in [0.15, 0.7, 3.0, 32.0, 64.0] {
+                for strength in [0.75, 1.0, 20.0] {
+                    let camera = pos + DVec3::new(-5.25, 2.0, 4.75);
+                    let mut vertices = Vec::new();
+                    shadow(
+                        &world,
+                        &facts,
+                        &|_| Some(Aabb::new(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0))),
+                        sprite,
+                        camera,
+                        pos,
+                        radius,
+                        strength,
+                        0.0,
+                        0,
+                        &mut vertices,
+                    );
+                    let (min, max) = bounds(camera, pos, radius);
+                    for vertex in vertices {
+                        let p = glam::Vec3::from_array(vertex.pos);
+                        assert!(
+                            p.cmpge(min).all() && p.cmple(max).all(),
+                            "{p:?}: {min:?}..{max:?}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 1000,
+            "exercise actual shadow geometry, including large radii"
+        );
+    }
+
     #[test]
     fn shadows_lie_on_the_block_top_under_model_feet() {
         use crate::chunk::Chunk;

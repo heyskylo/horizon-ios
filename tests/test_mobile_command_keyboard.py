@@ -32,6 +32,8 @@ def program(pad_source=None, command_source=None):
     methods = '\n'.join(method(pad_source, n) for n in names)
     methods += '\n' + method((ROOT / 'crates/horizon-client/src/game.rs').read_text(), 'reload_blocks_input')
     methods += '\n' + method(pad_source, 'suspend_system_keyboard')
+    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'menu_input_blocked')
+    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'presentation_stale')
     chat = (ROOT / 'crates/horizon-client/src/game/chat.rs').read_text()
     methods += '\n' + method(chat, 'chat_text_focused') + '\n' + method(chat, 'bed_chat_focus') + '\n' + method(chat, 'bed_chat_choose_at')
     assert methods.count('cfg!(target_os = "ios")') == 2
@@ -93,7 +95,8 @@ impl ChatInput {fn contains(&self,x:f64,y:f64)->bool{(0.0..100.0).contains(&x)&&
 #[derive(Default)] struct FocusEditor { focused: bool }
 impl FocusEditor { fn search_focused(&self)->bool{self.focused} fn text_focused(&self)->bool{self.focused} }
 #[derive(Default)] struct Gui { atlas: () }
-#[derive(Default)] struct Game {
+struct Renderer{current:bool} impl Renderer{fn presentation_current(&self)->bool{self.current}}
+#[derive(Default)] struct Game {renderer:Option<Renderer>,
  pack_reload: Option<()>, transaction_busy: bool, ios: bool, screen: Screen, title: Option<Title>, sign_edit: Option<()>, book: Option<books::BookScreen>,
  debug_options: Option<FocusEditor>, block_editor: Option<FocusEditor>,
  creative_screen: Creative, pad: Pad, window: Option<Window>, ui: Ui, gui: Gui,
@@ -132,15 +135,15 @@ impl Game {
 
 CASES = r'''
 #[test] fn overlay_blocks_native_and_controller_keyboard_for_all_reload_phases() {
- for phase in 0..3 {
+ for phase in 0..4 {
  let mut g=Game::new();g.screen=Screen::CommandBlock;
- match phase {0=>g.pack_reload=Some(()),1=>g.transaction_busy=true,_=>g.pad.reload_pending=true};
+ match phase {0=>g.pack_reload=Some(()),1=>g.transaction_busy=true,2=>g.pad.reload_pending=true,_=>g.renderer=Some(Renderer{current:false})};
  g.show_system_keyboard();g.sync_system_keyboard();
  assert!(!g.system_keyboard_up());
  g.pad_osk_output(osk::Output::Text("blocked".into()));g.ime_commit("blocked");
  assert!(g.command.is_empty());
  g.suspend_system_keyboard();assert!(!g.pad.menu.system_keyboard_hidden);
- g.pack_reload=None;g.transaction_busy=false;g.pad.reload_pending=false;
+ g.pack_reload=None;g.transaction_busy=false;g.pad.reload_pending=false;g.renderer=None;
  g.show_system_keyboard();assert!(g.system_keyboard_up());
  g.ime_commit("say restored");assert_eq!(g.command,"say restored");
  }

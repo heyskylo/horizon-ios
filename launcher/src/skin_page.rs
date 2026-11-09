@@ -144,6 +144,7 @@ impl Launcher {
         let frame = |w: f32, h: f32, image: Preview, empty: &'static str| {
             div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .justify_center()
                 .w(px(w + 24.))
@@ -191,19 +192,21 @@ impl Launcher {
                 },
             ))
         };
-        let mut skin_buttons =
-            div()
-                .flex()
-                .gap(px(6.))
-                .child(pick("skin-choose", "Choose a skin…", false, cx));
+        let mut skin_buttons = div().flex().flex_wrap().gap(px(6.)).child(pick(
+            "skin-choose",
+            "Choose a skin…",
+            false,
+            cx,
+        ));
         if look.skin {
             skin_buttons = skin_buttons.child(drop("skin-remove", "Default skin", false, cx));
         }
-        let mut cape_buttons =
-            div()
-                .flex()
-                .gap(px(6.))
-                .child(pick("cape-choose", "Choose a cape…", true, cx));
+        let mut cape_buttons = div().flex().flex_wrap().gap(px(6.)).child(pick(
+            "cape-choose",
+            "Choose a cape…",
+            true,
+            cx,
+        ));
         if look.cape {
             cape_buttons = cape_buttons.child(drop("cape-remove", "No cape", true, cx));
         }
@@ -211,33 +214,50 @@ impl Launcher {
         Some(
             plate(&t)
                 .flex()
-                .gap(px(20.))
+                .flex_col()
+                .gap(px(12.))
                 .px(px(16.))
-                .py(px(14.))
-                .ml(px(40.))
-                .child(frame(16. * TEXEL, 32. * TEXEL, skin, "Default"))
-                .child(frame(10. * TEXEL, 16. * TEXEL, cape, "No cape"))
+                .py(px(12.))
+                .when(!t.glass, |d| d.ml(px(40.)))
                 .child(
                     div()
                         .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(12.))
-                        .child(caps(trf("{name}'s skin", &[("name", &name)])).text_color(t.muted))
-                        .child(skin_buttons)
-                        .child(model)
-                        .child(cape_buttons)
-                        .children(note.map(|n| match n {
-                            Ok(said) => text(theme::CAPTION).text_color(t.muted).child(said),
-                            Err(e) => text(theme::CAPTION).text_color(t.danger).child(e),
-                        }))
-                        .child(text(theme::CAPTION).text_color(t.muted).child(tr(
+                        .gap(px(16.))
+                        .child(frame(16. * TEXEL, 32. * TEXEL, skin, "Default"))
+                        .child(frame(10. * TEXEL, 16. * TEXEL, cape, "No cape"))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(10.))
+                                .child(
+                                    caps(trf("{name}'s skin", &[("name", &name)]))
+                                        .text_color(t.muted),
+                                )
+                                .child(skin_buttons)
+                                .child(model)
+                                .child(cape_buttons)
+                                .children(note.map(|n| match n {
+                                    Ok(said) => {
+                                        text(theme::CAPTION).text_color(t.muted).child(said)
+                                    }
+                                    Err(e) => text(theme::CAPTION).text_color(t.danger).child(e),
+                                })),
+                        ),
+                )
+                .child(
+                    text(theme::CAPTION)
+                        .text_color(t.muted)
+                        .line_height(px(16.))
+                        .child(tr(
                             "A 64×64 (or 64×32) skin PNG and a 64×32 cape PNG, kept by the \
-                             launcher and given to the game when this name plays. The game \
-                             draws the default skins for now; it uses these once it can. A \
-                             Microsoft account's skin and cape: coming soon.",
-                        ))),
+                     launcher and given to the game when this name plays. The game \
+                     draws the default skins for now; it uses these once it can. A \
+                     Microsoft account's skin and cape: coming soon.",
+                        )),
                 ),
         )
     }

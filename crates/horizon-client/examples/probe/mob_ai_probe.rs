@@ -220,6 +220,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "RandomSwimming" => "RandomSwimmingGoal",
         "LookAtPlayer" => "LookAtPlayerGoal",
         "RandomLookAround" => "RandomLookAroundGoal",
+        "SpearUse" => "SpearUseGoal",
         "HurtByTarget" => "HurtByTargetGoal",
         "NearestTarget" => "NearestAttackableTargetGoal",
         "Panic" => "PanicGoal",
@@ -1449,7 +1450,13 @@ pub fn main() -> horizon_client::Result<()> {
                     else {
                         continue;
                     };
-                    let tag = horizon_client::entity_nbt::mob_to_nbt(&mobs[i], [0; 4], None, None);
+                    let tag = horizon_client::entity_nbt::mob_to_nbt(
+                        &mobs[i],
+                        [0; 4],
+                        None,
+                        None,
+                        |_| None,
+                    );
                     let flower = horizon_client::mobs::bee::get(&mobs[i]).and_then(|b| b.flower);
                     let mut honey = Vec::new();
                     let stored = {

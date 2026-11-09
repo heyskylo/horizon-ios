@@ -1451,13 +1451,15 @@ impl Launcher {
                     }
                 }
                 Msg::Exit(job, result) => {
+                    // A preparation (or a build) ended: the disk may have changed under the pages.
+                    backend::forget_prepared();
                     let error = result.err();
                     match job {
                         Job::Prepare => {
                             self.preparing = false;
                             // Play pressed before the version was prepared plays now.
                             if let Some(tag) = self.play_when_prepared.take() {
-                                if error.is_none() && backend::is_prepared(&tag) {
+                                if error.is_none() && backend::check_prepared(&tag) {
                                     self.starting_pack = None;
                                     self.start_client(tag);
                                 }

@@ -1768,6 +1768,14 @@ impl Menu {
         self.containers[RESULT][0] = result;
     }
 
+    /// A station's take sound, gated by its menu's `lastSoundTime`: once per
+    /// tick, so a shift-click that takes many results plays it once.
+    fn take_sound(&mut self, sound: &'static str) {
+        if !self.sounds.contains(&sound) {
+            self.sounds.push(sound);
+        }
+    }
+
     /// `ResultSlot.onTake` and the other `Slot.onTake` overrides.
     fn on_take(&mut self, env: &Env, s: usize, taken: &ItemStack) {
         if self.slots[s].role == Role::Potion {
@@ -1796,7 +1804,7 @@ impl Menu {
             if self.remove(env, 0, 1).is_some() {
                 self.stone_setup_result(env, self.data[0]);
             }
-            self.sounds.push("minecraft:ui.stonecutter.take_result");
+            self.take_sound("minecraft:ui.stonecutter.take_result");
             return;
         }
         if self.slots[s].role == Role::GrindResult {
@@ -1851,8 +1859,7 @@ impl Menu {
             // onCraftedBy is the caller's (map_crafted).
             self.remove(env, 0, 1);
             self.remove(env, 1, 1);
-            self.sounds
-                .push("minecraft:ui.cartography_table.take_result");
+            self.take_sound("minecraft:ui.cartography_table.take_result");
             self.slot_changed(env, s);
             return;
         }
@@ -1863,7 +1870,7 @@ impl Menu {
             if self.containers[MAIN][0].is_none() || self.containers[MAIN][1].is_none() {
                 self.data[0] = -1;
             }
-            self.sounds.push("minecraft:ui.loom.take_result");
+            self.take_sound("minecraft:ui.loom.take_result");
             return;
         }
         if matches!(self.kind, Kind::CrafterBlock) && self.slots[s].container == MAIN {
@@ -3464,6 +3471,34 @@ pub(crate) mod tests {
                     stack("oak_planks", 4).unwrap()
                 )]
             );
+        });
+    }
+
+    /// `StonecutterMenu`'s `lastSoundTime`: a shift-click crafting a whole
+    /// stack plays the take sound once, not once per item.
+    #[test]
+    fn a_stonecutter_shift_click_plays_the_take_sound_once() {
+        with_menu(Kind::Stonecutter, |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 0, stack("granite", 60));
+            let polished = menu
+                .stone
+                .recipes
+                .iter()
+                .position(|&r| {
+                    &*env.station_recipes.stonecutting[r].result.item
+                        == "minecraft:polished_granite"
+                })
+                .expect("granite cuts into polished granite");
+            assert!(menu.button(env, polished as i32));
+            menu.click(env, 1, 0, Input::QuickMove).unwrap();
+            assert_eq!(menu.slot(0), None);
+            let made: u32 = (2..menu.slot_count())
+                .filter_map(|i| menu.slot(i))
+                .map(|s| s.count)
+                .sum();
+            assert_eq!(made, 60);
+            assert_eq!(menu.sounds, ["minecraft:ui.stonecutter.take_result"]);
         });
     }
 

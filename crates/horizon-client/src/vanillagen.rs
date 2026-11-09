@@ -246,6 +246,12 @@ impl VanillaTerrain {
     pub fn is_flat(&self) -> bool {
         self.flat
     }
+    /// `NoiseGeneratorSettings.disableMobGeneration`: whether the generator
+    /// adds the creature packs of a freshly generated chunk. The End's preset
+    /// is the one shipped setting that turns it on.
+    pub fn disable_mob_generation(&self) -> bool {
+        self.generator.disable_mob_generation()
+    }
     /// The terrain around a generator, with the tables the client's chunks need.
     fn assemble(
         dir: &Path,

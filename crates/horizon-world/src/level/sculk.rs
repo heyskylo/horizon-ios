@@ -646,6 +646,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 continue;
             }
             let default_sculk = self.b.default_of(self.b.named.sculk);
+            self.emit(LevelEvent::BlockEvent {
+                pos: support_pos,
+                state: support_state,
+                kind: "push_entities_up",
+            });
             self.set_block_and_update(support_pos, default_sculk);
             self.sculk_sound(support_pos, "minecraft:block.sculk.spread", 1.0, 1.0);
             self.sculk_spread_all(default_sculk, support_pos, &ALL_SPREADS);

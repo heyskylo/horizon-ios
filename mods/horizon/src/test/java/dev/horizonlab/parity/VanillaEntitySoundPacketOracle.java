@@ -86,6 +86,37 @@ public final class VanillaEntitySoundPacketOracle {
 
     public static void main(String[] args) throws Exception {
         net.minecraft.SharedConstants.tryDetectVersion(); net.minecraft.server.Bootstrap.bootStrap();
+        if (args[0].equals("decode-recorded")) {
+            // Existing Studio captures: the pinned codec, not a second packet implementation.
+            try (var writer = new PrintWriter(Files.newBufferedWriter(Path.of(args[2])));
+                 var lines = Files.lines(Path.of(args[1]))) {
+                for (var line : (Iterable<String>) lines::iterator) {
+                    var row = JsonParser.parseString(line).getAsJsonObject();
+                    byte[] payload = HexFormat.of().parseHex(row.get("payload").getAsString());
+                    var access = RegistryAccess.fromRegistryOfRegistries(BuiltInRegistries.REGISTRY);
+                    var bytes = new RegistryFriendlyByteBuf(Unpooled.wrappedBuffer(payload), access);
+                    var again = new RegistryFriendlyByteBuf(Unpooled.buffer(), access);
+                    try {
+                        int id = bytes.readVarInt();
+                        if (id != 119) throw new AssertionError("not a pinned positional sound: " + id);
+                        var p = ClientboundSoundPacket.STREAM_CODEC.decode(bytes);
+                        if (bytes.isReadable()) throw new AssertionError("trailing sound bytes");
+                        again.writeVarInt(id);
+                        ClientboundSoundPacket.STREAM_CODEC.encode(again, p);
+                        byte[] encoded = new byte[again.readableBytes()]; again.readBytes(encoded);
+                        if (!java.util.Arrays.equals(payload, encoded)) throw new AssertionError("sound roundtrip");
+                        row.addProperty("event", p.getSound().value().location().toString());
+                        row.addProperty("category", p.getSource().ordinal());
+                        row.addProperty("x", p.getX()); row.addProperty("y", p.getY()); row.addProperty("z", p.getZ());
+                        row.addProperty("volume_bits", Integer.toHexString(Float.floatToRawIntBits(p.getVolume())));
+                        row.addProperty("pitch_bits", Integer.toHexString(Float.floatToRawIntBits(p.getPitch())));
+                        row.addProperty("seed", p.getSeed());
+                        writer.println(row);
+                    } finally { bytes.release(); again.release(); }
+                }
+            }
+            return;
+        }
         var u = Class.forName("sun.misc.Unsafe"); var field = u.getDeclaredField("theUnsafe");
         field.setAccessible(true); unsafe = field.get(null); allocate = u.getMethod("allocateInstance", Class.class);
         stubPlayers = make(StubPlayers.class); var server = make(StubServer.class); var level = make(ServerLevel.class);

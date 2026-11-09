@@ -60,8 +60,8 @@ impl Game {
  fn item_on_use_tick(&mut self,_:&ItemStack,_:u32){}
  fn finish_drinking(&mut self,_:usize,_:&ItemStack)->bool{false}
  fn stop_spyglass(&mut self){}
- fn use_vibration(&mut self,stack:&ItemStack){assert_eq!(stack.item,"original");self.events.push("vibration".into());}
- fn use_item_finished(&mut self,_:&ItemStack){self.events.push("finish".into());}
+ fn use_vibration(&mut self,stack:&ItemStack,event:&'static str){assert_eq!(stack.item,"original");assert_eq!(stack.cooldown,"original-group");assert_eq!(event,"minecraft:item_interact_finish");self.events.push(format!("vibration:{event}"));}
+ fn use_item_finished(&mut self,stack:&ItemStack){assert_eq!(stack.item,"original");assert_eq!(stack.cooldown,"original-group");assert_eq!(self.held.as_ref().unwrap().item,"bowl");self.events.push("finish".into());}
  fn held(&self) -> Option<&ItemStack> {self.held.as_ref()}
  fn held_slot(&self) -> usize {self.slot}
  fn send_use_item_complete(&mut self) {self.events.push("event".into());}
@@ -98,7 +98,7 @@ pub fn run() {
   assert!(timed.events.is_empty(),"not completed before duration");
   timed.finish_tick(info(2),stack,1,2);
   assert!(timed.using.is_none());
-  assert_eq!(timed.events,vec!["event","consume:original","remainder:bowl","cooldown:original-group","finish","vibration"]);
+  assert_eq!(timed.events,vec!["event","consume:original","remainder:bowl","cooldown:original-group","finish","vibration:minecraft:item_interact_finish"]);
  }
  for ticks in [0,1] {
   let mut full=Game::new(0);full.player.as_mut().unwrap().health.food.food=20;
@@ -120,7 +120,7 @@ fn main(){fixture::run();}
             built = subprocess.run(["rustc", "--edition=2024", str(directory / "probe.rs"),
                                     "-o", str(directory / "probe")], capture_output=True, text=True, timeout=60)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
-            run = subprocess.run([str(directory / "probe")], capture_output=True, text=True, timeout=10)
+            run = subprocess.run([str(directory / "probe")], cwd=directory, capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
 

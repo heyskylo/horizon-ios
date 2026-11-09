@@ -643,11 +643,24 @@ impl Game<'_> {
             let pose = glam::Mat4::from_translation(pos.as_vec3())
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, bob + min_offset_y, 0.0))
                 * glam::Mat4::from_rotation_y(spin);
-            let packed = self.world.light(
-                q.x.floor() as i32,
-                (q.y + 0.1).floor() as i32,
-                q.z.floor() as i32,
-            );
+            // `EntityRenderer.getPackedLightCoords`: an item entity is lit from
+            // the block its light probe (its eye, 0.2125 up) is in, at 15 block
+            // light while it burns. A pickup particle is not an entity and keeps
+            // the cell it is drawn in.
+            let packed = if entity {
+                let probe = item.light_probe(alpha);
+                item.render_light(self.world.light(
+                    probe[0].floor() as i32,
+                    probe[1].floor() as i32,
+                    probe[2].floor() as i32,
+                ))
+            } else {
+                vertex_light(self.world.light(
+                    q.x.floor() as i32,
+                    (q.y + 0.1).floor() as i32,
+                    q.z.floor() as i32,
+                ))
+            };
             let seed = i64::from(self.pack.item_renderer.item_id(&item.stack.item))
                 + i64::from(item.stack.damage);
             let copies = item_render::cluster_poses(
@@ -687,11 +700,11 @@ impl Game<'_> {
             let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning
-                .then(|| self.submit_item_skinned(&state, &copies, vertex_light(packed), lights))
+                .then(|| self.submit_item_skinned(&state, &copies, packed, lights))
                 .flatten();
             if skinned.is_none() {
                 for &copy in &copies {
-                    self.submit_item_world(&state, copy, vertex_light(packed), out);
+                    self.submit_item_world(&state, copy, packed, out);
                 }
             }
             if let Some(rgb) = outline {
