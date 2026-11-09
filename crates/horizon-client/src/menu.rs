@@ -17,6 +17,7 @@ use crate::{
 use std::sync::Arc;
 
 mod bundle;
+mod equippable;
 pub mod place;
 
 /// `ServerPlayer.getRecipeBook`: whether the player knows a recipe.
@@ -1437,36 +1438,18 @@ impl Menu {
     fn may_place(&self, env: &Env, s: usize, stack: &ItemStack) -> bool {
         match self.slots[s].role {
             Role::Plain | Role::CreativeDisplay => true,
-            Role::Armor(eq) => {
-                let Some(equip_slot) = Self::equip_slot(env, stack) else {
-                    return false;
-                };
-                let slot = match equip_slot.as_str() {
-                    "feet" => 0,
-                    "legs" => 1,
-                    "chest" => 2,
-                    "head" => 3,
-                    _ => return false,
-                };
-                let allowed = env
-                    .items
-                    .get(&stack.item)
-                    .and_then(|i| i.equip_allowed.as_ref())
-                    .is_none_or(|a| a.contains("minecraft:player"));
-                slot == eq && allowed
-            }
-
-            // LivingEntity.isEquippableInSlot: the item's equippable slot,
+            Role::Armor(eq) => Self::equippable(env, stack).is_some_and(|e| {
+                ["feet", "legs", "chest", "head"]
+                    .iter()
+                    .position(|s| *s == e.slot)
+                    == Some(eq)
+                    && e.allows("minecraft:player")
+            }),
+            // LivingEntity.isEquippableInSlot: the stack's equippable slot,
             // and the mount among its allowed entities.
-            Role::MountEquip(slot) => {
-                Self::equip_slot(env, stack).as_deref() == Some(slot)
-                    && env.items.get(&stack.item).is_some_and(|i| {
-                        self.mount
-                            .as_deref()
-                            .is_some_and(|m| i.equip_allowed.as_ref().is_none_or(|a| a.contains(m)))
-                    })
-            }
-
+            Role::MountEquip(slot) => Self::equippable(env, stack).is_some_and(|e| {
+                e.slot == slot && self.mount.as_deref().is_some_and(|m| e.allows(m))
+            }),
             Role::Shulker => fits_inside_container_items(stack),
             Role::Mod | Role::ModResult => self.mod_slot(s, stack).0,
             Role::Hidden => false,
@@ -2168,26 +2151,8 @@ enum Equip {
 }
 
 impl Menu {
-    /// `ItemStack.get(DataComponents.EQUIPPABLE).slot`: the stack's component,
-    /// else the item's default; a removed component leaves none.
-    fn equip_slot(env: &Env, stack: &ItemStack) -> Option<String> {
-        let data = stack.data();
-        if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
-            return None;
-        }
-        if let Some(tag) = data.and_then(|d| d.other("minecraft:equippable")) {
-            return match tag.get("slot") {
-                Some(horizon_world::nbt::Tag::String(slot)) => Some(slot.to_string_lossy()),
-                _ => None,
-            };
-        }
-        env.items
-            .get(&stack.item)
-            .and_then(|i| i.equip_slot.clone())
-    }
-
     fn equip(env: &Env, stack: &ItemStack) -> Equip {
-        match Self::equip_slot(env, stack).as_deref() {
+        match Self::equippable(env, stack).map(|e| e.slot).as_deref() {
             Some("feet") => Equip::Armor(0),
             Some("legs") => Equip::Armor(1),
             Some("chest") => Equip::Armor(2),
@@ -3507,27 +3472,6 @@ pub(crate) mod tests {
             // longer lets the click merge them.
             assert_eq!(menu.slot(9).map(|s| s.count), Some(1));
             assert_eq!(menu.carried.as_ref().map(|s| s.count), Some(1));
-        });
-    }
-
-    /// A menu reads a stack's `EQUIPPABLE.slot`: a patched stone can go to
-    /// the head slot and is equipped there.
-    #[test]
-    fn a_menu_reads_a_stacks_equippable_slot() {
-        with_menu(Kind::Inventory, |env, menu| {
-            let mut stone = stack("stone", 1).unwrap();
-            stone.data_mut().set_other(
-                "minecraft:equippable",
-                Some(horizon_world::nbt::Tag::compound([(
-                    "slot",
-                    horizon_world::nbt::Tag::String("head".into()),
-                )])),
-            );
-            menu.set_slot(env, 9, Some(stone));
-            menu.click(env, 9, 0, Input::QuickMove).unwrap();
-            assert_eq!(menu.slot(5).map(|s| &*s.item), Some("minecraft:stone"));
-            assert_eq!(menu.slot(9), None);
-            assert_eq!(menu.equipped.last().map(|(s, _)| *s), Some("head"));
         });
     }
 
