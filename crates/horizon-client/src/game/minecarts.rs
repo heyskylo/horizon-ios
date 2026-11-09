@@ -3993,7 +3993,7 @@ mod container_drop_tests {
                 c.items = slots.clone();
                 game.carts.push(c);
             }
-            game.world.random = LegacyRandom::new(1234);
+            game.world.random.set_seed(1234);
             if boat {
                 assert_eq!(game.hurt_boat_result(0, 100.0, false), Some(true));
                 assert!(game.boats.is_empty());

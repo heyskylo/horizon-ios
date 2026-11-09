@@ -189,7 +189,7 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_core::{geometry::Vec3, random::LegacyRandom};
+    use horizon_core::geometry::Vec3;
 
     fn zombie_villager() -> Mob {
         let mut kind = super::super::sensor_scan_tests::kind();
@@ -198,7 +198,7 @@ mod tests {
         data.species = Species::ZombieVillager;
         data.eye_height = 1.5;
         let mut m = Mob::new(42, kind, Vec3::new(1.25, 2.0, 3.75), 0.0);
-        m.random = LegacyRandom::new(0);
+        m.random.set_seed(0);
         m
     }
 

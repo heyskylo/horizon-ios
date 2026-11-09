@@ -112,7 +112,7 @@ use crate::{blocks::BlockFacts, mesher::Vertex, world::World};
 pub use data::MobData;
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, RandomSource},
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
 use serde_json::Value;
@@ -1570,7 +1570,7 @@ pub struct Mob {
     pub name_visible: bool,
     /// `Entity.DATA_SHARED_FLAGS_ID` bit 0x20: the model is hidden.
     pub invisible: bool,
-    pub random: LegacyRandom,
+    pub random: EntityRandom,
     pub ai: Box<ai::Ai>,
     pub extra: Extra,
     pub fluids: living::Fluids,
@@ -3354,24 +3354,24 @@ pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec
 }
 /// `Entity.random` of a client's copy of entity `id` first seen at `position`: vanilla's is its
 /// own (`RandomSource.create()`), drawn on by nothing else; this one is seeded from the two.
-pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
+pub fn entity_random(id: u32, position: Vec3) -> EntityRandom {
     let mut random = LegacyRandom::new(
         i64::from(id).wrapping_mul(0x5DEE_CE66D)
             ^ (position.x.to_bits() as i64)
             ^ (position.z.to_bits() as i64).rotate_left(17),
     );
     let _ = random.next_int();
-    random
+    EntityRandom::own(random)
 }
 /// The own random (`Entity.random`) of a living entity the server makes, as
 /// `LivingEntity.<init>` leaves it: its first two draws made the UUID
 /// (`Mth.createInsecureUUID`), returned here, and the next one the yaw, which
 /// every spawn path then replaces. Constructor draws of the kind come after.
-pub fn living_random() -> (LegacyRandom, [i32; 4]) {
+pub fn living_random() -> (EntityRandom, [i32; 4]) {
     let mut random = crate::random_source::entity();
     let uuid = crate::save::insecure_uuid(&mut random);
     let _yaw = random.next_float();
-    (random, uuid)
+    (EntityRandom::own(random), uuid)
 }
 impl Mob {
     pub fn new(id: u32, kind: Arc<MobType>, position: Vec3, yaw: f32) -> Self {
@@ -3384,7 +3384,7 @@ impl Mob {
         kind: Arc<MobType>,
         position: Vec3,
         yaw: f32,
-        random: LegacyRandom,
+        random: EntityRandom,
     ) -> Self {
         let mut mob = Self {
             join: Default::default(),

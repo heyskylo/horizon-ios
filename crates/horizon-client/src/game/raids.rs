@@ -16,7 +16,10 @@ use horizon_client::{
     raid::{self, Action, BarName, RaidLevel, RaidPlayer, RaiderInfo, RaiderType, Raids, Spawn},
     random_source,
 };
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::Vec3,
+    random::{LegacyRandom, LevelRandom, RandomSource},
+};
 use horizon_world::nbt::Tag;
 use std::collections::{HashMap, HashSet};
 
@@ -1281,7 +1284,7 @@ impl Game<'_> {
         let enemies = self.ui.rules.bool("spawn_mobs") && self.ui.rules.bool("spawn_monsters");
         let mut random = std::mem::replace(
             &mut self.world.random,
-            horizon_core::random::LegacyRandom::new(0),
+            LevelRandom::for_level(LegacyRandom::new(0)),
         );
         let mut members: Vec<Member> = Vec::new();
         let mut spawner = std::mem::take(&mut self.raiding.patrol);
@@ -1291,15 +1294,14 @@ impl Game<'_> {
                 centers: self.village_centers(),
                 can_spawn: &biome_ok,
             };
-            let mut spawn =
-                |l: &PatrolCx, m: Member, _: &mut horizon_core::random::LegacyRandom| {
-                    // EntityType.create makes no monsters in peaceful.
-                    if l.level.game.difficulty_id() == 0 {
-                        return false;
-                    }
-                    members.push(m);
-                    true
-                };
+            let mut spawn = |l: &PatrolCx, m: Member, _: &mut horizon_core::random::LevelRandom| {
+                // EntityType.create makes no monsters in peaceful.
+                if l.level.game.difficulty_id() == 0 {
+                    return false;
+                }
+                members.push(m);
+                true
+            };
             spawner.tick(&level, enemies, &mut random, &mut spawn);
         }
         self.raiding.patrol = spawner;
@@ -1429,7 +1431,7 @@ impl Game<'_> {
     ) -> Option<[f64; 3]> {
         let mut random = std::mem::replace(
             &mut self.world.random,
-            horizon_core::random::LegacyRandom::new(0),
+            LevelRandom::for_level(LegacyRandom::new(0)),
         );
         let mut found = None;
         for _ in 0..10 {

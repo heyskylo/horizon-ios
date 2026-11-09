@@ -5,11 +5,7 @@ use horizon_client::{
     motion::PlayerMotion,
     projectiles::{Projectile, ProjectileKind},
 };
-use horizon_core::{
-    geometry::Vec3,
-    position::ChunkPos,
-    random::{LegacyRandom, RandomSource},
-};
+use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
 use std::sync::Arc;
 fn with_game(test: impl FnOnce(&mut Game<'_>)) {
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
@@ -66,7 +62,7 @@ fn with_game(test: impl FnOnce(&mut Game<'_>)) {
     game.creative = true;
     assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
     assert!(game.run_command("summon pig 13.5 200 2.5 {UUID:[I;114,0,0,99],NoAI:1b,NoGravity:1b}"));
-    game.world.random = LegacyRandom::new(114);
+    game.world.random.set_seed(114);
     test(&mut game);
 }
 fn start_events() {

@@ -321,7 +321,7 @@ impl Game<'_> {
             self.hook = Some(hook);
             let item_start = self.dropped.len();
             let orb_start = self.orbs.len();
-            self.world.random = LegacyRandom::new(seed);
+            self.world.random.set_seed(seed);
             self.use_fishing_rod(&rod);
             let items: Vec<_> = self
                 .dropped

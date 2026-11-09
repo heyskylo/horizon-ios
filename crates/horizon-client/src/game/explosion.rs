@@ -1396,9 +1396,9 @@ mod tests {
         }
         let center = [8.3, 64.6, 7.9];
         for (radius, resists) in [(4.0, None), (6.0, None), (4.0, Some(([8, 64, 8], 1200.0)))] {
-            game.world.random = horizon_core::random::LegacyRandom::new(7);
+            game.world.random.set_seed(7);
             let expected = exploded_positions_stepwise(&mut game, center, radius, resists);
-            game.world.random = horizon_core::random::LegacyRandom::new(7);
+            game.world.random.set_seed(7);
             let got = game.exploded_positions(center, radius, resists);
             assert!(expected.len() > 20, "{radius}: {}", expected.len());
             assert_eq!(got, expected, "radius {radius}, {resists:?}");

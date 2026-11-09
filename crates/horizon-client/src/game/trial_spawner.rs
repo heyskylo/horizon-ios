@@ -17,7 +17,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::Vec3,
-    random::{LegacyRandom, RandomSource},
+    random::{LegacyRandom, LevelRandom, RandomSource},
 };
 use horizon_world::nbt::Tag;
 use std::collections::HashMap;
@@ -174,7 +174,10 @@ impl Game<'_> {
         ominous: bool,
     ) -> Result<()> {
         let pos = [key.0, key.1, key.2];
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(
+            &mut self.world.random,
+            LevelRandom::for_level(LegacyRandom::new(0)),
+        );
         let mut sequences = std::mem::take(&mut self.rand_sequences);
         let mut events = Vec::new();
         let mut planned: Vec<Planned> = Vec::new();
@@ -206,7 +209,7 @@ impl Game<'_> {
             };
             // TrialSpawner.ejectReward: the table's items, each thrown up out
             // of the spawner (DefaultDispenseItemBehavior.spawnItem, accuracy 2).
-            let mut eject = |table: &str, random: &mut LegacyRandom| {
+            let mut eject = |table: &str, random: &mut LevelRandom| {
                 let Some(loot) = &loot else {
                     return false;
                 };
