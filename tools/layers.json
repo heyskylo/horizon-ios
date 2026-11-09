@@ -25,6 +25,7 @@
     "horizon-prepare": "engine",
     "horizon-protocol": "engine",
     "horizon-server-files": "engine",
+    "horizon-system": "engine",
     "horizon-threads": "engine",
     "horizon-world": "engine",
 
@@ -38,6 +39,7 @@
     "horizon-mod-deps": "platform",
     "horizon-mods": "platform",
     "horizon-optifine": "platform",
+    "horizon-platform": "platform",
     "horizon-polytone": "platform",
     "horizon-port-pack": "platform",
     "horizon-shader-api": "platform",
