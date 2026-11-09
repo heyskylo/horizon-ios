@@ -253,7 +253,13 @@ pub(super) fn potion_cloud_to_nbt(c: &Breath, uuid: [i32; 4], raw: Option<&Tag>)
         "potion_duration_scale".into(),
         Tag::Float(potion.settings.duration_scale.to_bits()),
     );
-    map.insert("potion_contents".into(), Tag::Compound(contents));
+    // Vanilla writes the key only while the contents differ from
+    // PotionContents.EMPTY: no effects and the default water colour.
+    if !(potion.effects.is_empty()
+        && potion.color == horizon_client_core::potions::BASE_POTION_COLOR)
+    {
+        map.insert("potion_contents".into(), Tag::Compound(contents));
+    }
     tag
 }
 
