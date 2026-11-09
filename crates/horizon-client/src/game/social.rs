@@ -177,6 +177,15 @@ impl Game<'_> {
         );
     }
     pub(super) fn social_click(&mut self) {
+        // `super.mouseClicked` first: the search box is a widget the click
+        // lands in, and its `onClick` puts the caret under the pointer.
+        if social_screen::search_click_at(self.gui_size(), self.cursor) {
+            let shift = self.has_shift_down();
+            self.social
+                .search
+                .click(&self.gui.atlas, self.cursor.0, shift, false);
+            return;
+        }
         let view = self.social_view();
         let Some(action) = social_screen::click(self.gui_size(), self.cursor, &view) else {
             return;

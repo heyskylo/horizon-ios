@@ -151,6 +151,13 @@ fn visible(view: &SocialView, h: f32) -> impl Iterator<Item = (usize, f32)> + '_
 pub fn search_box(w: f32) -> [f32; 4] {
     [margin_x(w) + 28.0, 74.0, 200.0, 15.0]
 }
+/// `SocialInteractionsScreen.mouseClicked` hands the widgets their click
+/// before the list: a click inside the search box is the `EditBox`'s own
+/// (`EditBox.onClick` puts the caret under the pointer).
+pub fn search_click_at(size: (f32, f32), cursor: (f32, f32)) -> bool {
+    let [x, y, w, h] = search_box(size.0);
+    ui::hovered(cursor, x, y, w, h)
+}
 /// Done's rectangle (`HeaderAndFooterLayout`'s footer).
 fn done(w: f32, h: f32) -> [f32; 4] {
     [(w / 2.0).floor() - 100.0, h - 27.0, 200.0, 20.0]
