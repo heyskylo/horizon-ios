@@ -78,7 +78,7 @@ ThrownTrident.isAcceptibleReturnOwner	port	crates/horizon-client/src/game/triden
 ThrownTrident.findHitEntities	port	crates/horizon-client/src/arrows.rs::Ticker::step_move_and_hit	one entity hit per trident, none once it has dealt damage
 ThrownTrident.hitBlockEnchantmentEffects	port	crates/horizon-client/src/game/trident.rs::Game::channel_rod_hit	gap: minor: only Channeling's hit_block effect (lightning on a rod in a storm) is modelled
 ThrownTrident.tryPickup	port	crates/horizon-client/src/game/trident.rs::Game::trident_taken	all three pickup modes and the no-physics owner's return; gap: inventory overflow drops instead of refusing pickup
-ThrownTrident.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::trident_from_nbt	pickup, Owner, LeftOwner, HasBeenShot and DealtDamage survive load; ThrownTrident::from_nbt reads loyalty from the saved stack
+ThrownTrident.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt/trident.rs::trident_from_nbt	pickup, Owner, LeftOwner, HasBeenShot and DealtDamage survive load; ThrownTrident::from_nbt reads loyalty from the saved stack
 ThrownTrident.getLoyaltyFromItem	port	crates/horizon-client/src/game/trident.rs::Game::release_trident	loyalty level read from the thrown stack when the trident is released
 ThrownTrident.tickDespawn	inline	crates/horizon-client/src/arrows.rs::Ticker::tick	gap: minor: the 1200-tick life limit applies to every trident; the loyalty exemption is not checked
 AbstractHurtingProjectile.shouldRenderAtSqrDistance	skip:ui		distance culling for the fireball model; Horizon culls with its own range check
