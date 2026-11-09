@@ -8,6 +8,10 @@ pub(super) fn pipelines(
 ) -> [wgpu::RenderPipeline; 3] {
     std::array::from_fn(|i| {
         let mut constants = sprite_constants.to_vec();
+        constants.push((
+            "HDR_WRITE_LIGHT",
+            f64::from(u8::from(format == super::LINEAR_FRAME)),
+        ));
         constants.push(("NATIVE_MODEL_ALPHA_CUTOFF", [0.0, 0.1, 0.5][i]));
         // The ordinary Vertex ABI is unchanged. This material's private payload uses
         // normal's four bytes for a float z, and glint UV for float normal x/y.

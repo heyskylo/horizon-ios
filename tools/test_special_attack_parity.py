@@ -20,11 +20,9 @@ import tempfile
 
 try:
     from . import lab, test_rust_parity as base
-    from .integration_env import run_game
 except ImportError:
     import lab
     import test_rust_parity as base
-    from integration_env import run_game
 
 
 def cases():
@@ -63,13 +61,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--resources', type=Path,
                         default=Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES)))
-    parser.add_argument('--binary', type=Path,
-                        help='Previously built debug horizon-client; skips the normal debug build')
+    parser.add_argument('--test-binary', type=Path, required=True,
+                        help='Previously built horizon-client --lib test artifact; avoids world startup')
     parser.add_argument('--work', type=Path, default=lab.LOCAL / 'special-attack-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     source_paths = [lab.ROOT / path for path in (
         'crates/horizon-client/src/game.rs',
+        'crates/horizon-client/src/game/melee.rs',
         'crates/horizon-client/src/game/armor_stands.rs',
         'crates/horizon-client/src/game/boats.rs',
         'crates/horizon-client/src/game/minecarts.rs',
@@ -79,13 +78,7 @@ def main():
         'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaDispenserOracle.java',
         'tools/test_special_attack_parity.py')]
     source_hashes = base.source_hashes(source_paths)
-    binary = args.binary
-    if binary is None:
-        subprocess.run(['cargo', 'build', '-q', '-p', 'horizon-client', '--bin', 'horizon-client',
-                        '--no-default-features'], cwd=lab.ROOT, check=True,
-                       env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '2')})
-        binary = lab.cargo_target() / 'debug' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
-    binary = binary.resolve()
+    binary = args.test_binary.resolve()
     binary_hash = lab.digest(binary, 'sha256')
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -98,17 +91,20 @@ def main():
     classes.mkdir(exist_ok=True)
     sources = lab.ROOT / 'mods/horizon/src/test/java'
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn',
-                    '-sourcepath', str(sources), '-cp', dependencies, '-d', str(classes),
-                    str(sources / 'dev/horizonlab/parity/VanillaDispenserOracle.java')], check=True)
-    subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies,
-                    'dev.horizonlab.parity.VanillaDispenserOracle', str(args.resources.resolve()),
-                    str(input_path), str(work / 'native.txt')], check=True)
     with tempfile.TemporaryDirectory(prefix='special-attack-') as scratch:
-        run_game([str(binary), '--headless', '--resources', str(args.resources.resolve()),
-                  '--game-dir', scratch], cwd=scratch,
-                 env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{input_path},{work / "rust.txt"}'),
-                 check=True, timeout=180)
+        subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn',
+                        '-sourcepath', str(sources), '-cp', dependencies, '-d', str(classes),
+                        str(sources / 'dev/horizonlab/parity/VanillaDispenserOracle.java')],
+                       cwd=scratch, check=True)
+        subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies,
+                        'dev.horizonlab.parity.VanillaDispenserOracle', str(args.resources.resolve()),
+                        str(input_path), str(work / 'native.txt')], cwd=scratch, check=True)
+        subprocess.run(
+            [str(binary), 'game::special_attack_fixture::tests::special_attack_cases_without_world_startup',
+             '--exact', '--ignored', '--test-threads=1'], cwd=scratch,
+            env=lab.game_env(HORIZON_TEST_RESOURCES=str(args.resources.resolve()),
+                             HORIZON_SPECIAL_ATTACK_CASES=f'{input_path},{work / "rust.txt"}'),
+            check=True, timeout=180)
     def scoped(path):
         rows = path.read_text(encoding='utf-8').splitlines()
         errors = [row for row in rows if row.startswith('error')]

@@ -1,6 +1,6 @@
 Interaction.defineSynchedData	port	crates/horizon-client/src/game/interactions.rs::RemoteInteraction::new	width 1.0, height 1.0, response false
-Interaction.readAdditionalSaveData	missing		server side: Horizon's own server has no interaction entity, and a client never saves a remote one
-Interaction.addAdditionalSaveData	port	crates/horizon-client/src/game/persist.rs::Game::other_to_nbt	raw-backed width/height/response defaults and valid loaded settings/records; gap: numeric normalization and live server interaction state remain unmodeled
+Interaction.readAdditionalSaveData	port	crates/horizon-client/src/game/interactions.rs::InteractionState::from_tag	width, height, response and optional loaded actions
+Interaction.addAdditionalSaveData	port	crates/horizon-client/src/game/interactions.rs::InteractionState::write	width, height, response and optional action records
 Interaction.onSyncedDataUpdated	port	crates/horizon-client/src/game/interactions.rs::RemoteInteraction::metadata	DATA_WIDTH 8, DATA_HEIGHT 9, DATA_RESPONSE 10
 Interaction.skipAttackInteraction	inline	crates/horizon-client/src/game/remote_vehicles.rs::Game::remote_object_hit	false: an attack click picks the box like any entity, and the box ignores the hurt on the server
 Interaction.interact	port	crates/horizon-client/src/game/remote.rs::Game::remote_use_entity	SUCCESS when the response is set (the arm swings), CONSUME otherwise; both end the click and nothing behind the box is used
@@ -76,7 +76,7 @@ LivingEntity.setItemInHand	inline	crates/horizon-client/src/game.rs::Game::held_
 LivingEntity.getArmorCoverPercentage	port	crates/horizon-client/src/game/creatures.rs::Game::player_view	armor_cover is worn pieces over 4; a LAN guest's is 0
 LivingEntity.shouldTravelInFluid	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel	in liquid, affected by fluids and not standing on a fluid it walks on (lava walkers)
 LivingEntity.isInShallowFluid	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel_in_fluid	lava depth against fluid_jump_threshold
-LivingEntity.updateFallFlyingMovement	port	crates/horizon-client/src/motion.rs::MotionWorld::travel_fall_flying	gap: minor: the player only; a mob with a glider never fall-flies
+LivingEntity.updateFallFlyingMovement	port	crates/horizon-client/src/motion.rs::fall_flying_movement	shared pure arithmetic for existing player travel and common Mob glide travel; dry-air Husk runtime proof
 LivingEntity.travelRidden	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel	the rider's input is applied in equine.rs ridden_step, nautilus.rs ridden and happy_ghast.rs ridden
 LivingEntity.calculateEntityAnimation	port	crates/horizon-client/src/mobs/living.rs::Mob::update_walk_animation	a passenger's legs are held still at draw time (anim.rs)
 LivingEntity.causeExtraKnockback	port	crates/horizon-client/src/game/enchant_effects.rs::Game::extra_knockback_direction	target pushed along the attacker's yaw; the attacker stops sprinting
@@ -92,8 +92,8 @@ LivingEntity.canGlide	inline	crates/horizon-client/src/motion.rs::MotionWorld::p
 LivingEntity.onItemPickup	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::sulfur_cube_pickups	gap: player: only a sulfur cube's pickup fires thrown_item_picked_up_by_entity; a piglin picking up gold you threw does not, so Oh Shiny never unlocks
 LivingEntity.isUsingItem	inline	crates/horizon-client/src/game/remote.rs::RemoteInputWorld::using_item	Game::using is Some; a mob's is extra.using_item above 0
 LivingEntity.setLivingEntityFlag	skip:java		bit accessor; the flags are built when synced in game/lan.rs::mob_meta
-LivingEntity.getTicksUsingItem	inline	crates/horizon-client/src/game.rs::Game::tick_used_item	the tick count kept in Game::using
-LivingEntity.stopUsingItem	port	crates/horizon-client/src/game.rs::Game::stop_using_item	using is dropped when the use ends, and ItemStack.causeUseVibration sends ITEM_INTERACT_FINISH at the player when the stack's use effects ask for it
+LivingEntity.getTicksUsingItem	inline	crates/horizon-client/src/game/using_item.rs::Game::tick_used_item	the tick count kept in Game::using
+LivingEntity.stopUsingItem	port	crates/horizon-client/src/game/using_item.rs::Game::stop_using_item	using is dropped when the use ends, and ItemStack.causeUseVibration sends ITEM_INTERACT_FINISH at the player when the stack's use effects ask for it
 LivingEntity.getLocalBoundsForPose	inline	crates/horizon-client/src/game/mounts.rs::rider_poses	the rider's box in each dismount pose, standing, crouching then swimming, from the pose's dimensions at its scale; the strider dismount tests it (strider_dismount_location), the other vehicles use their own side checks
 LivingEntity.wouldNotSuffocateAtTargetPose	port	crates/horizon-client/src/pose.rs::MotionWorld::can_fit_pose	gap: minor: the player's poses only; a camel changing pose is not checked
 LivingEntity.canUsePortal	port	crates/horizon-client/src/game/nether_portal.rs::Game::mob_can_use_portal	gap: minor: a sleeping mob is not excluded
@@ -118,8 +118,8 @@ Mob.updateControlFlags	inline	crates/horizon-client/src/mobs/riders.rs::drive	ga
 Mob.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	gap: minor: drop_chances and DeathLootTable survive only from the loaded raw tag
 Mob.burnUndead	inline	crates/horizon-client/src/mobs/ai.rs::ai_step	gap: player: a helmeted undead never loses helmet durability in sunlight (vanilla 0 to 1 per burn tick), so the helmet never wears out or breaks
 Mob.pickUpItem	port	crates/horizon-client/src/mobs/equip.rs::Slot::wants_to_pick_up	ticked in #3514; `Mob.pickUpItem` is cited at crates/horizon-client/src/mobs/equip.rs:211
-Mob.attemptToShearEquipment	inline	crates/horizon-client/src/game/mounts.rs::Game::shear_pig_saddle	pig saddle before mounting; happy ghast harness and llama carpet remain in their adapters; gap: minor: other equipment slots and component overrides are not generalized
-Mob.shearItem	inline	crates/horizon-client/src/game/mounts.rs::Game::shear_pig_saddle	pig saddle uses shared drop, wear, event and interaction trigger paths; happy ghast and llama adapters remain separate; gap: minor: generalized equippable shearing sound/component handling remains outside the pig adapter
+Mob.attemptToShearEquipment	port	crates/horizon-client/src/game/mounts.rs::Game::shear_saddle	a saddle comes off any saddleable mob before its mobInteract (an occupied mount is skipped); happy ghast harness and llama carpet remain in their adapters; gap: minor: other equipment slots and component overrides are not generalized
+Mob.shearItem	inline	crates/horizon-client/src/game/mounts.rs::Game::shear_saddle	the shared drop, tool wear, shear game event, player_sheared_equipment trigger and unequip sound; happy ghast and llama adapters remain separate; gap: minor: generalized equippable shearing sound/component handling remains outside the saddle adapter
 Mob.canReplaceCurrentItem	port	crates/horizon-client/src/mobs/equip.rs::can_replace_current_item	armour slots compare armour, the main hand weapons and the off hand is never replaced; Mob.pickUpItem's candidate check (game/mob_looting.rs)
 Mob.compareArmor	port	crates/horizon-client/src/mobs/equip.rs::compare_armor	more armour, then more toughness, then canReplaceEqualItem; a PREVENT_ARMOR_CHANGE piece is never taken off
 Mob.compareWeapons	port	crates/horizon-client/src/mobs/equip.rs::compare_weapons	the species' preferred weapon tag first, then more attack damage, then canReplaceEqualItem
@@ -130,7 +130,7 @@ Mob.hasValidEquippableItemForSlot	skip:other		Horizon stores only items that fit
 Mob.createEquipmentParams	inline	crates/horizon-client/src/game/mob_gear.rs::Game::equip_from_table	EntityLootParams with the mob as `this`
 Mob.getEquipmentForSlot	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::armor	the material table leather, copper, golden, chainmail, iron, diamond by piece
 Mob.enchantSpawnedEquipment	port	crates/horizon-client/src/game/mob_gear.rs::Game::enchant_slot	chance times the local difficulty's special multiplier
-Mob.usePlayerItem	port	crates/horizon-client/src/game.rs::Game::consume_held	gap: minor: no use_remainder (a bottle or bowl a food item leaves behind)
+Mob.usePlayerItem	port	crates/horizon-client/src/game/using_item.rs::Game::consume_held	gap: minor: no use_remainder (a bottle or bowl a food item leaves behind)
 Mob.setNoAi	skip:java		plain field Mob::no_ai, synced as a flag in game/lan.rs::mob_meta
 Mob.setLeftHanded	skip:java		plain field Extra::left_handed, synced in game/lan.rs::mob_meta
 Mob.setAggressive	skip:java		plain field Ai::aggressive, synced in game/lan.rs::mob_meta

@@ -5,19 +5,13 @@ use horizon_shaders::{
 };
 
 #[test]
-fn optional_fade_feature_selects_the_pack_transition() {
-    let mut macros = Macros::standard();
+fn requested_fade_feature_loads() {
     let properties = Properties::parse(
         "iris.features.optional=FADE_VARIABLE\niris.features.required=FADE_VARIABLE\n",
-        &macros,
+        &Macros::standard(),
     );
-    let notes = macros.define_features(&properties);
+    let notes = Macros::feature_notes(&properties);
     assert!(notes.is_empty(), "requested fade rejected: {notes:?}");
-    let selected = Properties::parse(
-        "#ifdef IRIS_FEATURE_FADE_VARIABLE\nprobe=transition\n#else\nprobe=opaque\n#endif\n",
-        &macros,
-    );
-    assert_eq!(selected.get("probe"), Some("transition"));
 }
 
 #[test]
@@ -108,25 +102,23 @@ fn authored_fade_globals_keep_their_own_meaning() {
 }
 
 #[test]
-fn fade_feature_preserves_negotiation_and_pack_case() {
-    for (request, expected, rejected) in [
-        ("", "opaque", false),
-        ("iris.features.required=FADE_VARIABLE\n", "opaque", false),
-        (
-            "iris.features.optional=fade_variable\n",
-            "transition",
-            false,
-        ),
-        ("iris.features.required=UNKNOWN_FADE\n", "opaque", true),
+fn fade_feature_negotiation_ignores_case_and_defines_no_macro() {
+    for (request, rejected) in [
+        ("", false),
+        ("iris.features.required=FADE_VARIABLE\n", false),
+        ("iris.features.required=fade_variable\n", false),
+        ("iris.features.optional=fade_variable\n", false),
+        ("iris.features.required=UNKNOWN_FADE\n", true),
     ] {
-        let mut macros = Macros::standard();
+        let macros = Macros::standard();
         let properties = Properties::parse(request, &macros);
-        assert_eq!(!macros.define_features(&properties).is_empty(), rejected);
+        assert_eq!(!Macros::feature_notes(&properties).is_empty(), rejected);
+        // No `IRIS_FEATURE_*` (spec OQ-2): the pack keeps its base path.
         let selected = Properties::parse(
             "#ifdef IRIS_FEATURE_fade_variable\nprobe=transition\n#else\nprobe=opaque\n#endif\n",
             &macros,
         );
-        assert_eq!(selected.get("probe"), Some(expected));
+        assert_eq!(selected.get("probe"), Some("opaque"));
     }
 }
 

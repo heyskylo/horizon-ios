@@ -38,7 +38,7 @@ fn stack_json(s: &ItemStack) -> Value {
         "repair_cost": s.repair_cost(),
         "custom_name": s.custom_name(),
         "potion": s.potion(),
-        "trim": s.data().and_then(|d| d.trim.as_ref()).map(|(m, p)| json!([&**m, &**p])),
+        "trim": s.data().and_then(|d| d.trim.as_ref()).and_then(horizon_client::item_data::trim::named).map(|(m, p)| json!([m, p])),
     })
 }
 

@@ -1,6 +1,7 @@
 //! NBT paths (`NbtPathArgument`): `foo.bar[0]`, `[]`, `list[{id:1}]`,
 //! `{root:match}`, with get, set, insert and remove on a tag tree, and the
 //! partial NBT comparison (`NbtUtils.compareNbt`) selectors and conditions use.
+pub use horizon_world::nbt::compare_nbt;
 use horizon_world::nbt::{Compound, JavaString, Tag, parse_snbt};
 
 /// An error carrying the translation key and its arguments.
@@ -45,26 +46,6 @@ fn key(s: &str) -> JavaString {
 }
 fn get_child<'a>(c: &'a Compound, name: &str) -> Option<&'a Tag> {
     c.get(&key(name))
-}
-
-/// `NbtUtils.compareNbt(expected, actual, true)`.
-pub fn compare_nbt(expected: &Tag, actual: Option<&Tag>) -> bool {
-    let Some(actual) = actual else { return false };
-    if std::mem::discriminant(expected) != std::mem::discriminant(actual) {
-        return false;
-    }
-    match (expected, actual) {
-        (Tag::Compound(e), Tag::Compound(a)) => {
-            a.len() >= e.len() && e.iter().all(|(k, v)| compare_nbt(v, a.get(k)))
-        }
-        (Tag::List(e), Tag::List(a)) => {
-            if e.is_empty() {
-                return a.is_empty();
-            }
-            a.len() >= e.len() && e.iter().all(|x| a.iter().any(|y| compare_nbt(x, Some(y))))
-        }
-        _ => expected == actual,
-    }
 }
 
 // ---- list-like tags ----------------------------------------------------------

@@ -168,3 +168,47 @@ impl Game<'_> {
         )])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::*;
+
+    /// Invoke the actual attack methods in an empty scratch Game, without
+    /// starting a server, opening a world or entering the game loop.
+    #[test]
+    #[ignore = "needs prepared resources and HORIZON_SPECIAL_ATTACK_CASES=INPUT,OUTPUT"]
+    fn special_attack_cases_without_world_startup() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let spec = std::env::var("HORIZON_SPECIAL_ATTACK_CASES").expect("case paths required");
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.dispense_fixture(&spec).unwrap();
+    }
+}

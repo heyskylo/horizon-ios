@@ -58,6 +58,8 @@ impl Game<'_> {
             self.edit_height(h, x, z)
         })?;
         // (what the registry, the tags and the facts tell of a state, beside the world being changed)
+        self.ensure_stateful_entity_table();
+        let stateful = self.world.block_entities.stateful_entities();
         let registry = self.pack.assets.registry;
         // (the tags as `block_matches` reads them for commands)
         let world_items = match &self.world_tables {
@@ -81,6 +83,7 @@ impl Game<'_> {
                 let f = facts.get(BlockStateId(s));
                 watched.get(s as usize).copied().unwrap_or(false)
                     || f.block_entity
+                    || stateful.get(s as usize).copied().unwrap_or(false)
                     || BlockEntity::for_block(&f.name).is_some()
             },
         );
@@ -88,7 +91,7 @@ impl Game<'_> {
         // The block entities the new blocks bring, as `native_set_block` makes them (a mod block's own, API 15,
         // included), in the order `replace_block_entities` takes them: the positions needing a fresh entity.
         let name = |s: u32| self.res.facts().get(BlockStateId(s)).name.clone();
-        let wanted: Vec<Arc<str>> = out
+        let wanted: Vec<BlockStateId> = out
             .tracked
             .iter()
             .filter(|&&((x, y, z), old, new)| {
@@ -99,9 +102,11 @@ impl Game<'_> {
                         .get(&(x, y, z))
                         .is_some_and(|e| e.fits(&name(new)))
             })
-            .map(|&(_, _, new)| name(new))
+            .map(|&(_, _, new)| BlockStateId(new))
             .collect();
-        let mut made = make_block_entities(&wanted, |n| self.new_block_entity(n)).into_iter();
+        let mut made =
+            make_block_entities(&wanted, |state| self.new_block_entity_for_state(*state))
+                .into_iter();
         let facts = self.res.facts();
         let removed = replace_block_entities(
             &mut self.world,
@@ -384,15 +389,15 @@ fn resolve_runs(
 /// A block entity for each new block, in order: made for each position, as vanilla calls
 /// `EntityBlock.newBlockEntity` for each (a mod's may number its instances). A block that makes none (stone) is
 /// asked once.
-fn make_block_entities(
-    names: &[Arc<str>],
-    mut make: impl FnMut(&str) -> Option<BlockEntity>,
+fn make_block_entities<S: Eq + std::hash::Hash>(
+    states: &[S],
+    mut make: impl FnMut(&S) -> Option<BlockEntity>,
 ) -> Vec<Option<BlockEntity>> {
-    let mut none: FxHashSet<&str> = FxHashSet::default();
-    names
+    let mut none: FxHashSet<&S> = FxHashSet::default();
+    states
         .iter()
         .map(|n| {
-            if none.contains(&**n) {
+            if none.contains(n) {
                 return None;
             }
             let entity = make(n);
@@ -767,7 +772,7 @@ mod tests {
             .map(Arc::<str>::from),
             |n| {
                 calls.push(n.to_string());
-                (n == "machines:press").then(|| {
+                (n.as_ref() == "machines:press").then(|| {
                     BlockEntity::Mod(Box::new(
                         horizon_client::containers::ModBlockEntityFields {
                             id: format!("press-{}", calls.len()),
@@ -798,5 +803,26 @@ mod tests {
             calls,
             ["machines:press", "minecraft:stone", "machines:press"]
         );
+    }
+    #[test]
+    fn null_factories_are_cached_per_state_not_per_block_name() {
+        // One block can create no BE in one state and a BE in another.
+        // A cached null for the first state must not suppress the second.
+        let mut calls = Vec::new();
+        let made = make_block_entities(&[7_u32, 8, 7, 8], |state| {
+            calls.push(*state);
+            (*state == 8).then(|| {
+                BlockEntity::Mod(Box::new(
+                    horizon_client::containers::ModBlockEntityFields {
+                        id: "machines:heater".into(),
+                        ..Default::default()
+                    }
+                    .into(),
+                ))
+            })
+        });
+        assert_eq!(calls, [7, 8, 8]);
+        assert!(made[0].is_none() && made[2].is_none());
+        assert!(made[1].is_some() && made[3].is_some());
     }
 }

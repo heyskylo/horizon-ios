@@ -17,6 +17,9 @@ pub struct Facts {
     pub items: BTreeMap<String, Item>,
     #[serde(default)]
     pub tags: Tags,
+    /// The mods' recipes NeoForge loaded: those whose `neoforge:conditions` passed.
+    #[serde(default)]
+    pub recipes: BTreeMap<String, serde::de::IgnoredAny>,
     /// The game's items' default components (`items.json`), so item ports leave out what their template has.
     #[serde(skip)]
     pub vanilla_items: BTreeMap<String, Value>,
@@ -63,6 +66,9 @@ pub struct State {
     pub sound: Value,
     pub outline: Value,
     pub collision: Value,
+    /// `BlockBehaviour.canOcclude` (`noOcclusion` clears it); absent in older facts.
+    #[serde(default)]
+    pub can_occlude: Option<bool>,
     /// What breaking the state drops, per tool (`hand`, `diamond_pickaxe`,
     /// `shears`, `silk_touch_pickaxe`...): item id → count.
     #[serde(default)]
@@ -169,6 +175,47 @@ fn item_template(item: &Item) -> &'static str {
         (Some("ArmorItem"), Some("feet")) => "minecraft:iron_boots",
         _ => "minecraft:stick",
     }
+}
+
+/// 1.21.1's `minecraft:food` as 26.3's components: `food` keeps the numbers, `consumable` the eating
+/// time and effects (one `apply_effects` per 1.21.1 effect, each with its own chance), `use_remainder`
+/// what eating leaves. Effects of a mod's own are left out (said in `differences`): the game would
+/// refuse the item for an effect it doesn't know.
+fn food_26_3(f: &Value, differences: &mut Vec<String>) -> Map<String, Value> {
+    let mut food = json!({"nutrition": f["nutrition"], "saturation": f["saturation"]});
+    if f["can_always_eat"].as_bool() == Some(true) {
+        food["can_always_eat"] = json!(true);
+    }
+    let mut consumable = json!({});
+    // 1.6 s is both versions' default.
+    if let Some(s) = f["eat_seconds"].as_f64().filter(|s| (s - 1.6).abs() > 1e-6) {
+        consumable["consume_seconds"] = json!(s);
+    }
+    let mut effects = Vec::new();
+    for e in f["effects"].as_array().into_iter().flatten() {
+        let mut effect = e["effect"].clone();
+        let id = effect["id"].as_str().unwrap_or("");
+        if !id.starts_with("minecraft:") {
+            differences.push(format!("eating gives {id}, an effect of its own"));
+            continue;
+        }
+        effect.as_object_mut().map(|o| o.remove("neoforge:cures"));
+        let mut entry = json!({"type": "minecraft:apply_effects", "effects": [effect]});
+        if let Some(p) = e["probability"].as_f64().filter(|p| *p < 1.0) {
+            entry["probability"] = json!(p);
+        }
+        effects.push(entry);
+    }
+    if !effects.is_empty() {
+        consumable["on_consume_effects"] = Value::Array(effects);
+    }
+    let mut out = Map::new();
+    out.insert("minecraft:food".into(), food);
+    out.insert("minecraft:consumable".into(), consumable);
+    if let Some(r) = f.get("using_converts_to") {
+        out.insert("minecraft:use_remainder".into(), r.clone());
+    }
+    out
 }
 
 /// 1.21.1's `{"modifiers": [...]}` as 26.3's list, with attribute ids' `generic.` and `player.` dropped.
@@ -385,7 +432,16 @@ impl Facts {
             properties.insert("light".into(), json!(s.emission));
             properties.insert("requires_tool".into(), json!(s.requires_tool));
             properties.insert("friction".into(), json!(block.friction));
-            properties.insert("map_color".into(), json!(s.map_color_id));
+            // 26.3's MapColor ids end at 61; the game refuses the whole mod for one past them.
+            if s.map_color_id <= 61 {
+                properties.insert("map_color".into(), json!(s.map_color_id));
+            } else {
+                differences.push(format!("map colour {} (not vanilla's)", s.map_color_id));
+            }
+            // `noOcclusion` (a block its block entity draws): neighbours' faces stay drawn.
+            if s.can_occlude == Some(false) && theirs.is_none_or(|t| t.can_occlude != Some(false)) {
+                properties.insert("occludes".into(), json!(false));
+            }
             if theirs.is_none_or(|t| t.sound != s.sound) {
                 match self.sound_block(&s.sound, allowed) {
                     Some(b) => {
@@ -451,23 +507,24 @@ impl Facts {
     /// and what it does not reproduce.
     pub fn item(&self, id: &str, owned: &[&str]) -> Result<(Value, Vec<String>), String> {
         let item = self.items.get(id).ok_or("not in the oracle")?;
-        if item.block.is_some() {
-            return Err("a block item without a block".into());
-        }
         let mut differences = Vec::new();
         if !item.class.starts_with(VANILLA_PACKAGE) {
             differences.push(format!("class {} (behaviour beyond Item)", item.class));
         }
-        if item.food.is_some() {
-            return Err("food (no food template yet)".into());
-        }
         let template = item_template(item);
         let mut decl = json!({"template": template});
+        // A block item whose block has another name (seeds): its `BlockItem.getBlock`.
+        if let Some(block) = &item.block {
+            decl["place_block"] = json!(block);
+        }
         if item.max_stack_size != 64 {
             decl["max_stack_size"] = json!(item.max_stack_size);
         }
-        if item.rarity != "common" {
-            decl["rarity"] = json!(item.rarity);
+        match item.rarity.as_str() {
+            "common" => {}
+            "uncommon" | "rare" | "epic" => decl["rarity"] = json!(item.rarity),
+            // NeoForge lets mods add rarities; the game refuses the whole mod for one.
+            other => differences.push(format!("rarity {other} (not vanilla's)")),
         }
         if let Some(armor) = item.armor.as_ref().filter(|a| !a.material.is_empty())
             && !self.armor_asset_exists(armor, owned)
@@ -477,7 +534,10 @@ impl Facts {
                 armor.material
             ));
         }
-        let components = self.item_components(item, template, owned);
+        let mut components = self.item_components(item, template, owned);
+        if let Some(food) = item.components.get("minecraft:food").or(item.food.as_ref()) {
+            components.extend(food_26_3(food, &mut differences));
+        }
         if !components.is_empty() {
             decl["components"] = Value::Object(components);
         }
@@ -707,6 +767,115 @@ mod tests {
         assert_eq!(door(&me), Some(SelfDrop::Always));
         // Something else from the upper half: not a door table.
         assert_eq!(door(&json!({"hand": {"m:other": 1}})), None);
+    }
+
+    /// `noOcclusion` on a full-cube block (a cannon its block entity draws): the oracle's
+    /// `can_occlude: false` carries, so the neighbours' faces behind it are drawn.
+    #[test]
+    fn a_block_that_cannot_occlude_hides_no_neighbour_faces() {
+        let cube = json!([[0, 0, 0, 1, 1, 1]]);
+        let plain = ["net.minecraft.world.level.block.Block"];
+        let mut open = state(5.0, "anvil", cube.clone());
+        open["can_occlude"] = json!(false);
+        let mut solid = state(5.0, "metal", cube.clone());
+        solid["can_occlude"] = json!(true);
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:iron_block": block(&plain, json!({}), json!({"": solid.clone()})),
+                "m:cannon": block(&["m.Cannon", plain[0]], json!({}), json!({"": open})),
+                "m:plate": block(&["m.Plate", plain[0]], json!({}), json!({"": solid})),
+            },
+            "items": {}
+        }))
+        .unwrap();
+        let cannon = facts.template("m:cannon", &|_| true).unwrap();
+        assert_eq!(cannon.template, "minecraft:iron_block");
+        assert_eq!(cannon.properties.get("occludes"), Some(&json!(false)));
+        let plate = facts.template("m:plate", &|_| true).unwrap();
+        assert_eq!(plate.properties.get("occludes"), None);
+    }
+
+    /// A rarity or map colour a mod adds past vanilla's would make the game refuse the whole mod:
+    /// the template's stands in, and the report says so.
+    #[test]
+    fn values_past_vanillas_keep_the_templates() {
+        let cube = json!([[0, 0, 0, 1, 1, 1]]);
+        let plain = ["net.minecraft.world.level.block.Block"];
+        let mut gas = state(0.0, "stone", cube.clone());
+        gas["map_color_id"] = json!(63);
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:stone": block(&plain, json!({}), json!({"": state(1.5, "stone", cube)})),
+                "m:gas": block(&["m.Gas", plain[0]], json!({}), json!({"": gas})),
+            },
+            "items": {"m:relic": {"class": "net.minecraft.world.item.Item", "max_stack_size": 1,
+                "rarity": "m:masterwork"}}
+        }))
+        .unwrap();
+        let gas = facts.template("m:gas", &|_| true).unwrap();
+        assert!(!gas.properties.contains_key("map_color"));
+        assert!(
+            gas.differences.iter().any(|d| d.contains("map colour 63")),
+            "{:?}",
+            gas.differences
+        );
+        let (relic, differences) = facts.item("m:relic", &[]).unwrap();
+        assert_eq!(relic.get("rarity"), None);
+        assert!(
+            differences.iter().any(|d| d.contains("m:masterwork")),
+            "{differences:?}"
+        );
+    }
+
+    /// 1.21.1's `minecraft:food` held what 26.3 splits into `food`, `consumable` and `use_remainder`
+    /// (as 26.3's golden apple and mushroom stew have them).
+    #[test]
+    fn food_becomes_26_3s_food_and_consumable() {
+        let food = |f: Value| {
+            json!({"class": "net.minecraft.world.item.Item", "max_stack_size": 16,
+            "rarity": "common", "food": {"nutrition": f["nutrition"], "saturation": f["saturation"]},
+            "components": {"minecraft:food": f}})
+        };
+        let facts: Facts = serde_json::from_value(json!({"blocks": {}, "items": {
+            "m:bread": food(json!({"nutrition": 2, "saturation": 1.6})),
+            "m:stew": food(json!({"nutrition": 6, "saturation": 7.2, "can_always_eat": true, "eat_seconds": 0.8,
+                "using_converts_to": {"id": "minecraft:bowl", "count": 1},
+                "effects": [
+                    {"effect": {"id": "minecraft:hunger", "duration": 600, "show_icon": true,
+                        "neoforge:cures": ["milk"]}, "probability": 0.3},
+                    {"effect": {"id": "minecraft:regeneration", "amplifier": 1, "duration": 100}, "probability": 1.0},
+                    {"effect": {"id": "m:cozy", "duration": 100}, "probability": 1.0}]})),
+        }}))
+        .unwrap();
+        let (bread, _) = facts.item("m:bread", &[]).unwrap();
+        assert_eq!(
+            bread["components"]["minecraft:food"],
+            json!({"nutrition": 2, "saturation": 1.6})
+        );
+        assert_eq!(bread["components"]["minecraft:consumable"], json!({}));
+        assert_eq!(bread["components"].get("minecraft:use_remainder"), None);
+        let (stew, differences) = facts.item("m:stew", &[]).unwrap();
+        let c = &stew["components"];
+        assert_eq!(
+            c["minecraft:food"],
+            json!({"nutrition": 6, "saturation": 7.2, "can_always_eat": true})
+        );
+        assert_eq!(
+            c["minecraft:consumable"],
+            json!({"consume_seconds": 0.8, "on_consume_effects": [
+                {"type": "minecraft:apply_effects", "probability": 0.3,
+                    "effects": [{"id": "minecraft:hunger", "duration": 600, "show_icon": true}]},
+                {"type": "minecraft:apply_effects",
+                    "effects": [{"id": "minecraft:regeneration", "amplifier": 1, "duration": 100}]}]})
+        );
+        assert_eq!(
+            c["minecraft:use_remainder"],
+            json!({"id": "minecraft:bowl", "count": 1})
+        );
+        assert!(
+            differences.iter().any(|d| d.contains("m:cozy")),
+            "{differences:?}"
+        );
     }
 
     #[test]

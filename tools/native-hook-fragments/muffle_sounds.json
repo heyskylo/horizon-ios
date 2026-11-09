@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "muffle_sounds",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_muffle_sounds"
+    }
+  ],
+  "rust_summary": "a muffle of the game's sounds that fades back (`native_muffle_sounds`), as ears ringing after a blast hear them.",
+  "doc_summary": "`native_muffle_sounds(amount, lowpass, ticks, exempt)` (`host.muffle_sounds`) turns every sound down and low-passes it, fading back over `ticks` client ticks, except the sound events in `exempt`. Bundles need \"hooks\": @API:muffle_sounds@."
+}

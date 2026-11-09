@@ -21,7 +21,7 @@ ServerChunkCache.hasChunk	port	crates/horizon-client-render/src/world.rs::World:
 ServerChunkCache.getChunkForLighting	inline	crates/horizon-client-render/src/streaming.rs::Streaming::light_region	the 3x3 region handed to the light workers
 ServerChunkCache.runDistanceManagerUpdates	inline	crates/horizon-client/src/game.rs::Game::update_chunk_tickets	ticket levels are recomputed once a tick from players and forced chunks
 ServerChunkCache.isPositionTicking	port	crates/horizon-client/src/game.rs::GameLevel::is_ticking_chunk	block-ticking ticket level and a lit chunk with its neighbours loaded
-ServerChunkCache.close	inline	crates/horizon-client/src/game.rs::Game::save_game	save with wait; nothing else to close
+ServerChunkCache.close	inline	crates/horizon-client/src/game/autosave.rs::Game::save_game	save with wait; nothing else to close
 ServerChunkCache.broadcastChangedChunks	port	crates/horizon-client/src/lan/hub.rs::Hub::broadcast_block_changes	block changes grouped by section as BlockUpdate or SectionBlocksUpdate, plus block entity data; light is in broadcast_light_changes
 ServerChunkCache.getFullChunk	inline	crates/horizon-client/src/game/natural_spawning.rs::Game::spawn_natural	the spawn pass reads World::chunks directly
 ServerChunkCache.blockChanged	inline	crates/horizon-client-render/src/world.rs::World::set	World::set pushes the position onto block_log, which the hub drains
@@ -51,7 +51,7 @@ ServerLevel.tickPassenger	inline	crates/horizon-client/src/game/passengers.rs::G
 ServerLevel.updateNeighboursOnBlockSet	inline	crates/horizon-world/src/level/update.rs::Sim::set_block_limit	neighbour and comparator updates inside setBlock
 ServerLevel.mayInteract	inline	crates/horizon-client/src/game/lan_actions.rs::Game::under_spawn_protection	gap: minor: spawn protection only for guests on a dedicated server; the world border check is a stub that always allows (hand.rs within_border), so blocks can be built and broken outside the border
 ServerLevel.save	port	crates/horizon-client/src/game.rs::Game::save_level	
-ServerLevel.saveLevelData	port	crates/horizon-client/src/game.rs::Game::save_game_metadata	
+ServerLevel.saveLevelData	port	crates/horizon-client/src/game/autosave.rs::Game::save_game_metadata	
 ServerLevel.getEntities	inline	crates/horizon-client/src/game/commands.rs::Game::select_in_level	entity selectors filter the per-kind entity lists
 ServerLevel.addDuringTeleport	inline	crates/horizon-client/src/game/nether_portal.rs::Game::resolve_arrivals	mobs, items, boats and carts waiting for a portal exit join the level with the chunk entities; players go through Hub::respawn
 ServerLevel.addPlayer	inline	crates/horizon-client/src/lan/hub.rs::Hub::place_new_player	

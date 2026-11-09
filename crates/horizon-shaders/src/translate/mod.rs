@@ -175,7 +175,25 @@ pub struct GbuffersInputs {
     /// `gl_FragDepth`, while `gl_FragCoord.z` stays the geometry's own: the sky shows only where
     /// nothing else drew, and reads its own depth as in Iris 1.11.7.
     pub far_depth: bool,
+    /// `normals` and `specular` are bound as paged maps of the atlas `texture` reads
+    /// (`horizon-client-render`'s `paged_maps.rs`), not as images of its layout: the program's
+    /// texture calls on them read through `hz_pagedTexture`.
+    pub paged_maps: bool,
+    /// Translucent terrain: a fragment behind the boats' water patches (`horizonWaterMask`, the
+    /// patches' depth, 1 where there are none) is discarded, so no water shows inside a hull
+    /// (`RenderTypes.waterMask`), while the frame's depth stays the pack's own.
+    pub water_mask: bool,
+    /// The shadow pass's translucent terrain: a fragment inside a boat's water patch
+    /// (`horizonWaterPatch*`, camera-relative boxes) is discarded, so no water casts its light
+    /// into a hull. Not with a geometry stage.
+    pub water_patches: bool,
 }
+
+/// The sampler of the boats' water patches' depth (`GbuffersInputs::water_mask`).
+pub const WATER_MASK: &str = "horizonWaterMask";
+
+/// How many boats' water patches the shadow pass keeps water out of (`GbuffersInputs::water_patches`).
+pub const WATER_PATCHES: usize = 16;
 
 /// A fragment stays when its output 0's alpha compares to `reference` as `op` says (a GLSL
 /// comparison operator, `true` for GL's `ALWAYS`, `false` for `NEVER`).
@@ -250,6 +268,20 @@ const GBUFFERS_MATRICES: &str = "    hz_ModelViewMatrix = gbufferModelView;\n   
      mat4 hz_light = mat4(vec4(1.0 / 256.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0 / 256.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(1.0 / 32.0, 1.0 / 32.0, 0.0, 1.0));\n    \
      hz_TextureMatrix = mat4[8](mat4(1.0), hz_light, hz_light, mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0), mat4(1.0));\n";
 
+/// `pp` with `declaration` after its leading directives (`#version`, `#extension`...).
+fn with_declaration(pp: &Preprocessed, declaration: &str) -> Preprocessed {
+    let mut at = 0;
+    for line in pp.code.split_inclusive('\n') {
+        let t = line.trim_start();
+        if !(t.is_empty() || t.starts_with('#')) {
+            break;
+        }
+        at += line.len();
+    }
+    let code = format!("{}{declaration}\n{}", &pp.code[..at], &pp.code[at..]);
+    Preprocessed { code, ..pp.clone() }
+}
+
 /// Whether `code` names `name` (a whole identifier).
 fn uses_name(code: &str, name: &str) -> bool {
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
@@ -291,10 +323,40 @@ fn translate(
     );
     let vertex = vertex_bools.as_ref().unwrap_or(vertex);
     let fragment = fragment_bools.as_ref().unwrap_or(fragment);
+    // The boats' water patches' depth, read by our `main` (`GbuffersInputs::water_mask`).
+    let masked = gbuffers
+        .filter(|g| g.water_mask)
+        .map(|_| with_declaration(fragment, &format!("uniform sampler2D {WATER_MASK};")));
+    let fragment = masked.as_ref().unwrap_or(fragment);
+    // The boats' water patches (`GbuffersInputs::water_patches`): the vertex's camera-relative
+    // place to the fragment, and the patches' boxes.
+    let patches = gbuffers.is_some_and(|g| g.water_patches);
+    let varying = |pp: &Preprocessed, dir: &str| {
+        let old = pp.version.as_ref().is_none_or(|(v, _)| *v < 130);
+        format!(
+            "{} vec3 horizonPatchPos;",
+            if old { "varying" } else { dir }
+        )
+    };
+    let patch_vertex = patches.then(|| with_declaration(vertex, &varying(vertex, "out")));
+    let vertex = patch_vertex.as_ref().unwrap_or(vertex);
+    let patch_fragment = patches.then(|| {
+        let uniforms: String = std::iter::once("uniform int horizonWaterPatchCount;".to_owned())
+            .chain((0..2 * WATER_PATCHES).map(|k| format!("uniform vec4 horizonWaterPatch{k};")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        with_declaration(
+            fragment,
+            &format!("{}\n{uniforms}", varying(fragment, "in")),
+        )
+    });
+    let fragment = patch_fragment.as_ref().unwrap_or(fragment);
     let mut v = Stage::scan(vertex, ShaderStage::Vertex);
     let mut f = Stage::scan(fragment, ShaderStage::Fragment);
     v.gbuffers = gbuffers.is_some();
     f.gbuffers = gbuffers.is_some();
+    v.paged_maps = gbuffers.is_some_and(|g| g.paged_maps);
+    f.paged_maps = v.paged_maps;
     let mut errors: Vec<Error> = v
         .errors
         .drain(..)
@@ -536,6 +598,9 @@ fn translate(
         writeln!(vertex_main, "    {name} = hz_init_{name}();").unwrap();
     }
     vertex_main.push_str("    hz_main();\n");
+    if patches {
+        vertex_main.push_str("    horizonPatchPos = hz_Vertex.xyz;\n");
+    }
     // A struct's own declaration is the pack's: only a stage that declares it copies it.
     let declared = |list: &[scan::Var], name: &str, global: &str| {
         !global.is_empty() || list.iter().any(|var| var.name == name)
@@ -578,6 +643,42 @@ fn translate(
     }
     if gbuffers.is_some_and(|g| g.far_depth) {
         fragment_main.push_str("    gl_FragDepth = 1.0;\n");
+    }
+    // Inside a boat's water patch (`GbuffersInputs::water_patches`): each box is a corner and
+    // its y range, then its two horizontal edges; water there, a little below and above (waves),
+    // casts nothing.
+    if patches {
+        let boxes: Vec<String> = (0..2 * WATER_PATCHES)
+            .map(|k| format!("horizonWaterPatch{k}"))
+            .collect();
+        writeln!(
+            fragment_main,
+            "    vec4 hz_patches[{}] = vec4[{}]({});\n    \
+             for (int hz_i = 0; hz_i < {WATER_PATCHES}; hz_i++) {{\n        \
+             if (hz_i >= horizonWaterPatchCount) {{ break; }}\n        \
+             vec4 hz_a = hz_patches[2 * hz_i];\n        vec4 hz_b = hz_patches[2 * hz_i + 1];\n        \
+             vec2 hz_d = horizonPatchPos.xz - hz_a.xy;\n        \
+             float hz_s = dot(hz_d, hz_b.xy) / max(dot(hz_b.xy, hz_b.xy), 1e-6);\n        \
+             float hz_t = dot(hz_d, hz_b.zw) / max(dot(hz_b.zw, hz_b.zw), 1e-6);\n        \
+             if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n            \
+             && horizonPatchPos.y >= hz_a.z - 0.5 && horizonPatchPos.y <= hz_a.w + 0.25) {{ discard; }}\n    \
+             }}",
+            2 * WATER_PATCHES,
+            2 * WATER_PATCHES,
+            boxes.join(", ")
+        )
+        .unwrap();
+    }
+    // Behind a boat's water patch, within 3% of its distance (the water's surface lies at the
+    // patch, and packs wave it): no water there. Depth 1 is no patch.
+    if gbuffers.is_some_and(|g| g.water_mask) {
+        writeln!(
+            fragment_main,
+            "    float hz_mask = texelFetch(sampler2D({WATER_MASK}, hz_s_{WATER_MASK}), ivec2(gl_FragCoord.xy), 0).r;\n    \
+             if (textureSize(sampler2D({WATER_MASK}, hz_s_{WATER_MASK}), 0).x > 1 && hz_mask < 1.0\n        \
+             && gl_FragCoord.z > hz_mask - 0.03 * (1.0 - hz_mask)) {{ discard; }}"
+        )
+        .unwrap();
     }
     fragment_main.push_str("    hz_main();\n");
     for copy in &f.out_copies {
@@ -770,7 +871,42 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         })
         .collect();
     let mut images = bind_images([&c, &c], samplers.len());
+    // `workGroups` is an ivec3, `workGroupsRender` a vec2 (a third number, the depth of a 2D
+    // render, is taken as 1); anything else is not understood rather than guessed.
+    let mut sizes = |name: &str, counts: &[usize]| {
+        let v = constant(&c, name)?;
+        if !counts.contains(&v.len()) {
+            errors.push(Error {
+                file: compute.files.first().cloned().unwrap_or_default(),
+                line: 0,
+                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
+            });
+            return None;
+        }
+        Some(v)
+    };
+    let mut work_groups =
+        sizes("workGroups", &[3]).map(|v| [v[0] as u32, v[1] as u32, v[2] as u32]);
+    let work_groups_render =
+        sizes("workGroupsRender", &[2, 3]).map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
     let code = c.rewrite(&samplers, &uniforms);
+    let mut folded = None;
+    let code = match work_groups.map(|g| fold_work_groups(&code, g)) {
+        Some(Ok(Some((code, fold)))) => {
+            work_groups = Some(fold.dispatch);
+            folded = Some(fold);
+            code
+        }
+        Some(Err(message)) => {
+            errors.push(Error {
+                file: compute.files.first().cloned().unwrap_or_default(),
+                line: 0,
+                message,
+            });
+            code
+        }
+        _ => code,
+    };
     let code = work_group_size(&code).unwrap_or_else(|message| {
         errors.push(Error {
             file: compute.files.first().cloned().unwrap_or_default(),
@@ -800,6 +936,9 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         images.push(copy);
     }
     let mut main = String::from("\nvoid main() {\n");
+    if let Some(fold) = &folded {
+        main.push_str(&fold.unfold());
+    }
     main.push_str(
         "    hz_Fog = hz_FogParameters(hz_fog_color, hz_fog.x, hz_fog.y, hz_fog.z, hz_fog.w);\n",
     );
@@ -807,25 +946,11 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         writeln!(main, "    {name} = hz_init_{name}();").unwrap();
     }
     main.push_str("    hz_main();\n}\n");
-    let header = resources(&uniforms, &samplers, &images) + &c.prelude();
+    let mut header = resources(&uniforms, &samplers, &images) + &c.prelude();
+    if folded.is_some() {
+        header.push_str("uvec3 hz_WorkGroupID;\n");
+    }
     let text = format!("{header}{code}{main}");
-    // `workGroups` is an ivec3, `workGroupsRender` a vec2 (a third number, the depth of a 2D
-    // render, is taken as 1); anything else is not understood rather than guessed.
-    let mut sizes = |name: &str, counts: &[usize]| {
-        let v = constant(&c, name)?;
-        if !counts.contains(&v.len()) {
-            errors.push(Error {
-                file: compute.files.first().cloned().unwrap_or_default(),
-                line: 0,
-                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
-            });
-            return None;
-        }
-        Some(v)
-    };
-    let work_groups = sizes("workGroups", &[3]).map(|v| [v[0] as u32, v[1] as u32, v[2] as u32]);
-    let work_groups_render =
-        sizes("workGroupsRender", &[2, 3]).map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -867,6 +992,83 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         work_groups,
         work_groups_render,
     })
+}
+
+/// The most work groups wgpu dispatches along one dimension (WebGPU's
+/// `maxComputeWorkgroupsPerDimension`, which wgpu's Metal backend reports too).
+pub const MAX_WORK_GROUPS_PER_DIMENSION: u32 = 65_535;
+
+/// A `workGroups` over [`MAX_WORK_GROUPS_PER_DIMENSION`] in some dimension, run as the same
+/// number of groups in the shape `dispatch`.
+#[derive(Debug, PartialEq)]
+struct Fold {
+    groups: [u32; 3],
+    dispatch: [u32; 3],
+}
+
+impl Fold {
+    /// The start of `main`: the group's place in `groups`, from its linear index in `dispatch`.
+    fn unfold(&self) -> String {
+        let ([x, y, _], [a, b, _]) = (self.groups, self.dispatch);
+        format!(
+            "    uint hz_group = gl_WorkGroupID.x + {a}u * (gl_WorkGroupID.y + {b}u * gl_WorkGroupID.z);\n    \
+             hz_WorkGroupID = uvec3(hz_group % {x}u, hz_group / {x}u % {y}u, hz_group / {}u);\n",
+            x * y
+        )
+    }
+}
+
+/// `code` for a dispatch of `groups` laid out as a [`Fold`] when a dimension is over the limit:
+/// `gl_WorkGroupID`, `gl_GlobalInvocationID` and `gl_NumWorkGroups` read what they would in
+/// `groups`. The shape uses every group exactly, so no group returns early before a `barrier()`.
+fn fold_work_groups(code: &str, groups: [u32; 3]) -> Result<Option<(String, Fold)>, String> {
+    if groups.iter().all(|&n| n <= MAX_WORK_GROUPS_PER_DIMENSION) {
+        return Ok(None);
+    }
+    let too_many = || {
+        format!(
+            "`workGroups` {groups:?} can't be dispatched: no shape of at most \
+                 {MAX_WORK_GROUPS_PER_DIMENSION} per dimension holds them"
+        )
+    };
+    let total = groups
+        .iter()
+        .try_fold(1u32, |t, &n| t.checked_mul(n))
+        .ok_or_else(too_many)?;
+    let divisor = |n: u32| {
+        (1..=n.min(MAX_WORK_GROUPS_PER_DIMENSION))
+            .rev()
+            .find(|d| n.is_multiple_of(*d))
+            .unwrap_or(1)
+    };
+    let a = divisor(total);
+    let b = divisor(total / a);
+    let c = total / a / b;
+    if c > MAX_WORK_GROUPS_PER_DIMENSION {
+        return Err(too_many());
+    }
+    let [x, y, z] = groups;
+    let mut tokens: Vec<String> = crate::macros::lex(code)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    for t in &mut tokens {
+        match t.as_str() {
+            "gl_WorkGroupID" => *t = "hz_WorkGroupID".to_owned(),
+            "gl_GlobalInvocationID" => {
+                *t = "(hz_WorkGroupID * gl_WorkGroupSize + gl_LocalInvocationID)".to_owned()
+            }
+            "gl_NumWorkGroups" => *t = format!("uvec3({x}u, {y}u, {z}u)"),
+            _ => {}
+        }
+    }
+    Ok(Some((
+        tokens.concat(),
+        Fold {
+            groups,
+            dispatch: [a, b, c],
+        },
+    )))
 }
 
 /// `code` with `gl_WorkGroupSize` written as the constant its `layout(local_size_*)` declares:
@@ -2365,6 +2567,123 @@ in VertexData {{ {member} }} vIn;
                 &inputs,
             )
             .unwrap_or_else(|e| panic!("{fsh}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn paged_maps_read_through_their_page_table() {
+        let vsh = "#version 120\nvarying vec2 uv;\nvoid main() { gl_Position = ftransform(); uv = gl_MultiTexCoord0.st; }\n";
+        // A read with a bias, at a level, with gradients; a local named like a map is not one.
+        let fsh = "#version 120\nuniform sampler2D normals;\nuniform sampler2D specular;\nvarying vec2 uv;\n\
+                   float f() { float normals = 0.5; return normals; }\n\
+                   void main() { gl_FragData[0] = texture2D(normals, uv, -1.0) + texture2DLod(specular, uv, 0.0)\n\
+                   + textureGrad(normals, uv, dFdx(uv), dFdy(uv)) + vec4(f()); }\n";
+        let files = [
+            ("shaders/gbuffers_entities.vsh", vsh),
+            ("shaders/gbuffers_entities.fsh", fsh),
+        ];
+        let pack = Pack::from_zip_bytes("P.zip", zip(&files)).unwrap();
+        let m = Macros::standard();
+        for paged_maps in [false, true] {
+            let inputs = GbuffersInputs {
+                body: "    hz_Vertex = vec4(0.0, 0.0, 0.0, 1.0);\n".into(),
+                paged_maps,
+                ..Default::default()
+            };
+            let p = translate_gbuffers(
+                &preprocess(&pack, "gbuffers_entities.vsh", &m),
+                &preprocess(&pack, "gbuffers_entities.fsh", &m),
+                Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+            // Calls of the functions named `name`, in every function's body.
+            let calls = |name: &str| {
+                let bodies: Vec<String> = (p.fragment.functions.iter().map(|(_, f)| &f.body))
+                    .chain([&p.fragment.entry_points[0].function.body])
+                    .map(|body| format!("{body:?}"))
+                    .collect();
+                (p.fragment.functions.iter())
+                    .filter(|(_, f)| f.name.as_deref() == Some(name))
+                    .map(|(h, _)| {
+                        let call = format!("function: {h:?}");
+                        bodies
+                            .iter()
+                            .map(|b| b.matches(&call).count())
+                            .sum::<usize>()
+                    })
+                    .sum::<usize>()
+            };
+            // The three reads of the maps, and each of the three overloads reading.
+            let n = if paged_maps { 3 } else { 0 };
+            assert_eq!((calls("hz_pagedTexture"), calls("hz_pagedRead")), (n, n));
+        }
+    }
+
+    #[test]
+    fn shadow_water_inside_a_boats_patch_is_discarded() {
+        let vsh = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
+        let fsh = "#version 120\nvoid main() { gl_FragData[0] = vec4(0.2, 0.4, 0.8, 0.5); }\n";
+        let files = [("shaders/shadow.vsh", vsh), ("shaders/shadow.fsh", fsh)];
+        let pack = Pack::from_zip_bytes("P.zip", zip(&files)).unwrap();
+        let m = Macros::standard();
+        for water_patches in [false, true] {
+            let inputs = GbuffersInputs {
+                body: "    hz_Vertex = vec4(0.0, 0.0, 0.0, 1.0);\n".into(),
+                water_patches,
+                ..Default::default()
+            };
+            let p = translate_shadow(
+                &preprocess(&pack, "shadow.vsh", &m),
+                &preprocess(&pack, "shadow.fsh", &m),
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+            let boxes = (p.interface.uniforms.iter())
+                .filter(|u| u.name.starts_with("horizonWaterPatch"))
+                .count();
+            let kills = (p.fragment.functions.iter().map(|(_, f)| f))
+                .chain([&p.fragment.entry_points[0].function])
+                .any(|f| format!("{:?}", f.body).contains("Kill"));
+            let expected = if water_patches {
+                2 * WATER_PATCHES + 1
+            } else {
+                0
+            };
+            assert_eq!((boxes, kills), (expected, water_patches));
+        }
+    }
+
+    #[test]
+    fn water_behind_a_boats_patch_is_discarded() {
+        let vsh = "#version 120\nvoid main() { gl_Position = ftransform(); }\n";
+        let fsh = "#version 120\n#extension GL_ARB_shader_texture_lod : enable\n\
+                   void main() { gl_FragData[0] = vec4(0.2, 0.4, 0.8, 0.5); }\n";
+        let files = [
+            ("shaders/gbuffers_water.vsh", vsh),
+            ("shaders/gbuffers_water.fsh", fsh),
+        ];
+        let pack = Pack::from_zip_bytes("P.zip", zip(&files)).unwrap();
+        let m = Macros::standard();
+        for water_mask in [false, true] {
+            let inputs = GbuffersInputs {
+                body: "    hz_Vertex = vec4(0.0, 0.0, 0.0, 1.0);\n".into(),
+                water_mask,
+                ..Default::default()
+            };
+            let p = translate_gbuffers(
+                &preprocess(&pack, "gbuffers_water.vsh", &m),
+                &preprocess(&pack, "gbuffers_water.fsh", &m),
+                Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+            let sampler = (p.interface.samplers.iter()).any(|s| s.name == WATER_MASK);
+            let kills = (p.fragment.functions.iter().map(|(_, f)| f))
+                .chain([&p.fragment.entry_points[0].function])
+                .any(|f| format!("{:?}", f.body).contains("Kill"));
+            // The pack's own program discards nothing: only our check does.
+            assert_eq!((sampler, kills), (water_mask, water_mask));
         }
     }
 

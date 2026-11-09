@@ -128,7 +128,7 @@ ProblemReporter.Collector.getReport	skip:other		log text for load problems; Hori
 ProblemReporter.Collector.getTreeReport	skip:other		log text for load problems; Horizon's loaders report errors through their own results
 ProblemReporter.Collector.ProblemTreeNode.getLines	skip:other		log text for load problems; Horizon's loaders report errors through their own results
 ProblemReporter.ScopedCollector.close	skip:other		log text for load problems; Horizon's loaders report errors through their own results
-RandomSource.createThreadLocalInstance	port	crates/horizon-client/src/game/dispenser.rs::entity_random	gap: minor: seeds from a uniquifier and the clock, not ThreadLocalRandom
+RandomSource.createThreadLocalInstance	port	crates/horizon-client-render/src/random_source.rs::entity	gap: minor: seeds from a uniquifier and the clock, not ThreadLocalRandom
 SegmentedAnglePrecision.isSameAxis	skip:other		minor: no caller in 26.3 (dead helper)
 SegmentedAnglePrecision.fromDirection	port	crates/horizon-world/src/level/place.rs::rotation_segment_of	
 SegmentedAnglePrecision.toDegrees	inline	crates/horizon-client-render/src/block_entity_render.rs::classify	the segment-to-angle step (segment * 22.5); minor: no wrap to -180..180, same rotation

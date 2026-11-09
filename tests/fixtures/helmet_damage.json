@@ -1,0 +1,17 @@
+[
+  {"head":null,"head_damage":0,"boots_damage":null,"unbreaking":0,"seed":42,"source":"falling_anvil","expected_head":-1,"expected_health":12.0},
+  {"head":"iron_helmet","head_damage":0,"boots_damage":null,"unbreaking":0,"seed":42,"source":"falling_anvil","expected_head":3,"expected_health":14.096},
+  {"head":"iron_helmet","head_damage":162,"boots_damage":null,"unbreaking":0,"seed":42,"source":"falling_anvil","expected_head":-1,"expected_health":14.0},
+  {"head":"iron_helmet","head_damage":163,"boots_damage":null,"unbreaking":0,"seed":42,"source":"falling_anvil","expected_head":-1,"expected_health":14.0},
+  {"head":"iron_helmet","head_damage":164,"boots_damage":194,"unbreaking":0,"seed":42,"source":"falling_anvil","expected_head":-1,"expected_health":14.0},
+  {"head":"iron_helmet","head_damage":0,"boots_damage":0,"unbreaking":3,"seed":42,"source":"falling_anvil"},
+  {"head":"iron_helmet","head_damage":0,"boots_damage":0,"unbreaking":3,"seed":17,"source":"falling_block"},
+  {"head":"iron_helmet","head_damage":0,"boots_damage":0,"unbreaking":3,"seed":99,"source":"falling_stalactite"},
+  {"head":"iron_helmet","head_damage":0,"boots_damage":0,"unbreaking":3,"seed":42,"source":"generic"},
+  {"head":"stone","head_damage":0,"boots_damage":null,"unbreaking":0,"seed":42,"source":"falling_anvil","expected_head":0,"expected_health":14.0},
+  {"head":null,"head_damage":0,"boots_damage":194,"unbreaking":0,"seed":42,"source":"falling_anvil","expected_head":-1,"expected_health":12.0},
+  {"head":"iron_helmet","head_damage":164,"boots_damage":null,"unbreaking":0,"unbreakable":true,"seed":42,"source":"falling_anvil","expected_head":164,"expected_health":14.096},
+  {"head":"iron_helmet","head_damage":164,"boots_damage":194,"unbreaking":3,"seed":42,"source":"falling_anvil"},
+  {"head":null,"head_damage":0,"boots_damage":194,"unbreaking":0,"seed":42,"source":"mob_attack","expected_head":-1,"expected_health":12.0},
+  {"head":null,"head_damage":0,"boots_damage":192,"unbreaking":0,"seed":42,"source":"mob_attack"}
+]

@@ -122,6 +122,18 @@ def corpus(types):
                                     '2,2,2,spectator']):
             cases.append(f'{n}/player/{k} type={t} at-1=minecraft:stone sky=0 y=20 surface=80 player={player} '
                          f'seed={rng.randrange(-2**47, 2**47)} reason={rng.choice(REASONS)}')
+    # Position checks are separate from the full-chunk natural-spawn gate.
+    for mob, scenario in [('zombie', 'cave-dark'), ('cod', 'water-surface'),
+                          ('strider', 'lava-nether'), ('ghast', 'nether-dark')]:
+        for center in (0, 0.25, -0.25):
+            for x, z in [(-2, 0), (-1, 0), (0, 0), (1, 0), (2, 0), (0, -1), (0, 1)]:
+                s = SCENARIOS[scenario]
+                kv = {k: v for k, v in s.items() if k != 'b'}
+                kv.update(type='minecraft:' + mob, x=x, z=z, borderx=center,
+                          borderz=center, bordersize=2, seed=1, reason='natural')
+                for key, block in s['b'].items():
+                    kv['at' + ('-' if key[0] == 'm' else '') + key[1:]] = block
+                cases.append(f'{mob}/border/{center}/{x}/{z} ' + ' '.join(f'{a}={b}' for a, b in kv.items()))
     return cases
 
 

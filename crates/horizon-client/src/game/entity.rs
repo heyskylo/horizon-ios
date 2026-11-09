@@ -194,14 +194,15 @@ pub(super) trait Entity: EntityRules {
             return (0.0, 0.0);
         }
         let (bounds, at, eye) = (self.bounds(), self.position(), self.fluid_eye_y());
-        horizon_client::entities::update_entity_fluids(
+        let (water, lava, _) = horizon_client::entities::update_entity_fluids(
             bounds,
             at,
             eye,
             self.velocity_mut(),
             world,
             fluids,
-        )
+        );
+        (water, lava)
     }
     /// `BubbleColumnBlock.entityInside` through `applyEffectsFromBlocks`: a
     /// column lifts or drags every kind alike.
@@ -271,6 +272,13 @@ pub(super) trait Entity: EntityRules {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    /// `setOnGroundWithMovement` at the end of a piston's or shulker lid's
+    /// `Entity.move`, for the kinds that keep the flag: on a server it runs
+    /// for every push, sideways ones and those the collision turned away included.
+    fn set_piston_on_ground(&mut self, _on_ground: bool) {}
+    /// `Entity.setOnGround` from outside the entity's own move (`/tp`'s
+    /// `TeleportCommand.performTeleport`); kinds that keep no ground flag ignore it.
+    fn set_on_ground(&mut self, _on_ground: bool) {}
     /// `PistonMovingBlockEntity.causeBounce`: a slime block sets the velocity
     /// along the movement axis.
     fn piston_slime_bounce(&mut self, movement: Direction) {
@@ -521,6 +529,7 @@ mod render_bounds_tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
+            random: horizon_core::random::LegacyRandom::new(0),
         };
         let bounds = frame.render_bounds(1.0);
         assert!(bounds.min_position().x <= -0.71875);
@@ -568,15 +577,18 @@ macro_rules! stored_motion {
 
 impl Game<'_> {
     /// Tick an item owned by the caller. The two results are ordinary survival
-    /// and explicit consumption by a block-contact handler.
+    /// and explicit consumption by a block-contact handler. `escape_speed`:
+    /// the item is inside a block and moves without physics this tick, pushed
+    /// out at this speed.
     pub(super) fn tick_item_with_block_contacts(
         &mut self,
         item: &mut ItemEntity,
-        no_physics: bool,
+        escape_speed: Option<f32>,
         entity_boxes: &[Aabb],
         client: bool,
         splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
     ) -> (bool, bool) {
+        let no_physics = escape_speed.is_some();
         let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
         // Entity.baseTick splashes before moving, except on the first tick.
         item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
@@ -585,6 +597,7 @@ impl Game<'_> {
             self.res.facts(),
             self.collision,
             no_physics,
+            escape_speed,
             heights,
             entity_boxes,
             Some(self.border.geometry()),
@@ -958,7 +971,33 @@ macro_rules! load_entity_of_any_kind {
     };
 }
 
+/// The type ids the minecart kind loads.
+fn loads_as_cart(kind: &str) -> bool {
+    super::minecarts::CartKind::from_id(kind).is_some()
+}
+/// The type id the primed TNT kind loads.
+fn loads_as_tnt(kind: &str) -> bool {
+    kind == "minecraft:tnt"
+}
+
 impl Game<'_> {
+    /// The type ids the mob kind loads.
+    fn loads_as_mob(&self, kind: &str) -> bool {
+        self.res.mob_types().contains_key(kind)
+    }
+    /// The type ids the boat kind loads.
+    fn loads_as_boat(&self, kind: &str) -> bool {
+        super::boats::any_boat_wood(kind)
+            .is_some_and(|(wood, chest)| self.boat_models.has(wood, chest))
+    }
+    /// Whether `load_listed` loads `kind` as a vehicle that takes its mob
+    /// riders (`take_mob_passengers`): a mob, boat, minecart or primed TNT.
+    pub(super) fn listed_kind_takes_riders(&self, kind: &str) -> bool {
+        self.loads_as_mob(kind)
+            || self.loads_as_boat(kind)
+            || loads_as_cart(kind)
+            || loads_as_tnt(kind)
+    }
     /// Loads a saved entity as the first kind in `entity_lists!` that claims
     /// its type id: `Err` hands the compound back when none does.
     pub(super) fn load_listed(
@@ -1004,6 +1043,9 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     /// `Entity.move(MoverType.PISTON, ...)` ends in `setPos`, which `Shulker`
     /// overrides to snap to the block centre.
     fn move_by_piston(&mut self, movement: Vec3) {
@@ -1045,7 +1087,7 @@ impl Entity for Mob {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(game.res.mob_types().contains_key(kind)) {
+        if !game.loads_as_mob(kind) {
             return Err(tag);
         }
         game.load_mob(tag, None);
@@ -1128,6 +1170,9 @@ impl Entity for Mob {
 }
 
 impl Entity for ItemEntity {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1185,12 +1230,8 @@ impl Entity for ItemEntity {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
-    fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        // Entity.move(MoverType.PISTON): onGround only if the push was down.
-        if movement.y != 0.0 {
-            self.on_ground = movement.y < 0.0;
-        }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         ItemEntity::piston_slime_bounce(self, movement);
@@ -1198,6 +1239,9 @@ impl Entity for ItemEntity {
 }
 
 impl Entity for ExperienceOrb {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1252,11 +1296,8 @@ impl Entity for ExperienceOrb {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
-    fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        if movement.y != 0.0 {
-            self.on_ground = movement.y < 0.0;
-        }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
@@ -1265,6 +1306,9 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1292,9 +1336,7 @@ impl Entity for Boat {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(super::boats::any_boat_wood(kind)
-            .is_some_and(|(wood, chest)| game.boat_models.has(wood, chest)))
-        {
+        if !game.loads_as_boat(kind) {
             return Err(tag);
         }
         game.load_boat(tag, uuid, kind);
@@ -1336,6 +1378,9 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1363,7 +1408,7 @@ impl Entity for Minecart {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(super::minecarts::CartKind::from_id(kind).is_some()) {
+        if !loads_as_cart(kind) {
             return Err(tag);
         }
         game.load_cart(tag, uuid, kind);
@@ -1415,6 +1460,9 @@ fn armor_stand_size(stand: &ArmorStand) -> (f64, f64) {
 }
 
 impl Entity for ArmorStand {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1490,6 +1538,11 @@ impl Entity for ArmorStand {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
+    /// A living entity's own flag too: keeping the old support flag would run
+    /// Frost Walker while the stand is moving over open water.
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn is_living(&self) -> bool {
         true
     }
@@ -1517,6 +1570,9 @@ impl Entity for ArmorStand {
 }
 
 impl Entity for PrimedTnt {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1546,16 +1602,17 @@ impl Entity for PrimedTnt {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(kind == "minecraft:tnt") {
+        if !loads_as_tnt(kind) {
             return Err(tag);
         }
         game.load_tnt(tag, uuid);
         Ok(())
     }
     stored_motion!();
-    /// `PrimedTnt` eye height: `0.98 * 0.85`.
+    /// `EntityTypes.TNT`'s explicit `eyeHeight(0.15F)`. Nothing vanilla reads
+    /// for TNT depends on it (only `isEyeInFluid` does), but it is the type's.
     fn fluid_eye_y(&self) -> f64 {
-        self.position.y + f64::from(0.98f32 * 0.85f32)
+        self.position.y + f64::from(0.15_f32)
     }
     /// `PrimedTnt` is 0.98 across.
     fn portal_size(&self) -> Option<(f32, f32)> {
@@ -1576,6 +1633,9 @@ impl Entity for PrimedTnt {
     }
     fn on_ground(&self) -> bool {
         self.on_ground
+    }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
@@ -1644,7 +1704,7 @@ impl Entity for Projectile {
         self.previous_pitch = self.pitch;
     }
     fn native_type(&self) -> Cow<'static, str> {
-        self.kind.id().into()
+        self.entity_type().into()
     }
     fn save_nbt(
         game: &mut Game<'_>,
@@ -1669,6 +1729,7 @@ impl Entity for Projectile {
             }
             "minecraft:fireball"
             | "minecraft:small_fireball"
+            | "minecraft:dragon_fireball"
             | "minecraft:wind_charge"
             | "minecraft:breeze_wind_charge"
             | "minecraft:wither_skull" => game.load_fireball(tag, uuid, player_uuid),
@@ -1698,7 +1759,11 @@ impl Entity for Projectile {
             || horizon_client::entity_nbt::saved_with_chunk(self)
             || matches!(
                 self.kind,
-                K::LargeFireball { .. } | K::SmallFireball | K::WindCharge | K::BreezeWindCharge
+                K::LargeFireball { .. }
+                    | K::SmallFireball
+                    | K::DragonFireball
+                    | K::WindCharge
+                    | K::BreezeWindCharge
             );
         selectable.then_some(Target::Projectile(self.id))
     }
@@ -2133,6 +2198,7 @@ mod set_rotation_tests {
             ticks: 0,
             health: 5,
             rotation: [0.0, 0.0],
+            following: None,
         };
         orb.set_rotation([90.0, 10.0]);
         assert_eq!(orb.rotation(), [90.0, 10.0]);
