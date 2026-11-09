@@ -1357,7 +1357,7 @@ impl Game<'_> {
             // Camera.getNearPlane(fov).getPointOnPlane(invert * 0.525, -0.1).
             let aspect = f64::from(size[0]) / f64::from(size[1].max(1));
             let height =
-                (f64::from(fov * (std::f64::consts::PI / 180.0) as f32) / 2.0).tan() * 0.05;
+                (f64::from(fov * (std::f32::consts::PI / 180.0) as f32) / 2.0).tan() * 0.05;
             let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
             let left = -forward.cross(glam::DVec3::Y).normalize_or_zero();
             let up = forward.cross(left).normalize_or_zero();
@@ -1440,7 +1440,8 @@ impl Game<'_> {
 /// running to that player's hand.
 pub(super) struct RemoteHook {
     id: u32,
-    owner: u32,
+    pub(super) owner: u32,
+    pub(super) owner_fishing: bool,
     pub(super) position: Vec3,
     pub(super) previous: Vec3,
     velocity: Vec3,
@@ -1448,6 +1449,34 @@ pub(super) struct RemoteHook {
     on_ground: bool,
     lerp: HookLerp,
     pub(super) random: LegacyRandom,
+}
+
+fn push_remote_hook(hooks: &mut Vec<RemoteHook>, id: u32, owner: u32, at: Vec3, velocity: Vec3) {
+    for h in hooks.iter_mut().filter(|h| h.owner == owner) {
+        h.owner_fishing = false;
+    }
+    hooks.push(RemoteHook {
+        id,
+        owner,
+        owner_fishing: true,
+        position: at,
+        previous: at,
+        velocity,
+        state: State::Flying,
+        on_ground: false,
+        lerp: HookLerp::default(),
+        random: random_source::entity(),
+    });
+}
+
+fn remove_remote_hook_from(hooks: &mut Vec<RemoteHook>, id: u32) {
+    let owner = hooks.iter().find(|h| h.id == id).map(|h| h.owner);
+    hooks.retain(|h| h.id != id);
+    if let Some(owner) = owner {
+        for h in hooks.iter_mut().filter(|h| h.owner == owner) {
+            h.owner_fishing = false;
+        }
+    }
 }
 
 /// The `onGround` of a server's update (`handleMoveEntity`), except that a
@@ -1596,17 +1625,7 @@ impl Game<'_> {
             hook.velocity = velocity;
             self.hook = Some(hook);
         } else {
-            self.remote_hooks.push(RemoteHook {
-                id,
-                owner: owner as u32,
-                position: at,
-                previous: at,
-                velocity,
-                state: State::Flying,
-                on_ground: false,
-                lerp: HookLerp::default(),
-                random: random_source::entity(),
-            });
+            push_remote_hook(&mut self.remote_hooks, id, owner as u32, at, velocity);
         }
     }
 
@@ -1912,7 +1931,7 @@ impl Game<'_> {
         if self.remote.is_some() && self.hook.as_ref().is_some_and(|h| h.id == id) {
             self.hook = None;
         }
-        self.remote_hooks.retain(|h| h.id != id);
+        remove_remote_hook_from(&mut self.remote_hooks, id);
     }
 
     pub(super) fn clear_remote_hooks(&mut self) {
@@ -2299,5 +2318,20 @@ mod tests {
             Vec3::new(10.0, 2.0, 0.0),
         );
         assert_eq!(pulled, Vec3::new(1.5, 0.2, 0.0));
+    }
+
+    #[test]
+    fn removing_one_of_two_remote_hooks_clears_owner_fishing() {
+        let mut hooks = Vec::new();
+        super::push_remote_hook(&mut hooks, 10, 7, Vec3::ZERO, Vec3::ZERO);
+        super::push_remote_hook(&mut hooks, 11, 7, Vec3::ZERO, Vec3::ZERO);
+        super::push_remote_hook(&mut hooks, 20, 12, Vec3::ZERO, Vec3::ZERO);
+        assert!(!hooks[0].owner_fishing);
+        assert!(hooks[1].owner_fishing);
+        assert!(hooks[2].owner_fishing);
+        super::remove_remote_hook_from(&mut hooks, 10);
+        assert_eq!(hooks.len(), 2);
+        assert!(!hooks.iter().any(|h| h.owner == 7 && h.owner_fishing));
+        assert!(hooks.iter().any(|h| h.owner == 12 && h.owner_fishing));
     }
 }
