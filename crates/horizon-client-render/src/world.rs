@@ -319,6 +319,12 @@ impl World {
     pub fn bottom_y(&self) -> i32 {
         self.layout().min_y()
     }
+    /// `Entity.checkBelowWorld`'s floor, `Level.getMinY() - 64`: the level's own
+    /// lowest Y (0 in the Nether and the End), not the chunks' widened column.
+    /// An entity below it is out of the world.
+    pub fn below_world_y(&self) -> f64 {
+        f64::from(self.shape.min_y - 64)
+    }
     /// One above the highest block Y the level's chunks hold.
     pub fn top_y(&self) -> i32 {
         self.layout().max_y()

@@ -862,7 +862,7 @@ impl Ticker<'_, '_, '_, '_> {
         if !self.st.first_tick && self.st.fluids.is_in_fluid(&Tags, LAVA) {
             self.st.fall_distance *= 0.5;
         }
-        if self.position().y < f64::from(self.scene.world.bottom_y() - 64) {
+        if self.position().y < self.scene.world.below_world_y() {
             self.st.removed = true;
         }
         self.st.first_tick = false;
