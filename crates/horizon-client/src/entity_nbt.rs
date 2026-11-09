@@ -1489,7 +1489,7 @@ pub fn mob_to_nbt(
         _ => {}
     }
     if m.species() == S::Frog {
-        crate::mobs::brain_nbt::write_frog(m, map);
+        crate::mobs::brain::write_frog(m, map);
     }
     // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
     if m.species() == S::Bogged {
