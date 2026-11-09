@@ -1711,7 +1711,9 @@ mod tests {
         // Fallback tab: no panic, empty id, not search.
         assert_eq!(c.tab().id, "");
         assert!(!c.tab().search);
-        let names = Names { map: HashMap::new() };
+        let names = Names {
+            map: HashMap::new(),
+        };
         assert!(c.items(&names).is_empty());
         assert!(c.tab_headers().is_empty());
         assert_eq!(c.search_tab(), None);
