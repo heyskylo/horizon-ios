@@ -3,8 +3,7 @@
 
 def piston_bounce(cmd, setup):
     ops = setup('/tick freeze', '/gamerule spawn_mobs false',
-                '/gamerule advance_time false', '/gamerule random_tick_speed 0',
-                '/forceload add 0 0')
+                '/gamerule advance_time false', '/forceload add 0 0')
     ops.append({'op': 'settle', 'required_chunks': [[0, 0]]})
     ops += setup('/tp @s 1.5 200 1.5', '/gamemode creative @s',
                  '/kill @e[type=!player]', '/fill 0 199 0 15 199 15 stone',
