@@ -13984,81 +13984,12 @@ pub(crate) fn closest_space_nudge(
     out
 }
 
-/// GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown, and only over
-/// a level. The F3 overlay stays on when the world closes, so it must not reach the panorama.
-fn debug_crosshair_drawn(
-    enabled: bool,
-    first_person: bool,
-    hide_gui: bool,
-    panorama: bool,
-) -> bool {
-    enabled && first_person && !hide_gui && !panorama
-}
+use subtitles::{Subtitles, in_game_ui, subtitles};
 
-/// GameRenderer.shouldRenderBlockOutline, and only over a level. A panorama frame (the title
-/// screen, LevelLoadingScreen's Reason.OTHER) replaces the level vanilla draws under it, so the
-/// player's target must not leave its outline there.
-fn block_outline_drawn(
-    hide_gui: bool,
-    entity_targeted: bool,
-    can_build: bool,
-    panorama: bool,
-) -> bool {
-    !hide_gui && !entity_targeted && can_build && !panorama
-}
+mod hud_render;
 
-/// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
-/// block, jigsaw and the test blocks.
-fn is_game_master_block(name: &str) -> bool {
-    horizon_client::command_block::Mode::of_block(name).is_some()
-        || matches!(
-            name,
-            "minecraft:structure_block"
-                | "minecraft:jigsaw"
-                | "minecraft:test_block"
-                | "minecraft:test_instance_block"
-        )
-}
-
-/// `Screen.isInGameUi`: the screens that keep the game behind them — the
-/// container screens (`AbstractContainerScreen`) and the block editors
-/// (`AbstractCommandBlockEditScreen`, structure block, jigsaw, test block) —
-/// plus the two Horizon draws over `Screen::Playing`: a book (`BookViewScreen`)
-/// and a sign editor (`AbstractSignEditScreen`).
-fn in_game_ui(screen: Screen, book_or_sign: bool) -> bool {
-    book_or_sign
-        || matches!(
-            screen,
-            Screen::Inventory | Screen::Creative | Screen::CommandBlock | Screen::BlockEditor
-        )
-}
-
-/// Where `Hud.extractRenderState` draws the subtitles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Subtitles {
-    /// Hidden with the rest of the HUD: F1 with no screen over the game.
-    Hidden,
-    /// In the HUD's own pass, under any screen that draws later.
-    Now,
-    /// Deferred (`Hud.extractDeferredSubtitles`): an in-game screen draws
-    /// them from `Screen.extractBackground`, under its slots and tooltips,
-    /// whether or not the HUD is hidden. Horizon draws them just before the
-    /// screen, which keeps that order (only the screen's dimming goes over them).
-    Deferred,
-}
-
-/// `Hud.extractRenderState`'s subtitle rule: with no in-game screen the
-/// subtitles follow the HUD (`!isHidden`); with one they are deferred and
-/// draw over it, which is the one HUD element F1 does not take away.
-fn subtitles(show_hud: bool, in_game_ui: bool) -> Subtitles {
-    if in_game_ui {
-        Subtitles::Deferred
-    } else if show_hud {
-        Subtitles::Now
-    } else {
-        Subtitles::Hidden
-    }
-}
+use hud_render::{block_outline_drawn, debug_crosshair_drawn, is_game_master_block};
+mod subtitles;
 
 #[cfg(test)]
 #[path = "game_tests.rs"]
