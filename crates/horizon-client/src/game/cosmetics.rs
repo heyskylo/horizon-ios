@@ -20,14 +20,17 @@ use horizon_cosmetics::follow::Follow;
 use horizon_cosmetics::prefs::{self, Others};
 use horizon_cosmetics::trail::{Budget, Emitter};
 use horizon_cosmetics::{Item, Slot};
-use horizon_hooks::players::{Frame, Kind, PlayerModel, PlayerModels, SpriteStore};
+use horizon_hooks::players::{
+    Badge, CameraOverride, CameraView, Frame, Gear, Kind, Mark, NameDecoration, PlayerModel,
+    PlayerModels, SpriteStore, Sprites,
+};
 use std::cell::{Cell, RefCell};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Horizon's mark before a Horizon player's name, over their name tag and in the player list.
-pub(super) const MARK: horizon_client::tab_list::NameMark = &horizon_cosmetics::mark::MARK;
+const MARK: Mark = &horizon_cosmetics::mark::MARK;
 
 /// An item as the renderer takes it.
 struct Baked {
@@ -397,17 +400,13 @@ fn slot_image(item: &Item) -> Vec<u8> {
 
 /// Which slots an avatar's gear covers: a helmet or head item hides a hat, an elytra or a cape
 /// what is worn on the back. A name tag style is never drawn on the body.
-fn covered(m: &Mob, slot: Slot) -> bool {
+fn covered(gear: Gear, slot: Slot) -> bool {
     match slot {
-        Slot::Head => m.extra.head.is_some(),
-        Slot::Back => m.cape.is_some() || m.extra.chest.as_deref() == Some("minecraft:elytra"),
+        Slot::Head => gear.head,
+        Slot::Back => gear.back,
         Slot::Shoulder => false,
         // A chestplate, not an elytra.
-        Slot::Torso => m
-            .extra
-            .chest
-            .as_deref()
-            .is_some_and(|c| c != "minecraft:elytra"),
+        Slot::Torso => gear.chest,
         Slot::NameTag | Slot::Emote => true,
         // On no bone: drawn by a pass of their own, never on the body.
         Slot::Companion | Slot::Trail | Slot::Aura => true,
@@ -419,12 +418,12 @@ fn covered(m: &Mob, slot: Slot) -> bool {
 /// (`worn` is None), another player's at "name tags only" or hidden, or every item `covered` (a
 /// helmet over a hat). One max over at most five items, read when the item was parsed.
 fn body_top(
-    extras: &horizon_client::extras::Extras,
+    others: Others,
     own: bool,
     worn: Option<&horizon_cosmetics::Worn>,
     covered: impl Fn(Slot) -> bool,
 ) -> Option<f32> {
-    if !own && extras.effective_others() != Others::Shown {
+    if !own && others != Others::Shown {
         return None;
     }
     worn?
@@ -462,6 +461,14 @@ struct Seat {
     said: Said,
     /// Kept between ticks so a tick allocates nothing: the player models in view.
     models: Vec<PlayerModel>,
+    /// The world is the window's own single-player one (`Frame::solo`).
+    solo: bool,
+    /// Name tag badges' sprites, by the item's address: their id (never reused) and the item,
+    /// held so the address isn't reused while it is there.
+    sprites: FxHashMap<usize, (u64, Arc<Item>)>,
+    last_sprite: u64,
+    /// Sprites drawing missed, put in the atlas next frame.
+    wanted: Vec<u64>,
 }
 
 /// What the game tells the hooks before each call, until the settings move here (spec #14091
@@ -472,6 +479,14 @@ struct Said {
     listed: bool,
     /// Other players' cosmetics are shown (not "name tags only", not hidden).
     others_shown: bool,
+    /// Other players' cosmetics are hidden (not even name tag styles).
+    others_hidden: bool,
+    /// Horizon's mark by Horizon players' names.
+    marks: bool,
+    /// Cosmetics in single player: the signed-in account's on the player's own model.
+    solo: bool,
+    /// My emote pulled the camera back: when it started (the own model's age).
+    pull: Option<f32>,
     /// My emote while it plays: its id and whether it loops.
     playing: Option<(String, bool)>,
     /// A folder's first emote, which mannequins play.
@@ -496,12 +511,38 @@ pub(super) struct Hooks;
 pub(super) static HOOKS: Hooks = Hooks;
 
 impl horizon_hooks::Hooks for Hooks {
-    fn frame(&self, _frame: &Frame, _sprites: &mut dyn SpriteStore) {
-        service(Seat::frame);
+    fn frame(&self, frame: &Frame, sprites: &mut dyn SpriteStore) {
+        service(|s| {
+            s.solo = frame.solo;
+            s.frame();
+            s.put_sprites(sprites);
+        });
     }
 
     fn tick(&self, models: &mut dyn PlayerModels) {
         service(|s| s.tick(models));
+    }
+
+    fn name_decoration(
+        &self,
+        model: &PlayerModel,
+        sprites: &dyn Sprites,
+    ) -> Option<NameDecoration> {
+        service(|s| s.name_decoration(model, sprites))
+    }
+
+    fn player_mark(&self, uuid: u128) -> Option<Mark> {
+        service(|s| {
+            let client = s.client.as_ref().filter(|_| s.said.marks)?;
+            client.frame().horizon(uuid).then_some(MARK)
+        })
+    }
+
+    /// An emote pulls the camera back: it eases out over the emote's first quarter second.
+    fn camera(&self, own: &CameraView) -> Option<CameraOverride> {
+        let start = service(|s| s.said.pull)?;
+        let t = ((own.age - start) / 5.0).clamp(0.0, 1.0);
+        Some(CameraOverride::new(0.35 + 0.65 * t * t * (3.0 - 2.0 * t)))
     }
 }
 
@@ -609,6 +650,81 @@ impl Seat {
         }
     }
 
+    /// What goes by `m`'s name: Horizon's mark if they play Horizon (and the mark is on), the
+    /// name tag style they wear if cosmetics are shown for them (name tags only counts), and how
+    /// high what is drawn on their body gets (`body_top`). One look in the cache for all three.
+    fn name_decoration(
+        &mut self,
+        m: &PlayerModel,
+        sprites: &dyn Sprites,
+    ) -> Option<NameDecoration> {
+        let said = &self.said;
+        let own = m.kind == Kind::Own;
+        let styles = if own { said.mine } else { !said.others_hidden };
+        if !(styles || said.marks) {
+            return None;
+        }
+        let uuid = match m.kind {
+            Kind::Own => own_uuid(m.uuid, self.solo, said.solo, || {
+                horizon_client::auth::current().map(|s| s.uuid)
+            }),
+            Kind::Mannequin if self.local => Some(u128::from(m.id)),
+            Kind::Player => m.uuid,
+            _ => None,
+        }?;
+        let mut frame = self.client.as_ref()?.frame();
+        let mark = (said.marks && frame.horizon(uuid)).then_some(MARK);
+        let worn = if styles { frame.worn(uuid) } else { None };
+        drop(frame);
+        let others = if said.others_shown {
+            Others::Shown
+        } else {
+            Others::NameTags
+        };
+        let top = body_top(others, own, worn.as_ref(), |slot| covered(m.gear, slot))
+            .filter(|_| !m.invisible);
+        let badge = worn.and_then(|w| self.badge(&w, sprites));
+        Some(NameDecoration::new(mark, badge, top))
+    }
+
+    /// The name tag style in `worn`: its badge's place in the atlas and its line's colour. None
+    /// until the badge is in the atlas (it is put there next frame).
+    fn badge(&mut self, worn: &horizon_cosmetics::Worn, sprites: &dyn Sprites) -> Option<Badge> {
+        let item = worn.iter().find(|i| i.slot == Slot::NameTag)?;
+        let [r, g, b] = item.tag?.line;
+        let next = self.last_sprite + 1;
+        let (id, _) = *self
+            .sprites
+            .entry(Arc::as_ptr(item) as usize)
+            .or_insert_with(|| (next, item.clone()));
+        self.last_sprite = self.last_sprite.max(id);
+        let Some([u0, v0, u1, v1]) = sprites.get(id) else {
+            if !self.wanted.contains(&id) {
+                self.wanted.push(id);
+            }
+            return None;
+        };
+        // The mark sits in the slot's top left corner.
+        let u1 = u0 + (u1 - u0) * item.texture.width as f32 / 64.0;
+        let v1 = v0 + (v1 - v0) * item.texture.height as f32 / 64.0;
+        Some(Badge::new(
+            [u0, v0, u1, v1],
+            u32::from_be_bytes([0, r, g, b]),
+        ))
+    }
+
+    /// Puts the sprites drawing missed in the atlas; forgets those of items no one wears.
+    fn put_sprites(&mut self, store: &mut dyn SpriteStore) {
+        for id in self.wanted.drain(..) {
+            let item = self.sprites.values().find(|(i, _)| *i == id);
+            if let Some((_, item)) = item.filter(|_| !store.has(id)) {
+                store.put(id, slot_image(item));
+            }
+        }
+        self.sprites
+            .retain(|_, (_, item)| Arc::strong_count(item) > 1);
+    }
+
     /// Once a tick: names the Horizon players in view to the emote feed and plays what it says
     /// they play on their models; one that moved ends theirs here at once. Others' emotes show
     /// with "Other players' cosmetics" on Shown only; otherwise nothing is asked.
@@ -705,11 +821,16 @@ impl Game<'_> {
         };
         let extras = &self.settings.extras;
         let playing = self.cosmetics.emotes.sending();
+        let pull = self.cosmetics.emotes.pull();
         service(|s| {
             let said = &mut s.said;
             said.mine = extras.cosmetics_mine;
             said.listed = extras.horizon_listed;
             said.others_shown = extras.effective_others() == Others::Shown;
+            said.others_hidden = extras.effective_others() == Others::Hidden;
+            said.marks = extras.horizon_marks;
+            said.solo = extras.cosmetics_solo;
+            said.pull = pull;
             if said.playing.as_ref().map(|(id, l)| (id.as_str(), *l)) != playing {
                 said.playing = playing.map(|(id, l)| (id.to_owned(), l));
             }
@@ -773,81 +894,6 @@ impl Game<'_> {
                 let _ = tx.send(load_owned_emotes(&kept));
             })
             .ok();
-    }
-
-    /// Items from a folder (`HORIZON_COSMETICS_LOCAL`): mannequins are dressed and marked too.
-    pub(super) fn cosmetics_local(&self) -> bool {
-        self.cosmetics.local
-    }
-
-    /// What goes by `m`'s name: Horizon's mark if they play Horizon (and the mark is on), the
-    /// name tag style they wear if cosmetics are shown for them (name tags only counts), and how
-    /// high what is drawn on their body gets (`body_top`). One look in the cache for all three.
-    pub(super) fn cosmetics_marks(&self, m: &Mob, own: bool) -> super::names::Marks {
-        let mut marks = super::names::Marks::default();
-        let extras = &self.settings.extras;
-        let styles = if own {
-            extras.cosmetics_mine
-        } else {
-            extras.effective_others() != Others::Hidden
-        };
-        if !(styles || extras.horizon_marks) {
-            return marks;
-        }
-        let (Some(client), Some(uuid)) = (&self.cosmetics.client, self.cosmetics_uuid(m, own))
-        else {
-            return marks;
-        };
-        let mut frame = client.frame();
-        marks.horizon = extras.horizon_marks && frame.horizon(uuid);
-        let worn = if styles { frame.worn(uuid) } else { None };
-        drop(frame);
-        if !horizon_client::mobs::trader::is_invisible(m) {
-            marks.top = body_top(extras, own, worn.as_ref(), |slot| covered(m, slot));
-        }
-        marks.style = worn.and_then(|w| self.cosmetics_tag(&w));
-        marks
-    }
-
-    /// Those of `uuids` who play Horizon, with the mark on (the player list): one look each.
-    pub(super) fn horizon_players(
-        &self,
-        uuids: impl Iterator<Item = u128>,
-    ) -> std::collections::HashSet<u128> {
-        match &self.cosmetics.client {
-            Some(c) if self.settings.extras.horizon_marks => {
-                let mut frame = c.frame();
-                uuids.filter(|u| frame.horizon(*u)).collect()
-            }
-            _ => Default::default(),
-        }
-    }
-
-    /// The name tag style in `worn`: its badge's place in the atlas and its line's colour. None
-    /// until the badge is in the atlas.
-    fn cosmetics_tag(&self, worn: &horizon_cosmetics::Worn) -> Option<super::names::TagStyle> {
-        let item = worn.iter().find(|i| i.slot == Slot::NameTag)?;
-        let [r, g, b] = item.tag?.line;
-        let frame = self.cosmetics.frame.get();
-        let mut baked = self.cosmetics.baked.borrow_mut();
-        let entry = baked
-            .entry(Arc::as_ptr(item) as usize)
-            .or_insert_with(|| Baked::new(item, frame));
-        let Some(slot) = self.gui.atlas.sprites.get(&entry.location) else {
-            self.cosmetics.uploads.borrow_mut().push(item.clone());
-            return None;
-        };
-        if entry.marked.replace(frame) != frame {
-            self.skin_downloads.borrow_mut().drawn(&entry.location);
-        }
-        // The mark sits in the slot's top left corner.
-        let mut mark = *slot;
-        mark.u1 = mark.u0 + (slot.u1 - slot.u0) * item.texture.width as f32 / 64.0;
-        mark.v1 = mark.v0 + (slot.v1 - slot.v0) * item.texture.height as f32 / 64.0;
-        Some(super::names::TagStyle {
-            mark,
-            line: u32::from_be_bytes([0, r, g, b]),
-        })
     }
 
     /// What `m` wears, if cosmetics are shown for it: `own` for the player's own model.
@@ -941,7 +987,7 @@ impl Game<'_> {
                 }
                 continue;
             }
-            if emoting.is_none() && covered(m, item.slot) {
+            if emoting.is_none() && covered(super::player_hooks::gear(m), item.slot) {
                 continue;
             }
             let Some((models, uv)) = self.cosmetics_baked(item) else {
@@ -1247,13 +1293,18 @@ mod tests {
         let (short, long) = (Duration::from_millis(300), Duration::from_secs(10));
         let top_of = |extras: &Extras, patience| {
             let (worn, _) = other_player_from(Service(Arc::default(), both), extras, patience);
-            body_top(extras, false, worn.as_ref(), |_| false)
+            body_top(extras.effective_others(), false, worn.as_ref(), |_| false)
         };
         // No cosmetics drawn on the body (a name tag style only): vanilla's height exactly.
         let (worn, _) = other_player(&shown, long);
         assert!(worn.is_some());
         assert_eq!(
-            tag(body_top(&shown, false, worn.as_ref(), |_| false)),
+            tag(body_top(
+                shown.effective_others(),
+                false,
+                worn.as_ref(),
+                |_| false
+            )),
             VANILLA
         );
         // A small hat under the tag: vanilla's height too.
@@ -1267,7 +1318,9 @@ mod tests {
         );
         // A helmet over it: vanilla's height.
         let (worn, _) = other_player_from(Service(Arc::default(), both), &shown, long);
-        let helmet = body_top(&shown, false, worn.as_ref(), |slot| slot == Slot::Head);
+        let helmet = body_top(shown.effective_others(), false, worn.as_ref(), |slot| {
+            slot == Slot::Head
+        });
         assert_eq!(tag(helmet), VANILLA);
         // Others' cosmetics on name tags only, or hidden: nothing on the body, vanilla's height.
         for others in [Others::NameTags, Others::Hidden] {

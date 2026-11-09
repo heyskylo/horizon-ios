@@ -900,10 +900,12 @@ impl Game<'_> {
         let board = &self.score.board;
         let objective = board.display_objective(sb::SLOT_LIST);
         let up = |id: u128| upside_down.contains(&id);
-        // Horizon's mark before the names of Horizon players (the cosmetics service's cache).
-        let horizon = self.horizon_players(players.iter().map(|p| p.uuid));
-        let horizon_mark = super::cosmetics::MARK;
-        let marked = |id: u128| horizon.contains(&id).then_some(horizon_mark);
+        // A hook's mark before a name (Horizon's: they play Horizon).
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        let marked = horizon_hooks::engine::player_mark;
         let inputs = TabInputs {
             players: &players,
             board,

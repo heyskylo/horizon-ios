@@ -43,6 +43,11 @@ impl Emotes {
         let looping = p.item.emote.as_ref().is_some_and(|e| e.looping);
         Some((&p.item.id, looping))
     }
+
+    /// When the emote that pulled the camera back started (the own model's age), while it plays.
+    pub(in crate::game) fn pull(&self) -> Option<f32> {
+        self.camera_from.and(self.playing.as_ref()).map(|p| p.start)
+    }
 }
 
 /// An emote on a player's model: the engine's pose hook (`Mob::emote`), which names no cosmetics
@@ -276,19 +281,6 @@ impl Game<'_> {
             }
         }
         self.tick_emote();
-    }
-
-    /// How far the camera stands back while an emote pulls it (1: the usual distance): it eases
-    /// out over the emote's first quarter second.
-    pub(in crate::game) fn emote_camera_pull(&self, partial: f32) -> f32 {
-        let (Some(p), Some(m)) = (&self.cosmetics.emotes.playing, &self.player_model) else {
-            return 1.0;
-        };
-        if self.cosmetics.emotes.camera_from.is_none() {
-            return 1.0;
-        }
-        let t = ((m.age as f32 + partial - p.start) / 5.0).clamp(0.0, 1.0);
-        0.35 + 0.65 * t * t * (3.0 - 2.0 * t)
     }
 }
 

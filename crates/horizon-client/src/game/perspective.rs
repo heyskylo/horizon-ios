@@ -311,8 +311,8 @@ impl Game<'_> {
             }
         };
         let mut view = self.view;
-        // An emote pulls the camera back from the player's face (`game/cosmetics/emotes.rs`).
-        let pull = self.emote_camera_pull(partial);
+        // A hook may pull the camera back (an emote, from the player's face).
+        let pull = self.hooks_camera_distance(partial);
         let kind = match self.camera_type {
             CameraType::FirstPerson => horizon_client::camera::CameraType::FirstPerson,
             CameraType::ThirdPersonBack => horizon_client::camera::CameraType::ThirdPersonBack,
