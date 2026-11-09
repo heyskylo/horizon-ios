@@ -1,0 +1,23 @@
+{
+  "hooks": [
+    {
+      "name": "recipe_lookup",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_recipe_lookup",
+      "neoforge": "none (JEI's IRecipesGui.show and EMI's EmiApi.displayRecipes/displayUses, called by other mods through the viewer's own API)",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "handled"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "show_recipes",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_show_recipes"
+    }
+  ],
+  "rust_summary": "a mod asking the recipe viewer to show a stack's recipes or uses, or to act on a key over it (`native_show_recipes`, heard as `native_recipe_lookup`).",
+  "doc_summary": "`native_show_recipes(stack, lookup)` (client, `host.show_recipes`) asks whatever recipe viewer is installed to show `stack`'s recipes (`NativeRecipeLookup::Recipes`), its uses (`Uses`), or to act on a key that went down over it in a screen the mod draws (`Key(\"key.keyboard.a\")`), so a quest book's items open the viewer as its own list's do. The viewer hears it at the start of the next frame as `native_recipe_lookup(stack, lookup, handled)` and sets `handled`; with no viewer, nothing happens. Bundles need \"hooks\": @API:recipe_lookup@."
+}

@@ -1,10 +1,8 @@
 # Horizon world data
 
-`crates/horizon-world` implements part of the Rust rewrite's storage layer for
-the repository-pinned Java Edition **26.3**, data version **5023**. It reads and
-exports region files and provides block-section access. Lighting, world generation,
-networking and rendering remain unimplemented. Scheduled block/fluid queues now
-integrate with saved tick lists, but their gameplay callbacks remain unimplemented.
+`crates/horizon-world` holds the storage layer for the pinned Java Edition **26.3**, data version **5023**: NBT,
+region files, saved palettes, resident block sections, saved tick lists and the data fixers that upgrade older
+worlds. It also has a small offline tool for inspecting and copying region files.
 
 ## Commands
 
@@ -69,7 +67,7 @@ block-name coverage. The local oracle exports all 35,723 state identities and
 defaults from vanilla. This imports identities, not block implementations,
 shapes or behavior. Registry exports and game-derived fixtures stay in `.local/`.
 Chunk access requires data version 5023. A world saved by an older version is upgraded when it is opened, as 26.3 does: the file fixes (`FileFixerUpper`) and level.dat, then vanilla's DataFixers over every chunk, entity chunk, POI chunk, player, saved data, advancements and statistics file (`horizon_world::datafix`; vanilla upgrades each file as it reads it, Horizon all of them on opening). `tools/test_datafix_parity.py` compares the result with vanilla's own upgrade over worlds written by older server jars. Every server data fix is ported, from the saves of 1.8 (no DataVersion) on; only the fixes of client files (options, debug profiles) are not. `BlockRegistry::resolve` rejects invalid property descriptors. The separate
-[block-state JSON codec](block-state-codecs.md) reproduces vanilla property
+block-state JSON codec reproduces vanilla property
 fallback for compact and full JSON forms.
 
 `ChunkData::saved_ticks` reads `block_ticks` or `fluid_ticks`, resolves type
@@ -79,69 +77,10 @@ relative delays while preserving other root fields. IDs here identify block or
 fluid types, not block states. Missing tick lists are empty. Numeric fields use
 vanilla's integer narrowing and floating-point conversion. Unknown types and
 malformed entries return errors; vanilla's logging/partial-result paths are not
-reproduced. [Scheduler integration and its separate suite](scheduled-ticks.md).
+reproduced. Scheduler integration and its separate suite.
 
 ## Validation
 
-```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-python3 tools/test_rust_parity.py --prepare
-python3 tools/test_world_parity.py
-python3 tools/test_tick_parity.py
-```
-
-The world runner verifies the pinned artifacts, generates fixtures by invoking
-actual vanilla classes, processes them with Rust, and reads the results with
-both official client and server code. Each reference checks:
-
-- 32 NBT format/codec conversions covering every tag type, UTF-16 edge cases,
-  mixed lists, floating-point canonicalization and oversized byte arrays.
-- 44 edited/compacted palette cases, comparing 123,776 individual values across
-  uniform, local and global vanilla palette transitions.
-- 48 region chunk reads covering four codecs, copying, recompression, a stored
-  block edit, negative positions and oversized external chunks.
-- All 35,723 exported block-state IDs and their serialized registry data.
-- 8,192 resident values: a section with 4,096 distinct states, followed by the
-  result of 100,000 mixed block replacements checked against an independent
-  array of expected IDs. Rust additionally checks each returned old value,
-  periodic compaction, every registry ID through one slot, and uniform collapse.
-
-Offline tests cover malformed lengths, truncation, NBT limits, corrupt checksums,
-invalid palette indices, sector corruption, the inline/external size boundary,
-unknown-field preservation, failed-writer cleanup and destination collisions.
-CI runs both differential suites. Run artifacts and logs stay under
-`.local/rust-world-parity/`; a stale top-level success report is removed before
-each run. The checked-in [report](../benchmarks/rust-world-2026-10-05/scoped-parity.json)
-contains metadata and hashes only.
-
-These are synthetic storage fixtures, not a generated world's full save/load
-lifecycle or playable integration test. They establish the reported tested
-scope; they do not establish complete vanilla parity or any FPS improvement.
-
-
-## Contained fluid states
-
-`FluidStateTable` derives the fluid carried by each pinned block state: empty,
-water or lava, source/flowing identity, amount and falling status. Waterlogged
-copper grates carry falling source water. `FluidBlockBindings` binds constant-time
-conversion back to liquid block identities, including the collapse of liquid
-levels 8–15 to their shared falling-fluid block representation.
-
-`FluidHeightWorld` supplies above-fluid and downward-face support queries.
-Ordinary height returns a full block when matching fluid is above; camera height
-first checks downward support above a source. Empty fluids skip world queries.
-Coordinates wrap as Java integers, and query failures preserve evaluation order.
-The adapter owns block-support geometry; this interface does not implement every
-block's support shape.
-
-Run `python3 tools/test_fluid_parity.py`. The
-[fluid report](../benchmarks/rust-fluid-2026-10-06/scoped-parity.json) records
-**243,331 matching lines per JAR**. It compares all 35,723 block states, five fluid
-identities, every fluid-family pair, own-height bits, source/falling/full flags and
-legacy block conversion. An additional 2,432 fluid-state JSON fixtures compare
-all 37 fluid states, native defaults, malformed properties and encoding. The 40,344 world fixtures request 80,688 surface/camera
-height queries, including coordinate overflow and injected failures. The support
-fixtures use actual vanilla stone and air states. Fluid spreading, scheduled
-updates, entity interactions and rendering remain pending. Workspace tests
-and all-target Clippy pass.
+`tools/test_world_parity.py` (NBT, palettes, regions, block-state registry, resident sections), `test_tick_parity.py`
+(saved tick lists), `test_fluid_parity.py` (the fluid each block state carries) and `test_datafix_parity.py` (upgrading
+worlds written by older server jars) compare Rust with vanilla's own codecs on both reference jars.

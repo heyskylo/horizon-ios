@@ -110,7 +110,27 @@ impl ChunkTicks {
     pub fn poll(&mut self) -> Option<ScheduledTick> {
         let tick = self.queue.pop(ScheduledTick::drain_cmp)?;
         self.positions.remove(&tick.key());
+        self.trim();
         Some(tick)
+    }
+    /// The queue and its position set give back what they no longer use: generation schedules thousands of
+    /// ticks in a new chunk, and once they ran both kept their peak capacity for as long as the chunk stayed
+    /// loaded. Shrinking keeps the queue's order.
+    fn trim(&mut self) {
+        // The position set also holds the saved ticks not unpacked yet.
+        if self.pending.as_ref().is_some_and(|p| !p.is_empty()) {
+            return;
+        }
+        let len = self.queue.values.len();
+        if len == 0 {
+            if self.queue.values.capacity() > 0 {
+                self.queue.values = Vec::new();
+                self.positions = FxHashSet::default();
+            }
+        } else if self.queue.values.capacity() >= 64 && len * 4 < self.queue.values.capacity() {
+            self.queue.values.shrink_to(len * 2);
+            self.positions.shrink_to(len * 2);
+        }
     }
     /// First schedule wins for a type/position, irrespective of timing/priority.
     pub fn schedule(&mut self, tick: ScheduledTick) -> bool {
@@ -141,6 +161,7 @@ impl ChunkTicks {
             },
             ScheduledTick::drain_cmp,
         );
+        self.trim();
     }
     pub fn pack(&self, game_time: i64) -> Vec<SavedTick> {
         let mut saved = self.pending.clone().unwrap_or_default();
@@ -182,6 +203,44 @@ mod tests {
                 .unwrap();
         }
         level
+    }
+    /// A generation burst: thousands of ticks scheduled, some removed, then run. The trimmed queue keeps
+    /// the heap order of an untrimmed one at every step (vanilla's getAll order), polls the same ticks, and
+    /// gives its capacity back once drained.
+    #[test]
+    fn a_trimmed_queue_keeps_the_untrimmed_order_and_gives_memory_back() {
+        let mut chunk = ChunkTicks::default();
+        let mut plain: Heap<ScheduledTick> = Heap::default();
+        let mut seed = 0x2545_f491_u32;
+        let mut next = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % n
+        };
+        for order in 0..4000 {
+            let t = tick(
+                next(3),
+                next(16) as i32 + 1000 * order as i32,
+                next(40) as i64,
+                next(7) as i32 - 3,
+                order,
+            );
+            assert!(chunk.schedule(t));
+            plain.push(t, ScheduledTick::drain_cmp);
+        }
+        let cut = |t: ScheduledTick| t.pos.x % 7 == 0;
+        chunk.remove_if(cut);
+        plain.remove_if(cut, ScheduledTick::drain_cmp);
+        assert_eq!(chunk.queued(), &plain.values[..]);
+        while let Some(t) = chunk.poll() {
+            assert_eq!(Some(t), plain.pop(ScheduledTick::drain_cmp));
+            assert_eq!(chunk.queued(), &plain.values[..]);
+            assert!(!chunk.has_scheduled(t.pos, t.kind));
+        }
+        assert!(plain.values.is_empty());
+        assert_eq!(chunk.queue.values.capacity(), 0);
+        assert_eq!(chunk.positions.capacity(), 0);
     }
     #[test]
     fn due_chunks_compete_by_priority_not_trigger_time() {

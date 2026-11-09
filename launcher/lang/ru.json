@@ -462,7 +462,6 @@
   "Copying…": "Копирование…",
   "Filters": "Фильтры",
   "{count} followers": "{count} подписчиков",
-  "{count} stars on GitHub": "{count} звёзд на GitHub",
   "Connect an AI agent": "Подключить ИИ-агента",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Каждый переключатель выключен, пока вы его не включите. Что именно отправляется, написано под ним; страница конфиденциальности на playhorizon.dev говорит, как долго это хранится.",
   "Players": "Игроки",
@@ -1054,7 +1053,7 @@
   "Use": "Использовать",
   "installed": "установлена",
   "played by {names}": "играет {names}",
-  "{day}, {time} UTC": "{day}, {time} UTC",
+  "{day}, {time} UTC": "{day}, {time} по UTC",
   "Microsoft account · online servers too": "Учётная запись Microsoft · и онлайн-серверы",
   "Offline · single player and LAN worlds": "Офлайн · одиночная игра и миры по LAN",
   "Offline names": "Офлайн-имена",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Собирается на вашей версии Horizon",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Нужны нативные точки подключения v{needs}, в вашей версии Horizon есть v{has}: сначала обновите Horizon",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Сделан для Horizon {pin}, но {mods} привязаны к другому коммиту: сборка попросит «Всё равно собрать» и может не скомпилироваться",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Сделан для Horizon {pin}, вы играете на {yours}: лаунчер соберёт игру на {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} ждет вас: в ней больше нет {ids}, которые могут использоваться в ваших мирах. Обновите её на странице модов, когда будете готовы.",
   "Tags": "Теги",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Интеллектуальное управление приложениями (Smart App Control) Windows блокирует сборку (os error 4551). Оно разрешает запуск только подписанных программ, а нативная сборка запускает программы, которые никто не подписывал: скомпилированные на этом компьютере и некоторые программы самого компилятора. Чтобы собирать нативные моды, отключите его в разделе «Безопасность Windows» > «Управление приложениями/браузером» > «Параметры интеллектуального управления приложениями» и запустите сборку снова. В некоторых версиях Windows его нельзя включить обратно без переустановки Windows. Контентные моды (.hmod) не требуют сборки и работают с ним.",
@@ -1260,5 +1258,11 @@
   "Recommended": "Рекомендуется",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Более старая версия, {version}, собирается на Horizon, в который ты играешь: установка выбирает её",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: версия {version} не собралась, пробуем {older}",
-  "Use recommended (kept at {version})": "Использовать рекомендуемую (закреплена {version})"
+  "Use recommended (kept at {version})": "Использовать рекомендуемую (закреплена {version})",
+  "Only what works on {instance}": "Только то, что работает в {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Скрыто версий, которые не работают в {instance}: {count}",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Сделан для Horizon {pin}: лаунчер собирает его на {yours}, в который ты играешь, и на {pin}, только если там не компилируется",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} не собрались на Horizon, в который ты играешь: собираем на том, для которого они сделаны",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "В последней сборке — на Horizon {commit} ради {mods}, не на {horizon}",
+  "In the last build, on {horizon}": "В последней сборке — на {horizon}"
 }

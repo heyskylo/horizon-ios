@@ -45,6 +45,36 @@ pub fn fluid_flow(world: &World, fluids: &FluidResources, pos: [i32; 3]) -> [f64
     let flow = flow_at(&mut scene, state, at).unwrap_or(Vec3::ZERO);
     [flow.x, flow.y, flow.z]
 }
+/// `ClipContext.Fluid.WATER` in a fall-reset ray through `p`: the water's
+/// shape from the shared `FlowingFluid.shapes` cache (the first query of a
+/// fluid state fixes its height), as the player's own ray reads it.
+pub fn water_clip(
+    world: &World,
+    fluids: &FluidResources,
+    from: Vec3,
+    to: Vec3,
+    p: BlockPos,
+) -> bool {
+    let state = fluids.fluid(world.block(p.x, p.y, p.z));
+    if !matches!(state.kind(), FluidKind::Water | FluidKind::FlowingWater) {
+        return false;
+    }
+    let mut velocity = Vec3::ZERO;
+    let mut scene = EntityFluidWorld {
+        bounds: Aabb::new(from, from),
+        position: from,
+        eye_y: from.y,
+        velocity: &mut velocity,
+        world,
+        fluids,
+    };
+    let Ok(mut shapes) = fluids.shapes.lock() else {
+        return false;
+    };
+    shapes
+        .shape(&mut scene, state, p)
+        .is_ok_and(|shape| shape.clip(from, to, p).is_some())
+}
 /// `Entity.baseTick`'s fluid step for an entity that is pushed by fluid: its
 /// immersion heights, then the current of each fluid it sits in, added to
 /// `velocity` with vanilla's scales (water 0.014, lava 0.007 fast or
@@ -308,6 +338,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let item = ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -328,6 +359,7 @@ mod tests {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,

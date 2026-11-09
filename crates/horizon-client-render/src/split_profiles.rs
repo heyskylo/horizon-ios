@@ -5,10 +5,12 @@
 //! game fills the list when the page opens (`filled`), takes the choice, and says why a pick
 //! can't play (`refused`). Built from vanilla's widgets.
 use crate::{
-    gamepad::{Button as PadButton, GlyphStyle},
+    gamepad::MenuJob,
     graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
-    lang, pad_glyph,
+    hud_kit::fit::wrap,
+    lang,
+    pad_glyph::{self, Glyph, Glyphs},
     text::Text,
     ui,
 };
@@ -28,28 +30,6 @@ pub const NAME_MAX: usize = 16;
 pub fn valid_name(name: &str) -> bool {
     (3..=NAME_MAX).contains(&name.len())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// `text` in lines no wider than `max` (by `width`), broken between words.
-pub fn wrap(text: &str, max: f32, width: impl Fn(&str) -> f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let longer = if line.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{line} {word}")
-        };
-        if width(&longer) > max && !line.is_empty() {
-            lines.push(std::mem::replace(&mut line, word.to_owned()));
-        } else {
-            line = longer;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 #[derive(Default)]
@@ -243,7 +223,7 @@ impl SplitProfiles {
         atlas: &HudAtlas,
         cursor: (f32, f32),
         in_world: bool,
-        style: GlyphStyle,
+        glyphs: Glyphs,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
@@ -306,7 +286,7 @@ impl SplitProfiles {
                 None => tr("horizon.pages.split_profiles", "Who's playing?"),
             };
             graphics_style::title(batch, atlas, &Text::literal(title));
-            self.draw_bumpers(batch, atlas, style);
+            self.draw_bumpers(batch, atlas, glyphs);
             // Under Cancel: where offline profiles live.
             let y = buttons.last().map_or(0.0, |b| b.0[1] + 30.0);
             line(
@@ -400,7 +380,7 @@ impl SplitProfiles {
 
     /// Under the title: the bumpers as keys, as the prompts over a player's view draw them (the
     /// controller's own symbols, in its colours), then where they put the view.
-    fn draw_bumpers(&self, batch: &mut HudBatch, atlas: &HudAtlas, style: GlyphStyle) {
+    fn draw_bumpers(&self, batch: &mut HudBatch, atlas: &HudAtlas, glyphs: Glyphs) {
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let words = match &self.place {
             Some(place) => tr(
@@ -410,14 +390,14 @@ impl SplitProfiles {
             .replacen("%s", place, 1),
             None => tr("horizon.splitscreen.profiles.move", "Move where you play"),
         };
-        let keys = [PadButton::LeftBumper, PadButton::RightBumper];
-        let key_width = |b: PadButton| pad_glyph::width(atlas, b, style);
+        let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|job| Glyph::menu(job, glyphs));
+        let key_width = |b: Glyph| pad_glyph::width(atlas, b);
         let total = keys.iter().map(|&b| key_width(b) + 4.0).sum::<f32>() + 2.0 + width(&words);
         let (mut x, y) = (((batch.width - total) / 2.0).floor(), 30.0);
         for b in keys {
             let kw = key_width(b);
             // A light edge around a dark key: it stands out on the menu's dark background.
-            if pad_glyph::art(atlas, b, style).is_none() {
+            if pad_glyph::art(atlas, b).is_none() {
                 batch.fill(
                     atlas,
                     x - 2.0,
@@ -427,7 +407,7 @@ impl SplitProfiles {
                     rgba(170, 170, 170, 255),
                 );
             }
-            pad_glyph::draw(batch, atlas, b, style, x, y);
+            pad_glyph::draw(batch, atlas, b, x, y);
             x += kw + 4.0;
         }
         batch.text(atlas, &words, x + 2.0, y, rgba(240, 240, 240, 255), true);
@@ -571,24 +551,6 @@ impl SplitProfiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_notice_wraps_to_the_view_between_words() {
-        // Each character 6 wide: no line over 60.
-        let width = |s: &str| 6.0 * s.len() as f32;
-        let lines = wrap("This server needs each player's own account", 60.0, width);
-        assert!(lines.iter().all(|l| width(l) <= 60.0));
-        assert_eq!(
-            lines.join(" "),
-            "This server needs each player's own account"
-        );
-        // A word longer than the line keeps a line of its own.
-        assert_eq!(
-            wrap("a verylongwordindeed b", 30.0, width),
-            ["a", "verylongwordindeed", "b"]
-        );
-        assert!(wrap("", 60.0, width).is_empty());
-    }
 
     #[test]
     fn forgetting_the_last_page_s_only_profile_shows_the_page_before() {

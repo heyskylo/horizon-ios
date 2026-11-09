@@ -8,7 +8,7 @@ use crate::{
     chunk::Chunk,
     chunk_map::ChunkMembershipDelta,
     graphics::LeafCullingMode,
-    light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
+    light::{LightChanges, LightTables, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
 };
@@ -530,6 +530,12 @@ pub struct Streaming {
     saves: Arc<dyn Saves>,
     /// Results received while `save` waited, for the next `update`.
     deferred: Vec<Done>,
+    /// Per-update collection scratch, retained to avoid allocator churn while
+    /// the view is moving or many columns are dirty.
+    light_scratch: Vec<(i64, i32, i32)>,
+    gone_scratch: Vec<(i32, i32)>,
+    mesh_candidates_scratch: Vec<(i64, i32, i32, SectionMask)>,
+    mesh_columns_scratch: Vec<((i32, i32), SectionMask)>,
     sequence: u64,
     pub center: (i32, i32),
     /// The view distance around `center`; below 0, no area there (a dedicated
@@ -1056,6 +1062,7 @@ pub struct WorkerContext {
     pub biomes: Arc<crate::biome::Biomes>,
     pub light: Arc<LightTables>,
 }
+mod relight_now;
 impl Streaming {
     pub fn new<G: ChunkGenerator>(
         generator: Arc<G>,
@@ -1130,6 +1137,10 @@ impl Streaming {
             written: Default::default(),
             saves,
             deferred: Vec::new(),
+            light_scratch: Vec::new(),
+            gone_scratch: Vec::new(),
+            mesh_candidates_scratch: Vec::new(),
+            mesh_columns_scratch: Vec::new(),
             sequence: 0,
             center: (0, 0),
             radius: 8,
@@ -1664,6 +1675,15 @@ impl Streaming {
         if self.paused {
             return (uploads, Vec::new());
         }
+        let mut stale = Vec::new();
+        let mut light = std::mem::take(&mut self.light_scratch);
+        light.clear();
+        let mut gone = std::mem::take(&mut self.gone_scratch);
+        gone.clear();
+        let mut candidates = std::mem::take(&mut self.mesh_candidates_scratch);
+        candidates.clear();
+        let mut columns = std::mem::take(&mut self.mesh_columns_scratch);
+        columns.clear();
         ExtraCover::refresh(&mut self.cover, &self.extra);
         self.cover_current = true;
         // The sweeps below walk every loaded column and proto chunk. Run them
@@ -1678,7 +1698,6 @@ impl Streaming {
         let deferred = std::mem::take(&mut self.deferred);
         let received = self.shared.done.take();
         // Meshes made stale meanwhile, freed with the uploaded ones (`free`).
-        let mut stale = Vec::new();
         for done in deferred.into_iter().chain(received) {
             match done {
                 Done::Proto(x, z, proto, decorated) => {
@@ -1704,38 +1723,7 @@ impl Streaming {
                     }
                     self.lighting.remove(&(x, z));
                     let snapshot = self.light_snapshots.remove(&(x, z)).unwrap_or(u64::MAX);
-                    if let Some(chunk) = world.chunks.get_mut(&(x, z)) {
-                        let chunk = Arc::make_mut(chunk);
-                        // Keep blocks edited since the snapshot; take only light.
-                        // A chunk relit (a neighbour loaded or changed) remeshes
-                        // only around the light that changed, as vanilla's light
-                        // updates dirty only their sections (#270).
-                        let first = self.lit.insert((x, z));
-                        let mut changed = LightChanges::default();
-                        if first {
-                            apply_lighting(chunk, sections);
-                        } else {
-                            apply_relighting(chunk, sections, &mut changed);
-                        }
-                        // Saved unlit (at the edge of what was loaded), or its light
-                        // changed: saved again.
-                        if (first && !chunk.light_loaded) || !changed.is_empty() {
-                            world.modified.insert((x, z));
-                        }
-                        chunk.lit = true;
-                        if first {
-                            for dz in -1..=1 {
-                                for dx in -1..=1 {
-                                    for sy in 0..world.layout().sections() as i32 {
-                                        world.dirty_sections.insert((x + dx, sy, z + dz));
-                                    }
-                                }
-                            }
-                        } else {
-                            Self::mark_light_changes(world, &changed);
-                        }
-                        self.replay_light_edits(world, x, z, snapshot);
-                    }
+                    self.apply_lit(world, x, z, sections, snapshot);
                 }
                 Done::Meshed(x, sy, z, mesh, seq) => {
                     if self.meshing.get(&(x, sy, z)) != Some(&seq) {
@@ -1831,8 +1819,8 @@ impl Streaming {
             protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
         });
         // Finalize chunks whose neighbourhood is decorated.
-        let candidates: Vec<(i32, i32)> = self.protos.keys().copied().collect();
-        for (x, z) in candidates {
+        let finalize_candidates: Vec<(i32, i32)> = self.protos.keys().copied().collect();
+        for (x, z) in finalize_candidates {
             if world.chunks.contains_key(&(x, z))
                 || self.finishing.contains(&(x, z))
                 || !self.in_range(x, z, 1)
@@ -1990,8 +1978,6 @@ impl Streaming {
         // grew with the render distance and outlived the columns they
         // were queued for (#3629). What stays in `dirty_light` is asked
         // for again, from the current centre, as capacity frees.
-        let mut light: Vec<(i64, i32, i32)> = Vec::new();
-        let mut gone: Vec<(i32, i32)> = Vec::new();
         for &(x, z) in world.dirty_light.iter() {
             if !world.chunks.contains_key(&(x, z)) {
                 gone.push((x, z));
@@ -1999,12 +1985,12 @@ impl Streaming {
                 light.push((self.distance(x, z), x, z));
             }
         }
-        for key in gone {
+        for key in gone.drain(..) {
             world.dirty_light.remove(&key);
         }
         let room = (self.workers * 4).saturating_sub(self.lighting.len());
         nearest_first(&mut light, room);
-        for (_, x, z) in light {
+        for (_, x, z) in light.drain(..) {
             let Some(region) = self.light_region(world, x, z) else {
                 continue;
             };
@@ -2023,6 +2009,10 @@ impl Streaming {
         if !self.mesh {
             world.dirty_sections.clear();
             self.cover_current = false;
+            self.light_scratch = light;
+            self.gone_scratch = gone;
+            self.mesh_candidates_scratch = candidates;
+            self.mesh_columns_scratch = columns;
             return (uploads, removed);
         }
         // Meshing once the column and its neighbours are lit, and the column
@@ -2056,9 +2046,8 @@ impl Streaming {
         }
         // Column by column: the checks below hold for all of a column's
         // sections, and columns waiting for light cost one look per frame.
-        let mut candidates: Vec<(i64, i32, i32, SectionMask)> = Vec::new();
-        let columns: Vec<_> = world.dirty_sections.columns().collect();
-        for ((x, z), sections) in columns {
+        columns.extend(world.dirty_sections.columns());
+        for ((x, z), sections) in columns.iter().copied() {
             if !world.chunks.contains_key(&(x, z)) {
                 world.dirty_sections.take_column(x, z);
                 continue;
@@ -2096,7 +2085,7 @@ impl Streaming {
         // capacity frees; `requeue` then has a small queue to keep close.
         let room = (self.workers * 32).saturating_sub(self.meshing.len());
         nearest_first(&mut candidates, room);
-        for (_, x, z, sections) in candidates {
+        for (_, x, z, sections) in candidates.drain(..) {
             let Some(region) = Self::region(world, x, z) else {
                 continue;
             };
@@ -2132,6 +2121,10 @@ impl Streaming {
             }
         }
         self.cover_current = false;
+        self.light_scratch = light;
+        self.gone_scratch = gone;
+        self.mesh_candidates_scratch = candidates;
+        self.mesh_columns_scratch = columns;
         (uploads, removed)
     }
     fn schedule_generation(&mut self, world: &World, workers: usize) {

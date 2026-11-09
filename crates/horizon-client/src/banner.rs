@@ -189,9 +189,13 @@ pub fn banner_color(item: &str) -> Option<&'static str> {
     let name = item.strip_prefix("minecraft:")?.strip_suffix("_banner")?;
     DYES.iter().map(|d| d.0).find(|d| *d == name)
 }
-/// `DyeColor.getTextureDiffuseColor` (RGB) by dye name.
+/// `DyeColor.getTextureDiffuseColor` (RGB) by dye name, as the resource
+/// packs draw it (`pack_palette`): banner layers, banner and shield items and the
+/// loom follow a pack's dye colours as the banner base does.
 pub fn dye_rgb(name: &str) -> u32 {
-    DYES.iter().find(|d| d.0 == name).map_or(0xFFFFFF, |d| d.1)
+    DYES.iter()
+        .position(|d| d.0 == name)
+        .map_or(0xFFFFFF, crate::pack_palette::diffuse)
 }
 /// The layers of a banner or shield stack.
 pub fn layers(stack: &ItemStack) -> &[BannerLayer] {
