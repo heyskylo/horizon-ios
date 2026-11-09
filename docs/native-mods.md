@@ -4366,6 +4366,25 @@ It names the level it means by its `dimension` (`minecraft:overworld`), as `nati
   that edits for a player asks it for the positions it is about to change, and leaves out those it is refused.
   Bundles need "hooks": @API:can_build@.
 
+### Light and resends for raw section writes
+
+`crates/horizon-client/src/game/native_world_edit.rs`: more helpers for server mods that write sections themselves (a paste,
+an edit of their own) and must get the result to the players. Each names the level by its `dimension`, as
+`native_edit_blocks` does, and acts on the level being ticked only (0 or empty for another, and on a client).
+
+- `native_relight_chunks(dimension, chunks)` lights the loaded chunks `chunks` (`[x, z]`, block coordinates `>> 4`) and
+  the loaded chunks beside them again, whole and at once, from the blocks of each 3x3, as the light jobs
+  `native_edit_blocks` queues do later. A chunk without all eight neighbours loaded is left out; a job already out for a
+  chunk is dropped. The light that changed is saved and sent to the players for whom the chunk is on the edge of what
+  they track; send the others the chunk (`native_resend_chunk`). Returns how many chunks were lit.
+- `native_chunk_trackers(dimension, chunk)` gives the UUIDs of the players who have been sent the chunk, in join order
+  (vanilla's `ChunkMap.getPlayers(pos, false)`).
+- `native_resend_chunk(dimension, chunk, player)` sends the chunk whole again with its light, block entities and biomes
+  as they are now, to every player who has it or only to `player` (a UUID, or none) when that player has it. Returns how
+  many players were sent it. Relight first.
+
+Bundles need `"hooks": @API:chunk_relight_resend@`.
+
 ### Machines
 
 `crates/horizon-client/src/game/native_machines.rs`: helpers for a mod's machines on a server, in the level in place.
