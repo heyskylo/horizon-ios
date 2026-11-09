@@ -3137,9 +3137,13 @@ impl Menu {
 
     /// The PICKUP_ALL branch (double click).
     /// `canTakeItemForPickAll`: never the result slots of the menus that
-    /// override it (crafting, smithing, stonecutter, cartography), MerchantMenu's
-    /// or an item tab's display slots.
-    fn can_take_for_pick_all(&self, t: usize) -> bool {
+    /// override it (crafting, smithing, stonecutter, cartography; a mod menu
+    /// type's crafting result is one), MerchantMenu's or an item tab's
+    /// display slots.
+    /// The screen asks it before a double click's PICKUP_ALL
+    /// (`AbstractContainerScreen.mouseReleased`): a refused slot's second
+    /// click stays a PICKUP, another craft.
+    pub fn can_take_for_pick_all(&self, t: usize) -> bool {
         self.kind != Kind::Merchant
             && self.slots[t].role != Role::CreativeDisplay
             && (self.slots[t].container != RESULT
@@ -3444,7 +3448,7 @@ pub(crate) mod tests {
     use crate::{banner::Banners, brewing::Brewing, crafting::Recipes};
     use horizon_world::loot::PackOverlay;
 
-    fn stack(item: &str, count: u32) -> Option<ItemStack> {
+    pub(crate) fn stack(item: &str, count: u32) -> Option<ItemStack> {
         Some(ItemStack {
             item: format!("minecraft:{item}").into(),
             count,
@@ -4100,7 +4104,7 @@ pub(crate) mod tests {
 
     /// A mod menu type laid out as `CraftingMenu`: the result in slot 0, the
     /// grid in 1 to 9, as many container slots as the table's.
-    fn mod_crafting_table() -> Kind {
+    pub(crate) fn mod_crafting_table() -> Kind {
         Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {
             id: "test:station",
             slots: 10,
@@ -4203,32 +4207,7 @@ pub(crate) mod tests {
         });
     }
 
-    /// The recipe book's placement (`ServerPlaceRecipe`) and the viewers'
-    /// transfer fill a mod crafting grid as the crafting table's, and a
-    /// placement without the items leaves the grid empty for a ghost.
-    #[test]
-    fn recipes_place_in_a_mod_crafting_grid_as_in_the_table() {
-        with_menu(Kind::Crafting, |env, table| {
-            let station = &mut Menu::new(mod_crafting_table());
-            for menu in [&mut *table, &mut *station] {
-                menu.set_player_item(0, stack("oak_planks", 10));
-                menu.set_player_item(5, stack("cobblestone", 3));
-                menu.set_slot(env, 5, stack("dirt", 1));
-            }
-            let mut places = Vec::new();
-            for menu in [&mut *table, &mut *station] {
-                let first = menu.place_recipe(env, "minecraft:crafting_table", false, false, None);
-                let again = menu.place_recipe(env, "minecraft:crafting_table", true, false, None);
-                let ghost = menu.place_recipe(env, "minecraft:furnace", false, false, None);
-                let transfer = menu.transfer_recipe(env, "minecraft:stick");
-                places.push((first, again, ghost, transfer, seen(menu)));
-            }
-            assert_eq!(places[1], places[0]);
-            let (.., transfer, (slots, ..)) = &places[1];
-            assert_eq!(*transfer, Ok(()));
-            assert_eq!(slots[0], stack("stick", 4));
-        });
-    }
+    mod mod_grid_tests;
 
     /// Extra sources (`native_recipe_sources`) count as more inventory: the
     /// grid fills as the table's does when the player holds what the sources
@@ -4261,7 +4240,7 @@ pub(crate) mod tests {
             );
             // A furnace needs 8 cobblestone, which no one has: nothing moves.
             let before = station.sources.clone();
-            let refused = station.transfer_recipe(env, "minecraft:furnace");
+            let refused = station.transfer_recipe(env, "minecraft:furnace", false);
             assert_eq!(refused, Err(place::TransferError::Missing));
             assert_eq!(station.sources, before);
         });

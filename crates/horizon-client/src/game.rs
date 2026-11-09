@@ -91,6 +91,7 @@ mod chat;
 mod chat_filter;
 mod chiseled_bookshelf;
 mod client_ambient;
+mod clip_ray;
 mod clipboard;
 #[cfg(test)]
 mod clone_block_ticks_tests;
@@ -194,6 +195,7 @@ mod item_areas;
 #[cfg(test)]
 mod item_contact_tests;
 mod item_draw;
+mod item_durability;
 mod item_entities;
 #[cfg(test)]
 mod item_interact_mob_tests;
@@ -287,6 +289,7 @@ mod native_entity_state;
 mod native_explosions;
 mod native_falling;
 mod native_fluid_render;
+mod native_guards;
 mod native_hooks;
 mod native_host_bridge;
 mod native_inventories;
@@ -323,6 +326,7 @@ mod native_reload_listeners;
 mod native_scene;
 mod native_server;
 mod native_shaders;
+mod native_slot_roles;
 mod native_structures;
 mod native_terrain_model;
 pub mod native_text_field;
@@ -356,6 +360,7 @@ mod particle_culling;
 mod passengers;
 mod persist;
 mod perspective;
+mod physical_trigger;
 mod pick_entity;
 mod pickups;
 mod piglins;
@@ -576,10 +581,11 @@ pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
 pub use native_player_state::{NativeAttributeModifier, NativeEffect, NativeEffectV2};
 pub use native_reload_listeners::NativeReloadListener;
 pub use native_server::NativeExperienceOrb;
+pub use native_slot_roles::NativeSlotRole;
 pub use native_structures::{NativeStructureBlock, NativeStructureTemplate};
 pub use native_world_columns::NativeColumnBlocks;
 pub use native_world_draw::NativeWorldDraw;
-pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
+pub use native_world_edit::{NativeBlockEdit, NativeBlockNbt, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
 use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
 use resource_loader::{
@@ -779,6 +785,10 @@ struct GameLevel<'w> {
     player_box: Option<([f64; 3], [f64; 3])>,
     /// The LAN guests in this level who trigger blocks (not spectators).
     guest_boxes: Vec<([f64; 3], [f64; 3])>,
+    /// Whose `guest_boxes` are, in order.
+    guest_box_uuids: Vec<u128>,
+    /// Whose `player_box` is: the acting player (`native_player_physical_trigger`).
+    player_box_uuid: u128,
     /// Other players that block placement during a guest turn, whose hub is
     /// borrowed out; None outside one, where `guest_boxes` are those players.
     building_player_boxes: Option<Vec<([f64; 3], [f64; 3])>>,
@@ -1695,36 +1705,20 @@ impl LevelAccess for GameLevel<'_> {
     /// the minecarts and the other entities that don't ignore block triggers,
     /// and for `EntityQuery::Arrows` the arrows.
     fn count_entities(&self, area: Aabb, query: EntityQuery) -> usize {
-        let hit = |(lo, hi): &([f64; 3], [f64; 3])| {
-            area.intersects(Aabb::new(
-                Vec3::new(lo[0], lo[1], lo[2]),
-                Vec3::new(hi[0], hi[1], hi[2]),
-            ))
-        };
-        let carts = || self.cart_boxes.iter().filter(|b| hit(b)).count();
-        let others = || {
-            self.crystals
-                .iter()
-                .map(dragon::Crystal::bounds)
-                .chain(self.trigger_hooks.iter().map(|&(bounds, _)| bounds))
-                .chain(self.trigger_extras.iter().copied())
-                .filter(|b| area.intersects(*b))
-                .count()
-        };
-        let arrows = || self.arrow_boxes.iter().filter(|b| hit(b)).count();
-        let players = || {
-            self.player_box
-                .iter()
-                .chain(&self.guest_boxes)
-                .filter(|b| hit(b))
-                .count()
-        };
-        match query {
-            EntityQuery::Minecart => carts(),
-            EntityQuery::Arrows => arrows(),
-            EntityQuery::Mobs => players() + self.count_triggers::<true>(area),
-            EntityQuery::Everything => players() + self.count_triggers::<false>(area) + others(),
-        }
+        self.count_entities_for(area, query, |_| true)
+    }
+    /// The plate or tripwire `block` at `pos` is set off by a player only when
+    /// the mods let them (`native_player_physical_trigger`).
+    fn count_entities_at(
+        &self,
+        pos: BlockPos,
+        block: &str,
+        area: Aabb,
+        query: EntityQuery,
+    ) -> usize {
+        self.count_entities_for(area, query, |player| {
+            self.allow_physical_trigger(player, pos, block)
+        })
     }
     fn emit(&mut self, event: LevelEvent) {
         match event {
@@ -2788,9 +2782,9 @@ struct Game<'a> {
     mod_chunk_tickets: HashMap<Dim, HashMap<(i32, i32), std::collections::BTreeSet<String>>>,
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
-    /// The item columns for one pass of the players' pickups
-    /// (`tick_guests`), rebuilt after any write to the items (a pickup, a
-    /// command, an explosion): see `item_columns`.
+    /// Item columns for the players' pickups (`tick_guests`) and hopper carts
+    /// (`tick_carts`), exact at any time: any write to the items (a move, a
+    /// pickup, a command) makes them scan, then rebuild (`StampedItemColumns`).
     pickup_columns: Option<machines::StampedItemColumns>,
     /// Where the mobs are, while the block entities tick (potent sulfur gas).
     pass_mobs: Option<potent_sulfur::PassMobs>,
@@ -3601,130 +3595,7 @@ impl Game<'_> {
     }
     /// The first block outline hit within `reach` along the unit `dir`.
     fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
-        let mut pos = origin.map(|v| v.floor() as i32);
-        let step = dir.map(|d| if d > 0.0 { 1 } else { -1 });
-        let delta = dir.map(|d| {
-            if d == 0.0 {
-                f64::INFINITY
-            } else {
-                (1.0 / d).abs()
-            }
-        });
-        let mut t_max = [0.0; 3];
-        for i in 0..3 {
-            let boundary = if dir[i] > 0.0 {
-                f64::from(pos[i]) + 1.0
-            } else {
-                f64::from(pos[i])
-            };
-            t_max[i] = if dir[i] == 0.0 {
-                f64::INFINITY
-            } else {
-                (boundary - origin[i]) / dir[i]
-            };
-        }
-        let mut face = [0; 3];
-        let mut t = 0.0;
-        while t <= reach {
-            let state = self.world.block(pos[0], pos[1], pos[2]);
-            let f = self.res.facts().get(state);
-            if self.collision.cached_shapes().has_context_shapes(state) {
-                if let Some(hit) = self.clip_declared_outline(state, pos, origin, dir, reach) {
-                    return Some(hit);
-                }
-            } else if !self.res.facts().is_air(state)
-                && (f.fluid == Fluid::None
-                    || f.waterlogged
-                    || &*f.name == "minecraft:kelp"
-                    || f.render_shape == horizon_client::blocks::RenderShape::Model)
-                && !matches!(
-                    &*f.name,
-                    "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
-                )
-            {
-                // The nearest entry into one of the outline's boxes (slab method).
-                let mut best: Option<(f64, [i32; 3])> = None;
-                for b in self.outline_boxes(pos) {
-                    let (mut t0, mut t1, mut axis_in, mut sign) = (0.0f64, f64::INFINITY, None, 0);
-                    let mut miss = false;
-                    for a in 0..3 {
-                        if dir[a] == 0.0 {
-                            miss |= origin[a] < b[a] || origin[a] > b[a + 3];
-                            continue;
-                        }
-                        let (lo, hi) =
-                            ((b[a] - origin[a]) / dir[a], (b[a + 3] - origin[a]) / dir[a]);
-                        let (near, far) = if lo < hi { (lo, hi) } else { (hi, lo) };
-                        if near > t0 {
-                            t0 = near;
-                            axis_in = Some(a);
-                            sign = if dir[a] > 0.0 { -1 } else { 1 };
-                        }
-                        t1 = t1.min(far);
-                    }
-                    if miss || t0 > t1 || t0 > reach {
-                        continue;
-                    }
-                    let mut normal = face;
-                    if let Some(a) = axis_in {
-                        normal = [0; 3];
-                        normal[a] = sign;
-                    }
-                    if best.is_none_or(|(bt, _)| t0 < bt) {
-                        best = Some((t0, normal));
-                    }
-                }
-                if let Some((t, mut face)) = best {
-                    // `BlockGetter.clipWithInteractionOverride`: the hit stays at the
-                    // outline's point, with the face of the interaction shape when
-                    // the ray enters that first.
-                    let name = &*f.name;
-                    let facing = self
-                        .pack
-                        .assets
-                        .registry
-                        .state(state)
-                        .and_then(|s| s.properties.get("facing"))
-                        .map(String::as_str);
-                    let inside = interaction_shapes::boxes(name, facing);
-                    if !inside.is_empty() {
-                        let at = pos.map(f64::from);
-                        let world: Vec<[f64; 6]> = inside
-                            .iter()
-                            .map(|b| std::array::from_fn(|i| at[i % 3] + b[i]))
-                            .collect();
-                        if let Some((ti, normal)) =
-                            interaction_shapes::entry(origin, dir, &world, reach, face)
-                            && ti < t
-                        {
-                            face = normal;
-                        }
-                    }
-                    return Some(Hit {
-                        pos,
-                        face,
-                        point: [
-                            origin[0] + dir[0] * t,
-                            origin[1] + dir[1] * t,
-                            origin[2] + dir[2] * t,
-                        ],
-                    });
-                }
-            }
-            let axis = if t_max[0] < t_max[1] {
-                if t_max[0] < t_max[2] { 0 } else { 2 }
-            } else if t_max[1] < t_max[2] {
-                1
-            } else {
-                2
-            };
-            t = t_max[axis];
-            t_max[axis] += delta[axis];
-            pos[axis] += step[axis];
-            face = [0; 3];
-            face[axis] = -step[axis];
-        }
-        None
+        self.clip_ray_fluids(origin, dir, reach, false)
     }
     /// The stack in the hand that acts (`getItemInHand(hand)`).
     fn held(&self) -> Option<&ItemStack> {
@@ -4314,7 +4185,9 @@ impl Game<'_> {
                 (b.min_position().components(), b.max_position().components())
             })
             .collect();
-        let guest_boxes = self.lan_block_trigger_boxes();
+        let (guest_box_uuids, guest_boxes): (Vec<_>, Vec<_>) =
+            self.lan_block_trigger_boxes().into_iter().unzip();
+        let player_box_uuid = horizon_client::lan::playerdata::ints_uuid(self.acting_uuid());
         let building_player_boxes = self
             .lan_acting
             .is_some()
@@ -4409,6 +4282,8 @@ impl Game<'_> {
             thundering: thunder > 0.9,
             player_box,
             guest_boxes,
+            guest_box_uuids,
+            player_box_uuid,
             building_player_boxes,
             player_collision,
             biomes: world_biomes!(self),
@@ -8710,152 +8585,6 @@ impl Game<'_> {
         let _ = player.clamp_health_to_max();
         self.apply_enchantment_attributes();
     }
-    /// `LivingEntity.hurtServer` with the two equipment services performed
-    /// synchronously. Keeping the acting player installed lets durability
-    /// hooks observe and modify its real inventory before this hit continues.
-    fn hurt_player_equipment(
-        &mut self,
-        source: horizon_world::damage_source::DamageTypeId,
-        amount: f32,
-        blocking: Option<horizon_client::health::Blocking>,
-        living_cause: bool,
-        causing: i32,
-    ) -> horizon_client::Result<(horizon_client::health::BlockOutcome, f32)> {
-        let mut hit = self
-            .player
-            .as_mut()
-            .ok_or("missing damage target")?
-            .prepare_equipment_hurt(
-                &self.health_resources,
-                self.world.health_rules,
-                source,
-                amount,
-                blocking,
-                living_cause,
-                causing,
-            )?;
-        if let Some(damage) = hit.helmet_damage()
-            && self.armor[0]
-                .as_ref()
-                .is_some_and(|s| s.count > 0 && &*s.item != "minecraft:air")
-        {
-            self.hurt_equipment(source, damage, &[0]);
-            hit.helmet_worn();
-            self.refresh_armor_protection();
-        }
-        let actual = hit.damage().unwrap_or(amount);
-        let armor_damage = self
-            .player
-            .as_mut()
-            .ok_or("missing damage target")?
-            .select_equipment_hurt(&self.health_resources, &mut hit)?;
-        if let Some(damage) = armor_damage {
-            self.hurt_armor(source, damage);
-            self.refresh_armor_protection();
-        }
-        let outcome = self
-            .player
-            .as_mut()
-            .ok_or("missing damage target")?
-            .finish_equipment_hurt(&self.health_resources, hit)?;
-        Ok((outcome, actual))
-    }
-    /// The armor hits among a tick's motion events (`Player.hurtArmor` from
-    /// `getDamageAfterArmorAbsorb`), whatever the damage: a mob, an explosion,
-    /// a cactus, lava, a campfire.
-    fn wear_armor(&mut self, events: &[MotionEvent]) {
-        for event in events {
-            if let MotionEvent::Health(horizon_client::health::HealthEvent::ArmorHurt {
-                source,
-                amount,
-            }) = event
-            {
-                self.hurt_armor(*source, *amount);
-            }
-        }
-    }
-    /// `Player.hurtArmor` -> `LivingEntity.doHurtEquipment`: each worn piece that
-    /// wears when its wearer is hurt loses max(1, damage / 4) durability, except
-    /// to a fire source when the piece resists fire (`ItemStack.canBeHurtBy`).
-    fn hurt_armor(&mut self, source: horizon_world::damage_source::DamageTypeId, damage: f32) {
-        self.hurt_equipment(source, damage, &[3, 2, 1, 0]);
-    }
-    /// Vanilla visits FEET, LEGS, CHEST, HEAD, applying each break before the
-    /// next slot's durability hook and enchantment random draws.
-    fn hurt_equipment(
-        &mut self,
-        source: horizon_world::damage_source::DamageTypeId,
-        damage: f32,
-        slots: &[usize],
-    ) {
-        if damage <= 0.0 {
-            return;
-        }
-        // The maximum of 1.0F and damage / 4.0F, then Java's saturating float-to-int.
-        let amount = if damage.is_nan() {
-            0
-        } else {
-            (damage / 4.0).max(1.0) as i32
-        };
-        if amount <= 0 {
-            return;
-        }
-        let amount = amount as u32;
-        let name = self
-            .health_resources
-            .damage
-            .definition(source)
-            .map(|d| d.name.clone())
-            .unwrap_or_default();
-        let fire = self
-            .health_resources
-            .damage
-            .in_tag(source, "minecraft:is_fire");
-        for &i in slots {
-            let Some(stack) = self.armor[i].clone() else {
-                continue;
-            };
-            let Some(info) = world_items!(self).get(&stack.item) else {
-                continue;
-            };
-            let component = |id| stack.data().and_then(|data| data.other(id));
-            // ItemStack.isDamageableItem: component removal and
-            // unbreakable are checked before enchantment RNG or hooks.
-            if stack.count == 0
-                || !info.equip_damage_on_hurt
-                || component("minecraft:unbreakable").is_some()
-                || component("!minecraft:max_damage").is_some()
-                || component("!minecraft:damage").is_some()
-                || (fire && world_items!(self).resists_fire(&stack, &name))
-            {
-                continue;
-            }
-            let max = match component("minecraft:max_damage") {
-                Some(horizon_world::nbt::Tag::Int(value)) => match u32::try_from(*value) {
-                    Ok(value) => value,
-                    Err(_) => continue,
-                },
-                _ => info.max_damage,
-            };
-            if max == 0 {
-                continue;
-            }
-            let loss = self.wear(&stack, amount);
-            if loss == 0 {
-                continue;
-            }
-            let Some(worn) = self.armor[i].as_mut() else {
-                continue;
-            };
-            worn.damage = worn.damage.saturating_add(loss).min(max);
-            if worn.damage >= max {
-                let broken = worn.clone();
-                self.armor[i] = None;
-                self.player_equipment_broke(armor_slot(i), &broken);
-                self.apply_equipment();
-            }
-        }
-    }
     /// Voxel traversal that also stops at fluid source blocks (bucket pick).
     fn pick_fluid(&self) -> Option<Hit> {
         let (origin, dir) = self.aim()?;
@@ -9225,88 +8954,6 @@ impl Game<'_> {
         }
         if self.level_set(at, new).is_ok() {
             self.post_block_game_event("minecraft:block_change", at, None, Some(new));
-        }
-    }
-    pub(super) fn damage_held(&mut self, amount: u32) {
-        self.damage_held_in_slot(
-            amount,
-            horizon_world::player_inventory::EquipmentSlot::MainHand,
-        );
-    }
-    /// Hurt the acting hand's stack through ordinary wear/criterion/break handling,
-    /// reporting its break in the caller's explicit equipment slot.
-    pub(super) fn damage_held_in_slot(
-        &mut self,
-        amount: u32,
-        break_slot: horizon_world::player_inventory::EquipmentSlot,
-    ) {
-        if self.creative {
-            return;
-        }
-        let amount = match self.held().cloned() {
-            Some(held) => self.wear(&held, amount),
-            None => amount,
-        };
-        let max = self.held().map_or(0, |s| {
-            if &*s.item == "minecraft:trident" {
-                self.trident_max_damage(s)
-            } else {
-                self.items().get(&s.item).map_or(0, |i| i.max_damage)
-            }
-        });
-        self.apply_held_damage(amount, max, break_slot);
-    }
-    fn damage_held_with_max(&mut self, amount: u32, max: u32) {
-        if self.creative {
-            return;
-        }
-        let amount = match self.held().cloned() {
-            Some(held) => self.wear(&held, amount),
-            None => amount,
-        };
-        self.apply_held_damage(
-            amount,
-            max,
-            horizon_world::player_inventory::EquipmentSlot::MainHand,
-        );
-    }
-    fn apply_held_damage(
-        &mut self,
-        amount: u32,
-        max: u32,
-        break_slot: horizon_world::player_inventory::EquipmentSlot,
-    ) {
-        let cell = self.held_mut();
-        if let Some(stack) = cell.as_mut()
-            && max > 0
-        {
-            stack.damage += amount;
-            if stack.damage >= max {
-                let broken = stack.item.clone();
-                let gone = stack.clone();
-                *cell = None;
-                self.award_stat("broken", &broken, 1);
-                // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
-                self.player_equipment_broke(break_slot, &gone);
-            }
-        }
-    }
-    /// `ItemStack.hurtWithoutBreaking`: Unbreaking applies, but the stack stops at
-    /// one point of durability left instead of breaking.
-    fn hurt_held_without_breaking(&mut self, amount: u32) {
-        if self.creative {
-            return;
-        }
-        let Some(held) = self.held().cloned() else {
-            return;
-        };
-        let amount = self.wear(&held, amount);
-        let max = self.trident_max_damage(&held);
-        if amount == 0 || max == 0 {
-            return;
-        }
-        if let Some(stack) = self.held_mut().as_mut() {
-            stack.damage = (stack.damage + amount).min(max - 1);
         }
     }
     /// Block tool use: distinguish success, failure and fall-through for hand feedback.
@@ -14388,325 +14035,8 @@ fn is_game_master_block(name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn weather_follows_the_dimension_type_not_the_id() {
-        use super::level_can_have_weather as w;
-        assert!(w(true, false, false)); // open sky
-        assert!(!w(true, true, false)); // ceiling (Nether, overworld_caves)
-        assert!(!w(false, false, false)); // no sky light
-        assert!(!w(true, false, true)); // the End is named by id
-    }
-
-    use super::*;
-
-    /// A falling block is drawn moved by its column's model offset, as
-    /// `ModelBlockRenderer.tesselateBlock` does with `BlockState.getOffset`
-    /// of `BlockPos.containing(x, maxY, z)`: a pointed dripstone that breaks
-    /// off stays where it hung instead of jumping to the block's centre (#4102).
-    #[test]
-    fn a_falling_block_keeps_its_model_offset() {
-        let at = Vec3::new(3.5, 70.25, -1.5);
-        let falling = FallingBlock {
-            rotation: [0.0, 0.0],
-            join: Default::default(),
-            id: 0,
-            state: BlockStateId(7),
-            start_pos: BlockPos::new(3, 72, -2),
-            position: at,
-            previous: Vec3::new(3.5, 71.0, -1.5),
-            velocity: Vec3::ZERO,
-            age: 5,
-            no_gravity: false,
-            portal: Default::default(),
-            drop_item: true,
-            fall_distance: 0.0,
-            on_ground: false,
-            stuck: Vec3::ZERO,
-            damage: horizon_client::falling_block::Damage::default(),
-            saved: None,
-        };
-        // OffsetType.XZ: one offset per column (Mth.getSeed(x, 0, z)).
-        let offset = |state: BlockStateId, x: i32, z: i32| {
-            assert_eq!(state, BlockStateId(7));
-            ((x, z) == (3, -2)).then_some([0.125, 0.0, -0.0625])
-        };
-        let origin = falling.model_origin(0.5, offset);
-        assert_eq!(origin, glam::DVec3::new(3.125, 70.625, -2.0625));
-        // Blocks without a random offset are drawn centred on the entity.
-        let origin = falling.model_origin(1.0, |_, _, _| None);
-        assert_eq!(origin, glam::DVec3::new(3.0, 70.25, -2.0));
-    }
-
-    /// `FallingBlockRenderer.shouldRender` emits nothing for a falling block whose
-    /// own state is the state of the cell it is in (a `NoGravity` block, or one
-    /// that has just landed), where Horizon drew a z-fighting copy; the same block
-    /// draws its model again once that cell is cleared.
-    #[test]
-    fn a_falling_block_in_its_own_state_emits_nothing() {
-        let state = BlockStateId(7);
-        assert!(!falling_block_visible(state, state));
-        assert!(falling_block_visible(state, BlockStateId(0)));
-    }
-
-    /// A falling block does not sneak, so `Entity.isDescending()` is false.
-    /// Scaffolding top surface collides solidly with non-descending entities
-    /// so falling scaffolding lands on top of existing scaffolding instead
-    /// of falling through and breaking (#7553).
-    #[test]
-    fn falling_block_does_not_descend_through_scaffolding() {
-        let pos = BlockPos::new(0, 10, 0);
-        let scaffold = horizon_world::block_collision::ScaffoldingCollision::from_state(
-            &horizon_world::chunk::BlockState {
-                name: "minecraft:scaffolding".to_string(),
-                properties: [
-                    ("bottom".to_string(), "false".to_string()),
-                    ("distance".to_string(), "0".to_string()),
-                    ("waterlogged".to_string(), "false".to_string()),
-                ]
-                .into_iter()
-                .collect(),
-            },
-        )
-        .unwrap()
-        .expect("scaffolding collision rule");
-
-        // When a falling block is falling downward (wanted.y < 0) above the scaffolding top (y = 11.0):
-        let falling_y = 11.0;
-        let buggy_descending_context = CollisionContext::for_entity(
-            CollisionEntity {
-                identity: EntityIdentity(0),
-                kind: horizon_world::collision_context::EntityContextKind::Other,
-                y: falling_y,
-                descending: true, // the old buggy behavior: wanted.y < 0.0
-                main_hand: None,
-            },
-            false,
-        );
-        let fixed_context = CollisionContext::for_entity(
-            CollisionEntity {
-                identity: EntityIdentity(0),
-                kind: horizon_world::collision_context::EntityContextKind::Other,
-                y: falling_y,
-                descending: false, // fixed: FallingBlockEntity does not sneak
-                main_hand: None,
-            },
-            false,
-        );
-
-        // Before the fix, descending=true caused scaffolding collision to be empty:
-        assert!(buggy_descending_context.is_descending());
-        let buggy_shape = scaffold.shape(&buggy_descending_context, pos);
-        assert!(
-            buggy_shape.is_empty(),
-            "descending entities fall through scaffolding"
-        );
-
-        // With descending=false, scaffolding provides stable top collision:
-        assert!(!fixed_context.is_descending());
-        let solid_shape = scaffold.shape(&fixed_context, pos);
-        assert!(
-            !solid_shape.is_empty(),
-            "falling block must collide with scaffolding top"
-        );
-    }
-
-    #[test]
-    fn quit_shortcut_blocks_window_close_when_option_disabled() {
-        use winit::keyboard::ModifiersState;
-
-        let mut keys = HashSet::new();
-        let alt = ModifiersState::ALT;
-        let super_key = ModifiersState::SUPER;
-
-        let quit_shortcuts_enabled = true;
-        let quit_shortcuts_disabled = false;
-
-        keys.insert(if cfg!(target_os = "macos") {
-            KeyCode::KeyQ
-        } else {
-            KeyCode::F4
-        });
-        let mods = if cfg!(target_os = "macos") {
-            super_key
-        } else {
-            alt
-        };
-
-        let should_ignore =
-            |quit_shortcuts: bool, modifiers: ModifiersState, keys: &HashSet<KeyCode>| {
-                !quit_shortcuts && horizon_client::input::is_quit_shortcut_down(modifiers, keys)
-            };
-
-        // When enabled, close requests from shortcuts proceed normally.
-        assert!(!should_ignore(quit_shortcuts_enabled, mods, &keys));
-
-        // When disabled and the quit shortcut is held, close requests are ignored.
-        assert!(should_ignore(quit_shortcuts_disabled, mods, &keys));
-
-        // When disabled but shortcut NOT held (e.g. 'X' button clicked), close request proceeds.
-        assert!(!should_ignore(
-            quit_shortcuts_disabled,
-            ModifiersState::empty(),
-            &HashSet::new()
-        ));
-    }
-
-    #[test]
-    fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
-        use horizon_client::world::ModifiedChunks;
-        use std::cell::Cell;
-        let now = Instant::now();
-        let mut dirty = ModifiedChunks::default();
-        dirty.extend((0..27).map(|x| (x, 0)));
-        dirty.autosaved(&[(0, 0), (2, 0)], now);
-        dirty.remove(&(1, 0)); // already clean
-        let writes = Cell::new(127);
-        let mut chosen = Vec::new();
-        dirty.save_eagerly(
-            now,
-            || writes.get() < 128,
-            |k| k != (3, 0),
-            |k| {
-                chosen.push(k);
-                writes.set(writes.get() + 1);
-                true
-            },
-        );
-        assert_eq!(chosen, [(4, 0)]); // cooldown, clean, absent, then budget exhausted
-        chosen.clear();
-        dirty.save_eagerly(
-            now,
-            || true,
-            |_| true,
-            |k| {
-                chosen.push(k);
-                true
-            },
-        );
-        assert_eq!(chosen, (5..25).map(|x| (x, 0)).collect::<Vec<_>>()); // exactly 20
-        dirty.insert((4, 0)); // a later edit goes AFTER the still-cooled entries
-        chosen.clear();
-        dirty.save_eagerly(
-            now + Duration::from_secs(10),
-            || true,
-            |_| true,
-            |k| {
-                chosen.push(k);
-                true
-            },
-        );
-        assert_eq!(chosen, [(0, 0), (2, 0), (25, 0), (26, 0), (4, 0)]);
-        dirty.insert((4, 0));
-        dirty.save_eagerly(
-            now + Duration::from_secs(11),
-            || false,
-            |_| true,
-            |_| panic!("no time"),
-        );
-        assert!(dirty.contains(&(4, 0)));
-        dirty.unloaded(&(4, 0)); // unloading removes the cooldown even if reloaded immediately
-        chosen.clear();
-        dirty.save_eagerly(
-            now + Duration::from_secs(11),
-            || true,
-            |_| true,
-            |k| {
-                chosen.push(k);
-                true
-            },
-        );
-        assert_eq!(chosen, [(4, 0)]);
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn eager_saves_wait_for_an_open_world_and_for_light() {
-        let mut game = super::native_machines::tests::server_game();
-        let dir = std::env::temp_dir().join(format!("horizon-eager-game-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        game.save = Arc::new(horizon_client::save::SaveDir::new(
-            dir.clone(),
-            horizon_client::save::LevelShape::OVERWORLD,
-        ));
-        Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap()).lit = true;
-        game.world
-            .chunks
-            .insert((1, 0), Arc::new(horizon_client::chunk::Chunk::empty(1, 0)));
-        game.world.modified.extend([(0, 0), (1, 0)]);
-        game.save_chunks_eagerly(); // no world open: nothing to save into
-        assert!(game.world.modified.contains(&(0, 0)));
-        game.world_root = dir.clone();
-        game.save_chunks_eagerly();
-        assert!(!game.world.modified.contains(&(0, 0)));
-        assert!(game.world.modified.contains(&(1, 0))); // not lit yet
-        Arc::make_mut(game.world.chunks.get_mut(&(1, 0)).unwrap()).lit = true;
-        game.save_chunks_eagerly(); // still queued: no new dirty transition needed
-        assert!(!game.world.modified.contains(&(1, 0)));
-        game.save.flush().unwrap();
-        assert!(dir.join("region/r.0.0.mca").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn integrated_server_save_persists_owner_player_data() {
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-integrated-player-save-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-
-        // Initial world creation writes `level.dat` before the player spawns.
-        let mut level = Level {
-            name: "Creative".into(),
-            creative: true,
-            game_mode: 1,
-            ..Level::default()
-        };
-        level.write(&dir).unwrap();
-
-        // The integrated server stores the owner's state in `level` and saves the world.
-        level.position = Some([128.5, 72.0, -64.25]);
-        level.inventory = vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)];
-        write_level_for_role(
-            &mut level,
-            &dir,
-            execution_role::ExecutionRole::IntegratedServer,
-        )
-        .unwrap();
-
-        let reopened = Level::read(&dir).unwrap();
-        assert_eq!(reopened.position, Some([128.5, 72.0, -64.25]));
-        assert_eq!(
-            reopened.inventory,
-            vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)]
-        );
-
-        // A dedicated server save updates world metadata without overwriting the player file.
-        let mut dedicated = Level {
-            player_uuid: level.player_uuid,
-            day_time: 6000,
-            ..Level::default()
-        };
-        write_level_for_role(
-            &mut dedicated,
-            &dir,
-            execution_role::ExecutionRole::DedicatedServer,
-        )
-        .unwrap();
-
-        let reopened = Level::read(&dir).unwrap();
-        assert_eq!(reopened.day_time, 6000);
-        assert_eq!(reopened.position, Some([128.5, 72.0, -64.25]));
-        assert_eq!(
-            reopened.inventory,
-            vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)]
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+#[path = "game_tests.rs"]
+mod tests;
 
 fn write_level_for_role(
     level: &mut Level,
