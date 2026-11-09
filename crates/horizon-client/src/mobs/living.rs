@@ -14,8 +14,8 @@ use horizon_core::{
 };
 use horizon_world::{
     block_landing::LandingEntityKind,
-    entity_fluid::{CurrentAccumulator, CurrentTarget},
-    fluid::{FluidState, FluidTemplate},
+    entity_fluid::{CurrentAccumulator, CurrentTarget, ModFluidImmersion},
+    fluid::{FluidKind, FluidState},
     fluid_flow::{FluidFlowWorld, flow_at},
     movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
     registry::BlockStateId,
@@ -72,6 +72,9 @@ pub struct Fluids {
     pub in_water: bool,
     pub in_lava: bool,
     pub eye_in_water: bool,
+    /// The mod fluid the mob is deepest in (`isInFluidType`): not water to the
+    /// game, but the mob moves in it as in water, with its numbers.
+    pub modded: Option<ModFluidImmersion>,
 }
 /// `FluidFlowWorld` over the mob's scene: the neighbours a flow vector reads.
 struct FlowScene<'a, 'w>(&'a MobWorld<'w>);
@@ -164,12 +167,13 @@ impl MobWorld<'_> {
                 (hi.z.ceil() as i32 - 1).max(ez),
             ],
         );
-        if !self
-            .world
-            .may_hold(cells.0, cells.1, |s| self.facts.get(s).fluid != Fluid::None)
-        {
+        if !self.world.may_hold(cells.0, cells.1, |s| {
+            self.facts.get(s).fluid != Fluid::None
+                || !self.fluid_tables.fluid(s).kind().is_vanilla()
+        }) {
             return out;
         }
+        out.modded = self.mod_fluid(lo, hi, (ex, ez), eye_y);
         for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
             for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
                 for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
@@ -221,10 +225,69 @@ impl MobWorld<'_> {
         }
         out
     }
+    /// The mod fluid in a cell and its surface: a full block under the same
+    /// fluid, else its amount / 9 (`FluidState.getHeight`). A mod liquid block
+    /// holds its fluid only in the fluid table, not in the block facts.
+    fn mod_fluid_at(&self, x: i32, y: i32, z: i32) -> Option<(FluidKind, f64)> {
+        let state = self.fluid_tables.fluid(self.world.block(x, y, z));
+        if state.kind().is_vanilla() {
+            return None;
+        }
+        let fluid = state.kind().source();
+        let above = self.fluid_tables.fluid(self.world.block(x, y + 1, z));
+        let h = if above.kind().source() == fluid {
+            1.0
+        } else {
+            f64::from(state.amount()) / 9.0
+        };
+        Some((fluid, f64::from(y) + h))
+    }
+    /// The mod fluid deepest over the box (`lo`..`hi`), and whether the eye
+    /// (in column `eye`) is in it: a mod liquid block holds its fluid only in
+    /// the fluid table.
+    fn mod_fluid(
+        &self,
+        lo: Vec3,
+        hi: Vec3,
+        eye: (i32, i32),
+        eye_y: f64,
+    ) -> Option<ModFluidImmersion> {
+        let at = |x, y, z| self.mod_fluid_at(x, y, z);
+        let (y0, y1) = (lo.y.floor() as i32, hi.y.ceil() as i32 - 1);
+        let mut deepest: Option<ModFluidImmersion> = None;
+        for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
+            for y in y0..=y1 {
+                for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
+                    if let Some((fluid, top)) = at(x, y, z)
+                        && top >= lo.y
+                        && deepest.is_none_or(|m| top - lo.y > m.height)
+                    {
+                        deepest = Some(ModFluidImmersion {
+                            fluid,
+                            height: top - lo.y,
+                            eyes_inside: false,
+                        });
+                    }
+                }
+            }
+        }
+        let mut m = deepest?;
+        m.eyes_inside = (y0..=y1).any(|y| {
+            at(eye.0, y, eye.1).is_some_and(|(fluid, top)| {
+                fluid == m.fluid && top >= lo.y && eye_y >= f64::from(y) && eye_y <= top
+            })
+        });
+        Some(m)
+    }
     /// Entity.updateFluidHeightAndDoFluidPushing's currents over the deflated
     /// box: the flow of every water and lava block it touches, summed (a thin
-    /// fluid layer scales its flow down), as (water, lava).
-    fn fluid_currents(&self, bounds: Aabb) -> (CurrentAccumulator, CurrentAccumulator) {
+    /// fluid layer scales its flow down), as (water, lava); `modded` sums the
+    /// flow of that mod fluid instead.
+    fn fluid_currents(
+        &self,
+        bounds: Aabb,
+        modded: Option<FluidKind>,
+    ) -> (CurrentAccumulator, CurrentAccumulator) {
         let base_y = bounds.min_position().y;
         let b = bounds.deflate(Vec3::new(0.001, 0.001, 0.001));
         let (lo, hi) = (b.min_position(), b.max_position());
@@ -235,12 +298,22 @@ impl MobWorld<'_> {
                 for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
                     let p = BlockPos::new(x, y, z);
                     let state = self.fluid_tables.fluid(self.world.block(x, y, z));
-                    let current = match state.kind().template() {
-                        FluidTemplate::Empty => continue,
-                        FluidTemplate::Water => &mut water,
-                        FluidTemplate::Lava => &mut lava,
+                    let kind = state.kind();
+                    let current = if modded.is_some_and(|m| kind.source() == m) {
+                        &mut water
+                    } else if modded.is_some() || !kind.is_vanilla() {
+                        continue;
+                    } else if kind.source() == FluidKind::Water {
+                        &mut water
+                    } else if kind.source() == FluidKind::Lava {
+                        &mut lava
+                    } else {
+                        continue;
                     };
-                    let surface = f64::from(y) + self.fluid_height(x, y, z).1;
+                    let surface = match self.mod_fluid_at(x, y, z) {
+                        Some((_, top)) => top,
+                        None => f64::from(y) + self.fluid_height(x, y, z).1,
+                    };
                     if surface < lo.y {
                         continue;
                     }
@@ -591,6 +664,32 @@ impl Mob {
     pub fn is_in_liquid(&self) -> bool {
         self.fluids.in_water || self.fluids.in_lava
     }
+    /// The mod fluid the mob is in when it `canSwim`: it rises and floats in it.
+    pub fn swim_fluid(&self) -> Option<ModFluidImmersion> {
+        self.fluids
+            .modded
+            .filter(|m| m.fluid.info().entity.can_swim)
+    }
+    /// In a mod fluid that `canExtinguish`.
+    pub fn in_extinguishing_fluid(&self) -> bool {
+        self.fluids
+            .modded
+            .is_some_and(|m| m.fluid.info().entity.can_extinguish)
+    }
+    /// The eyes in a mod fluid that `canDrown`.
+    pub fn eye_in_drowning_fluid(&self) -> bool {
+        self.fluids
+            .modded
+            .is_some_and(|m| m.eyes_inside && m.fluid.info().entity.can_drown)
+    }
+    /// `FloatGoal.canUse` / the brains' `Swim`: deeper than the jump threshold
+    /// in water or a mod fluid that `canSwim`, or in lava.
+    pub fn floats(&self) -> bool {
+        let threshold = self.fluid_jump_threshold();
+        self.fluids.water > threshold
+            || self.fluids.in_lava
+            || self.swim_fluid().is_some_and(|m| m.height > threshold)
+    }
     /// `Entity.isPushedByFluid`: water animals, turtles, axolotls, frogs and
     /// nautiluses keep their own course.
     fn pushed_by_fluid(&self) -> bool {
@@ -883,7 +982,7 @@ impl Mob {
         self.fluids = w.fluids(self.bounds(), self.eye_y());
         // EntityFluidInteraction.applyCurrentTo: the flow pushes the mob.
         if (self.fluids.in_water || self.fluids.in_lava) && self.pushed_by_fluid() {
-            let (water, lava) = w.fluid_currents(self.bounds());
+            let (water, lava) = w.fluid_currents(self.bounds(), None);
             let lava_scale = if w.dimension_type.fast_lava {
                 0.007
             } else {
@@ -896,6 +995,16 @@ impl Mob {
             if lava.height > 0.0 {
                 let _ = lava.apply_to(&mut pushed, lava_scale);
             }
+        }
+        // A mod fluid pushes by its `motionScale` when it `canPushEntity`, and
+        // scales the fall distance by its `fallDistanceModifier`.
+        if let Some(m) = self.fluids.modded {
+            let numbers = m.fluid.info().entity;
+            if numbers.can_push && self.pushed_by_fluid() {
+                let (current, _) = w.fluid_currents(self.bounds(), Some(m.fluid));
+                let _ = current.apply_to(&mut Pushed(&mut self.velocity), numbers.motion_scale);
+            }
+            self.fall_distance *= f64::from(numbers.fall_distance_modifier);
         }
         if self.fluids.in_water {
             self.fall_distance = 0.0;
@@ -1370,7 +1479,8 @@ impl Mob {
             self.position.z.floor() as i32,
         );
         let stands_on_fluid = self.kind.flags.lava_walker && w.fluid(x, y, z) == Fluid::Lava;
-        if self.is_in_liquid() && self.affected_by_fluids() && !stands_on_fluid {
+        let in_fluid = self.is_in_liquid() || self.fluids.modded.is_some();
+        if in_fluid && self.affected_by_fluids() && !stands_on_fluid {
             self.travel_in_fluid(w, input, events);
         } else if self.extra.fall_flying {
             self.travel_fall_flying(w, input, events);
@@ -1562,7 +1672,9 @@ impl Mob {
         let falling = self.velocity.y <= 0.0;
         let old_y = self.position.y;
         let gravity = self.effective_gravity();
-        if self.fluids.in_water {
+        // A mod fluid moves the mob as water (NeoForge's `FluidType.move` left
+        // to the default).
+        if self.fluids.in_water || !self.fluids.in_lava && self.fluids.modded.is_some() {
             let mut slow = if self.extra.sprinting {
                 0.9
             } else {
@@ -1650,13 +1762,13 @@ impl Mob {
     /// The jump part of LivingEntity.aiStep.
     pub fn handle_jumping(&mut self, w: &MobWorld) {
         if self.ai.jumping && self.affected_by_fluids() {
+            // `jumpInFluid` also rises in a mod fluid that `canSwim`.
+            let swim = self.swim_fluid().map_or(0.0, |m| m.height);
             let (fluid_height, in_water_with_height) = if self.fluids.in_lava {
                 (self.fluids.lava, false)
             } else {
-                (
-                    self.fluids.water,
-                    self.fluids.in_water && self.fluids.water > 0.0,
-                )
+                let height = self.fluids.water.max(swim);
+                (height, (self.fluids.in_water || swim > 0.0) && height > 0.0)
             };
             let threshold = self.fluid_jump_threshold();
             if !in_water_with_height || self.on_ground && fluid_height <= threshold {
