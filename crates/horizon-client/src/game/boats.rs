@@ -258,6 +258,7 @@ impl Boat {
             raw,
             self.chest.then_some(&self.items[..]),
         );
+        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             map.insert("Fire".into(), Tag::Short(self.fire_ticks as i16));
         }
@@ -537,7 +538,8 @@ impl Game<'_> {
         Some((height, f.fluid_level == 8 && !f.fluid_falling))
     }
     /// `getWaterLevelAbove`: the top of the water column the hull is in.
-    fn water_level_above(&self, b: &Boat) -> f64 {
+    /// A float, as vanilla's: the block's y plus its water height in float.
+    fn water_level_above(&self, b: &Boat) -> f32 {
         let bb = b.bounds();
         let (lo, hi) = (bb.min_position(), bb.max_position());
         let (y0, y1) = (hi.y.floor() as i32, hi.y.ceil() as i32);
@@ -554,10 +556,10 @@ impl Game<'_> {
                 }
             }
             if height < 1.0 {
-                return f64::from(y) + f64::from(height);
+                return y as f32 + height;
             }
         }
-        f64::from(y1 + 1)
+        (y1 + 1) as f32
     }
     fn boat_status(&self, b: &mut Boat) -> Status {
         let bb = b.bounds();
@@ -569,7 +571,7 @@ impl Game<'_> {
             for y in hi.y.floor() as i32..max_y.ceil() as i32 {
                 for z in lo.z.floor() as i32..hi.z.ceil() as i32 {
                     if let Some((h, source)) = self.fluid_height(x, y, z)
-                        && max_y < f64::from(y) + f64::from(h)
+                        && max_y < f64::from(y as f32 + h)
                     {
                         if !source {
                             b.water_level = hi.y;
@@ -591,7 +593,8 @@ impl Game<'_> {
             for y in lo.y.floor() as i32..(lo.y + 0.001).ceil() as i32 {
                 for z in lo.z.floor() as i32..hi.z.ceil() as i32 {
                     if let Some((h, _)) = self.fluid_height(x, y, z) {
-                        let level = f64::from(y) + f64::from(h);
+                        // `float height = y + getHeight`: summed in float.
+                        let level = f64::from(y as f32 + h);
                         b.water_level = b.water_level.max(level);
                         in_water |= lo.y < level;
                     }
@@ -674,7 +677,33 @@ impl Game<'_> {
             0.0
         }
     }
-    /// `AbstractBoat.tick` for one boat (`controlled` when the player rides it).
+    /// `Entity.move`'s fall reset for a vehicle that keeps a fall and moves on
+    /// by `moved` from `from`: a move of a block or more casts up to 8 blocks
+    /// of it (`ClipContext.Block.FALLDAMAGE_RESETTING`, `ClipContext.Fluid.WATER`)
+    /// and a hit resets the fall, before the move's own drop counts.
+    pub(super) fn vehicle_fall_reset(&self, fall: f64, from: Vec3, moved: Vec3) -> f64 {
+        let length = moved.length_squared();
+        if fall == 0.0 || length < 1.0 {
+            return fall;
+        }
+        let to = from.add_vector(moved.normalize().scale(moved.length().min(8.0)));
+        let reset = &self.res.motion().fall_reset;
+        let fluids = &self.res.motion().fluids;
+        let hit = horizon_core::geometry::traverse_blocks(from, to, 1_000_000, |p| {
+            // A tagged block clips as a full block, not its collider.
+            let name = &self.res.facts().get(self.world.block(p.x, p.y, p.z)).name;
+            if reset.contains(&**name) && VoxelShape::block().clip(from, to, p).is_some() {
+                return Some(());
+            }
+            // The water's shape, through the shared fluid shape cache.
+            horizon_client::entities::water_clip(&self.world, fluids, from, to, p).then_some(())
+        });
+        if matches!(hit, Ok(Some(()))) {
+            0.0
+        } else {
+            fall
+        }
+    }
     /// `AbstractBoat.checkFallDamage` after a move that went `moved_y` (with
     /// `b` already where it landed): on the ground the fall resets; a move
     /// down over anything but water (the block under its `blockPosition`)
@@ -695,6 +724,7 @@ impl Game<'_> {
         }
         b.fall_distance
     }
+    /// `AbstractBoat.tick` for one boat (`controlled` when the player rides it).
     pub(super) fn tick_boat(&mut self, mut b: Boat, controlled: bool) -> Boat {
         b.previous = b.position;
         b.previous_yaw = b.yaw;
@@ -742,8 +772,10 @@ impl Game<'_> {
             && b.status != Status::InAir
             && b.status != Status::OnLand
         {
-            b.water_level = b.position.y;
-            let target = self.water_level_above(&b) - HEIGHT + 0.101;
+            // getY(1.0): the top of its box.
+            b.water_level = b.position.y + HEIGHT;
+            // getWaterLevelAbove() - getBbHeight(): a float subtraction.
+            let target = f64::from(self.water_level_above(&b) - HEIGHT as f32) + 0.101;
             let moved = Aabb::new(
                 Vec3::new(
                     b.bounds().min_position().x,
@@ -824,6 +856,7 @@ impl Game<'_> {
         };
         let movement = b.take_movement();
         if let Ok(moved) = scene.resolve(b.bounds(), movement, 0.0, b.on_ground) {
+            b.fall_distance = self.vehicle_fall_reset(b.fall_distance, b.position, moved);
             b.position = Vec3::new(
                 b.position.x + moved.x,
                 b.position.y + moved.y,

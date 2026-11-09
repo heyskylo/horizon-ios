@@ -253,6 +253,11 @@ impl Game<'_> {
         registries.function_tags = store.function_tags.keys().cloned().collect();
         registries.predicates = store.predicates.keys().cloned().collect();
         registries.item_modifiers = store.item_modifiers.keys().cloned().collect();
+        registries
+            .by_registry
+            .entry("minecraft:slot_source".into())
+            .or_default()
+            .ids = store.slot_sources.keys().cloned().collect();
         for (id, ids) in [
             ("minecraft:predicate", &registries.predicates),
             ("minecraft:item_modifier", &registries.item_modifiers),
@@ -306,6 +311,10 @@ impl Game<'_> {
         reg.function_tags = self.fns.store.function_tags.keys().cloned().collect();
         reg.predicates = self.fns.store.predicates.keys().cloned().collect();
         reg.item_modifiers = self.fns.store.item_modifiers.keys().cloned().collect();
+        reg.by_registry
+            .entry("minecraft:slot_source".into())
+            .or_default()
+            .ids = self.fns.store.slot_sources.keys().cloned().collect();
         reg.schedules = self.fns.schedule.iter().map(|s| s.id.clone()).collect();
         reg.datapacks_enabled = std::iter::once("vanilla".to_owned())
             .chain(self.fns.enabled.iter().cloned())
