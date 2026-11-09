@@ -262,6 +262,7 @@ mod tests {
         assert_eq!(b.max_position().y, 66.0);
     }
 
+    /// A wind charge past its first five ticks (`noDeflectTicks` run out).
     fn wind_charge() -> Projectile {
         let mut p = Projectile::new(
             ProjectileKind::WindCharge,
@@ -269,7 +270,24 @@ mod tests {
             Some(Who::Mob(7)),
         );
         p.velocity = Vec3::new(0.0, 1.5, 0.0);
+        p.no_deflect_ticks = 0;
         p
+    }
+
+    #[test]
+    fn a_fresh_wind_charge_is_not_turned() {
+        let mut p = wind_charge();
+        p.no_deflect_ticks = 5;
+        aim_deflect(
+            &mut p,
+            Some(Vec3::new(0.0, -1.0, 0.0)),
+            Some(Who::Player),
+            Some([4; 4]),
+            Some(3),
+        );
+        assert_eq!(p.velocity, Vec3::new(0.0, 1.5, 0.0));
+        assert_eq!(p.owner, Some(Who::Mob(7)));
+        assert!(!p.needs_sync);
     }
 
     #[test]
