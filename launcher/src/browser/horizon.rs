@@ -1277,7 +1277,16 @@ fn install_version_guarded(
     }
     let native = p.kind == index::Kind::NativeMod;
     let relative = match native {
-        true => format!("{}/{}.hnmod", crate::native_mods::INSTALLED, p.id),
+        true => format!(
+            "{}/{}.{}",
+            crate::native_mods::INSTALLED,
+            p.id,
+            if v.file.name.ends_with(".hmod") {
+                "hmod"
+            } else {
+                "hnmod"
+            }
+        ),
         false => relative(project.kind, &p.id, &v.file.name)?,
     };
     let mut list = installed::Installed::load(home);
@@ -1365,14 +1374,17 @@ fn install_version_guarded(
 /// keeps its `.hmod` until the player builds the game with the new version. The game runs it
 /// meanwhile and skips it once the native one is built in; removing the mod removes both.
 fn stays(native: bool, old: &str) -> bool {
-    native && old.ends_with(".hmod")
+    native && old.starts_with(&format!("{}/", java::MODS_DIR)) && old.ends_with(".hmod")
 }
 
 /// The mod id of an installed mod (`horizon-mods/<id>`, `horizon-mods/<id>.hmod` or
 /// `horizon-native-mods/<id>.hnmod`).
 pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
     if let Some(rest) = entry.file.strip_prefix(crate::native_mods::INSTALLED) {
-        return rest.strip_prefix('/')?.strip_suffix(".hnmod");
+        let name = rest.strip_prefix('/')?;
+        return name
+            .strip_suffix(".hnmod")
+            .or_else(|| name.strip_suffix(".hmod"));
     }
     let rest = entry.file.strip_prefix(java::MODS_DIR)?.strip_prefix('/')?;
     Some(rest.strip_suffix(".hmod").unwrap_or(rest))

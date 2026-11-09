@@ -329,7 +329,7 @@ pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
     }
     if let Some(id) = super::horizon::mod_id(&entry).filter(|_| entry.source == SourceId::Horizon) {
         // The `.hmod` a mod that turned native left behind (horizon::install_version).
-        if entry.file.ends_with(".hnmod") {
+        if super::super::native_status::is_native_file(&entry.file) {
             let _ = fs::remove_file(home.join(super::java::MODS_DIR).join(format!("{id}.hmod")));
         }
         super::java::set_enabled(home, id, false)?;
