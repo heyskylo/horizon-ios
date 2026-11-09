@@ -4132,6 +4132,7 @@ impl Game<'_> {
         self.native_player_clone(cloned, &name, true);
         let clock_rate = self.network_clock_rate();
         let ctx = TickCtx {
+            sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
@@ -7016,6 +7017,7 @@ mod connected_self_pose_tests {
 
     fn hub_pass(game: &mut Game<'_>, hub: &mut Hub, drain: bool) {
         let mut ctx = TickCtx {
+            sea_level: game.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut game.world,
             entities: &[],
             next_entity: &mut game.next_entity,
