@@ -543,6 +543,60 @@ fn finish_ram(m: &mut Mob, events: &mut Vec<MobEvent>) {
 }
 
 #[cfg(test)]
+mod long_jump_save_tests {
+    use super::*;
+    use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+    use horizon_world::nbt::Tag;
+    use std::sync::Arc;
+
+    fn goat() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:goat".into();
+        k.species = crate::mobs::Species::Goat;
+        Mob::new(7, kind, Vec3::new(0.5, 0.0, 0.5), 0.0)
+    }
+
+    /// `GoatAi`'s `LONG_JUMP_COOLDOWN_TICKS` is a brain memory, and
+    /// `Brain.Packed` saves every memory: `mob_to_nbt`/`mob_from_nbt` are the
+    /// pair `Game::mob_tree_nbt` and `Game::load_mob` go through. Horizon
+    /// counted the cooldown in the goat's memories and wrote no `Brain`, so a
+    /// goat that had just long jumped came back ready to jump again.
+    #[test]
+    fn a_goat_keeps_its_long_jump_cooldown_through_a_save() {
+        let mut m = goat();
+        assert_eq!(crate::mobs::frog::jump_cooldown(&m), None);
+        crate::mobs::frog::set_jump_cooldown(&mut m, Some(57));
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert_eq!(
+            saved
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("minecraft:long_jump_cooling_down")),
+            Some(&Tag::compound([("value", Tag::Int(57))])),
+            "the save names the ticks left"
+        );
+        let types = std::collections::HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
+        let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
+        assert_eq!(
+            crate::mobs::frog::jump_cooldown(&back),
+            Some(57),
+            "the reloaded cooldown"
+        );
+        // No cooldown writes no memory, even over a compound that names one.
+        let saved = mob_to_nbt(&goat(), [1, 2, 3, 4], Some(&saved), None, |_| None);
+        assert_eq!(
+            saved
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("minecraft:long_jump_cooling_down")),
+            None,
+            "no cooldown, no key"
+        );
+    }
+}
+
+#[cfg(test)]
 mod sound_tests {
     use super::*;
 
