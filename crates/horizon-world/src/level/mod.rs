@@ -138,7 +138,7 @@ mod growth_tests;
 mod tests;
 
 pub use bonemeal::TemplateSettings;
-pub use buckets::BucketContent;
+pub use buckets::{BucketContent, is_lava_bucket, mod_bucket_contents};
 pub use data::{BlockData, ItemBinding, ItemKind, Named, Props, PushReaction, StateFacts, Tags};
 pub use falling::Landing;
 pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
