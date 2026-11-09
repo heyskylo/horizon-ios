@@ -2,7 +2,7 @@
 //! transfer cooldowns), `DispenserBlock` / `DropperBlock.dispenseFrom` with
 //! the vanilla dispense behaviours Horizon has entities for, and container
 //! comparator signals (`AbstractContainerMenu.getRedstoneSignalFromContainer`).
-use super::{Game, storage::is_shulker_box};
+use super::{Game, spill, storage::is_shulker_box};
 
 mod crafter;
 pub(in crate::game) mod native_energy;
@@ -12,14 +12,16 @@ use horizon_client::{
     Result,
     containers::{BlockEntity, HOPPER_SLOTS, ModContainer},
     items::{ItemStack, Items},
+    save,
     world::World,
 };
 use horizon_core::{geometry::Direction, position::BlockPos, random::RandomSource};
 use horizon_world::{
     level::{Behaviours, LevelAccess},
+    nbt::Tag,
     registry::BlockStateId,
 };
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 type Pos = (i32, i32, i32);
 
@@ -73,6 +75,8 @@ impl Game<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Generic,
+    /// The saved decorated-pot slot, exposed only to hopper insertion.
+    Pot,
     /// `AbstractFurnaceBlockEntity` (a `WorldlyContainer`).
     Furnace,
     Hopper,
@@ -224,7 +228,10 @@ impl Containers<'_> {
         // them and a hopper leaves them alone.
         if matches!(
             entity,
-            BlockEntity::Beehive(_) | BlockEntity::Campfire(_) | BlockEntity::Brushable(_)
+            BlockEntity::Beehive(_)
+                | BlockEntity::Campfire(_)
+                | BlockEntity::Brushable(_)
+                | BlockEntity::EndPortal
         ) {
             return None;
         }
@@ -303,6 +310,38 @@ impl Containers<'_> {
             kind,
             container: None,
         })
+    }
+    /// `HopperBlockEntity.getBlockContainer` at its insertion target only.
+    /// Pots keep their authoritative slot in the chunk's saved tag. Pending
+    /// loot is deliberately left to its existing path, without unpacking it.
+    fn hopper_insertion_view(&self, pos: Pos) -> Option<View> {
+        self.view(pos, false).or_else(|| {
+            if self.name(self.world.block(pos.0, pos.1, pos.2)) != "minecraft:decorated_pot"
+                || spill::saved_entity(self.world, [pos.0, pos.1, pos.2])
+                    .is_some_and(|tag| matches!(tag.get("LootTable"), Some(Tag::String(_))))
+            {
+                return None;
+            }
+            Some(View {
+                parts: vec![(pos, 1)],
+                kind: Kind::Pot,
+                container: None,
+            })
+        })
+    }
+    /// The `ContainerSingleItem` slot for hopper insertion: only a saved pot
+    /// needs an owned decode. Existing modeled containers stay borrowed.
+    fn insertion_item(&self, view: &View, slot: usize) -> Option<Cow<'_, ItemStack>> {
+        if view.kind == Kind::Pot {
+            let (pos, _) = view.locate(slot)?;
+            let tag = spill::saved_entity(self.world, [pos.0, pos.1, pos.2])?;
+            return tag
+                .get("item")
+                .and_then(save::item_from_nbt)
+                .filter(|stack| stack.count > 0)
+                .map(Cow::Owned);
+        }
+        self.get(view, slot).map(Cow::Borrowed)
     }
     fn get(&self, view: &View, slot: usize) -> Option<&ItemStack> {
         if let Kind::Composter(level) = view.kind {
@@ -414,8 +453,8 @@ impl Containers<'_> {
     /// `HopperBlockEntity.isFullContainer`.
     fn is_full(&self, view: &View, face: Direction) -> bool {
         view.slots_for_face(Some(face)).into_iter().all(|i| {
-            self.get(view, i)
-                .is_some_and(|s| s.count >= self.max_stack(s))
+            self.insertion_item(view, i)
+                .is_some_and(|s| s.count >= self.max_stack(&s))
         })
     }
     /// `AbstractContainerMenu.getRedstoneSignalFromContainer`.
@@ -477,6 +516,43 @@ impl ItemColumns {
             }
         }
         self.cells.contains(&(x, z))
+    }
+    /// Whether an item's box may reach into any column of x0..=x1, z0..=z1.
+    pub(super) fn may_reach_area(
+        &mut self,
+        items: &[horizon_client::entities::ItemEntity],
+        (x0, x1): (i32, i32),
+        (z0, z1): (i32, i32),
+    ) -> bool {
+        (x0..=x1).any(|x| (z0..=z1).any(|z| self.may_reach(items, x, z)))
+    }
+}
+
+/// [`ItemColumns`] for a pass in which items can move (a command, an
+/// explosion's push), kept with the item list's
+/// [`ListStamp`](horizon_client::join_seq::ListStamp): after any write the
+/// first question scans as before (`true`), and the second with nothing
+/// written in between builds the columns. A pass that writes the items
+/// between questions costs no more than the scans did.
+#[derive(Default)]
+pub(super) struct StampedItemColumns {
+    stamp: Option<horizon_client::join_seq::ListStamp>,
+    columns: ItemColumns,
+}
+impl StampedItemColumns {
+    /// [`ItemColumns::may_reach_area`] for the items as they are now.
+    pub(super) fn may_reach_area(
+        &mut self,
+        items: &horizon_client::join_seq::JoinList<horizon_client::entities::ItemEntity>,
+        xs: (i32, i32),
+        zs: (i32, i32),
+    ) -> bool {
+        if self.stamp != Some(items.stamp()) {
+            self.stamp = Some(items.stamp());
+            self.columns = ItemColumns::default();
+            return true;
+        }
+        self.columns.may_reach_area(items, xs, zs)
     }
 }
 
@@ -672,12 +748,29 @@ impl Game<'_> {
         {
             return (Some(stack), false);
         }
-        let was_empty = c.is_empty(view);
+        let was_empty = (0..view.len()).all(|i| c.insertion_item(view, i).is_none());
         let max = c.max_stack(&stack);
         let mut success = false;
         let mut filled_empty = false;
-        let Some(target) = self.slot_mut_at(view, slot) else {
-            return (Some(stack), false);
+        let mut pot = if view.kind == Kind::Pot {
+            let pos = view.parts[0].0;
+            let Some(tag) = spill::saved_entity(&self.world, [pos.0, pos.1, pos.2])
+                .or_else(|| self.pot_data([pos.0, pos.1, pos.2]))
+            else {
+                return (Some(stack), false);
+            };
+            let item = tag.get("item").and_then(save::item_from_nbt);
+            Some((tag, item))
+        } else {
+            None
+        };
+        let target = if let Some((_, item)) = &mut pot {
+            item
+        } else {
+            let Some(target) = self.slot_mut_at(view, slot) else {
+                return (Some(stack), false);
+            };
+            target
         };
         // An empty stack a mod left in its slot: the slot is free (`isEmpty`).
         if target.as_ref().is_some_and(|s| s.count == 0) {
@@ -706,6 +799,18 @@ impl Game<'_> {
                 success = count > 0;
             }
             Some(_) => {}
+        }
+        if success && let Some((mut tag, item)) = pot {
+            let pos = view.parts[0].0;
+            if let Tag::Compound(map) = &mut tag {
+                if let Some(item) = item {
+                    map.insert("item".into(), save::item_to_nbt(&item));
+                } else {
+                    map.remove(&"item".into());
+                }
+            }
+            spill::put_saved_entity(&mut self.world, [pos.0, pos.1, pos.2], tag);
+            self.mark_block_entity_updated(pos);
         }
         // tryMoveInItem's setItem on an empty slot: AbstractFurnaceBlockEntity.setItem restarts
         // the cooking for a new input (a merge only grows the stack, and keeps it).
@@ -946,7 +1051,7 @@ impl Game<'_> {
         };
         let front = offset(pos, facing);
         let face = facing.opposite();
-        if let Some(target) = c.view(front, false) {
+        if let Some(target) = c.hopper_insertion_view(front) {
             self.native_hopper_inventory_search(
                 [pos.0, pos.1, pos.2],
                 Some([front.0, front.1, front.2]),
@@ -1314,6 +1419,25 @@ impl Game<'_> {
         }
         false
     }
+    /// `suck_item_entities` for a hopper minecart, which first asks the item
+    /// columns whether any item's box reaches the columns of the box: an item
+    /// that meets it reaches one of them. The columns follow the item list's
+    /// stamp, so any write since they were built (an item's move, an
+    /// explosion's push, a command, a pickup) makes them scan, then rebuild.
+    fn cart_suck_items(&mut self, hopper: &View, min: [f64; 3], max: [f64; 3]) -> bool {
+        if !self
+            .pickup_columns
+            .get_or_insert_with(Default::default)
+            .may_reach_area(
+                &self.dropped,
+                (min[0].floor() as i32, max[0].floor() as i32),
+                (min[2].floor() as i32, max[2].floor() as i32),
+            )
+        {
+            return false;
+        }
+        self.suck_item_entities(None, hopper, min, max)
+    }
     /// `MinecartHopper.tick`'s `tryConsumeItems` (`suckInItems`) for an enabled
     /// hopper minecart: one item from the container above, else the item
     /// entities over it or touching it, each tick without a cooldown.
@@ -1336,8 +1460,7 @@ impl Game<'_> {
         let at = [p.x, p.y + 1.5, p.z];
         let took = match self.suck_from_container(above, at, &view) {
             Some(took) => took,
-            None => self.suck_item_entities(
-                None,
+            None => self.cart_suck_items(
                 &view,
                 [p.x - 0.5, p.y + 11.0 / 16.0, p.z - 0.5],
                 [p.x + 0.5, p.y + 2.0, p.z + 0.5],
@@ -1347,8 +1470,7 @@ impl Game<'_> {
             // The cart's own box, inflated by 0.25 sideways.
             let b = cart.bounds();
             let (lo, hi) = (b.min_position(), b.max_position());
-            self.suck_item_entities(
-                None,
+            self.cart_suck_items(
                 &view,
                 [lo.x - 0.25, lo.y, lo.z - 0.25],
                 [hi.x + 0.25, hi.y, hi.z + 0.25],
@@ -1675,6 +1797,7 @@ mod item_column_tests {
     fn item(id: u32, x: f64, y: f64, z: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -1690,6 +1813,7 @@ mod item_column_tests {
             on_ground: true,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -1747,6 +1871,72 @@ mod item_column_tests {
             assert_eq!(a, b);
             println!("{hoppers} hoppers, {count} items: {before:.3} ms -> {after:.3} ms");
         }
+    }
+
+    /// An item moved in place (a `/tp`, an explosion's push) keeps the list's
+    /// length and last id; the stamped columns still see where it went.
+    #[test]
+    fn a_moved_item_is_seen_where_it_went() {
+        let mut items = horizon_client::join_seq::JoinList::from(vec![
+            item(1, 0.5, 64.0, 0.5),
+            item(2, 40.5, 64.0, 40.5),
+        ]);
+        let mut columns = super::StampedItemColumns::default();
+        let far = ((100, 100), (100, 100));
+        // The first question for a list scans; the second builds the columns.
+        assert!(columns.may_reach_area(&items, far.0, far.1));
+        assert!(!columns.may_reach_area(&items, far.0, far.1));
+        items[0].position = horizon_core::geometry::Vec3::new(100.5, 64.0, 100.5);
+        assert!(columns.may_reach_area(&items, far.0, far.1));
+        assert!(columns.may_reach_area(&items, far.0, far.1));
+        assert!(!columns.may_reach_area(&items, (0, 0), (0, 0)));
+    }
+
+    #[test]
+    fn no_player_with_an_item_in_reach_is_skipped() {
+        // guest_pickups' horizontal test, on every item.
+        let touches = |items: &[ItemEntity], p: [f64; 3]| {
+            items
+                .iter()
+                .any(|d| (d.position.x - p[0]).abs() < 1.5 && (d.position.z - p[2]).abs() < 1.5)
+        };
+        let mut seed = 0x0bad_5eed_u64;
+        let mut next = |range: f64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * range
+        };
+        let mut items: Vec<ItemEntity> = Vec::new();
+        let mut columns = ItemColumns::default();
+        let (mut skipped, mut found) = (0, 0);
+        for round in 0..4000u32 {
+            if round % 25 == 0 {
+                // On column edges as often as not.
+                let mut at = || {
+                    let v = next(40.0) - 20.0;
+                    if next(1.0) < 0.5 { v.round() } else { v }
+                };
+                items.push(item(round, at(), 64.0, at()));
+            } else if round % 101 == 0 && !items.is_empty() {
+                items.remove(next(items.len() as f64) as usize);
+            }
+            let p = [next(44.0) - 22.0, 64.0, next(44.0) - 22.0];
+            let reach = columns.may_reach_area(
+                &items,
+                ((p[0] - 1.5).floor() as i32, (p[0] + 1.5).floor() as i32),
+                ((p[2] - 1.5).floor() as i32, (p[2] + 1.5).floor() as i32),
+            );
+            let touching = touches(&items, p);
+            assert!(
+                reach || !touching,
+                "round {round}: skipped a player touching an item"
+            );
+            skipped += usize::from(!reach);
+            found += usize::from(touching);
+        }
+        assert!(
+            skipped > 1000 && found > 100,
+            "skipped {skipped}, found {found}"
+        );
     }
 
     #[test]
@@ -1900,6 +2090,110 @@ mod hopper_cart_transfer_tests {
         assert_eq!(
             after_cart, 20,
             "one item a tick, not a stack nor eight ticks"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pot_hopper_insertion_tests {
+    use super::super::{native_machines::tests::server_game, spill};
+    use super::*;
+    use horizon_client::save;
+    use horizon_world::nbt::Tag;
+
+    fn count(game: &Game<'_>, pos: Pos, slot: usize) -> u32 {
+        let Some(BlockEntity::Chest(slots)) = game.world.block_entities.get(&pos) else {
+            panic!("actual command-created inventory missing at {pos:?}");
+        };
+        slots[slot].as_ref().map_or(0, |item| item.count)
+    }
+    fn pot(game: &Game<'_>, z: i32) -> (Tag, ItemStack) {
+        let tag = spill::saved_entity(&game.world, [5, 200, z]).expect("actual saved pot");
+        let item = save::item_from_nbt(tag.get("item").expect("positive actual item")).unwrap();
+        (tag, item)
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_hopper_ticks_insert_into_the_saved_pot_slot() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        let mut initial = Vec::new();
+        for (z, id, target) in [
+            (4, "wheat", "decorated_pot"),
+            (8, "carrot", "decorated_pot"),
+            (12, "wheat", "chest"),
+        ] {
+            let command = format!(
+                "setblock 4 200 {z} hopper[facing=east,enabled=true]{{Items:[{{Slot:0b,id:\"minecraft:{id}\",count:40,components:{{\"minecraft:custom_data\":{{h282:1}}}}}},{{Slot:4b,id:\"minecraft:diamond\",count:2}}],TransferCooldown:0}}"
+            );
+            assert!(game.run_command(&command));
+            let content = if target == "decorated_pot" {
+                "item:{id:\"minecraft:wheat\",count:3,components:{\"minecraft:custom_data\":{h282:1}}}"
+            } else {
+                "Items:[{Slot:0b,id:\"minecraft:wheat\",count:3,components:{\"minecraft:custom_data\":{h282:1}}}]"
+            };
+            assert!(game.run_command(&format!("setblock 5 200 {z} {target}{{{content}}}")));
+            assert_eq!(count(&game, (4, 200, z), 0), 40);
+            assert_eq!(count(&game, (4, 200, z), 4), 2);
+            if target == "decorated_pot" {
+                assert!(!game.world.block_entities.contains_key(&(5, 200, z)));
+                assert!(
+                    game.containers().view((5, 200, z), false).is_none(),
+                    "generic discovery stays unchanged"
+                );
+                let (tag, item) = pot(&game, z);
+                assert_eq!(item.count, 3);
+                assert_eq!(&*item.item, "minecraft:wheat");
+                initial.push((z, tag, item));
+            }
+        }
+        assert_eq!(count(&game, (5, 200, 12), 0), 3);
+        let start = game.world.game_time;
+        let mut failures = Vec::new();
+        for elapsed in 1..=217 {
+            game.world.game_time = start + elapsed;
+            for z in [4, 8, 12] {
+                game.tick_hopper((4, 200, z));
+            }
+            if [1, 9, 217].contains(&elapsed) {
+                let n = ((elapsed - 1) / 8 + 1) as u32;
+                assert_eq!(
+                    count(&game, (4, 200, 12), 0),
+                    40 - n,
+                    "ordinary hopper cadence"
+                );
+                assert_eq!(count(&game, (5, 200, 12), 0), 3 + n);
+                assert_eq!(count(&game, (4, 200, 8), 0), 40, "different item rejected");
+                assert_eq!(pot(&game, 8).1.count, 3);
+                for z in [4, 8, 12] {
+                    assert_eq!(count(&game, (4, 200, z), 4), 2);
+                }
+                let (mut saved, item) = pot(&game, 4);
+                let mut before = initial[0].1.clone();
+                if let (Tag::Compound(a), Tag::Compound(b)) = (&mut saved, &mut before) {
+                    a.remove(&"item".into());
+                    b.remove(&"item".into());
+                }
+                assert_eq!(saved, before, "raw metadata preserved");
+                assert!(item.same_item_same_components(&initial[0].2));
+                let donor = count(&game, (4, 200, 4), 0);
+                assert_eq!(donor + item.count, 43, "actual conserved inventory");
+                assert!(game.containers().view((5, 200, 4), false).is_none());
+                if donor != 40 - n || item.count != 3 + n {
+                    failures.push((elapsed, donor, item.count));
+                }
+            }
+        }
+        assert_eq!(game.world.game_time - start, 217);
+        assert!(
+            failures.is_empty(),
+            "actual hopper/pot transfer missing: {failures:?}"
         );
     }
 }

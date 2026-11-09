@@ -110,6 +110,10 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class LocatorBarClient {
     private static volatile boolean tickSteps;
+    private static volatile boolean ownPoses;
+    private static volatile boolean selfMetadata;
+    private static volatile boolean trackPoses;
+    private static final Map<UUID, Integer> LOGIN_IDS = new java.util.concurrent.ConcurrentHashMap<>();
     private static volatile String step = "start";
     private static volatile boolean players;
     private static volatile boolean chat;
@@ -200,6 +204,9 @@ public final class LocatorBarClient {
                         players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundPlayerAbilitiesPacket(abilities));
                     }
                     case "ticksteps" -> tickSteps = w[1].equals("on");
+                    case "poses" -> ownPoses = w[1].equals("on");
+                    case "selfmetadata" -> selfMetadata = w[1].equals("on");
+                    case "trackposes" -> trackPoses = w[1].equals("on");
                     case "still" -> players.get(w[1]).still();
                     case "respawn" -> players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
                         net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.PERFORM_RESPAWN));
@@ -357,6 +364,7 @@ public final class LocatorBarClient {
         private final java.util.Set<Integer> boatIds = new java.util.HashSet<>();
         private final Map<Integer, String> entityTypes = new java.util.HashMap<>();
         private final Map<Integer, String> seen = new java.util.HashMap<>();
+        private final Map<Integer, UUID> trackedProfiles = new java.util.HashMap<>();
         private final Object replyLock = new Object();
         private int replies;
         private int syncs;
@@ -669,6 +677,57 @@ public final class LocatorBarClient {
             reader.start();
         }
 
+        // Test-only facts from already fully decoded official packets, never expected fixture values.
+        private void recordTargetTrack(Packet<?> p, byte[] payload) {
+            if (p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
+                && a.getType() == net.minecraft.world.entity.EntityTypes.PLAYER) {
+                trackedProfiles.put(a.getId(), a.getUUID());
+                record("track-add " + a.getUUID() + " " + a.getId() + " login=" + LOGIN_IDS.get(a.getUUID())
+                    + " xyz=" + Double.toHexString(a.getX()) + "," + Double.toHexString(a.getY()) + "," + Double.toHexString(a.getZ())
+                    + " payload_hex=" + java.util.HexFormat.of().formatHex(payload));
+            }
+            if (p instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket removed) {
+                removed.entityIds().forEach(entity -> {
+                    UUID target = trackedProfiles.remove(entity);
+                    if (target != null) record("track-remove " + target + " " + entity
+                        + " payload_hex=" + java.util.HexFormat.of().formatHex(payload));
+                });
+            }
+            if (p instanceof net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket data) {
+                UUID target = trackedProfiles.get(data.id());
+                if (target != null) {
+                    for (var value : data.packedItems()) {
+                        if (value.value() instanceof net.minecraft.world.entity.Pose pose) {
+                            record("track-pose " + target + " " + data.id() + " login=" + LOGIN_IDS.get(target)
+                                + " metadata=" + value.id() + " value=" + pose.name()
+                                + " payload_hex=" + java.util.HexFormat.of().formatHex(payload));
+                        }
+                    }
+                }
+            }
+            if (p instanceof net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket data) {
+                UUID target = trackedProfiles.get(data.getEntityId());
+                if (target != null) {
+                    for (var attribute : data.getValues()) {
+                        String key = attribute.attribute().unwrapKey().orElseThrow().identifier().toString();
+                        if (key.equals("minecraft:scale")) {
+                            var modifiers = new com.google.gson.JsonArray();
+                            for (var modifier : attribute.modifiers()) {
+                                var item = new com.google.gson.JsonObject();
+                                item.addProperty("id", modifier.id().toString());
+                                item.addProperty("amount_bits", Long.toHexString(Double.doubleToRawLongBits(modifier.amount())));
+                                item.addProperty("operation", modifier.operation().name());
+                                modifiers.add(item);
+                            }
+                            record("track-scale " + target + " " + data.getEntityId() + " login=" + LOGIN_IDS.get(target)
+                                + " base_bits=" + Long.toHexString(Double.doubleToRawLongBits(attribute.base()))
+                                + " modifiers=" + modifiers + " payload_hex=" + java.util.HexFormat.of().formatHex(payload));
+                        }
+                    }
+                }
+            }
+        }
+
         private void recordMenu(Packet<?> p, byte[] payload) throws Exception {
             var j = new com.google.gson.JsonObject();
             j.addProperty("packet", p.type().id().toString());
@@ -710,9 +769,21 @@ public final class LocatorBarClient {
                     value.addProperty("flags", entry.flags());
                     value.add("display", net.minecraft.world.item.crafting.display.RecipeDisplay.CODEC.encodeStart(
                         ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), entry.contents().display()).getOrThrow());
+                    var contents = entry.contents();
+                    if (contents.group().isPresent()) value.addProperty("group", contents.group().getAsInt());
+                    value.addProperty("category", net.minecraft.core.registries.BuiltInRegistries.RECIPE_BOOK_CATEGORY
+                        .getKey(contents.category()).toString());
+                    contents.craftingRequirements().ifPresent(list -> value.add("requirements",
+                        net.minecraft.world.item.crafting.Ingredient.CODEC.listOf().encodeStart(
+                            ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), list).getOrThrow()));
                     entries.add(value);
                 }
                 j.add("entries", entries);
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundRecipeBookRemovePacket c) {
+                j.addProperty("kind", "recipes-removed");
+                var ids = new com.google.gson.JsonArray();
+                for (var id : c.recipes()) ids.add(id.index());
+                j.add("ids", ids);
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundPlaceGhostRecipePacket c) {
                 j.addProperty("kind", "ghost");
                 j.addProperty("window", c.containerId());
@@ -737,6 +808,10 @@ public final class LocatorBarClient {
                     Packet<?> p = r.packet;
                     if (p instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket l) {
                         id = l.playerId();
+                        if (trackPoses) {
+                            LOGIN_IDS.put(profileUuid, id);
+                            record("pose-login " + profileUuid + " " + id + " payload_hex=" + java.util.HexFormat.of().formatHex(r.payload));
+                        }
                     }
                     if (tickSteps && p instanceof net.minecraft.network.protocol.game.ClientboundTickingStepPacket t)
                         record("tick-step " + t.tickSteps());
@@ -763,6 +838,40 @@ public final class LocatorBarClient {
                         j.addProperty("payload_hex", java.util.HexFormat.of().formatHex(r.payload));
                         record("sound-wire " + j);
                     }
+if (ownPoses && p instanceof net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket data
+    && data.id() == id) {
+    for (var value : data.packedItems()) {
+        if (value.value() instanceof net.minecraft.world.entity.Pose actualPose) {
+            record("own-pose " + data.id() + " " + value.id() + " " + actualPose.name()
+                + " payload_hex=" + java.util.HexFormat.of().formatHex(r.payload));
+        }
+    }
+}
+
+                    if (selfMetadata && p instanceof net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket data
+                        && data.id() == id) {
+                        var frame = new com.google.gson.JsonObject();
+                        frame.addProperty("profile_uuid", profileUuid.toString());
+                        frame.addProperty("login_entity_id", id);
+                        frame.addProperty("packet_entity_id", data.id());
+                        frame.addProperty("payload_hex", java.util.HexFormat.of().formatHex(r.payload));
+                        var values = new com.google.gson.JsonArray();
+                        for (var value : data.packedItems()) {
+                            var item = new com.google.gson.JsonObject();
+                            item.addProperty("index", value.id());
+                            item.addProperty("java_type", (value.value() == null ? "null" : value.value().getClass().getName()));
+                            if (value.value() instanceof net.minecraft.world.entity.Pose actualPose)
+                                item.addProperty("pose", actualPose.name());
+                            if (value.value() instanceof Byte actualByte)
+                                item.addProperty("byte_bits", Byte.toUnsignedInt(actualByte));
+                            if (value.value() instanceof Float actualFloat)
+                                item.addProperty("float_bits", Integer.toHexString(Float.floatToRawIntBits(actualFloat)));
+                            values.add(item);
+                        }
+                        frame.add("ordered_values", values);
+                        record("self-metadata " + frame);
+                    }
+                    if (trackPoses) recordTargetTrack(p, r.payload);
                     if (state) recordState(p);
                     if (menus) recordMenu(p, r.payload);
                     if (components) {

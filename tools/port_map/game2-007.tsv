@@ -40,10 +40,10 @@ AbstractMinecart.getCurrentBlockPosOrRailBelow	port	crates/horizon-client/src/ga
 AbstractMinecart.comeOffTrack	port	crates/horizon-client/src/game/minecarts.rs::Game::come_off_track	clamps speed, halves it on the ground, moves and drags in the air
 AbstractMinecart.move	port	crates/horizon-client/src/game/minecarts.rs::Game::move_cart	collision movement only; gap: minor: no push or pickup during the move, which push_carts and the cart tick do instead
 AbstractMinecart.applyEffectsFromBlocks	inline	crates/horizon-client/src/game/minecarts.rs::Game::cart_lava_tick	lava is applied there; gap: minor: other block effects on a cart (cobweb, berry bush) are not applied; under minecart_improvements, NewMinecartBehavior.moveAlongTrack applies block effects twice per step, and Horizon keeps the old order
-AbstractMinecart.getRedstoneDirection	skip:other		used only by the experimental NewMinecartBehavior; Horizon runs the old track behaviour
+AbstractMinecart.getRedstoneDirection	port	crates/horizon-client/src/game/minecarts.rs::Game::redstone_direction	the push a powered rail gives a resting cart: away from the powered conductor. move_along_track_new calls it when the minecart_improvements feature is on; the old track behaviour is the other path
 AbstractMinecart.applyNaturalSlowdown	port	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	slowdown per ride state, the furnace push and water
-AbstractMinecart.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	flipped and HasTicked read back; gap: minor: a custom display block and offset are not kept
-AbstractMinecart.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	flipped and HasTicked written; gap: minor: a custom display block and offset are not saved
+AbstractMinecart.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	flipped, HasTicked, DisplayState and DisplayOffset are read back; a DisplayState whose block no longer resolves is dropped (forget_unreadable_display)
+AbstractMinecart.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	flipped, HasTicked, DisplayState and DisplayOffset are written; the offset only when it is not the kind's default, the state only when set
 AbstractMinecart.pushOtherMinecart	port	crates/horizon-client/src/game/minecarts.rs::Game::push_from_cart	cart against cart push with the furnace case; the old-movement facing check is used
 Minecart.interact	port	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	a plain rideable cart is boarded unless sneaking or already ridden
 Minecart.activateMinecart	port	crates/horizon-client/src/game/minecarts.rs::Game::activate_cart	a powered activator rail ejects the rider and hurts a rideable cart
@@ -131,7 +131,7 @@ EnchantmentMenu.<init>	inline	crates/horizon-client/src/game/stations.rs::Game::
 EnchantmentMenu.getGoldCount	inline	crates/horizon-client/src/menu.rs::Menu::enchant_click	the lapis count is checked against the enchant cost there
 EnchantmentMenu.removed	inline	crates/horizon-client/src/game/stations.rs::Game::close_station	the inputs go back when the table closes
 EnchantmentMenu.quickMoveStack	port	crates/horizon-client/src/menu.rs::Menu::quick_move	shift-click for the enchanting slots, with lapis and the item slot
-FurnaceResultSlot.remove	port	crates/horizon-client/src/game.rs::Game::award_furnace_recipes	the furnace output's experience is awarded from the recorded recipe uses; gap: minor: no per-slot taken count
+FurnaceResultSlot.remove	port	crates/horizon-client/src/game/item_entities.rs::Game::award_furnace_recipes	the furnace output's experience is awarded from the recorded recipe uses; gap: minor: no per-slot taken count
 GrindstoneMenu.mergeItems	port	crates/horizon-client/src/stations.rs::grindstone_result	two repairable items merge into one with the summed durability
 GrindstoneMenu.mergeEnchantsFrom	inline	crates/horizon-client/src/stations.rs::grindstone_result	the second item's enchantments merge in, curses only when the target lacks them
 GrindstoneMenu.removed	inline	crates/horizon-client/src/game/stations.rs::Game::close_station	the repair inputs go back when the grindstone closes

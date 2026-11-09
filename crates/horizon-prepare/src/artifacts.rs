@@ -298,13 +298,18 @@ pub fn game_files(chosen: Option<&Path>, version: &str) -> GameFiles {
         }
         None => launcher_folders(),
     };
-    // A folder with both files first: a version JSON left without its jar is used, for the
-    // error to name the jar, only when no folder has both. A Prism/MultiMC tree is read as a
-    // whole: its `minecraft` folder has the version JSON and its root has the client jar,
-    // libraries and assets (#1487).
+    // A folder with both files and every library first, then one with both files: a launcher
+    // folder whose libraries are incomplete (an official launcher that never finished the
+    // download, beside a complete CurseForge copy, #13872) is used, for the error to name the
+    // library, only when no folder has them all. A version JSON left without its jar comes
+    // last, for the error to name the jar. A Prism/MultiMC tree is read as a whole: its
+    // `minecraft` folder has the version JSON and its root has the client jar, libraries and
+    // assets (#1487).
     let complete = |files: &GameFiles| files.manifest.is_file() && files.client.is_file();
+    let libraries = |files: &GameFiles| complete(files) && has_libraries(files);
     let partial = |files: &GameFiles| files.manifest.is_file();
-    for found in [complete, partial] {
+    let tiers: [&dyn Fn(&GameFiles) -> bool; 3] = [&libraries, &complete, &partial];
+    for found in tiers {
         let mut all = Vec::new();
         for (_, folder) in &folders {
             all.extend(prism_game_files(folder, version));
@@ -317,6 +322,25 @@ pub fn game_files(chosen: Option<&Path>, version: &str) -> GameFiles {
     let [mut files, _] = layouts(&folders[0].1, version);
     files.searched = folders;
     files
+}
+
+/// Whether every client library `files`' version JSON lists for this OS is in its libraries
+/// folder, as `import` looks for them (a Netty native transport the game runs without may be
+/// missing). Checksums are left to the import.
+fn has_libraries(files: &GameFiles) -> bool {
+    let Ok(manifest) = read_json(&files.manifest) else {
+        return false;
+    };
+    let Ok(artifacts) = client_library_artifacts(&manifest) else {
+        return false;
+    };
+    artifacts.into_iter().all(|(name, artifact)| {
+        runs_without(name)
+            || artifact_fields(artifact)
+                .ok()
+                .and_then(|(path, _)| safe_relative(path))
+                .is_some_and(|relative| library_in(&files.libraries, name, &relative).is_file())
+    })
 }
 
 /// A Maven name's path in a repository: `com.mojang:minecraft:26.3:client` is
@@ -360,6 +384,10 @@ fn prism_manifest(root: &Path, instance: Option<&Path>, version: &str) -> Option
         ]);
     candidates
         .map(|dir| dir.join(format!("{version}.json")))
+        // Prism Launcher's own layout: its Minecraft component is `meta/net.minecraft/<version>.json`.
+        .chain([root
+            .join("meta/net.minecraft")
+            .join(format!("{version}.json"))])
         .find(|path| path.is_file())
 }
 
@@ -1746,6 +1774,39 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Prism Launcher keeps its Minecraft component as `meta/net.minecraft/<version>.json`, not
+    /// in a folder of that version. Both are read; the folder's file wins when both exist.
+    #[test]
+    fn the_prism_version_file_is_found_flat_or_in_its_folder() {
+        let root = std::env::temp_dir().join(format!("horizon-prism-meta-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let put = |path: &str, data: &[u8]| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, data).unwrap();
+        };
+        let version_file =
+            br#"{"mainJar":{"name":"com.mojang:minecraft:9.9:client"},"uid":"net.minecraft"}"#;
+        put(
+            "libraries/com/mojang/minecraft/9.9/minecraft-9.9-client.jar",
+            b"client",
+        );
+        put("assets/indexes/1.json", b"{}");
+        let flat = root.join("meta/net.minecraft/9.9.json");
+        let nested = root.join("meta/net.minecraft/9.9/9.9.json");
+
+        put("meta/net.minecraft/9.9.json", version_file);
+        assert_eq!(prism_game_files(&root, "9.9").unwrap().manifest, flat);
+        assert_eq!(game_files(Some(&root), "9.9").manifest, flat);
+
+        put("meta/net.minecraft/9.9/9.9.json", version_file);
+        assert_eq!(prism_game_files(&root, "9.9").unwrap().manifest, nested);
+
+        fs::remove_file(&flat).unwrap();
+        assert_eq!(prism_game_files(&root, "9.9").unwrap().manifest, nested);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     /// scanfee's Prism Launcher 26.3 install on a Mac (#1487): Prism keeps natives under its own
     /// names and never downloads Netty's native transport, which the game runs without. Preparing
     /// still checks every other library, and the transport whenever the launcher has it.
@@ -2171,6 +2232,34 @@ mod tests {
             fixture.directory.display()
         )));
         assert!(error.contains("ATLauncher"));
+    }
+
+    /// A folder with the version JSON and jar but a library missing loses to a later folder that
+    /// has them all, and is still picked, for the error to name the library, when none has (#13872).
+    #[test]
+    fn a_folder_missing_a_library_loses_to_a_complete_one() {
+        let fixture = Imports::new();
+        let old = fixture.imported(&fixture.source);
+        let manifest = fs::read(old.join("manifest.json")).unwrap();
+        let client = fs::read(old.join("jars/client.jar")).unwrap();
+        let install = |folder: &Path, library: bool| {
+            let versions = folder.join("versions/9.9");
+            fs::create_dir_all(&versions).unwrap();
+            fs::write(versions.join("9.9.json"), &manifest).unwrap();
+            fs::write(versions.join("9.9.jar"), &client).unwrap();
+            if library {
+                fs::create_dir_all(folder.join("libraries")).unwrap();
+                fs::write(folder.join("libraries/client.jar"), b"client library").unwrap();
+            }
+        };
+        let launcher = fixture.directory.join("launcher");
+        let instance = launcher.join("instances/broken");
+        install(&instance, false);
+        install(&launcher, false);
+        assert_eq!(game_files(Some(&instance), "9.9").folder, instance);
+
+        install(&launcher, true);
+        assert_eq!(game_files(Some(&instance), "9.9").folder, launcher);
     }
 
     #[test]

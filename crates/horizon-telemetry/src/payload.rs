@@ -182,6 +182,34 @@ pub struct System {
     pub form: String,
 }
 
+impl System {
+    /// This machine, without the GPU and the screen (`horizon_system::Machine`). `home` is the
+    /// game folder, for the kind of drive it is on.
+    pub fn detect_in(home: Option<&std::path::Path>) -> Self {
+        let m = crate::system::Machine::detect_in(home);
+        Self {
+            os: m.os,
+            os_version: m.os_version,
+            arch: m.arch,
+            cpu: m.cpu,
+            threads: m.threads,
+            cores: m.cores,
+            cpu_base_mhz: m.cpu_base_mhz,
+            cpu_boost_mhz: m.cpu_boost_mhz,
+            ram_gb: m.ram_gb,
+            storage: m.storage.to_owned(),
+            power: m.power.to_owned(),
+            form: m.form.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    /// [`System::detect_in`] without the drive.
+    pub fn detect() -> Self {
+        Self::detect_in(None)
+    }
+}
+
 /// A screen: its size in physical pixels, refresh rate and scale.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -423,6 +451,46 @@ impl Timings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cargo test -p horizon-telemetry -- --ignored --nocapture what_this_machine_sends`
+    #[test]
+    #[ignore]
+    fn what_this_machine_sends() {
+        let home = std::env::current_dir().unwrap();
+        let mut system = System::detect_in(Some(&home));
+        system.vram_mb = crate::system::vram_mb("nvidia")
+            .or_else(|| crate::system::vram_mb("amd"))
+            .unwrap_or(0);
+        println!("{}", serde_json::to_string_pretty(&system).unwrap());
+    }
+
+    #[test]
+    fn the_item_describes_this_machine_and_leaves_the_gpu_to_the_game() {
+        let machine = crate::system::Machine::detect();
+        let system = System::detect();
+        assert_eq!(
+            (
+                system.os.as_str(),
+                system.cpu.as_str(),
+                system.threads,
+                system.ram_gb
+            ),
+            (
+                machine.os.as_str(),
+                machine.cpu.as_str(),
+                machine.threads,
+                machine.ram_gb
+            )
+        );
+        assert_eq!(
+            (system.power.as_str(), system.form.as_str()),
+            (machine.power, machine.form)
+        );
+        assert!(
+            system.gpu.is_empty() && system.display.is_none(),
+            "the game fills them in"
+        );
+    }
 
     #[test]
     fn items_are_tagged_by_kind_and_read_back() {

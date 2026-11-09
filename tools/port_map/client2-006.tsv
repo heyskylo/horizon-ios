@@ -1,9 +1,9 @@
 TextureAtlas.createTexture	inline	crates/horizon-client-render/src/sprites.rs::Sprites::finish	gap: minor: no GPU texture objects or mip views; array size and mip count are set in finish
 TextureAtlas.upload	inline	crates/horizon-client-render/src/sprites.rs::Sprites::finish	gap: minor: no GPU upload or animated UBOs; sprites are inserted before finish
 TextureAtlas.uploadInitialContents	inline	crates/horizon-client-render/src/sprites.rs::Sprites::finish	static frames copied into the array pixels
-TextureAtlas.dumpContents	skip:debug		DEBUG_DUMP_TEXTURE_ATLAS PNG dump
+TextureAtlas.dumpContents	port	crates/horizon-client-render/src/hud.rs::HudAtlas::dump_contents	F3's dump-dynamic-textures shortcut: writes the GUI atlas PNG and its sprite rectangles to screenshots/debug (TextureUtil.getDebugTexturePath), which the chat names
 TextureAtlas.dumpSpriteNames	skip:debug		DEBUG_DUMP_TEXTURE_ATLAS name list
-TextureAtlas.cycleAnimationFrames	port	crates/horizon-client-render/src/gfx/animate.rs::SpriteAnimator::animate	advances every animated layer to the frame for the tick
+TextureAtlas.cycleAnimationFrames	port	crates/horizon-client-render/src/gfx/animate.rs::SpriteAnimator::animate_with	advances every animated layer to the frame for the tick, rewriting only the sprites whose frame or mix changed
 TextureAtlas.uploadAnimationFrames	port	crates/horizon-client-render/src/gfx/animate.rs::mix_level	per mip level frame mix (drawToAtlas)
 TextureAtlas.getSprite	port	crates/horizon-client-render/src/sprites.rs::Sprites::insert	gap: minor: loads a texture on first lookup; vanilla returns the missing sprite for names not in the atlas
 TextureAtlas.clearTextureData	skip:java		frees sprite and UBO memory; Rust ownership
@@ -17,7 +17,7 @@ TextureManager.loadContentsSafe	inline	crates/horizon-client-render/src/sprites.
 TextureManager.register	inline	crates/horizon-client-render/src/sprites.rs::Sprites::insert	adds the layer under its name
 TextureManager.safeClose	skip:java		closes a texture object; Rust ownership
 TextureManager.getTexture	port	crates/horizon-client-render/src/sprites.rs::Sprites::insert	loads on first use, as SimpleTexture does
-TextureManager.tick	port	crates/horizon-client-render/src/gfx/animate.rs::SpriteAnimator::animate	gap: minor: animated layers advance in the per frame animate pass; there is no tickable texture list
+TextureManager.tick	inline	crates/horizon-client-render/src/gfx/animate.rs::SpriteAnimator::animate_with	gap: minor: animated layers advance in the per-frame animate pass; there is no tickable texture list
 TextureManager.release	skip:java		drops one texture object; Rust ownership
 TextureManager.close	skip:java		drops all texture objects; Rust ownership
 TextureManager.reload	port	crates/horizon-client-render/src/assets.rs::Assets::reload	gap: minor: rebuilds every render asset synchronously; no pending futures

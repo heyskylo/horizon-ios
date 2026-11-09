@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_inventory_changed",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_inventory_changed",
+      "neoforge": "none (vanilla's InventoryChangeTrigger; quest and collection mods listen to ServerPlayer's container slotChanged)",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a server player's inventory changing, with its 41 slots (`native_player_inventory_changed`).",
+  "doc_summary": "`native_player_inventory_changed(player, stacks)`: a server player's inventory changed, at the moment vanilla's `InventoryChangeTrigger` is checked (the per-tick check found another item or count in a slot), heard before any criterion and whether or not the tree has `inventory_changed` advancements. `stacks` are the 41 slots in `Inventory` numbering: 0..36 the main inventory (0..9 the hotbar), 36..40 the armour (feet, legs, chest, head), 40 the off hand. It also fires at a player's first check after joining, so a mod sees what they log in with. The player's state is swapped in, so the helpers read that player. Single player, LAN guests and a dedicated server's players; never on a client of a remote server. Quest, collection and 'obtain an item' mods need it instead of polling every inventory. Bundles need \"hooks\": @API:player_inventory_changed@.",
+  "comments": ["crates/horizon-client/src/game/advancements.rs"]
+}

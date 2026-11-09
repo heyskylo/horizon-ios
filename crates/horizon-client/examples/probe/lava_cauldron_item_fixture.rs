@@ -51,6 +51,7 @@ pub fn main() -> horizon_client::Result<()> {
                 .ok_or("missing cauldron")?,
         )?;
         let mut item = ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0; 2],
             join: Default::default(),
             health: 5,
@@ -73,6 +74,7 @@ pub fn main() -> horizon_client::Result<()> {
             no_gravity: true,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
         };
         output.push_str(f[0]);
         for _ in 0..2 {

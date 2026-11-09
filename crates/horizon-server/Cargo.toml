@@ -7,7 +7,10 @@ rust-version.workspace = true
 description = "Host a Horizon server: server.toml, the CLI and the supervisor that runs the game headless (docs/server.md)"
 
 [dependencies]
-horizon-server-files = { path = "../horizon-server-files" }
+# The engine, through the platform's public API (docs/layers.md): server.properties and the user lists, the
+# version `server/status` reports, and region files for [prune_chunks] (prune.rs), read and rewritten as vanilla's
+# RegionFile does.
+horizon-platform = { path = "../horizon-platform", features = ["server-files", "world"] }
 # `horizon-server mcp`: the Model Context Protocol, shared with horizon-ctl and the launcher.
 horizon-mcp = { path = "../horizon-mcp" }
 # server.toml's [anticheat], which the game reads: checked here before every start.
@@ -30,13 +33,9 @@ toml_edit = "0.25"
 # lockfile, ureq through horizon-server-files).
 horizon-release-sign = { path = "../horizon-release-sign" }
 sha2 = "0.10"
-# Vanilla's management protocol: the WebSocket handshake's SHA-1 and Base64 (both already in the lockfile), and
-# the version `server/status` reports.
+# Vanilla's management protocol: the WebSocket handshake's SHA-1 and Base64 (both already in the lockfile).
 sha1 = "0.10"
 base64 = "0.22"
-horizon-core = { path = "../horizon-core" }
-# [prune_chunks]: region files read and rewritten as vanilla's RegionFile does (prune.rs).
-horizon-world = { path = "../horizon-world" }
 # Its TLS (on by default, as vanilla's): rustls on ring, both already in the lockfile through ureq; the keystore
 # is a PKCS12 file, as vanilla's, and one is generated (self-signed) when the owner sets none.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

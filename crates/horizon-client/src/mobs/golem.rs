@@ -519,11 +519,13 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let Some(t) = cx.w.target_info(who) else {
         return;
     };
-    let start = Vec3::new(m.position.x, m.eye_y() - 0.1, m.position.z);
+    // ThrowableItemProjectile starts at getEyeY() - 0.1F; the aim uses 1.1F
+    // and 0.2F: all floats widened.
+    let start = Vec3::new(m.position.x, m.eye_y() - f64::from(0.1_f32), m.position.z);
     let xd = t.position.x - m.position.x;
-    let yd = t.eye_y - 1.1;
+    let yd = t.eye_y - f64::from(1.1_f32);
     let zd = t.position.z - m.position.z;
-    let yo = (xd * xd + zd * zd).sqrt() * 0.2;
+    let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
     p.shoot(
@@ -945,6 +947,8 @@ mod crack_sound_tests {
     #[test]
     fn player_hit_credits_dealt_absorbed() {
         let mut m = golem();
+        // Absorption I: max_absorption 4, which a hit clamps the amount to.
+        m.add_effect("absorption", 600, 0);
         m.absorption = 4.0;
         assert!(m.damage(1.5, Damage::player([0.0, 0.0, 1.0])));
         assert_eq!(m.dealt_absorbed, 15);
@@ -955,6 +959,7 @@ mod crack_sound_tests {
         m.damage(2.0, Damage::player([0.0, 0.0, 1.0]));
         assert_eq!(m.dealt_absorbed, 40);
         let mut other = golem();
+        other.add_effect("absorption", 600, 0);
         other.absorption = 4.0;
         other.damage(1.5, Damage::of(crate::mobs::DamageKind::Generic));
         assert_eq!(other.dealt_absorbed, 0);

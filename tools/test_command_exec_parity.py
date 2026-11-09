@@ -191,6 +191,8 @@ def main():
     parser.add_argument('--potion-effect-icon-fixture', action='store_true')
     parser.add_argument('--unsynced-randoms', action='store_true',
                         help='leave out the sync_randoms steps: the control in which their fields differ run to run')
+    parser.add_argument('--groups-file', type=Path,
+                        help='run these generated [name, ops] groups after the common setup instead of the corpus')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -224,6 +226,8 @@ def main():
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_FUNCTION_FEEDBACK]
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_POT_HOPPER]
     if args.vehicle_container_diagnostic:
         try:
             from .vehicle_container_corpus import vehicle_containers
@@ -394,7 +398,9 @@ def main():
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import contact_fixture
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
-    if args.only:
+    if args.only == 'hopper pot saved slot':
+        groups = [g for g in groups if g[0] == args.only]
+    elif args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.only in corpus_module.ISOLATED_BOAT_TREE:
         groups = [g for g in groups if g[0] == args.only]
@@ -416,6 +422,8 @@ def main():
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     if any(name in corpus_module.ISOLATED_JUKEBOX_CLOCK for name, _ in groups) and len(groups) != 1:
         parser.error('jukebox clock fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_POT_HOPPER for name, _ in groups) and len(groups) != 1:
+        parser.error('pot hopper fixture requires --only with its exact group')
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
@@ -480,6 +488,10 @@ def main():
     if args.merchant_gate_fixture:
         from merchant_gate_corpus import cases
         groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
+    if args.groups_file:
+        # Generated scripts (tools/parity_fuzz.py): the common setup, then the file's [name, ops] groups only.
+        groups = [('setup', corpus_module.group_setup()),
+                  *[(name, ops) for name, ops in json.loads(args.groups_file.read_text(encoding='utf-8'))]]
     script = []
     for _, lines in groups:
         script.extend(op for op in lines if not (args.unsynced_randoms and op['op'] == 'sync_randoms'))

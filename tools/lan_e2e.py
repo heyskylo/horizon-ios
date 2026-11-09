@@ -3634,7 +3634,7 @@ def check_piston_entities(host, guest, out):
 
 
 def check_piston_push(host, guest, out):
-    """A moving piston pushes both players and a stationary mob on each host path."""
+    """A moving piston pushes players, a stationary mob and an arrow."""
     hx, _, hz = pos_of(host)
     x, y, z = (int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8)
     host('command', command=f'fill {x-4} {y-1} {z-4} {x+7} {y-1} {z+4} minecraft:stone')
@@ -3683,6 +3683,35 @@ def check_piston_push(host, guest, out):
     after = next(p['pos'][0] for p in pigs if p['id'] == pig['id'])
     results['pig'] = after - before
     assert results['pig'] > 0.3, f'piston did not push pig: {before} -> {after}'
+    host('command', command=f'setblock {x-1} {y} {z} minecraft:air')
+    host.wait(10)
+    host('command', command=(
+        f'summon minecraft:arrow {x+1.65} {y+1} {z+0.5} {{Motion:[0.0d,0d,0d]}}'
+    ))
+    host.wait(5)
+    arrow = min(
+        (p for p in host('status')['projectiles'] if p['kind'] == 'Arrow'),
+        key=lambda p: abs(p['position'][0] - (x + 1.65)),
+        default=None,
+    )
+    assert arrow is not None, 'summoned arrow is missing'
+    before = arrow['position'][0]
+    host('command', command=f'setblock {x-1} {y} {z} minecraft:redstone_block')
+    host.wait(30)
+    pushed = next(
+        (p for p in host('status')['projectiles'] if p['id'] == arrow['id']),
+        None,
+    )
+    assert pushed is not None, 'piston removed the arrow'
+    results['arrow'] = pushed['position'][0] - before
+    assert results['arrow'] > 0.3, f'piston did not push arrow: {before} -> {pushed["position"][0]}'
+    seen = next(
+        (p for p in guest('status')['projectiles'] if p['id'] == arrow['id']),
+        None,
+    )
+    assert seen is not None, 'guest did not receive the pushed arrow'
+    results['guest_arrow'] = seen['position'][0] - before
+    assert results['guest_arrow'] > 0.3, f'guest did not see arrow move: {before} -> {seen["position"][0]}'
     results.update(piston_push_at_border(host, guest))
     return results
 
@@ -6009,6 +6038,35 @@ def check_boats(host, guest, out):
         try:
             boat = board(player, 'oak_boat', (bx + 0.5, y, z + 0.5))
             start = boat['position']
+            # startAttack must reject a paddling rider before even swinging.
+            # Aim into the sky so holding attack cannot enter continueAttack's
+            # separate block-mining path. Test each movement key independently.
+            player.raw('look', '0', '-80')
+            swings = player('state')['swings']
+            for key in ('w', 's', 'a', 'd'):
+                player.script([f'key {key} down', 'wait 2', 'mouse left click',
+                               'wait 2', f'key {key} up', 'wait 2'])
+                assert player('state')['swings'] == swings, \
+                    f'{label}: attacking while paddling with {key} swung the hand'
+            player('command', command='give @s minecraft:spyglass')
+            player.wait(5)
+            player.raw('select', 'minecraft:spyglass')
+            player.script(['pad stick left 0 1', 'wait 2', 'mouse left click',
+                           'mouse right down', 'wait 5'])
+            busy = player('state')
+            assert busy['swings'] == swings and busy.get('using') is None, \
+                f'{label}: controller paddling allowed an attack or item use: {busy}'
+            player.script(['mouse right up', 'pad release', 'wait 5'])
+            player.raw('mouse', 'left', 'click')
+            player.wait(10)
+            assert player('state')['swings'] == swings + 1, \
+                f'{label}: attacking after paddling stopped did not resume'
+            player.script(['mouse right down', 'wait 5'])
+            assert player('state').get('using') is not None, \
+                f'{label}: item use after paddling stopped did not resume'
+            player.script(['mouse right up', 'wait 5'])
+            player('command', command='clear @s minecraft:spyglass')
+            player.wait(5)
             # The summoned boat faces south: forward paddles it along the pool.
             player.raw('key', 'w', 'down')
             player.wait(30)

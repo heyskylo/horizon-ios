@@ -85,6 +85,10 @@ pub(super) struct RecipeUi {
     client: ClientBook,
     client_known: Option<BTreeSet<String>>,
     client_version: u64,
+    /// The entries a server's packets carried, by display id: the book is
+    /// made with them over its own (`Book::use_server_entries`).
+    server_entries:
+        std::collections::BTreeMap<i32, horizon_protocol::packets::recipes::RecipeBookEntry>,
     /// The display a click last placed (`lastRecipe`), which Enter and Space
     /// place again; slot clicks keep it.
     last_clicked: Option<i32>,
@@ -376,16 +380,52 @@ impl Game<'_> {
             self.recipe_ui.client.displays(),
         )
     }
+    /// A new session forgets the entries the last server's packets carried.
+    pub(super) fn recipe_ui_forget_server_entries(&mut self) {
+        self.recipe_ui.server_entries.clear();
+    }
     /// The book's model is made again from `Game::recipes` when next needed:
     /// the server's recipes arrived, or a new session began.
     pub(super) fn forget_book(&mut self) {
         self.recipe_ui.book = None;
         self.recipe_tables.categories = None;
     }
+    /// Puts a server's entries over `book` (`Book::use_server_entries`). The
+    /// names come from the connection's registries; a tag's items are the ones
+    /// the client knows for it (the server's tags are not read).
+    fn server_entries_over<'a>(
+        &self,
+        book: &mut Book,
+        entries: impl IntoIterator<Item = &'a horizon_protocol::packets::recipes::RecipeBookEntry>,
+    ) {
+        let Some(r) = self.remote.as_ref() else {
+            return;
+        };
+        let items = self.items();
+        let name_of = |registry: &str, id: i32| {
+            r.builtin
+                .get(registry)
+                .and_then(|ids| ids.name(id))
+                .map(str::to_owned)
+        };
+        let item = |id: i32| name_of("minecraft:item", id);
+        let category = |id: i32| name_of("minecraft:recipe_book_category", id);
+        let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
+        book.use_server_entries(
+            entries,
+            &horizon_client::recipe_book::PacketNames {
+                item: &item,
+                category: &category,
+                tag: &tag,
+            },
+        );
+    }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
             let mut book = Book::build(self.recipes(), self.items());
             book.set_display_ids(&self.stations().recipe_index);
+            // A server numbers and describes its recipes itself.
+            self.server_entries_over(&mut book, self.recipe_ui.server_entries.values());
             self.recipe_ui.book = Some(book);
         }
         if self.recipe_ui.search.is_none() {
@@ -547,6 +587,7 @@ impl Game<'_> {
                     horizon_client::item_tooltip::lines(
                         stack,
                         self.items().get(&stack.item),
+                        self.enchantments(),
                         &|k| self.pack.names.display_get(k),
                     )
                 })
@@ -1138,7 +1179,9 @@ impl Game<'_> {
         self.recipe_ui.ghost.clear();
         self.place_recipe(BookType::Crafting, index, all);
     }
-    pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32) {
+    /// A viewer's transfer of one set of ingredients, or with `all` as many as
+    /// the items allow (vanilla's Shift placement, `useMaxItems`).
+    pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32, all: bool) {
         self.panel.transfer_warning = None;
         if !self.mod_recipe_screen()
             || (self.creative && self.craft_size != 3 && !self.mod_crafting_open())
@@ -1148,7 +1191,7 @@ impl Game<'_> {
         }
         if self.remote.as_ref().is_some_and(|r| !r.recipe_transfer) {
             // Older Horizon and vanilla servers still accept book clicks.
-            if self.recipe_place(display_id, false).is_err() {
+            if self.recipe_place(display_id, all).is_err() {
                 self.show_transfer_result(4);
             }
             return;
@@ -1172,6 +1215,11 @@ impl Game<'_> {
             let mut request = horizon_protocol::buf::Writer::new();
             request.varint(self.remote_menu_id());
             request.string(&id);
+            // A trailing flag asks for as many as fit; a single transfer
+            // sends none, so servers from before it still take it.
+            if all {
+                request.u8(1);
+            }
             self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
                 horizon_protocol::packets::configuration::CustomPayload {
                     channel: horizon_client::lan::recipes::TRANSFER_CHANNEL.into(),
@@ -1183,7 +1231,7 @@ impl Game<'_> {
         use horizon_client::menu::place::TransferError;
         let mut result = Err(TransferError::Unavailable);
         self.menu_session(|menu, env, _| {
-            result = menu.transfer_recipe(env, &id);
+            result = menu.transfer_recipe(env, &id, all);
             Some(result.is_ok())
         });
         self.show_transfer_result(match result {
@@ -1299,10 +1347,12 @@ impl Game<'_> {
         let ui = &mut self.recipe_ui;
         if p.replace {
             ui.client.clear();
+            ui.server_entries.clear();
         }
         let mut toast = Vec::new();
         for e in &p.entries {
             ui.client.add(e.id);
+            ui.server_entries.insert(e.id, e.clone());
             if e.flags & 2 != 0 {
                 ui.client.highlight.insert(e.id);
             }
@@ -1316,6 +1366,14 @@ impl Game<'_> {
         // A local world opened later syncs its book from scratch.
         ui.client_known = None;
         ui.client_version += 1;
+        // A replacing packet starts the book again from its own recipes; a
+        // later one puts its entries over the book as it is.
+        if p.replace {
+            ui.book = None;
+        } else if let Some(mut book) = ui.book.take() {
+            self.server_entries_over(&mut book, p.entries.iter());
+            self.recipe_ui.book = Some(book);
+        }
         self.recipe_toast(&toast);
     }
     /// ClientboundRecipeBookRemovePacket.
@@ -1325,6 +1383,7 @@ impl Game<'_> {
     ) {
         for id in p.ids {
             self.recipe_ui.client.remove(id);
+            self.recipe_ui.server_entries.remove(&id);
         }
         self.recipe_ui.client_version += 1;
     }

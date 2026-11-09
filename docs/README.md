@@ -7,7 +7,6 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [AGENTS.md](../AGENTS.md) and [Architecture](architecture.md): where each part of the code lives, how `Game` is organised, which harness checks which area.
 - [How Horizon is built](how-horizon-is-built.md): who writes Horizon, how changes are checked, and what is safe to run.
 - [Release flow](release-flow.md): pull request checks, merging and the automatic Nightly releases that reach players.
-- [Resource preparation and filesystem work](prepare-performance.md): shared asset indexes, verified imports, staging and filesystem work that reduce preparation time.
 - [Build from source](../README.md#build-from-source): your own copy of the game, resource preparation, `cargo run`.
 - [Build times](build-times.md): `tools/build_times.py` measures cold and incremental builds per crate and the critical path, writes a JSON report and a table, and compares two reports; the first numbers, Windows and Linux.
 - [Native client](native-client.md): options, controls, the dedicated server, `horizon-ctl` scripting, packaging, architecture.
@@ -24,20 +23,23 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Agent control](agent-control.md): what AI agents can drive in the launcher and the game, and the design of the control socket, `horizon-ctl` and MCP.
 - [horizon-ctl commands](horizon-ctl-commands.md): every command `horizon-ctl` takes, its CLI arguments, and the corresponding MCP tools for driving the game.
 - [Graphics](graphics.md): the graphics settings screen (pages, search, descriptions), the graphics benchmark and what it measured.
+- [HDR and render passes](hdr-passes.md): what a pass on the world's picture (upscaling, anti-aliasing, frame generation, post effects, captures) keeps so HDR works, and how to check it.
 - [Server against Pumpkin](performance/server-vs-pumpkin.md): Horizon's server and Pumpkin (Rust) under the same bots at 0, 20, 60 and 100 players: tick time, CPU, memory, chunks, join; where Horizon loses, and how to run it again.
 - [Benchmark](benchmark.md): Horizon against vanilla 26.3 and vanilla with performance mods, on the same machine, world, path and settings: what is measured, how it is kept fair, how to reproduce it.
 - [Extras](extras.md): optional zoom, minimap, FPS and keystroke overlays and auto-reconnect, all off by default.
 - [PvP & HUD](pvp.md): optional client settings for PvP players (custom crosshair, block outline, hit color, HUD widgets), fair-play boundaries, and why each is off by default.
 - [Cosmetics](cosmetics.md): wearable items drawn only by Horizon clients (hats, back items, shoulder pets, name tag styles), with no gameplay effect, client-side visibility toggles and the JSON item format.
+- [Layers](layers.md): engine, platform and Horizon: what belongs to each, where a new feature goes, the dependency rule, every built-in outside address.
 - [Forking](forking.md): the `horizon-extras` feature that holds Horizon's own extras (cosmetics, Friends, its settings pages...), and building the game without them.
+- [Translations](translations.md): where Horizon's own text and its ~85 languages live, the unreviewed mark on machine-written strings, and how a native speaker reviews a language in #translations on Discord.
 - [Narrator](narrator.md): vanilla's text-to-speech (Ctrl+B): the voices per platform, how screens record what they narrate, `horizon-ctl narration`, and where it still differs from vanilla.
 - [Shader packs](shaders.md): Horizon's own WGSL shader packs, how to make and check one (`horizon-shader`).
+- [Shader-pack clean room](cleanroom/README.md): how Java shader-pack support was rebuilt without another loader's code: the [format specification](cleanroom/shader-packs-spec.md) and the [provenance log](cleanroom/provenance-log.md) of every source read.
 - [Mods](mods.md): content mods (data) and native mods (Rust), how to make, install and publish them. [Native mods](native-mods.md): how the launcher builds them. [Native hook points modelled on NeoForge](native-hooks-neoforge.md): the proposal for new hooks.
 - [Upgrading a 26.2 data pack](datapack-upgrade.md): `horizon-port-pack upgrade-datapack` rewrites a 26.2 worldgen pack in 26.3's formats, and how the rewrite is checked against vanilla.
 - [Modpacks](modpacks.md): porting whole packs (ATM10 and smaller): import, inventory, carry-over, an agent per mod with a harness against the Java original, coverage, and how "10x" is measured.
 - [Launcher](../launcher/README.md): installs, updates and starts builds; its CLI and MCP server; releasing it.
-- [Versioning](versioning.md): how releases are numbered from 0.2 (`v0.2.x`, `launcher@0.2.x`), how installs from before 0.2 get there, and the steps for the day 0.2 ships.
-- [Reusing pack overlays](reuse-pack-overlays.md): caching completed pack overlays, invalidating changed inputs and measuring reload costs.
+- [Versioning](versioning.md): how releases are numbered from 0.2 (`v0.2.x`, `launcher@0.2.x`), and how installs from before 0.2 get there.
 - [Resource packs](resource-packs.md): everything a 26.3 resource pack can change, whether Horizon honours it, and the proof.
 - [Opt-in data collection](telemetry.md): the consent, exactly what is sent, how it is stored and sent.
 - [Security](security.md): how Horizon protects code, CI and automatic releases against untrusted input while work is performed by AI agents.
@@ -57,57 +59,33 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 ## Parity
 
-- [Rust rewrite status](rust-parity.md): completion criteria, how to reproduce the validation, and per-area scope.
+- [Rust rewrite status](rust-parity.md): where the state of the port lives (harnesses, port ledger, known issues) and the rules every port keeps.
 - [Parity workflow](parity-workflow.md): `tools/parity.py`, the gate, other machines, merging.
 - [CI runners](ci-runners.md): which jobs run on GitHub's runners and which on ours (the desktop, playhorizon, the Mac mini), the `SELF_HOSTED_CI` switch, and where a fork's pull request may run.
 - Area notes: [block behaviours and ticking](parity/blocks.md), [section meshing](parity/meshing.md), [redstone machines tick by tick](parity/redstone-diff.md), [the same seed in vanilla and Horizon](parity/world-compare.md).
 - [Port ledger](port-ledger.md): `tools/port_ledger.py`, every vanilla method next to the Rust functions that port it, both ways, with the gaps where a port isn't wired like vanilla.
 - [Version ports](version-ports.md): how a new Minecraft release is detected, diffed against the pinned one and ported, and what stays manual.
-- [Decompilation and research lab](research-lab.md) and [decompilation status](decompilation-status.md): the local game inspection workspace the harnesses build on.
+- [Reading vanilla](parity-workflow.md#reading-vanilla): the local decompiled sources and bytecode queries the harnesses build on.
 
 ## Design notes
 
 - [Design system](design-system.md): shared tokens and interface rules for the launcher, website and Horizon-only game overlays.
-- [HUD kit](ui-kit.md): the pieces Horizon's own HUD overlays share: `Room`, which keeps the controller notice and splitscreen's join strip below the boss bars, and `Plate`, the box behind their text.
-- [Offscreen frame compositor](design/compositor.md): sharing a window surface between views, clipping and the standalone splitscreen compositor example.
+- [HUD kit](ui-kit.md): the pieces Horizon's own HUD overlays share: `Room`, which keeps the controller notice and splitscreen's join strip below the boss bars, `Plate`, the box behind their text, and controller glyphs asked for by what the button does, with the Nintendo letter rule.
+- Splitscreen plumbing (#3541): the renderer hands its window surface to a compositor that places each view (`cargo run --profile fast -p horizon-client-render --example compositor [-- --smoke]`), and `Audio::share(owner)` gives each view its own sound engine on one output, playing a world sound once from the nearest camera (`cargo test -p horizon-client-render --lib audio::tests`).
 - [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
 - [Live mod reloading](design/mod-hotload.md): loading, enabling and updating mods from inside the game without a restart.
 - [Mod registry v2](design/registry-v2.md): project kinds, metadata, installation locations and the registry rollout.
-- [Shared audio output](design/shared-audio.md): sound engines on one output, listener ownership and duplicate world-sound handling.
 
 ## Architecture: world generation
 
-- [World generation](world-generation.md): the pipeline from noise to features.
+- [World generation](world-generation.md): the pipeline from noise to features. Each stage's vanilla comparison is its harness (`tools/test_<name>_parity.py`); `python3 tools/port_ledger.py where Class.method` finds the Rust port of a vanilla method.
 - [World height](world-height.md): each level's shape from its dimension type, data packs' taller levels.
 - [Pregeneration](pregeneration.md): `/pregen`, generating, lighting and saving an area ahead of the players.
-- [Noise generation](noise-generation.md), [compiled density functions](density-functions.md), [structure density](structure-density.md), [terrain filling](terrain-filling.md).
-- Biomes: [lookup](biome-lookup.md), [temperatures](biome-temperatures.md).
-- Surfaces: [material surfaces](material-surfaces.md), [material conditions](material-conditions.md), [rule libraries](material-rule-libraries.md), [vertical anchors](vertical-anchors.md), [value providers](value-providers.md).
-- [Carving](carving.md), [heightmaps](heightmaps.md), [feature placement](feature-placement.md).
 
 ## Architecture: world data and simulation
 
 - [World data](world-data.md): chunk storage, palettes, region files.
-- [Block entity save batches](save-batch-entities.md): grouping block entities across save batches while preserving chunk data and save ordering.
-- [Block-state codecs](block-state-codecs.md), [scheduled ticks](scheduled-ticks.md).
-- [Collision geometry](collision-geometry.md): shapes, collision, movement and fluids.
-- [Face visibility](face-visibility.md): which model faces the mesher emits.
 
 ## Java comparison profiling
 
 - [JFR analysis for Java comparisons](profiling.md).
-
-## Benchmarks and results
-
-- [Animated sprite mip cache](animated-sprite-mips-benchmark.md): caching full mip chains for displayed source frames cut repeated tick cost by 53.34% (3.627 to 1.692 ms) and repeated render by 53.33%, within an 8 MiB budget.
-- [Generation scan gate benchmark](generation-scan-benchmark.md): reusing an exhausted generation scan made the stationary case 1,528.99x faster (15,441.3 to 10.1 ns/frame) and a dynamic remove/load cycle 14.72x faster.
-- [Bulk density and noise generation benchmark](noise-aquifer-benchmark.md): one-time dispatch, kernel reuse and X-column reuse cut Overworld terrain time by 20.62% with one worker (12.685 to 10.069 ms/input chunk) and 16.96% with four.
-- [Nether-portal section-scan benchmark](portal-scan-benchmark.md): a resident portal-section cache made the steady dense scan 11.19x faster (244.610 to 21.869 us/tick) and dense_portal 12.19x faster, while rescans after every-chunk edits were slower.
-- [Random-tick eligibility benchmark](random-tick-eligibility-benchmark.md): caching section eligibility made the steady dense selection 298.37x faster (1,311.924 to 4.397 us/tick) and 1% edits 141.74x faster.
-- [Shared model library benchmark](shared-model-library-benchmark.md): sharing one loaded model library cut combined asset and item preparation by 18.50 ms (3.47%), with item preparation down from 83.12 to 36.30 ms, for 1,578 KiB more peak RSS.
-- [Constant surface-rule specialization benchmark](surface-generation-benchmark.md): specializing constant surface rules improved primary Overworld terrain by 3.43% with one worker (10.664 to 10.298 ms/input chunk).
-- [Section visibility shortcuts](visibility-benchmark.md): the shortcut helper was 3.05x to 3.44x faster on random 1-50% opaque sections (27,657.9 to 9,061.1 ns at 1%) and no case regressed.
-- [Entity culling benchmark](media/entity-culling-benchmark.md): asynchronous entity culling raised average FPS by 19.2% (83.59 to 99.67) and synchronous culling by 15.9% in a 300-armor-stand wall scene.
-- [Lighting worker result packaging](performance/lighting-worker-results.md): moving light results instead of cloning them cut packaging and application from 63.948 to 44.397 us/column (1.44x) when sections are uniquely owned and from 65.332 to 53.025 us/column (1.23x) with a retained snapshot.
-- [Paletted container access](performance/paletted-container-access-results.md): one-pass section validation and per-palette unpack dispatch made `BlockSection::set` 1.44x faster (13.15 to 9.12 ns/write), `get` 1.61x faster (2.33 to 1.45 ns/read) and bulk `unpack` 1.04x faster.
-- [Progressive world resources](performance/startup-stage-3.md): stage 3 makes the title screens interactive before core resources finish; an unblocked launch reached core at 4,776 ms, renderer at 5,260 ms and rest at 6,282 ms, with progressive-title RSS about 11% higher in a warm run.

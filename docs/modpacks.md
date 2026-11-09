@@ -166,6 +166,7 @@ using the "Shape" column. What a content pack needs:
 | Block registry: ids, states, properties, shapes, sounds, light | — | data and up (all 331) | **0.2** | declared in `data/<mod>/horizon/block/*.json`, each from a vanilla *template* block (below) |
 | Item registry, block items | — | data and up | **0.2** | `data/<mod>/horizon/item/*.json`, from a vanilla template item |
 | Mob effect registry: category, colour, icon, name | — | data and up | **0.2** | `data/<mod>/horizon/mob_effect/*.json` ([mods.md](mods.md#content-mods-api-02)); no tick behaviour yet: that needs native hook points |
+| Fluid registry: template, `FluidType` numbers, bucket, block, textures | — | machines and up | **0.2** | `data/<mod>/horizon/fluid/*.json` ([mods.md](mods.md#content-mods-api-02)): ids, tags, its block flowing in the world, its bucket and the player and items in it; mobs, boats and drawing follow ([#6301](https://github.com/horizon-rust/horizon/issues/6301)) |
 | Recipes, loot tables, tags, advancements, lang, blockstates, models, textures, sounds in the mod's namespace | vanilla namespace only | data and up | **0.2** | the 26.3 data-pack and resource-pack formats, as they are |
 | Worldgen JSON: features, structures, template pools, processors, structure NBT, biome additions | vanilla bundle only | about 30 data-tier structure and biome mods | 0.2.x | carried into the `worldgen/` bundle |
 | Block and item behaviour callbacks: use, place, break, attack, random tick, scheduled tick, neighbour change, entity inside | — | logic and up (253) | **0.3** | `server` interface; hooks per registered id, budgeted |
@@ -1111,84 +1112,7 @@ same mods. It reaches the title 2.5x sooner and the world 3.6x sooner, and its f
 because it builds the content root once. One game per row on a loaded machine is not a
 benchmark; a quiet rerun with repeats is still to do.
 
-## The working version for 2026-10-23
-
-In scope (each is a PR or a small stack):
-
-1. **This design merged.**
-2. **Registries 0.2** in the game: content-only `.hmod`s with blocks (full cubes and the
-   vanilla templates the first pack needs: doors, trapdoors, fences, walls, slabs, stairs,
-   panes, glass), items, block items, recipes, loot tables, tags, blockstates, models, textures
-   and lang, in single player. Proven by a harness: a test mod's block placed, rendered, broken
-   with the right time and tool, dropping its loot, crafted from its recipe; every per-state
-   fact equal to its template's with the overrides applied. Parity unchanged with no mods.
-3. **`horizon-port-pack`**: import (`.mrpack`, CurseForge zip and instance, Prism), inventory,
-   classify, licence record, dependency order, data carry-over for data-tier mods and their
-   `.hmod`s, coverage report. Run on ATM10's real list (coverage report published in the PR,
-   metadata only) and on a small real pack end to end.
-4. **First pack end to end, locally:** 5–10 data-tier mods with permissive licences from ATM10
-   (candidates: Macaw's Doors, Fences and Walls, Trapdoors and Paths (MIT), Factory Blocks
-   (CC0), XTones Reworked (MIT), Cloud Glass (MIT), Glassential (MIT), Crystalix (LGPL)), each
-   with its harness against the NeoForge 1.21.1 oracle. The ports stay local even though these
-   licences would allow publishing: we ask first.
-5. **Launcher:** "Import modpack" (`.mrpack` / CurseForge zip / instance) showing the
-   coverage report (ATM10's first), and "Port and play" for what is portable.
-6. **Measured:** load time, RAM and FPS of that pack on NeoForge 1.21.1 against Horizon, with
-   the full ATM10 on NeoForge as the reference row.
-
-Out of scope for that date, and next in order: the rest of worldgen carry-over (mods'
-structures, sets, pools and features generate now, see step 4; mod biomes, noise and density
-functions, and the structure types written in Java such as YUNG's and Formations', do not yet),
-behaviour callbacks and server events, block entities, menus, capabilities and net, as
-native mods, the first agent-ported logic-tier mod as the pilot of step 5, then machines. Porting all
-of ATM10 is a campaign. Each step publishes its coverage number; we make no claim beyond what
-the report shows.
-
-### Where ATM10's data mods stand (2026-10-22)
-
-Measured with #1175, #1176, #1177 and #1191 on main, over the 42 data-tier mods carried from
-ATM10 (the launcher's `--dev-mod` carries), seeds 1234 and 2.
-
-- **Structures.** The carries define 687 structures in 25 mods. 419 of them start somewhere in
-  chunks -128..127 of the Overworld, the Nether or the End at one of the two seeds, and 264 in
-  chunks -64..63 (249 on 2026-10-19). Most of the rest are biome-bound and rare: no desert lies
-  in either square, and ChoiceTheorem's Overhauled Village (25 of 78) and Towns and Towers (15
-  of 60) have a variant per biome. 27 never start because their type is written in Java:
-  Better Mineshafts 13, Repurposed Structures' mansions 8, monuments 4 and End mineshaft 1, and
-  one Better Dungeons type.
-- **Processors.** 1,560 carried and 605 dropped (1,347 and 818 on 2026-10-19). The dropped ones
-  by mod: Formations 227 (Overworld 182, Nether 45), Repurposed Structures 182, Better Dungeons
-  69, Better Jungle Temples 50, Better Strongholds 41, Better Desert Temples 14, Villages and
-  Pillages 10, Better Fortresses 5, Better Witch Huts 3, Mo' Structures 3, Moog's Nether
-  Structures 1.
-- **Content.** 190,550 block states and 12,931 items load. 5 block models are missing (4 of
-  Macaw's Doors' cherry waffle door, Regions Unexplored's blue crystalite): those blocks draw
-  the missing model.
-- **Load time** (Mac mini M4 Pro, offscreen, render distance 12). The first start builds the
-  content root: about 25 to 35 s, and again after every game update, since the root's stamp
-  includes the executable. Later starts: 6.6 to 8.2 s to "resources loaded", against 1.3 to
-  2.5 s for vanilla.
-- **Play.** No crash at either seed: spawn, Mo' Structures' pirate ship, castle in the sky,
-  barn house and villager tower, CTOV villages, Formations' fountains (one with its chamber),
-  the Nether.
-
-What is missing, ranked by how much a player notices:
-
-1. **Code mods.** 333 of ATM10's 496 mods (machines, magic, mobs, tools, storage): the pack's
-   gameplay. They need a native port per mod.
-2. **The 12 mods only on CurseForge**, which the carry has not fetched.
-3. **Plainer structures.** The 605 dropped processors are what makes structures look aged,
-   overgrown or fitted to their biome in Java: Formations' biome swaps and block ageing (its
-   tables are All Rights Reserved code), Repurposed Structures' random and noise replacements
-   and floating-block removal, and YUNG's decorations (Better Dungeons, Jungle Temples,
-   Strongholds).
-4. **Structures that never generate:** the 27 Java types above. Repurposed Structures' mansions
-   and monuments are about 3,000 lines of LGPL layout code; whether to port them into this MIT
-   repository is a licence question.
-5. **The first start after installing or updating:** 25 to 35 s. Later starts are about four
-   times vanilla's.
-6. **Smaller gaps:** Mo' Structures' mixin that keeps lakes out of its structures and its two
-   block-ageing processors, and the 5 missing block models.
+## Measured end to end
 
 ### Three packs through the mod browser, measured
 

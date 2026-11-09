@@ -1,8 +1,9 @@
 //! Item tooltip formatting: equipment modifiers with a player's base values,
-//! and lines without player context for the recipe book's search tree.
+//! and lines without player context for the recipe book and creative search trees.
 use crate::text::{GRAY, Text};
 use crate::{
     bundle::TooltipLayout,
+    enchant::Enchantments,
     hud::rgba,
     items::{ItemInfo, ItemStack, Items},
 };
@@ -949,11 +950,28 @@ pub fn disc_fragment_line(
     Some(translate(key).unwrap_or_else(|| key.to_owned()))
 }
 
+/// The enchantment components in `ItemStack.addDetailsToTooltip` order.
+pub fn enchantment_lines(
+    stack: &ItemStack,
+    display: &TooltipDisplay,
+    enchantments: &Enchantments,
+) -> Vec<(String, bool)> {
+    let mut lines = Vec::new();
+    if display.shows("minecraft:stored_enchantments") {
+        lines.extend(enchantments.tooltip(stack.stored_enchantments()));
+    }
+    if display.shows("minecraft:enchantments") {
+        lines.extend(enchantments.tooltip(stack.enchantments()));
+    }
+    lines
+}
+
 /// The lines of `stack` below its name that its components give, in
 /// `ItemStack.addDetailsToTooltip` order.
 pub fn detail_lines(
     stack: &ItemStack,
     info: Option<&ItemInfo>,
+    enchantments: &Enchantments,
     translate: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let text = |key: &str| translate(key).unwrap_or_else(|| key.to_owned());
@@ -1016,6 +1034,11 @@ pub fn detail_lines(
             text(&format!("trim_material.minecraft.{}", short(material)))
         ));
     }
+    lines.extend(
+        enchantment_lines(stack, &display, enchantments)
+            .into_iter()
+            .map(|(text, _)| text),
+    );
     lines.extend(dyed_line(stack, &display, false, translate).map(|l| l.0));
     if let Some(info) = info {
         lines.extend(
@@ -1156,13 +1179,14 @@ pub fn container_lines(
 pub fn lines(
     stack: &ItemStack,
     info: Option<&ItemInfo>,
+    enchantments: &Enchantments,
     translate: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let mut lines = vec![name_line(stack, translate)];
     if TooltipDisplay::for_stack(stack).shows("minecraft:lore") {
         lines.extend(lore_texts(stack).into_iter().map(|t| t.plain()));
     }
-    lines.extend(detail_lines(stack, info, translate));
+    lines.extend(detail_lines(stack, info, enchantments, translate));
     lines
 }
 
@@ -1224,6 +1248,7 @@ mod tests {
 
     #[test]
     fn disc_fragment_shows_music_disc_line_first() {
+        let enchantments = Enchantments::default();
         let translate = |k: &str| {
             (k == "item.minecraft.disc_fragment_5.desc").then(|| "Music Disc - 5".to_owned())
         };
@@ -1232,12 +1257,12 @@ mod tests {
             disc_fragment_line(&stack, &translate).as_deref(),
             Some("Music Disc - 5")
         );
-        let lines = detail_lines(&stack, None, &translate);
+        let lines = detail_lines(&stack, None, &enchantments, &translate);
         assert_eq!(lines.first().map(String::as_str), Some("Music Disc - 5"));
         let other = ItemStack::new("minecraft:stick", 1);
         assert_eq!(disc_fragment_line(&other, &translate), None);
         assert!(
-            !detail_lines(&other, None, &translate)
+            !detail_lines(&other, None, &enchantments, &translate)
                 .iter()
                 .any(|l| l == "Music Disc - 5")
         );
@@ -1431,6 +1456,7 @@ mod tests {
 
     #[test]
     fn ominous_bottle_lists_bad_omen_at_its_amplifier_for_100_minutes() {
+        let enchantments = Enchantments::default();
         let lang = |key: &str| {
             Some(
                 match key {
@@ -1458,9 +1484,10 @@ mod tests {
             Some((format!("Bad Omen IV ({duration})"), blue))
         );
         assert!(
-            lines(&bottle, None, &lang).contains(&format!("Bad Omen IV ({duration})")),
+            lines(&bottle, None, &enchantments, &lang)
+                .contains(&format!("Bad Omen IV ({duration})")),
             "{:?}",
-            lines(&bottle, None, &lang)
+            lines(&bottle, None, &enchantments, &lang)
         );
         // A numbered template, as some languages write it.
         let numbered = |key: &str| match key {
@@ -1893,6 +1920,38 @@ mod tests {
         assert_eq!(modifier_line(&lang, "movement_speed", 0.0, 2, false), None);
     }
 
+    #[test]
+    fn test_russian_wooden_sword_modifiers() {
+        let lang = |k: &str| {
+            Some(
+                match k {
+                    "attribute.modifier.equals.0" => "%2$s: %1$s",
+                    "attribute.modifier.plus.0" => "%2$s: +%1$s",
+                    "attribute.modifier.take.0" => "%2$s: -%1$s",
+                    "attribute.modifier.equals.2" => "%2$s: %1$s%%",
+                    "attribute.modifier.plus.2" => "%2$s: +%1$s%%",
+                    "attribute.modifier.take.2" => "%2$s: -%1$s%%",
+                    "attribute.name.attack_damage" => "Урон при атаке",
+                    "attribute.name.attack_speed" => "Скорость атаки",
+                    "attribute.name.movement_speed" => "Скорость",
+                    _ => return None,
+                }
+                .to_owned(),
+            )
+        };
+        assert_eq!(
+            modifier_line(&lang, "attack_damage", 4.0, 0, true).as_deref(),
+            Some("Урон при атаке: 4")
+        );
+        assert_eq!(
+            modifier_line(&lang, "attack_speed", 1.6, 0, true).as_deref(),
+            Some("Скорость атаки: 1.6")
+        );
+        assert_eq!(
+            modifier_line(&lang, "movement_speed", -0.6, 2, false).as_deref(),
+            Some("Скорость: -60%")
+        );
+    }
     #[test]
     fn modifier_lines_support_positional_format() {
         let lang = |k: &str| {
