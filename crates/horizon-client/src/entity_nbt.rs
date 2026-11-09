@@ -1931,22 +1931,6 @@ fn custom_name(tag: &Tag) -> Option<String> {
     }
 }
 pub use horizon_client_core::component::name_text;
-/// Mob.finalizeSpawn's follow range bonus in the saved attributes.
-pub fn spawn_bonus(tag: &Tag) -> Option<f64> {
-    let Some(Tag::List(attrs)) = tag.get("attributes") else {
-        return None;
-    };
-    let range = attrs
-        .iter()
-        .find(|a| text(a.get("id")).as_deref() == Some("minecraft:follow_range"))?;
-    let Some(Tag::List(modifiers)) = range.get("modifiers") else {
-        return None;
-    };
-    let bonus = modifiers
-        .iter()
-        .find(|x| text(x.get("id")).as_deref() == Some("minecraft:random_spawn_bonus"))?;
-    float(bonus.get("amount"))
-}
 /// `Mob.readAdditionalSaveData`: negative radii retain the live homePosition.
 /// Used after the command adapter restores runtime AI, as well as fresh load.
 pub fn read_mob_home(m: &mut Mob, tag: &Tag) {
