@@ -504,8 +504,7 @@ impl Launcher {
                     Some(b.menu_entry.into_any_element()),
                     &t,
                 ))
-            })
-            .children(self.dev_options_section(cx));
+            });
         let data = card().child(self.collection_section(cx));
         vec![account, updates, launcher, network, game, ai, about, data]
     }
