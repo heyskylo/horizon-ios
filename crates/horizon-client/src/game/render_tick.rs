@@ -679,6 +679,7 @@ impl Game<'_> {
                 .player
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
+            cached_chunk: std::cell::Cell::new(None),
         };
         laps.lap("tp_level");
         // Resource packs' Polytone entity emitters on the player (#11486): fog, dust and

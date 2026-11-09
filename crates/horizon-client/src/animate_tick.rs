@@ -612,6 +612,7 @@ fn do_animate_tick(
         facts: ctx.facts,
         collision: ctx.collision,
         player: None,
+        cached_chunk: std::cell::Cell::new(None),
     };
     engine.polytone_animate(&level, pos);
     let facts = ctx.facts.get(state);
