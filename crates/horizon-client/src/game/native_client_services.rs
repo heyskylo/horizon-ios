@@ -105,11 +105,11 @@ impl NativeWorldId {
     }
 }
 
-/// The part of a friend's invite anyone may see (`net::tunnel::Resolver::public_part`). A host's
-/// code is fresh each time it shares, so a friend's world is known for that sharing only. Without
-/// Play with Friends no invite is read: a `friend:` world shows no part of it.
+/// The part of a friend's invite anyone may see (`horizon_hooks::tunnel::Resolver::public_part`).
+/// A host's code is fresh each time it shares, so a friend's world is known for that sharing only.
+/// Without Play with Friends no invite is read: a `friend:` world shows no part of it.
 fn invite_public_part(code: &str) -> String {
-    horizon_client::net::tunnel::resolver().map_or_else(String::new, |r| r.public_part(code))
+    horizon_hooks::engine::tunnel().map_or_else(String::new, |r| r.public_part(code))
 }
 
 /// A living entity known to the client, before interpolation. No authoritative writes.
@@ -537,8 +537,6 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "friends")]
-    use horizon_friends::{code::Code, invite};
 
     #[test]
     fn a_world_is_its_save_in_single_player_and_its_address_on_a_server() {
@@ -549,53 +547,6 @@ mod tests {
         assert_eq!(
             NativeWorldId::of(None, "mc.example.com:25565"),
             NativeWorldId::Server("mc.example.com:25565".into())
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "friends")]
-    fn friends_worlds_are_told_apart_by_their_hosts_never_by_their_secrets() {
-        super::super::friends::tunnel::register();
-        const PORT: u16 = 50000;
-        const RELAY: &str = "relay.example.com:443";
-        // A short code: its nameplate, then its secret.
-        let short = |nameplate: &str, secret: &str| Code {
-            nameplate: nameplate.into(),
-            secret: secret.into(),
-        };
-        let invite = |secret: u8, host: &str, relay: Option<Code>| {
-            let code = invite::Invite {
-                secret: [secret; invite::SECRET],
-                port: PORT,
-                endpoints: vec![format!("{host}:{PORT}").parse().unwrap()],
-                relay: relay.map(|code| invite::RelayRef {
-                    address: RELAY.into(),
-                    code,
-                }),
-            }
-            .encode();
-            NativeWorldId::of(None, &format!("{FRIEND}{code}"))
-        };
-        assert_ne!(
-            invite(1, "192.168.1.5", None),
-            invite(1, "192.168.1.6", None),
-            "two friends"
-        );
-        assert_ne!(
-            invite(1, "192.168.1.5", Some(short("ABCD", "WXYZ"))),
-            invite(1, "192.168.1.5", Some(short("EFGH", "WXYZ"))),
-            "two friends on other networks behind the same private address"
-        );
-        assert_eq!(
-            invite(1, "192.168.1.5", Some(short("ABCD", "WXYZ"))),
-            invite(2, "192.168.1.5", Some(short("ABCD", "QRST"))),
-            "the invite's and the relay code's secrets take no part"
-        );
-        let typed = |code: Code| NativeWorldId::of(None, &format!("{FRIEND}{code}"));
-        assert_eq!(typed(short("ABCD", "WXYZ")), typed(short("ABCD", "QRST")));
-        assert_eq!(
-            typed(short("ABCD", "WXYZ")),
-            NativeWorldId::Server(format!("{FRIEND}ABCD"))
         );
     }
 

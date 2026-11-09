@@ -287,8 +287,8 @@ otherwise, and must return quickly. With nothing registered a dispatch is one lo
 build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
-`published` (the world opened to or closed from LAN or friends, on change) and `shutdown` (the window closed, the
-world saved). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+`published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
+world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends'). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
@@ -472,7 +472,7 @@ All three run in CI's verify job and in `tools/pr_ready.py`.
 | Crate | Uses, against the rule |
 |---|---|
 | `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-friends`, `-telemetry` |
-| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` and `horizon-friends` (left through the `net::tunnel` hook) |
+| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` and `horizon-friends` (left through `Hooks::tunnel`) |
 | `horizon-client-render` | platform: `horizon-hdr`, `-mod-api-gen`, `-optifine`, `-polytone`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-telemetry` |
 | `horizon-client-input` | platform: `horizon-dualsense`, `horizon-theme` |
 

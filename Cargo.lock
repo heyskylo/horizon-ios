@@ -1418,6 +1418,7 @@ dependencies = [
 name = "horizon-chat-filter"
 version = "0.1.0"
 dependencies = [
+ "horizon-server-files",
  "serde",
  "serde_json",
  "toml",
@@ -1667,6 +1668,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hkdf",
  "horizon-addresses",
+ "horizon-platform",
  "if-addrs",
  "serde",
  "serde_json",
@@ -1792,6 +1794,7 @@ dependencies = [
 name = "horizon-official"
 version = "0.1.0"
 dependencies = [
+ "horizon-friends",
  "horizon-game",
  "horizon-heartbeat",
  "horizon-platform",
