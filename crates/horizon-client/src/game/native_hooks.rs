@@ -3638,6 +3638,34 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// May player `player` (`name`) `action` (`place` or `break`) a block at
+    /// `pos` in `dimension` (`minecraft:overworld`)? The question a
+    /// region-protection mod answers for edits that do not go through a
+    /// player's own block placing and breaking (`native_destroy_block`), such
+    /// as a mod's bulk editor. Asked on the server by `native_may_build`
+    /// only; the game never asks it itself. Set `cancel` to deny the edit; any
+    /// mod doing so denies it, and without a mod that does it is allowed. The
+    /// level is read only. Bundles need "hooks": @API:can_build@.
+    pub(super) fn native_can_build(
+        &self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        pos: [i32; 3],
+        action: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_can_build(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            dimension,
+            pos,
+            action,
+            cancel,
+        );
+    }
     /// Draw the mod block entity at `pos`, of block `block`
     /// (`mymod:machine`), on this client: once a frame while it is in view
     /// (vanilla's `BlockEntityRenderer.submit`: within 64 blocks, its chunk

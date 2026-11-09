@@ -4281,6 +4281,13 @@ It names the level it means by its `dimension` (`minecraft:overworld`), as `nati
   that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
   the end, or more than 65536 filters.
 
+- `native_may_build(player, name, dimension, pos, action)` asks whether a player may edit one block, for edits that skip
+  the normal place and break path (this one included): `action` is `place` or `break`, any other is refused. It asks
+  every mod's `native_can_build(player, name, dimension, pos, action, cancel)` hook, a region-protection mod's chance to
+  say no; any mod setting `cancel` denies the edit, and with no such mod it is allowed. Nothing asks it for you: a mod
+  that edits for a player asks it for the positions it is about to change, and leaves out those it is refused.
+  Bundles need "hooks": @API:can_build@.
+
 ### Machines
 
 `crates/horizon-client/src/game/native_machines.rs`: helpers for a mod's machines on a server, in the level in place.

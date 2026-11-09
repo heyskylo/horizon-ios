@@ -59,6 +59,27 @@ impl Game<'_> {
         }
         Ok(changed)
     }
+    /// For a server mod about to edit the block at `pos` of `dimension` for
+    /// player `player` (`name`): whether the mods allow it. Asks every mod
+    /// (`native_can_build`) with `action`, `place` or `break`; any denies it,
+    /// and none at all allows it. Any other `action` is refused. The edit
+    /// itself is the caller's: `native_edit_blocks` and `native_set_block`
+    /// do not ask.
+    pub(super) fn native_may_build(
+        &self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        pos: [i32; 3],
+        action: &str,
+    ) -> bool {
+        if !matches!(action, "place" | "break") {
+            return false;
+        }
+        let mut cancel = false;
+        self.native_can_build(player, name, dimension, pos, action, &mut cancel);
+        !cancel
+    }
     /// Whether `dimension` is the authoritative level being ticked: where a server mod's world helpers act.
     pub(super) fn native_level_open(&self, dimension: &str) -> bool {
         (self.serving.is_some() || self.options.dedicated.is_some()) && dimension == self.dim.id()
