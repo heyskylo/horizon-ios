@@ -968,6 +968,24 @@ mod tests {
     /// A chestplate a server made a glider: its patch adds `glider` and an
     /// `equippable` for the chest, or takes `glider` away again.
     #[test]
+    fn consumable_seconds_come_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "consume_seconds",
+                Tag::Float(0.5f32.to_bits()),
+            )])),
+        );
+        assert_eq!(consumable_seconds(&stack), Some(0.5));
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_seconds(&stack), None);
+    }
+
+    #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
             let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
