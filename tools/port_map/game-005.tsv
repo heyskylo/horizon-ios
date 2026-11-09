@@ -142,5 +142,5 @@ ExperienceOrb.setUnderwaterMovement	port	crates/horizon-client/src/entities.rs::
 ExperienceOrb.hurtServer	port	crates/horizon-client/src/entities.rs::ExperienceOrb::hurt	ticked in #3514; `ExperienceOrb.hurtServer` is cited at crates/horizon-client/src/entities.rs:538
 ExperienceOrb.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::orb_to_nbt	gap: minor: Health is always written as 5
 ExperienceOrb.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::orbs_from_nbt	gap: minor: Health is ignored
-HumanoidArm.getOpposite	inline	crates/horizon-client/src/game.rs::Game::hand_geometry	the main hand's side is main_hand_left; the off hand is the other side
+HumanoidArm.getOpposite	inline	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	the main hand's side is main_hand_left; the off hand is the other side
 InsideBlockEffectApplier.StepBasedCollector.flushStep	port	crates/horizon-client/src/arrows.rs::Collector::flush	gap: minor: the arrow collector has four effects (clear freeze, fire, lava, extinguish); the player's collector sits in motion.rs check_inside_blocks
