@@ -38,6 +38,9 @@ use horizon_protocol::{
 use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
+mod horizon_channels;
+use horizon_channels::horizon_channel;
+
 #[cfg(test)]
 mod crack_feedback_tests;
 
@@ -4132,6 +4135,7 @@ impl Game<'_> {
         self.native_player_clone(cloned, &name, true);
         let clock_rate = self.network_clock_rate();
         let ctx = TickCtx {
+            sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
@@ -5476,35 +5480,6 @@ impl Game<'_> {
         }
     }
 
-    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
-    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
-    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
-    /// server plays is broadcast to the players near the mount, the rider
-    /// included (their own client plays none).
-    fn lan_start_riding_jump(&mut self, host: &mut LanHost, conn: u32, data: i32) {
-        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
-            return;
-        };
-        let m = &mut self.mobs[index];
-        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
-            return;
-        };
-        let at = m.center();
-        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
-        let neutral = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == "neutral")
-            .unwrap_or(0) as i32;
-        host.hub.sound(
-            &format!("minecraft:{sound}"),
-            at,
-            volume,
-            1.0,
-            neutral,
-            None,
-        );
-    }
-
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:
     /// `Player.tryToStartFallFlying`, or else `stopFallFlying` (a second
     /// start while gliding ends the glide, as in vanilla).
@@ -6296,31 +6271,8 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
     [range(at[0]), range(at[2])]
 }
 
-/// What `ServerPlayerGameMode.handleBlockBreakAction`'s STOP_DESTROY_BLOCK branch does with a
-/// guest's STOP.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum StopDig {
-    /// A block the last START did not name: the STOP is not this dig's.
-    Other,
-    /// Already broken, by the guest's own tick: only the crack goes.
-    Gone,
-    /// The dig the START counts is at least 70 % done: the block breaks outright.
-    Break,
-    /// Less than that: the server finishes it alone from that same START.
-    Delay(u64),
-}
-
-/// The STOP branch's decision: a STOP is measured from the START that named its block
-/// (`destroyPos`, which an abort or a STOP from out of reach leaves alone), whose ticks times
-/// `getDestroyProgress` decide between the break and the delayed dig (#4124).
-fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f32) -> StopDig {
-    match play.dig_start_for(pos) {
-        None => StopDig::Other,
-        Some(_) if air => StopDig::Gone,
-        Some(start) if per_tick * (ticks - start + 1) as f32 >= 0.7 => StopDig::Break,
-        Some(start) => StopDig::Delay(start),
-    }
-}
+mod dig_stop;
+use dig_stop::{StopDig, stop_dig};
 
 /// ServerPlayer.swingAndResetAttackStrength resets only when a use starts a swing.
 fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
@@ -6955,18 +6907,6 @@ mod guest_close_listener_tests {
     }
 }
 
-/// Whether a guest's plugin channel message is for one of Horizon's own handlers in
-/// `lan_guest_packet` (its `CustomPayload` arms), not for the mods.
-fn horizon_channel(channel: &str) -> bool {
-    [
-        horizon_protocol::quiet::CHANNEL,
-        horizon_protocol::mod_net::CHANNEL,
-        horizon_client::lod_net::CHANNEL,
-        horizon_client::lan::recipes::TRANSFER_CHANNEL,
-    ]
-    .contains(&channel)
-}
-
 #[cfg(test)]
 mod horizon_channel_tests {
     use super::horizon_channel;
@@ -7016,6 +6956,7 @@ mod connected_self_pose_tests {
 
     fn hub_pass(game: &mut Game<'_>, hub: &mut Hub, drain: bool) {
         let mut ctx = TickCtx {
+            sea_level: game.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut game.world,
             entities: &[],
             next_entity: &mut game.next_entity,

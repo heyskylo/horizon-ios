@@ -12,6 +12,13 @@ use horizon_client::{
 };
 use horizon_core::geometry::{Aabb, Vec3};
 
+/// The point a `ServerboundInteractPacket` carries: `EntityHitResult.getLocation()
+/// - entity.position()`, measured from the entity's feet, as
+/// `MultiPlayerGameMode.interact` computes it.
+pub(super) fn interact_location(point: Vec3, feet: Vec3) -> [f64; 3] {
+    [point.x - feet.x, point.y - feet.y, point.z - feet.z]
+}
+
 /// The off hand's place in `visible_hands` (the main hand uses its hotbar slot).
 const OFFHAND: usize = usize::MAX;
 
@@ -313,7 +320,7 @@ impl Game<'_> {
                 (
                     i,
                     eye.distance_squared(at).sqrt(),
-                    super::interact_location(at, feet),
+                    interact_location(at, feet),
                 )
             })
             .reduce(|a, b| if b.1 < a.1 { b } else { a });

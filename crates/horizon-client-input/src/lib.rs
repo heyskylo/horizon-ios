@@ -9,6 +9,7 @@ pub mod gamepad;
 pub mod gameplay_guide;
 pub mod held;
 pub mod input;
+pub mod input_source;
 pub mod interaction_input;
 pub mod key_names;
 pub mod keybinds;

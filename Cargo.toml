@@ -33,6 +33,7 @@ members = [
     "crates/horizon-hooks",
     "crates/horizon-game",
     "crates/horizon-official",
+    "crates/horizon-heartbeat",
     "crates/horizon-bench",
     "crates/horizon-friends",
     "crates/horizon-relay",
