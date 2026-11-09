@@ -37,8 +37,15 @@ const FISH: [&str; 4] = [
 ];
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_bobber_floats_bites_and_rolls_the_table_of_a_mods_medium() {
+    crate::mod_api::in_own_process(
+        "game::fishing::medium_tests::a_bobber_floats_bites_and_rolls_the_table_of_a_mods_medium",
+        a_bobber_floats_bites_and_rolls_the_table_of_a_mods_medium_in_own_process,
+    );
+}
+
+fn a_bobber_floats_bites_and_rolls_the_table_of_a_mods_medium_in_own_process() {
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(

@@ -137,19 +137,21 @@ fn over(cursor: (f32, f32), (x, y, w): (f32, f32, f32)) -> bool {
 }
 
 impl Calibration {
-    pub fn new(s: &Settings) -> Self {
+    /// Starts from the settings, their Auto values from what the display of the window it
+    /// runs in reported (`output`, its renderer's).
+    pub fn new(s: &Settings, output: &crate::gfx::EffectiveOutput) -> Self {
         let g = &s.horizon;
+        let (peak, paper_white) = (
+            g.peak_nits(output.reported) as f32,
+            g.paper_white_nits(output.reported) as f32,
+        );
         Self {
             step: 0,
-            values: [
-                g.black_level_nits(),
-                g.peak_nits() as f32,
-                g.paper_white_nits() as f32,
-            ],
+            values: [g.black_level_nits(), peak, paper_white],
             auto: [
                 None,
-                (g.hdr_peak == 0).then_some(g.peak_nits() as f32),
-                (g.hdr_paper_white == 0).then_some(g.paper_white_nits() as f32),
+                (g.hdr_peak == 0).then_some(peak),
+                (g.hdr_paper_white == 0).then_some(paper_white),
             ],
             dragging: false,
         }
@@ -330,13 +332,16 @@ impl Calibration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gfx::EffectiveOutput;
+
+    const NONE: EffectiveOutput = EffectiveOutput::NONE;
 
     #[test]
     fn calibration_saves_only_on_save() {
         let mut s = Settings::default();
         s.horizon.hdr_black_level = 5;
         let before = s.horizon.clone();
-        let mut c = Calibration::new(&s);
+        let mut c = Calibration::new(&s, &NONE);
         assert_eq!(c.key(KeyCode::ArrowLeft), Outcome::Changed);
         assert_eq!(c.key(KeyCode::ArrowLeft), Outcome::Changed);
         assert!((c.picture(100.0).1 - 0.03).abs() < 1e-6);
@@ -350,8 +355,26 @@ mod tests {
         assert_eq!(c.key(KeyCode::Enter), Outcome::Save);
         c.save(&mut s);
         assert_eq!(s.horizon.hdr_black_level, 3);
-        assert_eq!(s.horizon.hdr_peak, before.peak_nits() + 50);
+        assert_eq!(s.horizon.hdr_peak, before.peak_nits(None) + 50);
         assert_eq!(s.horizon.hdr_paper_white, before.hdr_paper_white);
+    }
+
+    /// Auto's peak and paper white start from what the display of the window calibration
+    /// runs in reported; with no report, from 1000 and 203 nits.
+    #[test]
+    fn auto_starts_from_the_report_of_the_window_it_runs_in() {
+        use crate::gfx::{HdrOutput, output::tests};
+        let s = Settings::default();
+        let (caps, reading) = tests::window(Some(HdrOutput::Pq), Some(true));
+        let reporting = tests::snapshot(&s.horizon, Default::default(), caps, reading);
+        for (output, peak, paper_white) in [(&reporting, 1000.0, 400.0), (&NONE, 1000.0, 203.0)] {
+            let mut c = Calibration::new(&s, output);
+            c.key(KeyCode::Enter);
+            assert_eq!(c.picture(1.0).0, Step::Peak);
+            assert_eq!(c.picture(1.0).1, peak);
+            c.key(KeyCode::Enter);
+            assert_eq!(c.picture(1.0).1, paper_white);
+        }
     }
 
     #[test]
@@ -367,7 +390,7 @@ mod tests {
                 .collect(),
             (10..=480).step_by(10).map(|n| n as f32).collect(),
         ];
-        let mut c = Calibration::new(&Settings::default());
+        let mut c = Calibration::new(&Settings::default(), &NONE);
         for (i, expected) in expected.iter().enumerate() {
             assert_eq!(c.picture(1.0).0, STEPS[i]);
             for _ in 0..200 {
@@ -389,7 +412,7 @@ mod tests {
     #[test]
     fn black_level_saves_the_lift_it_shows_and_peak_reaches_10000() {
         let mut s = Settings::default();
-        let mut c = Calibration::new(&s);
+        let mut c = Calibration::new(&s, &NONE);
         // Untouched, no lift stays no lift.
         c.save(&mut s);
         assert_eq!(s.horizon.hdr_black_level, 0);
@@ -398,7 +421,7 @@ mod tests {
         c.save(&mut s);
         assert_eq!(s.horizon.hdr_black_level, 2);
         // Calibrated back down, 0 is no lift: what the step showed.
-        let mut c = Calibration::new(&s);
+        let mut c = Calibration::new(&s, &NONE);
         assert!((c.picture(1.0).1 - 0.02).abs() < 1e-6);
         c.key(KeyCode::ArrowLeft);
         c.key(KeyCode::ArrowLeft);
@@ -410,14 +433,14 @@ mod tests {
         assert_eq!(s.horizon.hdr_black_level, 0);
         assert_eq!(s.horizon.black_level_nits(), 0.0);
         assert_eq!(s.horizon.hdr_peak, 10_000);
-        let mut c = Calibration::new(&s);
+        let mut c = Calibration::new(&s, &NONE);
         c.key(KeyCode::Enter);
         assert_eq!(c.picture(1.0).1, 10_000.0);
         // One step down from the top is 500 nits; from 2000, 50.
         c.key(KeyCode::ArrowLeft);
         assert_eq!(c.picture(1.0).1, 9500.0);
         s.horizon.hdr_peak = 2000;
-        let mut c = Calibration::new(&s);
+        let mut c = Calibration::new(&s, &NONE);
         c.key(KeyCode::Enter);
         c.key(KeyCode::ArrowLeft);
         assert_eq!(c.picture(1.0).1, 1950.0);
