@@ -138,14 +138,24 @@ def admit(f):
         assert d['colors'][0]=='B' and len(d['colors'][1])==16384 and any(d['colors'][1])
         assert f[p+'/mapfile/last_id.dat']['body']['data']['map']==0
 
-def main():
-    a=argparse.ArgumentParser();a.add_argument('--side',choices=['java','native'],required=True);a.add_argument('--binary',type=Path,required=True);a.add_argument('--build',type=Path,required=True);a=a.parse_args();a.build.mkdir(parents=True,exist_ok=True)
+def side(name,binary,build):
     net.PLAYERS=[PLAYER];net.PROPERTIES.update({'level-seed':'42','level-type':'minecraft\\:normal','generate-structures':'true','generator-settings':'{}','force-gamemode':'false'})
-    (a.build/'program.json').write_text(json.dumps(program(),indent=2)+'\n')
-    java,client=clients(a.build)
-    if a.side=='java':
-        generate(java,a.build);f=run('java',java,client,a.build);admit(f);(a.build/'reference.json').write_text(json.dumps(f,indent=2)+'\n');print('JAVA ADMITTED',len(f));return 0
-    f=run('native',[str(a.binary.resolve()),'--resources',str(net.lab.LOCAL/'horizon-client/26.3'),'--dedicated','--nogui'],client,a.build)
-    ref=json.loads((a.build/'reference.json').read_text());diff={k:{'java':v,'native':f.get(k)} for k,v in ref.items() if f.get(k)!=v};report={'facts':len(ref),'matched':len(ref)-len(diff),'differences':diff,'reference_sha256':hashlib.sha256((a.build/'reference.json').read_bytes()).hexdigest()};(a.build/'strict-report.json').write_text(json.dumps(report,indent=2)+'\n');print('NATIVE',report['matched'],'/',report['facts'],list(diff));return bool(diff)
+    (build/'program.json').write_text(json.dumps(program(),indent=2)+'\n')
+    java,client=clients(build)
+    if name=='java':
+        generate(java,build);f=run('java',java,client,build);admit(f);(build/'reference.json').write_text(json.dumps(f,indent=2)+'\n');print('JAVA ADMITTED',len(f));return 0
+    f=run('native',[str(Path(binary).resolve()),'--resources',str(net.lab.LOCAL/'horizon-client/26.3'),'--dedicated','--nogui'],client,build)
+    ref=json.loads((build/'reference.json').read_text());diff={k:{'java':v,'native':f.get(k)} for k,v in ref.items() if f.get(k)!=v};report={'facts':len(ref),'matched':len(ref)-len(diff),'differences':diff,'reference_sha256':hashlib.sha256((build/'reference.json').read_bytes()).hexdigest()};(build/'strict-report.json').write_text(json.dumps(report,indent=2)+'\n');print('NATIVE',report['matched'],'/',report['facts'],list(diff));return int(bool(diff))
+
+def main():
+    p=argparse.ArgumentParser(description='With no arguments (as tools/parity.py runs it), builds the game and runs both sides into a fresh .local/exploration_map_command.')
+    p.add_argument('--side',choices=['java','native']);p.add_argument('--binary',type=Path);p.add_argument('--build',type=Path);a=p.parse_args()
+    if a.side:
+        if a.build is None or (a.side=='native' and a.binary is None):p.error('--side needs --build, and --binary for native')
+        a.build.mkdir(parents=True,exist_ok=True);return side(a.side,a.binary,a.build)
+    build=net.lab.LOCAL/'exploration_map_command';shutil.rmtree(build,ignore_errors=True)
+    # Builds the classes into build/classes and the game binary; each phase writes fresh folders under build.
+    _,build,_,horizon,_=net.sides('exploration_map_command',a.binary)
+    return side('java',None,build) or side('native',horizon[0],build)
 
 if __name__=='__main__':raise SystemExit(main())
