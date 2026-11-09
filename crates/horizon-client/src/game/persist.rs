@@ -139,6 +139,16 @@ pub(super) fn mark_fresh(tag: &mut Tag) {
 /// it doesn't join the level again. Taken off like [`FRESH_ADD`].
 const SAME_LEVEL_MOVE: &str = "horizon:same_level_move";
 
+/// `PrimedTnt.readAdditionalSaveData`: `getShortOr("fuse", 80)` accepts any
+/// numeric tag; floating values floor to int before the short narrowing.
+pub(super) fn tnt_fuse(tag: &Tag) -> i32 {
+    i32::from(match tag.get("fuse") {
+        Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+        Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+        other => horizon_client::save::number(other).unwrap_or(80) as i16,
+    })
+}
+
 /// Whether `tag` was queued as a move within its level; the mark comes off.
 fn take_moved(tag: &mut Tag) -> bool {
     match tag {
@@ -853,11 +863,7 @@ impl Game<'_> {
             let id = self.next_entity;
             // getShortOr uses NumericTag.shortValue: floor floating values
             // to int before short narrowing; integer tags narrow directly.
-            let fuse = i32::from(match tag.get("fuse") {
-                Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
-                Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
-                other => horizon_client::save::number(other).unwrap_or(80) as i16,
-            });
+            let fuse = tnt_fuse(&tag);
             self.tnts.push(super::tnt::PrimedTnt {
                 rotation: [0.0, 0.0],
                 join: Default::default(),
@@ -956,8 +962,10 @@ impl Game<'_> {
     /// A saved armor stand.
     pub(super) fn load_armor_stand(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         self.next_entity += 1;
+        // Its own random makes its UUID, kept unless the tag has one.
+        let (_, fresh) = horizon_client::mobs::living_random();
         if let Some(a) = entity_nbt::armor_stand_from_nbt(&tag, self.next_entity) {
-            self.remember(a.id, uuid, tag);
+            self.remember(a.id, Some(uuid.unwrap_or(fresh)), tag);
             self.armor_stands.push(a);
         }
     }
@@ -1074,11 +1082,14 @@ impl Game<'_> {
         } else {
             None
         };
-        let mut m = entity_nbt::mob_from_nbt(
+        // The mob's own random makes its UUID, kept unless the tag has one.
+        let (own, fresh) = horizon_client::mobs::living_random();
+        let mut m = entity_nbt::mob_from_nbt_with_random(
             &tag,
             self.res.mob_types(),
             self.next_entity,
             Some(self.pack.assets.registry),
+            own,
         )?;
         if horizon_client::mobs::camel::is_camel(m.species()) {
             horizon_client::mobs::camel::finish_load(&mut m, self.world.game_time);
@@ -1117,7 +1128,7 @@ impl Game<'_> {
             }
         }
         let id = m.id;
-        self.remember(id, uuid, tag);
+        self.remember(id, Some(uuid.unwrap_or(fresh)), tag);
         self.mobs.push(m);
         if finalize {
             self.enchant_spawn_equipment(id);
@@ -2271,6 +2282,7 @@ impl Game<'_> {
         if let (Some(shot), Tag::Compound(map)) = (shot, &mut tag) {
             map.insert("HasBeenShot".into(), shot);
         }
+        self.save_projectile_portal_cooldown(p, &mut tag);
         Some((chunk_of(p.position), tag))
     }
     /// The UUID a save writes for a reference to `who`, as `mob_to_nbt`'s

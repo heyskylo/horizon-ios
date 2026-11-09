@@ -757,6 +757,7 @@ impl Game<'_> {
             border: Some((self.border.geometry(), [c.position.x, c.position.z])),
         };
         if let Ok(moved) = scene.resolve(c.bounds(), delta, 0.0, c.on_ground) {
+            c.fall_distance = self.vehicle_fall_reset(c.fall_distance, c.position, moved);
             c.position = Vec3::new(
                 c.position.x + moved.x,
                 c.position.y + moved.y,

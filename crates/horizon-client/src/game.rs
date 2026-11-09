@@ -17936,6 +17936,8 @@ mod dragon_fireball_motion_tests;
 #[cfg(test)]
 mod fake_player_tick_tests;
 #[cfg(test)]
+mod fence_leash_force_tests;
+#[cfg(test)]
 mod golem_defense_tests;
 #[cfg(test)]
 mod hoglin_repeat_attack_tests;
