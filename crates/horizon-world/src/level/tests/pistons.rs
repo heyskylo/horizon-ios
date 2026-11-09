@@ -376,3 +376,33 @@ fn a_piston_pushes_a_retracted_piston_and_refuses_an_extended_one() {
         }
     }
 }
+
+/// `PistonBaseBlock.isPushable` ends in `!state.hasBlockEntity()`: a block with a
+/// block entity is never pushed, whatever its push reaction, so the piston
+/// facing one does not extend at all.
+#[test]
+fn a_piston_refuses_blocks_that_have_a_block_entity() {
+    let blocks: [(&str, &[(&str, &str)]); 4] = [
+        ("chest", &[("facing", "north"), ("type", "single")]),
+        ("furnace", &[("facing", "north"), ("lit", "false")]),
+        ("barrel", &[("facing", "north"), ("open", "false")]),
+        ("hopper", &[("facing", "down"), ("enabled", "true")]),
+    ];
+    for (name, props) in blocks {
+        let mut w = world!();
+        let block = w.id(name, props);
+        w.set(BlockPos::new(1, 5, 0), block);
+        w.set(
+            BlockPos::new(0, 5, 0),
+            w.id("piston", &[("facing", "east")]),
+        );
+        w.set(BlockPos::new(-1, 5, 0), w.id("redstone_block", &[]));
+        settle(&mut w);
+        assert_eq!(
+            w.prop(BlockPos::new(0, 5, 0), "extended"),
+            "false",
+            "a {name} ahead"
+        );
+        assert_eq!(w.get(BlockPos::new(1, 5, 0)), block, "{name} stays");
+    }
+}
