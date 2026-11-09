@@ -565,18 +565,20 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     for i in 0..4 {
         let xx = (m.position.x + f64::from((i % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
         let zz = (m.position.z + f64::from((i / 2 % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
-        let here = w.facts.get(w.world.block(xx, y, zz));
         let below = w.facts.get(w.world.block(xx, y - 1, zz));
-        // SnowLayerBlock.canSurvive: a full top face, not ice.
-        let ice = matches!(
-            below.name.as_ref(),
-            "minecraft:ice" | "minecraft:packed_ice" | "minecraft:barrier"
-        );
-        if here.name.as_ref() == "minecraft:air"
-            && below.full_collision
-            && !ice
-            && !placed.contains(&[xx, y, zz])
-        {
+        // SnowLayerBlock.canSurvive: the two snow-layer tags decide first,
+        // then a full top face (or a full snow layer) supports the snow.
+        let in_tag = |tag: &str| {
+            w.block_tags
+                .get(tag)
+                .is_some_and(|t| t.contains(&*below.name))
+        };
+        let supported = if in_tag("minecraft:cannot_support_snow_layer") {
+            false
+        } else {
+            in_tag("minecraft:support_override_snow_layer") || below.full_collision
+        };
+        if w.facts.is_air(w.world.block(xx, y, zz)) && supported && !placed.contains(&[xx, y, zz]) {
             placed.push([xx, y, zz]);
             events.push(MobEvent::SetBlockName {
                 mob: Some(m.id),
@@ -656,6 +658,53 @@ mod tests {
         );
         // Without the vanilla data under .local/horizon-client the world cannot be built: the test has nothing to check.
         let _ = ran;
+    }
+
+    /// `SnowGolem.aiStep` tests `isAir` (cave and void air too) and
+    /// `SnowLayerBlock.canSurvive` (the two snow-layer tags, then a full top face).
+    #[test]
+    fn snow_trail_follows_is_air_and_the_snow_layer_tags() {
+        let cases = [
+            ("minecraft:stone", "minecraft:cave_air", true),
+            ("minecraft:stone", "minecraft:void_air", true),
+            ("minecraft:soul_sand", "minecraft:air", true),
+            ("minecraft:mud", "minecraft:air", true),
+            ("minecraft:honey_block", "minecraft:air", true),
+            ("minecraft:ice", "minecraft:air", false),
+            ("minecraft:packed_ice", "minecraft:air", false),
+            ("minecraft:barrier", "minecraft:air", false),
+            ("minecraft:stone", "minecraft:water", false),
+        ];
+        for (floor, here, expect) in cases {
+            crate::mobs::world::with_built_test_world(
+                &[],
+                |world, reg| {
+                    world
+                        .chunks
+                        .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                    for x in 0..3 {
+                        for z in 0..3 {
+                            world
+                                .set(x, 0, z, reg.default_state(floor).unwrap())
+                                .unwrap();
+                            world
+                                .set(x, 1, z, reg.default_state(here).unwrap())
+                                .unwrap();
+                        }
+                    }
+                },
+                |w, _| {
+                    let mut golem = mob(7, Species::SnowGolem, Vec3::new(1.5, 1.0, 1.5));
+                    let mut events = Vec::new();
+                    snow_ai_step(&mut golem, w, &mut events);
+                    let placed = events
+                        .iter()
+                        .filter(|e| matches!(e, MobEvent::SetBlockName { .. }))
+                        .count();
+                    assert_eq!(placed > 0, expect, "{floor} under {here}");
+                },
+            );
+        }
     }
 
     /// `MoveTowardsTargetGoal.canUse` picks a random spot within 16 blocks and

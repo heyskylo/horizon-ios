@@ -13,11 +13,9 @@ winit = "0.30.13"
 horizon-theme = { path = "../horizon-theme" }
 png = "0.18"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
-# The DualSense's trigger effects (the `controllers` feature).
-horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 
 [features]
-controllers = ["dep:horizon-dualsense"]
+controllers = []
 
 [lints]
 workspace = true

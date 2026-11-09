@@ -138,6 +138,10 @@ fn scaling(sprite: &str, r: &Rect) -> NineSlice {
             | "horizon/jei/button_disabled_v2"
             | "horizon/jei/button_highlight_v2" => [6; 4],
             "horizon/jei/search_background_v2" => [6; 4],
+            "horizon/jei/interactive_ingredient_tooltip_background" => [16; 4],
+            "horizon/jei/recipe_preview_background_v2" => [16; 4],
+            "horizon/jei/scrollbar_background_v2" => [6; 4],
+            "horizon/jei/scrollbar_marker_v2" => [2, 2, 2, 1],
             "gui/sprites/widget/button"
             | "gui/sprites/widget/button_highlighted"
             | "gui/sprites/widget/button_disabled" => [3; 4],
@@ -806,8 +810,14 @@ fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &
     slider_sprites_ext(hover, active, false, false, dragging)
 }
 
-/// Track and handle sprites: the track outline shows while dragged or focused with
-/// keyboard navigation (!can_change_value), hovering or editing highlights the handle.
+/// `AbstractSliderButton.getSprite` and `getHandleSprite`: the track outline
+/// lights while the slider is focused and its value cannot change
+/// (`isActive() && isFocused() && !canChangeValue`), the handle while it is
+/// hovered or its value can change (`isActive() && (isHovered || canChangeValue)`).
+/// `canChangeValue` is set when the slider is focused with the mouse or Tab and
+/// flipped by Enter (`setFocused`, `keyPressed`): Horizon's `can_change_value`
+/// for the keyboard, and a drag for the mouse, which focuses it with the value
+/// free to change. So a dragged slider keeps its plain track.
 fn slider_sprites_ext(
     hover: bool,
     active: bool,
@@ -815,12 +825,13 @@ fn slider_sprites_ext(
     can_change_value: bool,
     dragging: bool,
 ) -> (&'static str, &'static str) {
-    let track = if dragging || (active && focused && !can_change_value) {
+    let can_change_value = can_change_value || dragging;
+    let track = if active && focused && !can_change_value {
         "gui/sprites/widget/slider_highlighted"
     } else {
         "gui/sprites/widget/slider"
     };
-    let handle = if active && (hover || can_change_value || dragging) {
+    let handle = if active && (hover || can_change_value) {
         "gui/sprites/widget/slider_handle_highlighted"
     } else {
         "gui/sprites/widget/slider_handle"
@@ -1227,6 +1238,13 @@ pub struct EditBox {
     /// Grey completion shown after the text (EditBox.setSuggestion).
     pub suggestion: Option<String>,
     pub text_color: u32,
+    /// `EditBox.textColorUneditable`: the colour of a box `setEditable(false)`
+    /// made read-only, which still shows its value and caret.
+    pub text_color_uneditable: u32,
+    /// `EditBox.isEditable`: a read-only box keeps the focus, the caret keys
+    /// and copy, but takes no typed text, Backspace/Delete or paste (`AnvilScreen`
+    /// sets it by its input slot).
+    pub editable: bool,
     /// `getMessage`: what the narrator calls the box ("<message> edit box:
     /// <value>").
     pub message: String,
@@ -1518,6 +1536,8 @@ impl EditBox {
             focused_at: Instant::now(),
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
+            text_color_uneditable: rgba(112, 112, 112, 255),
+            editable: true,
             message: String::new(),
             frame: None,
         }
@@ -1562,6 +1582,12 @@ impl EditBox {
     }
     /// EditBox.insertText: replace the selection, respecting the maximum length.
     pub fn insert_text(&mut self, text: &str) {
+        // `EditBox.charTyped` only inserts through `canConsumeInput`, which a
+        // read-only box fails; the screens here hand typed text to this method
+        // directly.
+        if !self.editable {
+            return;
+        }
         let (a, b) = self.selected();
         let filtered = crate::clipboard::filter_text(text, self.multiline);
         let room = self
@@ -1573,8 +1599,12 @@ impl EditBox {
         let pos = a + char_len(&insert);
         self.set_cursor(pos, false);
     }
-    /// Delete `n` characters (negative: backwards) or the selection.
+    /// Delete `n` characters (negative: backwards) or the selection. A
+    /// read-only box consumes the key without changing its value.
     pub fn delete_chars(&mut self, n: isize) {
+        if !self.editable {
+            return;
+        }
         if self.cursor != self.highlight {
             self.insert_text("");
             return;
@@ -1677,20 +1707,24 @@ impl EditBox {
         use winit::keyboard::KeyCode as K;
         match key {
             K::Backspace => {
-                let n = if ctrl {
-                    self.word_position(-1) as isize - self.cursor as isize
-                } else {
-                    -1
-                };
-                self.delete_chars(n);
+                if self.editable {
+                    let n = if ctrl {
+                        self.word_position(-1) as isize - self.cursor as isize
+                    } else {
+                        -1
+                    };
+                    self.delete_chars(n);
+                }
             }
             K::Delete => {
-                let n = if ctrl {
-                    self.word_position(1) as isize - self.cursor as isize
-                } else {
-                    1
-                };
-                self.delete_chars(n);
+                if self.editable {
+                    let n = if ctrl {
+                        self.word_position(1) as isize - self.cursor as isize
+                    } else {
+                        1
+                    };
+                    self.delete_chars(n);
+                }
             }
             K::ArrowLeft => {
                 let p = if ctrl {
@@ -1724,6 +1758,19 @@ impl EditBox {
         shortcut: crate::clipboard::EditShortcut,
         clipboard: &mut dyn crate::clipboard::Clipboard,
     ) -> bool {
+        use crate::clipboard::EditShortcut;
+        if !self.editable {
+            match shortcut {
+                // EditBox.keyPressed: Cut copies the selection, then does not
+                // take it out of a read-only box.
+                EditShortcut::Cut => {
+                    clipboard.set(&self.selected_text());
+                    return false;
+                }
+                EditShortcut::Paste => return false,
+                EditShortcut::SelectAll | EditShortcut::Copy => {}
+            }
+        }
         let before = self.value.clone();
         crate::clipboard::apply(self, shortcut, clipboard);
         self.reset_blink();
@@ -1777,7 +1824,11 @@ impl EditBox {
                 u32::MAX,
             );
         }
-        let color = self.text_color;
+        let color = if self.editable {
+            self.text_color
+        } else {
+            self.text_color_uneditable
+        };
         let rest: String = self.value.chars().skip(self.display).collect();
         let shown_len = atlas.font.fit(&rest, self.inner_width());
         let displayed: String = rest.chars().take(shown_len).collect();
@@ -2131,15 +2182,36 @@ mod tests {
         }
     }
 
+    /// `AbstractSliderButton.getSprite`/`getHandleSprite`: a focused slider
+    /// whose value can't change lights its track, a hovered one or one whose
+    /// value can change (Tab or Enter, or the mouse's drag) lights its handle.
     #[test]
-    fn slider_track_is_outlined_only_while_dragged() {
+    fn slider_sprites_follow_focus_and_the_drag() {
+        // Hovered, at rest: plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, false);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Dragged: still a plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, true);
-        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Focused with the arrow keys: the value can't change, the track lights.
+        let (track, handle) = slider_sprites_ext(false, true, true, false, false);
+        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // Focused with Tab, or Enter pressed on it: the value can change, the handle lights.
+        let (track, handle) = slider_sprites_ext(false, true, true, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Focused while the mouse drags: the track stays plain.
+        let (track, _) = slider_sprites_ext(true, true, true, false, true);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        // Not hovered, not dragged: nothing is lit.
         let (track, handle) = slider_sprites(false, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // An inactive slider highlights neither, even when focused.
+        let (track, handle) = slider_sprites_ext(true, false, true, true, true);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle");
     }
@@ -2530,5 +2602,52 @@ mod tests {
             menu_tooltip_position(screen, (100, 200), [100, 200, 150, 20], size),
             (112, 180)
         );
+    }
+
+    /// `EditBox.setEditable(false)`: the box keeps the focus, the caret keys
+    /// and copy, but `charTyped`/paste/Backspace/Delete do nothing, and Cut
+    /// copies without taking the text out. A value and the caret still show,
+    /// in `textColorUneditable`.
+    #[test]
+    fn a_read_only_edit_box_keeps_the_caret_and_copy_but_refuses_editing() {
+        use crate::clipboard::{EditShortcut, MemoryClipboard};
+        let mut edit = EditBox::new(0.0, 0.0, 100.0, 20.0);
+        edit.set_value("name");
+        edit.editable = false;
+        let mut clipboard = MemoryClipboard("pasted".into());
+        // The caret keys still work.
+        assert!(edit.key(winit::keyboard::KeyCode::ArrowLeft, false, false));
+        assert_eq!(edit.cursor, 3);
+        assert!(edit.key(winit::keyboard::KeyCode::Home, false, false));
+        assert_eq!(edit.cursor, 0);
+        // Backspace and Delete are consumed but change nothing.
+        assert!(edit.key(winit::keyboard::KeyCode::Backspace, false, false));
+        assert!(edit.key(winit::keyboard::KeyCode::Delete, false, false));
+        assert_eq!(edit.value, "name");
+        // Typed text (and an IME commit) goes through insert_text: refused.
+        edit.insert_text("typed");
+        assert_eq!(edit.value, "name");
+        edit.delete_chars(-1);
+        assert_eq!(edit.value, "name");
+        // Paste changes nothing; Cut copies and keeps the text; Copy copies.
+        edit.set_cursor(0, false);
+        edit.set_cursor(4, true);
+        assert!(!edit.shortcut(EditShortcut::Paste, &mut clipboard));
+        assert_eq!(edit.value, "name");
+        assert!(!edit.shortcut(EditShortcut::Cut, &mut clipboard));
+        assert_eq!(edit.value, "name");
+        assert_eq!(clipboard.0, "name");
+        edit.set_cursor(0, false);
+        edit.set_cursor(4, true);
+        assert!(!edit.shortcut(EditShortcut::Copy, &mut clipboard));
+        assert_eq!(clipboard.0, "name");
+        // An editable box does all of it again. (Set the caret past the
+        // selection first: insertion replaces a selection.)
+        edit.editable = true;
+        edit.set_cursor(4, false);
+        edit.insert_text("x");
+        assert_eq!(edit.value, "namex");
+        assert!(edit.key(winit::keyboard::KeyCode::Backspace, false, false));
+        assert_eq!(edit.value, "name");
     }
 }

@@ -351,7 +351,10 @@ fn java_runtime_lays_out_mojangs_runtime_with_its_executables_and_links() {
         LICENSE
     );
     // horizon-prepare finds it where the official launcher would have put it.
-    assert_eq!(horizon_prepare::java::minecraft_runtimes(&dir), [home]);
+    assert_eq!(
+        horizon_platform::prepare::java::minecraft_runtimes(&dir),
+        [home]
+    );
     // A second call keeps the files: only the index and manifest are asked again.
     server.asked();
     java_runtime(
