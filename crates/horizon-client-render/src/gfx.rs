@@ -1329,7 +1329,7 @@ pub struct Renderer {
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
     stars: stars::Stars,
-    /// OptiFine custom sky layers (`crate::custom_sky`), and the frame's from the game.
+    /// Custom sky layers (`crate::custom_sky`), and the frame's from the game.
     custom_sky: custom_sky::CustomSky,
     custom_sky_draws: Vec<crate::custom_sky::Draw>,
     /// The glowing entities' outline (`LevelRenderer.entityOutlineTarget`).
@@ -5517,11 +5517,11 @@ impl Renderer {
             ))
         });
     }
-    /// The pack's OptiFine custom sky layer textures (`crate::custom_sky::CustomSky::load`).
-    pub fn set_custom_sky(&mut self, pack: &crate::custom_sky::CustomSky) {
+    /// The pack's custom sky layer textures (`crate::custom_sky::load`).
+    pub fn set_custom_sky(&mut self, pack: &dyn crate::custom_sky::SkyLayers) {
         self.custom_sky.set_pack(&self.device, &self.queue, pack);
     }
-    /// The custom sky layers the next frame draws (`CustomSky::draws`): the game refills it each
+    /// The custom sky layers the next frame draws (`SkyLayers::draws`): the game refills it each
     /// frame, empty when the world's sky has none.
     pub fn custom_sky_draws(&mut self) -> &mut Vec<crate::custom_sky::Draw> {
         &mut self.custom_sky_draws
@@ -15718,11 +15718,11 @@ mod shadow_caster_tests {
     #[test]
     fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
         let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
-            let shadow = horizon_render_pipeline::Shadow {
+            let shadow = horizon_shaders::Shadow {
                 distance: 128.0,
                 near,
                 far,
-                ..horizon_render_pipeline::Shadow::default()
+                ..horizon_shaders::Shadow::default()
             };
             let camera = DVec3::new(13.5, y + 1.62, -13.5);
             let view = pack_post::ShadowView {

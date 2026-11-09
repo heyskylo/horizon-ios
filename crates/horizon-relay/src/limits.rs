@@ -93,6 +93,11 @@ pub struct Rates {
     /// before the global budget, so emptying that takes many sites rather than one home's /64s.
     pub site_unknown_per_min: f64,
     pub site_unknown_burst: f64,
+    /// Unknown short codes one nameplate may receive a minute (and the burst), from every address
+    /// at once: what one address set can take of the global budget for a single short code. Only
+    /// unknown short codes spend it; a wrong secret for a code that exists is the host's limit.
+    pub nameplate_unknown_per_min: f64,
+    pub nameplate_unknown_burst: f64,
 }
 impl Default for Rates {
     fn default() -> Self {
@@ -108,6 +113,8 @@ impl Default for Rates {
             open_per_address: 64,
             site_unknown_per_min: 24.0,
             site_unknown_burst: 6.0,
+            nameplate_unknown_per_min: 5.0,
+            nameplate_unknown_burst: 10.0,
         }
     }
 }
@@ -170,6 +177,8 @@ pub struct Limiter {
     open: HashMap<(IpAddr, u8), usize>,
     /// Unknown-code budgets by [`site_key`], swept with the addresses.
     sites: HashMap<IpAddr, Site>,
+    /// Unknown-code budgets by nameplate, swept with the sites.
+    nameplates: HashMap<String, Site>,
 }
 impl Limiter {
     pub fn new(rates: Rates, enabled: bool) -> Self {
@@ -181,6 +190,7 @@ impl Limiter {
             hosts: HashMap::new(),
             open: HashMap::new(),
             sites: HashMap::new(),
+            nameplates: HashMap::new(),
         }
     }
     /// Count one more connection open from `ip`, unless its address (or IPv6 site) holds as many
@@ -235,6 +245,46 @@ impl Limiter {
             self.site(ip, now).unknown.try_take(now);
         }
     }
+    fn nameplate(&mut self, nameplate: &str, now: Instant) -> &mut Site {
+        let r = &self.rates;
+        let site = self
+            .nameplates
+            .entry(nameplate.to_owned())
+            .or_insert_with(|| Site {
+                unknown: Bucket::new(
+                    r.nameplate_unknown_per_min / 60.0,
+                    r.nameplate_unknown_burst,
+                    now,
+                ),
+                seen: now,
+            });
+        site.seen = now;
+        site
+    }
+    /// Whether `nameplate` has unknown-code budget left (checked before every join, as the site's
+    /// and the global budget are, so a refusal says nothing about whether the code exists).
+    ///
+    /// A nameplate this relay has not seen has its whole burst left, so the check does not record
+    /// one: only [`Limiter::nameplate_unknown_take`] does, and a join refused later leaves no state.
+    pub fn nameplate_unknown_has(&mut self, nameplate: &str, now: Instant) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        match self.nameplates.get_mut(nameplate) {
+            Some(site) => site.unknown.has(now),
+            None => true,
+        }
+    }
+    /// An unknown code for `nameplate`: spends its own budget, whichever address asked.
+    pub fn nameplate_unknown_take(&mut self, nameplate: &str, now: Instant) {
+        if self.enabled {
+            self.nameplate(nameplate, now).unknown.try_take(now);
+        }
+    }
+    #[cfg(test)]
+    fn nameplates_tracked(&self) -> usize {
+        self.nameplates.len()
+    }
     /// Count one more host open from `ip`, unless its address (or IPv6 site)
     /// holds as many as it may already.
     pub fn open_host(&mut self, ip: IpAddr) -> bool {
@@ -277,6 +327,8 @@ impl Limiter {
             });
             // An idle site's bucket has refilled long before: dropping it changes nothing.
             self.sites
+                .retain(|_, s| now.saturating_duration_since(s.seen) < keep);
+            self.nameplates
                 .retain(|_, s| now.saturating_duration_since(s.seen) < keep);
         }
         let r = &self.rates;
@@ -415,6 +467,43 @@ mod tests {
         );
         v6.site_unknown_take("2001:db8:7:100::1".parse().unwrap(), t);
         assert!(!v6.site_unknown_has("2001:db8:7:1ff::1".parse().unwrap(), t));
+    }
+
+    #[test]
+    fn a_nameplate_spends_its_own_unknown_code_budget() {
+        let t = Instant::now();
+        let mut l = Limiter::new(
+            Rates {
+                nameplate_unknown_per_min: 6.0,
+                nameplate_unknown_burst: 2.0,
+                ..Rates::default()
+            },
+            true,
+        );
+        // Guesses against one code spend its budget, whichever address sends them.
+        assert!(
+            l.nameplate_unknown_has("K7QM", t),
+            "a code not probed yet has its whole burst"
+        );
+        assert_eq!(l.nameplates_tracked(), 0, "the check records nothing");
+        l.nameplate_unknown_take("K7QM", t);
+        assert!(l.nameplate_unknown_has("K7QM", t));
+        l.nameplate_unknown_take("K7QM", t);
+        assert!(!l.nameplate_unknown_has("K7QM", t), "the burst is spent");
+        assert_eq!(l.nameplates_tracked(), 1);
+        assert!(
+            l.nameplate_unknown_has("ZZZZ", t),
+            "another code keeps its own"
+        );
+        assert_eq!(
+            l.nameplates_tracked(),
+            1,
+            "checking another code records nothing"
+        );
+        assert!(
+            l.nameplate_unknown_has("K7QM", t + Duration::from_secs(10)),
+            "one a ten seconds back"
+        );
     }
 
     #[test]
