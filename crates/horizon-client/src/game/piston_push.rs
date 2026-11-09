@@ -13,7 +13,9 @@ use super::{
     Game,
     entity::{Entity, EntityHandle, with_entity, with_entity_mut},
 };
-use horizon_client::collisions::{EntityCollisions, SceneCollisions, with_piston_noclip};
+use horizon_client::collisions::{
+    EntityCollisions, SceneCollisions, no_collision_empty, with_piston_noclip,
+};
 use horizon_client::motion::MotionWorld;
 use horizon_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, border::BorderGeometry};
 use horizon_core::position::BlockPos;
@@ -834,7 +836,23 @@ impl Game<'_> {
                 }
             }
             Target::Entity(handle) => {
-                with_entity_mut!(self, handle, entity => entity.move_by_piston(movement))
+                with_entity_mut!(self, handle, entity => entity.move_by_piston(movement));
+                let Some(bounds) =
+                    with_entity!(self, handle, entity => entity.piston_release_bounds())
+                else {
+                    return;
+                };
+                let no_block_collision = {
+                    let mut scene = SceneCollisions {
+                        world: &self.world,
+                        binding: self.collision,
+                        subject: None,
+                    };
+                    no_collision_empty(&mut scene, bounds)
+                };
+                with_entity_mut!(self, handle, entity => {
+                    entity.release_after_piston(no_block_collision)
+                });
             }
         }
     }

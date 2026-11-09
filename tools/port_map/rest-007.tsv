@@ -28,18 +28,18 @@ ArgumentUtils.findUsedArgumentTypes	skip:data		bootstrap check that every used a
 SuggestionProviders.register	skip:data		bootstrap registration; the ids Horizon knows are the match in network.rs::provider
 SuggestionProviders.getName	inline	crates/horizon-client/src/lan/commands.rs::CommandTree::packet_with	gap: minor: the suggestion id is found by node path in SUGGESTIONS, not from the provider object
 DoubleArgumentInfo.serializeToNetwork	port	crates/horizon-client/src/lan/commands.rs::properties	writes the min and max presence byte, then each bound
-DoubleArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play.rs::ArgumentProperties::read	reads the presence byte and the bounds
+DoubleArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play/commands.rs::ArgumentProperties::read	reads the presence byte and the bounds
 DoubleArgumentInfo.serializeToJson	skip:data		the min and max JSON of the datagen report; Horizon reads commands.json
 FloatArgumentInfo.serializeToNetwork	port	crates/horizon-client/src/lan/commands.rs::properties	writes the min and max presence byte, then each bound
-FloatArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play.rs::ArgumentProperties::read	reads the presence byte and the bounds
+FloatArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play/commands.rs::ArgumentProperties::read	reads the presence byte and the bounds
 FloatArgumentInfo.serializeToJson	skip:data		the min and max JSON of the datagen report; Horizon reads commands.json
 IntegerArgumentInfo.serializeToNetwork	port	crates/horizon-client/src/lan/commands.rs::properties	writes the min and max presence byte, then each bound
-IntegerArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play.rs::ArgumentProperties::read	reads the presence byte and the bounds
+IntegerArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play/commands.rs::ArgumentProperties::read	reads the presence byte and the bounds
 IntegerArgumentInfo.serializeToJson	skip:data		the min and max JSON of the datagen report; Horizon reads commands.json
 LongArgumentInfo.serializeToNetwork	port	crates/horizon-client/src/lan/commands.rs::properties	writes the min and max presence byte, then each bound
-LongArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play.rs::ArgumentProperties::read	reads the presence byte and the bounds
+LongArgumentInfo.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play/commands.rs::ArgumentProperties::read	reads the presence byte and the bounds
 LongArgumentInfo.serializeToJson	skip:data		the min and max JSON of the datagen report; Horizon reads commands.json
-StringArgumentSerializer.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play.rs::ArgumentProperties::read	reads the string type as a varint
+StringArgumentSerializer.deserializeFromNetwork	port	crates/horizon-protocol/src/packets/play/commands.rs::ArgumentProperties::read	reads the string type as a varint
 StringArgumentSerializer.Template.instantiate	port	crates/horizon-command/src/network.rs::argument_type	word, phrase and greedy string types
 BlockBox.of	skip:other		no caller outside BlockBox in the 26.3 sources
 BlockBox.include	skip:other		no caller outside BlockBox in the 26.3 sources
