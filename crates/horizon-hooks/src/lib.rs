@@ -14,9 +14,10 @@
 //!
 //! The platform registries (docs/layers.md, "Platform registries") have the same shape:
 //! [`settings`] for the settings each crate keeps in its own lines, [`pages`] for its settings
-//! pages.
+//! pages, [`hud`] for what it draws on the HUD.
 #![forbid(unsafe_code)]
 
+pub mod hud;
 pub mod pages;
 mod registry;
 pub mod settings;
@@ -98,6 +99,7 @@ pub mod engine {
         all();
         crate::settings::all();
         crate::pages::engine::all();
+        crate::hud::engine::all();
     }
 
     /// [`Hooks::started`].
