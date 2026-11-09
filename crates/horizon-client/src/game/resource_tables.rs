@@ -184,29 +184,40 @@ impl PackResources {
         // These pack-local resources do not depend on one another. Decode the
         // images and language map together so a custom-sky pack cannot put all
         // of the pack assembly on the critical path behind its own files.
-        let (names, clouds, forcefield, custom_sky) = std::thread::scope(|scope| {
-            let names = named_scope(scope, "pack.names", || Names::load(root));
-            let clouds = named_scope(scope, "pack.clouds", || load_clouds(root));
-            let forcefield = named_scope(scope, "pack.forcefield", || load_forcefield(root));
-            let custom_sky = named_scope(scope, "pack.custom_sky", || {
-                horizon_client::custom_sky::CustomSky::load(root)
+        let (names, clouds, forcefield, custom_sky, environments, polytone_particles) =
+            std::thread::scope(|scope| {
+                let names = named_scope(scope, "pack.names", || Names::load(root));
+                let clouds = named_scope(scope, "pack.clouds", || load_clouds(root));
+                let forcefield = named_scope(scope, "pack.forcefield", || load_forcefield(root));
+                let custom_sky = named_scope(scope, "pack.custom_sky", || {
+                    horizon_client::custom_sky::load(root)
+                });
+                let environments =
+                    named_scope(scope, "pack.environments", || pack_environments(root));
+                let polytone_particles = named_scope(scope, "pack.particles", || {
+                    pack_particles(root, assets.registry)
+                });
+                (
+                    names
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                    clouds
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                    forcefield
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                    custom_sky
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                    environments
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                    polytone_particles
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                )
             });
-            (
-                names
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                clouds
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                forcefield
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                custom_sky
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-            )
-        });
-        let polytone_particles = pack_particles(root, assets.registry);
         let polytone_post = horizon_client::polytone_post::PolytonePost::read(
             root,
             horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Dir(
@@ -235,10 +246,11 @@ impl PackResources {
             names: Arc::new(names),
             clouds: Arc::new(clouds),
             forcefield: Arc::new(forcefield),
-            custom_sky: Arc::new(custom_sky),
-            environments: pack_environments(root),
+            custom_sky,
+            environments,
             polytone_particles,
             polytone_post,
+            polytone_colors: Arc::new(read_colors(root)),
         }
     }
 }
@@ -277,4 +289,13 @@ fn pack_particles(
     ));
     let registry = horizon_client::particles::polytone::Registry::read(root, configs, blocks);
     (!registry.is_empty()).then(|| Arc::new(registry))
+}
+
+/// The packs' custom colours; their dye and sheep colours go to the draw paths' table.
+fn read_colors(root: &std::path::Path) -> horizon_client::polytone_colors::PackColors {
+    let colors = horizon_client::polytone_colors::PackColors::read(root);
+    horizon_client::pack_palette::set(&colors);
+    horizon_client::pack_palette::set_item_bars(root);
+    horizon_client::brewing::set_pack_colors(colors.effects());
+    colors
 }

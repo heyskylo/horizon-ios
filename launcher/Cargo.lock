@@ -2641,6 +2641,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-addresses"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-bench"
 version = "0.1.0"
 dependencies = [
@@ -2662,6 +2666,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "glam",
+ "horizon-addresses",
  "png 0.18.1",
  "serde",
  "serde_json",
@@ -2675,6 +2680,7 @@ dependencies = [
  "chacha20poly1305",
  "getrandom 0.3.4",
  "hkdf",
+ "horizon-addresses",
  "if-addrs",
  "serde",
  "serde_json",
@@ -2682,6 +2688,10 @@ dependencies = [
  "socket2 0.6.5",
  "spake2",
 ]
+
+[[package]]
+name = "horizon-hooks"
+version = "0.1.0"
 
 [[package]]
 name = "horizon-launcher"
@@ -2700,20 +2710,17 @@ dependencies = [
  "gpui-fast",
  "gpui-fast-platform",
  "horizon-bench",
- "horizon-core",
  "horizon-cosmetics",
  "horizon-friends",
  "horizon-mcp",
  "horizon-mod-api-gen",
  "horizon-mods",
+ "horizon-platform",
  "horizon-port-pack",
- "horizon-prepare",
- "horizon-protocol",
  "horizon-release-sign",
  "horizon-shader-api",
  "horizon-telemetry",
  "horizon-theme",
- "horizon-world",
  "image",
  "keyring",
  "libc",
@@ -2775,6 +2782,18 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "wasmparser",
  "zip",
+]
+
+[[package]]
+name = "horizon-platform"
+version = "0.1.0"
+dependencies = [
+ "horizon-core",
+ "horizon-hooks",
+ "horizon-prepare",
+ "horizon-protocol",
+ "horizon-system",
+ "horizon-world",
 ]
 
 [[package]]
@@ -2842,10 +2861,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-system"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-telemetry"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "horizon-addresses",
+ "horizon-platform",
  "ruzstd",
  "serde",
  "serde_json",

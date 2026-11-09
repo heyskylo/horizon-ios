@@ -54,7 +54,10 @@ enum Dim { Overworld, Nether, End }
 struct Settings { entity_shadows: bool }
 struct Atlas { sprites: std::collections::HashMap<&'static str, usize> }
 struct Gui { atlas: Atlas }
-struct Game { dim: Dim, renderer: Option<Renderer>, settings: Settings, gui: Gui }
+struct Colors { shadows: bool }
+impl Colors { fn entity_shadows(&self) -> bool { self.shadows } }
+struct Pack { polytone_colors: Colors }
+struct Game { dim: Dim, renderer: Option<Renderer>, settings: Settings, gui: Gui, pack: Pack }
 impl Game {
     fn selected_blob(&self) -> Option<usize> { __GUARD__ shadow_sprite }
 }
@@ -84,6 +87,7 @@ fn scene(kind: &str, dim: Dim, enabled: bool, sprite: bool) -> Game {
             native: (kind == "native").then_some(Native { shadow: Some(()) }),
         }),
         settings: Settings { entity_shadows: enabled },
+        pack: Pack { polytone_colors: Colors { shadows: kind != "pack_hides" } },
         gui: Gui { atlas: Atlas { sprites: if sprite {
             [("misc/shadow", 73)].into_iter().collect()
         } else { Default::default() } } },
@@ -106,6 +110,7 @@ fn scene(kind: &str, dim: Dim, enabled: bool, sprite: bool) -> Game {
         ("no_pack", [73, 73, 73]),
         ("no_renderer", [73, 73, 73]),
         ("native", [None, 73, 73]),
+        ("pack_hides", [None, None, None]),
     ]
     for kind, expected in rows:
         for dimension, wanted in zip(["Overworld", "Nether", "End"], expected):

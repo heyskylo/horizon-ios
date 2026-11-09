@@ -450,17 +450,22 @@ pub struct BlockEmitters {
     pub priority: i32,
     pub particle_emitters: Vec<Emitter>,
     pub sound_emitters: Vec<SoundEmitter>,
+    /// `disable_particles`: the block's own particles (its `Block.animateTick`, as a torch's
+    /// flame) don't spawn (observed on the real mod); the emitters of block modifiers are apart.
+    pub disable_particles: bool,
 }
 
 impl BlockEmitters {
-    /// `None` when the file has no emitters (it modifies other things) or is switched off.
+    /// `None` when the file neither has emitters nor disables the block's particles (it modifies
+    /// other things), or is switched off.
     pub fn parse(json: &Json, implicit: Option<&str>) -> Result<Option<Self>, String> {
         if json.get("polytone_ignore").and_then(Json::as_bool) == Some(true) {
             return Ok(None);
         }
         let particle_emitters = emitters(json.get("particle_emitters"))?;
         let sound_emitters = sound_emitters(json.get("sound_emitters"))?;
-        if particle_emitters.is_empty() && sound_emitters.is_empty() {
+        let disable_particles = json.get("disable_particles").and_then(Json::as_bool) == Some(true);
+        if particle_emitters.is_empty() && sound_emitters.is_empty() && !disable_particles {
             return Ok(None);
         }
         Ok(Some(Self {
@@ -468,6 +473,7 @@ impl BlockEmitters {
             priority: json.get("priority").and_then(Json::as_i64).unwrap_or(0) as i32,
             particle_emitters,
             sound_emitters,
+            disable_particles,
         }))
     }
 }
@@ -486,6 +492,48 @@ impl EntityEmitters {
         Ok(Some(Self {
             targets: Targets::parse(json.get("targets"), implicit)?,
             emitters: emitters(json.get("emitters"))?,
+        }))
+    }
+}
+
+/// A particle modifier (wiki "Particle Modifiers"): expressions run once on each particle of the
+/// targeted types as it spawns. The real mod reads them in the legacy dialect (`AGE`, `SIZE`);
+/// `size` multiplies the particle's size and `speed` its motion, as vanilla's `Particle.scale`
+/// and `setPower` do (`size` observed on the real mod, #11486).
+pub struct ParticleModifier {
+    pub targets: Targets,
+    /// `color` (packed RGB), `red`, `green`, `blue`, `alpha`, `size`, `life`, `speed`: those
+    /// present.
+    pub fields: BTreeMap<String, Program>,
+    /// `colormap`, kept as JSON for the runtime.
+    pub colormap: Option<Json>,
+    /// `filter` (a block or item the particle carries), kept as JSON.
+    pub filter: Option<Json>,
+}
+
+const MODIFIER_FIELDS: [&str; 8] = [
+    "color", "red", "green", "blue", "alpha", "size", "life", "speed",
+];
+
+impl ParticleModifier {
+    /// `None` when the file is switched off or changes nothing.
+    pub fn parse(json: &Json, implicit: Option<&str>) -> Result<Option<Self>, String> {
+        if json.get("polytone_ignore").and_then(Json::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        let object = json
+            .as_object()
+            .ok_or("a particle modifier is not an object")?;
+        let (fields, _) = expressions(object, &MODIFIER_FIELDS)?;
+        let colormap = object.get("colormap").cloned();
+        if fields.is_empty() && colormap.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            targets: Targets::parse(json.get("targets"), implicit)?,
+            fields,
+            colormap,
+            filter: object.get("filter").cloned(),
         }))
     }
 }
@@ -635,6 +683,34 @@ mod tests {
         assert!(
             CustomParticle::parse(&serde_json::json!({"sound_emitters": [{"chance": "1"}]}))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_particle_modifier_reads_its_expressions_and_skips_empty_files() {
+        let m = ParticleModifier::parse(
+            &json!({"size": "SIZE * 4", "life": "20 + rand() * 20", "colormap": "pack:cmap"}),
+            Some("minecraft:flame"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(m.targets.matches("minecraft:flame", |_| false));
+        let keys: Vec<&str> = m.fields.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["life", "size"]);
+        assert_eq!(m.colormap, Some(json!("pack:cmap")));
+        // Nothing to change, or switched off: no modifier.
+        assert!(
+            ParticleModifier::parse(&json!({"targets": ["minecraft:smoke"]}), None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            ParticleModifier::parse(
+                &json!({"size": "2", "polytone_ignore": true}),
+                Some("minecraft:flame")
+            )
+            .unwrap()
+            .is_none()
         );
     }
 }

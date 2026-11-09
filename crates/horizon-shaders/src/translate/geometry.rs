@@ -49,6 +49,8 @@ pub fn translate_geometry(
         .fold(String::new(), |s, l| s + l + "\n");
     // The pack's vertex stage reads its inputs in our loop, not in `main`.
     gbuffers.body = String::new();
+    // The vertex's place isn't the fragment's through a geometry stage.
+    gbuffers.water_patches = false;
     gbuffers.attributes = Vec::new();
     let program = super::translate(&combined, fragment, Target::Buffers, Some(&gbuffers), true)?;
     Ok((program, triangles))

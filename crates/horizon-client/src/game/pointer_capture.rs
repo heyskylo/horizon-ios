@@ -49,23 +49,7 @@ impl Game<'_> {
             && !self.is_published()
             && !self.has_split_players()
             && self.title.is_none()
-            && (matches!(
-                self.screen,
-                Screen::Paused
-                    | Screen::Options
-                    | Screen::Stats
-                    | Screen::Advancements
-                    | Screen::WorldOptions
-                    | Screen::Friends
-                    | Screen::Social
-                    | Screen::ServerLinks
-                    | Screen::ConfirmLink
-                    | Screen::DialogWarning
-                    | Screen::CommandBlock
-                    | Screen::DebugOptions
-                    | Screen::HudEditor
-            ) || self.book.is_some()
-                || self.win_screen_pauses())
+            && (self.screen.is_pause_screen() || self.book.is_some() || self.win_screen_pauses())
     }
     /// A screen open over gameplay while `screen` stays `Playing`: a book or
     /// lectern, a sign, a server dialog, the code of conduct, a link or
@@ -150,7 +134,7 @@ impl Game<'_> {
         // grabs only on `setScreen(null)`: the pack prompt and server dialogs
         // are screens over the world that keep the pointer.
         if capture
-            && (!self.focused
+            && ((!self.focused && !self.unclaimed_window && !self.scripted_run())
                 || self.server_packs.prompt.is_some()
                 || self.dialog_open()
                 || self.command_prompt.is_some())
@@ -195,15 +179,14 @@ impl Game<'_> {
         };
         let scale = HudBatch::new(size).scale;
         let was_grabbed = self.captured;
-        if self.options.offscreen && !self.split_window {
-            // A genuinely hidden `--offscreen` run leaves the system pointer where
-            // the person at the computer has it. Its grab is internal (an
-            // agent turns the view with `mouse-move`).
+        if self.internal_grab() {
+            // Its grab is internal (an agent turns the view with `mouse-move`). A grab the
+            // window already held when a scripted run began stays the system's until the
+            // run ends (`settle_after_run`).
             if capture {
                 self.mouse.set_ignore_first_move();
             }
             self.captured = capture;
-            self.capture_mode = None;
         } else if capture {
             self.mouse.set_ignore_first_move();
             // macOS warps by re-associating the mouse with the pointer,
@@ -264,8 +247,43 @@ impl Game<'_> {
         ) {
             self.cursor = pos;
         }
-        if !self.options.offscreen || self.split_window {
+        if !self.internal_grab() {
             window.set_cursor_visible(!self.captured);
+        }
+    }
+    /// The game's pointer grab leaves the system pointer where the person at the computer has
+    /// it: a genuinely hidden `--offscreen` run, an agent's window no one has clicked yet, or a
+    /// scripted run, which plays the game while the person may be using the computer.
+    pub(super) fn internal_grab(&self) -> bool {
+        (self.options.offscreen && !self.split_window)
+            || self.unclaimed_window
+            || self.scripted_run()
+    }
+    /// Once a scripted run is over, the person's last click into the window or away from it
+    /// applies (`held_focus`), and the system pointer follows the grab the run left inside the
+    /// game, as if the window had taken or released it now.
+    pub(super) fn settle_after_run(&mut self, event_loop: &dyn EventLoopCtl) {
+        if self.scripted_run() {
+            return;
+        }
+        if let Some(focused) = self.focus_after_run.take() {
+            let id = self
+                .window
+                .as_ref()
+                .map_or_else(WindowId::dummy, |w| w.id());
+            self.handle_window_event(
+                event_loop,
+                id,
+                WindowEvent::Focused(focused),
+                input_trace::InputOrigin::User,
+            );
+        }
+        // Outside a run, a window whose grab is the system's holds it exactly while the game
+        // has it grabbed; only a run leaves the two apart.
+        if !self.internal_grab() && self.captured != self.capture_mode.is_some() {
+            let grab = self.captured;
+            self.captured = self.capture_mode.is_some();
+            self.capture(grab);
         }
     }
     /// A Linux window manager can release the native pointer grab while the
@@ -277,6 +295,7 @@ impl Game<'_> {
             && self.focused
             && self.captured
             && !self.options.offscreen
+            && !self.internal_grab()
             && let (Some(window), Some(mode)) = (&self.window, self.capture_mode)
         {
             let other = match mode {

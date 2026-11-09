@@ -9,10 +9,13 @@
 //! [`DimensionModifier`] environment attribute layers, and the scripting expressions
 //! ([`expr::Program`]) their values and other files use.
 mod attributes;
+pub mod colors;
+pub mod creative_tabs;
 pub mod expr;
 mod modifiers;
 pub mod pack;
 pub mod particles;
+pub mod sprites;
 mod target;
 
 pub use attributes::{Argument, Attributes, Layer, Modifier, normalize_attribute};

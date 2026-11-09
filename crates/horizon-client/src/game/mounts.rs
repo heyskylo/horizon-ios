@@ -891,7 +891,7 @@ impl Game<'_> {
     /// landing code's own fall damage for the player: creative flight is
     /// exempt, and the statistic, the sounds and the damage records wait in the
     /// player's events for its next tick, as a landing of its own leaves them.
-    fn rider_fall_damage(&mut self, distance: f64, modifier: f32) {
+    pub(super) fn rider_fall_damage(&mut self, distance: f64, modifier: f32) {
         let Some(player) = self.player.as_mut() else {
             return;
         };
@@ -1162,6 +1162,51 @@ pub(super) fn start_riding_jump(
         Some((equine::jump_sound(m), 0.4))
     } else {
         None
+    }
+}
+
+impl Game<'_> {
+    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
+    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
+    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
+    /// server plays is broadcast to the players near the mount, the rider
+    /// included (their own client plays none).
+    pub(super) fn lan_start_riding_jump(
+        &mut self,
+        host: &mut super::lan::LanHost,
+        conn: u32,
+        data: i32,
+    ) {
+        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
+            return;
+        };
+        let m = &mut self.mobs[index];
+        let camel = crate::mobs::camel::is_camel(m.species()).then_some(m.id);
+        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
+            return;
+        };
+        let at = m.center();
+        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
+        let neutral = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == "neutral")
+            .unwrap_or(0) as i32;
+        host.hub.sound(
+            &format!("minecraft:{sound}"),
+            at,
+            volume,
+            1.0,
+            neutral,
+            None,
+        );
+        // Camel.handleStartJump, which the helper accepted: after the dash
+        // sound, `gameEvent(GameEvent.ENTITY_ACTION)` from the camel.
+        if let Some(id) = camel {
+            self.post_entity_event(
+                "minecraft:entity_action",
+                horizon_client::mobs::Who::Mob(id),
+            );
+        }
     }
 }
 
@@ -1542,3 +1587,7 @@ mod tests {
         assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
     }
 }
+
+#[cfg(test)]
+#[path = "camel_jump_tests.rs"]
+mod camel_jump_tests;

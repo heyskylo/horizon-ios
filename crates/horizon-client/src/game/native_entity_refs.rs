@@ -42,6 +42,9 @@ impl Game<'_> {
         }
         match self.level_entity(id)? {
             Target::Mob(id) if !self.mobs.iter().any(|m| m.id == id && !m.removed) => None,
+            // The mod API has no natural fence knots (#13036 adds them for
+            // commands only).
+            Target::Knot(_) => None,
             t => Some(t),
         }
     }
@@ -382,6 +385,13 @@ mod client_tests {
         assert_eq!((&*stone.item, stone.count), ("minecraft:stone", 5));
         // The hotbar's first slot is the player's inventory slot 0.
         assert_eq!(game.inventory[0].as_ref().map(|s| s.count), Some(5));
+        // The player's own inventory answers the same with the menu up: the
+        // hotbar is slots 0-8, the chest's slots are not part of it.
+        let own = game.native_own_inventory().expect("a client has one");
+        assert_eq!(own.len(), 36);
+        let stone = own[0].as_ref().expect("the hotbar's first slot");
+        assert_eq!((&*stone.item, stone.count), ("minecraft:stone", 5));
+        assert!(own[1..].iter().all(Option::is_none));
 
         // A new client level: the handles of the old one read as None.
         game.handle_packet(C::Respawn(play::Respawn {

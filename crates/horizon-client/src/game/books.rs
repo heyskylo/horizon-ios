@@ -832,11 +832,13 @@ impl Game<'_> {
             return false;
         }
         let has_book = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Lectern(l)) if l.book.is_some());
+        // `LecternBlock.useItemOn`: `ItemTags.LECTERN_BOOKS`, which a data
+        // pack can add its own books to, not only the two vanilla items.
         let Some(book) = held.filter(|h| {
-            matches!(
-                &*h.item,
-                "minecraft:writable_book" | "minecraft:written_book"
-            )
+            world_items!(self)
+                .item_tags
+                .get("minecraft:lectern_books")
+                .is_some_and(|books| books.contains(&*h.item))
         }) else {
             return false;
         };
@@ -1105,24 +1107,42 @@ impl Game<'_> {
         }
     }
     /// The open lectern screen follows its block entity (`LecternScreen`'s
-    /// menu listener): the page, and closing once the book is gone.
+    /// menu listener): the page, and closing once the book is gone or the
+    /// player is out of `LecternMenu.stillValid`'s reach.
     pub(super) fn follow_lectern(&mut self) {
         let Some(BookScreen::View {
-            lectern: Some(key),
-            page,
-            pages,
-        }) = self.book.as_mut()
+            lectern: Some(key), ..
+        }) = self.book.as_ref()
         else {
             return;
         };
         if self.remote.is_some() {
             return;
         }
-        match self.world.block_entities.get(key) {
-            Some(BlockEntity::Lectern(l)) if l.book.is_some() => {
-                *page = (l.page.max(0) as usize).min(pages.len().saturating_sub(1));
-            }
-            _ => self.close_book(),
+        let key = *key;
+        // `LecternMenu.stillValid` -> `LecternBlockEntity$1.stillValid`:
+        // `Container.stillValidBlockEntity` (the same block entity) and
+        // `hasBook()`, plus the player's reach with the 4-block buffer.
+        let has_book = matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::Lectern(l)) if l.book.is_some()
+        );
+        let in_reach = self.eye_position().is_some_and(|eye| {
+            horizon_client::lan::guest::within_block_range(
+                eye,
+                self.reach() + 4.0,
+                [key.0, key.1, key.2],
+            )
+        });
+        if !has_book || !in_reach {
+            self.close_book();
+            return;
+        }
+        let Some(BookScreen::View { page, pages, .. }) = self.book.as_mut() else {
+            return;
+        };
+        if let Some(BlockEntity::Lectern(l)) = self.world.block_entities.get(&key) {
+            *page = (l.page.max(0) as usize).min(pages.len().saturating_sub(1));
         }
     }
     pub(super) fn book_click(&mut self, size: [u32; 2]) {
@@ -1599,6 +1619,67 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
 }
 
 #[cfg(test)]
+mod lectern_books_tag_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{containers::BlockEntity, items::ItemStack};
+
+    /// `LecternBlock.useItemOn` checks `ItemTags.LECTERN_BOOKS`; a world's
+    /// data pack adds its own book to that tag, and the lectern takes it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_packs_lectern_books_entry_goes_onto_the_lectern() {
+        let mut game = server_game();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-lectern-books-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tags = dir.join("datapacks/books/data/minecraft/tags/item");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::write(
+            dir.join("datapacks/books/pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tags.join("lectern_books.json"),
+            r#"{"values":["minecraft:written_book","minecraft:writable_book","minecraft:book"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/books"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+
+        // A book the pack put in the tag is placed; one it did not is not.
+        let stone = ItemStack::new("minecraft:stone", 1);
+        assert!(!game.use_lectern([8, 64, 8], Some(&stone)));
+        let book = ItemStack::new("minecraft:book", 1);
+        assert!(
+            game.use_lectern([8, 64, 8], Some(&book)),
+            "the pack's `#minecraft:lectern_books` entry was refused"
+        );
+        let Some(BlockEntity::Lectern(lectern)) = game.world.block_entities.get(&key) else {
+            panic!("no lectern block entity");
+        };
+        assert_eq!(
+            lectern.book.as_ref().map(|b| &*b.item),
+            Some("minecraft:book")
+        );
+    }
+}
+
+#[cfg(test)]
 mod lectern_signal_tests {
     use super::super::native_machines::tests::server_game;
     use super::lectern_signal;
@@ -1661,5 +1742,55 @@ mod lectern_signal_tests {
         }));
         assert_eq!(signal(&mut game, Some(written.clone()), 0), 1, "page 0");
         assert_eq!(signal(&mut game, Some(written), 1), 15, "last page");
+    }
+}
+
+#[cfg(test)]
+mod lectern_reach_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{
+        containers::{BlockEntity, Lectern},
+        items::ItemStack,
+        motion::PlayerMotion,
+    };
+    use horizon_core::geometry::Vec3;
+
+    /// `LecternMenu.stillValid` -> `Container.stillValidBlockEntity`: the open
+    /// lectern screen closes once the player is out of the interaction range
+    /// (with vanilla's four-block buffer), as the guest path already does.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lectern_screen_closes_out_of_reach() {
+        let mut game = server_game();
+        game.player = Some(
+            PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5)).expect("a player position"),
+        );
+        let key = (8, 64, 8);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world.block_entities.insert(
+            key,
+            BlockEntity::Lectern(Lectern {
+                book: Some(ItemStack::new("minecraft:writable_book", 1)),
+                page: 0,
+            }),
+        );
+        assert!(game.open_lectern([8, 64, 8]));
+        assert!(game.book.is_some(), "the lectern screen opened");
+
+        game.tick_lecterns();
+        assert!(game.book.is_some(), "the player is within reach");
+
+        game.player.as_mut().unwrap().position = Vec3::new(30.0, 64.0, 10.5);
+        game.tick_lecterns();
+        assert!(
+            game.book.is_none(),
+            "the lectern screen stayed open out of reach"
+        );
     }
 }

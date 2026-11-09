@@ -209,12 +209,9 @@ fn move_up_to_above_solid(w: &MobWorld, mut p: [i32; 3], above: i32) -> [i32; 3]
     }
     p
 }
-/// `Mob.isWithinHome(BlockPos)`.
-pub fn within_home(c: [i32; 3], r: i32, p: [i32; 3]) -> bool {
-    let d = |i: usize| i64::from(c[i] - p[i]);
-    let r = i64::from(r);
-    d(0) * d(0) + d(1) * d(1) + d(2) * d(2) < r * r
-}
+#[path = "home.rs"]
+mod home;
+pub use home::within_home;
 
 impl Mob {
     /// PathfinderMob.getWalkTargetValue.
@@ -844,7 +841,7 @@ impl Goal for Float {
         JUMP
     }
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
+        m.floats()
     }
     fn every_tick(&self) -> bool {
         true
@@ -1899,6 +1896,8 @@ impl Goal for HurtByTarget {
             && !(t.is_player && t.creative)
             // HurtByTargetGoal.canUse ends with canAttack(lastHurtByMob).
             && !m.spares_target(cx.w, by)
+            // TargetGoal.canAttack: Mob.isWithinHome(target.blockPosition()).
+            && m.within_home_at(t.position)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.bee && !super::bee::angry(m, cx.w) {
@@ -2132,100 +2131,9 @@ impl Goal for AvoidEntity {
         };
     }
 }
-/// TemptGoal: follow a player holding one of the items.
-#[derive(Clone, Debug)]
-pub struct Tempt {
-    pub speed: f64,
-    pub items: Arc<[String]>,
-    pub can_scare: bool,
-    pub stop_distance: f64,
-    p: [f64; 3],
-    rot: [f64; 2],
-    calm_down: i32,
-}
-impl Tempt {
-    pub fn new(speed: f64, items: Arc<[String]>, can_scare: bool) -> Self {
-        Self {
-            speed,
-            items,
-            can_scare,
-            stop_distance: 2.5,
-            p: [0.0; 3],
-            rot: [0.0; 2],
-            calm_down: 0,
-        }
-    }
-    fn wants(&self, item: &Option<Arc<str>>) -> bool {
-        item.as_ref()
-            .is_some_and(|i| self.items.iter().any(|t| t.as_str() == &**i))
-    }
-}
-impl Goal for Tempt {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        MOVE | LOOK
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if self.calm_down > 0 {
-            self.calm_down -= 1;
-            return false;
-        }
-        let Some(p) = &cx.w.player else { return false };
-        // Attributes.TEMPT_RANGE default 10; `TargetingConditions.forNonCombat`
-        // never picks a spectator.
-        p.alive
-            && !p.spectator
-            && (self.wants(&p.main_hand) || self.wants(&p.off_hand))
-            && m.distance_sqr(p.position) <= 100.0
-    }
-    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if self.can_scare
-            && let Some(p) = &cx.w.player
-        {
-            if m.distance_sqr(p.position) < 36.0 {
-                let moved = (p.position.x - self.p[0]).powi(2)
-                    + (p.position.y - self.p[1]).powi(2)
-                    + (p.position.z - self.p[2]).powi(2);
-                if moved > 0.010_000_000_000_000_002 {
-                    return false;
-                }
-                let (yaw, pitch) = look_angles(p.look);
-                if (pitch - self.rot[0]).abs() > 5.0 || (yaw - self.rot[1]).abs() > 5.0 {
-                    return false;
-                }
-            } else {
-                self.p = [p.position.x, p.position.y, p.position.z];
-            }
-            let (yaw, pitch) = look_angles(p.look);
-            self.rot = [pitch, yaw];
-        }
-        self.can_use(m, cx)
-    }
-    fn start(&mut self, _: &mut Mob, cx: &mut Cx) {
-        if let Some(p) = &cx.w.player {
-            self.p = [p.position.x, p.position.y, p.position.z];
-        }
-    }
-    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.nav_stop();
-        self.calm_down = reduced(100);
-    }
-    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        let Some(p) = cx.w.player.clone() else { return };
-        let (y, x) = (m.kind.max_head_y_rot + 20.0, m.max_head_x_rot());
-        m.look_at_speed(p.eye, y, x);
-        if m.distance_sqr(p.position) < self.stop_distance * self.stop_distance {
-            m.nav_stop();
-        } else {
-            m.nav_move_to_entity(
-                cx.w,
-                [p.position.x, p.position.y, p.position.z],
-                1,
-                self.speed,
-            );
-        }
-    }
-}
+mod tempt;
+
+pub use tempt::Tempt;
 fn look_angles(look: [f64; 3]) -> (f64, f64) {
     let yaw = (-look[0]).atan2(look[2]).to_degrees();
     let pitch = (-look[1]).asin().to_degrees();
@@ -3143,139 +3051,8 @@ mod built_by_player_tests {
 }
 
 #[cfg(test)]
-mod avoid_entity_targeting_tests {
-    use super::*;
-    use crate::mobs::world::test_player;
-    use crate::mobs::world::{with_built_test_world, with_test_world};
-    use std::sync::Arc;
-
-    /// `(the player is inside the plain distance range, the goal picks them)`.
-    /// The wall stands at z 5..6, between the rabbit at z 0.5 and the player at
-    /// z 10.5, so sight is the only thing that changes between the two.
-    fn target(difficulty: u8, wall: bool) -> Option<(bool, bool)> {
-        let build = move |world: &mut crate::world::World,
-                          registry: &horizon_world::registry::BlockRegistry| {
-            for cx in -1..1 {
-                for cz in -1..1 {
-                    world.chunks.insert(
-                        (cx, cz),
-                        std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
-                    );
-                }
-            }
-            let stone = registry.default_state("minecraft:stone").unwrap();
-            for x in -4..5 {
-                for z in -4..15 {
-                    world.set(x, 64, z, stone).unwrap();
-                }
-            }
-            if wall {
-                for x in -4..5 {
-                    for y in 65..68 {
-                        for z in 5..7 {
-                            world.set(x, y, z, stone).unwrap();
-                        }
-                    }
-                }
-            }
-        };
-        let mut out = None;
-        let ran = with_built_test_world(&[], build, |w, types| {
-            let mut world = w.clone();
-            world.difficulty = super::super::spawning::LocalDifficulty::new(difficulty, 0, 0, 0.0);
-            let player = test_player(Vec3::new(0.5, 65.0, 10.5));
-            world.player = Some(player.clone());
-            let mut m = Mob::new(
-                1,
-                Arc::new(types.types["minecraft:rabbit"].clone()),
-                Vec3::new(0.5, 65.0, 0.5),
-                0.0,
-            );
-            let mut goal = AvoidEntity::new(Avoid::Player, 20.0, 1.0, 1.0);
-            let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
-            let mut cx = Cx {
-                w: &world,
-                lr: &mut lr,
-                events: &mut events,
-            };
-            let in_range = m.distance_sqr(player.position) <= 20.0 * 20.0;
-            out = Some((in_range, goal.avoid_target(&mut m, &mut cx).is_some()));
-        });
-        ran.then_some(out).flatten()
-    }
-
-    /// `Sensing.hasLineOfSight`: the player is ten blocks away, well inside the
-    /// 20 block range, but the wall is between them, so the goal must not pick
-    /// them (it did before: only the distance was checked).
-    #[test]
-    fn a_rabbit_does_not_flee_a_player_behind_a_wall() {
-        if let Some((in_range, picked)) = target(2, true) {
-            assert!(in_range, "the player is inside the plain distance range");
-            assert!(!picked, "the rabbit picked a player it cannot see");
-        }
-    }
-
-    /// `LivingEntity.canAttack`: in Peaceful no player is a target at all, so
-    /// the goal does not pick them even in plain sight.
-    #[test]
-    fn a_rabbit_does_not_flee_in_peaceful() {
-        if let Some((in_range, picked)) = target(0, false) {
-            assert!(in_range, "the player is inside the plain distance range");
-            assert!(!picked, "the rabbit picked a player in Peaceful");
-        }
-    }
-
-    /// The control: the same world on normal difficulty with nothing in the way
-    /// still picks the player.
-    #[test]
-    fn a_rabbit_flees_a_player_it_can_see() {
-        if let Some((in_range, picked)) = target(2, false) {
-            assert!(in_range, "the player is inside the plain distance range");
-            assert!(picked, "the rabbit ignored a player in the open");
-        }
-    }
-
-    /// `TemptGoal` finds its player with `TargetingConditions.forNonCombat()`,
-    /// which never picks a spectator: a spectator holding wheat does not tempt
-    /// an animal.
-    #[test]
-    fn a_spectator_does_not_tempt_an_animal() {
-        let mut outcomes = Vec::new();
-        if !with_test_world(&[], |w, types| {
-            let kind = Arc::new(types.types["minecraft:cow"].clone());
-            for spectator in [false, true] {
-                let mut world = w.clone();
-                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
-                p.main_hand = Some("minecraft:wheat".into());
-                p.spectator = spectator;
-                world.player = Some(p);
-                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
-                m.ai.goals.add(
-                    3,
-                    Tempt::new(1.25, Arc::from(vec!["minecraft:wheat".to_string()]), false),
-                );
-                let mut lr = LegacyRandom::new(0);
-                let mut events = Vec::new();
-                let mut cx = Cx {
-                    w: &world,
-                    lr: &mut lr,
-                    events: &mut events,
-                };
-                let mut goals = std::mem::take(&mut m.ai.goals);
-                goals.tick(&mut m, &mut cx);
-                outcomes.push(goals.is_running("Tempt"));
-                m.ai.goals = goals;
-            }
-        }) {
-            return;
-        }
-        assert_eq!(
-            outcomes,
-            vec![true, false],
-            "a survival player tempts; a spectator does not"
-        );
-    }
-}
+#[path = "goals_targeting_tests.rs"]
+mod avoid_entity_targeting_tests;
 
 #[cfg(test)]
 mod peaceful_targets_tests {

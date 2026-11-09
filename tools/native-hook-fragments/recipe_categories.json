@@ -1,0 +1,30 @@
+{
+  "hooks": [
+    {
+      "name": "recipe_categories",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_recipe_categories",
+      "neoforge": "none (JEI's IRecipeCategory and IRecipeRegistration, registered through the viewer's own API)",
+      "side": "client",
+      "mod_api": {
+        "contract": "collect",
+        "out": "categories"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "collect_recipe_categories",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_collect_recipe_categories"
+    },
+    {
+      "name": "recipe_categories_changed",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_recipe_categories_changed"
+    },
+    {
+      "name": "recipe_categories_version",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_recipe_categories_version"
+    }
+  ],
+  "rust_summary": "mods' own recipe categories for recipe viewers, outputs with chances (`native_recipe_categories`, `native_collect_recipe_categories`).",
+  "doc_summary": "`native_recipe_categories(categories)` (client) collects the mods' own recipe categories for a recipe viewer: push a `NativeRecipeCategory` (id, title, subtitle, icon, catalysts, and recipes of inputs to outputs, each output with its chance, count range and notes) for a fishing spot, a sieve or a machine. A viewer gets them all with `native_collect_recipe_categories()` and asks again when `native_recipe_categories_version()` moves, which a mod makes happen with `native_recipe_categories_changed()` (its server's data came). Bundles need \"hooks\": @API:recipe_categories@."
+}

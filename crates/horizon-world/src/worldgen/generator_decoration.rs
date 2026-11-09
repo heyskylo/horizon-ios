@@ -414,6 +414,12 @@ impl Decoration {
         if region[4].is_decorated() {
             return Ok(DecorateStats::default());
         }
+        // The full chunks of the region, before their terrain moves into it.
+        let full: Vec<ChunkPos> = region
+            .iter()
+            .filter(|chunk| chunk.is_full())
+            .map(|chunk| chunk.position())
+            .collect();
         let mut chunks = Vec::with_capacity(9);
         let mut biomes = Vec::with_capacity(9);
         let (min_y, height) = (region[4].terrain.min_y(), region[4].terrain.height());
@@ -472,6 +478,7 @@ impl Decoration {
             last_tag: None,
             floor_bounds: [None; 9],
             shape_capture: std::cell::RefCell::new(Vec::new()),
+            full,
         };
         let mut stats = DecorateStats::default();
         let blocks = self.blocks;
@@ -752,6 +759,8 @@ impl PlacementContext for OriginWorld<'_> {
 /// WorldGenRegion-style view: reads anywhere in the 3×3 region, writes within
 /// the FEATURES step's write radius, biome lookups through the biome zoom.
 struct World<'a> {
+    /// The region's full chunks (`ImposterProtoChunk(chunk, false)`).
+    full: Vec<ChunkPos>,
     block_entities: Vec<([i32; 3], crate::nbt::Compound)>,
     entities: Vec<crate::nbt::Compound>,
     level_random: &'a mut dyn super::structure::legacy::PieceRandom,
@@ -863,8 +872,9 @@ impl World<'_> {
             for t in &ticks {
                 let at = [t.pos.x, t.pos.y, t.pos.z];
                 if t.fluid {
-                    let fluid = crate::fluid::FluidKind::ALL[t.kind as usize];
-                    self.schedule_fluid_tick(at, fluid, t.delay)?;
+                    if let Some(fluid) = crate::fluid::FluidKind::from_index(t.kind as usize) {
+                        self.schedule_fluid_tick(at, fluid, t.delay)?;
+                    }
                 } else {
                     let state = behaviours
                         .table
@@ -937,6 +947,12 @@ impl DecorationWorld for World<'_> {
         Ok(())
     }
 }
+impl World<'_> {
+    /// Whether `position` is in one of the region's full chunks.
+    fn is_full_chunk(&self, [x, _, z]: [i32; 3]) -> bool {
+        self.full.iter().any(|p| p.x == x >> 4 && p.z == z >> 4)
+    }
+}
 impl FeatureWorld for World<'_> {
     type Error = RegionError;
     #[inline]
@@ -963,6 +979,12 @@ impl FeatureWorld for World<'_> {
             .contains_block(BlockPos::new(position[0], position[1], position[2]))
         {
             return Ok(false);
+        }
+        // ImposterProtoChunk(chunk, false): setBlockState, setBlockEntity,
+        // removeBlockEntity and markPosForPostProcessing change nothing, and
+        // WorldGenRegion.setBlock still answers true.
+        if self.is_full_chunk(position) {
+            return Ok(true);
         }
         let old = self.region.block(position)?;
         self.region.set_block_worldgen(position, state)?;
@@ -1435,12 +1457,16 @@ impl PlacementContext for World<'_> {
             .zone
             .contains_block(BlockPos::new(position[0], position[1], position[2])))
     }
-    /// ProtoChunk.setBlockState: the section and the stage's heightmaps.
+    /// ProtoChunk.setBlockState: the section and the stage's heightmaps
+    /// (nothing on a full chunk: ImposterProtoChunk(chunk, false)).
     fn set_chunk_block(
         &mut self,
         position: [i32; 3],
         state: BlockStateId,
     ) -> Result<(), PlacementQueryError> {
+        if self.is_full_chunk(position) {
+            return Ok(());
+        }
         self.region
             .set_block_worldgen(position, state)
             .map_err(|e| query(format!("{e:?}")))?;

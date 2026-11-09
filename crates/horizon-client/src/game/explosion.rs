@@ -98,10 +98,16 @@ pub(super) enum BlockInteraction {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ExplosionSource {
     silent: bool,
+    /// The entity that exploded and its kind (`Explosion.getDirectSourceEntity`), when known.
+    entity: Option<(u32, &'static str)>,
 }
 impl ExplosionSource {
     pub(super) fn with_silence(mut self, silent: bool) -> Self {
         self.silent = silent;
+        self
+    }
+    pub(super) fn with_entity(mut self, id: u32, kind: &'static str) -> Self {
+        self.entity = Some((id, kind));
         self
     }
 }
@@ -297,6 +303,43 @@ impl Game<'_> {
         }
         hits as f32 / count as f32
     }
+    /// What a ray's step through the block at `pos` takes from its power
+    /// (`ExplosionDamageCalculator.getBlockExplosionResistance`), and whether
+    /// the block is spared.
+    fn blast_step<S: std::hash::BuildHasher>(
+        &self,
+        pos: [i32; 3],
+        resists: Option<([i32; 3], f32)>,
+        cap: Option<f32>,
+        wither_immune: Option<&std::collections::HashSet<String, S>>,
+    ) -> (f32, bool) {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let f = self.res.facts().get(state);
+        let fluid = if f.fluid != Fluid::None {
+            100.0f32
+        } else {
+            0.0
+        };
+        // A primed TNT minecart's rails and the blocks they
+        // stand on: no resistance, and never blown up.
+        let spared = self.combat.rail_proof_blast
+            && (self.rail(pos[0], pos[1], pos[2]).is_some()
+                || self.rail(pos[0], pos[1] + 1, pos[2]).is_some());
+        let taken = match resists {
+            Some((at, resistance)) if at == pos => (resistance + 0.3) * 0.3,
+            _ if !self.res.facts().is_air(state) || f.fluid != Fluid::None => {
+                let base = if spared {
+                    0.0
+                } else {
+                    f.explosion_resistance.max(fluid)
+                };
+                let immune = wither_immune.is_some_and(|t| t.contains(&*f.name));
+                (blast_resistance(base, cap, immune) + 0.3) * 0.3
+            }
+            _ => 0.0,
+        };
+        (taken, spared)
+    }
     /// `ServerExplosion.calculateExplodedPositions`; `resists` overrides one
     /// block's resistance (`ExplosionDamageCalculator.getBlockExplosionResistance`).
     fn exploded_positions(
@@ -335,6 +378,11 @@ impl Game<'_> {
                     zd /= d;
                     let mut power = radius * (0.7 + self.world.random.next_float() * 0.6);
                     let (mut xp, mut yp, mut zp) = (center[0], center[1], center[2]);
+                    // A ray's steps are 0.3 long, about three to a block: a
+                    // step in the block the last one was in takes what that
+                    // one took (the level does not change while rays cast),
+                    // and that block is in `set` already if it is to be.
+                    let mut last: Option<([i32; 3], f32, bool)> = None;
                     while power > 0.0 {
                         let pos = [xp.floor() as i32, yp.floor() as i32, zp.floor() as i32];
                         if pos[1] < min_y
@@ -344,35 +392,17 @@ impl Game<'_> {
                         {
                             break;
                         }
-                        let state = self.world.block(pos[0], pos[1], pos[2]);
-                        let f = self.res.facts().get(state);
-                        let fluid = if f.fluid != Fluid::None {
-                            100.0f32
-                        } else {
-                            0.0
+                        let (taken, spared, again) = match last {
+                            Some((at, taken, spared)) if at == pos => (taken, spared, true),
+                            _ => {
+                                let (taken, spared) =
+                                    self.blast_step(pos, resists, cap, wither_immune.as_ref());
+                                last = Some((pos, taken, spared));
+                                (taken, spared, false)
+                            }
                         };
-                        // A primed TNT minecart's rails and the blocks they
-                        // stand on: no resistance, and never blown up.
-                        let spared = self.combat.rail_proof_blast
-                            && (self.rail(pos[0], pos[1], pos[2]).is_some()
-                                || self.rail(pos[0], pos[1] + 1, pos[2]).is_some());
-                        match resists {
-                            Some((at, resistance)) if at == pos => {
-                                power -= (resistance + 0.3) * 0.3;
-                            }
-                            _ if !self.res.facts().is_air(state) || f.fluid != Fluid::None => {
-                                let base = if spared {
-                                    0.0
-                                } else {
-                                    f.explosion_resistance.max(fluid)
-                                };
-                                let immune =
-                                    wither_immune.as_ref().is_some_and(|t| t.contains(&*f.name));
-                                power -= (blast_resistance(base, cap, immune) + 0.3) * 0.3;
-                            }
-                            _ => {}
-                        }
-                        if power > 0.0 && !spared {
+                        power -= taken;
+                        if power > 0.0 && !spared && !again {
                             set.put(Key(pos), ());
                         }
                         xp += xd * f64::from(0.3f32);
@@ -985,7 +1015,7 @@ impl Game<'_> {
         self.post_game_event("minecraft:explode", center, ctx);
         let mut targets = self.exploded_positions(center, radius, resists);
         let dimension = self.dim.id();
-        self.native_explosion_detonate(dimension, center, &mut targets);
+        self.native_explosion_detonate(dimension, center, source.entity, &mut targets);
         let pushed =
             self.explosion_hurt_entities(center, radius, damage_type, interaction, &targets);
         if interaction != BlockInteraction::Keep {
@@ -1041,6 +1071,22 @@ impl Game<'_> {
         self.lan_explode(center, small, radius, block_count, pushed);
         Ok(())
     }
+    /// `InfestedBlock.spawnAfterBreak` without a tool that prevents it: while
+    /// blocks drop, its silverfish (`spawnInfestation`) comes out at the
+    /// bottom centre of the block, with its spawn animation.
+    pub(super) fn spawn_infestation(&mut self, pos: [i32; 3]) {
+        if !self.ui.rules.bool("block_drops") {
+            return;
+        }
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]),
+            f64::from(pos[2]) + 0.5,
+        ];
+        if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false) {
+            self.mob_poof(id);
+        }
+    }
     /// `BlockBehaviour.onExplosionHit` (TNT: `wasExploded` primes a short fuse).
     fn explosion_hit_block(
         &mut self,
@@ -1084,6 +1130,10 @@ impl Game<'_> {
             self.pending.record(pos, &entity, &name, custom);
         } else if let Some(tag) = super::spill::saved_entity(&self.world, pos) {
             self.pending.record_saved(pos, &tag);
+        }
+        // Block.onExplosionHit runs spawnAfterBreak before the drops.
+        if !is_tnt && name.starts_with("minecraft:infested_") {
+            self.spawn_infestation(pos);
         }
         if !is_tnt {
             let dynamic = self.pending.dynamic(pos);
@@ -1146,6 +1196,51 @@ impl Game<'_> {
             );
         }
         Ok(())
+    }
+
+    /// ServerExplosion: rays from a 16^3 grid lose (resistance + 0.3) * 0.3 per step.
+    /// A mob explosion (`ServerLevel.explode` with `ExplosionInteraction.MOB`:
+    /// blocks are kept without mobGriefing, else the mob_explosion_drop_decay
+    /// rule picks decay).
+    pub(super) fn explode(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        self.explode_mob(center, radius, false, source)
+    }
+
+    /// `ServerLevel.explode` with `ExplosionInteraction.MOB` and the caller's fire flag.
+    pub(super) fn explode_mob(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        fire: bool,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            BlockInteraction::Keep
+        } else {
+            self.destroy_type("mob_explosion_drop_decay")
+        };
+        self.server_explode_from(center, radius, interaction, fire, source)
+    }
+
+    /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
+    /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
+    pub(super) fn explode_sulfur_cube(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            BlockInteraction::Keep
+        } else {
+            self.destroy_type("tnt_explosion_drop_decay")
+        };
+        self.server_explode_from(center, radius, interaction, false, source)
     }
 }
 
@@ -1253,6 +1348,107 @@ fn blast_resistance(base: f32, cap: Option<f32>, wither_immune: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `exploded_positions` before rays reused their last block's lookup:
+    /// every step looked its block up.
+    fn exploded_positions_stepwise(
+        game: &mut Game<'_>,
+        center: [f64; 3],
+        radius: f32,
+        resists: Option<([i32; 3], f32)>,
+    ) -> Vec<[i32; 3]> {
+        let (min_y, max_y) = game.with_level(|_, level, _| {
+            use horizon_world::level::LevelAccess;
+            (level.min_y(), level.max_y())
+        });
+        let mut set: JavaHashMap<Key, ()> = JavaHashMap::default();
+        for xx in 0..16 {
+            for yy in 0..16 {
+                for zz in 0..16 {
+                    if !(xx == 0 || xx == 15 || yy == 0 || yy == 15 || zz == 0 || zz == 15) {
+                        continue;
+                    }
+                    let mut xd = f64::from(xx as f32 / 15.0 * 2.0 - 1.0);
+                    let mut yd = f64::from(yy as f32 / 15.0 * 2.0 - 1.0);
+                    let mut zd = f64::from(zz as f32 / 15.0 * 2.0 - 1.0);
+                    let d = (xd * xd + yd * yd + zd * zd).sqrt();
+                    (xd, yd, zd) = (xd / d, yd / d, zd / d);
+                    let mut power = radius * (0.7 + game.world.random.next_float() * 0.6);
+                    let (mut xp, mut yp, mut zp) = (center[0], center[1], center[2]);
+                    while power > 0.0 {
+                        let pos = [xp.floor() as i32, yp.floor() as i32, zp.floor() as i32];
+                        if pos[1] < min_y || pos[1] >= max_y {
+                            break;
+                        }
+                        let state = game.world.block(pos[0], pos[1], pos[2]);
+                        let f = game.res.facts().get(state);
+                        let fluid = if f.fluid != Fluid::None {
+                            100.0f32
+                        } else {
+                            0.0
+                        };
+                        match resists {
+                            Some((at, resistance)) if at == pos => {
+                                power -= (resistance + 0.3) * 0.3;
+                            }
+                            _ if !game.res.facts().is_air(state) || f.fluid != Fluid::None => {
+                                let base = f.explosion_resistance.max(fluid);
+                                power -= (blast_resistance(base, None, false) + 0.3) * 0.3;
+                            }
+                            _ => {}
+                        }
+                        if power > 0.0 {
+                            set.put(Key(pos), ());
+                        }
+                        xp += xd * f64::from(0.3f32);
+                        yp += yd * f64::from(0.3f32);
+                        zp += zd * f64::from(0.3f32);
+                        power -= 0.225_000_01;
+                    }
+                }
+            }
+        }
+        set.entries().map(|(k, _)| k.0).collect()
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn rays_reusing_their_last_block_explode_what_each_step_did() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        let registry = &game.pack.assets.registry;
+        let states: Vec<BlockStateId> = [
+            "minecraft:stone",
+            "minecraft:air",
+            "minecraft:water",
+            "minecraft:dirt",
+            "minecraft:obsidian",
+            "minecraft:air",
+            "minecraft:oak_planks",
+            "minecraft:glass",
+        ]
+        .iter()
+        .map(|n| registry.default_state(n).unwrap())
+        .collect();
+        // A jumble of blocks of every resistance around the blast, in the
+        // loaded chunk at the origin.
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in 56..74 {
+                    let i = ((x * 7 + y * 3 + z * 5) as usize) % states.len();
+                    game.world.set(x, y, z, states[i]).unwrap();
+                }
+            }
+        }
+        let center = [8.3, 64.6, 7.9];
+        for (radius, resists) in [(4.0, None), (6.0, None), (4.0, Some(([8, 64, 8], 1200.0)))] {
+            game.world.random = horizon_core::random::LegacyRandom::new(7);
+            let expected = exploded_positions_stepwise(&mut game, center, radius, resists);
+            game.world.random = horizon_core::random::LegacyRandom::new(7);
+            let got = game.exploded_positions(center, radius, resists);
+            assert!(expected.len() > 20, "{radius}: {}", expected.len());
+            assert_eq!(got, expected, "radius {radius}, {resists:?}");
+        }
+    }
 
     #[test]
     #[ignore = "requires prepared resources; tools/test_explosion_items_parity.py"]
