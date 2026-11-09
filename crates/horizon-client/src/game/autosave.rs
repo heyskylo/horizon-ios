@@ -89,6 +89,19 @@ impl Game<'_> {
                 self.player_autosaves.enqueue(g, &self.world_root);
             }
             self.save_connected_guest_statistics(&host);
+            // PlayerList.saveAll -> PlayerAdvancements.save for connected non-owners.
+            // Owner/disconnect records keep their existing wrapper and stats path.
+            for guest in &host.hub.guests {
+                if host
+                    .owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.uuid == guest.uuid)
+                    || !host.play.contains_key(&guest.conn)
+                {
+                    continue;
+                }
+                self.save_guest_advancements(&host, guest);
+            }
             self.lan = Some(host);
         }
         self.save_world_state();

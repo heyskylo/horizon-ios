@@ -316,8 +316,12 @@ impl Loading {
                 loaded.renderer_cpu,
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,
-                self.settings.horizon.wide_frame(),
+                &self.settings.horizon,
                 shader_packs::picked_pack_shape(&self.settings),
+                self.renderer
+                    .as_ref()
+                    .map(|r| r.display_reading())
+                    .unwrap_or_default(),
                 (
                     self.settings.file.int("textureFiltering"),
                     self.settings.file.int("maxAnisotropyBit"),

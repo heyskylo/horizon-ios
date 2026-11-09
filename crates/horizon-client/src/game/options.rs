@@ -182,7 +182,11 @@ impl Game<'_> {
         if ui.controller_open() {
             ui.set_controller_context(context);
         }
-        ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
+        let output = self
+            .renderer
+            .as_ref()
+            .map_or(Default::default(), |r| *r.output());
+        ui.draw(&self.settings, output, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
         self.show_calibration(batch.height);
     }
@@ -547,6 +551,14 @@ impl Game<'_> {
             self.reload_packs();
         }
         self.apply_fullscreen();
+        // A failed HDR start that named no driver becomes the window's driver's, and another
+        // driver's is dropped, so HDR output is tried again.
+        if let Some(driver) = self.renderer.as_ref().and_then(|r| r.hdr_driver())
+            && self.settings.horizon.settle_failed_start(driver)
+            && let Some(dir) = Self::options_path().parent()
+        {
+            self.settings.horizon.save(dir);
+        }
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma;
@@ -583,13 +595,8 @@ impl Game<'_> {
                 self.gpu_culling_auto.reset();
             }
             let _ = r.set_gpu_culling(gpu_culling);
-            r.watch_hdr(s.horizon.hdr);
-            r.set_hdr(
-                s.horizon.hdr_wanted(),
-                s.horizon.paper_white_nits() as f32,
-                s.horizon.peak_nits() as f32,
-                s.horizon.black_level_nits(),
-                s.horizon.hdr_ui_brightness as f32 / 100.0,
+            r.update_output(
+                &s.horizon,
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
             );
         }
