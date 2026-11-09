@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_biomes", "target": "horizon_client::game::native_biome_colors::native_biome_edit::Game<'_>::native_set_biomes"}
+  ],
+  "rust_summary": "biome writes (`native_set_biomes`).",
+  "doc_summary": "`native_set_biomes(dimension, entries)`, which sets biome cells (4x4x4 blocks, by quart position) in loaded chunks of the level being ticked and sends the changed columns' biomes to the players who see them, as `/fillbiome` does. Bundles need \"hooks\": @API:set_biomes@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_biome_colors/native_biome_edit.rs"
+  ]
+}

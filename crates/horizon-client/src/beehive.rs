@@ -63,6 +63,8 @@ pub trait HiveHost {
     /// `Level.addFreshEntity`.
     fn add(&mut self, m: Mob) -> bool;
     fn sound(&mut self, name: &'static str, at: [f64; 3]);
+    /// `BlockEntity.setChanged`: the hive's saved bees changed.
+    fn set_changed(&mut self, at: [i32; 3]);
 }
 
 fn strip_ignored(c: &mut Compound) {
@@ -99,7 +101,7 @@ impl OccupantExt for Occupant {
         if let Tag::Compound(c) = &mut tag {
             strip_ignored(c);
         }
-        let nectar = matches!(tag.get("HasNectar"), Some(Tag::Byte(v)) if *v != 0);
+        let nectar = crate::entity_nbt::flag(&tag, "HasNectar");
         Self {
             entity_data: tag,
             ticks_in_hive: 0,
@@ -114,7 +116,7 @@ impl OccupantExt for Occupant {
         }
     }
     fn has_nectar(&self) -> bool {
-        matches!(self.entity_data.get("HasNectar"), Some(Tag::Byte(v)) if *v != 0)
+        crate::entity_nbt::flag(&self.entity_data, "HasNectar")
     }
     fn from_nbt(tag: &Tag) -> Option<Self> {
         let data = tag.get("entity_data")?;
@@ -221,6 +223,7 @@ impl BeehiveExt for Beehive {
         }
         let corner = at.map(f64::from);
         host.sound("block.beehive.enter", corner);
+        host.set_changed(at);
         true
     }
     fn server_tick(
@@ -231,6 +234,7 @@ impl BeehiveExt for Beehive {
         host: &mut impl HiveHost,
     ) {
         let flower = self.flower;
+        let mut released = false;
         let mut i = 0;
         while i < self.bees.len() {
             // BeeData.tick: ticksInHive++ > minTicksInHive.
@@ -246,10 +250,15 @@ impl BeehiveExt for Beehive {
                 let occupant = b.clone();
                 if release(host, at, facing, honey, &occupant, status, flower).is_some() {
                     self.bees.remove(i);
+                    released = true;
                     continue;
                 }
             }
             i += 1;
+        }
+        // `tickOccupants`: a bee let out is a change to save.
+        if released {
+            host.set_changed(at);
         }
         if !self.bees.is_empty() && host.random().next_double() < 0.005 {
             let hum = [
@@ -279,6 +288,10 @@ impl BeehiveExt for Beehive {
                 None => true,
             },
         );
+        // `releaseAllOccupants`: a bee let out is a change to save.
+        if !out.is_empty() {
+            host.set_changed(at);
+        }
         out
     }
 }
@@ -411,6 +424,13 @@ pub fn facing_step(facing: Option<&str>) -> [i32; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bee_with_nectar_as_any_number_stays_longer() {
+        let bee = Occupant::of(Tag::compound([("HasNectar", Tag::Int(1))]));
+        assert!(bee.has_nectar());
+        assert_eq!(bee.min_ticks_in_hive, 2400);
+    }
 
     #[test]
     fn nbt_round_trips_in_vanilla_order() {

@@ -12,13 +12,14 @@ use horizon_client::{
     mobs::{Mob, Species, sulfur_cube},
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
+    random_source,
 };
 // Its old home, for mixin code that names it here.
 pub(super) use horizon_client::mod_api::NativeDispensed;
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3},
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::RandomSource,
 };
 use horizon_world::{
     fluid::FluidKind,
@@ -132,36 +133,6 @@ enum Target {
     Player,
     Mob(usize),
     Stand(usize),
-}
-
-/// `RandomSource.create()`: the unseeded random an entity owns
-/// (`RandomSupport.generateUniqueSeed`). Draws of an entity's own random never
-/// touch the level's stream.
-pub(super) fn entity_random() -> LegacyRandom {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    static UNIQUIFIER: AtomicI64 = AtomicI64::new(8_682_522_807_148_012);
-    const STEP: i64 = 1_181_783_497_276_652_981;
-    // seedUniquifier.updateAndGet(s -> s * STEP)
-    let mut current = UNIQUIFIER.load(Ordering::Relaxed);
-    let seed = loop {
-        let next = current.wrapping_mul(STEP);
-        match UNIQUIFIER.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
-        {
-            Ok(_) => break next,
-            Err(actual) => current = actual,
-        }
-    };
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as i64);
-    LegacyRandom::new(seed ^ nanos)
-}
-/// `new ItemEntity(level, x, y, z, stack)`'s motion, from the item's own random.
-pub(super) fn new_item_motion() -> [f64; 3] {
-    let mut r = entity_random();
-    let x = r.next_double() * 0.2 - 0.1;
-    let z = r.next_double() * 0.2 - 0.1;
-    [x, 0.2, z]
 }
 
 /// `EquipmentSlot`.
@@ -591,17 +562,19 @@ impl Game<'_> {
     }
     /// `ItemStack.hurtAndBreak(amount)` without an entity.
     fn hurt_and_break(&mut self, mut stack: ItemStack, amount: u32) -> Option<ItemStack> {
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(0, |i| i.max_damage);
-        if max == 0 {
+        if !horizon_client::stations::is_damageable(world_items!(self), &stack) {
             return Some(stack);
         }
-        stack.damage += self.durability_loss(&stack, amount);
-        if stack.damage >= max {
-            return shrink(ItemStack { damage: 0, ..stack });
+        let max = horizon_client::stations::max_damage(world_items!(self), &stack);
+        let loss = self.durability_loss(&stack, amount);
+        if loss == 0 {
+            return Some(stack);
+        }
+        stack.damage = (stack.damage.min(max as u32) as i32)
+            .wrapping_add(loss as i32)
+            .clamp(0, max) as u32;
+        if stack.damage >= max as u32 {
+            return shrink(stack);
         }
         Some(stack)
     }
@@ -669,6 +642,10 @@ impl Game<'_> {
             | "minecraft:axolotl_bucket"
             | "minecraft:tadpole_bucket"
             | "minecraft:sulfur_cube_bucket" => self.dispense_filled_bucket(pos, facing, stack)?,
+            // A mod fluid's bucket (`DispensibleContainerItem`).
+            mod_bucket if horizon_world::fluid::FluidKind::of_bucket(mod_bucket).is_some() => {
+                self.dispense_filled_bucket(pos, facing, stack)?
+            }
             "minecraft:bucket" => self.dispense_empty_bucket(pos, facing, stack)?,
             "minecraft:flint_and_steel" => self.dispense_flint_and_steel(pos, facing, stack)?,
             "minecraft:bone_meal" => self.dispense_bone_meal(pos, facing, stack)?,
@@ -729,7 +706,12 @@ impl Game<'_> {
             }
             return Ok((self.default_execute(pos, facing, stack), CLICK));
         }
-        if stack.item.ends_with("_spawn_egg") {
+        // DispenserBlock.getDefaultDispenseMethod: an egg without ENTITY_DATA drops as an item.
+        if stack.item.ends_with("_spawn_egg")
+            && stack
+                .data()
+                .is_none_or(|data| data.other("!minecraft:entity_data").is_none())
+        {
             return self.dispense_spawn_egg(pos, facing, stack);
         }
         Ok((self.default_execute(pos, facing, stack), CLICK))
@@ -855,7 +837,15 @@ impl Game<'_> {
             f64::from(p.1) + y_off,
             f64::from(p.2) + 0.5,
         ];
-        let id = self.spawn_mob(&name, at, true)?;
+        // EntityType.create: `snapTo(.., Mth.wrapDegrees(level.random.nextFloat() * 360), 0)`.
+        let id = self.spawn_mob_reason_yaw(
+            &name,
+            at,
+            true,
+            false,
+            false,
+            super::creatures::SpawnYaw::Created,
+        )?;
         // finalizeSpawn's riders (chicken jockeys, spider jockeys...) come
         // with a dispensed mob as with any spawn that is not natural.
         self.spawn_jockeys(id, false);
@@ -1017,19 +1007,24 @@ impl Game<'_> {
         }
         self.mob_ambient(id)
     }
+    /// `SpawnEggItemBehavior.execute`: spawn the type selected by the stack's entity data.
     fn dispense_spawn_egg(
         &mut self,
         pos: Pos,
         facing: Direction,
         stack: ItemStack,
     ) -> Result<Dispensed> {
-        let kind = stack.item.trim_end_matches("_spawn_egg").to_owned();
+        let (kind, _) = horizon_client::block_entity_item::spawn_egg_on_spawner(&stack, false);
         let front = offset(pos, facing);
         let Some(id) = self.spawn_mob_at(&kind, front, facing != Direction::Up) else {
             return Ok((Some(stack), CLICK));
         };
         // EntityType.create: `finalizeSpawn` first, the egg's components after.
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            // SpawnEggItemBehavior's `EntityType.spawn` never calls
+            // `setPersistenceRequired`, as a spawn egg used by hand doesn't;
+            // only the elder guardian's and copper golem's constructors do.
+            m.persistent = matches!(m.species(), Species::ElderGuardian | Species::CopperGolem);
             horizon_client::entity_nbt::apply_item_components(m, &stack);
         }
         // EntityType.updateCustomEntityTag: a configured egg
@@ -1103,7 +1098,7 @@ impl Game<'_> {
             ..stack.clone()
         };
         // Projectile.shoot spreads the shot with the projectile's own random.
-        let mut own = entity_random();
+        let mut own = random_source::entity();
         match item.as_str() {
             "minecraft:experience_bottle"
             | "minecraft:splash_potion"
@@ -1179,6 +1174,8 @@ impl Game<'_> {
         // EntityType.create rolls a yaw from the level random before the stack config turns it.
         let _ = self.world.random.next_float();
         self.next_entity += 1;
+        let (_, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(self.next_entity, uuid);
         let mut stand =
             horizon_client::entities::ArmorStand::new(self.next_entity, foot, y_rot(facing));
         // Entity.applyImplicitComponents: a name from an anvil names the stand.
@@ -1329,7 +1326,7 @@ impl Game<'_> {
         if emptied.is_none() {
             return Ok((self.dispense_default(pos, facing, stack), CLICK));
         }
-        if self.dim == super::Dim::Nether
+        if self.dimension_type().water_evaporates
             && matches!(
                 content,
                 BucketContent::Fluid(FluidKind::Water) | BucketContent::MobWater
@@ -1673,9 +1670,12 @@ impl Game<'_> {
         };
         let target = (placed.x, placed.y, placed.z);
         let state = self.apply_item_block_state([target.0, target.1, target.2], state, &stack)?;
-        let name = self.res.facts().get(state).name.clone();
-        if let Some(entity) = self.new_block_entity(&name) {
+        if !self.world.block_entities.stateful_entity(state.0)
+            && let Some(entity) = self.new_block_entity_for_state(state)
+        {
             self.world.block_entities.insert(target, entity);
+        }
+        if self.world.block_entities.get(&target).is_some() {
             self.apply_placed_item([target.0, target.1, target.2], &stack, false);
         }
         self.process_level_events()?;
@@ -1840,9 +1840,7 @@ impl Game<'_> {
         y_offset: f64,
         stack: ItemStack,
     ) -> [f64; 3] {
-        let v = new_item_motion();
-        self.spawn_item(stack, [at.x, at.y + y_offset, at.z], v, 10);
-        v
+        self.spawn_item_own(stack, [at.x, at.y + y_offset, at.z], 10)
     }
     /// `Mob.convertTo(type, ConversionParams.single(this, false, false))`: a
     /// new mob of `kind` in the same place (no spawn finalization, so no
@@ -2027,7 +2025,7 @@ impl Game<'_> {
                                     count: 1,
                                     ..stack.clone()
                                 };
-                                self.spawn_at_location(at, height, one);
+                                self.spawn_item_own(one, [at.x, at.y + height, at.z], 0);
                             }
                         }
                     }

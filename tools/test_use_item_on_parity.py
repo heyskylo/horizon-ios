@@ -353,6 +353,34 @@ def statue_case(rng, states, case):
     case['use_item'] = use
 
 
+WAX_CHEST_FACINGS = {'north': (0, -1), 'south': (0, 1), 'west': (-1, 0), 'east': (1, 0)}
+
+
+def wax_chest_case(rng, states, case):
+    """Honeycomb on a copper chest (`HoneycombItem.useOn`), sneaking so the chest does not open:
+    a double chest's other half gets its own `block_change` and wax particles, and the clicked
+    block a second sound. Single chests and a half whose other half is gone or not copper are the
+    controls: `ChestBlock.getConnectedBlockPos` looks only at the clicked state."""
+    name = rng.choice(['copper_chest', 'exposed_copper_chest', 'weathered_copper_chest', 'oxidized_copper_chest'])
+    facing = rng.choice(list(WAX_CHEST_FACINGS))
+    own = rng.choice(['left', 'right', 'single'])
+    props = {'facing': facing, 'waterlogged': 'false'}
+    case['cells'] = [[0, 0, 0, states.get(name, type=own, **props)]]
+    if own != 'single':
+        dx, dz = WAX_CHEST_FACINGS[facing]
+        # ChestBlock.getConnectedDirection: LEFT is facing.getClockWise().
+        dx, dz = (-dz, dx) if own == 'left' else (dz, -dx)
+        other = 'right' if own == 'left' else 'left'
+        partner = rng.choices(['same', 'gone', 'plain'], (6, 1, 1))[0]
+        if partner == 'same':
+            case['cells'].append([dx, 0, dz, states.get(name, type=other, **props)])
+        elif partner == 'plain':
+            case['cells'].append([dx, 0, dz, states.get('chest', type=other, **props)])
+    case['use_item'] = {'item': d_plain(rng.choice(['honeycomb', 'honeycomb', 'honeycomb', 'stick']), rng.choice([1, 16])),
+                        'creative': rng.random() < 0.2, 'sneaking': True, 'food': 20,
+                        'face': rng.choice(['up', 'north', 'south', 'west', 'east'])}
+
+
 def timed_case(rng, states, case):
     """A repeater, a comparator or a daylight detector clicked with an empty hand, none of which may
     be turned where `Player.getAbilities().mayBuild` is false (`RepeaterBlock.useWithoutItem`,
@@ -683,6 +711,12 @@ def cases(facts, count, seed, transformers=True):
         case = {**h.environment(rng), 'pos': [0, 0, 0]}
         case.pop('raining', None)
         case.pop('thundering', None)
+        if rng.random() < 0.04:
+            wax_chest_case(rng, states, case)
+            case['items'] = []
+            case['mode'] = 'dispense'
+            yield case
+            continue
         if transformers and rng.random() < 0.08:
             transformer_case(rng, states, case)
             case['mode'] = 'dispense'

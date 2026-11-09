@@ -1386,6 +1386,52 @@ mod tests {
         let p = |i: usize| glam::Vec3::from(q[i].pos);
         (p(1) - p(0)).cross(p(2) - p(0))
     }
+    /// Every solid quad the mesher emits packs into a far record, and the
+    /// record gives the quad back bit for bit (`lod::packed`).
+    ///
+    /// `lod::packed`'s own tests check its records against its own copy of what
+    /// `emit_quad` does, which would pass just as well if the two had drifted
+    /// apart. This checks them against the real mesher, over terrain that makes
+    /// faces of every axis and winding: a hill of varied heights, a material
+    /// boundary, a light boundary and water.
+    #[test]
+    fn every_quad_the_mesher_emits_packs_and_comes_back() {
+        let mut columns = columns();
+        for (i, column) in columns.iter_mut().enumerate() {
+            let (x, z) = (i % CELLS, i / CELLS);
+            let top = 4 + (x as i16 % 5) * 2 + (z as i16 % 3);
+            let state = if (x + z) % 7 == 0 { 3 } else { 1 };
+            let light = if x % 4 == 0 { 16 } else { 240 };
+            column.spans = vec![
+                Span {
+                    light,
+                    ..span(0, top, state)
+                },
+                // Water over the lower ground, for the fluid faces too.
+                span(top, 12.max(top + 1), 2),
+            ]
+            .into();
+        }
+        let mesh = mesh(&columns);
+        let quads = mesh.solid.as_chunks::<4>().0;
+        assert!(
+            quads.len() > 50,
+            "{} quads is too few to say much",
+            quads.len()
+        );
+        for (i, quad) in quads.iter().enumerate() {
+            let words = crate::lod::packed::pack(quad)
+                .unwrap_or_else(|| panic!("quad {i} of {} did not pack", quads.len()));
+            let back = crate::lod::packed::corners(words)
+                .unwrap_or_else(|| panic!("quad {i}'s record names no face"));
+            assert_eq!(
+                bytemuck::cast::<_, [[u32; 6]; 4]>(back),
+                bytemuck::cast::<_, [[u32; 6]; 4]>(*quad),
+                "quad {i} came back changed"
+            );
+        }
+    }
+
     #[test]
     fn flat_solid_cube_merges_to_six_faces_with_block_scaled_uvs() {
         let mut columns = columns();

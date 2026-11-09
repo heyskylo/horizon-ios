@@ -225,6 +225,8 @@ struct Launcher {
     content_scroll: Scrollbar,
     /// The glass Settings page's own scroll: its sections beside their list.
     settings_pane: gpui::ScrollHandle,
+    /// The glass Home's patch log scroll, for its wheel to chain to the page.
+    patch_scroll: Scrollbar,
     /// The section the glass Settings list marked when last drawn (`glass_settings`).
     settings_marked: usize,
     /// The Mods page's project card, kept in view beside its list.
@@ -469,6 +471,10 @@ struct Launcher {
     pack_busy: bool,
     pack_log: VecDeque<String>,
     pack_error: Option<String>,
+    /// Other launchers' modpacks on this computer, offered above the imported ones, and whether
+    /// the scan for them runs now.
+    found_packs: Vec<horizon_launcher::other_launchers::Found>,
+    found_scanning: bool,
     /// The game starting now plays this pack's profile (its work folder).
     starting_pack: Option<std::path::PathBuf>,
     /// The Mods page: the browser's search, installs and updates (`mods_page.rs`).
@@ -584,6 +590,7 @@ impl Launcher {
             switches: 0,
             content_scroll: Scrollbar::default(),
             settings_pane: gpui::ScrollHandle::new(),
+            patch_scroll: Scrollbar::default(),
             settings_marked: 0,
             mods_sticky: sticky::Sticky::default(),
             long_list: cull::Cull::default(),
@@ -736,6 +743,8 @@ impl Launcher {
             pack_busy: false,
             pack_log: VecDeque::new(),
             pack_error: None,
+            found_packs: Vec::new(),
+            found_scanning: false,
             starting_pack: None,
             mods: mods_page::Mods::new(cx),
             github: github_mods_page::Github::new(cx),
@@ -1051,17 +1060,46 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = native_mods::build(
-                &base,
-                &folder,
-                &instance,
-                anyway,
-                on_base,
-                profile,
-                |step| {
-                    let _ = tx.send(Msg::NativeProgress(step.label()));
-                },
-            );
+            let mut swapped = horizon_launcher::browser::horizon::fit_versions(&instance);
+            for line in &swapped {
+                let _ = tx.send(Msg::NativeProgress(line.clone()));
+            }
+            let build = || {
+                native_mods::build(
+                    &base,
+                    &folder,
+                    &instance,
+                    anyway,
+                    on_base,
+                    profile,
+                    |step| {
+                        let _ = tx.send(Msg::NativeProgress(step.label()));
+                    },
+                )
+            };
+            let mut result = build();
+            // A mod the build left out though its version said it builds here: its next older
+            // version that says so, and one more build.
+            let left: Vec<String> = result
+                .as_ref()
+                .ok()
+                .and_then(|version| native_mods::about(version))
+                .map(|about| about.left_out.into_iter().map(|l| l.id).collect())
+                .unwrap_or_default();
+            if !left.is_empty() {
+                let older = horizon_launcher::browser::horizon::try_older(&instance, &left);
+                if !older.is_empty() {
+                    for line in &older {
+                        let _ = tx.send(Msg::NativeProgress(line.clone()));
+                    }
+                    swapped.extend(older);
+                    result = build();
+                }
+            }
+            // The build's last line is what the player reads: it says which versions were swapped.
+            if result.is_ok() && !swapped.is_empty() {
+                let _ = tx.send(Msg::NativeProgress(swapped.join("\n")));
+            }
             let _ = tx.send(Msg::Native(result));
         });
     }
@@ -1195,10 +1233,10 @@ impl Launcher {
                             self.step_aside(cx);
                         }
                         Err(e) => {
-                            if e == account::NoOwner.to_string() {
+                            if e == account::NoOwner::default().to_string() {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;
-                                self.client_error = Some(account::NoOwner::in_window());
+                                self.client_error = Some(account::NoOwner::default().in_window());
                             } else {
                                 self.client_error = Some(e);
                             }
@@ -1211,10 +1249,13 @@ impl Launcher {
                         let mut cmd = backend::client_command(&tag);
                         let account::GameSession { file, offline, env } = match session {
                             Ok(pass) => pass,
-                            Err(account::NoOwner) => {
-                                self.owner = Some(false);
-                                self.owner_screen_open = true;
-                                self.client_error = Some(account::NoOwner::in_window());
+                            Err(refused) => {
+                                // A keyring that didn't answer isn't a missing owner (#12179).
+                                if refused.keyring.is_none() {
+                                    self.owner = Some(false);
+                                    self.owner_screen_open = true;
+                                }
+                                self.client_error = Some(refused.in_window());
                                 self.starting_pack = None;
                                 self.joining = None;
                                 self.quick_play = None;
@@ -1437,6 +1478,10 @@ impl Launcher {
                     }
                 }
                 Msg::PackDone(result) => self.pack_done(result),
+                Msg::FoundPacks(found) => {
+                    self.found_scanning = false;
+                    self.found_packs = found;
+                }
                 // Old versions log their session; it never reaches the window.
                 Msg::Line(_, line) if line.contains("Session ID is") => {}
                 Msg::Line(job, line) => {
@@ -1899,24 +1944,34 @@ impl Launcher {
             });
         let mods_tx = self.mods.tx.clone();
         std::thread::spawn(move || {
+            // One line per step: a terminal run shows where Play stops (#12179).
+            backend::play_step("checking the game's assets");
             backend::complete_assets(&tag);
             if let Some(auto) = auto {
+                backend::play_step("updating registry mods");
                 let (lines, _) = mods_page::auto_update(&[auto]);
                 if !lines.is_empty() {
                     let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
                 }
             }
+            backend::play_step("reading the sign-in");
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
+            backend::play_step("starting the game");
             let _ = tx.send(Msg::Session(session));
         });
     }
 
-    fn load_profile_heads(&mut self) {
-        let resources = self
-            .selected()
+    /// The prepared game files of the selected version (else the first installed): where the
+    /// default skins are.
+    fn game_resources(&self) -> std::path::PathBuf {
+        self.selected()
             .or_else(|| self.installed.first())
             .map(|tag| backend::resources(tag))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn load_profile_heads(&mut self) {
+        let resources = self.game_resources();
         // Offline names wear their own skin's face, or the default skin of their offline UUID.
         let offline: Vec<String> = self
             .players()
@@ -5298,6 +5353,7 @@ impl Render for Launcher {
         self.sky.free_replaced(window);
         self.pictures.free_retired(window);
         self.wardrobe_marks.free_replaced(window);
+        self.shop.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()

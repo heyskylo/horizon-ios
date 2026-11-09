@@ -9,7 +9,9 @@ holds the key that encrypts the game between them.
 It is built on Open to LAN: the integrated server (`crates/horizon-client/src/lan`) listens on a local
 TCP port and speaks the vanilla protocol. Play with friends puts an encrypted tunnel in front of that
 port. Neither the integrated server nor the guest's client changes: the tunnel carries exactly the
-bytes vanilla's protocol would send, between a loopback port on each side.
+bytes vanilla's protocol would send, between a loopback port on each side. On the guest's side the
+client first sends a one-time 16-byte token the tunnel handed it, so no other process on the computer
+that finds the port takes the session.
 
 ```
  guest's game                                                              host's game

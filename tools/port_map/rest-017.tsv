@@ -1,7 +1,7 @@
 DedicatedServer.readCodeOfConducts	port	crates/horizon-client/src/lan/code_of_conduct.rs::read	with enable-code-of-conduct the folder's files are read at startup (game/dedicated.rs::run_dedicated_inner) and handed to a joining player, whose client shows the prompt (game/code_of_conduct.rs)
 DedicatedServer.setEnforceWhitelist	port	crates/horizon-client/src/game/dedicated.rs::Game::set_enforce_whitelist	management stores enforce-whitelist and kicks unlisted players when enforcement is enabled
 DedicatedServer.setUsingWhitelist	port	crates/horizon-client/src/game/dedicated.rs::Game::console_whitelist	console whitelist on|off; store_property writes white-list back
-DedicatedServer.saveAllChunks	port	crates/horizon-client/src/game.rs::Game::save_game	gap: minor: no save notifications to the JSON-RPC management API
+DedicatedServer.saveAllChunks	port	crates/horizon-client/src/game/autosave.rs::Game::save_game	gap: minor: no save notifications to the JSON-RPC management API
 DedicatedServer.sendLowDiskSpaceWarning	port	crates/horizon-client/src/lan/hub.rs::Hub::send_low_disk_space_warning	chunk_io reports the low disk space and the operators are told (game/dedicated.rs); a client shows the toast (game/remote.rs)
 DedicatedServer.setAllowFlight	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	updates the live movement check and server.properties through management
 DedicatedServer.setDifficulty	port	crates/horizon-client/src/game/commands.rs::Game::cmd_difficulty	the /difficulty command; gap: minor: the new value is not written back to server.properties
@@ -103,10 +103,10 @@ ServerCommandSuggestionsProvider.trySchedule	inline	crates/horizon-client/src/ga
 ServerCommandSuggestionsProvider.request	port	crates/horizon-client/src/game/lan_actions.rs::Game::guest_suggestions	the newest command text replaces the one not answered yet, as lastRequest does
 ServerCommonPacketListenerImpl.onDisconnect	inline	crates/horizon-client/src/game/integrated.rs::Integrated::halt	gap: minor: unsure: whether a dropped local connection halts the server is not checked
 ServerCommonPacketListenerImpl.onPacketError	missing		vanilla records the exception for the crash report (reportPacketHandlingException); nothing in the tree keeps one — a failing packet is not named anywhere, and every other ServerWatchdog gap here is now closed
-ServerCommonPacketListenerImpl.handleKeepAlive	inline	crates/horizon-client/src/lan/conn.rs::write_loop	gap: minor: read_loop stores the id and write_loop sets the latency; a wrong id is not an instant disconnect
+ServerCommonPacketListenerImpl.handleKeepAlive	inline	crates/horizon-client/src/lan/conn.rs::wait_alive	gap: minor: read_loop stores the id and write_loop sets the latency; a wrong id is not an instant disconnect
 ServerCommonPacketListenerImpl.handleCustomClickAction	skip:debug		vanilla only logs at debug (the NeoForge hook is mod API); Horizon drops the packet
-ServerCommonPacketListenerImpl.keepConnectionAlive	port	crates/horizon-client/src/lan/conn.rs::write_loop	gap: minor: times out after 30 s without an answer; vanilla after 15 s
-ServerCommonPacketListenerImpl.checkIfClosed	inline	crates/horizon-client/src/lan/conn.rs::write_loop	gap: minor: the 15 s close timeout is covered by the 30 s keep-alive timeout
+ServerCommonPacketListenerImpl.keepConnectionAlive	port	crates/horizon-client/src/lan/conn.rs::wait_alive	gap: minor: times out after 30 s without an answer; vanilla after 15 s
+ServerCommonPacketListenerImpl.checkIfClosed	inline	crates/horizon-client/src/lan/conn.rs::wait_alive	gap: minor: the 15 s close timeout is covered by the 30 s keep-alive timeout
 ServerCommonPacketListenerImpl.createCookie	inline	crates/horizon-client/src/lan/conn.rs::login_and_configure	builds the Parts (profile, client information, brand); latency and transferred are not kept
 ServerConfigurationPacketListenerImpl.returnToWorld	inline	crates/horizon-client/src/lan/conn.rs::login_and_configure	queues the join steps after configuration; play() takes over in Horizon
 ServerConfigurationPacketListenerImpl.addOptionalTasks	inline	crates/horizon-client/src/lan/conn.rs::login_and_configure	gap: player: no code of conduct task (enable-code-of-conduct); the resource pack offer is there, mod tasks are not

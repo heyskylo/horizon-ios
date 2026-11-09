@@ -15,7 +15,7 @@ class BlockHighlightHookTests(unittest.TestCase):
         call = source.index("self.native_block_highlight(")
         start = source.rindex(".filter(|h| {", 0, call)
         end = source.index(".map(|h| {", call)
-        self.assertLess(source.index("let outline = if !self.ui.hide_gui"), start)
+        self.assertLess(source.index("let outline = if block_outline_drawn("), start)
         self.assertLess(source.index("self.can_place_on_in_adventure(h.pos)"), start)
         fixture = r"""
 use std::cell::Cell;

@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "player_chat_v2",
+      "target": "horizon_client_lib::lan::hub::chat::native_player_chat_v2",
+      "neoforge": "net.neoforged.neoforge.event.ServerChatEvent (ICancellableEvent), with the sender's permission level",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a player's chat message before it is sent, with the sender's permission level (`native_player_chat_v2`).",
+  "doc_summary": "`native_player_chat_v2(player, name, level, message, replies, cancel)` is `native_player_chat` with `level`, the sender's operator level (0 for anyone without one). Heard after v1 with the same cancel and replies; a mod that uses it need not use v1, and one that uses both hears the message twice. The text cannot be changed. Bundles need \"hooks\": @API:player_chat_v2@.",
+  "comments": ["crates/horizon-client/src/lan/hub/chat.rs"]
+}

@@ -26,7 +26,7 @@ type Pos = (i32, i32, i32);
 /// `HopperBlockEntity` transient state (`TransferCooldown`, `tickedGameTime`).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HopperState {
-    cooldown: i32,
+    pub(super) cooldown: i32,
     ticked: i64,
 }
 impl Default for HopperState {
@@ -35,6 +35,38 @@ impl Default for HopperState {
             cooldown: -1,
             ticked: 0,
         }
+    }
+}
+
+impl HopperState {
+    /// `HopperBlockEntity.loadAdditional`: only the cooldown is saved; the
+    /// last tick time starts at zero for the new block entity.
+    pub(super) fn load(tag: &horizon_world::nbt::Tag) -> Self {
+        let canonical = horizon_client::block_entity_nbt::canonical(tag);
+        let cooldown = match canonical.as_ref().and_then(|t| t.get("TransferCooldown")) {
+            Some(horizon_world::nbt::Tag::Int(value)) => *value,
+            _ => -1,
+        };
+        Self {
+            cooldown,
+            ticked: 0,
+        }
+    }
+}
+
+impl Game<'_> {
+    pub(super) fn hopper_cooldown(&self, pos: Pos) -> i32 {
+        self.hoppers.get(&pos).map_or_else(
+            || {
+                self.world
+                    .chunks
+                    .get(&(pos.0 >> 4, pos.2 >> 4))
+                    .and_then(|c| c.saved.as_deref())
+                    .and_then(|s| s.block_entity_sources.iter().find(|(p, _)| *p == pos))
+                    .map_or(-1, |(_, tag)| HopperState::load(tag).cooldown)
+            },
+            |s| s.cooldown,
+        )
     }
 }
 
@@ -192,7 +224,10 @@ impl Containers<'_> {
         // them and a hopper leaves them alone.
         if matches!(
             entity,
-            BlockEntity::Beehive(_) | BlockEntity::Campfire(_) | BlockEntity::Brushable(_)
+            BlockEntity::Beehive(_)
+                | BlockEntity::Campfire(_)
+                | BlockEntity::Brushable(_)
+                | BlockEntity::EndPortal
         ) {
             return None;
         }
@@ -445,6 +480,43 @@ impl ItemColumns {
             }
         }
         self.cells.contains(&(x, z))
+    }
+    /// Whether an item's box may reach into any column of x0..=x1, z0..=z1.
+    pub(super) fn may_reach_area(
+        &mut self,
+        items: &[horizon_client::entities::ItemEntity],
+        (x0, x1): (i32, i32),
+        (z0, z1): (i32, i32),
+    ) -> bool {
+        (x0..=x1).any(|x| (z0..=z1).any(|z| self.may_reach(items, x, z)))
+    }
+}
+
+/// [`ItemColumns`] for a pass in which items can move (a command, an
+/// explosion's push), kept with the item list's
+/// [`ListStamp`](horizon_client::join_seq::ListStamp): after any write the
+/// first question scans as before (`true`), and the second with nothing
+/// written in between builds the columns. A pass that writes the items
+/// between questions costs no more than the scans did.
+#[derive(Default)]
+pub(super) struct StampedItemColumns {
+    stamp: Option<horizon_client::join_seq::ListStamp>,
+    columns: ItemColumns,
+}
+impl StampedItemColumns {
+    /// [`ItemColumns::may_reach_area`] for the items as they are now.
+    pub(super) fn may_reach_area(
+        &mut self,
+        items: &horizon_client::join_seq::JoinList<horizon_client::entities::ItemEntity>,
+        xs: (i32, i32),
+        zs: (i32, i32),
+    ) -> bool {
+        if self.stamp != Some(items.stamp()) {
+            self.stamp = Some(items.stamp());
+            self.columns = ItemColumns::default();
+            return true;
+        }
+        self.columns.may_reach_area(items, xs, zs)
     }
 }
 
@@ -745,7 +817,7 @@ impl Game<'_> {
         let time = self.world.game_time;
         let waiting = {
             let state = self.hoppers.entry(pos).or_default();
-            state.cooldown -= 1;
+            state.cooldown = state.cooldown.wrapping_sub(1);
             state.ticked = time;
             state.cooldown > 0
         };
@@ -1282,6 +1354,25 @@ impl Game<'_> {
         }
         false
     }
+    /// `suck_item_entities` for a hopper minecart, which first asks the item
+    /// columns whether any item's box reaches the columns of the box: an item
+    /// that meets it reaches one of them. The columns follow the item list's
+    /// stamp, so any write since they were built (an item's move, an
+    /// explosion's push, a command, a pickup) makes them scan, then rebuild.
+    fn cart_suck_items(&mut self, hopper: &View, min: [f64; 3], max: [f64; 3]) -> bool {
+        if !self
+            .pickup_columns
+            .get_or_insert_with(Default::default)
+            .may_reach_area(
+                &self.dropped,
+                (min[0].floor() as i32, max[0].floor() as i32),
+                (min[2].floor() as i32, max[2].floor() as i32),
+            )
+        {
+            return false;
+        }
+        self.suck_item_entities(None, hopper, min, max)
+    }
     /// `MinecartHopper.tick`'s `tryConsumeItems` (`suckInItems`) for an enabled
     /// hopper minecart: one item from the container above, else the item
     /// entities over it or touching it, each tick without a cooldown.
@@ -1304,8 +1395,7 @@ impl Game<'_> {
         let at = [p.x, p.y + 1.5, p.z];
         let took = match self.suck_from_container(above, at, &view) {
             Some(took) => took,
-            None => self.suck_item_entities(
-                None,
+            None => self.cart_suck_items(
                 &view,
                 [p.x - 0.5, p.y + 11.0 / 16.0, p.z - 0.5],
                 [p.x + 0.5, p.y + 2.0, p.z + 0.5],
@@ -1315,8 +1405,7 @@ impl Game<'_> {
             // The cart's own box, inflated by 0.25 sideways.
             let b = cart.bounds();
             let (lo, hi) = (b.min_position(), b.max_position());
-            self.suck_item_entities(
-                None,
+            self.cart_suck_items(
                 &view,
                 [lo.x - 0.25, lo.y, lo.z - 0.25],
                 [hi.x + 0.25, hi.y, hi.z + 0.25],
@@ -1376,27 +1465,33 @@ impl Game<'_> {
         };
         let target = offset(key, facing);
         let remaining = if dropper {
-            match self.containers().view(target, false) {
+            // `HopperBlockEntity.getContainerAt`: the block's container, else a
+            // container entity (chest boat, chest or hopper minecart) there.
+            let one = ItemStack {
+                count: 1,
+                ..stack.clone()
+            };
+            let face = Some(facing.opposite());
+            let inserted = match self.containers().view(target, false) {
+                Some(into) => Some(self.dropper_insert(&into, one, face)),
+                None => self
+                    .entity_container_at([
+                        f64::from(target.0) + 0.5,
+                        f64::from(target.1) + 0.5,
+                        f64::from(target.2) + 0.5,
+                    ])
+                    .and_then(|id| {
+                        self.with_entity_container(id, |g, into| g.dropper_insert(into, one, face))
+                    }),
+            };
+            match inserted {
                 None => self.dispense_default(key, facing, stack),
-                Some(into) => {
-                    let one = ItemStack {
-                        count: 1,
-                        ..stack.clone()
-                    };
-                    if self
-                        .add_item(None, &into, one, Some(facing.opposite()))
-                        .is_none()
-                    {
-                        self.view_changed(&into);
-                        Some(ItemStack {
-                            count: stack.count - 1,
-                            ..stack
-                        })
-                        .filter(|s| s.count > 0)
-                    } else {
-                        Some(stack)
-                    }
-                }
+                Some(true) => Some(ItemStack {
+                    count: stack.count - 1,
+                    ..stack
+                })
+                .filter(|s| s.count > 0),
+                Some(false) => Some(stack),
             }
         } else {
             self.dispense_item(key, facing, stack)?
@@ -1406,6 +1501,15 @@ impl Game<'_> {
         }
         self.container_changed(key);
         Ok(())
+    }
+    /// `DropperBlock.dispenseFrom`'s `HopperBlockEntity.addItem` of one item
+    /// into the container in front: whether it all went in.
+    fn dropper_insert(&mut self, into: &View, one: ItemStack, face: Option<Direction>) -> bool {
+        let taken = self.add_item(None, into, one, face).is_none();
+        if taken {
+            self.view_changed(into);
+        }
+        taken
     }
 }
 
@@ -1628,6 +1732,7 @@ mod item_column_tests {
     fn item(id: u32, x: f64, y: f64, z: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -1643,6 +1748,7 @@ mod item_column_tests {
             on_ground: true,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -1700,6 +1806,72 @@ mod item_column_tests {
             assert_eq!(a, b);
             println!("{hoppers} hoppers, {count} items: {before:.3} ms -> {after:.3} ms");
         }
+    }
+
+    /// An item moved in place (a `/tp`, an explosion's push) keeps the list's
+    /// length and last id; the stamped columns still see where it went.
+    #[test]
+    fn a_moved_item_is_seen_where_it_went() {
+        let mut items = horizon_client::join_seq::JoinList::from(vec![
+            item(1, 0.5, 64.0, 0.5),
+            item(2, 40.5, 64.0, 40.5),
+        ]);
+        let mut columns = super::StampedItemColumns::default();
+        let far = ((100, 100), (100, 100));
+        // The first question for a list scans; the second builds the columns.
+        assert!(columns.may_reach_area(&items, far.0, far.1));
+        assert!(!columns.may_reach_area(&items, far.0, far.1));
+        items[0].position = horizon_core::geometry::Vec3::new(100.5, 64.0, 100.5);
+        assert!(columns.may_reach_area(&items, far.0, far.1));
+        assert!(columns.may_reach_area(&items, far.0, far.1));
+        assert!(!columns.may_reach_area(&items, (0, 0), (0, 0)));
+    }
+
+    #[test]
+    fn no_player_with_an_item_in_reach_is_skipped() {
+        // guest_pickups' horizontal test, on every item.
+        let touches = |items: &[ItemEntity], p: [f64; 3]| {
+            items
+                .iter()
+                .any(|d| (d.position.x - p[0]).abs() < 1.5 && (d.position.z - p[2]).abs() < 1.5)
+        };
+        let mut seed = 0x0bad_5eed_u64;
+        let mut next = |range: f64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * range
+        };
+        let mut items: Vec<ItemEntity> = Vec::new();
+        let mut columns = ItemColumns::default();
+        let (mut skipped, mut found) = (0, 0);
+        for round in 0..4000u32 {
+            if round % 25 == 0 {
+                // On column edges as often as not.
+                let mut at = || {
+                    let v = next(40.0) - 20.0;
+                    if next(1.0) < 0.5 { v.round() } else { v }
+                };
+                items.push(item(round, at(), 64.0, at()));
+            } else if round % 101 == 0 && !items.is_empty() {
+                items.remove(next(items.len() as f64) as usize);
+            }
+            let p = [next(44.0) - 22.0, 64.0, next(44.0) - 22.0];
+            let reach = columns.may_reach_area(
+                &items,
+                ((p[0] - 1.5).floor() as i32, (p[0] + 1.5).floor() as i32),
+                ((p[2] - 1.5).floor() as i32, (p[2] + 1.5).floor() as i32),
+            );
+            let touching = touches(&items, p);
+            assert!(
+                reach || !touching,
+                "round {round}: skipped a player touching an item"
+            );
+            skipped += usize::from(!reach);
+            found += usize::from(touching);
+        }
+        assert!(
+            skipped > 1000 && found > 100,
+            "skipped {skipped}, found {found}"
+        );
     }
 
     #[test]

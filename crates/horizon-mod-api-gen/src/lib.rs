@@ -698,12 +698,41 @@ fn rustfmt(code: &str) -> Result<Vec<u8>, String> {
 #[derive(Clone, Copy)]
 pub enum Target {
     Client,
-    Render,
 }
 
-/// Fill new hooks' placeholders in hand-written source. Never writes generated files.
+/// The renderer's `RenderHooks` and their dispatch, committed: `horizon-client-render` is an engine
+/// crate, which may not depend on this generator (docs/layers.md). [`fill_hooks`] writes it, and
+/// the game's build ([`generate`]) fails while it is out of date.
+pub const RENDER_HOOKS: &str = "crates/horizon-client-render/src/gfx/native_render/generated.rs";
+
+/// Fill new hooks' placeholders in hand-written source, and write the renderer's committed hooks
+/// ([`RENDER_HOOKS`]). Never writes the files generated into `OUT_DIR`.
 pub fn fill_hooks(root: &Path) -> Result<(), String> {
-    sources(root, FillMode::Fill).map(|_| ())
+    let render = sources(root, FillMode::Fill)?.render;
+    let path = root.join(RENDER_HOOKS);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, rustfmt(&render)?).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Whether the committed [`RENDER_HOOKS`] holds `render`, the code the catalog makes: the same
+/// tokens, so its formatting and plain comments don't count.
+fn render_hooks_current(root: &Path, render: &str) -> Result<(), String> {
+    let path = root.join(RENDER_HOOKS);
+    let committed = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let tokens = |code: &str| {
+        syn::parse_file(code)
+            .map(|file| file.into_token_stream().to_string())
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    if tokens(&committed)? == tokens(render)? {
+        Ok(())
+    } else {
+        Err(format!(
+            "{RENDER_HOOKS} is out of date with the render hooks: run cargo run -p xtask -- mod-api"
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -1153,6 +1182,8 @@ mod build;
 pub use build::{generate, inject};
 mod injection;
 pub use injection::{TraitContract, TraitInjection};
+mod staged;
+pub use staged::{MIXINS_STAGE, staged_mods};
 #[cfg(test)]
 mod injection_tests;
 
@@ -1204,6 +1235,31 @@ mod tests {
         std::fs::remove_file(fragments.join("duplicate.json")).unwrap();
         assert_eq!(super::catalog_hooks(&dir, &catalog).unwrap().len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The committed render hooks pass while they hold the catalog's code in any layout, and fail
+    /// the build once a hook changes.
+    #[test]
+    fn stale_render_hooks_fail_the_build() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("render-hooks-{}", std::process::id()));
+        let path = root.join(super::RENDER_HOOKS);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let code = "/// Drawn.\npub trait RenderHooks { fn drawn(&self) {} }\n";
+        std::fs::write(
+            &path,
+            "// @generated\n/// Drawn.\npub trait RenderHooks {\n    fn drawn(&self) {}\n}\n",
+        )
+        .unwrap();
+        super::render_hooks_current(&root, code).unwrap();
+        let changed = code.replace("drawn(&self)", "drawn(&self, partial: f32)");
+        assert!(
+            super::render_hooks_current(&root, &changed)
+                .unwrap_err()
+                .ends_with("run cargo run -p xtask -- mod-api")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1565,6 +1621,7 @@ mod tests {
             "tools/native-hook-fragments",
             "crates/horizon-client/src/game",
             "crates/horizon-client/src/mod_api.rs",
+            super::RENDER_HOOKS,
         ]
         .map(str::to_owned)
         .into();
@@ -1622,6 +1679,11 @@ mod tests {
         // The generator writes LF; a Windows checkout (core.autocrlf) has CRLF.
         let lf = |s: &str| s.replace("\r\n", "\n");
         assert_eq!(lf(&std::fs::read_to_string(&hooks).unwrap()), lf(&shipped));
+        // The committed render hooks come back as the generator writes them.
+        assert_eq!(
+            lf(&std::fs::read_to_string(root.join(super::RENDER_HOOKS)).unwrap()),
+            lf(&std::fs::read_to_string(real.join(super::RENDER_HOOKS)).unwrap()),
+        );
         assert_eq!(
             super::sources(&root, super::FillMode::Require)
                 .unwrap()

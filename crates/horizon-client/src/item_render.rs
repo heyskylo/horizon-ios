@@ -457,6 +457,9 @@ fn submit_quads(
     // translucency up once.
     let mut last: Option<(&str, bool)> = None;
     let mut last_rect: Option<(&str, Option<Rect>)> = None;
+    // A glint in the GUI follows the quad's sprite in the glint atlas: looked up once a sprite too.
+    let gui_glint = display == DisplayContext::Gui && foil == Foil::Standard;
+    let mut last_glint: Option<(&str, Option<Rect>)> = None;
     for q in &baked.quads {
         let rect = match last_rect {
             Some((sprite, rect)) if sprite == q.material.sprite => rect,
@@ -509,8 +512,15 @@ fn submit_quads(
             pos,
             uv,
             foil_uv: q.uv,
-            gui_glint_uv: (display == DisplayContext::Gui && foil == Foil::Standard)
-                .then(|| atlas.get(sprite_name(&q.material.sprite)))
+            gui_glint_uv: gui_glint
+                .then(|| match last_glint {
+                    Some((sprite, rect)) if sprite == q.material.sprite => rect,
+                    _ => {
+                        let rect = atlas.get(sprite_name(&q.material.sprite)).copied();
+                        last_glint = Some((&q.material.sprite, rect));
+                        rect
+                    }
+                })
                 .flatten()
                 .map(|r| {
                     q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v])
@@ -733,7 +743,15 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
-        Self::load_tables(root, library, true)
+        Self::load_tables(root, library, true, None)
+    }
+    /// Reuse the parsed entity-model document from the shared startup batch.
+    pub fn load_with_library_and_entity_models(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+        document: &crate::mobs::EntityModelDocument,
+    ) -> crate::Result<Self> {
+        Self::load_tables(root, library, true, Some(document))
     }
     /// What a dedicated server reads: the item prototypes (the stacks'
     /// default components) and ids, without the client item definitions,
@@ -743,12 +761,13 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
-        Self::load_tables(root, library, false)
+        Self::load_tables(root, library, false, None)
     }
     fn load_tables(
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
         drawn: bool,
+        entity_models: Option<&crate::mobs::EntityModelDocument>,
     ) -> crate::Result<Self> {
         let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::shared(root)?
             .iter()
@@ -776,7 +795,10 @@ impl ItemRenderer {
                 .unwrap_or_default(),
         );
         let parts = if drawn {
-            special::load_parts(root)
+            entity_models.map_or_else(
+                || special::load_parts(root),
+                special::load_parts_from_document,
+            )
         } else {
             HashMap::new()
         };

@@ -73,29 +73,6 @@ impl Entry {
         changed
     }
 
-    /// Option `i`'s slider one step on (`back`: one before), stopping at its ends. Whether its
-    /// value changed.
-    pub fn nudge_option(&mut self, i: usize, back: bool) -> bool {
-        let (Some(o), Some(v)) = (self.options.get(i), self.values.get_mut(i)) else {
-            return false;
-        };
-        let dir = if back { -1.0 } else { 1.0 };
-        let new = match &o.kind {
-            OptionKind::Float { min, max, step, .. } => {
-                let (min, max, step) = (f64::from(*min), f64::from(*max), f64::from(*step));
-                let n = ((*v - min) / step).round() + dir;
-                on_f32((min + n * step).clamp(min, max))
-            }
-            OptionKind::Int { min, max, .. } => {
-                (v.round() + dir).clamp(f64::from(*min), f64::from(*max))
-            }
-            _ => return false,
-        };
-        let changed = new != *v;
-        *v = new;
-        changed
-    }
-
     /// Every option back to its default.
     pub fn reset_options(&mut self) {
         let defaults = self.options.iter().map(|o| o.kind.default_constant());
@@ -353,15 +330,36 @@ fn step_value(kind: &OptionKind, v: f64, back: bool) -> f64 {
     }
 }
 
-/// Where `v` sits between the option's minimum and maximum, 0 to 1; `None` for the options
-/// that are buttons.
+/// A float option's stops past its minimum: its steps, the last one cut short at the maximum
+/// when the range isn't a whole number of them.
+pub fn float_steps(min: f32, max: f32, step: f32) -> f64 {
+    let (min, max, step) = (f64::from(min), f64::from(max), f64::from(step));
+    ((max - min) / step - STEP_SLACK).ceil()
+}
+/// What a range a hair over a whole number of steps loses to rounding, short of another stop.
+const STEP_SLACK: f64 = 1e-6;
+
+/// Where `v` sits between the option's minimum and maximum, 0 to 1, as `slider_value` reads
+/// it back: a float at its stop (the maximum the last one), an int along its range. `None` for
+/// the options that are buttons.
 fn slider_position(kind: &OptionKind, v: f64) -> Option<f32> {
-    let (min, max) = match kind {
-        OptionKind::Float { min, max, .. } => (f64::from(*min), f64::from(*max)),
-        OptionKind::Int { min, max, .. } => (f64::from(*min), f64::from(*max)),
+    let position = match kind {
+        OptionKind::Float { min, max, step, .. } => {
+            let steps = float_steps(*min, *max, *step);
+            let stop = ((v - f64::from(*min)) / f64::from(*step)).round();
+            if v >= f64::from(*max) || steps <= 0.0 {
+                1.0
+            } else {
+                stop / steps
+            }
+        }
+        OptionKind::Int { min, max, .. } => {
+            let (min, max) = (f64::from(*min), f64::from(*max));
+            (v - min) / (max - min)
+        }
         _ => return None,
     };
-    Some(((v - min) / (max - min)).clamp(0.0, 1.0) as f32)
+    Some(position.clamp(0.0, 1.0) as f32)
 }
 
 /// The option's value nearest the slider position `at`: a float on its steps from the
@@ -371,8 +369,8 @@ fn slider_value(kind: &OptionKind, at: f32) -> Option<f64> {
     let at = f64::from(at.clamp(0.0, 1.0));
     match kind {
         OptionKind::Float { min, max, step, .. } => {
+            let steps = float_steps(*min, *max, *step);
             let (min, max, step) = (f64::from(*min), f64::from(*max), f64::from(*step));
-            let steps = ((max - min) / step - 1e-6).ceil();
             Some(on_f32((min + (at * steps).round() * step).min(max)))
         }
         OptionKind::Int { min, max, .. } => {
@@ -649,17 +647,47 @@ mod tests {
         assert_eq!(entry.values[3], 1.0);
         entry.set_slider_position(3, 0.6);
         assert_eq!(entry.values[3], f64::from(0.6_f32));
+    }
 
-        // The arrow keys: a step at a time, not round past the ends.
-        entry.values[0] = 2.0;
-        assert!(!entry.nudge_option(0, false));
-        assert_eq!(entry.values[0], 2.0);
-        assert!(entry.nudge_option(0, true));
-        assert_eq!(entry.values[0], f64::from(1.95_f32));
-        entry.values[1] = 0.0;
-        assert!(!entry.nudge_option(1, true));
-        assert!(entry.nudge_option(1, false));
-        assert_eq!(entry.values[1], 1.0);
-        assert!(!entry.nudge_option(2, false));
+    /// The arrow keys step a slider through its stops (the shell's `slider_step`, by the stops
+    /// `float_steps` counts): a float whose range isn't a whole number of steps walks every one
+    /// both ways, its maximum included, and stops at the ends.
+    #[test]
+    fn the_arrow_keys_walk_a_floats_stops_both_ways() {
+        let kind = OptionKind::Float {
+            default: 0.0,
+            min: 0.0,
+            max: 1.0,
+            step: 0.3,
+        };
+        let mut entry = Entry {
+            file: "p".into(),
+            key: "horizon:p".into(),
+            title: "P".into(),
+            kind: Kind::Horizon,
+            options: vec![horizon_shader_api::PackOption {
+                id: "d".into(),
+                name: "D".into(),
+                description: String::new(),
+                kind,
+            }],
+            values: vec![0.0],
+            pages: Vec::new(),
+        };
+        let steps = float_steps(0.0, 1.0, 0.3) as u32;
+        let mut walk = |forward: bool| {
+            let mut seen = Vec::new();
+            for _ in 0..steps + 2 {
+                let at = entry.slider_position(0).unwrap();
+                let next = crate::settings_shell::slider_step(at, Some(steps), 100.0, forward);
+                entry.set_slider_position(0, next);
+                seen.push(entry.values[0]);
+            }
+            seen
+        };
+        // The `k`th stop, as the pack's f32 `override` gets it.
+        let stop = |k: u8| f64::from((f64::from(k) * f64::from(0.3_f32)) as f32);
+        assert_eq!(walk(true), [stop(1), stop(2), stop(3), 1.0, 1.0, 1.0]);
+        assert_eq!(walk(false), [stop(3), stop(2), stop(1), 0.0, 0.0, 0.0]);
     }
 }

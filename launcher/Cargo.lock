@@ -2641,6 +2641,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-addresses"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-bench"
 version = "0.1.0"
 dependencies = [
@@ -2662,6 +2666,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "glam",
+ "horizon-addresses",
  "png 0.18.1",
  "serde",
  "serde_json",
@@ -2675,6 +2680,7 @@ dependencies = [
  "chacha20poly1305",
  "getrandom 0.3.4",
  "hkdf",
+ "horizon-addresses",
  "if-addrs",
  "serde",
  "serde_json",
@@ -2696,6 +2702,7 @@ dependencies = [
  "flate2",
  "futures-lite",
  "getrandom 0.3.4",
+ "glam",
  "gpui-fast",
  "gpui-fast-platform",
  "horizon-bench",
@@ -2777,6 +2784,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-platform"
+version = "0.1.0"
+dependencies = [
+ "horizon-system",
+]
+
+[[package]]
 name = "horizon-port-pack"
 version = "0.1.0"
 dependencies = [
@@ -2841,10 +2855,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-system"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-telemetry"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "horizon-addresses",
+ "horizon-platform",
  "ruzstd",
  "serde",
  "serde_json",

@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     block_properties::BlockProperty,
-    fluid::FluidKind,
+    fluid::FluidTemplate,
     registry::{BlockRegistry, BlockStateId},
 };
 use horizon_core::geometry::Direction;
@@ -179,11 +179,13 @@ impl TreeBlocks {
                 *flag |= LIQUID;
             }
             if let Some(fluid) = bindings.fluids.state(id) {
-                match fluid.kind() {
-                    FluidKind::Water => *flag |= WATER_SOURCE | WATER_FLUID | ANY_FLUID,
-                    FluidKind::FlowingWater => *flag |= WATER_FLUID | ANY_FLUID,
-                    FluidKind::Lava | FluidKind::FlowingLava => *flag |= LAVA_FLUID | ANY_FLUID,
-                    FluidKind::Empty => {}
+                match fluid.kind().template() {
+                    FluidTemplate::Water if fluid.is_source() => {
+                        *flag |= WATER_SOURCE | WATER_FLUID | ANY_FLUID
+                    }
+                    FluidTemplate::Water => *flag |= WATER_FLUID | ANY_FLUID,
+                    FluidTemplate::Lava => *flag |= LAVA_FLUID | ANY_FLUID,
+                    FluidTemplate::Empty => {}
                 }
                 if fluid.is_source() {
                     *flag |= FLUID_SOURCE;
@@ -408,6 +410,10 @@ impl PosSet {
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+    /// Iteration order of the native set without materializing a position list.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = [i32; 3]> + '_ {
+        self.0.entries().map(|(key, _)| key.0)
     }
     /// Iteration order of the native set.
     pub(crate) fn to_vec(&self) -> Vec<[i32; 3]> {

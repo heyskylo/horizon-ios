@@ -40,8 +40,11 @@ impl Strategy {
 }
 
 /// SimpleBitStorage: `64 / bits` values per long, never spanning longs.
+/// `bits` above 32 (or 64+) would make `64 / bits` zero and shift by
+/// 64+; the wire path rejects them, but this is `pub` and `Paletted`
+/// fields are `pub`, so the accessor defends itself.
 pub fn storage_get(data: &[i64], bits: u8, i: usize) -> u32 {
-    if bits == 0 {
+    if bits == 0 || bits > 32 {
         return 0;
     }
     let per = 64 / bits as usize;
@@ -50,7 +53,7 @@ pub fn storage_get(data: &[i64], bits: u8, i: usize) -> u32 {
         .map_or(0, |&l| ((l as u64 >> offset) & ((1u64 << bits) - 1)) as u32)
 }
 pub fn storage_len(bits: u8, entries: usize) -> usize {
-    if bits == 0 {
+    if bits == 0 || bits > 32 {
         0
     } else {
         entries.div_ceil(64 / bits as usize)
@@ -81,6 +84,22 @@ pub struct Paletted {
 }
 impl Paletted {
     pub fn read(r: &mut Reader, strategy: Strategy, global_bits: u8) -> Result<Self> {
+        Self::read_layout(r, strategy, global_bits, false)
+    }
+    /// PalettedContainer.Data.write before 1.21.5 wrote a VarInt long count before the storage.
+    pub(crate) fn read_prefixed(
+        r: &mut Reader,
+        strategy: Strategy,
+        global_bits: u8,
+    ) -> Result<Self> {
+        Self::read_layout(r, strategy, global_bits, true)
+    }
+    fn read_layout(
+        r: &mut Reader,
+        strategy: Strategy,
+        global_bits: u8,
+        prefixed: bool,
+    ) -> Result<Self> {
         let wire = r.u8()?;
         let (has_palette, bits) = strategy.configuration(wire, global_bits);
         // SimpleBitStorage holds 1 to 32 bits; wider wire values would
@@ -96,7 +115,13 @@ impl Paletted {
             let n = r.count(1 << bits)?;
             (0..n).map(|_| r.varint()).collect::<Result<_>>()?
         };
-        let data = r.fixed_longs(storage_len(bits, strategy.entries()))?;
+        let n = storage_len(bits, strategy.entries());
+        if prefixed && r.count(r.remaining() / 8)? != n {
+            return Err(Error::new(
+                "palette long count disagrees with its bits per entry",
+            ));
+        }
+        let data = r.fixed_longs(n)?;
         Ok(Self {
             bits,
             palette,
@@ -544,5 +569,29 @@ mod tests {
         assert_eq!(nibble(layers[3].0.as_ref().unwrap(), 0), 0);
         assert_eq!(layers[1].1.as_deref(), Some(&[0u8; 2048][..]));
         assert!(layers[0].0.is_none() && layers[0].1.is_none());
+    }
+
+    /// `storage_get`/`storage_len` must not divide by zero or shift by
+    /// 64+ for `bits > 32`. The wire path rejects them, but both are
+    /// `pub` and `Paletted.bits` is `pub`, so callers can hand them
+    /// 64 or 255 directly.
+    #[test]
+    fn storage_bits_over_32_return_zero_instead_of_panicking() {
+        let data = [-1i64];
+        assert_eq!(storage_get(&data, 0, 0), 0);
+        assert_eq!(storage_get(&data, 33, 0), 0);
+        assert_eq!(storage_get(&data, 64, 0), 0);
+        assert_eq!(storage_get(&data, 255, 0), 0);
+        assert_eq!(storage_len(0, 10), 0);
+        assert_eq!(storage_len(33, 10), 0);
+        assert_eq!(storage_len(64, 10), 0);
+        assert_eq!(storage_len(255, 10), 0);
+        // A valid build still round-trips.
+        let values = [1u64, 2, 3];
+        let packed = pack(&values, 2, |v| *v);
+        assert_eq!(packed.len(), storage_len(2, values.len()));
+        assert_eq!(storage_get(&packed, 2, 0), 1);
+        assert_eq!(storage_get(&packed, 2, 1), 2);
+        assert_eq!(storage_get(&packed, 2, 2), 3);
     }
 }

@@ -25,14 +25,15 @@ impl Aabb {
             && self.lo.z < o.hi.z && self.hi.z > o.lo.z
     }
 }
-struct ExperienceOrb { id: u32, x: f64, value: u32, count: u32, age: u32, ticks: u32 }
+struct ExperienceOrb { id: u32, x: f64, value: i32, count: u32, age: u32, ticks: u32 }
 impl ExperienceOrb {
     fn bounds(&self) -> Aabb {
         Aabb::new(Vec3::new(self.x - 0.25, 0.0, -0.25), Vec3::new(self.x + 0.25, 0.5, 0.25))
     }
-    fn can_merge(&self, id: u32, value: u32) -> bool {
+    fn can_merge(&self, id: u32, value: i32) -> bool {
         self.value == value && (self.id as i32).wrapping_sub(id as i32) % 40 == 0
     }
+    fn points(&self) -> u32 { self.value.max(0) as u32 }
 }
 struct Dim;
 impl Dim { fn id(&self) -> &'static str { "minecraft:overworld" } }
@@ -53,9 +54,9 @@ impl Game {
     ORB_MERGES
     AWARD_ORB
     MERGE_NEW_ORB
-    MERGE_ORBS
+    MERGE_ORB
 }
-fn orb(id: u32, x: f64, value: u32, ticks: u32) -> ExperienceOrb {
+fn orb(id: u32, x: f64, value: i32, ticks: u32) -> ExperienceOrb {
     ExperienceOrb { id, x, value, count: 1, age: 10, ticks }
 }
 fn game(orbs: Vec<ExperienceOrb>, flip: bool, cancel: bool) -> Game {
@@ -89,26 +90,30 @@ fn spawn_merge_is_vanilla_unless_a_mod_decides() {
 #[test]
 fn tick_merge_is_vanilla_unless_a_mod_decides() {
     let two = |a, b| vec![orb(1, 0.0, 3, a), orb(41, 0.2, 3, b)];
-    let mut g = game(two(1, 0), false, false);
-    g.merge_orbs();
+    let mut g = game(two(0, 0), false, false);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.orbs[0].count, g.orbs[0].age), (1, 2, 10));
     assert_eq!(g.asked, [(1, 41, 3, 3)]);
-    // only an orb on its scan tick asks
-    let mut g = game(two(0, 0), false, false);
-    g.merge_orbs();
+    // only an orb on its scan tick asks: tickCount 20 is not the cadence
+    let mut g = game(two(19, 0), false, false);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.asked.len()), (2, 0));
     // vanilla yes, mod no
-    let mut g = game(two(1, 0), true, false);
-    g.merge_orbs();
+    let mut g = game(two(0, 0), true, false);
+    g.merge_orb(0);
     assert_eq!(g.orbs.len(), 2);
     // different ids: vanilla no, mod yes
-    let mut g = game(vec![orb(1, 0.0, 3, 1), orb(2, 0.2, 3, 0)], true, false);
-    g.merge_orbs();
+    let mut g = game(vec![orb(1, 0.0, 3, 0), orb(2, 0.2, 3, 5)], true, false);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.orbs[0].count), (1, 2));
     // canceled merge keeps both
-    let mut g = game(two(1, 0), false, true);
-    g.merge_orbs();
+    let mut g = game(two(0, 0), false, true);
+    g.merge_orb(0);
     assert_eq!((g.orbs.len(), g.merged.clone()), (2, vec![(1, 41)]));
+    // every eligible orb in reach is absorbed in the one scan
+    let mut g = game(vec![orb(1, 0.0, 3, 0), orb(41, 0.2, 3, 0), orb(81, 0.4, 3, 5)], false, false);
+    g.merge_orb(0);
+    assert_eq!((g.orbs.len(), g.orbs[0].count), (1, 3));
 }
 """
 
@@ -116,11 +121,11 @@ fn tick_merge_is_vanilla_unless_a_mod_decides() {
 class ExperienceOrbMergeTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_spawn_and_tick_merge_hooks(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = (ROOT / "crates/horizon-client/src/game/item_entities.rs").read_text(encoding="utf-8")
         fixture = (FIXTURE.replace("ORB_MERGES", method(source, "orb_merges"))
                    .replace("AWARD_ORB", method(source, "award_orb"))
                    .replace("MERGE_NEW_ORB", method(source, "merge_new_orb"))
-                   .replace("MERGE_ORBS", method(source, "merge_orbs")))
+                   .replace("MERGE_ORB", method(source, "merge_orb")))
         with tempfile.TemporaryDirectory() as folder:
             src, exe = Path(folder) / "orb.rs", Path(folder) / "orb.exe"
             src.write_text(fixture, encoding="utf-8")

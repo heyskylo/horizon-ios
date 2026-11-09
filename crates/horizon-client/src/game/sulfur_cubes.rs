@@ -172,24 +172,72 @@ impl Game<'_> {
             self.post_game_event("minecraft:entity_interact", [at.x, at.y, at.z], ctx);
             return true;
         }
+        if item == "minecraft:bucket" {
+            self.bucket_sulfur_cube(index);
+            return true;
+        }
         false
+    }
+    /// `Bucketable.bucketMobPickup` for a sulfur cube
+    /// (`SulfurCube.canBePickedUpWithBucket`: an empty bucket), as the water
+    /// bucket's mobs are picked up in `interact_mob`.
+    fn bucket_sulfur_cube(&mut self, index: usize) {
+        let held = self.held().cloned();
+        let m = &self.mobs[index];
+        self.audio.play(
+            "minecraft:item.bucket.fill_sulfur_cube",
+            Some(m.center()),
+            1.0,
+            1.0,
+        );
+        // getBucketItemStack, then saveToBucketTag.
+        let mut filled = ItemStack::new("minecraft:sulfur_cube_bucket", 1);
+        filled.extra = Some(Box::new(horizon_client::entity_nbt::bucket_components(m)));
+        self.trigger_item("minecraft:filled_bucket", &filled);
+        // PlayerInteractTrigger: the bucket as it was, and the cube picked up.
+        if let Some(stack) = &held {
+            let target = self.mob_entity(&self.mobs[index]);
+            self.trigger_item_entity("minecraft:player_interacted_with_entity", stack, &target);
+        }
+        let id = self.mobs[index].id;
+        // Leashable.dropLeash, then discard.
+        self.break_leash(id, true, false);
+        self.mobs[index].removed = true;
+        // ItemUtils.createFilledResult.
+        self.filled_result(filled);
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            self.native_player_bucket_entity(player, &name, id as i32, "minecraft:sulfur_cube");
+        }
+    }
+    /// The resident sulfur cubes whose adopted body (`adopted_body`, the
+    /// body `collectEquipmentChanges` last took) explodes, with its fuse:
+    /// their cached `explosionData`, which `primeWhenOnPoweredPosition` may
+    /// use this tick although the body has changed since.
+    pub(super) fn sulfur_cubes_adopted_explosive(&self) -> Vec<(u32, i32)> {
+        self.mobs
+            .iter()
+            .filter(|m| m.species() == Species::SulfurCube)
+            .filter_map(|m| Some((m.id, sulfur_cube::adopted_explosion(m)?.0)))
+            .collect()
     }
     /// `SulfurCube.primeWhenOnPoweredPosition`: an explosive cube standing in
     /// or next to redstone power lights its fuse (`getBestOwnOrNeighbourSignal`;
     /// no block has an own signal, so the neighbour signal is all there is).
-    pub(super) fn sulfur_cube_power_priming(&mut self) {
+    /// Only the cubes `primable` names (an adopted explosive body when the
+    /// tick started) can: `canExplode` and `primeTime` both read the cached
+    /// `explosionData`, so the fuse is that body's, not the live one's.
+    pub(super) fn sulfur_cube_power_priming(&mut self, primable: &[(u32, i32)]) {
         if !self.ui.rules.bool("tnt_explodes") {
             return;
         }
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if m.species() != Species::SulfurCube
-                || !sulfur_cube::archetype(m).is_some_and(|a| a.explosion.is_some())
-                || !m.alive()
-                || sulfur_cube::primed(m)
-            {
+            if m.species() != Species::SulfurCube || !m.alive() || sulfur_cube::primed(m) {
                 continue;
             }
+            let Some(&(_, fuse)) = primable.iter().find(|(id, _)| *id == m.id) else {
+                continue;
+            };
             let at = BlockPos::new(
                 m.position.x.floor() as i32,
                 m.position.y.floor() as i32,
@@ -198,7 +246,7 @@ impl Game<'_> {
             let signal =
                 self.with_level(|b, level, ticks| b.best_neighbor_signal(level, ticks, at));
             if signal != 0 {
-                sulfur_cube::prime(&mut self.mobs[i], false);
+                sulfur_cube::prime_with_fuse(&mut self.mobs[i], false, fuse);
             }
         }
     }
@@ -302,7 +350,7 @@ impl Game<'_> {
             let zd = (f64::from(i / 2) - 0.5) * offset;
             let at = [m.position.x + xd, m.position.y + 0.5, m.position.z + zd];
             let yaw = self.world.random.next_float() * 360.0;
-            if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
+            if let Some(id) = self.spawn_mob_raw(&m.kind.id, at, m.persistent)
                 && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
             {
                 c.extra.age = -24000;

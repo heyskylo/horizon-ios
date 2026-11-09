@@ -9,6 +9,9 @@ pub struct NativeClientHooks {
     pub sound_play: crate::sound_engine::PlaybackHook,
     pub living_heal: fn(u32, &mut f32, &mut bool),
     pub player_chat: fn(u128, &str, &str, &mut Vec<horizon_client_core::text::Text>, &mut bool),
+    pub player_chat_v2:
+        fn(u128, &str, u8, &str, &mut Vec<horizon_client_core::text::Text>, &mut bool),
+    pub chat_decorate: fn(u128, &str, &str, &mut Option<horizon_client_core::text::Text>),
     pub living_breathe: fn(u32, &str, &mut bool, &mut i32, &mut i32),
     pub living_drown: fn(u32, &str, &mut bool, &mut f32, i32, &mut bool),
     pub living_fall: fn(u32, &str, &mut f64, &mut f32, &mut bool),
@@ -36,6 +39,10 @@ pub struct NativeClientHooks {
 static HOOKS: OnceLock<NativeClientHooks> = OnceLock::new();
 
 /// Install the process-wide callbacks once; a second installation keeps the first.
+#[allow(
+    clippy::result_large_err,
+    reason = "the rejected table is handed back whole; it is installed once at start"
+)]
 pub fn install(hooks: NativeClientHooks) -> Result<(), NativeClientHooks> {
     HOOKS.set(hooks)
 }
@@ -61,6 +68,30 @@ pub(crate) fn player_chat(
 ) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.player_chat)(player, name, message, replies, cancel);
+    }
+}
+
+pub(crate) fn player_chat_v2(
+    player: u128,
+    name: &str,
+    level: u8,
+    message: &str,
+    replies: &mut Vec<horizon_client_core::text::Text>,
+    cancel: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.player_chat_v2)(player, name, level, message, replies, cancel);
+    }
+}
+
+pub(crate) fn chat_decorate(
+    player: u128,
+    name: &str,
+    message: &str,
+    decorated: &mut Option<horizon_client_core::text::Text>,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.chat_decorate)(player, name, message, decorated);
     }
 }
 

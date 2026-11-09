@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_block_entity", "target": "horizon_client::game::native_world_edit::Game<'_>::native_set_block_entity"},
+    {"name": "block_entity_nbt", "target": "horizon_client::game::native_world_edit::Game<'_>::native_block_entity_nbt"}
+  ],
+  "rust_summary": "block entity NBT for server mods: `native_set_block_entity` and `native_block_entity_nbt`, and `NativeBlockEdit::block_entities` for bulk edits.",
+  "doc_summary": "`native_set_block_entity(dimension, pos, nbt)` loads SNBT into the block entity at `pos` of the level being ticked as `/setblock ... {nbt}` does (false, changing nothing, when there is no block entity there or the `id` given is another type), `native_block_entity_nbt(dimension, pos)` reads its saved NBT as SNBT, and `NativeBlockEdit::block_entities` gives a bulk edit block entity data per position, loaded after the runs. Bundles need \"hooks\": @API:edit_blocks_nbt@.",
+  "comments": ["crates/horizon-client/src/game/native_world_edit.rs"]
+}

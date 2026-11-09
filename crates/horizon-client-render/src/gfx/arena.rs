@@ -5,6 +5,9 @@
 //! (`Arena::translucent_indices`): their back-to-front list then stays in one
 //! page of each and draws in a few multi-draws.
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(test)]
+#[path = "arena/source_tests.rs"]
+mod source_tests;
 
 /// Ranges are rounded up to this many vertices to limit fragmentation, and
 /// start at multiples of it (`flat` names sections by these blocks).
@@ -82,6 +85,8 @@ impl FreeList {
 /// One vertex buffer of the arena; only the newest page grows.
 struct Page {
     buffer: wgpu::Buffer,
+    /// Optional shader-pack source records, indexed by the vertex index / 4.
+    sources: Option<wgpu::Buffer>,
     /// Capacity in vertices.
     capacity: u64,
     free: FreeList,
@@ -116,6 +121,7 @@ pub struct Arena {
     closing: Option<u32>,
     /// A page had to go to system memory (logged once).
     spilled: bool,
+    sources_enabled: bool,
     /// Tests: GPU-local pages fail as if video memory were full.
     #[cfg(test)]
     video_memory_full: bool,
@@ -200,6 +206,7 @@ impl Arena {
             usage,
             closing: None,
             spilled: false,
+            sources_enabled: false,
             #[cfg(test)]
             video_memory_full: false,
         }
@@ -249,7 +256,11 @@ impl Arena {
     }
     /// Bytes of every page's buffer.
     pub fn bytes(&self) -> u64 {
-        self.pages.iter().flatten().map(|p| p.capacity).sum::<u64>() * self.stride
+        self.pages
+            .iter()
+            .flatten()
+            .map(|p| p.capacity * self.stride + p.sources.as_ref().map_or(0, wgpu::Buffer::size))
+            .sum()
     }
     /// The most vertices a page holds.
     pub fn page_vertices(&self) -> u64 {
@@ -280,6 +291,65 @@ impl Arena {
             .as_ref()
             .expect("live arena page")
             .buffer
+    }
+
+    pub fn sources(&self, page: u32) -> Option<&wgpu::Buffer> {
+        self.pages[page as usize].as_ref()?.sources.as_ref()
+    }
+
+    fn source_buffer(device: &wgpu::Device, capacity: u64) -> Option<wgpu::Buffer> {
+        if capacity / 4 * 8 > device.limits().max_storage_buffer_binding_size {
+            return None;
+        }
+        try_create(
+            device,
+            "Terrain quad sources",
+            capacity / 4 * 8,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        )
+    }
+
+    /// Native meshes allocate no sidecar. Once needed, existing pages also get a zeroed
+    /// sidecar so moves can retain sources. Failure leaves geometry intact and attributes
+    /// unknown; a later source upload may retry its page.
+    pub fn write_sources(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        uploads: &mut super::upload::Uploads,
+        page: u32,
+        start: u64,
+        vertices: u64,
+        sources: &[crate::mesher::TerrainSource],
+    ) {
+        if !sources.is_empty() && !self.sources_enabled {
+            self.sources_enabled = true;
+            for p in self.pages.iter_mut().flatten() {
+                p.sources = Self::source_buffer(device, p.capacity);
+            }
+        }
+        let p = self.pages[page as usize].as_mut().expect("live arena page");
+        if p.sources.is_none() && !sources.is_empty() {
+            p.sources = Self::source_buffer(device, p.capacity);
+        }
+        if let Some(buffer) = &p.sources {
+            let bytes = vertices / 4 * 8;
+            if bytes > 0 {
+                // Recycled ranges must never keep another mesh's identity, even for a
+                // missing or incomplete sidecar. Zero records have no valid bit.
+                encoder.clear_buffer(buffer, start / 4 * 8, Some(bytes));
+                if sources.len() as u64 == vertices / 4 {
+                    uploads.buffer(
+                        encoder,
+                        buffer,
+                        start / 4 * 8,
+                        bytemuck::cast_slice(sources),
+                    );
+                }
+            }
+        }
     }
     /// Bytes of one vertex (or index).
     pub fn stride(&self) -> u64 {
@@ -336,6 +406,10 @@ impl Arena {
         let start = free.take(len).expect("a new page fits one section");
         let page = Page {
             buffer,
+            sources: self
+                .sources_enabled
+                .then(|| Self::source_buffer(device, capacity))
+                .flatten(),
             capacity,
             free,
             host,
@@ -451,6 +525,10 @@ impl Arena {
         let free = FreeList::new(capacity);
         self.pages.push(Some(Page {
             buffer,
+            sources: self
+                .sources_enabled
+                .then(|| Self::source_buffer(device, capacity))
+                .flatten(),
             capacity,
             free,
             host,
@@ -483,6 +561,21 @@ impl Arena {
             to.1 * self.stride,
             vertices * self.stride,
         );
+        if let Some(to_sources) = self.sources(to.0) {
+            let bytes = vertices / 4 * 8;
+            if bytes > 0 {
+                match self.sources(from.0) {
+                    Some(from_sources) => encoder.copy_buffer_to_buffer(
+                        from_sources,
+                        from.1 / 4 * 8,
+                        to_sources,
+                        to.1 / 4 * 8,
+                        bytes,
+                    ),
+                    None => encoder.clear_buffer(to_sources, to.1 / 4 * 8, Some(bytes)),
+                }
+            }
+        }
     }
     pub fn release(&mut self, page: u32, start: u64, vertices: u64) {
         let len = Self::span(vertices).min(self.page_limit);
@@ -540,9 +633,17 @@ impl Arena {
         let Some((buffer, host)) = self.create(device, capacity, spill) else {
             return false;
         };
+        let sources = self
+            .sources_enabled
+            .then(|| Self::source_buffer(device, capacity))
+            .flatten();
         let old = self.pages[page].as_mut().expect("live arena page");
         // Copies recorded for the old buffer run before this one.
         encoder.copy_buffer_to_buffer(&old.buffer, 0, &buffer, 0, old.capacity * self.stride);
+        if let (Some(from), Some(to)) = (&old.sources, &sources) {
+            encoder.copy_buffer_to_buffer(from, 0, to, 0, from.size());
+        }
+        old.sources = sources;
         let previous = old.capacity;
         old.buffer = buffer;
         old.host = host;
@@ -879,6 +980,7 @@ mod tests {
             solid,
             solid_slots: u64::from(solid) * 4,
             packed: false,
+            packed_far: false,
             sides: crate::mesher::Sides::unsorted(solid),
             translucent,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1047,7 +1149,15 @@ mod tests {
                 hdr: None,
             }
         };
-        let mut flat = flat::Flat::new(&device, &terrain_layout, 4 * GRAIN, 0, pipeline, solid);
+        let mut flat = flat::Flat::new(
+            &device,
+            &terrain_layout,
+            4 * GRAIN,
+            0,
+            false,
+            pipeline,
+            solid,
+        );
         let stride = std::mem::size_of::<crate::mesher::TerrainVertex>() as u64;
         let mut translucent = Arena::translucent(&device, stride, 4 * GRAIN);
         translucent.page_limit = 4 * GRAIN;
@@ -1083,6 +1193,7 @@ mod tests {
             solid: 64,
             solid_slots: 64 * 4,
             packed: false,
+            packed_far: false,
             sides: crate::mesher::Sides::unsorted(64),
             translucent: 128,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1310,6 +1421,7 @@ mod tests {
                 solid,
                 solid_slots: u64::from(solid) * 4,
                 packed: false,
+                packed_far: false,
                 sides: crate::mesher::Sides::unsorted(solid),
                 translucent,
                 sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1436,6 +1548,7 @@ mod tests {
             let free = FreeList(BTreeMap::from([(used, capacity - used)]));
             let buffer = buffer.clone();
             arena.pages = vec![Some(Page {
+                sources: None,
                 buffer,
                 capacity,
                 free,
