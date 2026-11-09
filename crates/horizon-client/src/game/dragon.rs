@@ -1768,33 +1768,6 @@ impl Game<'_> {
         }
         best
     }
-    pub(super) fn attack_dragon(&mut self) -> bool {
-        let Some((id, d)) = self.dragon_hit() else {
-            return false;
-        };
-        if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
-            return false;
-        }
-        // A dragon part is no LivingEntity: `canCriticalAttack` is false.
-        let (amount, scale, _, _) = self.melee_damage("minecraft:ender_dragon", false);
-        self.swing_arm();
-        // The part's box.
-        let area = self
-            .special_targets()
-            .into_iter()
-            .find(|(part, _)| *part == id)
-            .map(|(_, b)| b);
-        let hurt = self.hit_special(id, amount, true, DamageKind::PlayerAttack, None);
-        // The sweep and the sounds read the charge, which the hit then spends.
-        if let (Some(area), Hurt::Landed { .. }) = (area, hurt) {
-            let (knockback, _) = self.extra_knockback("minecraft:ender_dragon", scale);
-            self.attack_effects(area, None, false, super::mace::Spared::Nothing, None);
-            self.special_attack_slowdown(knockback);
-            self.special_attack_exhaustion();
-        }
-        self.attack_ticks = 0;
-        true
-    }
     /// The 24 nodes (`findClosestNode` builds them on first use).
     fn dragon_nodes(&mut self) -> [[i32; 3]; 24] {
         if let Some(n) = self.dragon.as_ref().and_then(|d| d.nodes) {

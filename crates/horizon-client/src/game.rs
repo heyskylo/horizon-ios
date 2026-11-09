@@ -419,6 +419,7 @@ mod spawner;
 mod spear;
 mod spear_players;
 mod special_attack_fixture;
+mod special_attacks;
 mod spectator;
 mod spill;
 mod splash_water;
@@ -9984,57 +9985,6 @@ impl Game<'_> {
         }
         best
     }
-    /// `Player.attack`'s damage against `target_kind` (with the attack
-    /// strength and whether it is a critical hit): the weapon and effects
-    /// scaled by the attack strength, a mace's smash, the critical hit, then
-    /// enchantments.
-    pub(super) fn melee_damage(
-        &mut self,
-        target_kind: &str,
-        living: bool,
-    ) -> (f32, f32, bool, bool) {
-        self.melee_damage_with_admission(target_kind, living).0
-    }
-    /// Player.attack admits its hurt/tail before the item's damage bonus. Keep
-    /// that predicate with the one damage evaluation, including its RNG draws.
-    pub(super) fn melee_damage_with_admission(
-        &mut self,
-        target_kind: &str,
-        living: bool,
-    ) -> ((f32, f32, bool, bool), bool) {
-        if self.legacy_rules() {
-            let hit = self.legacy_melee_damage(target_kind, living);
-            // The legacy rules use their resulting damage, including the
-            // intentionally retained modern mace bonus.
-            return (hit, hit.0 > 0.0);
-        }
-        let hand_damage = self.attack_damage();
-        // Riptide's spin replaces the attack damage attribute.
-        let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
-        let damage = if spin > 0.0 { spin } else { hand_damage };
-        let scale = self.attack_strength_scale();
-        // getEnchantedDamage(target, damage, source) - damage, taken before the
-        // attack strength scales the base damage.
-        let enchant_bonus = self.enchanted_damage(target_kind, damage) - damage;
-        let mut amount = damage * (0.2 + scale * scale * 0.8);
-        // Player.attack decides the critical hit only for a hit with base or
-        // enchantment damage: checked before the mace's smash bonus is added.
-        let damaging = amount > 0.0 || enchant_bonus * scale > 0.0;
-        // Item.getAttackDamageBonus (a mace's smash), before the critical hit.
-        amount += self.smash_damage_bonus(target_kind);
-        let vanilla_crit = living && self.critical_attack(scale);
-        let mut crit = vanilla_crit;
-        let mut multiplier = if vanilla_crit { 1.5 } else { 1.0 };
-        if living && damaging {
-            self.native_critical_hit(target_kind, vanilla_crit, &mut crit, &mut multiplier);
-        }
-        if crit {
-            amount *= multiplier;
-        }
-        // Enchantment damage (sharpness, smite, bane) scaled by the attack strength.
-        amount += enchant_bonus * scale;
-        ((amount, scale, crit, enchant_bonus * scale > 0.0), damaging)
-    }
     /// `Player.attack`'s sounds when a vehicle takes the hit (it always does,
     /// and can't be hit critically): knockback when sprinting at full
     /// strength, then strong or weak, or the sweep around the vehicle's
@@ -10042,25 +9992,6 @@ impl Game<'_> {
     pub(super) fn vehicle_attack_sounds(&mut self, area: Aabb, magic: Option<i32>) {
         self.attack_effects(area, None, false, mace::Spared::Nothing, magic);
     }
-    /// Player.attack's cost after an accepted special-entity hurt. Hanging
-    /// decorations consume their hit in skipAttackInteraction, before this tail.
-    pub(super) fn special_attack_exhaustion(&mut self) {
-        if let Some(player) = self.player.as_mut() {
-            player.cause_food_exhaustion(0.1);
-        }
-    }
-    /// The attacker's side of Player.causeExtraKnockback, including when the
-    /// accepted target was removed by its hurt implementation.
-    pub(super) fn special_attack_slowdown(&mut self, knockback: f32) {
-        if knockback > 0.0 {
-            if let Some(player) = self.player.as_mut() {
-                player.velocity.x *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
-                player.velocity.z *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
-            }
-            self.stop_sprint_after_extra_knockback();
-        }
-    }
-
     /// `Player.attack` on a mob: the damage, knockback, sweep, particles and
     /// sounds.
     pub(super) fn attack_mob(&mut self, index: usize) {

@@ -69,6 +69,7 @@ def main():
     source_paths = [lab.ROOT / path for path in (
         'crates/horizon-client/src/game.rs',
         'crates/horizon-client/src/game/melee.rs',
+        'crates/horizon-client/src/game/special_attacks.rs',
         'crates/horizon-client/src/game/armor_stands.rs',
         'crates/horizon-client/src/game/boats.rs',
         'crates/horizon-client/src/game/minecarts.rs',

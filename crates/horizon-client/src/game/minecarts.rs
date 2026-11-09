@@ -2527,33 +2527,6 @@ impl Game<'_> {
                     .then_some(CartKind::Chest)
             })
     }
-    /// `VehicleEntity.hurtServer` from the player's attack.
-    pub(super) fn attack_cart(&mut self) -> bool {
-        let Some((i, d)) = self.cart_hit() else {
-            return false;
-        };
-        if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
-            return false;
-        }
-        let burning = self
-            .held()
-            .is_some_and(|s| s.enchantment_level("minecraft:fire_aspect") > 0);
-        let area = self.carts[i].bounds();
-        // Player.attack's full damage against the cart's entity type.
-        let id = self.carts[i].id as i32;
-        let kind = self.carts[i].kind.id();
-        let (damage, scale, _, magic) = self.melee_damage(kind, false);
-        if self.hurt_cart_result(i, damage, self.creative, burning) && damage > 0.0 {
-            self.vehicle_attack_sounds(area, magic.then_some(id));
-            let (knockback, _) = self.extra_knockback(kind, scale);
-            self.special_attack_slowdown(knockback);
-            self.special_attack_exhaustion();
-        }
-        // Player.onAttack: the hit starts the attack strength again.
-        self.attack_ticks = 0;
-        self.swing_arm();
-        true
-    }
     /// An arrow hit cart `i` (`MinecartTNT.hurtServer`, then
     /// `VehicleEntity.hurtServer`): a burning arrow sets off a TNT minecart.
     pub(super) fn arrow_hits_cart(
