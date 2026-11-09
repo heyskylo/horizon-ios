@@ -902,7 +902,8 @@ impl Game<'_> {
         let up = |id: u128| upside_down.contains(&id);
         // Horizon's mark before the names of Horizon players (the cosmetics service's cache).
         let horizon = self.horizon_players(players.iter().map(|p| p.uuid));
-        let marked = |id: u128| horizon.contains(&id);
+        let horizon_mark: tab_list::NameMark = &horizon_cosmetics::mark::MARK;
+        let marked = |id: u128| horizon.contains(&id).then_some(horizon_mark);
         let inputs = TabInputs {
             players: &players,
             board,
@@ -916,7 +917,7 @@ impl Game<'_> {
                 f64::from(self.settings.text_background_opacity),
             ),
             upside_down: &up,
-            horizon: &marked,
+            mark: &marked,
         };
         let draws = self.tab_list.layout(&inputs, &self.gui.atlas.font);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);

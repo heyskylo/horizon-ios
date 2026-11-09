@@ -247,9 +247,10 @@ mod tests {
         };
         let (effects, extras) = post.frame(&frame, &PolyGlobals::default());
         assert_eq!(effects, ["p:glare"]);
+        // `g.rain` is the mean of rain (0.25) and thunder (0): 0.125.
         assert_eq!(
             f32::from_le_bytes(extras.blocks["Weather"][..4].try_into().unwrap()),
-            0.75
+            0.875
         );
         assert!(extras.targets["p:history"].persistent);
         frame.rain = 1.0;

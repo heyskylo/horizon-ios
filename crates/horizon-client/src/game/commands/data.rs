@@ -204,10 +204,15 @@ impl Game<'_> {
                 let raw = self.persist.raw.get(&id);
                 // Projectile.addAdditionalSaveData stores the retained EntityReference,
                 // including an owner that is not currently resolved to a live entity.
-                entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
-                    .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw))?
+                let mut tag =
+                    entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
+                        .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
+                        .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
+                        .or_else(|| {
+                            entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw)
+                        })?;
+                self.save_projectile_portal_cooldown(p, &mut tag);
+                tag
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
@@ -246,6 +251,7 @@ impl Game<'_> {
                     f.drop_item,
                     f.damage,
                     f.fall_distance,
+                    f.on_ground,
                     f.rotation,
                     uuid,
                 );
@@ -409,6 +415,10 @@ impl Game<'_> {
                     // entity keeps its place in the level's join order.
                     let old = std::mem::replace(slot, new);
                     slot.join = old.join;
+                    // Entity.load fills in the entity that is there: its own
+                    // random (Entity.random) goes on, as a spawn egg's entity
+                    // data finds it.
+                    slot.random = old.random.clone();
                     if keep_liked_player {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
@@ -506,7 +516,7 @@ impl Game<'_> {
             }
             Target::Boat(id) => {
                 // AbstractBoat.readAdditionalSaveData over Entity.load: the
-                // position, rotation, motion, NoGravity, Fire and a chest boat's items.
+                // position, rotation, motion, ground and gravity flags, Fire and chest items.
                 let (position, velocity, yaw) =
                     entity_nbt::boat_from_nbt(&tag).ok_or_else(stale)?;
                 let uuid = self.uuid_for(id);
@@ -522,6 +532,7 @@ impl Game<'_> {
                 b.previous_yaw = yaw;
                 b.pitch = entity_nbt::rotation(&tag)[1];
                 b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                b.on_ground = entity_nbt::flag(&tag, "OnGround");
                 b.fire_ticks = crate::game::boats::saved_fire(&tag);
                 if b.chest {
                     b.items = save::decode_items(tag.get("Items"), crate::game::boats::CHEST_SLOTS);
@@ -554,6 +565,7 @@ impl Game<'_> {
                 falling.no_gravity = no_gravity;
                 falling.drop_item = drop_item;
                 falling.fall_distance = fall_distance;
+                falling.on_ground = entity_nbt::flag(&tag, "OnGround");
                 falling.damage = damage;
                 // Keep id/join, start_pos, portal state and stuck multiplier.
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
@@ -581,11 +593,7 @@ impl Game<'_> {
                 tnt.previous = position;
                 tnt.velocity = entity_nbt::motion(&tag);
                 tnt.rotation = entity_nbt::rotation(&tag);
-                // Keep the existing loaded-fuse conversion policy (H090 is separate).
-                tnt.fuse = match tag.get("fuse") {
-                    Some(Tag::Short(fuse)) => i32::from(*fuse),
-                    _ => 80,
-                };
+                tnt.fuse = super::super::persist::tnt_fuse(&tag);
                 tnt.on_ground = entity_nbt::flag(&tag, "OnGround");
                 tnt.fall_distance =
                     horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0);
@@ -698,6 +706,7 @@ impl Game<'_> {
                 p.yaw = yaw;
                 p.pitch = pitch;
                 p.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                p.on_ground = entity_nbt::flag(&tag, "OnGround");
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
             _ => return Err(stale()),

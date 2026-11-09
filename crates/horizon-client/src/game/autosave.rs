@@ -88,6 +88,7 @@ impl Game<'_> {
                 self.guest_attachments_into(g);
                 self.player_autosaves.enqueue(g, &self.world_root);
             }
+            self.save_connected_guest_statistics(&host);
             self.lan = Some(host);
         }
         self.save_world_state();
