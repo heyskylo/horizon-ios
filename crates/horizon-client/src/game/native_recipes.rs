@@ -140,6 +140,15 @@ impl Game<'_> {
         self.mod_give(item, count.clamp(1, 99), "");
         Ok(())
     }
+    /// `native_transfer_recipe`, and with `all` as many sets as the
+    /// inventory (and a mod crafting grid's sources) allow, as Shift on the
+    /// recipe book places: every grid slot gets the same count, capped at the
+    /// ingredients' stack size, alternatives (tags) shared out as vanilla's
+    /// `StackedItemContents` does. A server from before `all` ignores it.
+    /// API @API:transfer_recipe_all@.
+    pub(super) fn native_transfer_recipe_all(&mut self, book_id: i32, all: bool) {
+        self.transfer_viewer_recipe(book_id, all);
+    }
     /// `native_place_recipe`: refused as `recipes.place` refuses it.
     pub(super) fn recipe_place(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         if !self.mod_recipe_screen() {
