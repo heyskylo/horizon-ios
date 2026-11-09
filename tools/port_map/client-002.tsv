@@ -9,7 +9,7 @@ ClientPacketListener.handleTickingState	port	crates/horizon-client/src/game/remo
 ClientPacketListener.handleTickingStep	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	TickingStep arm: frozen ticks to run
 ClientPacketListener.handleMoveEntity	port	crates/horizon-client/src/game/remote.rs::Game::move_entity	relative move and rotation from the Pos, PosRot and Rot packets
 ClientPacketListener.handleMinecartAlongTrack	port	crates/horizon-client/src/game/remote.rs::Game::remote_move_minecart	the server's steps join the cart's own queue while it runs NewMinecartBehavior
-ClientPacketListener.handleRemoveEntities	port	crates/horizon-client/src/game/remote.rs::Game::remove_entity	gap: minor: a removed vehicle carrying the player is not remembered for a later teleport
+ClientPacketListener.handleRemoveEntities	port	crates/horizon-client/src/game/remote_removal.rs::Game::remove_entity	gap: minor: a removed vehicle carrying the player is not remembered for a later teleport
 ClientPacketListener.setValuesFromPositionPacket	port	crates/horizon-client/src/game/remote.rs::Game::remote_teleport	gap: minor: the entity case (TeleportEntity) is in the handle_packet arm, not here
 ClientPacketListener.handleRotatePlayer	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	PlayerRotation arm; gap: minor: no ServerboundMovePlayerPacket.Rot reply is sent
 ClientPacketListener.handleChunkBlocksUpdate	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SectionBlocksUpdate arm: each change through the block update
