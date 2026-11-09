@@ -325,7 +325,12 @@ impl CustomSky {
     }
 
     /// The pack's layer textures, replacing any before.
-    pub(super) fn set_pack(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pack: &dyn SkyLayers) {
+    pub(super) fn set_pack(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pack: &dyn SkyLayers,
+    ) {
         let limit = device.limits().max_texture_dimension_2d;
         self.groups = pack
             .images()
