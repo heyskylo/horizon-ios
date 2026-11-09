@@ -2215,13 +2215,10 @@ pub fn mob_from_nbt_with_random(
                     .map(Box::new),
             );
         }
-        // A sulfur cube's maximum waits for its size, which `sulfur_cube::from_nbt`
-        // sets below (AbstractCubeMob sizes it before the living load).
-        if m.species() != crate::mobs::Species::SulfurCube
-            && m.extra
-                .effects
-                .iter()
-                .any(|e| e.0 == "minecraft:health_boost")
+        if m.extra
+            .effects
+            .iter()
+            .any(|e| e.0 == "minecraft:health_boost")
         {
             crate::mobs::finalize::health_boost_changed(&mut m);
         }

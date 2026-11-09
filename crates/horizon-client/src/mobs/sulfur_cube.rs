@@ -1406,7 +1406,6 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     };
     m.extra.age = int("Age").unwrap_or(0);
     m.extra.age_locked = int("AgeLocked").unwrap_or(0) != 0;
-    let health = m.health;
     set_size(m, int("Size").unwrap_or(0) + 1, false);
     // LivingEntity's load applies the saved bases after the size, so they win.
     if let Some(Tag::List(saved)) = tag.get("attributes") {
@@ -1422,11 +1421,9 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
             }
         }
     }
-    m.health = if tag.get("Health").is_some() {
-        health
-    } else {
-        m.attrs.max_health
-    };
+    // The saved Health, not the one the living load's Health Boost clamp cut
+    // to the unsized maximum: vanilla sizes the cube before `setHealth`.
+    m.health = crate::save::float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
     m.extra.flag2 = int("wasOnGround").unwrap_or(0) != 0;
     m.extra.ints[3] = int("pickup_timer").unwrap_or(0);
     m.extra.scratch[3] = int("from_bucket").unwrap_or(0);
