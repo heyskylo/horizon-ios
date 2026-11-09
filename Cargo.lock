@@ -1794,9 +1794,19 @@ version = "0.1.0"
 dependencies = [
  "horizon-game",
  "horizon-heartbeat",
+ "horizon-official-servers",
  "horizon-platform",
  "log",
  "winresource",
+]
+
+[[package]]
+name = "horizon-official-servers"
+version = "0.1.0"
+dependencies = [
+ "horizon-addresses",
+ "horizon-platform",
+ "log",
 ]
 
 [[package]]
