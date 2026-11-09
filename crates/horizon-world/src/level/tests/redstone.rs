@@ -1249,3 +1249,34 @@ fn a_note_block_takes_its_instrument_from_the_block_below_or_a_head_above() {
         );
     }
 }
+
+/// `NoteBlock.useWithoutItem` cycles NOTE through its 25 values and wraps; `powered`
+/// follows the neighbour signal, on and off.
+#[test]
+fn a_note_block_cycles_through_25_notes_and_follows_its_power() {
+    let mut w = world!();
+    let at = BlockPos::new(0, 5, 0);
+    w.set(at, w.id("note_block", &[]));
+    assert_eq!(w.prop(at, "note"), "0");
+    for note in 1..=24 {
+        w.use_block(at);
+        assert_eq!(w.prop(at, "note"), note.to_string(), "click {note}");
+    }
+    w.use_block(at);
+    assert_eq!(
+        w.prop(at, "note"),
+        "0",
+        "the 25th click wraps to the first note"
+    );
+
+    assert_eq!(w.prop(at, "powered"), "false");
+    let source = BlockPos::new(1, 5, 0);
+    w.set(source, w.id("redstone_block", &[]));
+    assert_eq!(
+        w.prop(at, "powered"),
+        "true",
+        "powered by the redstone block"
+    );
+    w.set(source, w.b().air());
+    assert_eq!(w.prop(at, "powered"), "false", "and not without it");
+}
