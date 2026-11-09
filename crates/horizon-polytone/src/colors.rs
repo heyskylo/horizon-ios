@@ -22,6 +22,9 @@ pub struct Environment {
     pub water_fog_brightening: f32,
     /// `water_fog_brightening_time`: the ticks under water it takes (vanilla's 600).
     pub water_fog_brightening_time: f32,
+    /// `horizon_height`: below it the sky draws its dark disc (vanilla's 63; flat worlds keep
+    /// their floor).
+    pub horizon_height: f32,
 }
 
 impl Default for Environment {
@@ -33,6 +36,7 @@ impl Default for Environment {
             boss_fog_distance: 96.0,
             water_fog_brightening: 1.0,
             water_fog_brightening_time: 600.0,
+            horizon_height: 63.0,
         }
     }
 }
@@ -216,6 +220,7 @@ impl PackColors {
                 vanilla.water_fog_brightening_time,
             )
             .max(1.0),
+            horizon_height: number("horizon_height", vanilla.horizon_height),
         }
     }
 
