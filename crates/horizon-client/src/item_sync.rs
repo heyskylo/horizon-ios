@@ -138,6 +138,31 @@ pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
     out
 }
 
+/// `Consumable.animation` from the stack's `consumable` component.
+pub fn consumable_animation(stack: &ItemStack) -> Option<horizon_world::consumable::UseAnimation> {
+    use horizon_world::consumable::UseAnimation;
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    let Some(Tag::String(animation)) = data
+        .and_then(|d| d.other("minecraft:consumable"))
+        .and_then(|c| c.get("animation"))
+    else {
+        return None;
+    };
+    Some(match &*animation.to_string_lossy() {
+        "drink" => UseAnimation::Drink,
+        "block" => UseAnimation::Block,
+        "bow" => UseAnimation::Bow,
+        "spear" => UseAnimation::Spear,
+        "toot_horn" => UseAnimation::TootHorn,
+        "brush" => UseAnimation::Brush,
+        "bundle" => UseAnimation::Bundle,
+        "none" => UseAnimation::None,
+        _ => UseAnimation::Eat,
+    })
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
