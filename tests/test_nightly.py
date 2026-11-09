@@ -250,11 +250,14 @@ class MobileForkWorkflowTests(unittest.TestCase):
         self.assertEqual(command[1], "tools/ci/ios_release.py")
         command[0] = sys.executable
         command[1] = str(root / command[1])
-        command = [fixtures.SHA if part == "$GITHUB_SHA" else part for part in command]
+        workflow = {"$GITHUB_SHA": fixtures.SHA, "$GITHUB_RUN_NUMBER": "88", "$GITHUB_RUN_ATTEMPT": "1"}
+        command = [workflow.get(part, part) for part in command]
         with tempfile.TemporaryDirectory() as directory:
             ipa = Path(directory) / "Horizon-game-unsigned.ipa"
             for contains_assets in (False, True):
                 extra = {"Payload/Horizon.app/horizon-resources.json": b"{}"} if contains_assets else {}
-                fixtures.IOSReleaseTests().archive(ipa, extra)
+                version, build = fixtures.release.release_version("88", "1")
+                fixtures.IOSReleaseTests().archive(ipa, extra,
+                    {"CFBundleShortVersionString": version, "CFBundleVersion": build})
                 result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, not contains_assets, result.stderr)
