@@ -2,6 +2,12 @@
 //! drags, throws and the press/release of a slot click.
 use super::*;
 
+/// Q throws the whole stack with Control down: the same modifier word the
+/// screens read (`has_control_down`), never a latched sprint toggle.
+pub(super) fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
+    modifiers.control_key()
+}
+
 impl Game<'_> {
     /// `CreativeModeInventoryScreen.keyPressed` on the search tab: a hotbar
     /// key over a slot swaps before the search box sees it.
