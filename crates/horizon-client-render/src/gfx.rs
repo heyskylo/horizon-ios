@@ -239,6 +239,7 @@ mod reuse;
 mod stars;
 mod surface_setup;
 use surface_setup::{AdapterChoice, AdapterFailure, open_adapter, pick_adapter, set_up_surface};
+mod off_page;
 pub mod submit;
 mod sunrise_fan;
 mod timing;
@@ -250,6 +251,7 @@ mod wgsl_prefix;
 mod world_post;
 pub mod world_primitives;
 mod world_warp;
+use off_page::move_off_page;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
 /// its fixed-point UVs (`terrain.wgsl`'s `terrain_uv`).
@@ -725,62 +727,6 @@ impl Part {
             Self::Indices => s.sorted_indices = Some(to),
         }
     }
-}
-/// `Renderer::compact_arena`'s and `shrink_translucent`'s moves: what the meshes
-/// hold on `page` of `arena` (`part`) goes to its other pages in video memory,
-/// until the next range would pass `budget` bytes (it keeps what is left; the
-/// first range moves whatever its size, so none keeps the page closed), the
-/// copies into `encoder`, the ranges' flat draw ids (`flat`) and, in the
-/// section arena, GPU culling's records (`records`) along. False when the other
-/// pages have no room left.
-fn move_off_page<'a>(
-    arena: &mut arena::Arena,
-    encoder: &mut wgpu::CommandEncoder,
-    mut flat: Option<(&mut flat::Flat, &wgpu::Device, &mut upload::Uploads)>,
-    mut records: Option<&mut gpu_culling::Records>,
-    meshes: impl Iterator<Item = &'a mut SectionGpu>,
-    page: u32,
-    part: Part,
-    budget: &mut u64,
-) -> bool {
-    debug_assert!(
-        records.is_none() || matches!(part, Part::Section { .. }),
-        "records follow the section arena's ranges"
-    );
-    let mut moved = false;
-    for s in meshes {
-        // Nothing of a mesh here: split, one without solid quads (its (0, 0) is no
-        // range of page 0); in the other arenas, one without translucent quads.
-        let Some((_, start, vertices)) = part.of(s).filter(|r| r.0 == page) else {
-            continue;
-        };
-        let bytes = vertices * arena.stride();
-        if moved && bytes > *budget {
-            break;
-        }
-        let Some(to) = arena.alloc_moved(vertices) else {
-            return false;
-        };
-        arena.copy(encoder, (page, start), to, vertices);
-        arena.release(page, start, vertices);
-        if let (Some((flat, device, uploads)), Some(id)) = (&mut flat, s.flat_id) {
-            let key = match part {
-                Part::Translucent => to.0 + flat::TRANSLUCENT_KEYS,
-                _ => to.0,
-            };
-            flat.place(device, encoder, uploads, id, key, to.1, vertices);
-        }
-        part.set(s, to);
-        // Its solid quads start the range in either layout.
-        if let (Part::Section { .. }, Some(records), Some(id)) =
-            (part, records.as_deref_mut(), s.gpu_id)
-        {
-            records.relocate(id, to.0, u64::from(s.solid_base()));
-        }
-        *budget = budget.saturating_sub(bytes);
-        moved = true;
-    }
-    true
 }
 /// Starts moving a page of a large arena far larger than its ranges in use
 /// (`Arena::oversized`) into a new page of the size they get (`Arena::open_page`),
@@ -10116,7 +10062,11 @@ impl Renderer {
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
+        // Post effects (a resource pack's chains, `use_depth_buffer`) read the world's depth
+        // after the world pass, as `GameRenderer.render` hands them the main target's.
+        let post_reads_depth = !frame.title && !frame.post_effects.effects.is_empty();
         let keep_depth = pack_reads_world
+            || post_reads_depth
             || (taa && self.world_post.taa)
             || oit_on
             || native_render::render_needs().world_depth
@@ -13714,6 +13664,7 @@ mod tests {
             Some(Reported {
                 paper_white: 240,
                 peak: 998,
+                peak_guessed: true,
             })
         );
         assert_eq!(
@@ -13721,6 +13672,7 @@ mod tests {
             Some(Reported {
                 paper_white: 480,
                 peak: 480,
+                peak_guessed: true,
             })
         );
         // White above the calibrated peak (a Samsung QD-OLED's 380, the slider at 456).
@@ -13729,6 +13681,7 @@ mod tests {
             Some(Reported {
                 paper_white: 456,
                 peak: 456,
+                peak_guessed: true,
             })
         );
         assert_eq!(os_reported(&info(Some(1000.0), None)), None);
@@ -15419,11 +15372,9 @@ fn log_os_reported(reported: Option<crate::graphics::Reported>) {
         None => "Horizon renderer: the system doesn't report the display's luminance".into(),
     });
 }
-/// What the OS reports in absolute nits (Windows: DXGI's `MaxLuminance` and the SDR
-/// white level the brightness slider sets), which is HDR output's scale there: SDR
-/// white is Paper White, the display's peak is Peak Brightness. Both are kept within
-/// the settings' ranges. The OS's figures often come from the display's EDID and may
-/// run optimistic; the player's own value always wins.
+/// What the OS reports in absolute nits, HDR output's scale (Windows: DXGI's SDR white level,
+/// the brightness slider's, as Paper White, and its `MaxLuminance`, mostly the display's EDID
+/// guess, as Peak Brightness), kept within the settings' ranges. The player's values win.
 fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported> {
     let luminance = info.luminance?;
     let usable = |n: f32| n.is_finite() && n > 0.0;
@@ -15435,6 +15386,7 @@ fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported>
         // Windows' SDR brightness slider can set white above the reported peak (480 against
         // a calibrated 380): the highlights then stay at white instead of dropping below it.
         peak: (peak.round() as u32).clamp(200, 10_000).max(paper_white),
+        peak_guessed: true,
     })
 }
 
@@ -15470,6 +15422,7 @@ fn reported(l: horizon_hdr::wayland::Luminances) -> crate::graphics::Reported {
     crate::graphics::Reported {
         paper_white: 203,
         peak: peak.clamp(200, 10_000),
+        peak_guessed: false,
     }
 }
 
@@ -15718,11 +15671,11 @@ mod shadow_caster_tests {
     #[test]
     fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
         let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
-            let shadow = horizon_render_pipeline::Shadow {
+            let shadow = horizon_shaders::Shadow {
                 distance: 128.0,
                 near,
                 far,
-                ..horizon_render_pipeline::Shadow::default()
+                ..horizon_shaders::Shadow::default()
             };
             let camera = DVec3::new(13.5, y + 1.62, -13.5);
             let view = pack_post::ShadowView {

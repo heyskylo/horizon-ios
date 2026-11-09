@@ -70,6 +70,23 @@ pub(super) enum BookScreen {
         lectern: Option<(i32, i32, i32)>,
     },
 }
+impl BookScreen {
+    /// `BookSignScreen`'s constructor: its title box opens with the title
+    /// kept from the last time, which Cancel stored (`titleValue`).
+    fn begin_signing(&mut self) {
+        if let Self::Edit {
+            signing,
+            title,
+            title_edit,
+            ..
+        } = self
+        {
+            *signing = true;
+            title_edit.set_value(title.as_str());
+            title_edit.reset_blink();
+        }
+    }
+}
 /// The pages a book screen reads: a written book's components (so their
 /// click events stay), else a writable book's text.
 fn view_pages(data: Option<&StackData>) -> Vec<Text> {
@@ -988,7 +1005,7 @@ impl Game<'_> {
                     title,
                     ..
                 }) if !title.trim().is_empty() => self.save_book(true),
-                Some(BookScreen::Edit { signing, .. }) => *signing = true,
+                Some(book @ BookScreen::Edit { .. }) => book.begin_signing(),
                 _ => return Err("not a book and quill".into()),
             },
             Some("done") => match self.book.as_mut() {
@@ -1190,8 +1207,8 @@ impl Game<'_> {
                     self.turn_page(false);
                 } else if inside(w / 2.0 - 100.0, 196.0, 98.0, 20.0) {
                     click(self);
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = true;
+                    if let Some(book) = self.book.as_mut() {
+                        book.begin_signing();
                     }
                 } else if inside(w / 2.0 + 2.0, 196.0, 98.0, 20.0) {
                     click(self);
@@ -1807,5 +1824,48 @@ mod lectern_reach_tests {
             game.book.is_none(),
             "the lectern screen stayed open out of reach"
         );
+    }
+}
+
+#[cfg(test)]
+mod sign_tests {
+    use super::{BookScreen, book_page_box, book_title_box};
+
+    /// `BookSignScreen`'s constructor sets its title box to `titleValue`, what
+    /// Cancel kept; reopening the sign screen shows the title typed before,
+    /// not an empty box beside a stale `title`.
+    #[test]
+    fn the_sign_screen_opens_with_the_title_it_kept() {
+        let mut book = BookScreen::Edit {
+            slot: 0,
+            pages: vec!["page".into()],
+            page: 0,
+            signing: false,
+            title: "My Book".into(),
+            title_edit: book_title_box(),
+            page_edit: book_page_box(),
+        };
+        assert_eq!(book_title_value(&book), "");
+        book.begin_signing();
+        let BookScreen::Edit {
+            signing,
+            title,
+            title_edit,
+            ..
+        } = &book
+        else {
+            panic!("the book stays open");
+        };
+        assert!(signing);
+        assert_eq!(title.as_str(), "My Book");
+        assert_eq!(title_edit.value, "My Book");
+        assert_eq!(title_edit.cursor, 7);
+    }
+
+    fn book_title_value(book: &BookScreen) -> String {
+        match book {
+            BookScreen::Edit { title_edit, .. } => title_edit.value.clone(),
+            BookScreen::View { .. } => String::new(),
+        }
     }
 }

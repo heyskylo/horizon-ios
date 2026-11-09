@@ -1418,6 +1418,7 @@ dependencies = [
 name = "horizon-chat-filter"
 version = "0.1.0"
 dependencies = [
+ "horizon-server-files",
  "serde",
  "serde_json",
  "toml",
@@ -1591,7 +1592,6 @@ dependencies = [
  "horizon-optifine",
  "horizon-polytone",
  "horizon-protocol",
- "horizon-render-pipeline",
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
@@ -1893,10 +1893,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-render-pipeline"
-version = "0.1.0"
-
-[[package]]
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
@@ -1958,7 +1954,6 @@ version = "0.1.0"
 dependencies = [
  "half",
  "horizon-core",
- "horizon-render-pipeline",
  "naga",
  "png",
  "zip",
