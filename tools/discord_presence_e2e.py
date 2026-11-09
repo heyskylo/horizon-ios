@@ -9,7 +9,7 @@ The game goes title -> world -> Nether -> quit through horizon-ctl, and the acti
     single     single player on its server thread
     lan        a host opens its world to LAN and a guest joins: the guest shows "Multiplayer",
                the host "Hosting a world" with a party of 2 of 8
-    setting    off in horizon-extras.txt: nothing reaches Discord; the Horizon Settings switch
+    setting    off in horizon-extras.txt: nothing reaches Discord; the Extras switch
                turns it on (the activity appears) and off (it is cleared)
     late       Discord starts after the game: found within the 15 s retry
 
@@ -208,7 +208,7 @@ def lan(bins):
 
 
 def setting(bins):
-    """Off in horizon-extras.txt: Discord never hears from the game. Turned on in Horizon Settings: the
+    """Off in horizon-extras.txt: Discord never hears from the game. Turned on in Extras: the
     activity appears; off again: it is cleared."""
     game = Game(bins, 'setting', extras='discordPresence:false\n')
     d = game.discord
@@ -216,7 +216,7 @@ def setting(bins):
         game.ctl_run('wait-for', 'screen', 'title')
         time.sleep(3)
         assert not d.handshakes and not d.activities, (d.handshakes, d.activities)
-        game.ctl_run('options', 'horizon')
+        game.ctl_run('options', 'extras')
         switch = next(w for w in game.ctl_run('ui')['widgets'] if w.get('label', '').startswith('Discord Rich'))
         assert switch['label'] == 'Discord Rich Presence: Off', switch
         game.ctl_run('click', switch['id'])

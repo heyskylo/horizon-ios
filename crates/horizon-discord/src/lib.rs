@@ -8,11 +8,14 @@
 //!
 //! A Horizon crate (docs/layers.md): the game tells it what the player does through the
 //! platform's hooks ([`HOOKS`]: `client_started`, `activity`, `shutdown`), which the official
-//! executable (`horizon-official`) registers. horizon-client's own executable has no presence.
+//! executable (`horizon-official`) registers with the switch: its line of `horizon-extras.txt`
+//! ([`SETTING`]) and its row in Extras' Multiplayer group ([`SECTION`]). horizon-client's own
+//! executable has no presence.
 #![forbid(unsafe_code)]
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread::Thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,6 +23,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use horizon_platform::hooks::{self, Activity, Dimension, GameMode, Hooks, Play};
+use horizon_platform::pages::{Act, Label, Page, Place, Row};
+use horizon_platform::settings::Store;
 
 /// The "Horizon" application on Discord's developer portal (public: it names the game). Its
 /// Rich Presence assets: `horizon`, the logo.
@@ -67,7 +72,7 @@ impl Hooks for Presence {
                 dimension,
                 mode,
             },
-            // Hidden, and anything a later game says that this crate doesn't know yet.
+            // Anything a later game says that this crate doesn't know yet.
             _ => Status::Off,
         });
     }
@@ -75,6 +80,102 @@ impl Hooks for Presence {
     /// On quit: the activity is cleared.
     fn shutdown(&self) {
         stop();
+    }
+}
+
+/// The switch's line in `horizon-extras.txt`, where the engine's Extras kept it before.
+const KEY: &str = "discordPresence";
+/// The switch's row, and what it says on hover.
+const LABEL: &str = "horizon.extras.discord_presence";
+const ABOUT: &str = "horizon.extras.discord_presence.tooltip";
+
+/// The switch (on by default): the player's own settings' line, the game's first player's. A
+/// splitscreen player's settings file loads after the first player's and keeps it.
+static ON: AtomicBool = AtomicBool::new(true);
+/// Whether the player's settings were loaded once: the later loads are splitscreen players'.
+static LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Turns the presence on or off; off clears the activity at once.
+pub fn set_enabled(on: bool) {
+    ON.store(on, Ordering::Relaxed);
+    let mut shared = lock();
+    let status = shown(shared.game);
+    let changed = shared.wanted.update(status, unix_now());
+    drop(shared);
+    if let Some(thread) = THREAD.get().filter(|_| changed) {
+        thread.unpark();
+    }
+}
+
+pub fn enabled() -> bool {
+    ON.load(Ordering::Relaxed)
+}
+
+/// What Discord is told for the game's `status`: nothing with the switch off.
+fn shown(status: Status) -> Status {
+    if enabled() { status } else { Status::Off }
+}
+
+/// The switch's line of `horizon-extras.txt`, for `horizon_platform::settings::register`.
+pub static SETTING: Setting = Setting;
+
+pub struct Setting;
+
+impl Store for Setting {
+    fn file(&self) -> &'static str {
+        "horizon-extras.txt"
+    }
+    fn owns(&self, key: &str) -> bool {
+        key == KEY
+    }
+    fn load(&self, _key: &str, value: &str) {
+        // The first player's settings load first; the first load is theirs.
+        if LOADED.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        match value {
+            "true" => set_enabled(true),
+            "false" => set_enabled(false),
+            _ => {}
+        }
+    }
+    fn save(&self, line: &mut dyn FnMut(&str, &str)) {
+        line(KEY, if enabled() { "true" } else { "false" });
+    }
+    fn is_default(&self) -> bool {
+        enabled()
+    }
+}
+
+/// The switch's row in the Extras page's Multiplayer group, for
+/// `horizon_platform::pages::register`.
+pub static SECTION: Section = Section;
+
+pub struct Section;
+
+impl Page for Section {
+    fn id(&self) -> &'static str {
+        "horizon-discord.extras"
+    }
+    fn title(&self) -> &'static str {
+        "horizon.extras.header.multiplayer"
+    }
+    fn place(&self) -> Place {
+        Place::Extras
+    }
+    fn rows(&self, rows: &mut Vec<Row>) {
+        rows.push(Row::Toggle {
+            label: LABEL,
+            on: enabled(),
+        });
+    }
+    fn act(&self, row: usize, act: Act) {
+        if row == 0 && matches!(act, Act::Press | Act::PressBack) {
+            set_enabled(!enabled());
+        }
+    }
+    fn tooltip(&self, _row: usize) -> Option<Label> {
+        Some(Label::Key(ABOUT))
     }
 }
 
@@ -115,11 +216,15 @@ impl Wanted {
 }
 
 struct Shared {
+    /// What the game said last.
+    game: Status,
+    /// What Discord is to show: the game's, or nothing with the switch off.
     wanted: Wanted,
     stop: bool,
     stopped: bool,
 }
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
+    game: Status::Menus,
     wanted: Wanted {
         status: Status::Menus,
         since: None,
@@ -154,7 +259,10 @@ pub fn start(automated: bool) {
 
 /// What the player does now; only a change wakes the thread. Kept for [`start`] before it.
 pub fn set(status: Status) {
-    let changed = lock().wanted.update(status, unix_now());
+    let mut shared = lock();
+    shared.game = status;
+    let changed = shared.wanted.update(shown(status), unix_now());
+    drop(shared);
     if let Some(thread) = THREAD.get().filter(|_| changed) {
         thread.unpark();
     }
@@ -596,6 +704,33 @@ mod tests {
 
     /// A fake Discord: answers the handshake with READY, each command with its nonce, after a ping.
     #[cfg(unix)]
+    /// The switch as the player's settings and the Extras page see it. The only test that
+    /// touches the presence's statics.
+    #[test]
+    fn the_switch_clears_the_activity_and_keeps_the_first_players_line() {
+        let wanted = || lock().wanted.status;
+        Setting.load(KEY, "false");
+        // A splitscreen player's settings file loads later and keeps the first player's.
+        Setting.load(KEY, "true");
+        set(Status::Menus);
+        assert!(!enabled());
+        assert_eq!(wanted(), Status::Off);
+        let mut rows = Vec::new();
+        SECTION.rows(&mut rows);
+        assert_eq!(rows, [Row::Toggle { label: LABEL, on: false }]);
+        let mut lines = Vec::new();
+        Setting.save(&mut |k, v| lines.push(format!("{k}:{v}")));
+        assert_eq!(lines, ["discordPresence:false"]);
+        assert!(!Setting.is_default());
+        // On from the page: what the game said last is shown at once.
+        SECTION.act(0, Act::Press);
+        assert_eq!(wanted(), Status::Menus);
+        assert!(Setting.is_default());
+        SECTION.act(0, Act::Press);
+        assert_eq!(wanted(), Status::Off);
+        SECTION.act(0, Act::Press);
+    }
+
     #[test]
     fn talks_to_discord_over_its_socket() {
         let dir = std::env::temp_dir().join(format!("horizon-discord-{}", std::process::id()));

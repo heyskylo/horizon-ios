@@ -6,7 +6,7 @@ use horizon_hooks::{Activity, Client, Dimension, Play};
 
 /// At startup, for a game window (never a dedicated server's): the player's first activity, then
 /// `Hooks::client_started`.
-pub(super) fn client_started(options: &Options, settings: &Settings) {
+pub(super) fn client_started(options: &Options) {
     if options.dedicated.is_some() {
         return;
     }
@@ -14,12 +14,7 @@ pub(super) fn client_started(options: &Options, settings: &Settings) {
         || options.offscreen
         || options.frames.is_some()
         || options.world_frames.is_some();
-    // The Discord switch's state is the first thing the presence hears, so nothing is sent with
-    // it off.
-    horizon_hooks::engine::activity(match settings.extras.discord_presence {
-        true => Activity::Menus,
-        false => Activity::Hidden,
-    });
+    horizon_hooks::engine::activity(Activity::Menus);
     horizon_hooks::engine::client_started(&Client::new(automated));
 }
 
@@ -33,9 +28,6 @@ impl Game<'_> {
         horizon_hooks::engine::activity(self.activity());
     }
     fn activity(&self) -> Activity {
-        if !self.settings.extras.discord_presence {
-            return Activity::Hidden;
-        }
         if self.title.is_some() {
             return Activity::Menus;
         }

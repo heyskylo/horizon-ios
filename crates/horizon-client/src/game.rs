@@ -12693,7 +12693,7 @@ pub fn run_with() -> Result<()> {
         narrator::start(&early_settings);
     }
     // A game window's hooks (Discord's presence): never for a server.
-    activity::client_started(&options, &early_settings);
+    activity::client_started(&options);
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
