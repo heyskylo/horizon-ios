@@ -6,7 +6,7 @@ use super::Game;
 use horizon_client::mobs::{Species, riders};
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use std::collections::HashMap;
 
@@ -48,6 +48,12 @@ fn mount_rolls(species: Species, baby: bool, natural: bool) -> MountRolls {
         camel_husk: natural && species == Species::Husk,
         nautilus: natural && species == Species::Drowned && !baby,
     }
+}
+
+/// `SkeletonTrapGoal.tick`: each additional trap horse's horizontal push draws
+/// two `triangle(0.0, 1.1485)` offsets from the original trap horse's random.
+fn trap_horse_scatter(random: &mut LegacyRandom) -> (f64, f64) {
+    (random.triangle(0.0, 1.1485), random.triangle(0.0, 1.1485))
 }
 
 impl Game<'_> {
@@ -700,18 +706,21 @@ impl Game<'_> {
             let Some(other) = self.spawn_mob("minecraft:skeleton_horse", at, true) else {
                 continue;
             };
-            let (dx, dz) = (
-                self.world.random.triangle(0.0, 1.1485),
-                self.world.random.triangle(0.0, 1.1485),
-            );
+            // SkeletonTrapGoal.createHorse: scatter is drawn after the rider.
             if let Some(h) = self.mobs.iter_mut().find(|m| m.id == other) {
                 h.invulnerable = TRAP_INVULNERABLE;
                 h.extra.tame = true;
                 h.extra.age = 0;
-                h.velocity = Vec3::new(h.velocity.x + dx, h.velocity.y, h.velocity.z + dz);
             }
             if let Some(rider) = self.trap_skeleton(at) {
                 self.mount_mob(rider, other);
+                let Some(horse) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                    continue;
+                };
+                let (dx, dz) = trap_horse_scatter(&mut horse.random);
+                if let Some(h) = self.mobs.iter_mut().find(|m| m.id == other) {
+                    h.velocity = Vec3::new(h.velocity.x + dx, h.velocity.y, h.velocity.z + dz);
+                }
             }
         }
     }
@@ -767,5 +776,60 @@ mod tests {
         assert!(r(Species::Drowned, false).nautilus);
         assert!(!r(Species::Drowned, true).nautilus);
         assert!(!r(Species::Zombie, false).camel_husk);
+    }
+
+    #[test]
+    fn trap_horse_scatter_draws_two_triangles_from_original_horse_random() {
+        let mut horse_random = LegacyRandom::new(0x5DEECE66D);
+        let mut expected = horse_random.clone();
+        for _ in 0..3 {
+            let (dx, dz) = trap_horse_scatter(&mut horse_random);
+            assert_eq!(dx, expected.triangle(0.0, 1.1485));
+            assert_eq!(dz, expected.triangle(0.0, 1.1485));
+        }
+        assert_eq!(horse_random.next_long(), expected.next_long());
+    }
+
+    /// `SkeletonTrapGoal.tick`: springing a skeleton trap draws the three
+    /// additional horses' horizontal velocity scatter from the original trap
+    /// horse's own `random` after each rider is created.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn spring_skeleton_trap_draws_scatter_from_trap_horse_after_each_rider() {
+        use horizon_client::chunk::Chunk;
+        use std::sync::Arc;
+
+        let mut game = super::super::native_machines::tests::server_game();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let at = [8.5, 64.0, 8.5];
+        let trap_id = game
+            .spawn_mob_raw("minecraft:skeleton_horse", at, false)
+            .unwrap();
+        let mut expected_horse_rng = LegacyRandom::new(777);
+        if let Some(horse) = game.mobs.iter_mut().find(|m| m.id == trap_id) {
+            horse.extra.trap = true;
+            horse.random = expected_horse_rng.clone();
+        }
+        game.spring_skeleton_trap(trap_id);
+
+        let expected_pushes: Vec<(f64, f64)> = (0..3)
+            .map(|_| trap_horse_scatter(&mut expected_horse_rng))
+            .collect();
+        let horse = game.mobs.iter_mut().find(|m| m.id == trap_id).unwrap();
+        assert!(!horse.extra.trap);
+        assert_eq!(horse.random.next_long(), expected_horse_rng.next_long());
+
+        let extra_horses: Vec<&horizon_client::mobs::Mob> = game
+            .mobs
+            .iter()
+            .filter(|m| m.species() == Species::SkeletonHorse && m.id != trap_id)
+            .collect();
+        assert_eq!(extra_horses.len(), 3);
+        for (h, (dx, dz)) in extra_horses.iter().zip(expected_pushes) {
+            assert_eq!((h.velocity.x, h.velocity.z), (dx, dz));
+            assert!(h.extra.rider.is_some());
+        }
     }
 }
