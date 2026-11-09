@@ -93,6 +93,61 @@ impl PackColors {
         self.color(&format!("sheep.{name}"))
     }
 
+    /// `redstone.<power>`: the wire's and its dust particles' colour at that power (0 to 15).
+    pub fn redstone(&self, power: u8) -> Option<u32> {
+        self.color(&format!("redstone.{power}"))
+    }
+
+    /// `effect.<id>` or `effect.<id>.color` (the deprecated `potion.<id>` too): mob effects'
+    /// colours by id without vanilla's namespace, as the effects table names them. `water` and
+    /// `empty` are left out: they change nothing on the real mod.
+    pub fn effects(&self) -> Vec<(String, u32)> {
+        let mut out = Vec::new();
+        for (key, value) in &self.entries {
+            let Some(rest) = key
+                .strip_prefix("effect.")
+                .or_else(|| key.strip_prefix("potion."))
+            else {
+                continue;
+            };
+            let id = rest.strip_suffix(".color").unwrap_or(rest);
+            if id.ends_with(".particle") || matches!(id, "water" | "empty" | "minecraft:water") {
+                continue;
+            }
+            if let Some(color) = parse_color(value) {
+                let id = id.strip_prefix("minecraft:").unwrap_or(id);
+                // `effect.<id>.color` wins over the plain key whichever comes first.
+                out.retain(|(other, _)| other != id || !key.ends_with(".color"));
+                if !out.iter().any(|(other, _)| other == id) {
+                    out.push((id.to_owned(), color));
+                }
+            }
+        }
+        out
+    }
+
+    /// `particle.<id>`: a colour or an expression each new particle of that type takes, by
+    /// namespaced type id.
+    pub fn particles(&self) -> Vec<(String, String)> {
+        self.entries
+            .iter()
+            .filter_map(|(key, value)| {
+                let id = key.strip_prefix("particle.")?;
+                let id = if id.contains(':') {
+                    id.to_owned()
+                } else {
+                    format!("minecraft:{id}")
+                };
+                let value = match value {
+                    Json::String(s) => s.trim().to_owned(),
+                    Json::Number(n) => n.to_string(),
+                    _ => return None,
+                };
+                Some((id, value))
+            })
+            .collect()
+    }
+
     /// `entity_shadows`: false hides every entity's round shadow, whatever the video option says.
     pub fn entity_shadows(&self) -> bool {
         match self.entries.get("entity_shadows") {
@@ -159,6 +214,35 @@ mod tests {
         );
         assert!(p.entity_shadows());
         assert_eq!(p.xp_bar(), [Some(0x00ff22), Some(u32::MAX)]);
+    }
+
+    #[test]
+    fn effects_particles_and_redstone_by_id() {
+        let mut c = PackColors::default();
+        c.add_json(
+            "",
+            &json!({
+                "effect": {"minecraft:speed": {"color": "ff0000", "particle": "minecraft:poof"}, "water": "00ff00", "poison": 7},
+                "particle": {"minecraft:flame": "0x0000ff", "poof": 0},
+                "redstone": {"15": "00ff00"}
+            }),
+        );
+        let mut effects = c.effects();
+        effects.sort();
+        assert_eq!(
+            effects,
+            [("poison".to_owned(), 7), ("speed".to_owned(), 0xff0000)]
+        );
+        let mut particles = c.particles();
+        particles.sort();
+        assert_eq!(
+            particles,
+            [
+                ("minecraft:flame".to_owned(), "0x0000ff".to_owned()),
+                ("minecraft:poof".to_owned(), "0".to_owned())
+            ]
+        );
+        assert_eq!((c.redstone(15), c.redstone(0)), (Some(0x00ff00), None));
     }
 
     #[test]
