@@ -69,6 +69,9 @@ pub struct RegionFile {
     /// The sectors in use (`RegionBitmap`): the header's two and every
     /// chunk's.
     used: Vec<bool>,
+    /// The first free sector (`RegionBitmap`'s low watermark): allocation
+    /// starts its first-fit search here instead of at sector 0.
+    first_free: usize,
 }
 
 pub fn position_from_path(path: &Path) -> io::Result<ChunkPos> {
@@ -179,11 +182,17 @@ impl RegionFile {
             offsets,
             timestamps,
             used: Vec::new(),
+            first_free: 0,
         };
         region.force(0, 2);
         for offset in offsets.into_iter().filter(|&o| o != 0) {
             region.force((offset >> 8) as usize, (offset & 255) as usize);
         }
+        region.first_free = region
+            .used
+            .iter()
+            .position(|&u| !u)
+            .unwrap_or(region.used.len());
         Ok(region)
     }
 
@@ -193,18 +202,25 @@ impl RegionFile {
             self.used.resize(start + count, false);
         }
         self.used[start..start + count].fill(true);
+        if self.first_free >= start && self.first_free < start + count {
+            self.first_free = self.used[start + count..]
+                .iter()
+                .position(|&u| !u)
+                .map_or(self.used.len(), |i| start + count + i);
+        }
     }
     /// `RegionBitmap.free`.
     fn free(&mut self, start: usize, count: usize) {
         let end = (start + count).min(self.used.len());
         if start < end {
             self.used[start..end].fill(false);
+            self.first_free = self.first_free.min(start);
         }
     }
     /// `RegionBitmap.allocate`: the first run of free sectors long enough
     /// (the end of the file is free).
     fn allocate(&mut self, count: usize) -> usize {
-        let mut current = 0;
+        let mut current = self.first_free;
         loop {
             let start = (current..self.used.len())
                 .find(|&s| !self.used[s])
@@ -549,5 +565,73 @@ impl Drop for RegionWriter {
                 let _ = fs::remove_file(path);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pre-hint allocator: first fit from sector 0. The hint must keep
+    /// producing exactly its placements.
+    fn naive_first_fit(used: &[bool], count: usize) -> usize {
+        let mut current = 0;
+        loop {
+            let start = (current..used.len()).find(|&s| !used[s]).unwrap_or(used.len());
+            let end = (start..used.len()).find(|&s| used[s]);
+            if end.is_none_or(|end| end - start >= count) {
+                return start;
+            }
+            current = end.unwrap_or(start);
+        }
+    }
+
+    #[test]
+    fn allocation_matches_first_fit_from_zero() {
+        let dir = std::env::temp_dir().join(format!("horizon-region-first-free-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.0.0.mca");
+        let mut region = RegionFile::open_writable(&path, true).unwrap();
+
+        let mut seed = 0x1234_5678u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for op in 0..120 {
+            let slot = next() % 1024;
+            let size = match next() % 4 {
+                0 => 1, // external: one stub sector
+                _ => 2,
+            };
+            let pos = position(region.position, slot);
+            if next() % 5 == 0 {
+                assert!(region.clear(pos, op as u32).is_ok());
+            } else {
+                let record = ChunkRecord {
+                    compression: Compression::None,
+                    compressed: vec![0; size * SECTOR - 5],
+                    timestamp: op as u32,
+                };
+                assert!(region.write(pos, &record).is_ok());
+            }
+            // The naive bitmap from what the region placed, under the old rule.
+            let mut naive = vec![false; region.used.len()];
+            naive[0..2].fill(true);
+            for i in 0..1024 {
+                let o = region.offsets[i];
+                if o != 0 {
+                    let s = (o >> 8) as usize;
+                    let c = (o & 255) as usize;
+                    if naive.len() < s + c {
+                        naive.resize(s + c, false);
+                    }
+                    naive[s..s + c].fill(true);
+                }
+            }
+            assert_eq!(region.used, naive);
+            assert_eq!(region.first_free, naive_first_fit(&naive, 1));
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
