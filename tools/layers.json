@@ -95,7 +95,6 @@
     "horizon-client -> horizon-shaders",
     "horizon-client -> horizon-telemetry",
     "horizon-client -> horizon-theme",
-    "horizon-client-input -> horizon-theme",
     "horizon-client-lib -> horizon-anticheat",
     "horizon-client-lib -> horizon-bench",
     "horizon-client-lib -> horizon-chat-filter",

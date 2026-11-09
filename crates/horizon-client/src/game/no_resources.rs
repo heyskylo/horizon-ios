@@ -93,7 +93,7 @@ impl ApplicationHandler for Missing {
         if self.window.is_some() {
             return;
         }
-        let attributes = horizon_client::window::with_horizon_icon(
+        let attributes = horizon_client::window::with_icon(
             Window::default_attributes().with_title("Horizon"),
         )
         .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
