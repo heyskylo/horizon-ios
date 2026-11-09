@@ -85,7 +85,7 @@ impl SignText {
     }
     /// `DyeColor.getTextColor` of this side.
     pub fn text_color(&self) -> u32 {
-        crate::pack_dyes::text(usize::from(self.color.min(15)))
+        crate::pack_palette::text(usize::from(self.color.min(15)))
     }
     /// `SignText.hasAnyClickCommands`: a line whose style has a `run_command`
     /// click event.

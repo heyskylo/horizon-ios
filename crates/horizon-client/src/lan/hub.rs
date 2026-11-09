@@ -3318,7 +3318,7 @@ impl Hub {
                         continue;
                     };
                     let alpha = if ambient { 38 } else { 255 };
-                    let argb = (alpha << 24) | def.color as i32;
+                    let argb = (alpha << 24) | def.shown_color() as i32;
                     ("entity_effect", Some(ParticleData::Color(argb)))
                 }
             };
