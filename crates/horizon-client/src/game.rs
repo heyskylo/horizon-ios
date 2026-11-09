@@ -5473,7 +5473,7 @@ impl Game<'_> {
         if canceled {
             return Ok(false);
         }
-        self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
+        self.feedback(horizon_client::input_source::Feedback::BlockBroken);
         let broken = state;
         let facts = self.res.facts().get(state).clone();
         let state = self.crack_mined_pot(pos, state);
@@ -12490,7 +12490,7 @@ impl Game<'_> {
                     self.extras_frame(elapsed);
                     self.extras_retry()?;
                     self.apply_mouse_look();
-                    self.pad_look(elapsed.as_secs_f32());
+                    self.input_look(elapsed.as_secs_f32());
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();

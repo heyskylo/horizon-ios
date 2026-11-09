@@ -6722,7 +6722,7 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        let stick = self.pad_move();
+        let stick = self.input_move();
         if self.player.is_none() {
             return Ok(());
         }

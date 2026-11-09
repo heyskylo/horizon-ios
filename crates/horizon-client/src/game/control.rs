@@ -800,7 +800,7 @@ impl Game<'_> {
                 // controller still holding one keeps it.
                 let options = [self.settings.toggle_crouch, self.settings.toggle_sprint];
                 for (slot, name) in [(0, "key.sneak"), (1, "key.sprint")] {
-                    if !self.pad.holds_action(&self.settings.controller, name) {
+                    if !self.input_holds(name) {
                         self.toggles.key(
                             slot,
                             horizon_client::keymapping::KeyAction::Release,
