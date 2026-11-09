@@ -186,6 +186,47 @@ fn with_survival_game(f: impl FnOnce(&mut Game<'_>)) {
 
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_custom_durable_stick_wears_while_mining() {
+    with_survival_game(|game| {
+        let registry = game.pack.assets.registry;
+        let pos = [5, 63, 4];
+        let stone = registry
+            .default_state("minecraft:stone")
+            .expect("stone is registered");
+        game.world.set(pos[0], pos[1], pos[2], stone).unwrap();
+        let tool = "minecraft:tool={rules:[{blocks:\"#minecraft:mineable/pickaxe\",speed:50.0f,correct_for_drops:true}],damage_per_block:3}";
+        // `max_stack_size` keeps the stack out of vanilla's "damageable and
+        // stackable" rejection; `damage: 0` supplies the DAMAGE component a
+        // stick's prototype lacks, so the stack is damageable.
+        assert!(game.run_command(&format!(
+            "item replace entity @s weapon.mainhand with minecraft:stick[{tool},minecraft:max_stack_size=1,minecraft:max_damage=20,minecraft:damage=0]"
+        )));
+        assert_eq!(
+            game.items().stack_max_damage(game.held().unwrap()),
+            20,
+            "a non-durable prototype with MAX_DAMAGE and DAMAGE is damageable"
+        );
+        assert_eq!(game.destroy_progress(pos), 50.0 / 1.5 / 30.0);
+        game.break_block(pos).unwrap();
+        assert_eq!(game.held().unwrap().damage, 3);
+        assert!(
+            game.dropped
+                .iter()
+                .any(|item| &*item.stack.item == "minecraft:cobblestone")
+        );
+        let pos = [6, 63, 4];
+        game.world.set(pos[0], pos[1], pos[2], stone).unwrap();
+        game.held_mut().as_mut().unwrap().damage = 18;
+        game.break_block(pos).unwrap();
+        assert!(
+            game.held().is_none(),
+            "the twentieth point of damage breaks the stick"
+        );
+    });
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn efficiency_applies_to_a_same_item_swap() {
     with_survival_game(|game| {
         let registry = game.pack.assets.registry;

@@ -882,7 +882,15 @@ pub fn encode_components_with_items(stack: &ItemStack, items: &crate::items::Ite
 /// `encode_components` from the damage value and extra components.
 pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
     let mut entries: Vec<(&str, Tag)> = Vec::new();
-    if damage > 0 {
+    // A patch keeps an explicit DAMAGE that differs from the prototype. A
+    // durable item's prototype already supplies the component, so an explicit
+    // zero equals it and vanilla's `fromPatch` drops it; a normally
+    // non-durable item declares MAX_DAMAGE on the stack and has no prototype
+    // DAMAGE, so its `damage: 0` is part of the patch (`explicit_zero_damage`)
+    // and must survive saving or the stack comes back non-damageable.
+    let own_capacity =
+        data.is_some_and(|d| d.explicit_zero_damage && d.other("minecraft:max_damage").is_some());
+    if damage > 0 || own_capacity {
         entries.push(("minecraft:damage", Tag::Int(damage as i32)));
     }
     if let Some(d) = data {

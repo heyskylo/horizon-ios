@@ -178,7 +178,7 @@ impl Game<'_> {
             if &*s.item == "minecraft:trident" {
                 self.trident_max_damage(s)
             } else {
-                self.items().get(&s.item).map_or(0, |i| i.max_damage)
+                self.items().stack_max_damage(s)
             }
         });
         self.apply_held_damage(amount, max, break_slot);
