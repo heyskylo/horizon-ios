@@ -228,16 +228,7 @@ fn is_animal(id: &str) -> bool {
             | "zombie_nautilus"
     )
 }
-/// The `NeutralMob`s whose anger is `Extra::anger`: they write and read
-/// `anger_end_time` and `angry_at`. The bee keeps its own anger, and a
-/// piglin's is a brain memory, not `NeutralMob`'s.
-fn persistent_anger(s: crate::mobs::Species) -> bool {
-    use crate::mobs::Species as S;
-    matches!(
-        s,
-        S::Wolf | S::IronGolem | S::PolarBear | S::Enderman | S::ZombifiedPiglin
-    )
-}
+use crate::mobs::persistent_anger;
 /// The single player's UUID (`offline_uuid("Player")`): the entity the
 /// neutral mobs are angry at.
 fn player_uuid() -> [i32; 4] {
@@ -674,17 +665,8 @@ pub fn mob_to_nbt(
         put(
             &mut tag,
             "anger_end_time",
-            Tag::Long(
-                if (m.species() == crate::mobs::Species::Enderman && m.no_ai)
-                    || m.extra.anger_end > 0
-                {
-                    // NeutralMob saves the actual absolute value, including zero
-                    // and past values, while this Enderman's AI is disabled.
-                    m.extra.anger_end
-                } else {
-                    -1
-                },
-            ),
+            // The absolute value as it is, also zero or one already past.
+            Tag::Long(m.extra.anger_end),
         );
         // `angry_at` only while there is an anger target: the UUID of the one
         // the level has (`uuid_of`). A mob target read from the save that is
