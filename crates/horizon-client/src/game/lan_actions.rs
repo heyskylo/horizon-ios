@@ -4186,8 +4186,8 @@ impl Game<'_> {
                 .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
                     [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
                 });
-            let at = found.map_or(world, |(at, yaw)| {
-                host.hub.guests[i].yaw = yaw;
+            let at = found.map_or(world, |(at, yaw, pitch)| {
+                (host.hub.guests[i].yaw, host.hub.guests[i].pitch) = (yaw, pitch);
                 [at.x, at.y, at.z]
             });
             if found.is_none() {

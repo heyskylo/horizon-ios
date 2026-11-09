@@ -458,6 +458,7 @@ pub(crate) mod tests {
             dim: game.dim,
             pos: [1, 2, 3],
             yaw: 0.0,
+            pitch: 0.0,
             forced: false,
         };
         let spawn = Vec3::new(1.0, 2.0, 3.0);

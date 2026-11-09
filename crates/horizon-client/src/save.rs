@@ -13,6 +13,8 @@
 //! game rules) is kept from the loaded files and written back unchanged.
 //! Worlds saved by older Horizon builds (`region/`, `DIM-1/`, `Player` in
 //! `level.dat`) are migrated on open.
+mod respawn;
+
 use crate::{
     Result,
     beehive::BeehiveExt,
@@ -3948,8 +3950,8 @@ pub struct Level {
     pub spawn: Option<[f64; 3]>,
     /// A respawn point resolved through its block when the player respawns
     /// (a bed, a respawn anchor, a forced point in any dimension):
-    /// dimension, block, yaw and `forced`.
-    pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
+    /// dimension, block, yaw, pitch and `forced`.
+    pub respawn_elsewhere: Option<(String, [i32; 3], f32, f32, bool)>,
     pub position: Option<[f64; 3]>,
     pub rotation: [f32; 2],
     pub health: f32,
@@ -4295,20 +4297,8 @@ impl Level {
         if let Some(d) = text(p.get("Dimension")) {
             self.dimension = d;
         }
-        if let Some(respawn) = p.get("respawn")
-            && let Some(Tag::IntArray(pos)) = respawn.get("pos")
-            && pos.len() == 3
-        {
-            let dimension =
-                text(respawn.get("dimension")).unwrap_or_else(|| "minecraft:overworld".into());
-            let forced = number(respawn.get("forced")).is_some_and(|v| v != 0);
-            // Forced points, including Overworld ones, are validated through
-            // their blocks on death, just like beds and respawn anchors.
-            let yaw = match respawn.get("yaw") {
-                Some(Tag::Float(b)) => f32::from_bits(*b),
-                _ => 0.0,
-            };
-            self.respawn_elsewhere = Some((dimension, [pos[0], pos[1], pos[2]], yaw, forced));
+        if let Some(respawn) = respawn::read(p) {
+            self.respawn_elsewhere = Some(respawn);
         }
         let mut inventory = Vec::new();
         let mut inventory_components = HashMap::new();
@@ -4539,17 +4529,8 @@ impl Level {
             ));
         }
         // A respawn point other than the world spawn: an anchor elsewhere, or a bed.
-        if let Some((dimension, block, yaw, forced)) = &self.respawn_elsewhere {
-            let mut respawn = vec![
-                ("dimension", string(dimension)),
-                ("pos", Tag::IntArray(block.to_vec())),
-                ("yaw", Tag::Float(yaw.to_bits())),
-                ("pitch", Tag::Float(0f32.to_bits())),
-            ];
-            if *forced {
-                respawn.push(("forced", Tag::Byte(1)));
-            }
-            entries.push(("respawn", Tag::compound(respawn)));
+        if let Some(saved) = &self.respawn_elsewhere {
+            entries.push(("respawn", respawn::write(saved)));
         } else if let Some(s) = self.spawn {
             let block = [
                 s[0].floor() as i32,
@@ -7702,7 +7683,7 @@ mod tests {
         assert_eq!(back.spawn, Some([8.0, 64.0, 8.0]));
         assert_eq!(
             back.respawn_elsewhere,
-            Some(("minecraft:overworld".into(), [20, 70, 20], 0.0, true))
+            Some(("minecraft:overworld".into(), [20, 70, 20], 0.0, 0.0, true))
         );
         assert!(back.difficulty_locked);
         assert!(back.weather.raining);
@@ -7973,7 +7954,7 @@ mod tests {
         // A personal point coinciding with the world spawn must still keep
         // its forced flag and yaw, rather than turning into a world fallback.
         for pos in [[5, 64, 5], [0, 80, 0]] {
-            let point = ("minecraft:overworld".to_owned(), pos, 37.0, true);
+            let point = ("minecraft:overworld".to_owned(), pos, 37.0, 0.0, true);
             let level = Level {
                 respawn_elsewhere: Some(point.clone()),
                 ..Level::default()

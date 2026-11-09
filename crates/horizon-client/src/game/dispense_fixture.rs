@@ -350,7 +350,7 @@ impl Game<'_> {
             let found =
                 self.find_respawn_and_use(config, op["consume"].as_bool().unwrap_or(true))?;
             used.push(match found {
-                Some((p, yaw)) => format!(
+                Some((p, yaw, _pitch)) => format!(
                     "respawn {} {} {} {}",
                     num(p.x),
                     num(p.y),
@@ -567,6 +567,7 @@ impl Game<'_> {
                 dim: self.dim,
                 pos: [p(0), p(1), p(2)],
                 yaw: 0.0,
+                pitch: 0.0,
                 forced: false,
             });
         }
