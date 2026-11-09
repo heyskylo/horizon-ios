@@ -788,3 +788,42 @@ fn trapdoors_and_fence_gates_open_with_power_beside_them() {
         );
     }
 }
+
+/// `RedStoneWireBlock` connects, through each neighbour's `shouldRedstoneWireConnectTo`,
+/// to any signal source from any side, to a repeater only along its axis, and to an
+/// observer only when it faces the wire (an observer's output is at its back). A wire
+/// whose only connection is on one axis is drawn straight, so `getConnectionState`
+/// connects the opposite side too; one with no connection stays a dot. The neighbour
+/// stands east of the wire and is placed after it, so the wire takes the connection
+/// from the shape update, as in play.
+#[test]
+fn redstone_wire_connects_to_each_neighbour_by_that_blocks_own_rule() {
+    let neighbours: [(&str, &[(&str, &str)], bool); 12] = [
+        ("repeater", &[("facing", "east")], true),
+        ("repeater", &[("facing", "west")], true),
+        ("repeater", &[("facing", "north")], false),
+        ("comparator", &[("facing", "north")], true),
+        ("observer", &[("facing", "east")], true),
+        ("observer", &[("facing", "west")], false),
+        ("observer", &[("facing", "north")], false),
+        ("redstone_block", &[], true),
+        ("redstone_torch", &[("lit", "true")], true),
+        ("redstone_lamp", &[], false),
+        ("stone", &[], false),
+        ("redstone_wire", &[], true),
+    ];
+    for (name, props, connects) in neighbours {
+        let mut w = world!();
+        w.floor(4, 4, "stone");
+        let wire = BlockPos::new(0, 5, 0);
+        w.set(wire, w.id("redstone_wire", &[]));
+        w.set(BlockPos::new(1, 5, 0), w.id(name, props));
+        // Connected: east, and west filled in to make the line. Not: still a dot.
+        let side = if connects { "side" } else { "none" };
+        let what = format!("a {name} {props:?} east of the wire");
+        assert_eq!(w.prop(wire, "east"), side, "east: {what}");
+        assert_eq!(w.prop(wire, "west"), side, "west: {what}");
+        assert_eq!(w.prop(wire, "north"), "none", "north: {what}");
+        assert_eq!(w.prop(wire, "south"), "none", "south: {what}");
+    }
+}
