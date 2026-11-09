@@ -1,6 +1,8 @@
 //! Saving and loading the game state that lives outside chunk blocks:
 //! entities (`entities/*.mca`, per chunk like vanilla's `EntityStorage`) and
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
+#[cfg(test)]
+mod anger_tests;
 mod display;
 
 use super::{FallingBlock, Game};
@@ -1103,7 +1105,7 @@ impl Game<'_> {
         // end time, and the mob is angry at the target again, through
         // `Mob.setTarget` -> `asValidTarget`: a player the golem cannot attack
         // (`IronGolem.canAttack`) comes back as no target.
-        m.extra.anger = horizon_client::mobs::anger_left(m.extra.anger_end, self.world.game_time);
+        horizon_client::mobs::adopt_anger_end(&mut m, self.world.game_time);
         if m.extra.anger > 0 && m.extra.angry_at.is_some() {
             m.ai.target = (!m.built_by_player()).then_some(horizon_client::mobs::Who::Player);
         }
@@ -1553,13 +1555,11 @@ impl Game<'_> {
         }
         // `NeutralMob.addPersistentAngerSaveData`: the anger ends at an
         // absolute game time, so it goes on while the chunk is unloaded, and
-        // the target is the entity the mob is angry at.
+        // the target is the entity the mob is angry at (`settle_anger_end`).
         let anger = self.mobs[i].extra.anger;
-        // A loaded NoAI Enderman owns an absolute NeutralMob timestamp;
-        // its skipped AI does not decrement the derived gameplay counter.
-        if !(self.mobs[i].species() == horizon_client::mobs::Species::Enderman
-            && self.mobs[i].no_ai)
-        {
+        if horizon_client::mobs::persistent_anger(self.mobs[i].species()) {
+            horizon_client::mobs::settle_anger_end(&mut self.mobs[i], self.world.game_time);
+        } else {
             self.mobs[i].extra.anger_end = if anger > 0 {
                 self.world.game_time + i64::from(anger)
             } else {
@@ -5220,7 +5220,7 @@ mod h262_enderman_absolute_anger_tests {
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
     use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
-    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+    pub(super) fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
         let loaded = load_resources(
@@ -5456,7 +5456,7 @@ mod h262_enderman_absolute_anger_tests {
             game.world.game_time += 1;
             assert_eq!(
                 game.mob_tree_nbt(i).get("anger_end_time"),
-                Some(&Tag::Long(151))
+                Some(&Tag::Long(150)) // an absolute end (#13076)
             );
         });
     }
