@@ -5518,7 +5518,7 @@ impl Renderer {
     }
     /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`) for the block
     /// outline, or the built-in one.
-    pub fn set_lines_shader(&mut self, program: Option<&horizon_shaders::CoreProgram>) {
+    pub fn set_lines_shader(&mut self, program: Option<&crate::core_shader::CoreProgram>) {
         let format = self.output.frame.format;
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
@@ -5527,8 +5527,8 @@ impl Renderer {
     /// `stars_shader`), or the built-in sky and stars.
     pub fn set_sky_shaders(
         &mut self,
-        disc: Option<&horizon_shaders::CoreProgram>,
-        stars: Option<&horizon_shaders::CoreProgram>,
+        disc: Option<&crate::core_shader::CoreProgram>,
+        stars: Option<&crate::core_shader::CoreProgram>,
     ) {
         self.core_sky = core_sky::CoreSky::new(&self.device, self.output.frame.format, disc, stars);
     }
