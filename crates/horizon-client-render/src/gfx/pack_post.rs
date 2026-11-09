@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use glam::{DMat4, DVec3};
-use horizon_render_pipeline::{Format, Kind, SHADOW_COLORS};
+use horizon_render_pipeline::{BUFFERS, Format, Kind, SHADOW_COLORS};
 use horizon_shaders::{Group, Post};
 use smallvec::SmallVec;
 
@@ -28,8 +28,6 @@ use super::pack_images;
 use super::pack_sky::PackSky;
 use super::pack_textures;
 use super::pack_uniforms::{self, FrameUniforms, PackInputs};
-
-const BUFFERS: usize = horizon_render_pipeline::BUFFERS;
 
 mod packed;
 
