@@ -3435,6 +3435,31 @@ mod despawn_tests {
             assert!(!feline_removed_when_far(s, false, 12000), "{s:?}");
         }
     }
+    /// `AbstractFish.removeWhenFarAway` and `Axolotl.removeWhenFarAway`: a fish or
+    /// an axolotl with a custom name is kept however far it swims, while the name
+    /// saves no other mob — a monster still goes.
+    #[test]
+    fn a_named_fish_or_axolotl_never_despawns() {
+        crate::mobs::world::with_test_world(&[], |w, types| {
+            let far = MobWorld {
+                // 200 blocks from the player: past the 128 a monster loses.
+                nearest_player: Some(Vec3::new(200.0, 64.0, 0.0)),
+                ..w.clone()
+            };
+            let checked = |id: &str, name: Option<&str>| {
+                let kind = std::sync::Arc::new(types.types[id].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.0, 64.0, 0.0), 0.0);
+                m.custom_name = name.map(str::to_owned);
+                despawn_check(&mut m, &far)
+            };
+            for fish in ["minecraft:cod", "minecraft:salmon", "minecraft:axolotl"] {
+                assert!(checked(fish, Some("Bubbles")), "{fish} keeps its name");
+                assert!(!checked(fish, None), "{fish} without one goes");
+            }
+            // A name is not persistence for anything else.
+            assert!(!checked("minecraft:zombie", Some("Bubbles")));
+        });
+    }
 }
 
 #[cfg(test)]
