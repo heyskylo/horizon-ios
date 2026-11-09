@@ -877,7 +877,7 @@ mod tests {
     fn drawn(atlas: &HudAtlas, text: &str) -> (f32, Vec<([f32; 2], [f32; 2])>) {
         let mut batch = HudBatch::new([1280, 720]);
         let mut ui = Ui::new(atlas, &mut batch, (0.0, 0.0));
-        let w = ui.text_line(Face::Medium, BODY, 20.0, 10.0, 10.0, color::TEXT, text);
+        let w = ui.text_line(Face::Medium, body(), 20.0, 10.0, 10.0, color::text(), text);
         let quads = batch
             .vertices
             .iter()
