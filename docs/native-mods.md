@@ -2682,6 +2682,20 @@ server only.
   `native_player_view_distance(uuid)` is the distance the player has now. Both answer false/None for a player not online
   and inside a guest's packet hook, where the hub is taken out: call them from a tick or console hook. API
   @API:player_view_distance@.
+- **`native_set_player_fake(uuid, fake)`** (`native_view_distance.rs`): marks the player as a fake player, a mod's bot
+  with no client, or not. A fake player keeps only a small area loaded and ticking around it (its view distance plus
+  one, at most the server's plus one), its packets are cut to the few a bot needs (position, entity motion, the chunk
+  batch end, keep-alive, ping, combat kill and respawn), and it does not count for natural mob spawning. The mark lasts
+  until the player leaves. False off a server, for a player not online, and inside a guest's packet hook: call it from a
+  tick or console hook. API @API:set_player_fake@.
+- **`native_expect_fake_player(name, fake)`** (`native_view_distance.rs`): says that a player named `name` (any case)
+  will join as a fake player, or not any more. The player is fake from its first packet on, so its join sends and
+  builds nothing a client-less player cannot read (no login records, recipe book, command tree, player list or
+  advancements). False off a server. API @API:expect_fake_player@.
+- **`native_is_player_fake(uuid)`** (`native_view_distance.rs`): whether the player is a fake player, a mod's bot with no
+  client (marked by `native_set_player_fake`, or announced by name with `native_expect_fake_player`, which makes it fake from
+  its first packet on). False off a server and for a player not online; for a join hook that gets only a uuid. API
+  @API:is_player_fake@.
 - **`native_chunk_snapshot(dimension, [x, z])`** (`native_chunk_snapshot.rs`): a `NativeChunkSnapshot` of a loaded
   chunk of a level that is open (in place or with nobody in it), None for a chunk not loaded (nothing is loaded for
   it). It shares the chunk's sections until the level changes them, so it is cheap to take on the server thread and
@@ -3016,6 +3030,8 @@ None.
   and `hidden` level server mods set (Bukkit's `getPing`, `isOnGround`, `getAllowFlight`, `isFlying`,
   `isSneaking`, `getEyeHeight`, `getDisplayName`). For the acting player, `latency`, `nickname`, `hidden` and
   `address` read 0 or None while the hub is out of reach. Bundles need `"hooks": @API:server_player_state@`.
+- **`NativeServerPlayer.fake`** is true for a fake player, a mod's bot with no client (`native_set_player_fake`), so a
+  mod can leave out what only a client would show. Bundles need `"hooks": @API:server_player_fake@`.
 - Helper **`native_player_client(uuid) -> Option<NativeClientInfo>`** (`host.player_client`): the client's brand,
   language, the view distance it asks for, chat visibility, main hand and particle setting, the chunks the server
   sent it and its wire bytes in and out (Paper's `getClientBrandName`, `locale`, `getClientViewDistance`). It
@@ -4219,8 +4235,9 @@ Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water 
 than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
 and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
 a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
-cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
-mod's fluid yet, and no buckets of one.
+fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
+and may be named in fluid tags; tanks still take undeclared ids as before. A cauldron takes only water and lava, and the
+world itself has only vanilla's fluids: no source or flowing blocks of a mod's fluid yet, and no buckets of one.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its

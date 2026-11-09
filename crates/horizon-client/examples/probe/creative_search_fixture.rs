@@ -7,19 +7,23 @@
 //! usage: creative_search_fixture RESOURCES CREATIVE_JSON VANILLA_JSON OUTPUT [permissions]
 use horizon_client::{
     creative::{Creative, Names},
+    enchant::Enchantments,
     item_data::canon_stack,
+    lang::{self, Language},
 };
 use serde_json::{Value, json};
-use std::{fs, path::Path};
+use std::{fs, path::PathBuf, sync::Arc};
 
 pub fn main() -> horizon_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
     let usage =
         "usage: creative_search_fixture RESOURCES CREATIVE_JSON VANILLA_JSON OUTPUT [permissions]";
-    let names = Names::load(Path::new(args.get(1).ok_or(usage)?));
+    let resources = PathBuf::from(args.get(1).ok_or(usage)?);
+    let names = Names::load(&resources);
     let mut creative = Creative::from_json(&serde_json::from_slice(&fs::read(
         args.get(2).ok_or(usage)?,
     )?)?)?;
+    creative.set_enchantments(Arc::new(Enchantments::load(&resources)));
     creative.set_permissions(args.get(5).is_some_and(|a| a == "permissions"), &names);
     let vanilla: Value = serde_json::from_slice(&fs::read(args.get(3).ok_or(usage)?)?)?;
     let tabs: Vec<Value> = creative
@@ -36,21 +40,39 @@ pub fn main() -> horizon_client::Result<()> {
             })
         })
         .collect();
-    let searches: Vec<Value> = vanilla["searches"]
-        .as_array()
-        .ok_or("searches")?
-        .iter()
-        .map(|s| {
-            let query = s["query"].as_str().unwrap_or_default();
-            json!({"query": query, "results": creative.search_results(query, &names)})
-        })
-        .collect();
+    let searches = query_results(&creative, &names, &vanilla["searches"])?;
+    let french = Language::load(&[&resources], "fr_fr");
+    let (french_searches, _) = lang::scoped(french, || {
+        query_results(&creative, &names, &vanilla["frenchSearches"])
+    });
     let search: Vec<String> = creative
         .search_items()
         .iter()
         .map(|s| canon_stack(Some(s)))
         .collect();
-    let out = json!({"tabs": tabs, "search": search, "searches": searches});
+    let out = json!({
+        "tabs": tabs,
+        "search": search,
+        "searches": searches,
+        "frenchSearches": french_searches?,
+    });
     fs::write(args.get(4).ok_or(usage)?, out.to_string())?;
     Ok(())
+}
+
+fn query_results(
+    creative: &Creative,
+    names: &Names,
+    queries: &Value,
+) -> horizon_client::Result<Vec<Value>> {
+    let results = queries
+        .as_array()
+        .ok_or("searches")?
+        .iter()
+        .map(|s| {
+            let query = s["query"].as_str().unwrap_or_default();
+            json!({"query": query, "results": creative.search_results(query, names)})
+        })
+        .collect();
+    Ok(results)
 }

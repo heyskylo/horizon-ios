@@ -4230,8 +4230,17 @@ impl Game<'_> {
             // Native mods, at the start of ServerPlayer.tick: before the
             // player's digging, item use and cooldowns. Swapping the guest in
             // costs a player's state each tick: only when a mod can listen.
+            // A fake player (a mod's bot) has its pre hook run in the one swap of its tick
+            // below, unless it is digging or using something first (each swap costs a player's
+            // state).
+            let fake = host.hub.guests[gi].fake;
+            let mut pre_pending = false;
             if !horizon_client::mod_api::mods().is_empty() {
-                self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                if fake {
+                    pre_pending = true;
+                } else {
+                    self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                }
             }
             let play = host.play.entry(conn).or_default();
             // ServerGamePacketListenerImpl.tick's dropSpamThrottler.
@@ -4240,6 +4249,10 @@ impl Game<'_> {
             let using = play.using.is_some();
             let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
             if digging.is_some() || using || delayed {
+                if pre_pending {
+                    pre_pending = false;
+                    self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                }
                 // A spear in use reaches the other players too.
                 let players = if using {
                     self.stab_players_for(host, conn)
@@ -4322,21 +4335,36 @@ impl Game<'_> {
             // armor, experience and level objectives follow the guest.
             let mut recorded =
                 std::mem::take(&mut host.play.entry(conn).or_default().score_recorded);
-            self.as_guest(host, conn, |g| {
-                g.tick_fishing();
-                g.tick_maps();
-                g.tick_lodestone_compasses();
-                g.native_inventory_ticks();
-                g.count_tick_stats(sleeping);
-                g.tick_advancements();
-                g.update_player_attributes();
-                g.record_player_scores(&mut recorded);
-                // Native mods, at the end of ServerPlayer.tick.
-                g.native_player_tick();
-            });
+            if fake {
+                // A fake player has no fishing line, maps, compasses, statistics, advancements
+                // or score objectives to keep.
+                self.as_guest(host, conn, |g| {
+                    if pre_pending {
+                        g.native_player_tick_pre();
+                    }
+                    g.native_inventory_ticks();
+                    g.update_player_attributes();
+                    g.native_player_tick();
+                });
+            } else {
+                self.as_guest(host, conn, |g| {
+                    g.tick_fishing();
+                    g.tick_maps();
+                    g.tick_lodestone_compasses();
+                    g.native_inventory_ticks();
+                    g.count_tick_stats(sleeping);
+                    g.tick_advancements();
+                    g.update_player_attributes();
+                    g.record_player_scores(&mut recorded);
+                    // Native mods, at the end of ServerPlayer.tick.
+                    g.native_player_tick();
+                });
+            }
             host.play.entry(conn).or_default().score_recorded = recorded;
-            self.lan_map_updates(host, conn);
-            host.hub.flush_progress(conn);
+            if !fake {
+                self.lan_map_updates(host, conn);
+                host.hub.flush_progress(conn);
+            }
             self.guest_dig_feedback(host, conn);
             // A player frozen for a hand-over picks nothing up: what it took would be
             // missing from its record, and lost when the release saves nothing.
@@ -5316,7 +5344,13 @@ impl Game<'_> {
                 }
                 MotionEvent::Fall(event) => {
                     let player = host.hub.guest(conn).map(|g| g.uuid);
-                    self.landing_block_updates(player, &event)
+                    // The rule's own game event goes out as the player whose
+                    // landing it was (`FarmlandBlock.turnToBaseBlock`'s change,
+                    // `TurtleEggBlock.decreaseEggs`' destroy): a sculk sensor, a
+                    // calibrated sensor and a warden hear it.
+                    if let Some(vibration) = self.landing_block_updates(player, &event) {
+                        self.as_guest(host, conn, |game| game.post_landing_vibration(vibration));
+                    }
                 }
                 // PowderSnowBlock.entityInside: every player around sees the
                 // snowflake (`ServerLevel.sendParticles`).
@@ -7262,5 +7296,216 @@ mod guest_close_listener_tests {
             "actual ordinary guest final close must be heard: {missing:?}"
         );
         drop(receivers);
+    }
+}
+
+#[cfg(test)]
+mod item_on_block_cooldown_tests {
+    use super::ItemStack;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::{
+        configuration::ClientInformation,
+        play::{self, Clientbound, Serverbound},
+    };
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    // Actual registered guest packet route, with real loaded block facts.
+    fn placement_control(check_start: Option<bool>) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-use-cooldown-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap()
+            .0;
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "use-cooldown-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 331,
+                name: "SwingGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [4.5, 200.0, 4.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.inventory[0] = Some(ItemStack::new("minecraft:stone", 16));
+        guest.selected = 0;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        assert_eq!(host.hub.guests[0].uuid, 331);
+        assert!(host.hub.guests[0].placed && host.hub.guests[0].loaded);
+        assert_eq!(host.hub.guests[0].game_mode, 0);
+        let mut planks = ItemStack::new("minecraft:oak_planks", 5);
+        planks.data_mut().set_other(
+            "minecraft:use_cooldown",
+            Some(horizon_world::nbt::Tag::compound([
+                ("seconds", horizon_world::nbt::Tag::Float(30.0f32.to_bits())),
+                (
+                    "cooldown_group",
+                    horizon_world::nbt::Tag::String("probe:group".into()),
+                ),
+            ])),
+        );
+        host.hub.guests[0].inventory[0] = Some(planks);
+        let use_on = |x, sequence| {
+            Serverbound::UseItemOn(play::UseItemOn {
+                hand: 0,
+                pos: [x, 199, 6],
+                face: 1,
+                cursor: [0.5, 1.0, 0.5],
+                inside: false,
+                world_border: false,
+                sequence,
+            })
+        };
+        assert!(game.world.is_air(game.world.block(5, 200, 6)));
+        if check_start.is_none() {
+            let mut stick = host.hub.guests[0].inventory[0].as_ref().unwrap().clone();
+            stick.item = "minecraft:stick".into();
+            stick.count = 1;
+            host.hub.guests[0].inventory[0] = Some(stick);
+            game.lan_guest_packet(&mut host, 2, use_on(5, 1));
+            assert!(
+                game.world.is_air(game.world.block(5, 200, 6)),
+                "failed stick use"
+            );
+            assert!(!host.play[&2].cooldowns.is_on_cooldown("probe:group"));
+            let mut planks = host.hub.guests[0].inventory[0].as_ref().unwrap().clone();
+            planks.item = "minecraft:oak_planks".into();
+            planks.count = 5;
+            host.hub.guests[0].inventory[0] = Some(planks);
+        }
+        game.lan_guest_packet(&mut host, 2, use_on(5, 2));
+        let oak = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:oak_planks")
+            .unwrap();
+        assert_eq!(game.world.block(5, 200, 6), oak, "actual first placement");
+        assert_eq!(host.hub.guests[0].inventory[0].as_ref().unwrap().count, 4);
+        assert!(
+            host.play.contains_key(&2),
+            "real acting guest context installed"
+        );
+        if check_start == Some(true) {
+            assert!(
+                host.play[&2].cooldowns.is_on_cooldown("probe:group"),
+                "successful use starts the actual guest's group"
+            );
+            assert!(rx.try_iter().any(|out| {
+                let bodies = match out { Out::Packet(body) => vec![body], Out::Packets(bodies) => bodies, Out::Disconnect(_) => panic!("disconnect") };
+                bodies.iter().any(|body| {
+                    let mut r = horizon_protocol::buf::Reader::new(body);
+                    matches!(Clientbound::decode(r.varint().unwrap(),r.rest()), Ok(Clientbound::Cooldown(p)) if p.group == "probe:group" && p.duration == 600)
+                })
+            }), "existing helper's actual cooldown packet");
+        } else if check_start == Some(false) {
+            game.lan_guest_packet(&mut host, 2, use_on(6, 2));
+            assert!(
+                game.world.is_air(game.world.block(6, 200, 6)),
+                "same-group second placement is rejected"
+            );
+            assert_eq!(host.hub.guests[0].inventory[0].as_ref().unwrap().count, 4);
+        }
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn failed_stick_use_keeps_group_available_for_placement() {
+        placement_control(None);
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn actual_guest_placement_starts_its_cooldown() {
+        placement_control(Some(true));
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn actual_guest_second_placement_is_rejected() {
+        placement_control(Some(false));
     }
 }
