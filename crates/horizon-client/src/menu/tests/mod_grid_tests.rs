@@ -52,7 +52,7 @@ fn recipes_place_in_a_mod_crafting_grid_as_in_the_table() {
             let first = menu.place_recipe(env, "minecraft:crafting_table", false, false, None);
             let again = menu.place_recipe(env, "minecraft:crafting_table", true, false, None);
             let ghost = menu.place_recipe(env, "minecraft:furnace", false, false, None);
-            let transfer = menu.transfer_recipe(env, "minecraft:stick");
+            let transfer = menu.transfer_recipe(env, "minecraft:stick", false);
             places.push((first, again, ghost, transfer, seen(menu)));
         }
         assert_eq!(places[1], places[0]);
