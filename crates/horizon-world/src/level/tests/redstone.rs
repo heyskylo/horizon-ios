@@ -981,3 +981,87 @@ fn a_dispenser_and_a_dropper_trigger_on_any_side_and_through_the_block_above() {
         }
     }
 }
+
+/// `getAnalogOutputSignal` of the blocks whose output is a function of their own
+/// state, read through a comparator as in play: a beehive's honey level, a cake's
+/// `(7 - bites) * 2`, a candle cake's full 14, a composter's level, an end portal
+/// frame's 15 with an eye, a lava cauldron's 3, a water or powder snow cauldron's
+/// level, a respawn anchor's `floor(charges / 4 * 15)` and a lit copper bulb's 15.
+#[test]
+fn a_comparator_reads_the_output_vanilla_gives_each_state_based_block() {
+    type Row = (&'static str, Vec<(&'static str, String)>, i32);
+    let mut rows: Vec<Row> = Vec::new();
+    for honey in 0..=5 {
+        for name in ["beehive", "bee_nest"] {
+            rows.push((name, vec![("honey_level", honey.to_string())], honey));
+        }
+    }
+    for bites in 0..=6 {
+        rows.push(("cake", vec![("bites", bites.to_string())], (7 - bites) * 2));
+    }
+    for name in ["candle_cake", "red_candle_cake"] {
+        rows.push((name, vec![("lit", "false".to_string())], 14));
+    }
+    for level in 0..=8 {
+        rows.push(("composter", vec![("level", level.to_string())], level));
+    }
+    rows.push(("end_portal_frame", vec![("eye", "true".into())], 15));
+    rows.push(("end_portal_frame", vec![("eye", "false".into())], 0));
+    rows.push(("lava_cauldron", vec![], 3));
+    for level in 1..=3 {
+        for name in ["water_cauldron", "powder_snow_cauldron"] {
+            rows.push((name, vec![("level", level.to_string())], level));
+        }
+    }
+    for (charges, signal) in [(0, 0), (1, 3), (2, 7), (3, 11), (4, 15)] {
+        rows.push((
+            "respawn_anchor",
+            vec![("charges", charges.to_string())],
+            signal,
+        ));
+    }
+    for name in ["copper_bulb", "waxed_copper_bulb"] {
+        rows.push((name, vec![("lit", "true".into())], 15));
+        rows.push((name, vec![("lit", "false".into())], 0));
+    }
+    rows.push(("cauldron", vec![], 0));
+
+    let mut wrong = Vec::new();
+    for (name, props, expected) in rows {
+        let mut w = world!();
+        w.floor(0, 4, "stone");
+        let subject = BlockPos::new(0, 1, 0);
+        let props: Vec<(&str, &str)> = props.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        // A comparator facing west reads the block west of it; its output is read
+        // from the block beyond it. The comparator comes first: it computes only when
+        // it is told a neighbour changed, and a block that has an output tells it
+        // when it is placed (`Level.setBlock`), where a bare `setBlock` of the
+        // comparator beside an existing block tells it nothing.
+        w.set(
+            BlockPos::new(1, 1, 0),
+            w.id("comparator", &[("facing", "west")]),
+        );
+        w.set(subject, w.id(name, &props));
+        for _ in 0..4 {
+            w.full_tick();
+        }
+        let output =
+            w.f.behaviours
+                .best_neighbor_signal(&mut w.level, &mut w.ticks, BlockPos::new(2, 1, 0));
+        if output != expected {
+            wrong.push(format!(
+                "{name} {props:?}: read {output}, vanilla {expected}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} rows differ:
+{}",
+        wrong.len(),
+        wrong.join(
+            "
+"
+        )
+    );
+}
