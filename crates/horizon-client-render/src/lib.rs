@@ -2,6 +2,7 @@
 //! the HUD, menus and settings. Gameplay (horizon-client) builds on it; nothing here reaches gameplay.
 #![forbid(unsafe_code)]
 pub mod android_gamepad;
+pub mod android_runtime;
 pub mod assets;
 pub mod atlas_sources;
 pub mod audio;

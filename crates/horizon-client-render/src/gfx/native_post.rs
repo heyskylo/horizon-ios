@@ -358,9 +358,6 @@ pub struct NativeFrame {
     pub api: Api,
     pub decoder: Option<Decoder>,
     mirror: Option<wgpu::TextureView>,
-    /// The HDR display a 0.2 pack's picture goes to this frame (`Hdr::display`: headroom,
-    /// paper white, peak and black level), set before `write`; `None` is SDR.
-    pub display: Option<[f32; 4]>,
 }
 
 /// A depth texture of `size` the world's depth is copied into.
@@ -570,7 +567,6 @@ impl NativeFrame {
             api,
             decoder: (api == Api::V0_2).then(|| Decoder::new(device)),
             mirror: None,
-            display: None,
             last: None,
             eye: [f32::NAN; 4],
             history_reset: true,
@@ -775,14 +771,26 @@ impl NativeFrame {
         );
     }
 
-    /// Writes this frame's inputs, for a world of `size`.
-    pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
-        let inputs = self.next_inputs(frame, size);
+    /// Writes this frame's inputs, for a world of `size` drawn for `display`
+    /// (`EffectiveOutput::display`), which a 0.2 pack reads.
+    pub(crate) fn write(
+        &mut self,
+        queue: &wgpu::Queue,
+        frame: &Frame,
+        size: [u32; 2],
+        display: super::output::DisplayValues,
+    ) {
+        let inputs = self.next_inputs(frame, size, display);
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&inputs));
     }
 
     /// This frame's inputs, moving the eased values and the frame count on.
-    fn next_inputs(&mut self, frame: &Frame, size: [u32; 2]) -> FrameInputs {
+    fn next_inputs(
+        &mut self,
+        frame: &Frame,
+        size: [u32; 2],
+        display: super::output::DisplayValues,
+    ) -> FrameInputs {
         // Under `HORIZON_STILL` the world's ticks are the clock (`PackInputs::still_ticks`), and
         // eased values sit at their targets.
         // A scripted clock (`PackInputs::frame_timing`) comes first, and eased values
@@ -811,12 +819,12 @@ impl NativeFrame {
         if self.api == Api::V0_2 {
             inputs.sky_color = decoded(inputs.sky_color);
             inputs.fog_color = decoded(inputs.fog_color);
-            if let Some([headroom, paper_white, peak, black_level]) = self.display {
+            if display.hdr {
                 inputs.hdr = 1;
-                inputs.headroom = headroom;
-                inputs.paper_white = paper_white;
-                inputs.peak = peak;
-                inputs.black_level = black_level;
+                inputs.headroom = display.headroom;
+                inputs.paper_white = display.paper_white;
+                inputs.peak = display.peak;
+                inputs.black_level = display.black_level;
             }
         }
         if !self.reflects {
@@ -1582,7 +1590,7 @@ pub fn frame_inputs(
             2.0 * s.distance / s.resolution.max(1) as f32 * (1.0 - k)
         }),
         // Shader API 0.2's display fields, which 0.1 packs don't declare: SDR's values, which
-        // `NativeFrame::display` replaces on an HDR display.
+        // `NativeFrame::write` replaces on an HDR display.
         hdr: 0,
         headroom: 1.0,
         paper_white: 80.0,
@@ -1719,7 +1727,10 @@ mod tests {
         assert_eq!(eased(1.0, 0.0, 2.0, 0.0), 1.0);
     }
     use super::*;
+    use crate::gfx::output::DisplayValues;
     use horizon_shader_api::{MANIFEST, Pack, check};
+
+    const SDR: DisplayValues = DisplayValues::SDR;
 
     #[test]
     fn wetness_rises_slower_than_it_dries() {
@@ -1750,7 +1761,7 @@ mod tests {
         frame.pack.eye_light = [0, 15];
         frame.pack.rain = 1.0;
         frame.pack.frame_timing = Some(FrameTiming::nth(1, 2000.0));
-        let first = native.next_inputs(&frame, [4, 4]);
+        let first = native.next_inputs(&frame, [4, 4], SDR);
         assert_eq!(
             (first.time, first.frame_index, first.delta_time),
             (0.0, 1, 0.0)
@@ -1761,7 +1772,7 @@ mod tests {
         native.last.as_mut().unwrap().2 -= std::time::Duration::from_secs(5);
         frame.pack.eye_light = [0, 0];
         frame.pack.frame_timing = Some(FrameTiming::nth(2, 2000.0));
-        let second = native.next_inputs(&frame, [4, 4]);
+        let second = native.next_inputs(&frame, [4, 4], SDR);
         assert_eq!(
             (second.time, second.frame_index, second.delta_time),
             (2.0, 2, 2.0)
@@ -1803,14 +1814,14 @@ mod tests {
         frame.pack.eye_in = 1;
         for n in 1..=5 {
             frame.pack.frame_timing = Some(FrameTiming::nth(n, 700.0));
-            used.next_inputs(&frame, [4, 4]);
+            used.next_inputs(&frame, [4, 4], SDR);
         }
         used.reset_history();
         frame.pack.eye_light = [2, 15];
         frame.pack.eye_in = 0;
         for n in 1..=3 {
             frame.pack.frame_timing = Some(FrameTiming::nth(n, 50.0));
-            let inputs = [&mut used, &mut fresh].map(|f| f.next_inputs(&frame, [4, 4]));
+            let inputs = [&mut used, &mut fresh].map(|f| f.next_inputs(&frame, [4, 4], SDR));
             assert_eq!(
                 bytemuck::bytes_of(&inputs[0]),
                 bytemuck::bytes_of(&inputs[1]),
@@ -2625,7 +2636,7 @@ file = \"b.wgsl\"
         }
     }
 
-    /// A 0.2 pack's `Frame` describes the HDR display its picture goes to (`display`), and SDR
+    /// A 0.2 pack's `Frame` describes the HDR display its picture goes to, and SDR
     /// without one: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0.
     #[test]
     fn a_0_2_frame_describes_the_display_it_goes_to() {
@@ -2644,19 +2655,24 @@ file = \"b.wgsl\"
         );
         let fields = |i: &FrameInputs| (i.hdr, i.headroom, i.paper_white, i.peak, i.black_level);
         assert_eq!(
-            fields(&native.next_inputs(&frame, [4, 4])),
+            fields(&native.next_inputs(&frame, [4, 4], SDR)),
             (0, 1.0, 80.0, 80.0, 0.0)
         );
-        native.display = Some([4.0, 250.0, 1000.0, 0.05]);
+        let hdr = |headroom, paper_white, peak, black_level| DisplayValues {
+            hdr: true,
+            headroom,
+            paper_white,
+            peak,
+            black_level,
+        };
         assert_eq!(
-            fields(&native.next_inputs(&frame, [4, 4])),
+            fields(&native.next_inputs(&frame, [4, 4], hdr(4.0, 250.0, 1000.0, 0.05))),
             (1, 4.0, 250.0, 1000.0, 0.05)
         );
         // Read every frame: a change of display shows on the next one.
-        native.display = Some([2.0, 300.0, 600.0, 0.0]);
-        assert_eq!(fields(&native.next_inputs(&frame, [4, 4])).1, 2.0);
-        native.display = None;
-        assert_eq!(fields(&native.next_inputs(&frame, [4, 4])).0, 0);
+        let next = native.next_inputs(&frame, [4, 4], hdr(2.0, 300.0, 600.0, 0.0));
+        assert_eq!(fields(&next).1, 2.0);
+        assert_eq!(fields(&native.next_inputs(&frame, [4, 4], SDR)).0, 0);
     }
 
     /// On the layered HDR frame a 0.2 pack's light is tone mapped once: by Horizon's curve,

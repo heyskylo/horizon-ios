@@ -65,10 +65,6 @@ impl Game<'_> {
             {
                 continue;
             }
-            // ItemEntity.tick's noPhysics (servers only): out of a block
-            // placed on it, towards the closest open side (#1252).
-            let no_physics = merging && item.inside_block(&self.world, self.collision);
-            let escape_speed = no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
             // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
             // where the item can reach this tick (a block of slack for the next velocity).
             let reach = Vec3::new(
@@ -77,6 +73,16 @@ impl Game<'_> {
                 item.velocity.z.abs() + 1.0,
             );
             obstacles.near(item.bounds().inflate(reach), &mut nearby);
+            // ItemEntity.tick's noPhysics (servers only): out of a block, a solid entity
+            // or the border, placed or closed on it, towards the closest open side (#1252).
+            let no_physics = merging
+                && item.inside_block(
+                    &self.world,
+                    self.collision,
+                    &nearby,
+                    Some(self.border.geometry()),
+                );
+            let escape_speed = no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
             let mut entered = Vec::new();
             let (alive, discarded) = self.tick_item_with_block_contacts(
                 item,
