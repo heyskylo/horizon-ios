@@ -24,7 +24,7 @@ pub mod template;
 pub mod temple;
 
 use crate::{
-    nbt::{self, Limits},
+    nbt::Limits,
     registry::{BlockRegistry, BlockStateId},
 };
 use horizon_core::geometry::Direction;
@@ -313,12 +313,13 @@ impl TemplateStore {
             flate2::read::GzDecoder::new(bytes.as_slice())
                 .read_to_end(&mut raw)
                 .ok()?;
-            let tag = nbt::read_named(&raw, Limits::templates()).ok()?.0.tag;
-            Some(StructureTemplate::from_nbt(
-                &tag,
+            StructureTemplate::from_bytes(
+                &raw,
+                Limits::templates(),
                 self.registry,
                 &self.transforms,
-            ))
+            )
+            .ok()
         });
         // StructureTemplateManager.getOrCreate: missing templates are empty.
         let mut loaded = loaded.unwrap_or_else(StructureTemplate::empty);
