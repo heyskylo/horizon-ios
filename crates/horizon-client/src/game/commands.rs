@@ -80,6 +80,10 @@ pub(super) enum Target {
     Spawner(u32),
     /// A simulated lingering, creeper or dragon area-effect cloud.
     Cloud(u32),
+    /// The fence knot a lead tie made (`minecraft:leash_knot`), by its
+    /// entity id in the level's `knot_ids` (game/leads.rs). Explicitly
+    /// summoned knots are `Other`s.
+    Knot(u32),
 }
 /// `Entity.setXRot`: reduce the angle before clamping the pitch.
 /// Runs `$body` on the moving entity `$t` names (one of `entity_lists!`'s
@@ -134,6 +138,15 @@ pub(in crate::game) struct OtherEntity {
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
+}
+/// A natural fence knot is only read by commands here: one that would move
+/// or remove it fails as a whole instead of skipping it, so it never
+/// reports a change it did not make (#13036).
+pub(in crate::game) fn refuse_knot_change(targets: &[Target]) -> R<()> {
+    if targets.iter().any(|t| matches!(t, Target::Knot(_))) {
+        return Err(err("command.failed", &[]));
+    }
+    Ok(())
 }
 /// `EntityType.getDescriptionId`: `entity.<namespace>.<path>`.
 fn entity_name_key(id: &str) -> String {
@@ -206,7 +219,8 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Rocket(id)
     | Target::Trident(id)
     | Target::Spawner(id)
-    | Target::Cloud(id)) = t
+    | Target::Cloud(id)
+    | Target::Knot(id)) = t
     else {
         return None;
     };
@@ -635,6 +649,10 @@ impl Game<'_> {
                 .iter()
                 .find(|s| s.id == id)
                 .map(|s| s.position),
+            Target::Knot(id) => self.natural_knot(id).map(|fence| {
+                let p = horizon_client::mobs::leash::knot_state(fence).position;
+                [p.x, p.y, p.z]
+            }),
         }
     }
     pub(super) fn target_type(&self, t: Target) -> String {
@@ -689,6 +707,7 @@ impl Game<'_> {
             Target::Fangs(_) => "minecraft:evoker_fangs".into(),
             Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
             Target::Cloud(_) => "minecraft:area_effect_cloud".into(),
+            Target::Knot(_) => "minecraft:leash_knot".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -1019,6 +1038,9 @@ impl Game<'_> {
                 .filter(|c| c.id != 0)
                 .map(|c| Target::Cloud(c.id)),
         );
+        // The knots lead ties made (LeashFenceKnotEntity), each the one
+        // entity its id names.
+        candidates.extend(self.natural_knot_ids().into_iter().map(Target::Knot));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -1058,6 +1080,7 @@ impl Game<'_> {
             Target::Trident(id),
             Target::Spawner(id),
             Target::Cloud(id),
+            Target::Knot(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -1088,6 +1111,7 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.iter().any(|t| t.id == id),
             Target::Spawner(id) => self.ominous_spawners.iter().any(|s| s.id == id),
             Target::Cloud(id) => self.breath_clouds.iter().any(|c| c.id == id),
+            Target::Knot(id) => self.natural_knot(id).is_some(),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1892,6 +1916,8 @@ impl Game<'_> {
             }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
+            // The commands refuse to move a natural knot (`refuse_knot_change`).
+            Target::Knot(_) => {}
         }
         // Entity.teleportSameDimension: the riders go with their vehicle at
         // once, by the offset it took and the turn it was given.
@@ -2021,6 +2047,7 @@ impl Game<'_> {
                 self.in_target_level(targets[0], |game| game.target_name(targets[0]))
                     .unwrap_or_else(Text::empty)
             });
+            refuse_knot_change(&targets)?;
             for &t in &targets {
                 if !self.teleport_across(t, level, pos, rotation, true)? {
                     // TeleportCommand.teleportToEntity: the destination's angles,
@@ -2104,6 +2131,7 @@ impl Game<'_> {
             self.in_target_level(targets[0], |game| game.target_name(targets[0]))
                 .unwrap_or_else(Text::empty)
         });
+        refuse_knot_change(&targets)?;
         for &t in &targets {
             // `facing` teleports with the rotation unchanged (Relative.ROTATION,
             // no turn for the riders), then LookAt.perform turns the target alone.
@@ -2528,6 +2556,8 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
             Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
+            // The commands refuse to kill a natural knot (`refuse_knot_change`).
+            Target::Knot(_) => {}
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         self.orbs.retain(|o| o.age < u32::MAX / 2);
@@ -2551,6 +2581,7 @@ impl Game<'_> {
             };
             names.push(name);
         }
+        refuse_knot_change(&targets)?;
         for &t in &targets {
             self.kill_target(t);
         }

@@ -3485,12 +3485,15 @@ impl Game<'_> {
         {
             Some(("minecraft:player".to_owned(), g.position))
         } else {
-            self.level_entity(id).map(|t| {
-                (
-                    self.target_type(t),
-                    self.target_position(t).unwrap_or_default(),
-                )
-            })
+            // The mod hooks hear no natural fence knot (#13036).
+            self.level_entity(id)
+                .filter(|t| !matches!(t, super::commands::Target::Knot(_)))
+                .map(|t| {
+                    (
+                        self.target_type(t),
+                        self.target_position(t).unwrap_or_default(),
+                    )
+                })
         };
         if let Some((kind, at)) = aimed
             && self.as_guest(host, conn, |g| {

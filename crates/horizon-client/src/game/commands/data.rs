@@ -330,6 +330,29 @@ impl Game<'_> {
                     s.raw.as_deref(),
                 )
             }
+            // LeashFenceKnotEntity saves nothing of its own: the common
+            // entity fields, as an explicitly summoned knot's.
+            Target::Knot(id) => {
+                let fence = self.natural_knot(id)?;
+                let uuid = *self.persist.uuids.get(&id)?;
+                let knot = super::OtherEntity {
+                    id,
+                    kind: "minecraft:leash_knot".into(),
+                    position: horizon_client::mobs::leash::knot_state(fence).position,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    item_transformation: None,
+                    interaction: None,
+                    knot_check: None,
+                    eye: None,
+                };
+                let mut tag = self.other_to_nbt(&knot, uuid);
+                // Entity.saveWithoutId writes `remainingFireTicks` always; the
+                // knot's never changes (BlockAttachedEntity.tick has no
+                // baseTick).
+                set_key(&mut tag, "Fire", Tag::Short(0));
+                tag
+            }
         })
     }
     /// `Entity.load` of new data (`EntityDataAccessor.setData`): the entity is
@@ -1264,6 +1287,9 @@ impl Game<'_> {
             text: g.target_name(t),
             display: None,
         };
+        if matches!(id, "tag.add" | "tag.remove") {
+            super::refuse_knot_change(&targets)?;
+        }
         let mut all: Vec<String> = Vec::new();
         for &t in &targets {
             let mut tags = self.tags_of(t);

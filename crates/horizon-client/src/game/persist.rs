@@ -2071,6 +2071,8 @@ impl Game<'_> {
     fn live_entity_ids(&self) -> HashSet<u32> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
         let mut alive: HashSet<u32> = self.entity_ids_off_walk().collect();
+        // The natural fence knots a lead still holds (game/leads.rs).
+        alive.extend(self.natural_knot_ids());
         for_each_entity!(entity_lists_of!(self), entity => {
             alive.insert(entity.id());
         });
