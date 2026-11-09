@@ -1091,7 +1091,7 @@ const INITIALIZED: [&str; 13] = [
 ];
 
 /// Whether no block's collision shape overlaps `bb` (where the query fails, nothing does).
-fn unobstructed(level: &ParticleLevel<'_>, bb: horizon_core::geometry::Aabb) -> bool {
+pub(super) fn unobstructed(level: &ParticleLevel<'_>, bb: horizon_core::geometry::Aabb) -> bool {
     let mut scene = crate::collisions::SceneCollisions {
         world: level.world,
         binding: level.collision,
@@ -1103,13 +1103,6 @@ fn unobstructed(level: &ParticleLevel<'_>, bb: horizon_core::geometry::Aabb) -> 
 impl super::ParticleController for Controller {
     fn tick(&mut self, p: &mut Particle, level: &ParticleLevel<'_>) -> ParticleUpdate {
         let mut update = ParticleUpdate::default();
-        // A particle with physics whose box starts inside a block's collision goes before its
-        // first tick, so none of its emitters run (measured on the mod: one spawned just under a
-        // block, where falling leaves start, never falls; one 0.01 clear of it does).
-        if self.ticks == 0 && self.def.has_physics && !unobstructed(level, p.bb) {
-            p.remove();
-            return update;
-        }
         if !p.advance_age() {
             return update;
         }
@@ -1337,6 +1330,10 @@ pub(super) fn make(
     particle.polytone_type =
         (def.limit.is_some() || def.exclusion_radius > 0.0).then(|| Arc::from(name));
     particle.bb = super::aabb_at(position, particle.bb_width, particle.bb_height);
+    // A particle with physics whose box starts inside a block's collision never joins the world:
+    // it is not drawn and none of its emitters run (measured on the mod: one spawned just under a
+    // block, where falling leaves start, never shows; one 0.01 clear of it does).
+    particle.spawn_check = def.has_physics;
     particle.controller = Some(Box::new(Controller {
         def: def.clone(),
         registry: registry.clone(),
@@ -1545,6 +1542,31 @@ impl ParticleEngine {
             self.add(&options, position, velocity);
         }
         self.sounds.extend(sounds);
+    }
+}
+
+impl ParticleEngine {
+    /// Sets (or clears) the resource packs' Polytone custom particle types.
+    pub fn set_polytone(&mut self, registry: Option<Arc<Registry>>) {
+        let registry = registry.filter(|r| !r.is_empty());
+        let same = match (&self.polytone, &registry) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.polytone_gpu.clear();
+            self.polytone_overrides = registry
+                .iter()
+                .flat_map(|r| {
+                    ParticleType::ALL.iter().filter_map(|&ty| {
+                        let id = format!("minecraft:{}", ty.name());
+                        r.get(&id).is_some().then_some((ty, id))
+                    })
+                })
+                .collect();
+        }
+        self.polytone = registry;
     }
 }
 
@@ -2312,7 +2334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_particle_with_physics_born_inside_a_block_goes_before_it_emits() {
+    fn a_particle_with_physics_born_inside_a_block_never_joins() {
         let blocks = blocks();
         let leaf = |physics| {
             serde_json::json!({"has_physics": physics, "render_type": "invisible",
@@ -2330,11 +2352,31 @@ mod tests {
             ),
             (
                 "assets/test/polytone/custom_particles/mark.json",
-                serde_json::json!({"render_type": "invisible"}),
+                serde_json::json!({"render_type": "invisible", "has_physics": false}),
             ),
             (
                 "assets/minecraft/polytone/entity_modifiers/player.json",
                 serde_json::json!({"emitters": [{"particle": "test:leaf", "chance": "1"}]}),
+            ),
+            (
+                "assets/test/polytone/custom_particles/wide.json",
+                serde_json::json!({"has_physics": true, "render_type": "invisible",
+                    "initializer": {"lifetime": "20", "hitbox_size": 10},
+                    "particle_emitters": [{"particle": "test:mark", "chance": "1"}]}),
+            ),
+            (
+                "assets/test/polytone/custom_particles/parent.json",
+                serde_json::json!({"has_physics": true, "render_type": "invisible",
+                    "initializer": {"lifetime": "20", "hitbox_size": "0.08"},
+                    "particle_emitters": [{"particle": "test:wide", "chance": "1", "y": "-0.05"}]}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/skeleton.json",
+                serde_json::json!({"emitters": [{"particle": "test:parent", "chance": "1", "x": "-4.5"}]}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/creeper.json",
+                serde_json::json!({"emitters": [{"particle": "test:wide", "chance": "1", "x": "-4.5"}]}),
             ),
             (
                 "assets/minecraft/polytone/entity_modifiers/zombie.json",
@@ -2351,19 +2393,31 @@ mod tests {
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         // The solid block is at (1, 64, 1): its bottom face is y 64.
-        let mut tick_one = |entity: &str, y: f64| {
+        // Spawns one particle, lets the engine take it in and tick it: whether it joined, and
+        // how many particles it emitted.
+        let mut spawn = |entity: &str, y: f64| {
+            engine.particles.clear();
             engine.pending.clear();
             engine.polytone_entity(&level, entity, [1.5, y, 1.5]);
-            let mut p = engine.pending.pop().unwrap();
-            engine.tick_particle(&mut p, &level);
-            (p.removed, engine.pending.len())
+            engine.tick(&level);
+            let joined = engine.particles.len();
+            engine.tick(&level);
+            (
+                joined,
+                engine.particles.len() + engine.pending.len() - joined,
+            )
         };
-        // 0.05 under the block, a 0.08 box reaches into it: gone, nothing emitted.
-        assert_eq!(tick_one("minecraft:player", 63.95), (true, 0));
-        // 0.01 clear of it, it lives and emits.
-        assert_eq!(tick_one("minecraft:player", 63.91), (false, 1));
+        // The solid block is at (1, 64, 1): its bottom face is y 64.
+        // 0.05 under the block, a 0.08 box reaches into it: it never joins, nothing emitted.
+        assert_eq!(spawn("minecraft:player", 63.95), (0, 0));
+        // 0.01 clear of it, it joins and emits.
+        assert_eq!(spawn("minecraft:player", 63.91), (1, 1));
         // Without physics nothing collides.
-        assert_eq!(tick_one("minecraft:zombie", 63.95), (false, 1));
+        assert_eq!(spawn("minecraft:zombie", 63.95), (1, 1));
+        // A wide box reaching a block from five blocks away does not join either.
+        assert_eq!(spawn("minecraft:creeper", 60.0), (0, 0));
+        // Nor does one a clear particle emits there: the small one joins, its wide copy never.
+        assert_eq!(spawn("minecraft:skeleton", 60.0), (1, 0));
         std::fs::remove_dir_all(root).unwrap();
     }
 
