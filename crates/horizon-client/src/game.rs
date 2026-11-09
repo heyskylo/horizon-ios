@@ -6481,6 +6481,13 @@ impl Game<'_> {
         let (wi, hi) = (w as i32, h as i32);
         let in_studio = self.studio_replay.is_some();
         let show_hud = !self.ui.hide_gui && !in_studio;
+        // Hud.extractRenderState asks `Screen.isInGameUi` twice: such a screen
+        // defers the subtitles over itself, and keeps them while F1 hides the
+        // rest of the HUD.
+        let subtitles = subtitles(
+            show_hud,
+            in_game_ui(self.screen, self.book.is_some() || self.sign_edit.is_some()),
+        );
         self.ui.room = self.hud_room(w, h, show_hud);
         // What the gameplay guide keeps off starts after the view's full overlays.
         let mut guide_from = 0;
@@ -6708,6 +6715,13 @@ impl Game<'_> {
             self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
                 g.draw_scoreboard(batch);
             });
+            if subtitles != Subtitles::Hidden {
+                self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                    g.draw_subtitles(batch);
+                });
+            }
+        } else if subtitles == Subtitles::Deferred {
+            // F1 hid the HUD, but an in-game screen still shows the subtitles.
             self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
                 g.draw_subtitles(batch);
             });
@@ -13983,41 +13997,12 @@ pub(crate) fn closest_space_nudge(
     out
 }
 
-/// GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown, and only over
-/// a level. The F3 overlay stays on when the world closes, so it must not reach the panorama.
-fn debug_crosshair_drawn(
-    enabled: bool,
-    first_person: bool,
-    hide_gui: bool,
-    panorama: bool,
-) -> bool {
-    enabled && first_person && !hide_gui && !panorama
-}
+use subtitles::{Subtitles, in_game_ui, subtitles};
 
-/// GameRenderer.shouldRenderBlockOutline, and only over a level. A panorama frame (the title
-/// screen, LevelLoadingScreen's Reason.OTHER) replaces the level vanilla draws under it, so the
-/// player's target must not leave its outline there.
-fn block_outline_drawn(
-    hide_gui: bool,
-    entity_targeted: bool,
-    can_build: bool,
-    panorama: bool,
-) -> bool {
-    !hide_gui && !entity_targeted && can_build && !panorama
-}
+mod hud_render;
 
-/// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
-/// block, jigsaw and the test blocks.
-fn is_game_master_block(name: &str) -> bool {
-    horizon_client::command_block::Mode::of_block(name).is_some()
-        || matches!(
-            name,
-            "minecraft:structure_block"
-                | "minecraft:jigsaw"
-                | "minecraft:test_block"
-                | "minecraft:test_instance_block"
-        )
-}
+use hud_render::{block_outline_drawn, debug_crosshair_drawn, is_game_master_block};
+mod subtitles;
 
 #[cfg(test)]
 #[path = "game_tests.rs"]
