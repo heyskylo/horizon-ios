@@ -80,8 +80,41 @@ pub(super) enum Target {
     Spawner(u32),
     /// A simulated lingering, creeper or dragon area-effect cloud.
     Cloud(u32),
+    /// The fence knot a lead tie made (`minecraft:leash_knot`), by its
+    /// entity id in the level's `knot_ids` (game/leads.rs). Explicitly
+    /// summoned knots are `Other`s.
+    Knot(u32),
 }
 /// `Entity.setXRot`: reduce the angle before clamping the pitch.
+/// Runs `$body` on the moving entity `$t` names (one of `entity_lists!`'s
+/// kinds) as `$e`, through the `Entity` trait; nothing for the others.
+macro_rules! target_entity_mut {
+    ($game:expr, $t:expr, $e:ident => $body:expr) => {{
+        #[allow(unused_imports)]
+        use super::entity::Entity as _;
+        macro_rules! on {
+            ($list:expr, $id:expr) => {
+                if let Some($e) = $list.iter_mut().find(|x| x.id == $id) {
+                    $body
+                }
+            };
+        }
+        match $t {
+            Target::Mob(id) => on!($game.mobs, id),
+            Target::Item(id) => on!($game.dropped, id),
+            Target::Orb(id) => on!($game.orbs, id),
+            Target::Projectile(id) => on!($game.creatures.projectiles, id),
+            Target::Stand(id) => on!($game.armor_stands, id),
+            Target::Boat(id) => on!($game.boats, id),
+            Target::Cart(id) => on!($game.carts, id),
+            Target::Tnt(id) => on!($game.tnts, id),
+            Target::Falling(id) => on!($game.falling, id),
+            Target::Rocket(id) => on!($game.rockets, id),
+            Target::Trident(id) => on!($game.tridents, id),
+            _ => {}
+        }
+    }};
+}
 fn entity_pitch(pitch: f32) -> f32 {
     (pitch % 360.0).clamp(-90.0, 90.0)
 }
@@ -95,12 +128,33 @@ pub(in crate::game) struct OtherEntity {
     pub position: Vec3,
     pub yaw: f32,
     pub pitch: f32,
-    pub item_transformation: Option<super::native_entities::ItemDisplayTransformation>,
+    pub item_transformation: Option<super::native_entities::DisplayTransformation>,
+    /// A `minecraft:interaction`'s saved settings; None for every other kind.
+    pub interaction: Option<super::interactions::InteractionState>,
     /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.
     pub knot_check: Option<u8>,
+    /// A summoned or loaded `minecraft:eye_of_ender`'s flight; None for every other kind.
+    pub eye: Option<super::end::SummonedEye>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
+}
+/// A natural fence knot is only read by commands here: one that would move
+/// or remove it fails as a whole instead of skipping it, so it never
+/// reports a change it did not make (#13036).
+/// The targets a command that moves or kills entities acts on: a natural leash knot is
+/// listed for selectors and `/data` but not changed yet, so it is left out, as before it was
+/// listed. A selector that found only knots finds no entity.
+pub(in crate::game) fn without_knots(targets: Vec<Target>) -> R<Vec<Target>> {
+    let found = !targets.is_empty();
+    let kept: Vec<Target> = targets
+        .into_iter()
+        .filter(|t| !matches!(t, Target::Knot(_)))
+        .collect();
+    if found && kept.is_empty() {
+        return Err(err("argument.entity.notfound.entity", &[]));
+    }
+    Ok(kept)
 }
 /// `EntityType.getDescriptionId`: `entity.<namespace>.<path>`.
 fn entity_name_key(id: &str) -> String {
@@ -173,7 +227,8 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Rocket(id)
     | Target::Trident(id)
     | Target::Spawner(id)
-    | Target::Cloud(id)) = t
+    | Target::Cloud(id)
+    | Target::Knot(id)) = t
     else {
         return None;
     };
@@ -602,6 +657,10 @@ impl Game<'_> {
                 .iter()
                 .find(|s| s.id == id)
                 .map(|s| s.position),
+            Target::Knot(id) => self.natural_knot(id).map(|fence| {
+                let p = horizon_client::mobs::leash::knot_state(fence).position;
+                [p.x, p.y, p.z]
+            }),
         }
     }
     pub(super) fn target_type(&self, t: Target) -> String {
@@ -621,7 +680,7 @@ impl Game<'_> {
                 .projectiles
                 .iter()
                 .find(|p| p.id == id)
-                .map_or_else(String::new, |p| p.kind.id().into()),
+                .map_or_else(String::new, |p| p.entity_type().into()),
             Target::Stand(_) => "minecraft:armor_stand".into(),
             Target::Frame(id) => {
                 if self.item_frames.iter().any(|f| f.id == id && f.glow) {
@@ -656,6 +715,7 @@ impl Game<'_> {
             Target::Fangs(_) => "minecraft:evoker_fangs".into(),
             Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
             Target::Cloud(_) => "minecraft:area_effect_cloud".into(),
+            Target::Knot(_) => "minecraft:leash_knot".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -701,6 +761,18 @@ impl Game<'_> {
             // FallingBlockEntity.getTypeName: `entity.minecraft.falling_block_type`
             // with the block's name.
             Target::Falling(id) => {
+                let custom = self
+                    .falling
+                    .iter()
+                    .find(|f| f.id == id)
+                    .and_then(|f| f.saved.as_ref())
+                    .and_then(|saved| saved.1.get("CustomName"))
+                    .or_else(|| self.persist_raw(id).and_then(|r| r.get("CustomName")));
+                if let Some(c) = custom {
+                    return horizon_client::scoreboard::comp_text(
+                        &horizon_client::scoreboard::tag_to_json(c),
+                    );
+                }
                 let block = self
                     .falling
                     .iter()
@@ -719,17 +791,9 @@ impl Game<'_> {
             ),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
-                let custom = match other {
-                    Target::Stand(id)
-                    | Target::Frame(id)
-                    | Target::Painting(id)
-                    | Target::Boat(id)
-                    | Target::Cart(id)
-                    | Target::Other(id)
-                    | Target::Fangs(id)
-                    | Target::Cloud(id) => self.persist_raw(id).and_then(|r| r.get("CustomName")),
-                    _ => None,
-                };
+                let custom = super::native_entities::target_id(other)
+                    .and_then(|id| self.persist_raw(id))
+                    .and_then(|r| r.get("CustomName"));
                 if let Some(c) = custom {
                     return horizon_client::scoreboard::comp_text(
                         &horizon_client::scoreboard::tag_to_json(c),
@@ -787,7 +851,11 @@ impl Game<'_> {
                 candidates.append(&mut source_candidates);
             }
             if s.kind != 's' {
-                candidates.extend(self.level_candidates());
+                if s.kind == 'e' && matches!(s.sort, Sort::Arbitrary) && !s.world_limited() {
+                    candidates.extend(self.global_selector_candidates());
+                } else {
+                    candidates.extend(self.level_candidates());
+                }
             }
             out.extend(self.select_in_level(candidates, s, origin));
             if let Some(back) = back {
@@ -810,6 +878,17 @@ impl Game<'_> {
             .map(|(t, _)| t)
             .collect()
     }
+    /// `type=`: every positive must match, no negative may match.
+    fn selector_types_match(&self, s: &Selector, ty: &str) -> bool {
+        s.types.iter().all(|(want, neg)| {
+            let matches = if let Some(tag) = want.strip_prefix('#') {
+                self.entity_tag_matches(tag, ty)
+            } else {
+                want == ty
+            };
+            matches != *neg
+        })
+    }
     /// The candidates of the level in place that pass the selector
     /// (EntitySelector.getPredicate).
     fn select_in_level(
@@ -820,22 +899,27 @@ impl Game<'_> {
     ) -> Vec<(Target, f64)> {
         let level = self.experience.level;
         let creative = self.creative;
+        // EntitySelector tests the type before any predicate. With no scores=
+        // or team= (whose holders may be made as they are read), the rest of
+        // the extra filter is a pure test of each candidate, so the ones of
+        // another type leave first: `@e[type=marker,tag=…]` no longer reads
+        // the tags of every falling block and item in the level.
+        let candidates = if !s.types.is_empty() && s.scores.is_empty() && s.teams.is_empty() {
+            candidates
+                .into_iter()
+                .filter(|&t| self.selector_types_match(s, &self.target_type(t)))
+                .collect()
+        } else {
+            candidates
+        };
         let passing = self.selector_extra_filter(&candidates, s);
         candidates
             .into_iter()
             .filter_map(|t| {
                 let p = self.target_position(t)?;
                 let ty = self.target_type(t);
-                // type=: every positive must match, no negative may match.
-                for (want, neg) in &s.types {
-                    let matches = if let Some(tag) = want.strip_prefix('#') {
-                        self.entity_tag_matches(tag, &ty)
-                    } else {
-                        *want == ty
-                    };
-                    if matches == *neg {
-                        return None;
-                    }
+                if !self.selector_types_match(s, &ty) {
+                    return None;
                 }
                 if !s.include_entities
                     && !t.is_player()
@@ -914,6 +998,42 @@ impl Game<'_> {
             })
             .collect()
     }
+    /// `EntityLookup.getEntities`: insertion order for the joined families in
+    /// unbounded arbitrary queries. Spatial queries keep their existing path;
+    /// their section membership order is a separate traversal.
+    fn global_selector_candidates(&self) -> Vec<Target> {
+        use super::entity::{Entity as _, entity_lists_of, with_entity};
+        let original = self.level_candidates();
+        // Counts preserve every occurrence, including nonwalk fallback targets.
+        // The map is never iterated to choose order and is not an order store.
+        let mut remaining = std::collections::HashMap::<Target, usize>::new();
+        for target in &original {
+            *remaining.entry(*target).or_default() += 1;
+        }
+        let mut ordered = Vec::with_capacity(original.len());
+        let walked = entity_lists_of!(self).walk_in_join_order(|handle, _| {
+            if let Some(target) = with_entity!(self, handle, entity => entity.selector_target())
+                && let Some(count) = remaining.get_mut(&target)
+                && *count > 0
+            {
+                *count -= 1;
+                ordered.push(target);
+            }
+        });
+        // Invalid/unjoined storage retains the whole old path, never a prefix.
+        if walked.is_err() {
+            return original;
+        }
+        for target in original {
+            let count = remaining.get_mut(&target).expect("an original candidate");
+            if *count > 0 {
+                *count -= 1;
+                ordered.push(target);
+            }
+        }
+        ordered
+    }
+
     /// The entities of the level in place a selector can find: one walk over
     /// the entity lists (a kind added there joins `@e` once it names its
     /// `Target`), then the kinds that are not on the walk. An
@@ -942,6 +1062,9 @@ impl Game<'_> {
                 .filter(|c| c.id != 0)
                 .map(|c| Target::Cloud(c.id)),
         );
+        // The knots lead ties made (LeashFenceKnotEntity), each the one
+        // entity its id names.
+        candidates.extend(self.natural_knot_ids().into_iter().map(Target::Knot));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -981,6 +1104,7 @@ impl Game<'_> {
             Target::Trident(id),
             Target::Spawner(id),
             Target::Cloud(id),
+            Target::Knot(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -1011,6 +1135,7 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.iter().any(|t| t.id == id),
             Target::Spawner(id) => self.ominous_spawners.iter().any(|s| s.id == id),
             Target::Cloud(id) => self.breath_clouds.iter().any(|c| c.id == id),
+            Target::Knot(id) => self.natural_knot(id).is_some(),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1333,6 +1458,9 @@ impl Game<'_> {
         let custom = s.data().and_then(|data| data.custom_name.as_ref());
         let hover = if let Some(c) = custom {
             horizon_client::component::name_text(c)
+        } else if let Some(key) = horizon_client::brewing::contents_name_key(s) {
+            // A potion's or tipped arrow's own name, over its `item_name`.
+            Text::translate(&key, &[])
         } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
@@ -1345,18 +1473,6 @@ impl Game<'_> {
             .filter(|t| !t.trim().is_empty())
         {
             Text::literal(title)
-        } else if matches!(
-            item,
-            "minecraft:potion"
-                | "minecraft:splash_potion"
-                | "minecraft:lingering_potion"
-                | "minecraft:tipped_arrow"
-        ) && s.potion().is_some()
-        {
-            Text::translate(
-                &horizon_client::brewing::potion_name_key(item, s.potion()),
-                &[],
-            )
         } else if item == "minecraft:shield"
             && let Some(color) = s.data().and_then(|d| d.base_color.as_deref())
         {
@@ -1531,6 +1647,43 @@ impl Game<'_> {
         };
         self.feedback(message);
         Ok(targets.len() as i32)
+    }
+    /// `Entity.teleportTo(level, x, y, z, relatives, yRot, xRot, ...)`, as
+    /// `/tp` and `/spreadplayers` call it: its transition has no motion and no
+    /// relative delta, so `teleportSetPosition` leaves the moving entity still.
+    /// (An end gateway's or a vehicle's transition carries its motion.)
+    pub(super) fn teleport_stops(&mut self, t: Target) {
+        let _ = self.in_target_level(t, |g| {
+            target_entity_mut!(g, t, e => *e.velocity_mut() = Vec3::ZERO);
+            // The dragon's flight builds on the motion it carries.
+            if let Target::Dragon(id) = t
+                && let Some(d) = g.dragon.as_mut().filter(|d| d.id == id)
+            {
+                d.stop();
+            }
+        });
+    }
+    /// `TeleportCommand.performTeleport` after a successful `teleportTo` in
+    /// the target's own level: unless it is a fall-flying living entity, its
+    /// vertical motion is zeroed and it is on the ground; a mob's navigation
+    /// stops (`PathfinderMob`; the others hold no path). The players' own
+    /// ground is their clients'.
+    fn tp_lands(&mut self, t: Target) {
+        self.teleport_stops(t);
+        let _ = self.in_target_level(t, |g| {
+            if let Target::Mob(id) = t
+                && let Some(m) = g.mobs.iter_mut().find(|m| m.id == id)
+            {
+                m.nav_stop();
+                if m.extra.fall_flying {
+                    return;
+                }
+            }
+            target_entity_mut!(g, t, e => {
+                e.velocity_mut().y = 0.0;
+                e.set_on_ground(true);
+            });
+        });
     }
     pub(in crate::game) fn teleport_to(
         &mut self,
@@ -1787,6 +1940,8 @@ impl Game<'_> {
             }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
+            // The commands leave a natural knot out (`without_knots`).
+            Target::Knot(_) => {}
         }
         // Entity.teleportSameDimension: the riders go with their vehicle at
         // once, by the offset it took and the turn it was given.
@@ -1893,7 +2048,7 @@ impl Game<'_> {
     }
     fn cmd_teleport(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let targets = if id.starts_with("teleport.targets") {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![
                 self.source_entity()
@@ -1921,6 +2076,7 @@ impl Game<'_> {
                     // TeleportCommand.teleportToEntity: the destination's angles,
                     // which the riders turn to as well.
                     self.teleport_to(t, pos, rotation, true);
+                    self.tp_lands(t);
                 }
             }
             let message = if targets.len() == 1 {
@@ -2026,6 +2182,7 @@ impl Game<'_> {
             if let Some(f) = facing {
                 self.send_player_look_at(t, anchored_eyes, f, facing_entity);
             }
+            self.tp_lands(t);
         }
         let [x, y, z] = pos.map(|v| Text::literal(format_double(v)));
         let message = if targets.len() == 1 {
@@ -2044,14 +2201,14 @@ impl Game<'_> {
     }
     /// `ServerClockManager.getInstance`: commands address clock-keyed state.
     /// Keep the existing Overworld clock tied to the world's canonical day time.
-    fn command_clock_time(&self, clock: &str) -> i64 {
+    pub(super) fn command_clock_time(&self, clock: &str) -> i64 {
         if clock == "minecraft:overworld" {
             self.world.day_time
         } else {
             self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
         }
     }
-    fn set_command_clock_time(&mut self, clock: &str, total: i64) {
+    pub(super) fn set_command_clock_time(&mut self, clock: &str, total: i64) {
         if clock == "minecraft:overworld" {
             self.world.day_time = total;
         } else {
@@ -2062,7 +2219,7 @@ impl Game<'_> {
                 .0 = total;
         }
     }
-    fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
+    pub(super) fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
         if clock == "minecraft:overworld" {
             &mut self.ui.clock
         } else {
@@ -2097,12 +2254,7 @@ impl Game<'_> {
                 if total == t {
                     return Err(err("commands.time.set.already_at_time", &[&clock, &t]));
                 }
-                let mut cancel = false;
-                self.native_time_skip(self.dim.id(), total, t, "command", &mut cancel);
-                if !cancel {
-                    self.set_command_clock_time(&clock, t);
-                    self.command_clock_state(&clock).partial = 0.0;
-                }
+                self.jump_clock(&clock, total, t, "command");
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &t]));
                 Ok(t as i32)
             }
@@ -2260,41 +2412,7 @@ impl Game<'_> {
                 true,
             )
         };
-        let previous = (
-            self.world.weather.clear_time,
-            self.world.weather.rain_time,
-            self.world.weather.thunder_time,
-            self.world.weather.raining,
-            self.world.weather.thundering,
-        );
-        let mut cancel = false;
-        self.native_weather_change(self.dim.id(), raining, thundering, &mut cancel);
-        let old_thundering = self.world.weather.thundering;
-        let old_thunder_time = self.world.weather.thunder_time;
-        let mut cancel_thunder = false;
-        self.native_thunder_change(self.dim.id(), thundering, &mut cancel_thunder);
-        if cancel {
-            let w = &mut self.world.weather;
-            (
-                w.clear_time,
-                w.rain_time,
-                w.thunder_time,
-                w.raining,
-                w.thundering,
-            ) = previous;
-        } else {
-            // ServerLevel.setWeatherParameters.
-            let w = &mut self.world.weather;
-            w.clear_time = clear;
-            w.rain_time = time;
-            w.thunder_time = time;
-            w.raining = raining;
-            w.thundering = thundering;
-            if cancel_thunder {
-                w.thunder_time = old_thunder_time;
-                w.thundering = old_thundering;
-            }
-        }
+        self.apply_weather(clear, time, raining, thundering);
         self.feedback(Text::translate(key, &[]));
         Ok(duration.unwrap_or(-1))
     }
@@ -2306,27 +2424,29 @@ impl Game<'_> {
         // Entity.kill (BlockAttachedEntity.kill; ArmorStand's generic_kill hit,
         // which bypasses its invulnerability; a vehicle is no LivingEntity):
         // removed, then ENTITY_DIE by the entity itself. Mobs post theirs as
-        // they die, the crystal and the dragon on their own paths, and an item
-        // entity can dampen it (ItemEntity.dampensVibrations), so it is not here.
-        let died = matches!(
+        // they die, the dragon on its own path, and EndCrystal.kill posts it
+        // after onDestroyedBy. The source is captured before the removal: an
+        // armor stand is living (wardens can't target it), and a dropped item
+        // keeps its stack's ItemEntity.dampensVibrations.
+        let died = (!matches!(
             t,
-            Target::Stand(_)
-                | Target::Frame(_)
-                | Target::Painting(_)
-                | Target::Boat(_)
-                | Target::Cart(_)
-                | Target::Orb(_)
-                | Target::Projectile(_)
-                | Target::Fangs(_)
-                | Target::Tnt(_)
-                | Target::Falling(_)
-                | Target::Rocket(_)
-                | Target::Trident(_)
-                | Target::Spawner(_)
-                | Target::Cloud(_)
-        )
+            Target::Player
+                | Target::Guest(_)
+                | Target::Mob(_)
+                | Target::Crystal(_)
+                | Target::Dragon(_)
+        ))
         .then(|| self.target_position(t))
         .flatten();
+        let mut context = self.who_context(None, None);
+        context.living = matches!(t, Target::Stand(_));
+        if let Target::Item(id) = t {
+            context.dampens = self.dropped.iter().find(|i| i.id == id).is_some_and(|i| {
+                self.res
+                    .items()
+                    .item_in_tag("minecraft:dampens_vibrations", &i.stack.item)
+            });
+        }
         match t {
             Target::Guest(_) => {
                 self.for_player(t, |g| g.kill_target(Target::Player));
@@ -2338,10 +2458,12 @@ impl Game<'_> {
                 self.ui.death_cause = Some("death.attack.genericKill".into());
             }
             Target::Mob(id) => {
+                let mut killed = None;
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // LivingEntity.kill: a generic_kill hit of Float.MAX_VALUE,
                     // which its death message tells.
-                    if m.alive() {
+                    let alive = m.alive();
+                    if alive {
                         m.record_damage(
                             horizon_client::mobs::Damage::of(
                                 horizon_client::mobs::DamageKind::GenericKill,
@@ -2353,6 +2475,16 @@ impl Game<'_> {
                     if m.death_time == 0 {
                         m.death_time = 1;
                     }
+                    killed = alive.then(|| m.clone());
+                }
+                // The hit runs LivingEntity.die before the command returns:
+                // its ENTITY_DIE, loot and experience come now, not in the
+                // next tick's deaths, which skip it (as a frog's bite does).
+                if let Some(m) = killed
+                    && !m.removed
+                    && self.died.insert(id)
+                {
+                    self.mob_died(&m);
                 }
             }
             Target::Item(id) => {
@@ -2382,7 +2514,9 @@ impl Game<'_> {
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                     self.release_vehicle_container(id);
                     let b = self.boats.remove(i);
-                    self.spill_killed_vehicle_contents(b.position, &b.items);
+                    // AbstractChestBoat.remove, after the live menu writes
+                    // back its slots.
+                    self.drop_vehicle_contents(b.position.components(), &b.items);
                     self.boat_removed(&b);
                 }
             }
@@ -2390,7 +2524,8 @@ impl Game<'_> {
                 self.release_vehicle_container(id);
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                     let c = self.carts.remove(i);
-                    self.spill_killed_vehicle_contents(c.position, &c.items);
+                    // AbstractMinecartContainer.remove.
+                    self.drop_vehicle_contents(c.position.components(), &c.items);
                 }
             }
             Target::Other(id) => self.others.retain(|o| o.id != id),
@@ -2404,41 +2539,19 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
             Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
+            // The commands leave a natural knot out (`without_knots`).
+            Target::Knot(_) => {}
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         self.orbs.retain(|o| o.age < u32::MAX / 2);
         if let Some(at) = died {
-            self.entity_killed_event(at, false);
+            self.post_game_event("minecraft:entity_die", at, context);
         }
         self.native_leaves_flush();
     }
-    /// `AbstractChestBoat.remove` / `AbstractMinecartContainer.remove` for
-    /// destroying removal (`Entity.kill`): `Containers.dropContents`, separate
-    /// from hurt-time hull drops and after the live menu writes back its slots.
-    fn spill_killed_vehicle_contents(&mut self, pos: Vec3, slots: &[Option<ItemStack>]) {
-        for stack in slots {
-            let count = stack.as_ref().map_or(0, |s| s.count);
-            for piece in horizon_world::level::removal::drop_item_stack_at(
-                &mut self.world.random,
-                pos.components(),
-                count,
-            ) {
-                let Some(stack) = stack else { continue };
-                self.spawn_item(
-                    ItemStack {
-                        count: piece.count,
-                        ..stack.clone()
-                    },
-                    piece.pos,
-                    piece.motion,
-                    0,
-                );
-            }
-        }
-    }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![self.implied_player()]
         };
@@ -2506,7 +2619,9 @@ impl Game<'_> {
         }
         let name;
         if self.res.mob_types().contains_key(&kind) {
-            self.spawn_mob_spawned(&short, pos)
+            // SummonCommand.createEntity loads the mob from `{id:..}`: its yaw
+            // is the compound's (none, so 0), with no level-random draw.
+            self.spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
             name = Text::translate(&entity_name_key(&kind), &[]);
         } else {
@@ -2534,6 +2649,7 @@ impl Game<'_> {
                         count: 1,
                         ticks: 0,
                         health: 5,
+                        following: None,
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {
@@ -2712,6 +2828,7 @@ impl Game<'_> {
             return Ok(false);
         }
         self.ensure_stateful_entity_table();
+        self.sculk_prepare();
         // A different block replaces the block entity (Level.setBlock).
         let (old, new) = (
             self.res.facts().get(previous).name.clone(),
@@ -2755,6 +2872,7 @@ impl Game<'_> {
         let needs_entity = !self.world.block_entities.stateful_entity(landed.0) && old != new;
         if needs_entity
             && self.res.facts().get(landed).name == new
+            && !self.sculk_place_entity(landed)
             && let Some(entity) = self.new_block_entity_for_state(landed)
         {
             self.world.block_entities.insert(key, entity);
@@ -2855,59 +2973,6 @@ impl Game<'_> {
         });
         self.process_level_events()
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
-    }
-    /// The block entity part of `BlockInput.place`: load the block entity
-    /// from the argument's tag; true when its saved data changed.
-    pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
-        use horizon_world::nbt::Tag;
-        if self.pot_data(pos).is_some() {
-            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-                return false;
-            };
-            return self.set_pot_data(pos, &tag).unwrap_or(false);
-        }
-        let key = (pos[0], pos[1], pos[2]);
-        let Some(e) = self.world.block_entities.get(&key) else {
-            return false;
-        };
-        let name = self.data_block_name(pos);
-        let before = horizon_client::save::encode_block_entity(key, e, &name);
-        let Ok((mut tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-            return false;
-        };
-        if let Tag::Compound(c) = &mut tag {
-            for k in ["id", "x", "y", "z"] {
-                if let Some(v) = before.get(k) {
-                    c.insert(k.into(), v.clone());
-                }
-            }
-        }
-        let Some((_, mut new)) = horizon_client::save::decode_block_entity(&tag) else {
-            return false;
-        };
-        let rolled = self.take_loot_table(key, &tag, &mut new);
-        let after = horizon_client::save::encode_block_entity(key, &new, &name);
-        // The lock is outside the model: a tag that only changes it still
-        // changes the block entity.
-        let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        // So is the custom name.
-        let name_changed = self.load_block_name(key, &new, &tag);
-        let cooldown_changed = if name == "minecraft:hopper" {
-            let state = super::machines::HopperState::load(&tag);
-            let changed = self.hoppers.get(&key).map_or(-1, |s| s.cooldown) != state.cooldown;
-            self.hoppers.insert(key, state);
-            changed
-        } else {
-            false
-        };
-        if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
-            return false;
-        }
-        self.world.block_entities.insert(key, new);
-        self.world.set_block_lock(key, &tag);
-        self.update_spawner_display(key);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        true
     }
     /// `RandomizableContainer.unpackLootTable` for a player who opens a
     /// container: a roll the container still holds fires
@@ -3083,7 +3148,8 @@ impl Game<'_> {
         // of states, and matching a tag is a name lookup.
         let mut matched: std::collections::HashMap<BlockStateId, bool> =
             std::collections::HashMap::new();
-        let plain = !(destroy || hollow || outline);
+        // A tag can change a block entity whose block is already in place.
+        let plain = !(destroy || hollow || outline) && block.nbt.is_none();
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
@@ -3126,7 +3192,8 @@ impl Game<'_> {
                         self.destroy_block_dropping([x, y, z])?;
                         affected = true;
                     }
-                    let target = if (outline || hollow) && !edge {
+                    let core = (outline || hollow) && !edge;
+                    let target = if core {
                         if outline {
                             if affected {
                                 count += 1;
@@ -3143,7 +3210,16 @@ impl Game<'_> {
                         target
                     };
                     let previous = self.world.block(x, y, z);
-                    if self.place_state([x, y, z], target, strict, true)? {
+                    let placed = self.place_state([x, y, z], target, strict, true)?;
+                    // BlockInput.place loads the tag into the block entity now
+                    // there; a tag that changed it counts the block as placed.
+                    // A hollow fill's core is plain air.
+                    let loaded = !core
+                        && block
+                            .nbt
+                            .as_deref()
+                            .is_some_and(|nbt| self.load_block_entity_nbt([x, y, z], nbt));
+                    if placed || loaded {
                         count += 1;
                         if !strict {
                             updated.push(([x, y, z], previous));
@@ -3164,10 +3240,115 @@ impl Game<'_> {
         self.feedback(Text::tr("commands.fill.success", &[&count]));
         Ok(count)
     }
+    /// `CloneCommands`: `from <sourceDimension>` is resolved as `begin` is
+    /// read, `to <targetDimension>` as `destination` is
+    /// (`DimensionArgument.getDimension`), each position checked loaded in its
+    /// own level (`BlockPosArgument.getLoadedBlockPos`): an unknown source fails
+    /// before an unknown target. The blocks are read in the source level and
+    /// placed in the target level. The command's own level is back in place,
+    /// whatever happened, before the command reports.
     fn cmd_clone(&mut self, ctx: &Context) -> R<i32> {
-        let a = self.block_pos_arg(ctx, "begin")?;
-        let b = self.block_pos_arg(ctx, "end")?;
-        let dest = self.block_pos_arg(ctx, "destination")?;
+        let here = self.dim;
+        let result = self.clone_levels(ctx);
+        if self.dim != here {
+            self.enter_command_level(here);
+        }
+        if self.dim != here {
+            log::error!("/clone could not return to {}", here.id());
+            return Err(err("commands.clone.failed", &[]));
+        }
+        let count = result?;
+        self.feedback(Text::tr("commands.clone.success", &[&count]));
+        Ok(count)
+    }
+    fn clone_levels(&mut self, ctx: &Context) -> R<i32> {
+        let here = self.dim;
+        let source_level = self.command_source.map_or(self.dim, |s| s.dimension);
+        // The coordinates, from the command's own source, before any level moves.
+        let position = |name: &str| -> R<[i32; 3]> {
+            let c = self
+                .coords(ctx, name)
+                .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
+            Ok(self.resolve_coords(&c).map(|v| v.floor() as i32))
+        };
+        let (a, b, dest) = (
+            position("begin")?,
+            position("end")?,
+            position("destination")?,
+        );
+        let from_dim = self.clone_dimension(ctx, "sourceDimension")?;
+        self.clone_loaded(from_dim, here, source_level, a)?;
+        self.clone_loaded(from_dim, here, source_level, b)?;
+        let to_dim = self.clone_dimension(ctx, "targetDimension")?;
+        self.clone_loaded(to_dim, here, source_level, dest)?;
+        self.clone_between(
+            ctx,
+            a,
+            b,
+            dest,
+            from_dim.unwrap_or(here),
+            to_dim.unwrap_or(here),
+        )
+    }
+    /// `BlockPosArgument.getLoadedBlockPos` in the level a dimension argument
+    /// names, or, without one, the command's own (as `block_pos_arg` checks it).
+    fn clone_loaded(
+        &mut self,
+        dim: Option<Dim>,
+        here: Dim,
+        source_level: Dim,
+        p: [i32; 3],
+    ) -> R<()> {
+        match dim {
+            Some(dim) => self.clone_enter(dim)?,
+            None => {
+                self.clone_enter(here)?;
+                if source_level != self.dim {
+                    return Err(err("argument.pos.unloaded", &[]));
+                }
+            }
+        }
+        if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
+            return Err(err("argument.pos.unloaded", &[]));
+        }
+        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
+            return Err(err("argument.pos.outofworld", &[]));
+        }
+        Ok(())
+    }
+    /// `DimensionArgument.getDimension`: a built-in dimension, or
+    /// `argument.dimension.invalid`; None when the argument is absent.
+    fn clone_dimension(&self, ctx: &Context, name: &str) -> R<Option<Dim>> {
+        let Some(Arg::Resource(id)) = ctx.get(name) else {
+            return Ok(None);
+        };
+        if !matches!(
+            id.as_str(),
+            "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
+        ) {
+            return Err(err("argument.dimension.invalid", &[id]));
+        }
+        Ok(Some(Dim::from_id(id)))
+    }
+    /// Put `dim`'s level in place for the clone, or fail it when it cannot be.
+    fn clone_enter(&mut self, dim: Dim) -> R<()> {
+        if self.dim != dim {
+            self.enter_command_level(dim);
+        }
+        if self.dim != dim {
+            return Err(err("commands.clone.failed", &[]));
+        }
+        Ok(())
+    }
+    fn clone_between(
+        &mut self,
+        ctx: &Context,
+        a: [i32; 3],
+        b: [i32; 3],
+        dest: [i32; 3],
+        from_dim: Dim,
+        to_dim: Dim,
+    ) -> R<i32> {
         let min = [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])];
         let max = [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])];
         let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
@@ -3175,7 +3356,7 @@ impl Game<'_> {
         let overlap = (0..3).all(|i| dest[i] <= max[i] && dmax[i] >= min[i]);
         let moving = ctx.has("move");
         // Mode.canOverlap: only the normal mode refuses overlapping regions.
-        if !ctx.has("force") && !moving && overlap {
+        if !ctx.has("force") && !moving && from_dim == to_dim && overlap {
             return Err(err("commands.clone.overlap", &[]));
         }
         let area = (0..3).map(|i| i64::from(size[i] + 1)).product::<i64>();
@@ -3183,6 +3364,7 @@ impl Game<'_> {
         if area > i64::from(limit) {
             return Err(err("commands.clone.toobig", &[&limit, &area]));
         }
+        self.clone_enter(to_dim)?;
         for p in [dest, dmax] {
             if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
                 return Err(err("argument.pos.unloaded", &[]));
@@ -3198,6 +3380,7 @@ impl Game<'_> {
         };
         let air = self.world.air;
         let masked = ctx.has("masked");
+        self.clone_enter(from_dim)?;
         let mut copies = Vec::new();
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
@@ -3230,6 +3413,7 @@ impl Game<'_> {
                 self.place_state(*from, air, true, false)?;
             }
         }
+        self.clone_enter(to_dim)?;
         let strict = ctx.has("strict");
         // CloneCommands.clone sets every destination to a barrier first, so
         // each copied state but a barrier counts as placed.
@@ -3266,7 +3450,6 @@ impl Game<'_> {
         if count == 0 {
             return Err(err("commands.clone.failed", &[]));
         }
-        self.feedback(Text::tr("commands.clone.success", &[&count]));
         Ok(count)
     }
     /// Player.giveExperiencePoints including negative amounts.
@@ -3694,9 +3877,16 @@ impl Game<'_> {
             Some(Arg::Coords(c)) => c.rotation(self.source_rotation()),
             _ => [0.0, 0.0],
         };
+        // SetWorldSpawnCommand uses RespawnData.of before storing or comparing.
+        let rot = [wrap_degrees(rot[0]), rot[1].clamp(-90.0, 90.0)];
         // LevelData.setRespawnData: the world's spawn (level.dat `spawn`).
+        let previous_point = self.world_spawn_position().map(|v| v.floor() as i32);
         let old = self.level.world_spawn.replace(pos);
+        let old_angle = self.level.world_spawn_angle;
         self.level.world_spawn_angle = rot;
+        if previous_point != pos || old_angle.map(f32::to_bits) != rot.map(f32::to_bits) {
+            self.lan_broadcast_world_spawn();
+        }
         self.native_spawn_change(pos, rot);
         // A player whose fallback is the world spawn (no spawnpoint of its
         // own; a bed or an anchor that is gone falls back to it) respawns at
@@ -3852,7 +4042,9 @@ impl Game<'_> {
                         _ => false,
                     }
                 }
-                _ => present.is_some(),
+                // Count is a pseudo-component, not a catalog component.
+                _ if id == "minecraft:count" => present.is_some(),
+                _ => self.stack_component_present(stack, &id),
             };
             result != negated
         };
@@ -3860,6 +4052,23 @@ impl Game<'_> {
             .iter()
             .filter(|t| !t.trim().is_empty())
             .all(|term| split_top_level(term, '|').iter().any(|alt| test(alt)))
+    }
+    /// `ItemPredicateArgument.createComponentExistencePredicate`: the stack's
+    /// effective component presence, with its patch ahead of its prototype.
+    fn stack_component_present(&self, stack: &ItemStack, id: &str) -> bool {
+        // Read the modeled patch before saved-default elision. A removal wins
+        // even when the actual item prototype supplies the component.
+        if let Some(patch) = horizon_client::item_data::components_tag(stack.damage, stack.data()) {
+            if patch.get(&format!("!{id}")).is_some() {
+                return false;
+            }
+            if patch.get(id).is_some() {
+                return true;
+            }
+        }
+        self.items()
+            .get(&stack.item)
+            .is_some_and(|item| item.components.iter().any(|key| key == id))
     }
     fn cmd_clear(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
@@ -5156,86 +5365,129 @@ mod query_feedback_tests {
 }
 
 #[cfg(test)]
-mod forced_respawn_tests {
+#[path = "forced_respawn_tests.rs"]
+mod forced_respawn_tests;
+
+#[cfg(test)]
+mod effective_presence_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
     #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn overworld_spawnpoint_is_validated_at_both_player_blocks() {
-        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
-        use horizon_client::chunk::Chunk;
-        use horizon_core::geometry::Vec3;
-        use std::sync::Arc;
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.player = Some(
-            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(5.5, 64.0, 5.5))
-                .unwrap(),
-        );
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn registered_presence_uses_actual_catalog_and_stack_patch() {
+        let mut game = server_game();
         game.build_registries();
         game.set_allow_commands(true);
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.level.world_spawn = Some([0, 80, 0]);
-        let registry = game.pack.assets.registry;
-        let air = registry.default_state("minecraft:air").unwrap();
-        // Liquid is a block property: aquatic plants such as kelp still permit
-        // a forced point, while a bubble column does not, at feet or head.
-        for (block, allowed) in [
-            ("air", true),
-            ("water", false),
-            ("lava", false),
-            ("bubble_column", false),
-            ("kelp", true),
-            ("stone", false),
-        ] {
-            let state = registry
-                .default_state(&format!("minecraft:{block}"))
-                .unwrap();
-            for height in [0, 1] {
-                game.world.set(5, 64, 5, air).unwrap();
-                game.world.set(5, 65, 5, air).unwrap();
-                game.world.set(5, 64 + height, 5, state).unwrap();
-                assert!(game.run_command("spawnpoint @s 5 64 5"));
-                let config = game
-                    .respawn_config
-                    .expect("Overworld commands must retain a forced configuration");
-                assert!(config.forced);
-                assert_eq!(config.pos, [5, 64, 5]);
-                let actual = game.resolve_server_respawn(config);
-                assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
-                assert_eq!(game.respawn_config.is_some(), allowed);
-                assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
-                if let Some((at, yaw)) = actual {
-                    assert_eq!(at, Vec3::new(5.5, 64.1, 5.5));
-                    assert_eq!(yaw, 0.0);
+        let key = "minecraft:jukebox_playable";
+        assert!(
+            game.items()
+                .get("minecraft:music_disc_cat")
+                .unwrap()
+                .components
+                .iter()
+                .any(|k| k == key)
+        );
+        assert!(
+            !game
+                .items()
+                .get("minecraft:stone")
+                .unwrap()
+                .components
+                .iter()
+                .any(|k| k == key)
+        );
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("setblock 4 199 4 stone"));
+        assert!(game.run_command("setblock 4 200 4 chest{Items:[{Slot:0b,id:\"minecraft:music_disc_cat\",count:1},{Slot:1b,id:\"minecraft:stone\",count:1},{Slot:2b,id:\"minecraft:stone\",count:1,components:{\"minecraft:jukebox_playable\":\"minecraft:cat\",\"minecraft:custom_data\":{h193:1}}},{Slot:3b,id:\"minecraft:music_disc_cat\",count:1,components:{\"!minecraft:jukebox_playable\":{},\"minecraft:custom_data\":{h193:1}}}]}"));
+        assert!(game.run_command("scoreboard objectives add h193 dummy"));
+        let clock = game.world.game_time;
+        let horizon_client::containers::BlockEntity::Chest(stacks) =
+            game.world.block_entities.get(&(4, 200, 4)).unwrap()
+        else {
+            panic!("actual chest missing")
+        };
+        let stacks = stacks.clone();
+        assert_eq!(stacks.len(), 27);
+        assert!(
+            stacks[0].as_ref().unwrap().extra.is_none(),
+            "plain modeled stack has no patch"
+        );
+        assert!(
+            stacks[2]
+                .as_ref()
+                .unwrap()
+                .extra
+                .as_ref()
+                .unwrap()
+                .other(key)
+                .is_some()
+        );
+        assert!(
+            stacks[3]
+                .as_ref()
+                .unwrap()
+                .extra
+                .as_ref()
+                .unwrap()
+                .other("!minecraft:jukebox_playable")
+                .is_some()
+        );
+        let saved = game.block_entity_nbt([4, 200, 4]).unwrap();
+        let mut failures = Vec::new();
+        for (slot, present) in [true, false, true, false].into_iter().enumerate() {
+            let stack = stacks[slot].as_ref().unwrap();
+            assert_eq!(stack.count, 1);
+            for neg in [false, true] {
+                let expected = present != neg;
+                let term = format!("{}minecraft:jukebox_playable", if neg { "!" } else { "" });
+                let predicate = ItemInput {
+                    id: String::new(),
+                    tag: false,
+                    any: true,
+                    components: Some(format!("[{term}]")),
+                };
+                if game.stack_matches(&predicate, stack) != expected {
+                    failures.push(format!("direct slot{slot} {term}"));
+                }
+                for sign in ["if", "unless"] {
+                    for (name, n) in [("r", 91), ("s", 17)] {
+                        assert!(
+                            game.run_command(&format!("scoreboard players set #{name} h193 {n}"))
+                        );
+                    }
+                    let accepted = game.run_command(&format!("execute store result score #r h193 store success score #s h193 {sign} items block 4 200 4 container.{slot} *[{term}]"));
+                    let yes = if sign == "if" { expected } else { !expected };
+                    let score = |name| game.score.board.score(name, "h193").unwrap().value;
+                    if (accepted, score("#r"), score("#s")) != (yes, i32::from(yes), i32::from(yes))
+                    {
+                        failures.push(format!("command slot{slot} {sign} {term}"));
+                    }
                 }
             }
         }
+        let plain = ItemStack::new("minecraft:music_disc_cat", 1);
+        assert!(plain.extra.is_none());
+        let p = ItemInput {
+            id: String::new(),
+            tag: false,
+            any: true,
+            components: Some("[minecraft:jukebox_playable]".into()),
+        };
+        if !game.stack_matches(&p, &plain) {
+            failures.push("no-raw modeled prototype".into());
+        }
+        assert_eq!(
+            game.block_entity_nbt([4, 200, 4]).unwrap(),
+            saved,
+            "read-only saved inventory"
+        );
+        assert_eq!(game.world.game_time, clock, "zero actor ticks");
+        assert!(game.world.loaded(4, 4));
+        assert!(
+            failures.is_empty(),
+            "actual effective component presence mismatches: {failures:?}"
+        );
     }
 }
 
@@ -5651,6 +5903,154 @@ mod vehicle_kill_tests {
         assert!(
             differences.is_empty(),
             "kill must spill authoritative explicit contents: {differences:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod global_selector_order_tests {
+    use super::{Selector, Sort, Target};
+    use horizon_client::join_seq::Joined;
+    use horizon_core::position::ChunkPos;
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_registered_global_selector_keeps_interleaved_insertion_and_limits() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        for x in 0..2 {
+            for z in 0..2 {
+                game.world.chunks.insert(
+                    (x, z),
+                    std::sync::Arc::new(horizon_client::chunk::Chunk::empty(x, z)),
+                );
+                game.block_ticks
+                    .add_empty_chunk(ChunkPos::new(x, z))
+                    .unwrap();
+            }
+        }
+        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
+        assert!(game.run_command("scoreboard objectives add h268 dummy"));
+        let clock = game.world.game_time;
+        let actors = [
+            ("pig", 41, [17.5, 200.0, 16.25]),
+            ("armor_stand", 7, [15.75, 200.0, 15.5]),
+            ("item", 93, [15.5, 200.0, 17.0]),
+            ("pig", 2, [17.0, 200.0, 15.75]),
+            ("armor_stand", 68, [18.5, 200.0, 16.5]),
+            ("item", 11, [14.0, 200.0, 16.75]),
+        ];
+        let mut targets = Vec::new();
+        let mut last_join = 0;
+        for (i, (kind, uuid, pos)) in actors.iter().enumerate() {
+            let extra = match *kind {
+                "pig" => ",NoAI:1b,Health:10f,PersistenceRequired:1b",
+                "armor_stand" => ",Health:20f",
+                _ => ",Item:{id:\"minecraft:stone\",count:1},PickupDelay:32767s",
+            };
+            assert!(game.run_command(&format!(
+                "summon {kind} {:?} {:?} {:?} {{UUID:[I;268,0,0,{uuid}],Tags:[\"h268\"],NoGravity:1b,Motion:[0d,0d,0d]{extra}}}",
+                pos[0], pos[1], pos[2]
+            )));
+            let target = game
+                .target_by_uuid((268u128 << 96) | *uuid as u128)
+                .unwrap();
+            assert_eq!(game.target_type(target), format!("minecraft:{kind}"));
+            assert_eq!(game.target_position(target), Some(*pos));
+            assert!(game.world.loaded(pos[0] as i32, pos[2] as i32));
+            let join = match target {
+                Target::Mob(id) => game.mobs.iter().find(|m| m.id == id).unwrap().join_seq(),
+                Target::Stand(id) => game
+                    .armor_stands
+                    .iter()
+                    .find(|m| m.id == id)
+                    .unwrap()
+                    .join_seq(),
+                Target::Item(id) => game.dropped.iter().find(|m| m.id == id).unwrap().join_seq(),
+                _ => panic!("actual admitted family"),
+            };
+            assert!(
+                join.is_joined() && join.get() > last_join,
+                "actual registered creation chronology {i}"
+            );
+            last_join = join.get();
+            targets.push(target);
+            assert!(game.run_command("scoreboard players set #r h268 91"));
+            assert!(game.run_command(
+                "execute store result score #r h268 run execute if entity @e[tag=h268]"
+            ));
+            assert_eq!(
+                game.score.board.score("#r", "h268").unwrap().value,
+                i as i32 + 1
+            );
+        }
+        let selector = Selector {
+            kind: 'e',
+            include_entities: true,
+            limit: usize::MAX,
+            tags: vec![("h268".into(), false)],
+            ..Default::default()
+        };
+        // Existing sorted paths remain controls, with no equal-distance ties.
+        let mut nearest = selector.clone();
+        nearest.sort = Sort::Nearest;
+        nearest.pos = [Some(16.0), Some(200.0), Some(16.0)];
+        assert_eq!(
+            game.select(&nearest),
+            [1, 3, 2, 0, 5, 4].map(|i| targets[i])
+        );
+        nearest.sort = Sort::Furthest;
+        assert_eq!(
+            game.select(&nearest),
+            [4, 5, 0, 2, 3, 1].map(|i| targets[i])
+        );
+        let mut spatial = selector.clone();
+        spatial.distance = Some((None, Some(3.0)));
+        spatial.pos = [Some(16.0), Some(200.0), Some(16.0)];
+        let old_spatial = game.select(&spatial);
+        let mut failures = Vec::new();
+        for (name, options, expected) in [
+            ("all", "sort=arbitrary", vec![41, 7, 93, 2, 68, 11]),
+            ("two", "sort=arbitrary,limit=2", vec![41, 7]),
+            (
+                "filtered",
+                "type=!minecraft:armor_stand,sort=arbitrary,limit=3",
+                vec![41, 93, 2],
+            ),
+        ] {
+            assert!(game.run_command(&format!(
+                "data modify storage h268:proof {name} set value []"
+            )));
+            assert!(game.run_command("scoreboard players set #r h268 91"));
+            assert!(game.run_command("scoreboard players set #s h268 17"));
+            assert!(game.run_command(&format!("execute positioned 16.0 200.0 16.0 store result score #r h268 store success score #s h268 as @e[tag=h268,{options}] run data modify storage h268:proof {name} append from entity @s UUID")));
+            assert_eq!(game.score.board.score("#r", "h268").unwrap().value, 1);
+            assert_eq!(game.score.board.score("#s", "h268").unwrap().value, 1);
+            let actual = game.score.storage.get("h268:proof").get(name).cloned();
+            let wanted = Some(Tag::List(
+                expected
+                    .iter()
+                    .map(|v| Tag::IntArray(vec![268, 0, 0, *v]))
+                    .collect(),
+            ));
+            if actual != wanted {
+                failures.push(format!("{name}: {actual:?} != {wanted:?}"));
+            }
+        }
+        assert_eq!(
+            game.select(&spatial),
+            old_spatial,
+            "unchanged spatial path within the scene"
+        );
+        assert_eq!(game.world.game_time, clock);
+        for (target, (_, _, pos)) in targets.iter().zip(actors.iter()) {
+            assert_eq!(game.target_position(*target), Some(*pos));
+        }
+        assert!(
+            failures.is_empty(),
+            "actual registered selector order/limits: {failures:#?}"
         );
     }
 }

@@ -3,6 +3,7 @@
 //! biome mix comes from the Gaussian sampler over a test grid of biomes.
 use horizon_world::environment_attributes::{ATTRIBUTES, AttributeMap, Kind, Value};
 use horizon_world::environment_system::{BiomeBlend, Builder, Conditions, gaussian_sample};
+use horizon_world::environment_timeline::Timeline;
 use serde_json::Value as Json;
 use std::{collections::HashMap, error::Error, fmt::Write};
 
@@ -33,6 +34,7 @@ fn cell(grid: &[String], x: i32, y: i32, z: i32) -> &str {
 
 fn run(
     maps: &HashMap<String, AttributeMap>,
+    timelines: &[Timeline],
     case: &Json,
     output: &mut String,
 ) -> Result<(), Box<dyn Error>> {
@@ -60,6 +62,11 @@ fn run(
         .map(|id| map(id))
         .collect::<Result<Vec<_>, _>>()?;
     builder.biome_layer(biomes);
+    if case["timelines"].as_bool() == Some(true) {
+        for timeline in timelines {
+            builder.timeline_layer(timeline);
+        }
+    }
     if case["weather"].as_bool() == Some(true) {
         builder.weather_layers();
     }
@@ -88,6 +95,9 @@ fn run(
         thunder: case["thunder"].as_f64().ok_or("thunder")? as f32,
         blend: blended.then_some(&blend),
         biome: &biome,
+        clock: &|_| case["ticks"].as_i64().unwrap_or(0),
+        post_blend: None,
+        post_biome: None,
     };
     for attribute in ATTRIBUTES.iter().filter(|a| a.kind != Kind::Other) {
         let value = system.value(attribute, &conditions).ok_or("no value")?;
@@ -111,7 +121,12 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let mut lines = input.lines();
     let data: Json = serde_json::from_str(lines.next().ok_or("no data")?)?;
     let mut maps = HashMap::new();
+    let mut timelines = Vec::new();
     for (id, json) in data.as_object().ok_or("data")? {
+        if id.starts_with("timeline:") {
+            timelines.push(Timeline::parse(json).map_err(|e| format!("{id}: {e}"))?);
+            continue;
+        }
         maps.insert(
             id.clone(),
             AttributeMap::parse(json).map_err(|e| format!("{id}: {e}"))?,
@@ -119,7 +134,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     }
     let mut output = String::new();
     for line in lines {
-        run(&maps, &serde_json::from_str(line)?, &mut output)?;
+        run(&maps, &timelines, &serde_json::from_str(line)?, &mut output)?;
     }
     std::fs::write(&args[2], output)?;
     Ok(())

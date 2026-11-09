@@ -228,8 +228,9 @@ pub fn slot_item(m: &Mob, slot: &str) -> Option<LootStack> {
         for (e, l) in &g.slots[index] {
             stack.enchantments.push((e.to_string(), *l as i32));
         }
-        if let Some((material, pattern)) = &g.trims[index] {
-            let trim = serde_json::json!({ "material": &**material, "pattern": &**pattern });
+        if let Some(trim) = &g.trims[index] {
+            let trim =
+                horizon_client_core::scoreboard::tag_to_json(&crate::item_data::trim::to_nbt(trim));
             stack.components.push(("minecraft:trim".to_owned(), trim));
         }
     }
@@ -276,18 +277,22 @@ pub fn clear_slot(m: &mut Mob, slot: &str) {
         }
         "head" => {
             m.extra.head = None;
+            m.extra.armor[0] = None;
             gear::HEAD
         }
         "chest" => {
             m.extra.chest = None;
+            m.extra.armor[1] = None;
             gear::CHEST
         }
         "legs" => {
             m.extra.legs = None;
+            m.extra.armor[2] = None;
             gear::LEGS
         }
         "feet" => {
             m.extra.feet = None;
+            m.extra.armor[3] = None;
             gear::FEET
         }
         "body" => {
@@ -339,6 +344,39 @@ pub fn drop_chance(m: &Mob, slot: &str) -> f32 {
         "mainhand" if m.species() == Species::Vex => 0.0,
         _ => DEFAULT_DROP_CHANCE,
     }
+}
+/// `DropChances.isPreserved`: whether the slot's drop chance is > 1.0.
+pub fn is_preserved(m: &Mob, slot: &str) -> bool {
+    drop_chance(m, slot) > 1.0
+}
+/// `Mob.dropPreservedEquipment`: drops any equipped items whose drop chance is > 1.0.
+pub fn drop_preserved_equipment(m: &mut Mob) -> Vec<crate::items::ItemStack> {
+    use horizon_world::player_inventory::EquipmentSlot;
+    let mut dropped = Vec::new();
+    for &slot in &SLOTS {
+        if is_preserved(m, slot) {
+            let eq_slot = match slot {
+                "mainhand" => Some(EquipmentSlot::MainHand),
+                "offhand" => Some(EquipmentSlot::OffHand),
+                "feet" => Some(EquipmentSlot::Feet),
+                "legs" => Some(EquipmentSlot::Legs),
+                "chest" => Some(EquipmentSlot::Chest),
+                "head" => Some(EquipmentSlot::Head),
+                "body" => Some(EquipmentSlot::Body),
+                "saddle" => Some(EquipmentSlot::Saddle),
+                _ => None,
+            };
+            if let Some(eq) = eq_slot
+                && let Some(stack) = super::finalize::equipment_stack(m, eq)
+                && stack.count > 0
+                && &*stack.item != "minecraft:air"
+            {
+                clear_slot(m, slot);
+                dropped.push(stack);
+            }
+        }
+    }
+    dropped
 }
 /// The facts loot predicates read about a mob.
 pub fn loot_entity(m: &Mob, vehicle: Option<LootEntity>) -> LootEntity {
@@ -809,5 +847,16 @@ mod slot_tests {
             &mut LegacyRandom::new(7),
         );
         assert!(!helmet(&out), "no timer, no equipment: {out:?}");
+    }
+
+    #[test]
+    fn preserved_equipment_drops_when_chance_exceeds_one() {
+        let mut m = mob("minecraft:zombie", Species::Zombie);
+        m.extra.head = Some("minecraft:iron_helmet".into());
+        m.extra.drop_chances = Some(Box::new([2.0; 8]));
+        let drops = drop_preserved_equipment(&mut m);
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].item.as_ref(), "minecraft:iron_helmet");
+        assert_eq!(m.extra.head, None);
     }
 }

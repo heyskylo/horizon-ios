@@ -149,6 +149,8 @@ impl Game<'_> {
         };
         let mut cancel = false;
         self.native_hanging_break(player, kind, pos, &mut cancel);
+        let dimension = self.dim.id();
+        self.native_hanging_break_v2(player, dimension, kind, pos, &mut cancel);
         cancel
     }
     /// `ItemFrameItem.useOn`.
@@ -182,6 +184,7 @@ impl Game<'_> {
             check_interval: 0,
             // `applyComponentsFromItemStack` sets `CUSTOM_NAME`.
             custom_name: stack.data().and_then(|d| d.custom_name.clone()),
+            random: horizon_client::random_source::entity(),
         };
         // `EntityType.createDefaultStackConfig`: the item's `custom_data`, then its
         // `entity_data` merged over the frame (`TypedEntityData.loadInto`), before
@@ -354,7 +357,7 @@ impl Game<'_> {
             .to_owned();
         let rotation = self.item_frames[i].rotation;
         let at = center(&self.item_frames[i]);
-        let f = if with_frame {
+        let mut f = if with_frame {
             self.item_frames.remove(i)
         } else {
             self.item_frames[i].clone()
@@ -372,7 +375,10 @@ impl Game<'_> {
             // item only gives the item up (ItemFrame.hurtServer).
             self.entity_killed_event(at, true);
         }
-        self.drop_frame_items(&f, with_frame, true);
+        self.drop_frame_items(&mut f, with_frame, true);
+        if !with_frame {
+            self.item_frames[i].random = f.random.clone();
+        }
         // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
         // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
         let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
@@ -415,7 +421,7 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| b.update_neighbour_for_output_signal(level, ticks, at));
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
-    fn drop_frame_items(&mut self, f: &ItemFrame, with_frame: bool, by_player: bool) {
+    fn drop_frame_items(&mut self, f: &mut ItemFrame, with_frame: bool, by_player: bool) {
         // The framed map forgets the frame, except when the drops are off and
         // something caused the break (`removeFramedMap` runs only for a null
         // `causedBy` then).
@@ -434,7 +440,7 @@ impl Game<'_> {
             drops.push(f.item_stack_with_data());
         }
         if let Some(item) = f.item.clone()
-            && self.world.random.next_float() < f.drop_chance
+            && f.random.next_float() < f.drop_chance
         {
             drops.push(item);
         }
@@ -481,11 +487,11 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            let f = self.item_frames.remove(i);
-            self.entity_killed_event(center(&f), false);
+            let mut f = self.item_frames.remove(i);
+            self.entity_killed_event_by(center(&f), self.explosion_kill_credit());
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-            self.drop_frame_items(&f, true, false);
+            self.drop_frame_items(&mut f, true, false);
             // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
             let ctx = self.who_context(None, None);
             self.post_game_event("minecraft:block_change", center(&f), ctx);
@@ -509,14 +515,14 @@ impl Game<'_> {
             self.item_frames[i].check_interval += 1;
             if self.item_frames[i].check_interval >= 100 {
                 self.item_frames[i].check_interval = 0;
-                let f = self.item_frames[i].clone();
+                let mut f = self.item_frames[i].clone();
                 if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
                 {
                     self.item_frames.remove(i);
                     self.entity_killed_event(center(&f), false);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-                    self.drop_frame_items(&f, true, false);
+                    self.drop_frame_items(&mut f, true, false);
                     // ItemFrame.dropItem(level, null): BLOCK_CHANGE after the drops.
                     let ctx = self.who_context(None, None);
                     self.post_game_event("minecraft:block_change", center(&f), ctx);
@@ -780,6 +786,7 @@ mod map_limit_tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
+            random: horizon_core::random::LegacyRandom::new(0),
         }
     }
     /// A map whose `count` frame markers all count toward the limit.

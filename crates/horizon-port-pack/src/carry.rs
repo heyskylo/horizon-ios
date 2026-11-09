@@ -113,6 +113,8 @@ pub struct Report {
     /// left out), moved to `outside/`: vanilla refuses a recipe for an unknown item, and the
     /// game would craft air.
     pub recipes_unregistered: Vec<String>,
+    /// Recipes whose NeoForge conditions don't pass (the oracle didn't load them), in `outside/`.
+    pub recipes_off: Vec<String>,
     pub item_definitions_added: usize,
     /// Templates and properties came from the NeoForge oracle's facts, not
     /// from guesses.
@@ -388,7 +390,38 @@ pub fn renamed_assets(v: &mut Value) -> bool {
             renamed.map(|new| *s = new).is_some()
         }
         Value::Array(a) => a.iter_mut().fold(false, |c, x| renamed_assets(x) | c),
-        Value::Object(o) => o.values_mut().fold(false, |c, x| renamed_assets(x) | c),
+        Value::Object(o) => {
+            // 1.21.1's `template_farmland` (`dirt`, `top`) is 26.3's indented cube, its dirt the side and bottom.
+            let farmland = o.get("parent").and_then(Value::as_str).is_some_and(|p| {
+                p.strip_prefix("minecraft:").unwrap_or(p) == "block/template_farmland"
+            });
+            if farmland {
+                o.insert(
+                    "parent".into(),
+                    json!("minecraft:block/template_cube_bottom_top_indented"),
+                );
+                if let Some(t) = o.get_mut("textures").and_then(Value::as_object_mut)
+                    && let Some(dirt) = t.get("dirt").cloned()
+                {
+                    t.entry("side").or_insert(dirt.clone());
+                    t.entry("bottom").or_insert(dirt);
+                }
+            }
+            // A block state variant: 1.21.1's Gson read `"true"` and `"90"`, 26.3's codec does not.
+            let mut typed = false;
+            if o.contains_key("model") {
+                for (key, v) in o.iter_mut() {
+                    let new = match (key.as_str(), v.as_str()) {
+                        ("uvlock", Some(s)) => s.parse::<bool>().ok().map(Value::from),
+                        ("x" | "y" | "weight", Some(s)) => s.parse::<i64>().ok().map(Value::from),
+                        _ => None,
+                    };
+                    typed |= new.map(|new| *v = new).is_some();
+                }
+            }
+            o.values_mut()
+                .fold(farmland | typed, |c, x| renamed_assets(x) | c)
+        }
         _ => false,
     }
 }
@@ -756,8 +789,11 @@ fn extra_namespaces(
 ) -> Vec<String> {
     let mut candidates = BTreeSet::new();
     for name in zip.file_names().filter_map(Result::ok) {
-        if let Some((_, ns, _)) = split(&name)
+        // Tags alone (Farmer's Delight's `create:brittle`) add to another mod's tags: no claim,
+        // or two such mods would clash over a namespace neither owns.
+        if let Some((root, ns, rest)) = split(&name)
             && ns != id
+            && !(root == "data" && rest.starts_with("tags/"))
             && !NOT_CLAIMED.contains(&ns)
             && !pack_mod(ns)
         {
@@ -1024,7 +1060,11 @@ pub fn carry(
         } else {
             None
         };
-        let keep = keep && unreadable.is_none();
+        let off = keep && recipe_off(&name, &bytes, facts, loaded);
+        if off {
+            report.recipes_off.push(name.clone());
+        }
+        let keep = keep && unreadable.is_none() && !off;
         if let Some(why) = unreadable {
             report.unreadable.insert(name.clone(), why);
         }
@@ -1063,6 +1103,15 @@ pub fn carry(
                 if let Ok(mut recipe) = serde_json::from_slice::<Value>(&bytes) {
                     tags_used(&recipe, &mut convention);
                     let renamed = renamed_ids(&mut recipe);
+                    // Kept, so its conditions passed (`recipe_off`): 26.3 has no use for them.
+                    if recipe["type"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("minecraft:"))
+                    {
+                        recipe
+                            .as_object_mut()
+                            .map(|o| o.remove("neoforge:conditions"));
+                    }
                     let old_result = result_before_1_20_5(&recipe);
                     let upgraded = !old_result && upgrade_recipe(&mut recipe);
                     if upgraded {
@@ -1115,9 +1164,15 @@ pub fn carry(
                 // Additions to other sets and pools, as files the game merges.
                 let modifier = serde_json::from_slice::<Value>(&bytes).ok();
                 let types = &mut report.worldgen_types;
-                if let Some((kind, mut added)) =
-                    modifier.and_then(|v| crate::lithostitched::modifier(&v, loaded, types))
-                {
+                let modifier =
+                    modifier.and_then(|v| crate::lithostitched::modifier(&v, loaded, types));
+                if let Some(("biome_modifier", file)) = &modifier {
+                    let to = format!("data/{id}/neoforge/biome_modifier/lithostitched/{path}");
+                    write(
+                        &inside.join(to),
+                        &serde_json::to_vec_pretty(file).unwrap_or_default(),
+                    )?;
+                } else if let Some((kind, mut added)) = modifier {
                     crate::processors::carry(
                         kind,
                         &mut added,
@@ -1344,12 +1399,13 @@ pub fn carry(
             if declared.contains(full) {
                 continue;
             }
-            if item
-                .block
-                .as_ref()
-                .is_some_and(|b| facts.blocks.contains_key(b))
-                && report.blocks_unknown.contains_key(name)
-            {
+            // The block it places must be carried: a vanilla one or one of this mod's declared ones.
+            if item.block.as_ref().is_some_and(|b| {
+                !b.starts_with("minecraft:")
+                    && !b
+                        .strip_prefix(&prefix)
+                        .is_some_and(|b| report.blocks.contains_key(b))
+            }) {
                 report
                     .items_unknown
                     .insert(name.to_owned(), "its block is left out".into());
@@ -1426,8 +1482,16 @@ pub fn carry(
                 }
             }
         }
+        // Without the oracle's classes an armour piece is known by its vanilla armour tag:
+        // worn in its slot, one to a stack.
+        let armor = tagged_armor(&inside);
         for m in item_models.iter().filter(|m| !blockstates.contains_key(*m)) {
-            write_decl("item", m, &json!({"template": "minecraft:stick"}))?;
+            let mut v = json!({"template": "minecraft:stick"});
+            if let Some(slot) = armor.get(&format!("{id}:{m}")) {
+                v["max_stack_size"] = json!(1);
+                v["components"] = json!({"minecraft:equippable": {"slot": slot}});
+            }
+            write_decl("item", m, &v)?;
             report.items += 1;
         }
     }
@@ -1458,6 +1522,43 @@ pub fn carry(
         &serde_json::to_vec_pretty(&report).unwrap_or_default(),
     )?;
     Ok(report)
+}
+
+/// A recipe of the mod's whose `neoforge:conditions` fail, so NeoForge never loads it: with the
+/// oracle, one it didn't load (a mod's own conditions, such as config flags, are only known
+/// there); without, NeoForge's own conditions read as the pack ports mods along.
+fn recipe_off(
+    name: &str,
+    bytes: &[u8],
+    facts: Option<&Facts>,
+    loaded: &dyn Fn(&str) -> bool,
+) -> bool {
+    let Some(("data", ns, rest)) = split(name) else {
+        return false;
+    };
+    let Some(path) = rest
+        .strip_prefix("recipe/")
+        .and_then(|r| r.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    let Ok(recipe) = serde_json::from_slice::<Value>(bytes) else {
+        return false;
+    };
+    if recipe.get("neoforge:conditions").is_none() {
+        return false;
+    }
+    let prefix = format!("{ns}:");
+    let ran = |f: &&Facts| {
+        f.recipes
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|(k, _)| k.starts_with(&prefix))
+    };
+    match facts.filter(ran) {
+        Some(f) => !f.recipes.contains_key(&format!("{prefix}{path}")),
+        None => !crate::lithostitched::conditions_pass(&recipe, loaded),
+    }
 }
 
 /// The item a recipe makes: `result.id` (1.21 and later), `result.item` or a bare id.
@@ -1540,6 +1641,42 @@ fn unregistered_recipes(
     }
     report.recipes_unregistered.sort();
     Ok(())
+}
+
+/// The items the carried vanilla armour tags (`minecraft:head_armor`...) name, `#tag`s
+/// followed through the carried item tags, with the equipment slot each is worn in.
+fn tagged_armor(inside: &Path) -> BTreeMap<String, &'static str> {
+    fn members(inside: &Path, tag: &str, depth: u8, out: &mut Vec<String>) {
+        let Some((ns, path)) = tag.split_once(':') else {
+            return;
+        };
+        let v: Value = fs::read(inside.join(format!("data/{ns}/tags/item/{path}.json")))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        for e in v["values"].as_array().into_iter().flatten() {
+            let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
+            match id.strip_prefix('#') {
+                Some(t) if depth < 8 => members(inside, t, depth + 1, out),
+                Some(_) => {}
+                None => out.push(id.to_owned()),
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (tag, slot) in [
+        ("head_armor", "head"),
+        ("chest_armor", "chest"),
+        ("leg_armor", "legs"),
+        ("foot_armor", "feet"),
+    ] {
+        let mut ids = Vec::new();
+        members(inside, &format!("minecraft:{tag}"), 0, &mut ids);
+        for id in ids {
+            out.entry(id).or_insert(slot);
+        }
+    }
+    out
 }
 
 /// The tags a recipe's ingredients name (`#ns:path` or `{"tag": ...}`).
@@ -2457,6 +2594,50 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Without the oracle every item is a stick: the ones the vanilla armour tags name (directly
+    /// or through the mod's own tag) are worn in their slot, one to a stack.
+    #[test]
+    fn armour_the_vanilla_armour_tags_name_is_worn_in_its_slot() {
+        let dir = temp_dir("armor");
+        let jar = dir.join("armor.jar");
+        let model: &[u8] = br#"{"parent": "minecraft:item/generated"}"#;
+        write_jar(
+            &jar,
+            &[
+                ("assets/example/models/item/hat.json", model),
+                ("assets/example/models/item/robe.json", model),
+                ("assets/example/models/item/gem.json", model),
+                (
+                    "data/minecraft/tags/item/head_armor.json",
+                    br#"{"values": ["example:hat"]}"#,
+                ),
+                (
+                    "data/minecraft/tags/item/chest_armor.json",
+                    br##"{"values": ["#example:armors/chest"]}"##,
+                ),
+                (
+                    "data/example/tags/item/armors/chest.json",
+                    br#"{"values": [{"id": "example:robe", "required": false}]}"#,
+                ),
+            ],
+        );
+        let out = dir.join("work/mods/example");
+        carry_alone(&jar, &out).unwrap();
+        let decl = |m: &str| -> Value {
+            let f = out.join(format!("carry/data/example/horizon/item/{m}.json"));
+            serde_json::from_slice(&fs::read(f).unwrap()).unwrap()
+        };
+        let worn = |slot: &str| {
+            json!({"template": "minecraft:stick", "max_stack_size": 1,
+                "components": {"minecraft:equippable": {"slot": slot}}})
+        };
+        let (hat, robe, gem) = (decl("hat"), decl("robe"), decl("gem"));
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(hat, worn("head"));
+        assert_eq!(robe, worn("chest"));
+        assert_eq!(gem, json!({"template": "minecraft:stick"}));
+    }
+
     /// A mod shipping its files under other names than its id: the
     /// namespaces its own files name are its, compat files for other mods
     /// and a pack mod's namespace stay outside.
@@ -2492,6 +2673,15 @@ mod tests {
             ),
             // Compat for a mod outside the pack, named by nothing of its own.
             ("data/wares/loot_table/crate.json", r#"{"pools": []}"#),
+            // Tags for a mod outside the pack, named by its own model: no claim.
+            (
+                "data/create/tags/block/brittle.json",
+                r#"{"values": ["kaisyn:brick"]}"#,
+            ),
+            (
+                "assets/kaisyn/models/block/brick.json",
+                r#"{"parent": "create:block/casing"}"#,
+            ),
             // A pack mod's config naming the mod's sets, and a loader's file.
             (
                 "data/cristel/config/towers.json",
@@ -2521,6 +2711,7 @@ mod tests {
             report.outside,
             [
                 "data/wares/loot_table/crate.json",
+                "data/create/tags/block/brittle.json",
                 "data/cristel/config/towers.json",
                 "data/neoforge/loot_modifiers/global.json",
             ]
@@ -2628,6 +2819,155 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// NeoForge loads a recipe only when its `neoforge:conditions` pass. The oracle's recipes are the ones
+    /// that did: those are upgraded like any vanilla recipe, the others stay outside, as NeoForge left them out.
+    #[test]
+    fn conditional_recipes_are_the_ones_neoforge_loaded() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-port-pack-conditions-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        let recipe = |flag: &str| {
+            json!({"type": "minecraft:stonecutting", "ingredient": {"item": "minecraft:stone"},
+                "result": {"id": "minecraft:stone_slab", "count": 2},
+                "neoforge:conditions": [{"type": "gem:flag", "flag": flag}]})
+            .to_string()
+        };
+        let other_mod =
+            json!({"type": "minecraft:stonecutting", "ingredient": {"item": "minecraft:stone"},
+            "result": {"id": "minecraft:stone_slab", "count": 2},
+            "neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "absent"}]})
+            .to_string();
+        for (name, text) in [
+            (
+                "META-INF/neoforge.mods.toml",
+                "license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n".to_owned(),
+            ),
+            ("data/gem/recipe/on.json", recipe("on")),
+            ("data/gem/recipe/off.json", recipe("off")),
+            ("data/gem/recipe/other.json", other_mod),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let pack = Pack {
+            loaded: &|m| m == "gem",
+            mods: &|_| false,
+        };
+        let facts: Facts = serde_json::from_value(json!({"blocks": {}, "items": {},
+            "recipes": {"gem:on": {"type": "minecraft:stonecutting"}}}))
+        .unwrap();
+        let out = dir.join("with-facts");
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let on: Value =
+            serde_json::from_slice(&fs::read(out.join("carry/data/gem/recipe/on.json")).unwrap())
+                .unwrap();
+        assert_eq!(on["ingredient"], json!("minecraft:stone"));
+        assert!(on.get("neoforge:conditions").is_none());
+        assert_eq!(
+            report.recipes_off,
+            ["data/gem/recipe/off.json", "data/gem/recipe/other.json"]
+        );
+        assert!(!out.join("carry/data/gem/recipe/off.json").exists());
+        // Without the oracle: NeoForge's own conditions are read, a mod's own can't be.
+        let out = dir.join("no-facts");
+        let report = carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            report.recipes_off,
+            [
+                "data/gem/recipe/on.json",
+                "data/gem/recipe/off.json",
+                "data/gem/recipe/other.json"
+            ]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Seeds place a block of another name (`BlockItem.getBlock`): the item is carried binding that block,
+    /// and an item whose block is left out stays out.
+    #[test]
+    fn items_place_their_block_of_another_name() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-seeds-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let block = |class: &str, item: &str| {
+            json!({"class": [class, "net.minecraft.world.level.block.Block"], "properties": {}, "default": "",
+                "item": item, "explosion_resistance": 3.0, "friction": 0.6, "speed_factor": 1.0,
+                "jump_factor": 1.0, "states": {"": {"hardness": 2.0, "emission": 0, "requires_tool": false,
+                    "map_color_id": 13, "sound": {"break": "wood"}, "outline": [[0, 0, 0, 1, 1, 1]],
+                    "collision": [[0, 0, 0, 1, 1, 1]]}}})
+        };
+        let seeds = |b: &str| {
+            json!({"class": "net.minecraft.world.item.ItemNameBlockItem", "max_stack_size": 64,
+                "rarity": "common", "block": b})
+        };
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:oak_planks": block("net.minecraft.world.level.block.Block", "minecraft:oak_planks"),
+                "gem:cabbages": block("gem.Cabbages", "gem:cabbage_seeds"),
+            },
+            "items": {"gem:cabbage_seeds": seeds("gem:cabbages"), "gem:lost_seeds": seeds("gem:lost")}
+        }))
+        .unwrap();
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let out = dir.join("out");
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            report.items_unknown.keys().collect::<Vec<_>>(),
+            ["lost_seeds"]
+        );
+        let carried = out.join("carry");
+        let package = horizon_mods::Package::read(&carried).unwrap();
+        let content = horizon_mods::Content::read(&carried, &package.manifest).unwrap();
+        let item = content
+            .items
+            .iter()
+            .find(|i| i.id == "gem:cabbage_seeds")
+            .unwrap();
+        assert_eq!(item.place_block.as_deref(), Some("gem:cabbages"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A jar entry whose name escapes through a Windows separator writes
     /// nothing: not into `carry`, not into `outside`, nowhere.
     #[test]
@@ -2708,5 +3048,36 @@ mod tests {
                 "2": "pulley:block/chain", "3": "minecraft:block/chain_command_block_back"}})
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Tom's Simple Storage writes `"uvlock": "true"`: 1.21.1 read a block state variant with Gson, which
+    /// took strings for booleans and numbers; 26.3's codec does not, and the whole block state failed.
+    #[test]
+    fn block_state_variants_take_strings_as_their_booleans_and_numbers() {
+        let mut state = json!({"multipart": [{"apply": {"uvlock": "true", "x": "90",
+            "model": "t:block/cable"}, "when": {"x": "1", "down": "false"}}],
+            "variants": {"": [{"model": "t:a", "y": 180, "weight": "3"}]}});
+        assert!(renamed_assets(&mut state));
+        assert_eq!(
+            state,
+            json!({"multipart": [{"apply": {"uvlock": true, "x": 90, "model": "t:block/cable"},
+                "when": {"x": "1", "down": "false"}}],
+                "variants": {"": [{"model": "t:a", "y": 180, "weight": 3}]}})
+        );
+    }
+
+    /// 1.21.1's farmland template (`dirt` and `top`) is 26.3's `template_cube_bottom_top_indented`, whose
+    /// dirt is its `side` and `bottom` (26.3's farmland model).
+    #[test]
+    fn farmland_template_is_26_3s_indented_cube() {
+        let mut model = json!({"parent": "block/template_farmland",
+            "textures": {"dirt": "minecraft:block/gravel", "top": "m:block/raked"}});
+        assert!(renamed_assets(&mut model));
+        assert_eq!(
+            model,
+            json!({"parent": "minecraft:block/template_cube_bottom_top_indented", "textures": {
+                "dirt": "minecraft:block/gravel", "side": "minecraft:block/gravel",
+                "bottom": "minecraft:block/gravel", "top": "m:block/raked"}})
+        );
     }
 }

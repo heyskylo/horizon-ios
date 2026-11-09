@@ -34,7 +34,7 @@ struct Params {
 // Horizon's logo, 1 inside, 0 outside, for calibration's test pictures.
 @group(0) @binding(3) var logo: texture_2d<f32>;
 // The float frame with HUD coverage (Hdr::layered): the frame keeps the world as light
-// (fs_resolve), the HUD draws on a picture of its own (`hud`, fs_keep), and `coverage` says how
+// directly from its writers; the HUD draws on a picture of its own (`hud`, fs_keep), and `coverage` says how
 // much of the world it hides there (gfx/hud_coverage.rs).
 @group(0) @binding(4) var coverage: texture_2d<f32>;
 @group(0) @binding(5) var hud: texture_2d<f32>;
@@ -154,69 +154,8 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     return vec4(0.0);
 }
 
-// The light of colour `f` under the world's mark `a` (the alpha the world left, hdr_mark) where
-// the world `shows`, else the colour clipped at white; and whether a light source lifted it.
-// `eased` for the last pass, which eases it into the peak itself; the layered frame leaves that
-// to the tone curve (fs_tonemap).
-struct Lit {
-    light: vec3<f32>,
-    lifted: bool,
-};
-
 fn lit(f: vec3<f32>, a: f32, shows: bool, eased: bool) -> Lit {
-    var lifted = false;
-    // Light over 1 (a float frame's) shows only where the world does and carries
-    // no mark (alpha 1), up to the peak: light written as light. Marked pixels clip
-    // at white before their lift, as on a unorm frame, so light sources, the sun and
-    // HDR lighting look as they do there; so do the HUD, menus and HDR Lighting off.
-    let c = select(min(f, vec3(1.0)), f, shows && a == 1.0);
-    // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
-    var light = pow(c, vec3(2.2));
-    // HDR lighting: alpha between 0.76 and 1 is how much of it the surface gets. Vanilla's
-    // light is albedo times lightmap, so this is the lightmap going past 1. It eases into the
-    // peak from 60% of it, so bright textures keep their detail. Unmarked light (alpha 1)
-    // gets no gain and no knee: the clamp to the peak below is all it needs here.
-    if shows && a >= 0.75 && a < 1.0 {
-        let top = max(light.r, max(light.g, light.b));
-        let gain = 1.0 + (params.scene - 1.0) * (1.0 - a) / 0.24;
-        let v = top * gain;
-        let knee = max(0.6 * params.peak, 1.0);
-        var out = v;
-        if eased && v > knee && params.peak > knee {
-            out = knee + (params.peak - knee) * (1.0 - exp(-(v - knee) / (params.peak - knee)));
-        }
-        light *= select(gain, out / max(top, 1e-4), eased && v > knee);
-    }
-    // The world's alpha is below 0.75 on light sources, the sun and the moon
-    // (terrain.wgsl, entity.wgsl): its band of 0.175 is the tier, the lower the
-    // brighter, and where in the band how much (hdr_mark).
-    if shows && a < 0.75 {
-        let band = u32(clamp(floor((a + 0.005) / 0.175), 0.0, 3.0));
-        let tier = 3u - band;
-        let lift = 1.0 - clamp((a - 0.175 * f32(band)) / 0.165, 0.0, 1.0);
-        if lift > 0.0 {
-            let top = max(light.r, max(light.g, light.b));
-            var gain = 1.0 + (params.peak - 1.0) * params.share[tier] * lift;
-            if eased {
-                gain = min(gain, params.peak / max(top, 1e-4));
-            }
-            light *= max(gain, 1.0);
-            lifted = true;
-        }
-    }
-    // HORIZON_HDR_DEBUG=1: what isn't lifted turns grey, what is keeps its
-    // colour with a magenta tint, so a lift shows on any colour.
-    if params.debug > 0.5 && params.world > 0.5 {
-        if lifted {
-            light *= vec3(1.0, 0.6, 1.0);
-        } else {
-            light = vec3(dot(light, vec3(0.2126, 0.7152, 0.0722)));
-        }
-    }
-    if eased {
-        light = min(light, vec3(params.peak));
-    }
-    return Lit(light, lifted);
+    return hdr_mark_light(f, a, shows, eased, vec4(params.peak, params.scene, params.world, params.debug), params.share);
 }
 
 // Calibration: above its controls the test picture, straight in nits, past
@@ -272,16 +211,6 @@ fn display(light: vec3<f32>) -> vec4<f32> {
     return display(light);
 }
 
-// Hdr::resolve, after the world and the hand: the marks they left (`world` holds the frame as
-// they drew it) become light in the frame, in gamma as the frame stores it, alpha 1, past the
-// peak if they lift it there (the tone curve eases it in). What draws after it (camera overlays,
-// the menu blur) draws on light, and nothing is lifted later.
-@fragment fn fs_resolve(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let w = frame_texel(textureLoad(world, vec2<i32>(pos.xy), 0));
-    let shows = params.world > 0.5 && params.peak > 1.0;
-    return vec4(pow(lit(w.rgb, w.a, shows, false).light, vec3(1.0 / 2.2)), 1.0);
-}
-
 // The tone curve's knee: up to it light stays as it is. Where HDR lighting eased into the peak
 // before the curve (`lit`), 60% of it, so bright textures keep their detail; at least paper white.
 fn tone_knee(headroom: f32) -> f32 {
@@ -332,10 +261,16 @@ fn tone_scale(top: f32, headroom: f32, paper: f32) -> f32 {
 }
 
 // Hdr::keep_world: the HUD's backdrop, the world clipped to white with alpha 0, the frame as
-// the HUD found it before.
+// the HUD found it before. The HUD's target is 8-bit, as that frame was.
 @fragment fn fs_keep(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let w = textureLoad(frame, vec2<i32>(pos.xy), 0).rgb;
     return vec4(clamp(w, vec3(0.0), vec3(1.0)), 0.0);
+}
+
+// The backdrop `fs_keep` left in the HUD's 8-bit target for world `w`: where no HUD draws, the
+// target holds exactly this, so the HUD's own part below is exactly 0 there.
+fn backdrop(w: vec3<f32>) -> vec3<f32> {
+    return round(clamp(w, vec3(0.0), vec3(1.0)) * 255.0) / 255.0;
 }
 
 // The HUD over the world in gamma, the space the HUD blends in: its own part, what its backdrop
@@ -344,15 +279,48 @@ fn tone_scale(top: f32, headroom: f32, paper: f32) -> f32 {
 // 100%, that is the HUD's picture as drawn.
 fn layered(at: vec2<i32>) -> vec3<f32> {
     let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
-    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let p = textureLoad(hud, at, 0).rgb;
     let c = textureLoad(coverage, at, 0).r;
-    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    let h = max(p - (1.0 - c) * backdrop(w), vec3(0.0));
     return h * pow(params.ui, 1.0 / 2.2) + (1.0 - c) * w;
 }
 
 // Hdr::composite: the picture so far, stored as the frame stores light, for the menu blur.
 @fragment fn fs_composite(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4(layered(vec2<i32>(pos.xy)), 1.0);
+}
+
+// Screenshots keep midtones at their drawn brightness, with a shoulder starting at 0.6
+// paper white in linear light. Unlike the display curve (whose knee is at least white),
+// this has an unbounded source range: k + (1-k)*(top-k)/(top+1-2*k) approaches SDR
+// white smoothly, with slope 1 at k. One scale keeps the world's linear RGB ratios.
+fn screenshot_world(w: vec3<f32>) -> vec3<f32> {
+    let top = pow(max(w.r, max(w.g, w.b)), 2.2);
+    if top <= 0.6 {
+        return w;
+    }
+    let mapped = 0.6 + 0.4 * (top - 0.6) / (top - 0.2);
+    return w * pow(mapped / top, 1.0 / 2.2);
+}
+
+override screenshot_world_only: bool = false;
+// Off where Horizon lifts nothing (HDR Lighting off, or a shader pack's picture): the world is
+// clipped at white as SDR draws it.
+override screenshot_shoulder: bool = true;
+
+// The ordinary PNG, or the world's icon before the HUD: H as drawn, at 100%, over
+// the SDR world's light. This never changes the targets used by HDR output or its copy.
+@fragment fn fs_sdr_screenshot(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = vec2<i32>(pos.xy);
+    let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
+    let mapped = select(min(w, vec3(1.0)), screenshot_world(w), screenshot_shoulder);
+    if screenshot_world_only {
+        return vec4(mapped, 1.0);
+    }
+    let p = textureLoad(hud, at, 0).rgb;
+    let c = textureLoad(coverage, at, 0).r;
+    let h = max(p - (1.0 - c) * backdrop(w), vec3(0.0));
+    return vec4(h + (1.0 - c) * mapped, 1.0);
 }
 
 @fragment fn fs_hdr_layered(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {

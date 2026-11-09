@@ -256,6 +256,27 @@ pub const WATCH_ALL: u8 = 1;
 /// decoded for it.
 pub const WATCH_ENTITY_DATA: u8 = 2;
 
+/// Whether a fake player (a bot with no client) still takes the packet `body`: the few it must answer
+/// (teleport, knockback, chunk batch, keep-alive, ping, death, respawn). Anything else would only be
+/// dropped unread.
+fn fake_wants(body: &[u8]) -> bool {
+    let mut r = horizon_protocol::buf::Reader::new(body);
+    r.varint().map_or(true, fake_wants_id)
+}
+/// [`fake_wants`] for a packet id.
+pub fn fake_wants_id(id: i32) -> bool {
+    use horizon_protocol::ids::play::clientbound as cb;
+    [
+        cb::PLAYER_POSITION,
+        cb::SET_ENTITY_MOTION,
+        cb::CHUNK_BATCH_FINISHED,
+        cb::KEEP_ALIVE,
+        cb::PING,
+        cb::PLAYER_COMBAT_KILL,
+        cb::RESPAWN,
+    ]
+    .contains(&id)
+}
 /// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
 /// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
 /// were; a changed one is encoded again.
@@ -351,6 +372,9 @@ pub struct PlayerSender {
     /// The connection's bytes on the wire (after compression and encryption), counted by its
     /// network thread: `horizon-report`'s network use per player. None for a test's channel.
     wire: Option<Arc<Counters>>,
+    /// A fake player's (a mod's bot with no client): only the packets a client-less player must
+    /// still answer are queued ([`fake_wants`]).
+    fake: Arc<std::sync::atomic::AtomicBool>,
 }
 #[derive(Clone)]
 enum To {
@@ -369,6 +393,7 @@ impl PlayerSender {
             held: Arc::default(),
             to: To::Channel(tx),
             wire: None,
+            fake: Arc::default(),
         }
     }
     /// The bytes received from and sent to the client on the wire so far, where the
@@ -404,6 +429,9 @@ impl PlayerSender {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
     pub fn send(&self, body: Vec<u8>) {
+        if self.fake.load(Ordering::Relaxed) && !fake_wants(&body) {
+            return;
+        }
         let Some(body) = outgoing(self.player, body) else {
             return;
         };
@@ -418,11 +446,19 @@ impl PlayerSender {
             }
         }
     }
+    /// Marks this sender as a fake player's or not.
+    pub fn set_fake(&self, fake: bool) {
+        self.fake.store(fake, Ordering::Relaxed);
+    }
+    /// Whether this sender is a fake player's.
+    pub fn is_fake(&self) -> bool {
+        self.fake.load(Ordering::Relaxed)
+    }
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
     pub fn send_many(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {
         // A mod hearing what is sent (`outgoing`) does so outside the lock.
-        if !HOLDING.get() || WATCHED.load(Ordering::Relaxed) != 0 {
+        if !HOLDING.get() || WATCHED.load(Ordering::Relaxed) != 0 || self.is_fake() {
             bodies.into_iter().for_each(|body| self.send(body));
             return;
         }
@@ -990,6 +1026,17 @@ fn serve_login(
         .forwarding_secret
         .as_deref()
         .filter(|_| online.is_none() && !c.is_memory());
+    // `ServerLoginPacketListenerImpl.handleHello`: the integrated server's own player
+    // (the name matches `getSingleplayerProfile`) logs in as that profile — the account's
+    // UUID — never as an offline profile made from the name. Every other memory player
+    // (a splitscreen seat) stays offline; a LAN guest could not own the name in online
+    // mode, and this keeps an offline host's name from being taken over a memory room.
+    let singleplayer = shared
+        .config
+        .singleplayer_profile
+        .as_ref()
+        .filter(|(owner_name, _)| c.is_memory() && hello.name.eq_ignore_ascii_case(owner_name))
+        .map(|(owner_name, uuid)| (owner_name.clone(), *uuid));
     let (uuid, mut properties) = match (online, forwarding) {
         (Some(online), _) => {
             match authenticate(&mut c, shared, online, &hello.name, address, &user) {
@@ -1035,7 +1082,19 @@ fn serve_login(
                 return Err(err);
             }
         },
-        (None, None) => (offline_uuid(&hello.name), Vec::new()),
+        (None, None) => match singleplayer {
+            Some((owner_name, owner_uuid)) => {
+                name = owner_name;
+                let properties = shared
+                    .config
+                    .owner_profile
+                    .as_ref()
+                    .map(|profile| profile.properties().to_vec())
+                    .unwrap_or_default();
+                (owner_uuid, properties)
+            }
+            None => (offline_uuid(&hello.name), Vec::new()),
+        },
     };
     // The mods may hold the login for their answers, or refuse it, before the server's checks.
     if !c.is_memory() {
@@ -1629,6 +1688,7 @@ fn play(
         held: Arc::default(),
         to: To::Pool(outbox.clone(), watch.clone()),
         wire: Some(c.reader.counters.clone()),
+        fake: Arc::default(),
     };
     let required_pack = shared
         .config
@@ -1985,6 +2045,16 @@ impl KeepAliveWatch {
 mod tests {
 
     #[test]
+    fn a_fake_player_queues_only_the_packets_it_must_answer() {
+        use horizon_protocol::ids::play::clientbound as cb;
+        for id in [cb::KEEP_ALIVE, cb::PING, cb::PLAYER_POSITION, cb::RESPAWN] {
+            assert!(fake_wants_id(id));
+        }
+        assert!(!fake_wants_id(cb::LEVEL_CHUNK_WITH_LIGHT));
+        assert!(!fake_wants_id(cb::SET_TIME));
+    }
+
+    #[test]
     fn undrained_packets_stop_at_twice_the_inbox() {
         let u = Undrained::default();
         // Up to the cap, counted; one more is refused and counts nothing.
@@ -2226,6 +2296,27 @@ mod tests {
         );
         assert_eq!(owner.uuid, offline_uuid("Owner"));
         assert!(owner.properties.is_empty());
+    }
+
+    /// `ServerLoginPacketListenerImpl.handleHello`: the integrated server's own player
+    /// logs in as `getSingleplayerProfile`'s UUID, not the offline one its name makes;
+    /// anyone else through memory keeps the offline profile.
+    #[test]
+    fn the_integrated_owners_login_is_the_singleplayer_profile() {
+        let owner_uuid = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdefu128;
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            singleplayer_profile: Some(("Owner".into(), owner_uuid)),
+            ..crate::lan::NetConfig::loopback(0, "Owner - World".into(), 8)
+        };
+        let lan =
+            crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
+                .unwrap();
+        let owner = login_profile(Connection::local(lan.connect_local().unwrap()), "Owner");
+        assert_eq!(owner.uuid, owner_uuid);
+        let guest = login_profile(Connection::local(lan.connect_local().unwrap()), "Alex");
+        assert_eq!(guest.uuid, offline_uuid("Alex"));
     }
 
     fn unpack(out: Out) -> Vec<Vec<u8>> {

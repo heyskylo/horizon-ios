@@ -619,6 +619,8 @@ pub fn listen(
                 pos,
                 source: ctx.source,
                 owner: ctx.owner,
+                source_uuid: ctx.source_uuid,
+                owner_uuid: ctx.owner_uuid,
             },
             now,
         );
@@ -1209,6 +1211,9 @@ mod digging_tests {
             return;
         };
         let mut out = Vec::new();
+        // The client moves the age on before it ticks (`tickCount++`), so a
+        // warden's first client tick is never at age 0, a heartbeat tick.
+        m.age += 1;
         client_tick(&mut m, &mut out);
         assert!(out.is_empty(), "a standing warden digs nothing: {out:?}");
 

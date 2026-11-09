@@ -107,6 +107,9 @@ thread_local! {
     static SCROLL_AREAS: RefCell<(Vec<ScrollArea>, Vec<ScrollArea>)> = const { RefCell::new((Vec::new(), Vec::new())) };
     /// The steps screens declared since `end_frame` ([`focus_link`]), and the last frame's.
     static FOCUS_LINKS: RefCell<(Vec<FocusLink>, Vec<FocusLink>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+    /// The targets whose value left and right step ([`steps_value`]) since `end_frame`, and the
+    /// last frame's.
+    static STEPPERS: RefCell<(Vec<[f32; 4]>, Vec<[f32; 4]>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
 /// Splitscreen: one player's buttons and focus targets, kept aside while another player's game
@@ -120,6 +123,7 @@ pub struct Saved(
     (u64, u64),
     (Vec<ScrollArea>, Vec<ScrollArea>),
     (Vec<FocusLink>, Vec<FocusLink>),
+    (Vec<[f32; 4]>, Vec<[f32; 4]>),
 );
 
 /// This thread's buttons and targets, leaving none.
@@ -132,6 +136,7 @@ pub fn take() -> Saved {
         ACTION_SCREENS.take(),
         SCROLL_AREAS.take(),
         FOCUS_LINKS.take(),
+        STEPPERS.take(),
     )
 }
 
@@ -141,6 +146,7 @@ pub fn put(saved: Saved) {
     TARGETS.set(saved.1);
     SCROLL_AREAS.set(saved.5);
     FOCUS_LINKS.set(saved.6);
+    STEPPERS.set(saved.7);
     ACTIONS.set(saved.2);
     ACTION_GLYPHS.set(saved.3);
     ACTION_SCREENS.set(saved.4);
@@ -288,6 +294,7 @@ pub fn cover_frame() {
     ACTIONS.with_borrow_mut(|(current, _)| current.clear());
     SCROLL_AREAS.with_borrow_mut(|(current, _)| current.clear());
     FOCUS_LINKS.with_borrow_mut(|(current, _)| current.clear());
+    STEPPERS.with_borrow_mut(|(current, _)| current.clear());
 }
 
 /// This frame drew a list with something to scroll, in `rect`, scrolled `amount`
@@ -351,6 +358,18 @@ pub fn linked_step(focus: [f32; 4], down: bool) -> Option<[f32; 4]> {
             })
             .map(|l| l.to)
     })
+}
+
+/// Left and right on the target at `rect` step its value, back and on, rather than move the focus
+/// (the settings shell's choices, whose `<` `>` say so): Right as a press, Left as a Shift press.
+pub fn steps_value(rect: [f32; 4]) {
+    STEPPERS.with_borrow_mut(|(current, _)| current.push(rect));
+}
+
+/// Whether the last drawn frame said left and right step the value of the target at `focus`.
+pub fn last_steps_value(focus: [f32; 4]) -> bool {
+    let same = |rect: &[f32; 4]| rect.iter().zip(focus).all(|(a, b)| (a - b).abs() < 0.5);
+    STEPPERS.with_borrow(|(_, last)| last.iter().any(same))
 }
 
 /// The focus targets of the last drawn frame.
@@ -431,6 +450,9 @@ pub fn end_frame(frames: u64) {
                 *last = std::mem::take(current);
             });
             FOCUS_LINKS.with_borrow_mut(|(current, last)| {
+                *last = std::mem::take(current);
+            });
+            STEPPERS.with_borrow_mut(|(current, last)| {
                 *last = std::mem::take(current);
             });
             NARRATION.with_borrow_mut(|(current, last)| {

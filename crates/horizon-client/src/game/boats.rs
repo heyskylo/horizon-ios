@@ -23,7 +23,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
     position::BlockPos,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_world::collision_context::CollisionContext;
 use horizon_world::nbt::Tag;
@@ -93,6 +93,9 @@ pub(super) struct Boat {
     /// left, right, up, down
     pub input: [bool; 4],
     pub on_ground: bool,
+    /// `Entity.fallDistance`: counted by `AbstractBoat.checkFallDamage`, saved
+    /// and loaded (`fall_distance`).
+    pub fall_distance: f64,
     /// `Entity.stuckSpeedMultiplier`: set where the boat sits in powder snow
     /// (`PowderSnowBlock.entityInside`), spent by the next move.
     stuck: Vec3,
@@ -109,6 +112,7 @@ pub(super) struct Boat {
     pub leash_spin: f64,
     /// `Entity.tickCount`, for the 100 ticks a saved holder is waited for.
     pub age: i32,
+    pub random: LegacyRandom,
 }
 /// `ChestBoat.CONTAINER_SIZE`.
 pub(super) const CHEST_SLOTS: usize = 27;
@@ -212,6 +216,7 @@ impl Boat {
             paddle_controller: false,
             input: [false; 4],
             on_ground: false,
+            fall_distance: 0.0,
             stuck: Vec3::ZERO,
             chest: false,
             items: Vec::new(),
@@ -220,6 +225,7 @@ impl Boat {
             leash_pending: None,
             leash_spin: 0.0,
             age: 0,
+            random: horizon_client::random_source::entity(),
         }
     }
     /// A chest boat or chest raft.
@@ -247,10 +253,12 @@ impl Boat {
             self.position,
             self.velocity,
             [self.yaw, self.pitch],
+            (self.on_ground, self.fall_distance),
             uuid,
             raw,
             self.chest.then_some(&self.items[..]),
         );
+        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             map.insert("Fire".into(), Tag::Short(self.fire_ticks as i16));
         }
@@ -530,7 +538,8 @@ impl Game<'_> {
         Some((height, f.fluid_level == 8 && !f.fluid_falling))
     }
     /// `getWaterLevelAbove`: the top of the water column the hull is in.
-    fn water_level_above(&self, b: &Boat) -> f64 {
+    /// A float, as vanilla's: the block's y plus its water height in float.
+    fn water_level_above(&self, b: &Boat) -> f32 {
         let bb = b.bounds();
         let (lo, hi) = (bb.min_position(), bb.max_position());
         let (y0, y1) = (hi.y.floor() as i32, hi.y.ceil() as i32);
@@ -547,10 +556,10 @@ impl Game<'_> {
                 }
             }
             if height < 1.0 {
-                return f64::from(y) + f64::from(height);
+                return y as f32 + height;
             }
         }
-        f64::from(y1 + 1)
+        (y1 + 1) as f32
     }
     fn boat_status(&self, b: &mut Boat) -> Status {
         let bb = b.bounds();
@@ -562,7 +571,7 @@ impl Game<'_> {
             for y in hi.y.floor() as i32..max_y.ceil() as i32 {
                 for z in lo.z.floor() as i32..hi.z.ceil() as i32 {
                     if let Some((h, source)) = self.fluid_height(x, y, z)
-                        && max_y < f64::from(y) + f64::from(h)
+                        && max_y < f64::from(y as f32 + h)
                     {
                         if !source {
                             b.water_level = hi.y;
@@ -584,7 +593,8 @@ impl Game<'_> {
             for y in lo.y.floor() as i32..(lo.y + 0.001).ceil() as i32 {
                 for z in lo.z.floor() as i32..hi.z.ceil() as i32 {
                     if let Some((h, _)) = self.fluid_height(x, y, z) {
-                        let level = f64::from(y) + f64::from(h);
+                        // `float height = y + getHeight`: summed in float.
+                        let level = f64::from(y as f32 + h);
                         b.water_level = b.water_level.max(level);
                         in_water |= lo.y < level;
                     }
@@ -667,6 +677,53 @@ impl Game<'_> {
             0.0
         }
     }
+    /// `Entity.move`'s fall reset for an entity that keeps a fall and moves on
+    /// by `moved` from `from`: a move of a block or more casts up to 8 blocks
+    /// of it (`ClipContext.Block.FALLDAMAGE_RESETTING`, `ClipContext.Fluid.WATER`)
+    /// and a hit resets the fall, before the move's own drop counts.
+    pub(super) fn vehicle_fall_reset(&self, fall: f64, from: Vec3, moved: Vec3) -> f64 {
+        let length = moved.length_squared();
+        if fall == 0.0 || length < 1.0 {
+            return fall;
+        }
+        let to = from.add_vector(moved.normalize().scale(moved.length().min(8.0)));
+        let reset = &self.res.motion().fall_reset;
+        let fluids = &self.res.motion().fluids;
+        let hit = horizon_core::geometry::traverse_blocks(from, to, 1_000_000, |p| {
+            // A tagged block clips as a full block, not its collider.
+            let name = &self.res.facts().get(self.world.block(p.x, p.y, p.z)).name;
+            if reset.contains(&**name) && VoxelShape::block().clip(from, to, p).is_some() {
+                return Some(());
+            }
+            // The water's shape, through the shared fluid shape cache.
+            horizon_client::entities::water_clip(&self.world, fluids, from, to, p).then_some(())
+        });
+        if matches!(hit, Ok(Some(()))) {
+            0.0
+        } else {
+            fall
+        }
+    }
+    /// `AbstractBoat.checkFallDamage` after a move that went `moved_y` (with
+    /// `b` already where it landed): on the ground the fall resets; a move
+    /// down over anything but water (the block under its `blockPosition`)
+    /// adds to it.
+    pub(super) fn boat_fall(&self, b: &Boat, moved_y: f64) -> f64 {
+        if b.on_ground {
+            return 0.0;
+        }
+        if moved_y < 0.0 {
+            let below = self.res.facts().get(self.world.block(
+                b.position.x.floor() as i32,
+                b.position.y.floor() as i32 - 1,
+                b.position.z.floor() as i32,
+            ));
+            if below.fluid != Fluid::Water {
+                return b.fall_distance - f64::from(moved_y as f32);
+            }
+        }
+        b.fall_distance
+    }
     /// `AbstractBoat.tick` for one boat (`controlled` when the player rides it).
     pub(super) fn tick_boat(&mut self, mut b: Boat, controlled: bool) -> Boat {
         b.previous = b.position;
@@ -695,7 +752,10 @@ impl Game<'_> {
         }
         // `Entity.baseTick`: the boat is immersed and pushed by the current it
         // sits in (`isPushedByFluid`), before `floatBoat` scales the velocity.
-        let _ = b.push_by_fluid(&self.world, &self.res.motion().fluids);
+        // updateFluidInteraction: in water the fall resets.
+        if b.push_by_fluid(&self.world, &self.res.motion().fluids).0 > 0.0 {
+            b.fall_distance = 0.0;
+        }
         // floatBoat
         // `-getGravity()`: none with NoGravity.
         let mut vspeed = 0.0 - b.get_gravity();
@@ -712,8 +772,10 @@ impl Game<'_> {
             && b.status != Status::InAir
             && b.status != Status::OnLand
         {
-            b.water_level = b.position.y;
-            let target = self.water_level_above(&b) - HEIGHT + 0.101;
+            // getY(1.0): the top of its box.
+            b.water_level = b.position.y + HEIGHT;
+            // getWaterLevelAbove() - getBbHeight(): a float subtraction.
+            let target = f64::from(self.water_level_above(&b) - HEIGHT as f32) + 0.101;
             let moved = Aabb::new(
                 Vec3::new(
                     b.bounds().min_position().x,
@@ -742,7 +804,7 @@ impl Game<'_> {
                     inv_friction = 0.9;
                 }
                 Status::UnderWater => {
-                    buoyancy = 0.01;
+                    buoyancy = f64::from(0.01_f32);
                     inv_friction = 0.45;
                 }
                 Status::InAir => inv_friction = 0.9,
@@ -794,12 +856,14 @@ impl Game<'_> {
         };
         let movement = b.take_movement();
         if let Ok(moved) = scene.resolve(b.bounds(), movement, 0.0, b.on_ground) {
+            b.fall_distance = self.vehicle_fall_reset(b.fall_distance, b.position, moved);
             b.position = Vec3::new(
                 b.position.x + moved.x,
                 b.position.y + moved.y,
                 b.position.z + moved.z,
             );
             b.on_ground = movement.y < 0.0 && moved.y > movement.y;
+            b.fall_distance = self.boat_fall(&b, moved.y);
             if (moved.x - movement.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
             }
@@ -823,15 +887,11 @@ impl Game<'_> {
             None,
         );
         b.velocity = horizon_world::entity_move::scale_by_block_speed(b.velocity, factor);
-        Self::tick_boat_paddles(&mut b, &mut self.audio, &mut self.world.random);
+        Self::tick_boat_paddles(&mut b, &mut self.audio);
         b
     }
     /// `AbstractBoat.tick` advances the oars even when this client does not move the hull.
-    pub(super) fn tick_boat_paddles(
-        b: &mut Boat,
-        audio: &mut super::Audio,
-        random: &mut horizon_core::random::LegacyRandom,
-    ) {
+    pub(super) fn tick_boat_paddles(b: &mut Boat, audio: &mut super::Audio) {
         // Paddle sounds at the top of each stroke.
         for i in 0..2 {
             if b.paddle_state(i) {
@@ -847,7 +907,7 @@ impl Game<'_> {
                     if let Some(sound) = sound {
                         let v = view_vector(b.yaw, 0.0);
                         let (dx, dz) = if i == 1 { (-v[2], v[0]) } else { (v[2], -v[0]) };
-                        let pitch = 0.8 + 0.4 * random.next_float();
+                        let pitch = 0.8 + 0.4 * b.random.next_float();
                         audio.play(
                             sound,
                             Some([b.position.x + dx, b.position.y, b.position.z + dz]),
@@ -1687,24 +1747,23 @@ impl Game<'_> {
             let id = self.boats[i].id;
             self.release_vehicle_container(id);
             let b = self.boats.remove(i);
-            // AbstractBoat.remove: a destroyed boat drops its lead.
-            self.boat_removed(&b);
             // `AbstractChestBoat.remove` spills the chest through
-            // `Containers.dropContents` for every destroying removal reason;
-            // that has no `entity_drops` gate of its own.
-            for stack in b.items.iter().flatten() {
-                self.spawn_item(stack.clone(), at, super::dispenser::new_item_motion(), 10);
-            }
+            // `Containers.dropContents` for every destroying removal reason
+            // (the kill below, and a creative hit's discard); that has no
+            // `entity_drops` gate of its own. A plain boat has no slots.
+            self.drop_vehicle_contents(at, &b.items);
+            // AbstractBoat.remove, after that: a destroyed boat drops its lead.
+            self.boat_removed(&b);
             // `VehicleEntity.destroy(level, dropItem)`: `kill` (the boat's own
-            // ENTITY_DIE), then the boat item on the death path only, and only
-            // with `entity_drops` on, by `spawnAtLocation` (an ItemEntity's own
-            // random motion).
+            // ENTITY_DIE after that removal), then the boat item on the death
+            // path only, and only with `entity_drops` on, by `spawnAtLocation`
+            // (an ItemEntity's own random motion).
             if !creative {
                 self.entity_killed_event(at, false);
             }
             if !creative && self.ui.rules.bool("entity_drops") {
                 let item = b.entity_type();
-                self.spawn_item(
+                self.spawn_item_own(
                     ItemStack {
                         item: Arc::from(item.as_str()),
                         count: 1,
@@ -1712,9 +1771,14 @@ impl Game<'_> {
                         extra: None,
                     },
                     at,
-                    super::dispenser::new_item_motion(),
                     10,
                 );
+                // AbstractChestBoat.destroy: `chestVehicleDestroyed` drops the
+                // emptied chest again, which only draws each slot's spot.
+                if b.chest {
+                    let empty = vec![None; b.items.len()];
+                    self.drop_vehicle_contents(at, &empty);
+                }
             }
         }
         Some(destroyed)
@@ -1823,11 +1887,18 @@ impl Game<'_> {
                 && &*b.wood != "bamboo"
                 && !matches!(b.status, Status::UnderWater | Status::UnderFlowingWater)
             {
+                // Depth only, so its texture is never seen; one texel of the white sprite, the
+                // same at every corner (no derivatives, so the base level at any distance), keeps
+                // a shader pack's alpha test from throwing the patch away.
+                let white = (self.gui.atlas.sprites.get("horizon/white")).map_or(uv, |r| {
+                    let (u, v) = ((r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0);
+                    [u, v, u, v]
+                });
                 horizon_client::mobs::render::draw(
                     patch,
                     base,
                     &Poses::new(patch),
-                    uv,
+                    white,
                     0xFFFF_FFFF,
                     packed,
                     horizon_client::gfx::WATER_MASK_OVERLAY,

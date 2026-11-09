@@ -56,9 +56,11 @@ impl Game<'_> {
     /// `BehaviorUtils.throwItem`: toss a stack from a villager's hand toward
     /// a point.
     fn villager_throw(&mut self, from: Vec3, eye: f64, to: Vec3, stack: ItemStack) {
-        let at = [from.x, eye - 0.3, from.z];
+        // The hand drop and the velocity are the float 0.3F, widened.
+        let k = f64::from(0.3_f32);
+        let at = [from.x, eye - k, from.z];
         let d = Vec3::new(to.x - from.x, to.y - from.y, to.z - from.z).normalize();
-        self.spawn_item(stack, at, [d.x * 0.3, d.y * 0.3, d.z * 0.3], 10);
+        self.spawn_item(stack, at, [d.x * k, d.y * k, d.z * k], 10);
     }
 
     /// `TradeWithVillager.tick` for one pair: gossip (at most once in 1200
@@ -162,8 +164,7 @@ impl Game<'_> {
             spawning::villager_type(&facts)
         });
         self.mobs[ib].extra.age = 6000;
-        let Some(id) =
-            self.spawn_mob_for("minecraft:villager", [from.x, from.y, from.z], true, true)
+        let Some(id) = self.spawn_mob_raw("minecraft:villager", [from.x, from.y, from.z], true)
         else {
             return;
         };

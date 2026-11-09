@@ -823,7 +823,7 @@ impl Behaviours {
         let mut reschedule = Vec::new();
         while !ticks.block_events.is_empty() {
             let event = ticks.block_events.remove(0);
-            if !level.is_ticking_chunk(event.pos.chunk()) {
+            if !level.should_tick_blocks_at(event.pos.chunk()) {
                 reschedule.push(event);
                 continue;
             }

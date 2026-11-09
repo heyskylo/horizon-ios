@@ -433,6 +433,25 @@ pub enum Entry {
     /// A modifier of a type not ported yet (`ListModifier.append`, `MobSpawnSettingsModifier`
     /// `overlay`): kept, and applying it leaves the value as it was.
     Unported(Json),
+    /// An entry computed when it applies, from the value so far (not vanilla: a resource pack's
+    /// expression). `None` leaves the value as it was.
+    Dynamic(Dynamic),
+}
+
+/// The function behind [`Entry::Dynamic`]; two are equal when they are the same function.
+#[derive(Clone)]
+pub struct Dynamic(pub std::sync::Arc<dyn Fn(&Value) -> Option<Entry> + Send + Sync>);
+
+impl std::fmt::Debug for Dynamic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Dynamic")
+    }
+}
+
+impl PartialEq for Dynamic {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// `BooleanModifier`.
@@ -475,6 +494,13 @@ impl Entry {
             .and_then(Json::as_str)
             .ok_or_else(|| format!("{value_error}; and no modifier"))?;
         let argument = object.get("argument").ok_or("no argument")?;
+        Self::with_modifier(attribute, op, argument)
+    }
+
+    /// `EnvironmentAttributeMap.Entry.createFullCodec`: the entry `op` makes of `argument` on
+    /// this attribute, with the modifier's argument codec (also a timeline keyframe's value,
+    /// under its track's modifier).
+    pub fn with_modifier(attribute: &Attribute, op: &str, argument: &Json) -> Result<Self, String> {
         let kind = attribute.kind;
         let color = matches!(kind, Kind::RgbColor | Kind::ArgbColor);
         let simple = |argument: &Json| -> Result<Value, String> {
@@ -535,6 +561,77 @@ impl Entry {
         })
     }
 
+    /// `AttributeTrack.bakeSampler`'s argument lerp: two keyframes of one track (same
+    /// modifier) blended at `alpha`. Overrides use the type's keyframe lerp; float arguments
+    /// `Mth.lerp`; color arguments `ARGB.srgbLerp`; `FloatWithAlpha` and
+    /// `ColorModifier.BlendToGray.lerp` each field; boolean arguments step at 1
+    /// (as `AttributeType.ofNotInterpolated` keyframes do).
+    pub fn keyframe_lerp(attribute: &Attribute, alpha: f32, from: &Self, to: &Self) -> Self {
+        let float = |a: f32, b: f32| a + alpha * (b - a);
+        let value = |a: &Value, b: &Value| match (a, b) {
+            (Value::Float(a), Value::Float(b)) => Value::Float(float(*a, *b)),
+            (Value::Rgb(a), Value::Rgb(b)) => {
+                Value::Rgb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (Value::Argb(a), Value::Argb(b)) => {
+                Value::Argb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            _ => {
+                if alpha >= 1.0 {
+                    b.clone()
+                } else {
+                    a.clone()
+                }
+            }
+        };
+        match (from, to) {
+            (Self::Override(a), Self::Override(b)) => {
+                Self::Override(attribute.lerp(Lerp::Keyframe, alpha, a, b))
+            }
+            (
+                Self::AlphaBlendFloat {
+                    value: v1,
+                    alpha: a1,
+                },
+                Self::AlphaBlendFloat {
+                    value: v2,
+                    alpha: a2,
+                },
+            ) => Self::AlphaBlendFloat {
+                value: float(*v1, *v2),
+                alpha: float(*a1, *a2),
+            },
+            (Self::Add(a), Self::Add(b)) => Self::Add(value(a, b)),
+            (Self::Subtract(a), Self::Subtract(b)) => Self::Subtract(value(a, b)),
+            (Self::Multiply(a), Self::Multiply(b)) => Self::Multiply(value(a, b)),
+            (Self::Minimum(a), Self::Minimum(b)) => Self::Minimum(float(*a, *b)),
+            (Self::Maximum(a), Self::Maximum(b)) => Self::Maximum(float(*a, *b)),
+            (Self::AlphaBlendColor(a), Self::AlphaBlendColor(b)) => {
+                Self::AlphaBlendColor(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (
+                Self::BlendToGray {
+                    brightness: b1,
+                    factor: f1,
+                },
+                Self::BlendToGray {
+                    brightness: b2,
+                    factor: f2,
+                },
+            ) => Self::BlendToGray {
+                brightness: float(*b1, *b2),
+                factor: float(*f1, *f2),
+            },
+            _ => {
+                if alpha >= 1.0 {
+                    to.clone()
+                } else {
+                    from.clone()
+                }
+            }
+        }
+    }
+
     /// `AttributeModifier.apply(subject, argument)`.
     pub fn apply(&self, subject: &Value) -> Value {
         use Value::{Argb, Float, Rgb};
@@ -543,6 +640,10 @@ impl Entry {
         };
         match (self, subject) {
             (Self::Override(v), _) => v.clone(),
+            (Self::Dynamic(f), subject) => match (f.0)(subject) {
+                Some(entry) => entry.apply(subject),
+                None => subject.clone(),
+            },
             (Self::AlphaBlendFloat { value, alpha }, Float(s)) => Float(s + alpha * (value - s)),
             (Self::Add(Float(b)), Float(a)) => Float(a + b),
             (Self::Subtract(Float(b)), Float(a)) => Float(a - b),
@@ -653,6 +754,14 @@ fn java_max(a: f32, b: f32) -> f32 {
 #[derive(Clone, Default)]
 pub struct AttributeMap(Vec<(&'static Attribute, Entry)>);
 
+impl std::fmt::Debug for AttributeMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(a, _)| a.id))
+            .finish()
+    }
+}
+
 impl AttributeMap {
     /// `EnvironmentAttributeMap.CODEC`: a JSON object from attribute id to entry.
     pub fn parse(json: &Json) -> Result<Self, String> {
@@ -676,6 +785,21 @@ impl AttributeMap {
             map.0.push((attribute, entry));
         }
         map
+    }
+
+    /// Sets the attribute's entry, replacing the one it had.
+    pub fn set(&mut self, attribute: &'static Attribute, entry: Entry) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+        self.0.push((attribute, entry));
+    }
+
+    /// Drops the attribute's entry.
+    pub fn remove(&mut self, attribute: &Attribute) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn get(&self, attribute: &Attribute) -> Option<&Entry> {

@@ -50,17 +50,21 @@ pub fn open_uri(uri: &str) {
     #[cfg(not(windows))]
     open_folder(Path::new(uri));
 }
-/// The resource root to load from, given the vanilla root, the selection and
-/// a server's packs, which go on top (`Pack.Position.TOP`, fixed).
+/// The resource root to load from: the selection and a server's packs, which go on top
+/// (`Pack.Position.TOP`, fixed), laid over `base`. `base` is the mods' content root
+/// ([`super::mods::content_root`] of `vanilla`), so mod resources sit below the player's packs
+/// as in vanilla, and a pack change leaves the content root's cache alone (#12403). Built-in
+/// packs are found in `vanilla`.
 pub fn startup_root(
     vanilla: &Path,
+    base: &Path,
     selected: &[String],
     server: &[Pack],
 ) -> std::io::Result<PathBuf> {
     let all = packs::discover(vanilla, &packs_dir());
     let mut enabled = packs::enabled(&all, selected);
     enabled.extend_from_slice(server);
-    packs::resource_root(vanilla, &enabled, &cache_dir())
+    packs::resource_root(base, &enabled, &cache_dir())
 }
 fn info(p: &Pack) -> PackInfo {
     let built_in = !p.id.starts_with("file/");
@@ -135,6 +139,29 @@ pub(super) fn pack_infos(vanilla: &Path, server: &[Pack]) -> Vec<PackInfo> {
     infos.push(vanilla_info(vanilla));
     infos
 }
+/// The folder packs' Polytone config entries (#11486), by pack id, for those that have some:
+/// what the Pack Options page edits.
+pub(super) fn pack_configs(vanilla: &Path) -> std::collections::BTreeMap<String, packs::Configs> {
+    packs::discover(vanilla, &packs_dir())
+        .into_iter()
+        .filter(|p| !p.polytone_configs.entries().is_empty())
+        .map(|p| (p.id, p.polytone_configs))
+        .collect()
+}
+/// The player changed Pack Options: `chosen` replaces their choices for `entries`, kept in
+/// `polytone-configs.json`.
+pub(super) fn save_pack_options(
+    entries: &[String],
+    chosen: std::collections::BTreeMap<String, packs::ConfigValue>,
+) {
+    let mut all = packs::polytone_choices();
+    all.retain(|id, _| !entries.contains(id));
+    all.extend(chosen);
+    if let Err(e) = packs::save_polytone_choices(&packs::polytone_choices_file(), &all) {
+        log::warn!("could not save the pack options: {e}");
+    }
+    packs::set_polytone_choices(all);
+}
 impl Game<'_> {
     pub(super) fn vanilla_root(&self) -> PathBuf {
         if self.ui.vanilla_root.as_os_str().is_empty() {
@@ -164,10 +191,12 @@ impl Game<'_> {
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
         let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
+        let configs = pack_configs(&self.vanilla_root());
         let browsing = self.settings.extras.pack_browser;
         let o = &mut self.ui.options;
         o.pack_browser = browsing;
         o.pack_infos = infos;
+        o.pack_configs = configs;
         o.pack_selection = self.settings.resource_packs.clone();
         o.pack_screen = None;
     }
@@ -211,6 +240,7 @@ impl Game<'_> {
             let selection = self.settings.resource_packs.clone();
             let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.pack_infos = infos;
+            self.ui.options.pack_configs = pack_configs(&self.vanilla_root());
             self.ui.options.pack_selection = selection;
             self.ui.options.pack_screen = None;
         }
@@ -353,8 +383,12 @@ impl Game<'_> {
                     Some(textures),
                     self.settings.horizon.api,
                     self.settings.horizon.translucent_batching,
-                    self.settings.horizon.wide_frame(),
+                    &self.settings.horizon,
                     super::shader_packs::picked_pack_shape(&self.settings),
+                    self.renderer
+                        .as_ref()
+                        .map(|r| r.display_reading())
+                        .unwrap_or_default(),
                     (
                         self.settings.file.int("textureFiltering"),
                         self.settings.file.int("maxAnisotropyBit"),
@@ -496,8 +530,8 @@ pub(super) fn stage_pack(
     japanese: bool,
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
-    let root = startup_root(vanilla_root, selected, server)?;
-    let root = super::mods::content_root(&root, mods_enabled, dev_mods);
+    let base = super::mods::content_root(vanilla_root, mods_enabled, dev_mods);
+    let root = startup_root(vanilla_root, &base, selected, server)?;
     progress.set(1);
     // The world's models and sprites and the GUI atlas read the same root and nothing of
     // each other: about a second each, side by side.

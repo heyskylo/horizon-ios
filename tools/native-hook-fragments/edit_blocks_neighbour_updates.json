@@ -1,0 +1,7 @@
+{
+  "hooks": [],
+  "helpers": [],
+  "rust_summary": "`NativeBlockEdit.neighbour_updates`: a bulk edit can tell the neighbours of each block it changes, as `set_block` does.",
+  "doc_summary": "`NativeBlockEdit` has `neighbour_updates` (off by default): when on, `native_edit_blocks` tells the neighbours of each block it changes (`ServerLevel.updateNeighboursOnBlockSet`, so redstone, shapes and the block updates a `set_block` sends follow), as a `set_block` with its flags does; off, no neighbour is told. Bundles need \"hooks\": @API:edit_blocks_neighbour_updates@.",
+  "comments": ["crates/horizon-client/src/game/native_world_edit.rs"]
+}

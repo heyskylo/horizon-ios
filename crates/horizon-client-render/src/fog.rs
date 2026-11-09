@@ -99,20 +99,26 @@ impl FogState {
         self.block_light_flicker += (a - b) * c * d * 0.1;
         self.block_light_flicker *= 0.9;
     }
-    /// `LocalPlayer.aiStep`: water vision ramps up while the eye is in water.
-    pub fn tick(&mut self, eye_in_water: bool) {
+    /// `LocalPlayer.aiStep`: water vision ramps up while the eye is in water, ten times faster
+    /// for a spectator.
+    pub fn tick(&mut self, eye_in_water: bool, spectator: bool) {
         self.water_vision_time = if eye_in_water {
-            (self.water_vision_time + 1).min(600)
+            (self.water_vision_time + if spectator { 10 } else { 1 }).min(600)
         } else {
             (self.water_vision_time - 10).max(0)
         };
     }
     /// `LocalPlayer.getWaterVision`.
     pub fn water_vision(&self, eye_in_water: bool) -> f32 {
+        self.water_vision_over(eye_in_water, 600.0)
+    }
+    /// The water vision a pack's `water_fog_brightening_time` gives: vanilla's ramp over that
+    /// many ticks, of the 600 the game counts (more never reaches full).
+    pub fn water_vision_over(&self, eye_in_water: bool, ticks: f32) -> f32 {
         if !eye_in_water {
             return 0.0;
         }
-        let t = self.water_vision_time as f32;
+        let t = self.water_vision_time as f32 * 600.0 / ticks;
         if t >= 600.0 {
             return 1.0;
         }
@@ -225,6 +231,8 @@ pub struct FogInputs<'a> {
     /// `GameRenderer.nightVisionScale` while Night Vision is on without
     /// Darkness, else 0 (`FogRenderer.computeFogColor`'s brightenFactor).
     pub night_vision: f32,
+    /// The packs' Polytone `environment` fog settings.
+    pub environment: horizon_polytone::colors::Environment,
 }
 
 /// `FogRenderer.setupFog` + `computeFogColor`.
@@ -240,7 +248,7 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
     // Base colour of the applicable environment.
     let mut color = match input.fog_type {
         FogType::Lava => rgb(0x99_1A00),
-        FogType::PowderSnow => rgb(0x9F_BACC),
+        FogType::PowderSnow => rgb(input.environment.powder_snow_fog.unwrap_or(0x9F_BACC)),
         FogType::Water => input.water_fog_color,
         FogType::Atmospheric => {
             let mut fog = sky.fog_color;
@@ -298,8 +306,11 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
         color[1] += (color[1] * 0.6 - color[1]) * t;
         color[2] += (color[2] * 0.6 - color[2]) * t;
     }
-    let brighten = if eye_in_water {
+    let env = &input.environment;
+    let brighten = if eye_in_water && input.full_water_vision {
         water_vision
+    } else if eye_in_water {
+        state.water_vision_over(true, env.water_fog_brightening_time) * env.water_fog_brightening
     } else {
         input.night_vision
     };
@@ -341,10 +352,11 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
         }
         _ if input.blindness.is_some() => {
             let (duration, infinite) = input.blindness.unwrap_or((0, true));
+            let end = env.blindness_fog_distance;
             let distance = if infinite {
-                5.0
+                end
             } else {
-                rd + (5.0 - rd) * (duration as f32 / 20.0).min(1.0)
+                rd + (end - rd) * (duration as f32 / 20.0).min(1.0)
             };
             fog.environmental_start = distance * 0.25;
             fog.environmental_end = distance;
@@ -354,7 +366,7 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
         _ if input.darkness.is_some() => {
             // DarknessFogEnvironment.setupFog: closing in to 15 blocks.
             let blend = input.darkness.unwrap_or(0.0);
-            let distance = rd + (15.0 - rd) * blend;
+            let distance = rd + (env.darkness_fog_distance - rd) * blend;
             fog.environmental_start = distance * 0.75;
             fog.environmental_end = distance;
             fog.sky_end = distance;
@@ -379,7 +391,7 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
             fog.cloud_end = ((input.cloud_range_chunks * 16) as f32).min(sky.cloud_fog_end);
             if input.boss_world_fog {
                 fog.environmental_start = fog.environmental_start.min(10.0);
-                fog.environmental_end = fog.environmental_end.min(96.0);
+                fog.environmental_end = fog.environmental_end.min(env.boss_fog_distance);
                 fog.sky_end = fog.environmental_end;
                 fog.cloud_end = fog.environmental_end;
             }
@@ -482,6 +494,7 @@ mod tests {
             fire_resistance: false,
             full_water_vision: false,
             night_vision: 0.0,
+            environment: Default::default(),
         }
     }
     #[test]
@@ -557,6 +570,55 @@ mod tests {
         assert_eq!(fog.environmental_end, 96.0);
         clear_distance_fog(&mut fog, &input);
         assert!(fog.environmental_start >= 1e9 && fog.render_distance_start >= 1e9);
+    }
+    #[test]
+    fn a_packs_environment_moves_effect_fog_and_its_colours() {
+        let sky = Sky {
+            fog_start: 10.0,
+            fog_end: 96.0,
+            ..Sky::default()
+        };
+        let tables = FogTables {
+            water_fog_end: vec![1.0],
+        };
+        let environment = horizon_polytone::colors::Environment {
+            powder_snow_fog: Some(0xFF0000),
+            blindness_fog_distance: 40.0,
+            water_fog_brightening: 0.0,
+            ..Default::default()
+        };
+        let mut input = inputs(&sky);
+        input.blindness = Some((-1, true));
+        input.environment = environment;
+        assert_eq!(
+            setup_fog(&tables, &FogState::default(), &input).environmental_end,
+            40.0
+        );
+        input.blindness = None;
+        input.fog_type = FogType::PowderSnow;
+        let fog = setup_fog(&tables, &FogState::default(), &input);
+        assert_eq!(fog.color, [1.0, 0.0, 0.0, 1.0]);
+        // Under water for the full 600 ticks: vanilla washes the fog out to a full channel; a
+        // brightening of 0 keeps the colour given.
+        let mut state = FogState::default();
+        for _ in 0..600 {
+            state.tick(true, false);
+        }
+        input.fog_type = FogType::Water;
+        input.water_fog_color = [0.1, 0.2, 0.4];
+        let washed = setup_fog(&tables, &state, &inputs_with(&input, Default::default())).color;
+        assert_eq!(washed[2], 1.0);
+        let kept = setup_fog(&tables, &state, &input).color;
+        assert_eq!(&kept[..3], &[0.1, 0.2, 0.4]);
+    }
+    fn inputs_with<'a>(
+        input: &FogInputs<'a>,
+        environment: horizon_polytone::colors::Environment,
+    ) -> FogInputs<'a> {
+        FogInputs {
+            environment,
+            ..*input
+        }
     }
     #[test]
     fn fog_off_keeps_fluid_and_effect_fog() {
@@ -707,11 +769,11 @@ mod tests {
     fn water_vision_ramps() {
         let mut s = FogState::default();
         for _ in 0..100 {
-            s.tick(true);
+            s.tick(true, false);
         }
         assert!((s.water_vision(true) - 0.6).abs() < 1e-6);
         for _ in 0..500 {
-            s.tick(true);
+            s.tick(true, false);
         }
         assert_eq!(s.water_vision(true), 1.0);
         assert_eq!(s.water_vision(false), 0.0);
@@ -726,17 +788,17 @@ mod tests {
         input.fog_type = FogType::Water;
         // Just in: vanilla's water vision is 0, so the fog ends at a quarter of 96 blocks.
         let mut state = FogState::default();
-        state.tick(true);
+        state.tick(true, false);
         let first = setup_fog(&tables, &state, &input);
         assert_eq!(first.environmental_end, 24.0);
         for _ in 0..600 {
-            state.tick(true);
+            state.tick(true, false);
         }
         let settled = setup_fog(&tables, &state, &input);
         assert_eq!(settled.environmental_end, 96.0);
         input.full_water_vision = true;
         let mut fresh = FogState::default();
-        fresh.tick(true);
+        fresh.tick(true, false);
         let clear = setup_fog(&tables, &fresh, &input);
         assert_eq!(clear.environmental_end, settled.environmental_end);
         assert_eq!(clear.color, settled.color);
@@ -781,5 +843,21 @@ mod tests {
         let fog = setup_fog(&tables, &state, &inputs(&sky));
         assert_eq!(fog.environmental_start, -160.0);
         assert_eq!(fog.environmental_end, 768.0);
+    }
+
+    #[test]
+    fn a_spectator_sees_clearly_under_water_ten_times_sooner() {
+        let mut swimmer = FogState::default();
+        let mut spectator = FogState::default();
+        for _ in 0..60 {
+            swimmer.tick(true, false);
+            spectator.tick(true, true);
+        }
+        // LocalPlayer.getWaterVision after 60 ticks: 60 and 600 ticks of vision.
+        assert!((swimmer.water_vision(true) - 0.36).abs() < 1e-6);
+        assert_eq!(spectator.water_vision(true), 1.0);
+        // Out of the water both lose it 10 a tick.
+        spectator.tick(false, true);
+        assert_eq!(spectator.water_vision_time, 590);
     }
 }

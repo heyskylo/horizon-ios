@@ -195,6 +195,7 @@ struct HorizonMaterialSolid {
 // What `fs_solid` leaves in the frame's alpha for HDR output, from the sprite before the pack's
 // material: the pack decides the colour, Horizon still knows which pixels are light sources.
 fn horizon_material_mark(in: HorizonMaterialOut, texel: vec4<f32>) -> f32 {
+    if horizon_terrain_HDR_WRITE_LIGHT { return 1.0; }
     let code = in.hdr_code & 15u;
     if code > 0u {
         let whole = code > 4u;
@@ -309,7 +310,8 @@ pub struct NativeMaterial {
 /// every name it declares prefixed.
 fn vanilla_terrain() -> String {
     prefixed(
-        section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
+        &(include_str!("../hdr_light.wgsl").to_owned()
+            + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
         PREFIX,
     )
 }
@@ -431,6 +433,10 @@ impl NativeMaterial {
         ];
         constants.extend(sprite_names.into_iter().zip(shape.sprites));
         constants.push(("horizon_material_fog", f64::from(u8::from(fog))));
+        constants.push((
+            "horizon_terrain_HDR_WRITE_LIGHT",
+            f64::from(u8::from(shape.format == super::LINEAR_FRAME)),
+        ));
         constants.push((
             "horizon_displace_distance",
             displaced.map_or(0.0, |d| f64::from(d.distance)),
@@ -577,6 +583,39 @@ impl NativeMaterial {
             writes_surface,
         })
     }
+}
+
+#[cfg(test)]
+pub(super) fn coverage_test_shader(api: horizon_shader_api::Api) -> String {
+    use horizon_shader_api::{MANIFEST, Pack, StageKind, check};
+    let manifest = format!(
+        "schema = 1\nid = \"coverage\"\nname = \"Coverage\"\nversion = \"1\"\napi = \"{api}\"\n[material]\nfile = \"material.wgsl\"\n[displacement]\n"
+    );
+    let material = "fn material(input: MaterialInput) -> Surface { return Surface(vec4<f32>(1.4, 0.3, 0.1, 0.7)); }\nfn displacement(input: DisplacementInput) -> f32 { return 0.0; }\n";
+    let files = [(MANIFEST, manifest.as_str()), ("material.wgsl", material)]
+        .map(|(n, text)| (n.to_owned(), text.as_bytes().to_vec()))
+        .into();
+    let report = check(&Pack::from_files(files).unwrap()).unwrap();
+    let stage = report
+        .stages
+        .iter()
+        .find(|s| s.kind == StageKind::Material)
+        .unwrap();
+    shader_source(&stage.source, &[], &[], (false, true), api)
+        + r#"
+override TEST_TIER: u32 = 0u;
+override TEST_OVERLAY: u32 = 0u;
+@vertex fn test_vertex(@builtin(vertex_index) i: u32) -> HorizonMaterialOut {
+    var o: HorizonMaterialOut;
+    o.clip = vec4(vec2(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = vec2(0.5);
+    o.tint = vec4(1.0);
+    o.lightmap = vec3(1.0);
+    o.hdr_code = TEST_TIER;
+    o.base = vec3(1.0);
+    return o;
+}
+"#
 }
 
 #[cfg(test)]

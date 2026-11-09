@@ -2,6 +2,26 @@
 //! shader pack's translucent layers, and the far terrain (LOD) distances.
 use super::*;
 
+#[derive(Default)]
+pub(super) struct FrameAttempt<K = FrameKey>(Option<K>);
+
+/// The frame the renderer would be made with (`Renderer::requested_frame`), the pick's path,
+/// its outcome.
+type FrameKey = (
+    Option<horizon_client::gfx::FrameConfiguration>,
+    PathBuf,
+    Option<Option<horizon_shader_api::Api>>,
+);
+
+impl<K: PartialEq> FrameAttempt<K> {
+    // Remember attempts, including failures, until the requested configuration changes.
+    fn changed(&mut self, key: K) -> bool {
+        let changed = self.0.as_ref() != Some(&key);
+        self.0 = Some(key);
+        changed
+    }
+}
+
 impl Game<'_> {
     pub(super) fn renderer_for(
         &self,
@@ -18,14 +38,98 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
-            self.settings.horizon.wide_frame(),
+            &self.settings.horizon,
             shader_packs::picked_pack_shape(&self.settings),
+            self.renderer
+                .as_ref()
+                .map(|r| r.display_reading())
+                .unwrap_or_default(),
             (
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
             ),
         )
     }
+    /// Under `HORIZON_HDR_FRAME=float` the frame follows what draws the picture
+    /// (docs/design/hdr-linear-light.md, "When it changes"): when HDR, Smooth Gradients or the
+    /// pick (unless refused) call for another frame than the renderer's, it is made again before
+    /// this frame draws. Without the switch a frame stays until the next start, as before.
+    pub(super) fn follow_frame(&mut self) {
+        if !native_shaders::linear_frame_switch()
+            || self.options.paced_by_split
+            || self.options.split_guest
+        {
+            return;
+        }
+        let picked = shader_packs::picked_pack(&self.settings);
+        let path = self.native_shaders.resolve_path(
+            &Self::shader_packs_dir(),
+            picked,
+            shader_packs::dev_pack().is_some(),
+        );
+        let available = path.exists()
+            && path.file_name().is_none_or(|f| {
+                !shader_packs::active_pack(&f.to_string_lossy(), &self.settings.mods).is_empty()
+            });
+        let outcome = if available {
+            native_shaders::outcome(&path)
+        } else {
+            Some(None)
+        };
+        // The renderer's offer can change while the game runs (Vulkan's formats follow desktop
+        // HDR and the window's output), and the frame with it.
+        let request = shader_packs::picked_pack_shape(&self.settings).frame();
+        let wanted = self
+            .renderer
+            .as_ref()
+            .map(|r| r.requested_frame(&self.settings.horizon, request));
+        if !self.frame_attempted.changed((wanted, path, outcome)) {
+            return;
+        }
+        if self
+            .renderer
+            .as_ref()
+            .is_none_or(|r| r.frame_follows(&self.settings.horizon, request))
+        {
+            return;
+        }
+        if let Err(e) = self.rebuild_renderer() {
+            log::warn!("Horizon: the renderer for the new frame could not be made: {e}");
+        }
+    }
+
+    /// The renderer made again on the same device from the resources loaded, keeping the
+    /// pipelines that come out the same (`adopt_renderer`, as after a lost device).
+    fn rebuild_renderer(&mut self) -> Result<()> {
+        let Some(window) = self.window.clone() else {
+            return Ok(());
+        };
+        let started = std::time::Instant::now();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.release_surface();
+        }
+        let mut renderer = match self.renderer_for(window, &self.pack, &self.gui) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.recreate_surface()?;
+                }
+                return Err(error);
+            }
+        };
+        if let Some(old) = &mut self.renderer {
+            renderer.resize(old.config.width, old.config.height);
+            renderer.screenshot = old.screenshot.take();
+            renderer.screenshot_result = old.screenshot_result.take();
+        }
+        self.adopt_renderer(renderer);
+        log::info!(
+            "Horizon: the renderer was made again for the frame the settings call for in {} ms",
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
     pub(super) fn apply_settings(&mut self) {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
@@ -115,5 +219,36 @@ impl Game<'_> {
         } else {
             self.streaming.radius
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameAttempt;
+    use horizon_shader_api::Api;
+
+    #[test]
+    fn failed_frame_attempt_waits_for_a_policy_or_setting_change() {
+        let mut attempts = FrameAttempt::default();
+        let mut rebuilds = 0;
+        // The requested frame stands for itself here: the 8-bit one, then the float one.
+        for key in [
+            ("8-bit", "p", None),
+            ("8-bit", "p", None),
+            // HDR output offered later, with HDR On: the frame is looked at again.
+            ("float", "p", None),
+            ("float", "p", Some(Some(Api::V0_2))),
+            ("float", "p", Some(Some(Api::V0_2))),
+            ("float", "p", Some(None)),
+            ("float", "p", Some(None)),
+            ("float", "q", None),
+            ("8-bit", "q", None),
+        ] {
+            if attempts.changed(key) {
+                // A replacement fails: no success is recorded, just the attempted key.
+                rebuilds += 1;
+            }
+        }
+        assert_eq!(rebuilds, 6);
     }
 }

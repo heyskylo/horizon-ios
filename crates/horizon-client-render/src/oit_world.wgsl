@@ -25,6 +25,9 @@ fn oit_terrain_color(in: TerrainOut) -> vec4<f32> {
 // Stage 3: premultiplied colour, weighted by the transmittance in front.
 @fragment fn fs_oit_accumulate(wire: TerrainWire) -> @location(0) vec4<f32> {
     let in = from_wire(wire);
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+    }
     let color = oit_terrain_color(in);
     let seen = oit_sample_transmittance(vec2<i32>(in.clip.xy),
         oit_normalize_depth(in.clip.z, in.clip.xy), 1.0 - color.a);
@@ -33,6 +36,13 @@ fn oit_terrain_color(in: TerrainOut) -> vec4<f32> {
                 linear_fog(in.cylindrical, globals.fog.z, globals.fog.w));
     // The fog colour is premultiplied by the same weight.
     let rgb = mix(weighted.rgb, globals.fog_color.rgb * weighted.a, f * globals.fog_color.a);
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()),
+            globals.hdr_light.y, f * globals.fog_color.a));
+        // Convert the surface before weighting; its mark never belongs to the light behind it.
+        let fogged = mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a);
+        return vec4(hdr_written(fogged, mark, globals.hdr_settings, globals.hdr_shares) * weighted.a, weighted.a);
+    }
     return vec4(rgb, weighted.a);
 }
 

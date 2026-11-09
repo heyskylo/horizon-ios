@@ -9,7 +9,6 @@ use std::{
     path::PathBuf,
     sync::OnceLock,
 };
-
 struct Fixture {
     registry: BlockRegistry,
     behaviours: Behaviours,
@@ -50,6 +49,8 @@ pub(crate) struct TestLevel {
     pub block_light: HashMap<BlockPos, i32>,
     /// `Level.isClientSide`.
     pub client_side: bool,
+    pub tick_ready: bool,
+    pub block_events_ready: bool,
     /// Positions that refuse fluids, fire and piston moves, as a land claim would.
     pub guarded: HashSet<BlockPos>,
     /// What `adjust_signal` answers at a position: the weak and direct signal,
@@ -73,6 +74,10 @@ pub(crate) struct TestLevel {
     pub shulker_closed: HashMap<BlockPos, bool>,
     /// The containers `container_open` reports as open.
     pub opened: HashSet<BlockPos>,
+    /// Players standing in every plate and tripwire, by UUID.
+    pub occupants: Vec<u128>,
+    /// Occupants a mod's physical-trigger hook cancels.
+    pub spared: HashSet<u128>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -88,6 +93,8 @@ impl TestLevel {
             events: Vec::new(),
             block_light: HashMap::new(),
             client_side: false,
+            tick_ready: true,
+            block_events_ready: true,
             guarded: HashSet::new(),
             fire_odds: HashMap::new(),
             smoke_sources: HashMap::new(),
@@ -95,10 +102,30 @@ impl TestLevel {
             opener_rechecks: Vec::new(),
             shulker_closed: HashMap::new(),
             opened: HashSet::new(),
+            occupants: Vec::new(),
+            spared: HashSet::new(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn count_entities_at(
+        &self,
+        _pos: BlockPos,
+        _block: &str,
+        _area: Aabb,
+        _query: EntityQuery,
+    ) -> usize {
+        self.occupants
+            .iter()
+            .filter(|p| !self.spared.contains(p))
+            .count()
+    }
+    fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
+        self.block_events_ready
+    }
+    fn is_ticking_chunk(&self, _chunk: ChunkPos) -> bool {
+        self.tick_ready
+    }
     fn container_open(&self, pos: BlockPos) -> bool {
         self.opened.contains(&pos)
     }
@@ -4103,3 +4130,46 @@ fn a_rail_riding_on_slime_stays_on_it() {
     let pulled = w.name(BlockPos::new(1, 2, 0));
     assert!(pulled.starts_with("rail"), "pulled back: got {pulled}");
 }
+
+#[test]
+fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
+    for (ticketed, ready) in [(true, false), (false, true), (true, true), (false, false)] {
+        let mut w = world!();
+        w.level.tick_ready = ready;
+        w.level.block_events_ready = ticketed;
+        let pos = BlockPos::new(0, 1, 0);
+        let piston = w.id("piston", &[("facing", "up")]);
+        w.set(BlockPos::new(0, 0, 0), w.id("redstone_block", &[]));
+        w.set(pos, piston);
+        assert_eq!(w.ticks.block_events.len(), 1, "placement queues an event");
+        w.f.behaviours.run_block_events(&mut w.level, &mut w.ticks);
+        assert_eq!(
+            w.prop(pos, "extended"),
+            ticketed.to_string(),
+            "ticketed={ticketed}, ticking={ready}"
+        );
+        assert_eq!(w.ticks.block_events.is_empty(), ticketed);
+        if ticketed {
+            assert!(!w.ticks.moving_pistons.is_empty());
+            w.f.behaviours
+                .tick_block_entities(&mut w.level, &mut w.ticks);
+            assert_eq!(
+                w.ticks.moving_pistons[0].1.progress > 0.0,
+                ready,
+                "moving piston entities still require ticking readiness"
+            );
+        } else {
+            w.level.block_events_ready = true;
+            w.f.behaviours.run_block_events(&mut w.level, &mut w.ticks);
+            assert_eq!(
+                w.prop(pos, "extended"),
+                "true",
+                "deferred events run once ticketed"
+            );
+            assert!(w.ticks.block_events.is_empty());
+        }
+    }
+}
+
+mod barrel;
+mod trigger_tests;

@@ -130,3 +130,80 @@ mod tests {
         );
     }
 }
+
+/// Whether an entity id names `minecraft:interaction`.
+pub(super) fn is_interaction(kind: &str) -> bool {
+    matches!(kind, "minecraft:interaction" | "interaction")
+}
+
+/// `Interaction.PlayerAction`: the player and the game time of the last
+/// attack or use, as `PlayerAction.CODEC` saves it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct PlayerAction {
+    pub player: [i32; 4],
+    pub timestamp: i64,
+}
+
+impl PlayerAction {
+    fn from_tag(tag: Option<&horizon_world::nbt::Tag>) -> Option<Self> {
+        use horizon_world::nbt::Tag;
+        let tag = tag?;
+        let Tag::IntArray(player) = tag.get("player")? else {
+            return None;
+        };
+        let timestamp = horizon_client::save::number(tag.get("timestamp"))?;
+        Some(Self {
+            player: player.as_slice().try_into().ok()?,
+            timestamp,
+        })
+    }
+    fn to_tag(self) -> horizon_world::nbt::Tag {
+        use horizon_world::nbt::Tag;
+        Tag::compound([
+            ("player", Tag::IntArray(self.player.to_vec())),
+            ("timestamp", Tag::Long(self.timestamp)),
+        ])
+    }
+}
+
+/// A server `Interaction`'s saved settings
+/// (`Interaction.readAdditionalSaveData` / `addAdditionalSaveData`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct InteractionState {
+    pub width: f32,
+    pub height: f32,
+    pub response: bool,
+    pub attack: Option<PlayerAction>,
+    pub interaction: Option<PlayerAction>,
+}
+
+impl InteractionState {
+    /// `Interaction.readAdditionalSaveData`: the dimensions, optional action records and response.
+    pub fn from_tag(tag: &horizon_world::nbt::Tag) -> Self {
+        let float = |key| horizon_client::save::float(tag.get(key)).unwrap_or(1.0) as f32;
+        Self {
+            width: float("width"),
+            height: float("height"),
+            response: horizon_client::entity_nbt::flag(tag, "response"),
+            attack: PlayerAction::from_tag(tag.get("attack")),
+            interaction: PlayerAction::from_tag(tag.get("interaction")),
+        }
+    }
+    /// `Interaction.addAdditionalSaveData`: the settings, and each action when set.
+    pub fn write(&self, c: &mut horizon_world::nbt::Compound) {
+        use horizon_world::nbt::Tag;
+        c.insert("width".into(), Tag::Float(self.width.to_bits()));
+        c.insert("height".into(), Tag::Float(self.height.to_bits()));
+        for (key, action) in [("attack", self.attack), ("interaction", self.interaction)] {
+            match action {
+                Some(action) => {
+                    c.insert(key.into(), action.to_tag());
+                }
+                None => {
+                    c.remove(&key.into());
+                }
+            }
+        }
+        c.insert("response".into(), Tag::Byte(i8::from(self.response)));
+    }
+}

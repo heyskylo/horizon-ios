@@ -1,19 +1,17 @@
 //! HUD coverage beside its unchanged colour and alpha, only on the float HDR lane.
 
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The HUD's own target on the layered frame (`Hdr::hud`): 8-bit, so each HUD draw clips at
+/// white and rounds as on vanilla's frame. The coverage pipelines are the only ones that draw
+/// on it.
+pub(crate) const HUD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 pub(crate) fn supported(
-    lane: (bool, bool, bool),
-    hdr_offered: bool,
     attachments: u32,
     flags: wgpu::DownlevelFlags,
     format: wgpu::TextureFormatFeatures,
 ) -> bool {
-    !lane.0
-        && lane.1
-        && lane.2
-        && hdr_offered
-        && attachments >= 2
+    attachments >= 2
         && flags.contains(wgpu::DownlevelFlags::INDEPENDENT_BLEND)
         && format
             .allowed_usages
@@ -79,8 +77,9 @@ impl Pipeline {
     }
 }
 
-/// Keep the primary output and all its blend factors, including destination alpha. Wrap the
-/// final shader result, so pack text's alpha, early returns and discard all apply to coverage.
+/// Keep the primary output and all its blend factors, including destination alpha, on the
+/// HUD's target (`HUD_FORMAT`). Wrap the final shader result, so pack text's alpha, early
+/// returns and discard all apply to coverage.
 /// `None` for a fragment shader without a colour output at location 0.
 pub(super) fn pipeline(
     device: &wgpu::Device,
@@ -94,7 +93,8 @@ pub(super) fn pipeline(
         wgpu::ShaderSource::Naga(m) => m.into_owned(),
         _ => return None,
     };
-    let primary = fragment.targets.first()?.clone()?;
+    let mut primary = fragment.targets.first()?.clone()?;
+    primary.format = HUD_FORMAT;
     let blend = primary.blend.unwrap_or(wgpu::BlendState::REPLACE).color;
     let additive = matches!(
         (blend.src_factor, blend.dst_factor),
@@ -345,37 +345,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coverage_requires_the_no_pack_float_hdr_lane_and_independent_r8_blending() {
+    fn coverage_requires_two_attachments_and_independent_r8_blending() {
         let flags = wgpu::DownlevelFlags::INDEPENDENT_BLEND;
         let format = wgpu::TextureFormatFeatures {
             allowed_usages: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             flags: wgpu::TextureFormatFeatureFlags::BLENDABLE,
         };
-        let lane = (false, true, true);
-        assert!(supported(lane, true, 2, flags, format));
-        // Switch unset (including legacy 16-bit HDR and 0.1 packs), HDR off, a 0.2
-        // pack's float frame, and unsupported devices never allocate coverage.
-        for other in [
-            (false, false, true),
-            (true, false, true),
-            (true, true, true),
-            (false, true, false),
-        ] {
-            assert!(!supported(other, true, 2, flags, format));
-        }
-        assert!(!supported(lane, false, 2, flags, format));
-        assert!(!supported(lane, true, 1, flags, format));
+        assert!(supported(2, flags, format));
+        assert!(!supported(1, flags, format));
+        assert!(!supported(2, wgpu::DownlevelFlags::empty(), format));
         assert!(!supported(
-            lane,
-            true,
-            2,
-            wgpu::DownlevelFlags::empty(),
-            format
-        ));
-        assert!(!supported(
-            lane,
-            true,
             2,
             flags,
             wgpu::TextureFormatFeatures {
@@ -384,12 +364,18 @@ mod tests {
             }
         ));
         assert!(!supported(
-            lane,
-            true,
             2,
             flags,
             wgpu::TextureFormatFeatures {
                 allowed_usages: wgpu::TextureUsages::TEXTURE_BINDING,
+                ..format
+            }
+        ));
+        assert!(!supported(
+            2,
+            flags,
+            wgpu::TextureFormatFeatures {
+                allowed_usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 ..format
             }
         ));
@@ -446,7 +432,7 @@ mod tests {
 
     #[test]
     fn coverage_wraps_the_debug_crosshair_without_changing_world_entry_points() {
-        let mut module = naga::front::wgsl::parse_str(include_str!("../terrain.wgsl")).unwrap();
+        let mut module = naga::front::wgsl::parse_str(&crate::gfx::terrain_shader()).unwrap();
         wrap(
             &mut module,
             "fs_debug_line",

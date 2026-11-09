@@ -474,6 +474,21 @@ impl Game<'_> {
             }
             self.sculk.known = loaded;
         }
+        self.sculk_sync_writes();
+    }
+
+    /// `LevelChunk.setBlockState`: finish sculk placement before a command
+    /// or `BlockItem.updateCustomBlockEntityTag` loads saved entity fields.
+    pub(super) fn sculk_place_entity(&mut self, state: BlockStateId) -> bool {
+        self.sculk_prepare();
+        if self.kind_of_state(state.0) == 0 {
+            return false;
+        }
+        self.sculk_sync_writes();
+        true
+    }
+
+    fn sculk_sync_writes(&mut self) {
         let writes = std::mem::take(&mut self.world.watched_writes);
         for (key, old, new) in writes {
             let (old_kind, new_kind) = (self.kind_of_state(old), self.kind_of_state(new));
@@ -568,6 +583,8 @@ impl Game<'_> {
         Context {
             source: Some(Who::Player),
             owner: None,
+            source_uuid: None,
+            owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: self.spectator(),
             stepping_carefully: self.keys.held(Action::Sneak),
@@ -598,6 +615,8 @@ impl Game<'_> {
         Context {
             source: Some(Who::Mob(id)),
             owner: None,
+            source_uuid: None,
+            owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: false,
             stepping_carefully: false,
@@ -688,6 +707,7 @@ impl Game<'_> {
             return;
         }
         let ctx = ctx(self);
+        let ctx = self.with_vibration_uuids(ctx);
         for key in near {
             self.sculk_listen(key, event, pos, &ctx);
         }
@@ -730,6 +750,27 @@ impl Game<'_> {
             );
         }
         slots
+    }
+    /// The context with the saved identities of its source and owner, as
+    /// `VibrationInfo`'s constructor takes them from the entities when the
+    /// event is heard. Only what the context already names is filled.
+    fn with_vibration_uuids(&self, mut ctx: Context) -> Context {
+        if ctx.source_uuid.is_none() {
+            ctx.source_uuid = self.vibration_uuid(ctx.source);
+        }
+        if ctx.owner_uuid.is_none() {
+            ctx.owner_uuid = self.vibration_uuid(ctx.owner);
+        }
+        ctx
+    }
+    /// The saved UUID of a vibration's mob through the save layer's
+    /// `save_who_uuid`. `Who::Player` stays `None`: on a server it can be the
+    /// acting guest as well as the host, so it names no single entity here.
+    fn vibration_uuid(&self, who: Option<Who>) -> Option<[i32; 4]> {
+        match who {
+            Some(who @ Who::Mob(_)) => self.save_who_uuid(who),
+            _ => None,
+        }
     }
     /// The mob at `index` hears a game event, if it is a warden or an allay.
     fn mob_listen(&mut self, index: usize, event: &'static str, pos: [f64; 3], ctx: &Context) {
@@ -876,6 +917,8 @@ impl Game<'_> {
                     pos,
                     source: ctx.source,
                     owner: ctx.owner,
+                    source_uuid: ctx.source_uuid,
+                    owner_uuid: ctx.owner_uuid,
                 },
                 time,
             );
@@ -1189,6 +1232,7 @@ impl Game<'_> {
                     let d = [at[0] - dest[0], at[1] - dest[1], at[2] - dest[2]];
                     let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
                     let time = self.world.game_time;
+                    let source_uuid = self.vibration_uuid(Some(who));
                     if let Some(e) = self.sculk_entity(key) {
                         e.vibration.schedule(
                             Info {
@@ -1197,6 +1241,8 @@ impl Game<'_> {
                                 pos: at,
                                 source: Some(who),
                                 owner: None,
+                                source_uuid,
+                                owner_uuid: None,
                             },
                             time,
                         );
@@ -2335,12 +2381,56 @@ impl Game<'_> {
     /// `ArmorStand.kill`, `VehicleEntity.destroy`): removed, then
     /// `gameEvent(ENTITY_DIE, attributedTo != null ? attributedTo : this)` at
     /// the entity's position. `by_player`: the player's hit killed it, so the
-    /// player is the source. Otherwise the source is the entity itself (or a
-    /// bolt), which no listener tells apart from none: it is not living,
-    /// sneaking, a spectator or a warden.
+    /// player is the source. Nonliving self sources have no Who handle;
+    /// their listener facts are represented by the default context.
     pub(super) fn entity_killed_event(&mut self, at: [f64; 3], by_player: bool) {
-        let ctx = self.who_context(by_player.then_some(Who::Player), None);
-        self.post_game_event("minecraft:entity_die", at, ctx);
+        self.entity_killed_event_by(at, by_player.then_some(super::commands::Target::Player));
+    }
+    /// `BlockAttachedEntity.kill` / `ArmorStand.kill` with DamageSource.getEntity.
+    pub(super) fn entity_killed_event_by(
+        &mut self,
+        at: [f64; 3],
+        source: Option<super::commands::Target>,
+    ) {
+        self.entity_event_by("minecraft:entity_die", at, source);
+    }
+    /// `Entity.gameEvent(event, attributedTo)` at `at`, attributed to `source`
+    /// (a LAN guest posts as that player), else to the entity itself.
+    pub(super) fn entity_event_by(
+        &mut self,
+        event: &'static str,
+        at: [f64; 3],
+        source: Option<super::commands::Target>,
+    ) {
+        use super::commands::Target;
+        if let Some(Target::Guest(conn)) = source {
+            if self.lan_acting == Some(conn) {
+                let ctx = self.player_context(None);
+                self.post_game_event(event, at, ctx);
+                return;
+            }
+            if let Some(mut host) = self.lan.take() {
+                let posted = self
+                    .as_guest(&mut host, conn, |g| {
+                        let ctx = g.player_context(None);
+                        g.post_game_event(event, at, ctx);
+                    })
+                    .is_some();
+                self.lan = Some(host);
+                if posted {
+                    return;
+                }
+            }
+        }
+        let who = match source {
+            Some(Target::Player) => Some(Who::Player),
+            Some(Target::Mob(id)) => Some(Who::Mob(id)),
+            _ => None,
+        };
+        let mut ctx = self.who_context(who, None);
+        // A stand is living, but Warden.canTargetEntity explicitly excludes it.
+        ctx.living |= matches!(source, Some(Target::Stand(_)));
+        self.post_game_event(event, at, ctx);
     }
 }
 

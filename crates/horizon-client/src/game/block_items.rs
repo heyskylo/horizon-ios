@@ -259,12 +259,7 @@ impl Game<'_> {
         let mut stack = ItemStack::new(&self.res.facts().get(state).item, 1);
         let patch = block_entity_item::collected_components(&saved);
         (stack.damage, stack.extra) = item_data::decode_components(Some(&Tag::Compound(patch)));
-        self.spawn_item(
-            stack,
-            pos.map(|v| f64::from(v) + 0.5),
-            super::dispenser::new_item_motion(),
-            10,
-        );
+        self.spawn_item_own(stack, pos.map(|v| f64::from(v) + 0.5), 10);
     }
 
     /// `BlockItem.updateBlockStateFromTag`: the properties of the item's
@@ -328,6 +323,8 @@ impl Game<'_> {
     ) {
         let key = (pos[0], pos[1], pos[2]);
         self.pending.banner.remove(&pos);
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        self.sculk_place_entity(state);
         let Some(saved) = self.saved_block_entity(key) else {
             return;
         };

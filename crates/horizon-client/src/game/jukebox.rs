@@ -318,7 +318,7 @@ impl Game<'_> {
                 &mut self.world.random,
                 horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
             );
-            self.spawn_item(record, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(record, at, 10);
         }
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
@@ -365,7 +365,7 @@ impl Game<'_> {
             let color = f64::from(self.world.random.next_int_bound(4).unwrap_or(0)) / 24.0;
             let at = [
                 f64::from(pos[0]) + 0.5,
-                f64::from(pos[1]) + 1.2,
+                f64::from(pos[1]) + f64::from(1.2_f32), // add(0.0, 1.2F, 0.0)
                 f64::from(pos[2]) + 0.5,
             ];
             self.particles.add(

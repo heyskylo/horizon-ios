@@ -10,6 +10,12 @@ Two kinds of mod run in Horizon:
 Fabric and NeoForge jars do **not** run as they are: their code calls and patches Minecraft's Java classes, and
 Horizon has none. What carries over is the data and assets inside a jar ([modpacks.md](modpacks.md)).
 
+Running Java mods unchanged needs a Java bridge (a JVM beside the game, proposed in [#10216](https://github.com/horizon-rust/horizon/pull/10216); not in Horizon today).
+The project decided on 2026-11-09 that it will only ever be a **separate, optional download, never installed or on by
+default**: when the game or the launcher finds a Java mod it may offer to turn it on, and the player decides. Before
+it is promoted out of beta, its server MSPT and memory are measured against the Java client running the same mods
+(plan: [#13914](https://github.com/horizon-rust/horizon/issues/13914)).
+
 Mods are **off by default**. A fresh install has no `horizon-mods` folder and plays exactly like vanilla 26.3.
 
 ## Playing with mods
@@ -100,8 +106,8 @@ Unknown keys are refused, so a typo is an error, not a silently ignored permissi
 A content mod has capability `registries` and carries `assets/` and `data/` in the `.hmod`. It adds blocks and items
 by declaring them in `data/<id>/horizon/block/*.json` and `data/<id>/horizon/item/*.json`, each copying a vanilla
 template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-mob-effects)), and creative tabs, mob
-effects, entity types and menu types (each below) in `creative_tab/`, `mob_effect/`, `entity_type/` and `menu/` beside
-them. LAN and dedicated server players play with them when they run the same mods: a client whose mods add different
+effects, fluids, entity types and menu types (each below) in `creative_tab/`, `mob_effect/`, `fluid/`, `entity_type/`
+and `menu/` beside them. LAN and dedicated server players play with them when they run the same mods: a client whose mods add different
 content is refused when it joins, with the reason.
 
 A server that has content mods on also checks them one by one (`horizon_protocol::mod_list`, channel
@@ -127,6 +133,22 @@ ticks still grows: `"random_ticks": true` for every state (or `false`, to stop a
 `{ "property": "grown", "values": ["false"] }` for the states whose own state property (declared in
 `state_properties`) is one of the values. The block's native `native_random_tick` hook then fires as it does
 for a vanilla block that ticks, and its sections count it.
+
+`state_light` selects emission by the template's or declared state properties. It has the same
+`property` or ordered `properties`, `values` and optional `default` selection as a shape table;
+every value is an integer from 0 to 15:
+
+```json
+{ "template": "minecraft:glass", "state_properties": { "lit": { "type": "boolean" } },
+  "state_light": { "properties": ["lit"], "values": { "false": 0, "true": 15 } } }
+```
+
+Unknown properties, unreachable tuples, repeated property names and uncovered states without a
+`default` reject the declaration. A selected value takes precedence over `properties.light`,
+including zero. Without `state_light`, scalar light and template emission stay unchanged. The
+compiler resolves the table once into the normal per-state emission facts, shared by the client,
+server and saved resource cache. Light propagation uses those facts when a block changes state;
+it performs no declaration lookup or mod callback.
 
 `render_shape` says how a block is drawn whatever its template does, as vanilla's `getRenderShape`:
 `"MODEL"` puts its block model in the chunk mesh, `"ENTITYBLOCK_ANIMATED"` leaves the model out for a block whose
@@ -327,6 +349,34 @@ as vanilla's; without one it draws as the missing texture). It does nothing on i
 attribute modifiers. A world opened without the mod drops the effect from its players and mobs. Clients join a server
 only with the same mods' effects, as with its blocks.
 
+A mod fluid is declared in `data/<id>/horizon/fluid/<name>.json`. It copies `minecraft:water` or `minecraft:lava`
+(`template`) with NeoForge's `FluidType` and `BaseFlowingFluid.Properties` numbers in snake case, each optional (left
+out, it is the template's): `light_level` (0 to 15), `density`, `viscosity`, `temperature`, `motion_scale`,
+`fall_distance_modifier`, `can_push_entity`, `can_swim`, `can_drown`, `can_extinguish`, `can_convert_to_source`,
+`supports_boating`, `can_hydrate`, `tick_rate` (1 or more), `slope_find_distance` (1 to 8), `level_decrease_per_block`
+(1 to 7) and `explosion_resistance`. `bucket` names one of the mod's items and `block` one of its blocks, both optional;
+the block copies the template's liquid block (`"template": "minecraft:water"` or `"minecraft:lava"`), which holds the
+fluid at its `level`.
+`still` and `flowing` (required) and `overlay` are its textures in the block atlas, `tint` an ARGB colour over them:
+
+```json
+{ "template": "minecraft:water", "viscosity": 6000, "tick_rate": 20, "bucket": "ruby:honey_bucket",
+  "still": "ruby:block/honey_still", "flowing": "ruby:block/honey_flow" }
+```
+
+Like vanilla's, it is two fluids: the source `<id>:<name>` and the flowing `<id>:flowing_<name>`
+(`ruby:molten/iron` flows as `ruby:molten/flowing_iron`). Both take network ids after vanilla's, by id, so fluid tags
+in `data/<id>/tags/fluid/` may name them, and clients join a server only with the same mods' fluids, as with its
+blocks. Native mods' tanks hold them by these ids.
+
+Its block flows in the world as its template does, with the fluid's own `tick_rate`, `level_decrease_per_block`,
+`slope_find_distance` and `can_convert_to_source`, and leaves its own block where it spreads. It meets other fluids as
+NeoForge's `BaseFlowingFluid` does: lava's and water's conversions (stone, obsidian, cobblestone) stay theirs, a mod
+fluid copying lava neither fizzes nor turns water to stone, and no fluid replaces a mod fluid. Its `bucket` pours the source and an empty bucket
+picks the source back up (a fluid without one can't be picked up), from a hand or a dispenser, with the template's
+sounds. Not yet: mobs don't swim in it, and it is drawn as its template
+([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these step by step).
+
 A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
 `minecraft:snowball`, a thrown item projectile, or a living mob (below). A thrown type's `item` is one of the mod's own
 items (one type per item), and `damage` (0 by default) is what a hit deals to anything it hits, as `thrown` damage from
@@ -408,6 +458,27 @@ station, but never the result: hoppers, comparators and a broken block see only 
 result are the menu's other slots. The grid's slots follow `native_menu_slot_rules`; the result takes nothing. It runs
 on the server, so single player, LAN and dedicated servers craft alike; the result a player is shown is made again
 each tick its grid changed, whoever changed it. The grid and result may not be listed in `results`.
+
+Recipe placement works there as in a crafting table: a recipe viewer's `native_place_recipe` (the recipe book's click,
+`ServerboundPlaceRecipePacket`) and `native_transfer_recipe` fill the grid from the player's inventory, giving what was
+in it back, so JEI ports and the Recipes mod fill it unchanged. A native mod can let the placement take ingredients
+from containers beside the block too ([native-mods.md](native-mods.md#recipe-sources)). Not yet: the ghost recipe the server sends for missing
+items is not drawn on a mod's screen.
+
+`links` gives the menu slots that show other containers' slots instead of the block entity's, as Tinkers' Construct's
+crafting station shows the chest beside it: `count` slots from `from` on, which a native mod links to block containers
+each tick the menu is open ([native-mods.md](native-mods.md#menu-links)):
+
+```json
+{ "slots": 64, "crafting": { "grid": 1, "size": 3, "result": 0 }, "links": { "from": 10, "count": 54 } }
+```
+
+They are real slots of the menu: a click, a shift-click, a drag, a double click or another mod's inventory tool moves
+the linked containers' own items, on the server, and a changed container is saved and its comparators update. A
+shift-click from the inventory fills the other container slots first, in order, so a crafting grid before its links.
+The block entity never holds them, so a broken block drops none of them; leave them out of the container's `faces`.
+Linked slots past the containers' slots hold nothing and take nothing. They may not overlap the crafting grid, its
+result or `results`.
 
 #### Namespaces and limits
 

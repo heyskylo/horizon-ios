@@ -50,6 +50,8 @@ pub(super) enum Event {
     Checked((SourceId, String), Result<Box<Check>, String>),
     /// What a Horizon registry project says before install: signed or not, what it may do.
     About(HashMap<String, Vec<String>>),
+    /// Registry native mods' [`horizon::works_on`] in the selected instance, by id.
+    Works(HashMap<String, (bool, String)>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
     /// What the automatic updates did (`horizon::auto`), and the instances (ids) whose native
@@ -86,6 +88,11 @@ pub(super) struct Mods {
     more: bool,
     error: Option<String>,
     pub(super) installed: Vec<installed::Entry>,
+    /// The registry native mods' versions the player picked on their Versions tab, by id
+    /// (`horizon::chosen`), read with `installed`.
+    pub(super) chosen: std::collections::BTreeMap<String, String>,
+    /// The Horizon the selected instance played when its updates were last looked for.
+    pub(super) checked_for: Option<String>,
     loaded: bool,
     /// Whether the page searched for the instance as it is (its version and loader).
     asked: bool,
@@ -122,6 +129,9 @@ pub(super) struct Mods {
     pub(super) checks: HashMap<(SourceId, String), Checking>,
     /// Horizon registry projects' trust and capabilities, by id ([`horizon::trust_and_capabilities`]).
     pub(super) about: HashMap<String, Vec<String>>,
+    /// Whether a registry native mod works on the selected instance, and how, by id
+    /// ([`horizon::works_on`]).
+    pub(super) works: HashMap<String, (bool, String)>,
     /// The project page, filters and images.
     pub(super) browse: super::mods_project::Browse,
     pub(super) tx: Sender<Event>,
@@ -136,6 +146,13 @@ impl Mods {
     }
 
     /// The game folder installs go into: the selected instance's, once the page has read it.
+    /// Reads what the browser installed in the game folder again, with the versions picked.
+    pub(super) fn reload_installed(&mut self) {
+        let home = self.home();
+        self.installed = installed::Installed::load(&home).entries;
+        self.chosen = horizon::chosen(&home);
+    }
+
     pub(super) fn home(&self) -> PathBuf {
         self.home.clone().unwrap_or_else(backend::game_home)
     }
@@ -188,6 +205,8 @@ impl Mods {
             more: false,
             error: None,
             installed: Vec::new(),
+            chosen: Default::default(),
+            checked_for: None,
             loaded: false,
             asked: false,
             home: None,
@@ -207,6 +226,7 @@ impl Mods {
             shown: None,
             checks: HashMap::new(),
             about: HashMap::new(),
+            works: HashMap::new(),
             browse: Default::default(),
             tx,
             rx,
@@ -270,12 +290,13 @@ fn count(n: u64) -> String {
 }
 
 /// A registry project's rating: five pixel stars, the mean's nearest whole number of them lit, the
-/// mean and how many; None while the ratings aren't known.
+/// mean and how many; then its GitHub stars ([`github_stars`]). "No ratings yet" only when it has
+/// neither; None while the ratings aren't known and it has no GitHub stars.
 pub(super) fn stars(id: &str, t: &theme::Theme) -> Option<Div> {
+    let github = github_stars(id, t);
     let row = div().flex().items_center().gap(px(2.));
-    Some(match horizon::rating(id)? {
-        None => row.text_color(t.muted).child(tr("No ratings yet")),
-        Some(r) => {
+    let row = match horizon::rating(id) {
+        Some(Some(r)) => {
             let lit = r.average.round() as usize;
             row.children((0..5).map(|i| {
                 blocks::icon(
@@ -294,7 +315,31 @@ pub(super) fn stars(id: &str, t: &theme::Theme) -> Option<Div> {
                 count(r.count)
             )))
         }
-    })
+        Some(None) if github.is_none() => row.text_color(t.muted).child(tr("No ratings yet")),
+        _ => row,
+    };
+    match github {
+        Some(g) => Some(row.gap(px(8.)).child(g)),
+        None if horizon::rating(id).is_some() => Some(row),
+        None => None,
+    }
+}
+
+/// A registry project's GitHub stars: GitHub's mark, a star and how many, as its repository
+/// shows them; None when it has none (`horizon::github_stars`).
+pub(super) fn github_stars(id: &str, t: &theme::Theme) -> Option<Div> {
+    let n = horizon::github_stars(id)?;
+    Some(
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(4.))
+            .text_color(t.muted)
+            .child(blocks::icon("glass/github", 12., t.muted))
+            .child(blocks::icon("star", 12., t.warn))
+            .child(count(n)),
+    )
 }
 
 /// A checksum as the page shows it: the algorithm and the first and last hex digits.
@@ -379,7 +424,7 @@ impl Launcher {
                         crate::glass_toast::say(said.clone());
                     }
                     m.message = Some(result);
-                    m.installed = installed::Installed::load(&m.home()).entries;
+                    m.reload_installed();
                     m.installed_list.reset();
                     if modpack {
                         // The Modpacks page reads its list again.
@@ -400,17 +445,21 @@ impl Launcher {
                     m.about.extend(about);
                     m.results_list.reset();
                 }
+                Event::Works(works) => {
+                    m.works.extend(works);
+                    m.results_list.reset();
+                }
                 Event::AutoUpdated(lines, rebuild) => {
                     m.rebuild.extend(rebuild);
                     if !lines.is_empty() {
                         m.message = Some(Ok(lines.join("\n")));
-                        m.installed = installed::Installed::load(&m.home()).entries;
+                        m.reload_installed();
                         m.installed_list.reset();
                     }
                 }
                 Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
-                    m.installed = installed::Installed::load(&m.home()).entries;
+                    m.reload_installed();
                     m.installed_list.reset();
                 }
             }
@@ -490,22 +539,30 @@ impl Launcher {
             let result = browser::source(source)
                 .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|s| s.search(&query));
+            let instance = horizon_launcher::instances::selected();
             let about: HashMap<String, Vec<String>> = match (&result, source) {
+                (Ok(found), SourceId::Horizon) => found
+                    .iter()
+                    .map(|p| {
+                        let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
+                        (p.id.clone(), lines)
+                    })
+                    .collect(),
+                _ => HashMap::new(),
+            };
+            let works = match (&result, source) {
                 (Ok(found), SourceId::Horizon) => {
-                    let instance = horizon_launcher::instances::selected();
-                    found
-                        .iter()
-                        .map(|p| {
-                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
-                            (p.id.clone(), lines)
-                        })
-                        .collect()
+                    let ids: Vec<String> = found.iter().map(|p| p.id.clone()).collect();
+                    horizon::works_lines(&ids, &instance)
                 }
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));
             if !about.is_empty() {
                 let _ = tx.send(Event::About(about));
+            }
+            if !works.is_empty() {
+                let _ = tx.send(Event::Works(works));
             }
         });
     }
@@ -663,6 +720,7 @@ impl Launcher {
         }
         let tx = self.mods.tx.clone();
         let java = self.mods.java.clone();
+        let home = self.mods.home();
         std::thread::spawn(move || {
             let mut found = HashMap::new();
             for e in entries {
@@ -671,7 +729,7 @@ impl Launcher {
                 };
                 let newer = match &java {
                     Some(target) => java_instance::update_for(&*source, target, &e),
-                    None => installed::update_for(&*source, &e),
+                    None => installed::update_for(&*source, &e, &home),
                 };
                 if let Ok(Some(v)) = newer {
                     found.insert((e.source, e.project.clone()), v.number);
@@ -747,6 +805,39 @@ impl Launcher {
                     .trim()
                     .to_string()),
             };
+            let _ = tx.send(Event::Done(result, false));
+        });
+    }
+
+    /// Installs version `version` of registry native mod `id` as the player picked it on its
+    /// Versions tab ([`horizon::install_chosen`]). The first native mod goes through the trust
+    /// notice and the recommended version instead.
+    pub(super) fn mods_install_version(&mut self, id: String, version: String) {
+        if self.mods.busy.is_some() {
+            return;
+        }
+        if !self.settings.native_mods_noticed {
+            self.mods_install(SourceId::Horizon, id, None);
+            return;
+        }
+        self.mods.message = None;
+        self.mods.busy = Some((id.clone(), format!("{} {version}", id), 0.));
+        self.mods.updates.remove(&(SourceId::Horizon, id.clone()));
+        let tx = self.mods.tx.clone();
+        let home = self.mods.home();
+        let instance = self
+            .selected_instance()
+            .map_or_else(|| "Horizon".to_string(), |i| i.name.clone());
+        std::thread::spawn(move || {
+            let result = horizon::install_chosen(&id, &version, &home, &|_, _| {}).map(|e| {
+                trf(
+                    "Installed {mods} into {instance}. Build to play with it.",
+                    &[
+                        ("mods", &format!("{} {}", e.title, e.number)),
+                        ("instance", &instance),
+                    ],
+                )
+            });
             let _ = tx.send(Event::Done(result, false));
         });
     }
@@ -1000,9 +1091,31 @@ impl Launcher {
             self.mods.asked = false;
         }
         self.mods.java = java;
+        // The instance moved to another Horizon (picked, or an update it follows): the versions
+        // that fit change, so look for updates again.
+        let plays = self
+            .selected_instance()
+            .and_then(|i| i.version.clone())
+            .or_else(|| self.installed.first().cloned());
+        if self.mods.loaded && self.mods.java.is_none() && plays != self.mods.checked_for {
+            self.mods.checked_for = plays.clone();
+            self.mods.updates.clear();
+            self.mods_check_updates();
+        }
         if !self.mods.loaded || (home.is_some() && self.mods.home != home) {
+            // Another instance: what works there, its versions and the last message differ.
+            if self.mods.loaded {
+                self.mods.about.clear();
+                self.mods.works.clear();
+                self.mods.message = None;
+                if let Some(open) = self.mods.browse.open.as_ref().map(|o| o.project.clone()) {
+                    self.mods_open(open);
+                }
+                self.mods_search(0);
+            }
+            self.mods.checked_for = plays;
             self.mods.home = home;
-            self.mods.installed = installed::Installed::load(&self.mods.home()).entries;
+            self.mods.reload_installed();
             self.mods.installed_list.reset();
             self.mods.updates.clear();
             self.mods.confirm_remove = None;
@@ -1011,6 +1124,17 @@ impl Launcher {
             self.mods_taken_down();
             self.mods.loaded = true;
         }
+    }
+
+    /// Find mods from an instance: the registry's mods, only those that work on it, as a list.
+    pub(super) fn mods_find_for_instance(&mut self) {
+        self.mods_set_kind(PackKind::Mod);
+        let m = &mut self.mods;
+        m.source = source_for(PackKind::Mod);
+        m.browse.open = None;
+        m.picked = None;
+        m.browse.filters.works_on = true;
+        self.mods_search(0);
     }
 
     /// Opens a kind's tab: its first source, its own filters, a new search.
@@ -1058,7 +1182,7 @@ impl Launcher {
             crate::glass_toast::say(said.clone());
         }
         self.mods.message = Some(removed.clone());
-        self.mods.installed = installed::Installed::load(&home).entries;
+        self.mods.reload_installed();
         self.mods.installed_list.reset();
         self.mods.confirm_remove = None;
         removed
@@ -1421,6 +1545,30 @@ impl Launcher {
                     }));
                 }
                 right = right.child(update);
+            }
+            if let Some(kept) = self
+                .mods
+                .chosen
+                .get(&e.project)
+                .filter(|_| e.source == SourceId::Horizon)
+            {
+                let mut recommended = button(
+                    SharedString::from(format!("mods-recommended-{}", e.project)),
+                    trf("Use recommended (kept at {version})", &[("version", kept)]),
+                    Kind::Ghost,
+                    &t,
+                );
+                if busy {
+                    recommended = disabled(recommended);
+                } else {
+                    let id = e.project.clone();
+                    recommended =
+                        recommended.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.mods_install(SourceId::Horizon, id.clone(), None);
+                            cx.notify();
+                        }));
+                }
+                right = right.child(recommended);
             }
             let confirming = self.mods.confirm_remove.as_deref() == Some(e.project.as_str());
             let id = e.project.clone();
@@ -1991,6 +2139,8 @@ pub(super) fn auto_update(targets: &[AutoTarget]) -> (Vec<String>, Vec<String>) 
             in_pack: horizon::auto::in_pack(&i.home),
             level,
             natives: t.natives,
+            fit: horizon_launcher::native_fit::plays(i)
+                .map(|plays| (plays, horizon_launcher::native_fit::pins(&i.home))),
         };
         if let Some(report) = horizon::auto::run(&i.home, &ctx, &|_, _| {}) {
             lines.extend(report.lines());

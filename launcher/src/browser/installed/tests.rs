@@ -151,7 +151,10 @@ fn installs_with_dependencies_then_updates_and_removes() {
     // An update replaces the old file.
     fake.release("addon", "2", &["base"], b"addon pack v2", false);
     let entry = Installed::load(&home).lookup("addon").cloned().unwrap();
-    assert_eq!(update_for(&fake, &entry).unwrap().unwrap().number, "2");
+    assert_eq!(
+        update_for(&fake, &entry, &home).unwrap().unwrap().number,
+        "2"
+    );
     install(&fake, &addon, false, &home, NONE).unwrap();
     assert!(!home.join("resourcepacks/addon-1.zip").exists());
     assert_eq!(
@@ -163,7 +166,7 @@ fn installs_with_dependencies_then_updates_and_removes() {
         .cloned()
         .unwrap();
     assert_eq!(entry.number, "2");
-    assert!(update_for(&fake, &entry).unwrap().is_none());
+    assert!(update_for(&fake, &entry, &home).unwrap().is_none());
 
     let removed = remove(&home, "addon").unwrap();
     assert_eq!(removed.project, "addon");

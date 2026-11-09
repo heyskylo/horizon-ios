@@ -241,6 +241,7 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.extra.left_handed = from.extra.left_handed;
     to.no_ai = from.no_ai;
     to.invulnerable_flag = from.invulnerable_flag;
+    to.invulnerable_time = from.invulnerable_time;
     to.no_gravity = from.no_gravity;
     to.silent = from.silent;
     to.extra.set_main_hand(from.extra.main_hand.clone());
@@ -254,6 +255,14 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.extra.feet = from.extra.feet.clone();
     to.extra.effects = from.extra.effects.clone();
     to.extra.effect_fallbacks = from.extra.effect_fallbacks.clone();
+    if to
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:health_boost")
+    {
+        horizon_client::mobs::finalize::health_boost_changed(to);
+    }
     // VillagerData and the trades, experience and gossip.
     to.extra.variant = from.extra.variant;
     to.extra.variant2 = from.extra.variant2;

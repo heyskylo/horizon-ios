@@ -3,6 +3,7 @@
 //! (positional, mixed across nearby biomes for the visual attributes), timelines and the weather
 //! (time-based). Also `WeatherAttributes`, `SpatialAttributeInterpolator` and `GaussianSampler`.
 use crate::environment_attributes::{Attribute, AttributeMap, Entry, Lerp, Value};
+use crate::environment_timeline::{Timeline, TrackSampler};
 use std::collections::HashMap;
 
 /// `SpatialAttributeInterpolator`: biome attribute maps with their summed weights, in the order
@@ -89,15 +90,23 @@ pub struct Conditions<'a, 'b> {
     /// The biome's attributes at the position: the noise biome, or the block's biome for
     /// attributes with full-resolution biomes.
     pub biome: &'b dyn Fn(bool) -> Option<&'a AttributeMap>,
+    /// `ClockManager.getInstance(clock).totalTicks()` for a `WorldClock` id.
+    pub clock: &'b dyn Fn(&str) -> i64,
+    /// A second biome group that applies after the weather (resource packs' biome
+    /// `post_process` layers): its mix and the map at the position, as for the biome layer.
+    pub post_blend: Option<&'b BiomeBlend<'a>>,
+    pub post_biome: Option<&'b dyn Fn(bool) -> Option<&'a AttributeMap>>,
 }
-
-/// A time-based layer other than the weather, such as a timeline's track.
-pub type TimeLayer = Box<dyn Fn(&Value) -> Value + Send + Sync>;
 
 enum Layer {
     Constant(Entry),
     Biome,
-    Time(TimeLayer),
+    /// A biome group after the weather, read from `Conditions::post_blend` / `post_biome`.
+    BiomePost,
+    Track {
+        sampler: TrackSampler,
+        clock: String,
+    },
     Weather {
         rain: Option<Entry>,
         thunder: Option<Entry>,
@@ -146,9 +155,19 @@ impl Builder {
         self
     }
 
-    /// `addTimeBasedLayer`, for a timeline's track.
-    pub fn time_layer(&mut self, attribute: &'static Attribute, layer: TimeLayer) -> &mut Self {
-        self.push(attribute, Layer::Time(layer));
+    /// `EnvironmentAttributeSystem.Builder.addTimelineLayer`: a time-based layer per track
+    /// (`Timeline.createTrackSampler`), reading the timeline's clock.
+    pub fn timeline_layer(&mut self, timeline: &Timeline) -> &mut Self {
+        for track in &timeline.tracks {
+            let sampler = track.sampler(timeline.period);
+            self.push(
+                track.attribute,
+                Layer::Track {
+                    sampler,
+                    clock: timeline.clock.clone(),
+                },
+            );
+        }
         self
     }
 
@@ -156,6 +175,16 @@ impl Builder {
     /// thunder changes.
     pub fn weather_layers(&mut self) -> &mut Self {
         let (rain, thunder) = weather_maps();
+        self.weather_layers_with(&rain, &thunder)
+    }
+
+    /// The weather layers over other rain and thunder maps (vanilla's, as a resource pack
+    /// changed them).
+    pub fn weather_layers_with(
+        &mut self,
+        rain: &AttributeMap,
+        thunder: &AttributeMap,
+    ) -> &mut Self {
         let attributes: Vec<_> = rain.attributes().chain(thunder.attributes()).collect();
         let mut seen: Vec<&'static str> = Vec::new();
         for attribute in attributes {
@@ -166,6 +195,24 @@ impl Builder {
                     rain.get(attribute).cloned(),
                     thunder.get(attribute).cloned(),
                 );
+            }
+        }
+        self
+    }
+
+    /// A positional layer, after those added before it, for every attribute some biome's
+    /// post-process map sets (a resource pack's biome `post_process` group, not vanilla).
+    pub fn biome_post_layer<'m>(
+        &mut self,
+        biomes: impl IntoIterator<Item = &'m AttributeMap>,
+    ) -> &mut Self {
+        let mut seen: Vec<&'static str> = Vec::new();
+        for map in biomes {
+            for attribute in map.attributes() {
+                if !seen.contains(&attribute.id) {
+                    seen.push(attribute.id);
+                    self.push(attribute, Layer::BiomePost);
+                }
             }
         }
         self
@@ -190,12 +237,17 @@ impl Builder {
             .filter_map(|(id, (attribute, layers))| {
                 let mut base = attribute.default_value()?;
                 let mut layers = layers.into_iter().peekable();
-                while let Some(Layer::Constant(entry)) = layers.peek() {
+                // A pack's dynamic entry changes with the frame: it stays a layer.
+                while let Some(Layer::Constant(entry)) = layers.peek()
+                    && !matches!(entry, Entry::Dynamic(_))
+                {
                     base = entry.apply(&base);
                     layers.next();
                 }
                 let layers: Vec<Layer> = layers.collect();
-                let positional = layers.iter().any(|l| matches!(l, Layer::Biome));
+                let positional = layers
+                    .iter()
+                    .any(|l| matches!(l, Layer::Biome | Layer::BiomePost));
                 Some((
                     id,
                     Sampler {
@@ -227,7 +279,9 @@ impl Sampler {
         for layer in &self.layers {
             result = match layer {
                 Layer::Constant(entry) => entry.apply(&result),
-                Layer::Time(f) => f(&result),
+                Layer::Track { sampler, clock } => {
+                    sampler.apply(&result, (conditions.clock)(clock))
+                }
                 Layer::Biome if !positional => result,
                 // `addBiomeLayerForAttribute`'s positional layer.
                 Layer::Biome => match conditions.blend {
@@ -242,6 +296,19 @@ impl Sampler {
                 Layer::Weather { rain, thunder } => {
                     weather(attribute, result, rain, thunder, conditions)
                 }
+                Layer::BiomePost if !positional => result,
+                Layer::BiomePost => match conditions.post_blend {
+                    Some(blend) if attribute.spatially_interpolated() => {
+                        blend.apply(attribute, &result)
+                    }
+                    _ => match conditions
+                        .post_biome
+                        .and_then(|f| f(attribute.full_resolution_biomes()))
+                    {
+                        Some(map) => map.apply(attribute, &result),
+                        None => result,
+                    },
+                },
             };
         }
         attribute.sanitize(result)
@@ -300,7 +367,7 @@ fn byte_channel(v: f32) -> f32 {
 }
 
 /// `WeatherAttributes.RAIN` and `THUNDER`.
-fn weather_maps() -> (AttributeMap, AttributeMap) {
+pub fn weather_maps() -> (AttributeMap, AttributeMap) {
     use crate::environment_attributes::attribute;
     // `Timelines.NIGHT_SKY_LIGHT_COLOR`: `colorFromFloat(1, 0.48, 0.48, 1)`.
     let night = [byte_channel(0.48), byte_channel(0.48), 1.0];

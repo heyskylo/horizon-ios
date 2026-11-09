@@ -45,6 +45,36 @@ pub fn fluid_flow(world: &World, fluids: &FluidResources, pos: [i32; 3]) -> [f64
     let flow = flow_at(&mut scene, state, at).unwrap_or(Vec3::ZERO);
     [flow.x, flow.y, flow.z]
 }
+/// `ClipContext.Fluid.WATER` in a fall-reset ray through `p`: the water's
+/// shape from the shared `FlowingFluid.shapes` cache (the first query of a
+/// fluid state fixes its height), as the player's own ray reads it.
+pub fn water_clip(
+    world: &World,
+    fluids: &FluidResources,
+    from: Vec3,
+    to: Vec3,
+    p: BlockPos,
+) -> bool {
+    let state = fluids.fluid(world.block(p.x, p.y, p.z));
+    if !matches!(state.kind(), FluidKind::Water | FluidKind::FlowingWater) {
+        return false;
+    }
+    let mut velocity = Vec3::ZERO;
+    let mut scene = EntityFluidWorld {
+        bounds: Aabb::new(from, from),
+        position: from,
+        eye_y: from.y,
+        velocity: &mut velocity,
+        world,
+        fluids,
+    };
+    let Ok(mut shapes) = fluids.shapes.lock() else {
+        return false;
+    };
+    shapes
+        .shape(&mut scene, state, p)
+        .is_ok_and(|shape| shape.clip(from, to, p).is_some())
+}
 /// `Entity.baseTick`'s fluid step for an entity that is pushed by fluid: its
 /// immersion heights, then the current of each fluid it sits in, added to
 /// `velocity` with vanilla's scales (water 0.014, lava 0.007 fast or
@@ -57,7 +87,7 @@ pub fn update_entity_fluids(
     velocity: &mut Vec3,
     world: &World,
     fluids: &FluidResources,
-) -> (f64, f64) {
+) -> (f64, f64, bool) {
     let mut interaction = EntityFluidInteraction::new([WATER, LAVA]);
     let mut scene = EntityFluidWorld {
         bounds,
@@ -68,10 +98,13 @@ pub fn update_entity_fluids(
         fluids,
     };
     if interaction.update(&mut scene, false, 4096).is_err() {
-        return (0.0, 0.0);
+        return (0.0, 0.0, false);
     }
     let water_height = interaction.fluid_height(&scene, WATER);
     let lava_height = interaction.fluid_height(&scene, LAVA);
+    // `updateFluidOnEyes`'s answer, kept by the interaction's trackers:
+    // whether the entity's eye is inside the water it scanned.
+    let eye_in_water = interaction.is_eye_in_fluid(&FluidTags, WATER);
     let _ = interaction.apply_current(&mut scene, WATER, 0.014);
     let _ = interaction.apply_current(
         &mut scene,
@@ -82,7 +115,7 @@ pub fn update_entity_fluids(
             0.0023333333333333335
         },
     );
-    (water_height, lava_height)
+    (water_height, lava_height, eye_in_water)
 }
 impl ItemEntity {
     /// `Entity.getEyeY` of an item (eye height 0.2125), where
@@ -94,13 +127,17 @@ impl ItemEntity {
     #[cfg(test)]
     pub(super) fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> (f64, f64) {
         let (bounds, at, eye) = (self.bounds(), self.position, self.fluid_eye_y());
-        update_entity_fluids(bounds, at, eye, &mut self.velocity, world, fluids)
+        let (water, lava, _) =
+            update_entity_fluids(bounds, at, eye, &mut self.velocity, world, fluids);
+        (water, lava)
     }
 }
 impl ExperienceOrb {
     /// `Entity.updateFluidInteraction`: refreshes fluid immersion over the
     /// orb's box and pushes its velocity by any water or lava current.
-    pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> (f64, f64) {
+    /// Answers `isEyeInFluid(FluidTags.WATER)` for the eye the scan reads,
+    /// `0.425` above the orb's feet.
+    pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> bool {
         update_entity_fluids(
             self.bounds(),
             self.position,
@@ -109,6 +146,7 @@ impl ExperienceOrb {
             world,
             fluids,
         )
+        .2
     }
 }
 impl ArmorStand {
@@ -300,6 +338,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let item = ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -320,6 +359,7 @@ mod tests {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -419,6 +459,7 @@ mod tests {
             count: 1,
             ticks: 0,
             health: 5,
+            following: None,
         };
         let mut still = orb.clone();
         assert!(still.tick(
@@ -467,6 +508,65 @@ mod tests {
             );
         }
         assert!(carried.position.x > at.x + 0.5);
+    }
+
+    /// `ExperienceOrb.tick`'s water branch reads `isEyeInFluid(FluidTags.WATER)`,
+    /// not the feet's block: an orb whose feet hang in the air under the
+    /// surface, with its eye in the water, floats (`setUnderwaterMovement`)
+    /// instead of falling.
+    #[test]
+    fn an_orb_whose_eye_dips_into_water_floats_with_its_feet_in_air() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let water = assets.registry.default_state("minecraft:water").unwrap();
+        for x in 19..=21 {
+            for z in 19..=21 {
+                world.set(x, 5, z, water).unwrap();
+            }
+        }
+        let at = Vec3::new(20.5, 4.6, 20.5);
+        let mut orb = ExperienceOrb {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            id: 1,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            value: 1,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            following: None,
+        };
+        assert!(orb.tick(
+            &world,
+            &facts,
+            &collision,
+            None,
+            true,
+            &mut || 0.0,
+            None,
+            &fluids,
+            &mut |_, _| {},
+        ));
+        assert!(
+            orb.velocity.y > 0.0,
+            "the eye in the water floats the orb, got {}",
+            orb.velocity.y
+        );
     }
 
     /// `Entity.baseTick` pushes a boat by the current it sits in: a boat box

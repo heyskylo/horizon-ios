@@ -760,26 +760,29 @@ pub struct Subscription {
     pub kind: String,
 }
 
-/// `WorldTemplate`: one entry of `RealmsSelectWorldTemplateScreen`'s list.
+/// `WorldTemplate`: one entry of `RealmsSelectWorldTemplateScreen`'s list. Its fields
+/// read as `JsonUtils.getStringOr`/`getIntOr` do (a number or a boolean is its JSON
+/// text), since the service's answer is not typed consistently across templates.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTemplate {
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "string_or")]
     pub id: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "string_or")]
     pub name: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "string_or")]
     pub version: String,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "string_or")]
     pub author: String,
-    /// The publisher's page and the trailer, opened in the browser.
-    #[serde(default)]
+    /// The publisher's page and the trailer, opened in the browser. `getUriNullable`
+    /// treats an empty string as no link at all.
+    #[serde(default, deserialize_with = "uri_or")]
     pub link: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "option_string_or")]
     pub image: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "uri_or")]
     pub trailer: Option<String>,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "string_or")]
     pub recommended_players: String,
     /// `WorldTemplate.WorldTemplateType`: `WORLD_TEMPLATE` when the answer has none.
     #[serde(
@@ -795,12 +798,85 @@ pub struct WorldTemplate {
 pub struct WorldTemplateList {
     #[serde(default, deserialize_with = "nullable")]
     pub templates: Vec<WorldTemplate>,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "int_or")]
     pub page: i32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "int_or")]
     pub size: i32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "int_or")]
     pub total: i32,
+}
+
+impl WorldTemplateList {
+    /// `WorldTemplatePaginatedList.parse`: a template that does not read is dropped, not
+    /// the page; a page that does not read at all is empty (and said so in the log).
+    pub fn parse(json: &str) -> Self {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+            log::error!("Realms: could not parse the world template page");
+            return Self::default();
+        };
+        let Some(object) = value.as_object() else {
+            log::error!("Realms: the world template page is not an object");
+            return Self::default();
+        };
+        let templates = object
+            .get("templates")
+            .and_then(serde_json::Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|template| {
+                        serde_json::from_value::<WorldTemplate>(template.clone()).ok()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let int = |key: &str| int_of(object.get(key));
+        Self {
+            templates,
+            page: int("page"),
+            size: int("size"),
+            total: int("total"),
+        }
+    }
+}
+
+/// `JsonUtils.getStringOr`: a string as it is, any other primitive as its JSON text.
+fn string_or<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    })
+}
+
+/// `getStringOr` with a null default: absent or null stays none.
+fn option_string_or<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(text) => Some(text),
+        other => Some(other.to_string()),
+    })
+}
+
+/// `JsonUtils.getUriNullable`: absent, null or an empty string is no link (the service
+/// sends `""` for a template without a publisher page or trailer).
+fn uri_or<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(option_string_or(d)?.filter(|text| !text.is_empty()))
+}
+
+/// `JsonUtils.getIntOr`: a number or the decimal text of one.
+fn int_or<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+    Ok(int_of(Some(&serde_json::Value::deserialize(d)?)))
+}
+
+fn int_of(value: Option<&serde_json::Value>) -> i32 {
+    match value {
+        Some(serde_json::Value::Number(number)) => number
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .unwrap_or(0),
+        Some(serde_json::Value::String(text)) => text.trim().parse().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// `WorldTemplate.parse` keeps vanilla's default type when the answer has none.
@@ -1177,6 +1253,13 @@ impl RealmsClient {
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
+    /// `RealmsClient.agreeToTos`: `POST mco/tos/agreed`, an empty body.
+    pub fn agree_to_tos(&self) -> Result<(), RealmsError> {
+        let url = self.url("mco/tos/agreed");
+        Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(""))?;
+        Ok(())
+    }
+
     /// `RealmsClient.backupsFor`: `GET worlds/{id}/backups`.
     pub fn backups_for(&self, realm_id: i64) -> Result<Vec<Backup>, RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/backups"));
@@ -1429,7 +1512,7 @@ impl RealmsClient {
             "worlds/templates/{world_type}?page={page}&pageSize={page_size}"
         ));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
-        Ok(serde_json::from_str(&json).unwrap_or_default())
+        Ok(WorldTemplateList::parse(&json))
     }
 
     /// `RealmsClient.resetWorldWithTemplate`: `POST worlds/{id}/reset` with
@@ -2422,6 +2505,41 @@ mod tests {
             serde_json::from_str(r#"{"templates":[{"type":"nonsense"}]}"#).unwrap();
         assert_eq!(unknown.templates[0].kind, "WORLD_TEMPLATE");
         assert_eq!((unknown.page, unknown.size, unknown.total), (0, 0, 0));
+    }
+
+    /// `WorldTemplate.parse`'s `JsonUtils.getStringOr`: the service's ids and player
+    /// counts are numbers for some templates; the page's counters may be strings. A
+    /// template that still does not read is dropped, not the page.
+    #[test]
+    fn a_template_page_reads_numbers_and_drops_only_bad_entries() {
+        let page = WorldTemplateList::parse(
+            r#"{"templates":[
+                {"id":42,"name":"Skyblock","recommendedPlayers":4,"link":17,
+                 "image":"abc","trailer":null,"type":"ADVENTUREMAP"},
+                "not a template"
+            ],"page":"1","size":10,"total":"11"}"#,
+        );
+        assert_eq!(page.templates.len(), 1);
+        let template = &page.templates[0];
+        assert_eq!(template.id, "42");
+        assert_eq!(template.recommended_players, "4");
+        assert_eq!(template.link.as_deref(), Some("17"));
+        assert_eq!(template.image.as_deref(), Some("abc"));
+        assert_eq!(template.trailer, None);
+        assert_eq!(template.kind, "ADVENTUREMAP");
+        assert_eq!((page.page, page.size, page.total), (1, 10, 11));
+        // The template list test above keeps the string ids the first answers used.
+        let strings = WorldTemplateList::parse(
+            r#"{"templates":[{"id":"1896582","recommendedPlayers":"1-4"}]}"#,
+        );
+        assert_eq!(strings.templates[0].id, "1896582");
+        assert_eq!(strings.templates[0].recommended_players, "1-4");
+        // `getUriNullable`: an empty link is no link, so no button appears and no empty
+        // URL can be opened.
+        let empty =
+            WorldTemplateList::parse(r#"{"templates":[{"id":"1","link":"","trailer":""}]}"#);
+        assert_eq!(empty.templates[0].link, None);
+        assert_eq!(empty.templates[0].trailer, None);
     }
 
     #[test]
