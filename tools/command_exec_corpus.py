@@ -6859,6 +6859,27 @@ def command_block_last_output():
     return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
                        '/scoreboard objectives remove cb_out', f'/forceload remove {x0} {z0}')
 
+def glide_fall_accumulation():
+    """#13868: `LivingEntity.updateFallFlying` starts with `checkFallDistanceAccumulation`: a glide whose vertical speed
+    is above -0.5 keeps at most 1 of its fall; a dive keeps it all."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 288, 280, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    subjects = [('pufferfish', 'fall_distance:20.0d'), ('zombie', 'fall_distance:5.5d,NoAI:1b'),
+                ('zombie', 'fall_distance:5.5d,NoAI:1b,Motion:[0.0d,-0.8d,0.0d]'),
+                ('zombie', 'fall_distance:0.75d,NoAI:1b')]
+    for n, (kind, fields) in enumerate(subjects, 1):
+        ops.append(cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 8}.5 '
+                       f'{{UUID:[I;14400,0,{n},1],FallFlying:1b,PersistenceRequired:1b,{fields}}}', expect_result=1))
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+    for n in range(1, len(subjects) + 1):
+        for key in ('fall_distance', 'FallFlying'):
+            ops.append(cmd(f'/data get entity 00003840-0000-0000-0000-{n:04x}00000001 {key}'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7484,6 +7505,7 @@ def groups():
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('command block last output', command_block_last_output()),
+        ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('item fall distance', item_fall_distance()),
