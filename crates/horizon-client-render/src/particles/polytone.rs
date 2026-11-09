@@ -684,26 +684,6 @@ impl Ctx<'_> {
 }
 
 impl Host for Ctx<'_> {
-    /// A particle's own fields, as `particle_method` answers them.
-    fn field(&mut self, root: Root, field: horizon_polytone::expr::Field) -> Option<V> {
-        use horizon_polytone::expr::Field as F;
-        let Subject::Particle(p) = &self.subject else {
-            return None;
-        };
-        if root != Root::Object {
-            return None;
-        }
-        Some(V::Num(match field {
-            F::Age => f64::from(p.age),
-            F::Life => f64::from(p.lifetime),
-            F::Custom => *self.custom,
-            F::X => p.position[0],
-            F::Y => p.position[1],
-            F::Z => p.position[2],
-            F::Temperature | F::Downfall => return None,
-        }))
-    }
-
     fn root(&mut self, root: Root) -> V {
         match root {
             Root::Object => V::Object(SELF),
@@ -820,6 +800,26 @@ impl Host for Ctx<'_> {
                 .ok_or_else(|| format!("no config {id}")),
             _ => Err(format!("{name} is not available here")),
         }
+    }
+
+    /// A particle's own fields, as `particle_method` answers them.
+    fn field(&mut self, root: Root, field: horizon_polytone::expr::Field) -> Option<V> {
+        use horizon_polytone::expr::Field as F;
+        let Subject::Particle(p) = &self.subject else {
+            return None;
+        };
+        if root != Root::Object {
+            return None;
+        }
+        Some(V::Num(match field {
+            F::Age => f64::from(p.age),
+            F::Life => f64::from(p.lifetime),
+            F::Custom => *self.custom,
+            F::X => p.position[0],
+            F::Y => p.position[1],
+            F::Z => p.position[2],
+            F::Temperature | F::Downfall => return None,
+        }))
     }
 }
 
@@ -1729,57 +1729,6 @@ mod tests {
         assert_eq!(p.light_coords(0.0, 240, 0), (240, 128));
         // A brighter block light is kept.
         assert_eq!(p.light_coords(0.0, 0, 208), (0, 208));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// Times a firefly-like custom particle's ticker (five expressions and a named custom a
-    /// tick): `cargo test --release -p horizon-client-render --lib custom_ticker_cost --
-    /// --ignored --nocapture`.
-    #[test]
-    #[ignore = "timing, not a check"]
-    fn custom_ticker_cost() {
-        let blocks = blocks();
-        let root = pack(&[
-            (
-                "assets/test/polytone/custom_particles/spark.json",
-                serde_json::json!({
-                    "has_physics": false,
-                    "initializer": {"lifetime": "100000", "custom": "0.3"},
-                    "ticker": {
-                        "alpha": "(0.7 + 0.3*sin(o.age*0.18 + o.custom*13000)) * min(o.age/(o.life*0.15),1)",
-                        "size": "(0.65 + o.custom*0.15) * min(o.age/(o.life*0.12),1)",
-                        "dx": "(0.014 + 0.006*sin(o.age*0.04 + o.custom*3000)) * sin(o.custom*200000 + o.age*0.035)",
-                        "dz": "(0.014 + 0.006*sin(o.age*0.04 + o.custom*3000)) * cos(o.custom*200000 + o.age*0.035)",
-                        "dy": "0.006*sin(o.age*0.08 + o.custom*9000)",
-                        "customs": {"Glow": "o.custom('glow') + 1"}
-                    }
-                }),
-            ),
-            (
-                "assets/test/polytone/block_modifiers/torch.json",
-                serde_json::json!({
-                    "targets": ["minecraft:torch"],
-                    "particle_emitters": [{"particle": "test:spark", "chance": "1", "x": "0.5", "y": "1", "z": "0.5"}]
-                }),
-            ),
-        ]);
-        let scene = scene(blocks);
-        let level = ParticleLevel {
-            world: &scene.world,
-            facts: &scene.facts,
-            collision: &scene.collision,
-            player: None,
-        };
-        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
-        engine.polytone_animate(&level, [1, 64, 1]);
-        let mut p = engine.pending.pop().unwrap();
-        let ticks = 200_000;
-        let start = std::time::Instant::now();
-        for _ in 0..ticks {
-            engine.tick_particle(&mut p, &level);
-        }
-        let per = start.elapsed() / ticks;
-        println!("one custom particle tick: {per:?} (x {:.4})", p.position[0]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
