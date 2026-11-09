@@ -142,7 +142,7 @@ AbstractTextAreaWidget.extractBackground	skip:ui		frame drawn by the book screen
 AbstractTextAreaWidget.extractBorder	skip:ui		frame sprite; no behaviour
 AbstractTextAreaWidget.withinContentAreaTopBottom	skip:ui		visibility cull while drawing lines
 AbstractWidget.extractRenderState	port	crates/horizon-client-render/src/ui.rs::hovered	gap: minor: the scissor test is not part of the hover check
-AbstractWidget.extractTooltipForNextRenderPass	port	crates/horizon-client-render/src/ui.rs::tooltip	gap: minor: unsure: widget hover delay not checked
+AbstractWidget.extractTooltipForNextRenderPass	port	crates/horizon-client-render/src/ui.rs::tooltip	widgets with a delay wait it out: the social rows' buttons use social_screen::TooltipDelay (PlayerEntry.TOOLTIP_DELAY, 500 ms); others have vanilla's zero delay
 AbstractWidget.extractScrollingStringOverContents	port	crates/horizon-client-render/src/ui.rs::scrolling_text	ui::button and ui::slider (margin 2) draw it for the HudBatch widgets; screen_draw.rs::scrolling_string_over_contents for the screen_draw ones
 AbstractWidget.mouseClicked	port	crates/horizon-client/src/title.rs::Title::click	gap: minor: click dispatch is per screen; the press sound is audio.rs Audio::play_button_click
 AbstractWidget.mouseReleased	port	crates/horizon-client-render/src/ui.rs::Scroll::release	gap: minor: only the scroll release; widget onRelease is per screen
