@@ -26,7 +26,6 @@ horizon-narrator = { path = "../horizon-narrator" }
 horizon-optifine = { path = "../horizon-optifine" }
 horizon-polytone = { path = "../horizon-polytone" }
 horizon-protocol = { path = "../horizon-protocol" }
-horizon-render-pipeline = { path = "../horizon-render-pipeline" }
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-shaders = { path = "../horizon-shaders" }
 horizon-system = { path = "../horizon-system" }
@@ -77,6 +76,10 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 audio = ["dep:cpal"]
 # Helpers horizon-client's tests build their fixtures with.
 test-support = []
+# horizon-client's `horizon-extras`: asking the device for hardware ray tracing on request
+# (`gfx/ray_query.rs`, `HORIZON_RAY_TRACING=1`). Without it the device is requested as without
+# the variable.
+horizon-extras = []
 
 [lints]
 workspace = true

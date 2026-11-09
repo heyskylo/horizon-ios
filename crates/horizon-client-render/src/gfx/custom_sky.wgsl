@@ -6,7 +6,7 @@ struct Layer {
     // Projection * view (camera-relative) * the layer's rotation.
     clip_from_sky: mat4x4<f32>,
     brightness: f32,
-    // horizon_optifine::sky::Blend, in gfx/custom_sky.rs's MODES order.
+    // crate::custom_sky::Blend, in gfx/custom_sky.rs's MODES order.
     mode: u32,
     pad: vec2<u32>,
     hdr_settings: vec4<f32>,

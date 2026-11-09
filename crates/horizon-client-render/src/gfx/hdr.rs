@@ -210,7 +210,7 @@ pub struct Hdr {
     pub masks: Masks,
     /// HDR lighting, whether Horizon lifts this frame's world: off under a Horizon shader pack
     /// that draws, while a `shaders/` pack's post or material stage runs (the pack's own),
-    /// with HDR Lighting (`look`) off, and with `HORIZON_HDR_LIGHTING=0`, to compare.
+    /// and with HDR Lighting (`look`) off.
     pub lighting: bool,
     /// The HDR Lighting setting: off, nothing in the world is lifted, light sources and the
     /// sun included, so the picture is SDR's on the HDR canvas.
