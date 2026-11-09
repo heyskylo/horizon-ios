@@ -2137,15 +2137,33 @@ mod tests {
         }
     }
 
+    /// `AbstractSliderButton.getSprite`/`getHandleSprite`: a focused slider
+    /// that is not being dragged lights its track, a hovered or dragged one
+    /// lights its handle, and a drag leaves the track plain - vanilla's
+    /// `canChangeValue` is the drag, and it suppresses the track outline.
     #[test]
-    fn slider_track_is_outlined_only_while_dragged() {
+    fn slider_sprites_follow_focus_and_the_drag() {
+        // Hovered, at rest: plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, false);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Dragged: still a plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, true);
-        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Keyboard focus with no value change in flight: the track lights.
+        let (track, handle) = slider_sprites_ext(false, true, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // Focused while the mouse drags: the drag wins, the track stays plain.
+        let (track, _) = slider_sprites_ext(true, true, true, true);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        // Not hovered, not dragged: nothing is lit.
         let (track, handle) = slider_sprites(false, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // An inactive slider highlights neither, even when focused.
+        let (track, handle) = slider_sprites_ext(true, false, true, true);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle");
     }
