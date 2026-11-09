@@ -193,7 +193,19 @@ pub fn button(
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
+    flags: (bool, bool, bool),
+) {
+    button_with_room(batch, atlas, rect, label, flags, 0.0);
+}
+/// A button whose label leaves `room` at its left, for a controller's glyph drawn there
+/// (`widgets::action_glyph_room`).
+pub fn button_with_room(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
     (hover, live, primary): (bool, bool, bool),
+    room: f32,
 ) {
     let [x, y, w, h] = rect;
     let face = match (live, primary, hover) {
@@ -209,7 +221,15 @@ pub fn button(
     }
     let color = if live { WHITE } else { MUTED };
     let ty = y + ((h - 8.0) / 2.0).floor();
-    scrolling_label(batch, atlas, label, [x + 2.0, ty, w - 4.0], (y, h), color);
+    let left = x + 2.0 + room;
+    scrolling_label(
+        batch,
+        atlas,
+        label,
+        [left, ty, w - 4.0 - room],
+        (y, h),
+        color,
+    );
 }
 /// A widget label of `[left, y, width]` inside the widget's `(top, height)`: centred when it fits,
 /// else slid (vanilla `AbstractWidget.extractScrollingStringOverContents`) and clipped to the box.

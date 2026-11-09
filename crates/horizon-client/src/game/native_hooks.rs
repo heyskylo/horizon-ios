@@ -8668,28 +8668,6 @@ impl Game<'_> {
     pub(super) fn native_net_from_client(&mut self, player: u128, channel: &str, data: &[u8]) {
         mod_api::dispatch_net_from_client(self, mod_api::mods(), player, channel, data);
     }
-    /// Plays a block of a mod's own audio (client, `host.push_voice`): `samples` are mono,
-    /// -1 to 1, at `sample_rate` hertz. `source` is the mod's own id for the speaker (a
-    /// player's UUID, say): each source's blocks play one after another in the order they were
-    /// pushed, and different sources play at once. `at` is where they were spoken, for
-    /// direction and a linear fade to silence at 48 blocks; none plays them centred. The call
-    /// queues and returns; the output callback mixes them with the game's sounds. A source
-    /// holds at most two seconds, and a burst past that is refused rather than delayed; at
-    /// most 64 sources play at once. False when nothing was queued: on a server, without an
-    /// audio device, nothing to play, or a cap. API @API:push_voice@.
-    pub(super) fn native_push_voice(
-        &mut self,
-        mod_id: &str,
-        source: u128,
-        samples: &[f32],
-        sample_rate: u32,
-        at: Option<[f64; 3]>,
-    ) -> bool {
-        self.native_window()
-            && self
-                .audio
-                .push_voice(mod_id, source, samples, sample_rate, at)
-    }
     /// A message from the server on `channel` (`mod_id:name`), whose `data`
     /// is the sender's own bytes. The window's game only. API 40.
     pub(super) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
@@ -9025,6 +9003,21 @@ impl Game<'_> {
             to,
         );
     }
+    /// A player on the server had a stack change in one of their inventories:
+    /// `kind` is `Player`, `Ender`, `Cursor` or `Crafting`. Heard once per kind
+    /// that differs from what the mods last heard, after the players'
+    /// equipment in each tick, and a player's first tick counts from empty
+    /// (`native_players_inventory_changes`). Any cause is heard, vanilla's
+    /// clicks and pickups included. It only hears: change the inventory with
+    /// `native_set_inventory_slot` and its kin. A player away is not heard.
+    /// Server-side. Bundles that use it need `"hooks": @API:inventory_changed@`.
+    pub(super) fn native_inventory_changed(
+        &mut self,
+        uuid: u128,
+        kind: crate::mod_api::NativeInventoryKind,
+    ) {
+        mod_api::dispatch_inventory_changed(self, mod_api::mods(), uuid, kind);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for
@@ -9033,6 +9026,30 @@ impl Game<'_> {
     pub(super) fn native_player_died(&mut self, player: u128, cause: Option<&str>) {
         mod_api::dispatch_player_died(self, mod_api::mods(), player, cause);
     }
+    /// `player` (`name`) is joining: the "joined the game" line the host's chat
+    /// shows (`line`). Set `line` to `None` to show nothing, or replace it. Only
+    /// the host's chat is asked: a dedicated server sends no such line. Server-side.
+    /// Pending API @API:player_join_message@.
+    pub(super) fn native_player_join_message(
+        &mut self,
+        player: u128,
+        name: &str,
+        line: &mut Option<Text>,
+    ) {
+        mod_api::dispatch_player_join_message(self, mod_api::mods(), player, name, line);
+    }
+    /// `player` (`name`) is leaving: the "left the game" line the host's chat
+    /// shows (`line`). Set `line` to `None` to show nothing, or replace it. Server-side.
+    /// Pending API @API:player_leave_message@.
+    pub(super) fn native_player_leave_message(
+        &mut self,
+        player: u128,
+        name: &str,
+        line: &mut Option<Text>,
+    ) {
+        mod_api::dispatch_player_leave_message(self, mod_api::mods(), player, name, line);
+    }
+
     /// `player` (`name`) died, with the message the game rendered for them
     /// (`message`, the death screen's and the team's line), whether or not
     /// death messages are shown. Only hears: the message is not changed
@@ -11064,6 +11081,28 @@ impl Game<'_> {
     /// This `Game` is the window's, not a server's.
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
+    }
+    /// Plays a block of a mod's own audio (client, `host.push_voice`): `samples` are mono,
+    /// -1 to 1, at `sample_rate` hertz. `source` is the mod's own id for the speaker (a
+    /// player's UUID, say): each source's blocks play one after another in the order they were
+    /// pushed, and different sources play at once. `at` is where they were spoken, for
+    /// direction and a linear fade to silence at 48 blocks; none plays them centred. The call
+    /// queues and returns; the output callback mixes them with the game's sounds. A source
+    /// holds at most two seconds, and a burst past that is refused rather than delayed; at
+    /// most 64 sources play at once. False when nothing was queued: on a server, without an
+    /// audio device, nothing to play, or a cap. API @API:push_voice@.
+    pub(super) fn native_push_voice(
+        &mut self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        sample_rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.native_window()
+            && self
+                .audio
+                .push_voice(mod_id, source, samples, sample_rate, at)
     }
     /// Queues a toast of the mod's own in the toast slots the advancement
     /// toasts use, drawn as an `AdvancementToast`: item `icon` (16 pixels; an
