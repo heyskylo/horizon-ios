@@ -31,7 +31,7 @@ impl FluidShapeCache {
         if state.kind() == FluidKind::Empty {
             return Ok(VoxelShape::empty());
         }
-        let index = state.kind() as usize * 18
+        let index = state.kind().index() * 18
             + usize::from(state.falling()) * 9
             + usize::from(state.amount());
         if let Some(shape) = &self.shapes[index] {

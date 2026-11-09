@@ -485,7 +485,7 @@ impl Game<'_> {
             // LocalPlayer water vision and AtmosphericFogEnvironment rain fog.
             let in_water =
                 fog_type(&self.world, self.res.facts(), e, &self.near_plane()) == FogType::Water;
-            self.fog.tick(in_water);
+            self.fog.tick(in_water, self.spectator());
             let (rain, sky_light, rains) = self.rain_fog_inputs(e);
             update_rain_fog(&mut self.fog, rain, sky_light, rains, 1.0);
         }

@@ -402,6 +402,48 @@ pub(super) fn named_mob_pickable(
 /// camera-relative bounds (`cull_skinned`).
 pub(super) type Skinned = Option<((usize, usize, u32), Option<(glam::Vec3, glam::Vec3)>)>;
 
+/// What a block's `onProjectileHit` reads of the projectile that struck it:
+/// a thrown projectile ([`ProjectileHitter::of`]) or a fishing bobber
+/// (`FishingHook.onHitBlock` calls `Projectile.onHitBlock` too).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ProjectileHitter {
+    /// `Projectile.getOwner`.
+    pub(super) owner: Option<Who>,
+    /// On a server, the guest (by connection) who owns it.
+    pub(super) guest: Option<u32>,
+    /// An `AbstractArrow` (a target block resets after 20 ticks, not 8).
+    pub(super) arrow: bool,
+    /// Its entity type, for `target_hit`'s projectile predicate.
+    pub(super) kind: &'static str,
+    pub(super) position: Vec3,
+}
+impl ProjectileHitter {
+    pub(super) fn of(p: &Projectile) -> Self {
+        Self {
+            owner: p.owner,
+            guest: p.guest,
+            arrow: p.arrow.is_some(),
+            kind: p.entity_type(),
+            position: p.position,
+        }
+    }
+}
+
+/// How a new mob's yaw is chosen, as its vanilla spawn path chooses it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum SpawnYaw {
+    /// `level.random.nextFloat() * 360`, unwrapped.
+    Level,
+    /// `EntityType.create(level, .., pos, reason, ..)` (spawn eggs, a
+    /// dispenser's eggs, mob buckets): `snapTo(.., Mth.wrapDegrees(level.random
+    /// .nextFloat() * 360), 0)`.
+    Created,
+    /// A yaw that takes no draw: `SummonCommand.createEntity` loads the mob
+    /// from its compound (0 without `Rotation`), and
+    /// `SpawnEggItem.spawnOffspringFromSpawnEgg` snaps the baby to 0.
+    Fixed(f32),
+}
+
 impl Game<'_> {
     /// A sulfur cube's attribute map (`LivingEntity.attributes`), from its
     /// type's defaults, before its first tick adopts the body's archetype
@@ -542,13 +584,18 @@ impl Game<'_> {
         at: [f64; 3],
         persistent: bool,
     ) -> Option<u32> {
-        self.spawn_mob_internal(kind, at, persistent, false, false, false)
+        self.spawn_mob_internal(kind, at, persistent, false, false, false, SpawnYaw::Level)
     }
     /// `SummonCommand` and `SpawnEggItem`: vanilla spawns the mob, but it
     /// never calls `Mob.setPersistenceRequired` for it, so the mob is not
     /// persistent: the despawn rule holds it like any other mob, and only
     /// its NBT can make it persistent.
-    pub(super) fn spawn_mob_spawned(&mut self, kind: &str, at: [f64; 3]) -> Option<u32> {
+    pub(super) fn spawn_mob_spawned(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        yaw: SpawnYaw,
+    ) -> Option<u32> {
         // Ender Dragons have their own entity implementation rather than a
         // `Mob` entry.  Spawn eggs still go through `SpawnEggItem.spawnMob`,
         // so route this special entity through the same spawned-entity path.
@@ -557,7 +604,7 @@ impl Game<'_> {
         }
         // The spawn is not a natural one (no jockeys, the patrol leader roll
         // stays), but the mob is not persistent.
-        let id = self.spawn_mob_for(kind, at, true, false)?;
+        let id = self.spawn_mob_reason_yaw(kind, at, true, false, false, yaw)?;
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.persistent = false;
         }
@@ -585,7 +632,27 @@ impl Game<'_> {
         scripted: bool,
         natural: bool,
     ) -> Option<u32> {
-        self.spawn_mob_internal(kind, at, persistent, scripted, natural, true)
+        self.spawn_mob_internal(
+            kind,
+            at,
+            persistent,
+            scripted,
+            natural,
+            true,
+            SpawnYaw::Level,
+        )
+    }
+    /// `spawn_mob_reason` with the new mob's yaw chosen as its vanilla path does.
+    pub(super) fn spawn_mob_reason_yaw(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        persistent: bool,
+        scripted: bool,
+        natural: bool,
+        yaw: SpawnYaw,
+    ) -> Option<u32> {
+        self.spawn_mob_internal(kind, at, persistent, scripted, natural, true, yaw)
     }
     fn spawn_mob_internal(
         &mut self,
@@ -595,6 +662,7 @@ impl Game<'_> {
         scripted: bool,
         natural: bool,
         finalize: bool,
+        yaw: SpawnYaw,
     ) -> Option<u32> {
         let kind = if kind.contains(':') {
             kind.to_owned()
@@ -603,8 +671,19 @@ impl Game<'_> {
         };
         let t = self.res.mob_types().get(&kind).cloned()?;
         self.next_entity += 1;
-        let yaw = self.world.random.next_float() * 360.0;
-        let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), yaw);
+        let yaw = match yaw {
+            SpawnYaw::Level => self.world.random.next_float() * 360.0,
+            SpawnYaw::Created => {
+                horizon_client::camera::wrap_degrees(self.world.random.next_float() * 360.0)
+            }
+            SpawnYaw::Fixed(yaw) => yaw,
+        };
+        // The mob's own random (Entity.random): its UUID first, then LivingEntity's
+        // yaw draw, apart from the spawn yaw above, which comes from the level's.
+        let (own, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(self.next_entity, uuid);
+        let position = Vec3::new(at[0], at[1], at[2]);
+        let mut mob = Mob::with_random(self.next_entity, t, position, yaw, own);
         mob.persistent = persistent;
         if finalize {
             let facts = self.biome_facts(
@@ -910,7 +989,7 @@ impl Game<'_> {
             None => self.default_summon_position()?,
         };
         let id = self
-            .spawn_mob_spawned(kind, at)
+            .spawn_mob_spawned(kind, at, SpawnYaw::Created)
             .ok_or_else(|| format!("unknown or unsupported mob {kind}"))?;
         if baby && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.extra.age = if m.species() == Species::Sniffer {
@@ -2559,6 +2638,19 @@ impl Game<'_> {
                 } => {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
                     self.post_game_event(event, at, ctx);
+                }
+                // `FarmlandBlock.turnToBaseBlock` and `TurtleEggBlock.decreaseEggs`:
+                // the landing's own block change posts its game event, from the
+                // mob that landed (`Context.of(entity, state)`) unless the block
+                // destroyed itself under it (`Context.of(state)`).
+                MobEvent::LandingGameEvent {
+                    event,
+                    at,
+                    source,
+                    state,
+                } => {
+                    let who = source.map(Who::Mob);
+                    self.post_block_game_event(event, at, who, Some(state));
                 }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
@@ -4728,22 +4820,13 @@ impl Game<'_> {
                 if super::remote_projectiles::has_smoke_trail(&p.kind) {
                     trails.push(p.position);
                 }
-                // ThrownEnderpearl.onAboveBubbleColumn / onInsideBubbleColumn.
-                if keep && hit == Hit::None && matches!(p.kind, ProjectileKind::EnderPearl) {
-                    let (at, h) = (p.position, 0.125);
-                    horizon_client::motion::bubble_column_push_over(
-                        w.world,
-                        w.registry,
-                        w.facts,
-                        w.collision,
-                        Aabb::new(
-                            Vec3::new(at.x - h, at.y, at.z - h),
-                            Vec3::new(at.x + h, at.y + 2.0 * h, at.z + h),
-                        ),
-                        &mut p.velocity,
-                        |pos| bubble_tops.push(pos),
-                    );
-                }
+                // Projectile.onAboveBubbleColumn's particles, from the tick's
+                // bubble column pushes (`Projectile::tick`).
+                bubble_tops.extend(
+                    p.bubble_surfaces
+                        .drain(..)
+                        .map(|[x, y, z]| BlockPos::new(x, y, z)),
+                );
                 let events_from = arrow_events.len();
                 let ordinary_arrow = p.is_arrow();
                 if let Some(a) = p.arrow.as_mut() {
@@ -4993,7 +5076,13 @@ impl Game<'_> {
     }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
     /// rings it, and a player's shot counts as the player's ring.
-    fn bell_projectile_hit(&mut self, p: &Projectile, pos: [i32; 3], at: Vec3, face: [i32; 3]) {
+    fn bell_projectile_hit(
+        &mut self,
+        p: &ProjectileHitter,
+        pos: [i32; 3],
+        at: Vec3,
+        face: [i32; 3],
+    ) {
         let Some(face) = Direction::ALL.into_iter().find(|d| d.normal() == face) else {
             return;
         };
@@ -5273,9 +5362,9 @@ impl Game<'_> {
     /// `TargetBlock.onProjectileHit`: a target block takes its power from
     /// where the projectile landed and resets after 20 ticks for an arrow, 8
     /// for any other projectile. A player's shot counts as a target hit.
-    fn target_block_hit(&mut self, p: &Projectile, pos: [i32; 3], at: Vec3, face: [i32; 3]) {
+    fn target_block_hit(&mut self, p: &ProjectileHitter, pos: [i32; 3], at: Vec3, face: [i32; 3]) {
         let block = BlockPos::new(pos[0], pos[1], pos[2]);
-        let arrow = p.arrow.is_some();
+        let arrow = p.arrow;
         let location = [at.x, at.y, at.z];
         let hit = self.with_level(|b, level, ticks| {
             b.target_projectile_hit(level, ticks, block, location, face, arrow)
@@ -5285,15 +5374,44 @@ impl Game<'_> {
             self.native_target_hit(self.dim.id(), pos, strength);
             if p.owner == Some(Who::Player) && (p.guest.is_none() || p.guest == self.lan_acting) {
                 self.award_custom_stat("target_hit", 1);
-                let kind = p.entity_type();
                 let projectile = horizon_client::advancements::EntityView {
-                    kind: kind.to_owned(),
+                    kind: p.kind.to_owned(),
                     position: [p.position.x, p.position.y, p.position.z],
                     ..Default::default()
                 };
                 self.trigger_target_hit(&projectile, strength);
             }
         }
+    }
+    /// `Projectile.onHitBlock`, which a fishing bobber's override calls before it
+    /// rebounds: the struck block's `onProjectileHit` for the acting player's
+    /// bobber at `position`, which hit
+    /// `pos` on `face` at `at`. A bell rings, a target block is powered (8
+    /// ticks: a bobber is no arrow), amethyst chimes and a big dripleaf tilts.
+    /// The bobber is no `#impact_projectiles` and never burns, so the blocks it
+    /// breaks or lights take no part.
+    pub(super) fn fishing_hook_block_hit(
+        &mut self,
+        position: Vec3,
+        pos: [i32; 3],
+        at: Vec3,
+        face: [i32; 3],
+    ) {
+        let hook = ProjectileHitter {
+            owner: Some(Who::Player),
+            guest: self.lan_acting,
+            arrow: false,
+            kind: "minecraft:fishing_bobber",
+            position,
+        };
+        self.bell_projectile_hit(&hook, pos, at, face);
+        self.amethyst_projectile_hit(pos);
+        if self.with_level(|b, level, ticks| {
+            b.big_dripleaf_projectile_hit(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
+        }) {
+            let _ = self.process_level_events();
+        }
+        self.target_block_hit(&hook, pos, at, face);
     }
     pub(super) fn projectile_hit(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
         let result = self.projectile_hit_inner(p, hit);
@@ -5310,7 +5428,7 @@ impl Game<'_> {
         if let Hit::Block { pos, at, face } = hit
             && face != [0; 3]
         {
-            self.bell_projectile_hit(p, pos, at, face);
+            self.bell_projectile_hit(&ProjectileHitter::of(p), pos, at, face);
             self.amethyst_projectile_hit(pos);
             if self.with_level(|b, level, ticks| {
                 b.big_dripleaf_projectile_hit(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
@@ -5338,7 +5456,7 @@ impl Game<'_> {
         if let Hit::Block { pos, face, .. } = hit
             && face != [0; 3]
         {
-            self.target_block_hit(p, pos, at, face);
+            self.target_block_hit(&ProjectileHitter::of(p), pos, at, face);
         }
         if let Hit::Entity {
             who: Who::Mob(id),
@@ -7439,8 +7557,11 @@ impl Game<'_> {
             (parent.species(), parent.extra.variant, parent.extra.color);
         let target = self.mob_entity(&self.mobs[index]);
         // SpawnEggItem.spawnOffspringFromSpawnEgg: `type.create(level, SPAWN_ITEM_USE)`
-        // creates the baby without finalizeSpawn.
-        let Some(id) = self.spawn_mob_raw(&kind, at, false) else {
+        // creates the baby without finalizeSpawn, and `snapTo(pos, 0, 0)` faces
+        // it south without a level-random draw.
+        let Some(id) =
+            self.spawn_mob_internal(&kind, at, false, false, false, false, SpawnYaw::Fixed(0.0))
+        else {
             return false;
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
@@ -7533,7 +7654,8 @@ impl Game<'_> {
             f64::from(p[1]),
             f64::from(p[2]) + 0.5,
         ];
-        let Some(id) = self.spawn_mob_spawned(&kind, at) else {
+        // SpawnEggItem.spawnMob: `EntityType.spawn`.
+        let Some(id) = self.spawn_mob_spawned(&kind, at, SpawnYaw::Created) else {
             return Ok(false);
         };
         // SpawnEggItem.spawnMob: `EntityType.create` finalizes the mob, then

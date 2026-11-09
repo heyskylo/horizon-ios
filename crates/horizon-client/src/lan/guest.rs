@@ -124,6 +124,10 @@ pub struct Guest {
     /// A native mod's limit on `view_distance` for this player alone
     /// (`native_set_player_view_distance`); None: the server's.
     pub view_limit: Option<i32>,
+    /// A fake player (a mod's bot with no client; `native_set_player_fake`): it keeps only a small
+    /// area loaded and ticking around it and does not count for natural spawning, so hundreds of
+    /// bots do not each hold a whole view distance.
+    pub fake: bool,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
     pub yaw: f32,
@@ -458,6 +462,7 @@ impl Guest {
             latency: j.latency,
             view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
             view_limit: None,
+            fake: false,
             info: j.info,
             brand: j.brand,
             channels: j.configured.channels,
@@ -615,6 +620,9 @@ impl Guest {
         })
     }
     pub fn send(&self, packet: &play::Clientbound) {
+        if self.fake && !super::conn::fake_wants_id(packet.id()) {
+            return;
+        }
         if self.anticheat.record.is_some() {
             self.note_change(packet);
         }
