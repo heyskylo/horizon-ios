@@ -46,6 +46,7 @@ impl Gpu {
             hud_coverage::HUD_FORMAT,
             &view,
             &view,
+            &view,
             &device.create_sampler(&Default::default()),
             true,
         )
