@@ -4,11 +4,16 @@
 //! play-with-friends world is open, every minute and at once when that last one changes.
 //! It sends nothing when sending is turned off (`HORIZON_TELEMETRY_URL=off`) or with
 //! `HORIZON_NO_HEARTBEAT=1` (automated runs).
+//!
+//! It plugs into the game through its hooks ([`HOOKS`], `horizon_hooks`), as a Horizon crate
+//! does: it leaves the engine for the Horizon layer when the official executable ships (layer
+//! plan M5, docs/layers.md).
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::Thread;
 use std::time::Duration;
 
+use horizon_hooks::{Hooks, Started};
 use horizon_telemetry::live::{self, Ping};
 
 /// A world is open to LAN or to friends.
@@ -18,18 +23,38 @@ static PINGER: OnceLock<Thread> = OnceLock::new();
 /// After a failure the next ping waits longer, doubling up to this.
 const MAX_WAIT: Duration = Duration::from_secs(600);
 
-/// Starts the pings, once. Call when the game itself starts (not a dedicated server, not a
-/// benchmark or an automated run).
-pub fn start() {
+/// The ping's hooks, for `horizon_hooks::register`.
+pub static HOOKS: Heartbeat = Heartbeat;
+
+pub struct Heartbeat;
+
+impl Hooks for Heartbeat {
+    /// Starts the pings, once: someone is playing (not a dedicated server, a benchmark or an
+    /// automated run).
+    fn started(&self, game: &Started<'_>) {
+        start(game.version);
+    }
+
+    /// A change is sent at once.
+    fn published(&self, open: bool) {
+        LAN.store(open, Ordering::Relaxed);
+        if let Some(pinger) = PINGER.get() {
+            pinger.unpark();
+        }
+    }
+}
+
+fn start(version: &str) {
     if PINGER.get().is_some() || std::env::var_os("HORIZON_NO_HEARTBEAT").is_some() {
         return;
     }
     let Some(endpoint) = horizon_telemetry::endpoint() else {
         return;
     };
+    let version = version.to_owned();
     let spawned = std::thread::Builder::new()
         .name("Heartbeat".into())
-        .spawn(move || run(&endpoint));
+        .spawn(move || run(&endpoint, &version));
     match spawned {
         Ok(handle) => {
             let _ = PINGER.set(handle.thread().clone());
@@ -38,22 +63,12 @@ pub fn start() {
     }
 }
 
-/// Whether a world is open to LAN or friends; a change is sent at once.
-pub fn set_lan(open: bool) {
-    if LAN.swap(open, Ordering::Relaxed) != open
-        && let Some(pinger) = PINGER.get()
-    {
-        pinger.unpark();
-    }
-}
-
-fn run(endpoint: &str) {
+fn run(endpoint: &str, version: &str) {
     let session = live::session_id();
-    let version = crate::telemetry::version();
     let mut wait = live::INTERVAL;
     let mut failed = false;
     loop {
-        let ping = Ping::new(&session, &version, LAN.load(Ordering::Relaxed));
+        let ping = Ping::new(&session, version, LAN.load(Ordering::Relaxed));
         match live::send(endpoint, &ping) {
             Ok(()) => {
                 wait = live::INTERVAL;
@@ -68,7 +83,7 @@ fn run(endpoint: &str) {
                 wait = (wait * 2).min(MAX_WAIT);
             }
         }
-        // Woken early by `set_lan`; a spurious wake only sends one ping more.
+        // Woken early by a change of `published`; a spurious wake only sends one ping more.
         std::thread::park_timeout(wait);
     }
 }
