@@ -51,6 +51,7 @@ fn pictures_are_lazy_shared_and_released_then_reloaded_from_the_pack() {
             clamp: true
         }
     );
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -93,4 +94,5 @@ fn realms_pictures_do_not_enlarge_the_startup_atlas() {
         atlas.height,
         atlas.pixels.len()
     );
+    fs::remove_dir_all(&root).unwrap();
 }
