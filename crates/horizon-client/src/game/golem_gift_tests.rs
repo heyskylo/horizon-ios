@@ -3,7 +3,7 @@
 //! guaranteed drop (`setGuaranteedDrop`: drop chance 2.0 for that slot). The
 //! gift goes through the game's own `MobEvent::Gift` handler. Other slots
 //! keep their chances, and an antenna that already holds an item keeps it.
-use super::*;
+use super::super::*;
 use horizon_client::{chunk::Chunk, mobs::MobEvent};
 use horizon_core::position::ChunkPos;
 use std::sync::Arc;
