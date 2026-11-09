@@ -110,6 +110,7 @@ pub mod preedit;
 pub mod providers;
 pub mod pvp;
 pub mod pvp_hud;
+pub mod radial_editor;
 pub mod radial_overlay;
 pub mod random_source;
 pub mod screen_draw;

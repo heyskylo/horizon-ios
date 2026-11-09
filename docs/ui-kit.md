@@ -424,7 +424,9 @@ pages read from a shader pack, rows that link to pages out of the page list, and
    included. **Apply**, for changes that wait: `pending` shows it beside Undo, and `apply` does them.
 6. **Host it**: a `Shell` of it on `OptionsUi`, named in `OptionsUi::shell` and `shell_mut`, and opened
    at its page with `Shell::show`. Every input goes through those two, so a screen can't take the wheel
-   and miss the stick.
+   and miss the stick. They live in `options_ui/shell_pages.rs` with the rest of the hosting glue
+   (`shell_events`, `pad_clicks_step`, `shell_opened_focus`), so hosting a screen touches that file,
+   not `options_ui.rs`.
 7. **Delete** the screen's own drawing, scrolling, focus, search and click code.
 
 What the old screen's tests checked moves to tests on the `Shell` of the new one: press a row with
@@ -444,6 +446,11 @@ or what else its button does, and draws the row's reset.
 - `shared`: what else the same button does, which the strip lists and the row marks "[ ]" in yellow.
 - `reset`: `Reset::None` (no button), `Reset::Default` (greyed) or `Reset::Changed` (live) for a reset
   button at the row's end; pressed (a click, or Right then Enter or A), it calls `Screen::reset`.
+- The strip says the binding's note (unbound, or what else its button does) unless the row has a
+  `chosen` of its own: that outranks the note except while the host waits, so a binding can say why it
+  has no button or shares one (the radial menu's opener says what that means for opening the menu).
+- A `Capture::Pad` row waits on any screen of the shell, not only Controller Settings: the game binds
+  the next button for whatever `selected_pad_action` names.
 
 A press gives `Output::Bind(capture)`; the host's `shell_events` starts the wait, and passes what it waits
 on back to `Hosted::draw`.
@@ -466,6 +473,26 @@ let binding = Binding {
 };
 Row::new(Item::Bind(action), name, Value::Binding(binding))
 ```
+
+### Lists, steps and where the focus opens
+
+A screen whose choice has too many values to step through can open a list of them instead, as the
+radial menu's editor does for a slot's action:
+
+- `Screen::choose(s, row)`: a press on a `Choice` row (A, Enter or a click; not Left, Right or a
+  Shift press). `None`, the default, steps it as Right does; outputs (a `Push` of the list's page) open
+  the list instead. Left and Right still step it.
+- `Hosted::clicks_step(on)`: the host marks the clicks that are a controller's D-pad Left or Right
+  (`OptionsUi::pad_clicks_step`, from `game/pad_menu.rs`), so on such a choice they step rather than
+  open the list.
+- `Shell::focus_soon(row)`: put the focus on a row at the next draw, scrolled into view, as the
+  keyboard would. The host reads where it went (`Hosted::opened_focus`, `OptionsUi::shell_opened_focus`)
+  so a controller's focus lands there too: the list opens on the slot's current action, and back on
+  the slot after a pick.
+- `Shell::changed_elsewhere()`: a page pushed over the screen (the list) changed what its Undo puts
+  back.
+- A screen whose pages are the player's (`Sheet`s that come and go) can delete the open one: the shell
+  then shows the first page.
 
 ### The page list
 

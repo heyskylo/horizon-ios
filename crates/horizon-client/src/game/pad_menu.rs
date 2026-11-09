@@ -495,10 +495,10 @@ impl Game<'_> {
         if self.prompt_open() {
             return self.pad_prompt_first(targets).or(targets.first().copied());
         }
+        let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
         // Back on a screen the pad left: where it was, as vanilla keeps a
         // screen's focused widget (Options, after its Done). The same widget
         // first: the rows under it can have moved.
-        let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
         if let Some(i) = self
             .pad
             .menu
@@ -795,10 +795,10 @@ impl Game<'_> {
         }
         // A prompt over the screen answers first; no press reaches both.
         let prompt = self.prompt_open();
-        // Bindings waiting for a button: this one (Start cancels).
+        // Bindings, or the radial menu's opener row, waiting for a button: this one (Start
+        // cancels).
         if !prompt
             && self.screen == Screen::Options
-            && self.ui.options.controller_open()
             && let Some(action) = self.ui.options.selected_pad_action.take()
         {
             // Start cancels, and so does a button the action can't take (the radial menu's
@@ -1148,6 +1148,8 @@ impl Game<'_> {
         }
         let focus = self.pad_reveal(focus);
         self.pad.menu.focus = Some(focus);
+        // A step, not a press: a radial slot's press opens its list.
+        self.ui.options.pad_clicks_step(true);
         if button == Button::DPadLeft {
             self.pad_with_modifier(KeyCode::ShiftLeft, |game| {
                 game.pad_click_at(event_loop, focus.center(), false)
@@ -1155,6 +1157,7 @@ impl Game<'_> {
         } else {
             self.pad_click_at(event_loop, focus.center(), false);
         }
+        self.ui.options.pad_clicks_step(false);
         true
     }
 
@@ -1851,7 +1854,16 @@ impl Game<'_> {
             // Two frames on, as after a step that scrolled: the first may predate the scroll.
             && !reveal_pending(self.pad.menu.revealed, widgets::generation())
         {
-            if let Some(focus) = self.pad.menu.focus {
+            // A settings page that says where its focus opens (a radial slot's list on the slot's
+            // action, the slot again after it), once its row is drawn.
+            let opened = (self.screen == Screen::Options)
+                .then(|| self.ui.options.shell_opened_focus())
+                .flatten()
+                .and_then(|rect| gamepad::refind(rect, &rects, 2.0));
+            if let Some(i) = opened {
+                self.ui.options.clear_shell_opened_focus();
+                self.pad.menu.focus = Some(targets[i]);
+            } else if let Some(focus) = self.pad.menu.focus {
                 let kind = std::mem::discriminant(&focus.kind);
                 let named = self.pad_named_focus(focus, &rects);
                 let followed = stick_scrolled.and_then(|s| {

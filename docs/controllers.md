@@ -104,8 +104,9 @@ stick that doesn't select still walks or turns the view.
 Every hold opens on the first page, so a flick aimed blind always lands on the
 same slot.
 
-Two settings change how it is held and aimed, saved as `radialMode` and
-`radialStick` in `horizon-controller.txt`:
+Two settings in Controller Settings > General, under Radial Menu, change how it
+is held and aimed, saved as `radialMode` and `radialStick` in
+`horizon-controller.txt`:
 
 - Radial Menu: Hold (the default) or Toggle (`radialMode:hold|toggle`). In
   Toggle a press opens it, shown at once, and it stays open with the opener up:
@@ -209,7 +210,8 @@ Two settings change how it is held and aimed, saved as `radialMode` and
   the triggers and View. In the binds list a refused button cancels the capture
   as Start does, and a file with one reads as if it had no opener saved (D-pad
   Right, unless another action is there or the stick refuses it). Changing the
-  stick so that the opener is under the selecting thumb unbinds it; back on the
+  stick so that the opener is under the selecting thumb unbinds it, and the
+  opener's row says no button opens the menu and which ones can; back on the
   right stick an unbound opener takes D-pad Right again if it is free. A bumper
   can be the opener; the other bumper then turns the pages on, round the end.
 
@@ -247,6 +249,21 @@ command. Fields and kinds it doesn't read stay too. A file can hold up to 16
 pages (`PARSE_MAX`), and the lines of any past them are kept; the menu and the
 editor show the first six, and a page deleted there brings the next forward.
 Removing an action empties its slot and moves no other.
+
+Controller Settings > Bindings > Radial Menu edits them, on the settings shell
+(`horizon-client-render/src/radial_editor.rs`): the page list is the pages, by
+name, and each page has its eight slots by direction (A or a click opens the list
+of every action and Empty for that slot, which names the slot, marks what it holds
+and opens on it; Right steps a slot to the next action, Empty between the last and
+the first, and Left or Shift-click back, as on every choice of the settings shell),
+then Rename Page, New Page
+and Delete Page, then Reset All Pages and the opener's button, drawn with its
+glyph. A press on the opener's row waits there for a controller button, as a key
+row does: A, B, X, Y and the right stick's click are refused, Start cancels, and
+the row's description says when no button opens the menu or another action
+shares it. Delete and Reset act at once: Undo, there once something changed, puts
+the pages and the opener back as the screen found them. Rename opens a page with
+a name field (A on it opens the on-screen keyboard), Done and Cancel.
 
 A Nintendo pad's face buttons can go by their places, as the table and SDL's
 layout have them (B, at the bottom, jumps and confirms), or by their letters,
@@ -649,7 +666,8 @@ Extras and Graphics, with a search field and General, Bindings and Device pages.
 describes the pointed or focused row, and what a choice's value does. Left and Right step a choice both
 ways, as its `<` `>` show. The search gives the keys back as soon as the focus leaves it.
 
-Bindings is a list like the key binds screen. Each action's row shows its button's art in the player's
+Bindings starts with the Radial Menu row, which opens the radial menu's pages (described above), then
+Actions, a list like the key binds screen. Each action's row shows its button's art in the player's
 glyphs. Press the row and then a button; Start, a click or a key cancels, and the keyboard's Escape
 unbinds. Meanwhile the row reads "> A <" and the strip names the button that cancels. A button that does
 more than one action is marked "[ ]" in yellow, as vanilla marks conflicts, and the strip lists what else
