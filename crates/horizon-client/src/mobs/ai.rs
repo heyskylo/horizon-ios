@@ -2496,15 +2496,10 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
 /// that `canFallInLove` (not in love yet) or a baby that `canAgeUp` (not age
 /// locked). Tamed wolves and cats only sit or stand when it does not.
 pub fn takes_food(m: &Mob) -> bool {
-    // `Turtle.canFallInLove` is `super.canFallInLove() && !this.hasEgg()`: a
-    // turtle that already carries an egg refuses its food instead of breeding.
-    // `Hoglin.canFallInLove` is `!HoglinAi.isPacified(this) && super.canFallInLove()`:
-    // a warped fungus nearby pacifies the adult, and it refuses the fungus in
-    // the player's hand. The baby branch below asks `canAgeUp`, not
-    // `canFallInLove`, so a pacified baby still grows.
+    // `canFallInLove`: a turtle carrying an egg and a pacified hoglin refuse their food.
     let breedable = m.extra.in_love <= 0
         && !(m.species() == Species::Turtle && super::turtle::has_egg(m))
-        && !(m.species() == Species::Hoglin && super::piglin::is_pacified(m));
+        && !super::piglin::refuses_love(m);
     (m.extra.age == 0 && breedable) || (m.extra.age < 0 && !m.extra.age_locked)
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in

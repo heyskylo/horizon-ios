@@ -1734,6 +1734,13 @@ fn find_hoglin_repellent(m: &Mob, w: &MobWorld) -> Option<[i32; 3]> {
 pub fn is_pacified(m: &Mob) -> bool {
     m.extra.ints[0] > 0
 }
+/// `Hoglin.canFallInLove` is `!HoglinAi.isPacified(this) && super.canFallInLove()`:
+/// a warped fungus nearby pacifies the adult, and it refuses the fungus in the
+/// player's hand. `ai::takes_food`'s baby branch asks `canAgeUp`, not
+/// `canFallInLove`, so a pacified baby still grows.
+pub fn refuses_love(m: &Mob) -> bool {
+    m.species() == Species::Hoglin && is_pacified(m)
+}
 /// The hoglin's repellent memories: the sensors (every 20 ticks), the end of
 /// `PACIFIED` (`ints[0]`) and `BecomePassiveIfMemoryPresent(NEAREST_REPELLENT, 200)`.
 fn hoglin_repellent(m: &mut Mob, w: &MobWorld) {
