@@ -751,6 +751,30 @@ mod tests {
         );
     }
 
+    /// `LoadingOverlay.isReadyToFadeOut`: a reload that stages at once still
+    /// keeps its overlay up - the 1000 ms `fadeInStart` gate - so a small pack
+    /// does not flash the Mojang logo for a frame or two.
+    #[test]
+    fn a_fast_reload_keeps_the_overlay_up_before_it_applies() {
+        assert_eq!(OVERLAY_HOLD, Duration::from_millis(1000));
+        let mut quick = PackReload::spawn_holding(ReloadKind::Selection, Duration::ZERO, |_| {
+            Err("staged".into())
+        })
+        .unwrap();
+        assert_eq!(wait(&mut quick).0, ReloadKind::Selection);
+        let hold = Duration::from_millis(80);
+        let mut held =
+            PackReload::spawn_holding(ReloadKind::Selection, hold, |_| Err("staged".into()))
+                .unwrap();
+        // The worker is done long before the overlay has had its time.
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(held.finished().is_none(), "the overlay is still up");
+        std::thread::sleep(hold);
+        assert_eq!(wait(&mut held).0, ReloadKind::Selection);
+    }
+
     #[test]
     fn a_reload_waits_for_world_resources_and_the_one_in_flight() {
         assert!(!reload_waits(false, false));
