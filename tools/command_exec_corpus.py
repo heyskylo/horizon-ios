@@ -6838,6 +6838,27 @@ def living_short_timers():
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
 
+def command_block_last_output():
+    """#13077: `BaseCommandBlock` keeps the feedback it got as a component (stamped with the time:
+    `Component.literal("[HH:mm:ss] ").append(message)`) and saves it with
+    `ComponentSerialization.CODEC`: a failed command keeps its red, click-to-suggest error."""
+    x0, y0, z0 = 3904, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/scoreboard objectives add cb_out dummy', False)]
+    # Two failures, whose styled feedback (red, click to suggest the command) is what the save must keep.
+    # A success's feedback names an entity, a new score holder or a bracketed value, whose components
+    # the two engines build differently (or which change later groups' scoreboard lists).
+    commands = ['say', 'scoreboard players get #nobody cb_out']
+    at = [(x0 + 2 + 3 * n, y0, z0 + 4) for n in range(len(commands))]
+    for command, (x, y, z) in zip(commands, at):
+        ops.append(cmd(f'/setblock {x} {y} {z} minecraft:command_block{{Command:"{command}"}}', expect_result=1))
+        ops.append(cmd(f'/setblock {x} {y + 1} {z} minecraft:redstone_block', expect_result=1))
+    ops.append({'op': 'tick', 'n': 3})
+    for x, y, z in at:
+        ops.append(cmd(f'/data get block {x} {y} {z} LastOutput'))
+    return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
+                       '/scoreboard objectives remove cb_out', f'/forceload remove {x0} {z0}')
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7421,6 +7442,7 @@ def groups():
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('command block last output', command_block_last_output()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('item fall distance', item_fall_distance()),
