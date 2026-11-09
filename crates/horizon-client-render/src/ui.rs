@@ -2646,4 +2646,19 @@ mod tests {
         assert!(edit.key(winit::keyboard::KeyCode::Backspace, false, false));
         assert_eq!(edit.value, "name");
     }
+
+    /// `EditBox.setCentered` (`BookSignScreen`'s title box): with the flag the
+    /// text starts `(width - text width) / 2` in, which is also where a click
+    /// maps; without it the text starts at the box's left edge.
+    #[test]
+    fn a_centred_box_starts_its_text_in_the_middle() {
+        let mut edit = EditBox::new(10.0, 0.0, 114.0, 9.0);
+        edit.bordered = false;
+        assert_eq!(edit.text_start_x(0.0), 10.0);
+        edit.centered = true;
+        assert_eq!(edit.text_start_x(0.0), 67.0);
+        assert_eq!(edit.text_start_x(18.0), 58.0);
+        // (114 - 5) / 2 = 54.5, rounded down.
+        assert_eq!(edit.text_start_x(5.0), 64.0);
+    }
 }
