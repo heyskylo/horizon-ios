@@ -71,11 +71,10 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 - [Design system](design-system.md): shared tokens and interface rules for the launcher, website and Horizon-only game overlays.
 - [HUD kit](ui-kit.md): the pieces Horizon's own HUD overlays share: `Room`, which keeps the controller notice and splitscreen's join strip below the boss bars, `Plate`, the box behind their text, and controller glyphs asked for by what the button does, with the Nintendo letter rule.
-- [Offscreen frame compositor](design/compositor.md): sharing a window surface between views, clipping and the standalone splitscreen compositor example.
+- Splitscreen plumbing (#3541): the renderer hands its window surface to a compositor that places each view (`cargo run --profile fast -p horizon-client-render --example compositor [-- --smoke]`), and `Audio::share(owner)` gives each view its own sound engine on one output, playing a world sound once from the nearest camera (`cargo test -p horizon-client-render --lib audio::tests`).
 - [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
 - [Live mod reloading](design/mod-hotload.md): loading, enabling and updating mods from inside the game without a restart.
 - [Mod registry v2](design/registry-v2.md): project kinds, metadata, installation locations and the registry rollout.
-- [Shared audio output](design/shared-audio.md): sound engines on one output, listener ownership and duplicate world-sound handling.
 
 ## Architecture: world generation
 
