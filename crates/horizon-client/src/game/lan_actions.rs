@@ -4199,6 +4199,9 @@ impl Game<'_> {
             .filter(|g| host.hub.here(g) && g.loaded)
             .map(|g| g.conn)
             .collect();
+        // The players' pickups ask which columns items reach before
+        // scanning every item: most players stand on none.
+        self.pickup_columns = Some(Default::default());
         // The players the guests' hooks can catch.
         if host.play.values().any(|p| p.hook.is_some()) {
             self.refresh_hook_targets(host);
@@ -4375,6 +4378,7 @@ impl Game<'_> {
             }
             self.guest_die(host, gi, conn);
         }
+        self.pickup_columns = None;
     }
 
     /// `native_player_logging_out` for guest `conn`, who has left but is still in the hub
@@ -5721,6 +5725,23 @@ impl Game<'_> {
             )
         };
         if mode == SPECTATOR || self.dropped.is_empty() {
+            return;
+        }
+        // The test below takes items whose position is less than 1.5 from
+        // the player's on x and z: their boxes reach these columns.
+        if let Some(columns) = self.pickup_columns.as_mut()
+            && !columns.may_reach_area(
+                &self.dropped,
+                (
+                    (position[0] - 1.5).floor() as i32,
+                    (position[0] + 1.5).floor() as i32,
+                ),
+                (
+                    (position[2] - 1.5).floor() as i32,
+                    (position[2] + 1.5).floor() as i32,
+                ),
+            )
+        {
             return;
         }
         let near: Vec<_> = self
