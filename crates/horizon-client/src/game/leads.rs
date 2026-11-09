@@ -68,6 +68,7 @@ fn resolve_pending_leash(
     is_guest: impl FnOnce([i32; 4]) -> bool,
     mob_by_uuid: impl FnOnce([i32; 4]) -> Option<u32>,
     boat_by_uuid: impl FnOnce([i32; 4]) -> Option<u32>,
+    knot_by_uuid: impl FnOnce([i32; 4]) -> Option<[i32; 3]>,
 ) -> Option<(Holder, Option<[i32; 4]>)> {
     match pending {
         Pending::Knot(p) => Some((Holder::Knot(p), None)),
@@ -85,9 +86,12 @@ fn resolve_pending_leash(
         {
             Some((Holder::Player, owner_uuid))
         }
+        // `Leashable.restoreLeashFromSave`: `ServerLevel.getEntity(uuid)`, a
+        // leash knot included.
         Pending::Uuid(u) => mob_by_uuid(u)
             .map(|id| (Holder::Mob(id), None))
-            .or_else(|| boat_by_uuid(u).map(|id| (Holder::Boat(id), None))),
+            .or_else(|| boat_by_uuid(u).map(|id| (Holder::Boat(id), None)))
+            .or_else(|| knot_by_uuid(u).map(|p| (Holder::Knot(p), None))),
     }
 }
 
@@ -120,6 +124,70 @@ fn write_mob_leash_tag(
 }
 
 impl Game<'_> {
+    /// The fences the live leads of the level in place hang on, mobs first,
+    /// each once.
+    fn lead_fences(&self) -> Vec<[i32; 3]> {
+        let mut fences = Vec::new();
+        let mobs = self
+            .mobs
+            .iter()
+            .filter(|m| !m.removed)
+            .map(|m| m.extra.leash);
+        for holder in mobs.chain(self.boats.iter().map(|b| b.leash)) {
+            if let Some(Holder::Knot(p)) = holder
+                && !fences.contains(&p)
+            {
+                fences.push(p);
+            }
+        }
+        fences
+    }
+    /// `LeashFenceKnotEntity.notifyLeasheeRemoved`: a fence no lead hangs on
+    /// any more has lost its knot, with its id. Its UUID goes with the rest
+    /// of the dead entities' memory (`prune_entity_memory`).
+    pub(super) fn forget_untied_knots(&mut self) {
+        let fences = self.lead_fences();
+        self.knot_ids.retain(|p, _| fences.contains(p));
+    }
+    /// `LeashFenceKnotEntity.getOrCreateKnot` → `createKnot`: the first lead
+    /// tied to a fence makes its knot, a real entity with its own id (the
+    /// shared `Entity.id` counter) and UUID, whether or not anyone tracks
+    /// it. A fence that already has one keeps it. Call
+    /// [`Self::forget_untied_knots`] before the tie.
+    pub(super) fn tie_knot(&mut self, fence: [i32; 3]) {
+        if self.knot_ids.contains_key(&fence) {
+            return;
+        }
+        self.next_entity += 1;
+        let id = self.next_entity;
+        self.knot_ids.insert(fence, id);
+        self.uuid_for(id);
+    }
+    /// The fence of the natural knot whose entity id is `id`, while a lead
+    /// still hangs on it.
+    pub(super) fn natural_knot(&self, id: u32) -> Option<[i32; 3]> {
+        let (&fence, _) = self.knot_ids.iter().find(|&(_, &k)| k == id)?;
+        let mobs = self
+            .mobs
+            .iter()
+            .filter(|m| !m.removed)
+            .map(|m| m.extra.leash);
+        mobs.chain(self.boats.iter().map(|b| b.leash))
+            .any(|h| h == Some(Holder::Knot(fence)))
+            .then_some(fence)
+    }
+    /// The ids of the level's natural knots that a lead still holds, in the
+    /// order they were made.
+    pub(super) fn natural_knot_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .knot_ids
+            .values()
+            .copied()
+            .filter(|&id| self.natural_knot(id).is_some())
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
     /// BlockAttachedEntity.tick / LeashFenceKnotEntity.survives for explicitly loaded knots.
     pub(super) fn tick_explicit_knots(&mut self) {
         let ticking = self.entity_ticking_area();
@@ -358,7 +426,11 @@ impl Game<'_> {
                 },
                 |u| self.mob_by_uuid(u),
                 |u| self.boat_by_uuid(u),
+                |u| self.knot_by_uuid(u),
             );
+            if let Some((Holder::Knot(_), _)) = holder {
+                self.forget_untied_knots();
+            }
             let m = &mut self.mobs[i];
             if let Some((h, player)) = holder {
                 if h == Holder::Player {
@@ -366,6 +438,9 @@ impl Game<'_> {
                 }
                 m.extra.leash = Some(h);
                 m.extra.leash_pending = None;
+                if let Holder::Knot(fence) = h {
+                    self.tie_knot(fence);
+                }
             } else if m.age > 100 {
                 m.extra.leash_pending = None;
                 let at = [m.position.x, m.position.y, m.position.z];
@@ -548,12 +623,16 @@ impl Game<'_> {
         {
             return true;
         }
+        self.forget_untied_knots();
         let mut attached = self.tie_player_boats(center, Holder::Knot(knot_pos));
         for j in in_hand {
             if self.can_attach_lead(j, center) {
                 self.mobs[j].extra.leash = Some(Holder::Knot(knot_pos));
                 attached = true;
             }
+        }
+        if attached {
+            self.tie_knot(knot_pos);
         }
         if !attached && !sneaking && knot_hit {
             let player = self.player_center();
@@ -916,6 +995,7 @@ mod rope_hold_tests {
                 |u| u == owner_uuid || u == guest_uuid,
                 |_| None,
                 |_| None,
+                |_| None,
             )
             .expect("restored player leash");
             assert_eq!(holder, Holder::Player);
@@ -940,6 +1020,7 @@ mod rope_hold_tests {
             level_player_uuid,
             Some(owner_uuid),
             |_| false,
+            |_| None,
             |_| None,
             |_| None,
         )
@@ -967,6 +1048,7 @@ mod rope_hold_tests {
                     |_| false,
                     |_| None,
                     |_| None,
+                    |_| None,
                 )
                 .is_none()
             );
@@ -980,6 +1062,41 @@ mod rope_hold_tests {
                 |_| false,
                 |u| (u == absent).then_some(17),
                 |_| None,
+                |_| None,
+            ),
+            Some((Holder::Mob(17), None))
+        );
+    }
+
+    /// #13113: a leash knot's UUID resolves to the knot's fence post, as
+    /// `ServerLevel.getEntity` finds the knot like any entity.
+    #[test]
+    fn a_leash_knots_uuid_resolves_to_its_post() {
+        let knot = [7193, 0, 0, 1];
+        let post = [4, 64, 6];
+        let player = uuid_ints(offline_uuid("Player"));
+        assert_eq!(
+            resolve_pending_leash(
+                Pending::Uuid(knot),
+                player,
+                None,
+                |_| false,
+                |_| None,
+                |_| None,
+                |u| (u == knot).then_some(post),
+            ),
+            Some((Holder::Knot(post), None))
+        );
+        // An entity that holds the UUID wins, as nothing else can share it.
+        assert_eq!(
+            resolve_pending_leash(
+                Pending::Uuid(knot),
+                player,
+                None,
+                |_| false,
+                |u| (u == knot).then_some(17),
+                |_| None,
+                |_| Some(post),
             ),
             Some((Holder::Mob(17), None))
         );
@@ -994,6 +1111,7 @@ mod rope_hold_tests {
                 legacy,
                 None,
                 |_| false,
+                |_| None,
                 |_| None,
                 |_| None,
             )
