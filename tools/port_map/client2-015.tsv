@@ -2,7 +2,7 @@ WinScreen.wrapCreditsIO	port	crates/horizon-client/src/win_screen.rs::WinScreen:
 WinScreen.extractRenderState	port	crates/horizon-client/src/win_screen.rs::WinScreen::draw	logo, lines scrolled up, last line stops mid-screen; background and vignette are drawn here too
 WinScreen.extractVignette	inline	crates/horizon-client/src/win_screen.rs::WinScreen::draw	credits_vignette sprite stretched over the screen
 WinScreen.extractMenuBackground	port	crates/horizon-client/src/win_screen.rs::WinScreen::menu_background	menu background tiled and scrolled at half the text speed
-WorldOptionsScreen.init	port	crates/horizon-client/src/game/lan_screen.rs::Game::open_world_options	reads difficulty, lock, LAN port and command/force settings when opened; layout is WorldOptions::buttons
+WorldOptionsScreen.init	port	crates/horizon-client/src/game/lan_screen.rs::Game::open_world_options	reads difficulty, lock, LAN port and command/force settings when opened; layout is WorldOptions::buttons; the port box's PORT_INFO_TEXT tooltip is WorldOptions::port_tooltip
 WorldOptionsScreen.createGameRulesButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	GameRules arm opens the rules view; enabled state is in WorldOptions::active
 WorldOptionsScreen.createGameModeButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	Default and Personal mode arms cycle the mode; enabled state is in WorldOptions::active
 WorldOptionsScreen.createAllowCommandsButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	Cheats arm toggles commands; the hardcore lock is in WorldOptions::active

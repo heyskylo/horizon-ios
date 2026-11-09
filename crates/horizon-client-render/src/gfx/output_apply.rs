@@ -550,7 +550,8 @@ mod tests {
             paper_white: 250,
             peak: 600,
         });
-        settings.hdr_ui_brightness = 60;
+        // 150 nits under the reported paper white of 250: 0.6 of it.
+        settings.hdr_ui_nits = 150;
         let mut swapchain = Swapchain::default();
         let next = candidate(&settings, caps, reading, &applied);
         let published = commit(&mut swapchain, &applied, next, caps, &mut None);
