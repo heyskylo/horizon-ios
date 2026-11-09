@@ -34,6 +34,7 @@ members = [
     "crates/horizon-game",
     "crates/horizon-official",
     "crates/horizon-heartbeat",
+    "crates/horizon-official-servers",
     "crates/horizon-bench",
     "crates/horizon-friends",
     "crates/horizon-relay",

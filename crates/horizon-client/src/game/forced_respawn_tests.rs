@@ -70,9 +70,10 @@ fn overworld_spawnpoint_is_validated_at_both_player_blocks() {
             assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
             assert_eq!(game.respawn_config.is_some(), allowed);
             assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
-            if let Some((at, yaw)) = actual {
+            if let Some((at, yaw, pitch)) = actual {
                 assert_eq!(at, Vec3::new(5.5, 64.1, 5.5));
                 assert_eq!(yaw, 0.0);
+                assert_eq!(pitch.to_bits(), 0.0f32.to_bits());
             }
         }
     }
