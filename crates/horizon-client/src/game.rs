@@ -5256,6 +5256,7 @@ impl Game<'_> {
                 .guests
                 .iter()
                 .filter(|g| h.hub.here(g))
+                .filter(|g| !g.fake) // fake players hold small forced tickets below
                 .map(|g| (g.chunk(), g.spectator()))
                 .collect()
         });
@@ -5304,6 +5305,21 @@ impl Game<'_> {
                 view_distance: self.settings.render_distance.clamp(2, 32),
                 simulation_distance: self.settings.simulation_distance.max(2),
             }
+        });
+        // A fake player holds a forced chunk's 3x3 ticket, not a whole view distance.
+        let sources = sources.map(|mut s| {
+            if let Some(h) = self.lan.as_ref() {
+                s.forced.extend(
+                    h.hub
+                        .guests
+                        .iter()
+                        .filter(|g| {
+                            g.fake && h.hub.here(g) && game_mode::loads_chunks(rule, g.spectator())
+                        })
+                        .map(|g| g.chunk()),
+                );
+            }
+            s
         });
         self.tickets.update(sources);
     }
@@ -19295,6 +19311,8 @@ fn write_level_for_role(
 mod allay_pickup_cooldown_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
+#[cfg(test)]
+mod fake_player_tick_tests;
 #[cfg(test)]
 mod golem_defense_tests;
 #[cfg(test)]

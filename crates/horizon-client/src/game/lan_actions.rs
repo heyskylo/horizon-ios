@@ -4230,8 +4230,17 @@ impl Game<'_> {
             // Native mods, at the start of ServerPlayer.tick: before the
             // player's digging, item use and cooldowns. Swapping the guest in
             // costs a player's state each tick: only when a mod can listen.
+            // A fake player (a mod's bot) has its pre hook run in the one swap of its tick
+            // below, unless it is digging or using something first (each swap costs a player's
+            // state).
+            let fake = host.hub.guests[gi].fake;
+            let mut pre_pending = false;
             if !horizon_client::mod_api::mods().is_empty() {
-                self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                if fake {
+                    pre_pending = true;
+                } else {
+                    self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                }
             }
             let play = host.play.entry(conn).or_default();
             // ServerGamePacketListenerImpl.tick's dropSpamThrottler.
@@ -4240,6 +4249,10 @@ impl Game<'_> {
             let using = play.using.is_some();
             let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
             if digging.is_some() || using || delayed {
+                if pre_pending {
+                    pre_pending = false;
+                    self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                }
                 // A spear in use reaches the other players too.
                 let players = if using {
                     self.stab_players_for(host, conn)
@@ -4322,21 +4335,36 @@ impl Game<'_> {
             // armor, experience and level objectives follow the guest.
             let mut recorded =
                 std::mem::take(&mut host.play.entry(conn).or_default().score_recorded);
-            self.as_guest(host, conn, |g| {
-                g.tick_fishing();
-                g.tick_maps();
-                g.tick_lodestone_compasses();
-                g.native_inventory_ticks();
-                g.count_tick_stats(sleeping);
-                g.tick_advancements();
-                g.update_player_attributes();
-                g.record_player_scores(&mut recorded);
-                // Native mods, at the end of ServerPlayer.tick.
-                g.native_player_tick();
-            });
+            if fake {
+                // A fake player has no fishing line, maps, compasses, statistics, advancements
+                // or score objectives to keep.
+                self.as_guest(host, conn, |g| {
+                    if pre_pending {
+                        g.native_player_tick_pre();
+                    }
+                    g.native_inventory_ticks();
+                    g.update_player_attributes();
+                    g.native_player_tick();
+                });
+            } else {
+                self.as_guest(host, conn, |g| {
+                    g.tick_fishing();
+                    g.tick_maps();
+                    g.tick_lodestone_compasses();
+                    g.native_inventory_ticks();
+                    g.count_tick_stats(sleeping);
+                    g.tick_advancements();
+                    g.update_player_attributes();
+                    g.record_player_scores(&mut recorded);
+                    // Native mods, at the end of ServerPlayer.tick.
+                    g.native_player_tick();
+                });
+            }
             host.play.entry(conn).or_default().score_recorded = recorded;
-            self.lan_map_updates(host, conn);
-            host.hub.flush_progress(conn);
+            if !fake {
+                self.lan_map_updates(host, conn);
+                host.hub.flush_progress(conn);
+            }
             self.guest_dig_feedback(host, conn);
             // A player frozen for a hand-over picks nothing up: what it took would be
             // missing from its record, and lost when the release saves nothing.
