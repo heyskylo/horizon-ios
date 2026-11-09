@@ -2377,10 +2377,7 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
         }
-        // The UUID its own random made, unless a load already gave it one.
-        if let Some(uuid) = p.uuid.take() {
-            self.persist.uuids.entry(p.id).or_insert(uuid);
-        }
+        self.persist.uuids.extend(p.uuid.take().map(|uuid| (p.id, uuid)));
         // Projectile.setOwner: the acting player's or the mob's UUID, which
         // its save keeps even once the owner is gone.
         if p.owner_uuid.is_none() {

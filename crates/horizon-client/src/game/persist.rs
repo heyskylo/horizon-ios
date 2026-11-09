@@ -704,8 +704,7 @@ impl Game<'_> {
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
             self.remember_tags(p.id, &tag);
-            // The UUID its own random made, kept unless the tag has one.
-            self.remember_uuid(p.id, uuid.or(p.uuid), &tag);
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
         }
     }
@@ -723,10 +722,8 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
-            // Entity.load: the saved or summoned UUID, as the other projectiles
-            // keep theirs, else the one its own random made.
-            let fresh = horizon_client::projectiles::new_own_random().1;
-            self.remember_uuid(p.id, Some(uuid.unwrap_or(fresh)), &tag);
+            // Entity.load: the saved or summoned UUID, else its own random's.
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }
@@ -752,9 +749,7 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
-            // Its own random's UUID, kept unless the tag has one.
-            let fresh = horizon_client::projectiles::new_own_random().1;
-            self.remember_uuid(p.id, Some(uuid.unwrap_or(fresh)), &tag);
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }
@@ -773,9 +768,7 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
-            // Its own random's UUID, kept unless the tag has one.
-            let fresh = horizon_client::projectiles::new_own_random().1;
-            self.remember_uuid(p.id, Some(uuid.unwrap_or(fresh)), &tag);
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }

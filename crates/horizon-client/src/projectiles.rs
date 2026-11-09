@@ -784,6 +784,13 @@ impl Projectile {
     }
     /// `Projectile.shoot` from the projectile's own random, after its UUID's
     /// draws: an arrow's, or for another kind one made now.
+    /// The UUID a loaded or summoned projectile keeps (`Entity.load`): the
+    /// tag's, else the one its own random made. The constructor makes that
+    /// random either way, so a kind that makes it at the shot makes it here.
+    pub fn own_uuid(&mut self, tag_uuid: Option<[i32; 4]>) -> [i32; 4] {
+        let own = self.uuid.take().unwrap_or_else(|| new_own_random().1);
+        tag_uuid.unwrap_or(own)
+    }
     pub fn shoot_own(&mut self, dir: [f64; 3], speed: f32, uncertainty: f32) {
         let mut random = match self.arrow.as_mut() {
             Some(a) => a.random.clone(),
