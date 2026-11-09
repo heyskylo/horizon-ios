@@ -7234,6 +7234,13 @@ impl Renderer {
     pub fn hdr_driver(&self) -> Option<&str> {
         self.hdr_driver.as_deref()
     }
+    /// Removes this renderer's marker of an HDR output that hasn't presented a frame yet
+    /// (`graphics::HDR_MARKER`), for a clean exit: only a crash may leave it.
+    pub fn drop_hdr_marker(&mut self) {
+        if let Some(marker) = self.hdr_marker.take() {
+            let _ = std::fs::remove_file(marker);
+        }
+    }
     /// Follows the selected mode even when Auto currently wants SDR. Off never asks
     /// the system about the display; selecting On or Auto starts a fresh watch.
     fn watch_hdr(&mut self, mode: crate::graphics::HdrMode) {
