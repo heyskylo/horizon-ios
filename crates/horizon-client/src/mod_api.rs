@@ -1136,6 +1136,40 @@ mod generated_host {
 }
 pub use generated_host::Host;
 
+/// A deferred main-thread callback for native mods.
+pub type TaskCallback = Box<dyn FnOnce(&mut dyn Host) + Send + 'static>;
+
+/// Extension methods for [`Host`] task scheduling.
+pub trait HostTaskExt: Host {
+    /// Offload heavy computation to the mod worker pool and safely run `callback`
+    /// on the main thread with the typed result during `native_tick`.
+    fn spawn_task_with<T: Send + 'static>(
+        &self,
+        task: impl FnOnce() -> T + Send + 'static,
+        callback: impl FnOnce(&mut dyn Host, T) + Send + 'static,
+    ) {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot_task = slot.clone();
+        self.spawn_task(
+            Box::new(move || {
+                let res = task();
+                if let Ok(mut lock) = slot_task.lock() {
+                    *lock = Some(res);
+                }
+            }),
+            Box::new(move |host| {
+                if let Ok(mut lock) = slot.lock()
+                    && let Some(res) = lock.take()
+                {
+                    callback(host, res);
+                }
+            }),
+        );
+    }
+}
+
+impl<H: Host + ?Sized> HostTaskExt for H {}
+
 pub use crate::game::native_client_services::HudMode;
 
 /// Result of accessing or decoding an attachment.
@@ -1221,6 +1255,32 @@ pub use generated::Hooks;
 #[doc(hidden)]
 pub use generated::*;
 
+/// Runs `body` in a fresh process of this test binary: `mod_api::MODS` is set once per process, and
+/// another test that set it first would make this one's `set` fail. The parent starts the binary again
+/// for just this test (`--exact`, `--include-ignored`) and requires that exactly one test ran and passed; the
+/// child sees `OWN_PROCESS` and runs `body` itself.
+#[cfg(test)]
+pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
+    const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
+    if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
+        return body();
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--include-ignored", "--test-threads=1"])
+        .env(OWN_PROCESS, name)
+        .output()
+        .unwrap();
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && report.contains("test result: ok. 1 passed;"),
+        "{name} failed in its own process:\n{report}"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1233,6 +1293,13 @@ mod tests {
     /// turned on; a test's own list is never switched.
     #[test]
     fn a_mod_turned_off_is_skipped_until_turned_on() {
+        crate::mod_api::in_own_process(
+            "mod_api::tests::a_mod_turned_off_is_skipped_until_turned_on",
+            a_mod_turned_off_is_skipped_until_turned_on_in_own_process,
+        );
+    }
+
+    fn a_mod_turned_off_is_skipped_until_turned_on_in_own_process() {
         name_mods(&["quiet", "broken"]);
         let _ = MODS.set(Arc::from(vec![
             Box::new(Quiet) as Box<dyn Hooks>,

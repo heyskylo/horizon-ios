@@ -10,6 +10,12 @@ Two kinds of mod run in Horizon:
 Fabric and NeoForge jars do **not** run as they are: their code calls and patches Minecraft's Java classes, and
 Horizon has none. What carries over is the data and assets inside a jar ([modpacks.md](modpacks.md)).
 
+Running Java mods unchanged needs a Java bridge (a JVM beside the game, proposed in [#10216](https://github.com/horizon-rust/horizon/pull/10216); not in Horizon today).
+The project decided on 2026-11-09 that it will only ever be a **separate, optional download, never installed or on by
+default**: when the game or the launcher finds a Java mod it may offer to turn it on, and the player decides. Before
+it is promoted out of beta, its server MSPT and memory are measured against the Java client running the same mods
+(plan: [#13914](https://github.com/horizon-rust/horizon/issues/13914)).
+
 Mods are **off by default**. A fresh install has no `horizon-mods` folder and plays exactly like vanilla 26.3.
 
 ## Playing with mods
@@ -368,7 +374,16 @@ Its block flows in the world as its template does, with the fluid's own `tick_ra
 NeoForge's `BaseFlowingFluid` does: lava's and water's conversions (stone, obsidian, cobblestone) stay theirs, a mod
 fluid copying lava neither fizzes nor turns water to stone, and no fluid replaces a mod fluid. Its `bucket` pours the source and an empty bucket
 picks the source back up (a fluid without one can't be picked up), from a hand or a dispenser, with the template's
-sounds. Not yet: mobs don't swim in it, and it is drawn as its template
+sounds.
+
+It is not water to the game (a zombie in it doesn't become a drowned, nor does it hydrate farmland): as NeoForge tracks
+each `FluidType`, an entity's immersion in it is its own. The player moves in it as in water, whatever its template,
+and its numbers decide the rest: its current pushes the player, dropped items, experience orbs, armour stands and boats
+by `motion_scale` when `can_push_entity`; the player swims and rises in it when `can_swim`, loses air with the eyes in
+it when `can_drown`, is put out when `can_extinguish`, and has the fall distance multiplied by
+`fall_distance_modifier` each tick in it (0 resets it, as water does). Left out, each is its template's: water's
+0.014, all true and 0; lava's 0.0023, only `can_push_entity`, and 0.5. Not yet: mobs and arrows swim and move in it as
+on land, boats don't float on it (`supports_boating`), and it is drawn as its template
 ([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these step by step).
 
 A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:

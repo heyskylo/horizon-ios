@@ -228,6 +228,7 @@ def main():
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_ITEM_COUNT]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_POT_HOPPER]
     if args.vehicle_container_diagnostic:
         try:
             from .vehicle_container_corpus import vehicle_containers
@@ -398,7 +399,9 @@ def main():
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import contact_fixture
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
-    if args.only:
+    if args.only == 'hopper pot saved slot':
+        groups = [g for g in groups if g[0] == args.only]
+    elif args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.only in corpus_module.ISOLATED_BOAT_TREE:
         groups = [g for g in groups if g[0] == args.only]
@@ -424,6 +427,8 @@ def main():
         parser.error('jukebox clock fixture requires --only with its exact group')
     if any(name in corpus_module.ISOLATED_ITEM_COUNT for name, _ in groups) and len(groups) != 1:
         parser.error('item count fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_POT_HOPPER for name, _ in groups) and len(groups) != 1:
+        parser.error('pot hopper fixture requires --only with its exact group')
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:

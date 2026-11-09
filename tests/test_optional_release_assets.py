@@ -15,6 +15,11 @@ REQUIRED = {
     "horizon-macos-x64.zip", "horizon-server-linux-x86_64.tar.gz", "horizon-source.tar.gz",
 }
 OPTIONAL = ("horizon-windows-arm64.zip", "horizon-linux-musl-x86_64.tar.gz")
+# The bash on PATH, as in test_pr_ready: Windows' CreateProcess looks in System32 before PATH, so a bare "bash"
+# there is WSL's, which gets none of the steps' env and none of the host's paths.
+BASH = shutil.which("bash")
+POSIX_BASH = BASH is not None and not (
+    os.name == "nt" and os.path.dirname(os.path.normcase(BASH)).endswith(os.path.normcase(r"\system32")))
 
 
 def run_step(containing):
@@ -26,8 +31,8 @@ def run_step(containing):
     raise AssertionError(f"no workflow step containing {containing}")
 
 
-@unittest.skipUnless(shutil.which("bash") and shutil.which("openssl") and shutil.which("sha256sum"),
-                     "release shell checks require bash, OpenSSL and sha256sum")
+@unittest.skipUnless(POSIX_BASH and shutil.which("openssl") and shutil.which("sha256sum"),
+                     "release shell checks require a bash that is not WSL's, OpenSSL and sha256sum")
 class OptionalReleaseAssetsTests(unittest.TestCase):
     def test_sign_and_publish_with_each_optional_archive_combination(self):
         for mask in range(4):
@@ -46,7 +51,7 @@ class OptionalReleaseAssetsTests(unittest.TestCase):
                 env = dict(os.environ, EPHEMERAL="yes", SHA="0123456789abcdef", SHORT="0123456", DATE="2026-11-04",
                            ALSO_FOR="nightly-2026-11-04-0123456", SOURCE_TAG="nightly-test",
                            RELEASE_SIGNING_KEY="", RELEASE_SIGNING_KEY_NEXT="")
-                signed = subprocess.run(["bash", "-e", "-c", run_step("sign_release.sh nightly")],
+                signed = subprocess.run([BASH, "-e", "-c", run_step("sign_release.sh nightly")],
                                         cwd=root, env=env, text=True, capture_output=True)
                 self.assertEqual(signed.returncode, 0, signed.stderr)
                 # `name` or `*name`: sha256sum on Windows (Git Bash) marks binary mode with `*`.
@@ -71,7 +76,7 @@ gh() {
   done
 }
 '''
-                published = subprocess.run(["bash", "-e", "-c", stubs + run_step("gh release create nightly")],
+                published = subprocess.run([BASH, "-e", "-c", stubs + run_step("gh release create nightly")],
                                            cwd=root, env=env, text=True, capture_output=True)
                 self.assertEqual(published.returncode, 0, published.stderr)
                 files = {Path(name).name for name in (root / "published").read_text().splitlines()}
