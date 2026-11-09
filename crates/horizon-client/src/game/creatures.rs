@@ -2085,6 +2085,27 @@ impl Game<'_> {
             // next).
             self.spawn_item_own(item, pos, 10);
         }
+        // LivingEntity.dropExperience: a mod may change the mob's experience
+        // before the orbs are split and spawned (the orbs stay last).
+        if rest.iter().any(|d| matches!(d, drops::Drop::Orb(_))) {
+            let mut xp: i32 = rest
+                .iter()
+                .filter_map(|d| match d {
+                    drops::Drop::Orb(value) => Some(*value),
+                    _ => None,
+                })
+                .sum();
+            let before = xp;
+            self.native_living_experience_drop(m.id, &kind, &mut xp);
+            if xp != before {
+                rest.retain(|d| !matches!(d, drops::Drop::Orb(_)));
+                while xp > 0 {
+                    let value = drops::orb_value(xp);
+                    xp -= value;
+                    rest.push(drops::Drop::Orb(value));
+                }
+            }
+        }
         for d in rest {
             match d {
                 drops::Drop::CarriedBlock(state) => {
@@ -2739,7 +2760,17 @@ impl Game<'_> {
                     // Only a creeper or a wither empties the hives it blows up.
                     // The creeper is already gone from the list, so the event
                     // carries its kind. A sulfur cube's blast is TNT's.
-                    let source = super::explosion::ExplosionSource::default().with_silence(silent);
+                    let mut source =
+                        super::explosion::ExplosionSource::default().with_silence(silent);
+                    if let Some(id) = source_mob
+                        && matches!(species, Species::Creeper | Species::Wither)
+                    {
+                        let kind = match species {
+                            Species::Creeper => "minecraft:creeper",
+                            _ => "minecraft:wither",
+                        };
+                        source = source.with_entity(id, kind);
+                    }
                     let result = match species {
                         Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius, source))
@@ -3236,12 +3267,31 @@ impl Game<'_> {
                             .get(self.world.block(pos[0], pos[1], pos[2]))
                             .name
                             .clone();
-                        self.level_set_with_flags(pos, state, flags)?;
+                        let mut cancel = false;
                         if let Some(mob) = mob
-                            && let Some(m) = self.mobs.iter().find(|m| m.id == mob)
+                            && let Some(kind) = self
+                                .mobs
+                                .iter()
+                                .find(|m| m.id == mob)
+                                .map(|m| m.kind.id.clone())
                         {
-                            let kind = m.kind.id.clone();
-                            self.native_entity_change_block(mob, &kind, pos, &old_name, name);
+                            self.native_entity_change_block_v3(
+                                mob,
+                                &kind,
+                                pos,
+                                &old_name,
+                                name,
+                                &mut cancel,
+                            );
+                        }
+                        if !cancel {
+                            self.level_set_with_flags(pos, state, flags)?;
+                            if let Some(mob) = mob
+                                && let Some(m) = self.mobs.iter().find(|m| m.id == mob)
+                            {
+                                let kind = m.kind.id.clone();
+                                self.native_entity_change_block(mob, &kind, pos, &old_name, name);
+                            }
                         }
                     }
                 }
@@ -4678,22 +4728,13 @@ impl Game<'_> {
                 if super::remote_projectiles::has_smoke_trail(&p.kind) {
                     trails.push(p.position);
                 }
-                // ThrownEnderpearl.onAboveBubbleColumn / onInsideBubbleColumn.
-                if keep && hit == Hit::None && matches!(p.kind, ProjectileKind::EnderPearl) {
-                    let (at, h) = (p.position, 0.125);
-                    horizon_client::motion::bubble_column_push_over(
-                        w.world,
-                        w.registry,
-                        w.facts,
-                        w.collision,
-                        Aabb::new(
-                            Vec3::new(at.x - h, at.y, at.z - h),
-                            Vec3::new(at.x + h, at.y + 2.0 * h, at.z + h),
-                        ),
-                        &mut p.velocity,
-                        |pos| bubble_tops.push(pos),
-                    );
-                }
+                // Projectile.onAboveBubbleColumn's particles, from the tick's
+                // bubble column pushes (`Projectile::tick`).
+                bubble_tops.extend(
+                    p.bubble_surfaces
+                        .drain(..)
+                        .map(|[x, y, z]| BlockPos::new(x, y, z)),
+                );
                 let events_from = arrow_events.len();
                 let ordinary_arrow = p.is_arrow();
                 if let Some(a) = p.arrow.as_mut() {
@@ -5966,7 +6007,8 @@ impl Game<'_> {
                     *power as f32,
                     fire,
                     super::explosion::ExplosionSource::default()
-                        .with_silence(self.entity_silent(p.id)),
+                        .with_silence(self.entity_silent(p.id))
+                        .with_entity(p.id, "minecraft:fireball"),
                 );
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
@@ -6008,19 +6050,25 @@ impl Game<'_> {
                     _ => None,
                 };
                 let owner = self.potion_owner(p.owner);
-                self.splash(
-                    stack,
-                    at,
-                    mob,
-                    block,
-                    p.age,
-                    &owner,
-                    self.entity_silent(p.id),
-                    p.velocity,
-                );
+                let item = stack.item.to_string();
+                let mut cancel = false;
                 if stack.item.as_ref() != "minecraft:experience_bottle" {
-                    let item = stack.item.to_string();
-                    self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                    self.native_potion_splash_v2(&item, [at.x, at.y, at.z], &mut cancel);
+                }
+                if !cancel {
+                    self.splash(
+                        stack,
+                        at,
+                        mob,
+                        block,
+                        p.age,
+                        &owner,
+                        self.entity_silent(p.id),
+                        p.velocity,
+                    );
+                    if stack.item.as_ref() != "minecraft:experience_bottle" {
+                        self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                    }
                 }
             }
             // LlamaSpit.onHitEntity hurts only when the owner is a LivingEntity.

@@ -2551,6 +2551,41 @@ pub(super) fn text_of(v: &Value) -> Text {
     horizon_client::scoreboard::comp_text(v)
 }
 
+/// An advancement's display as a server mod reads it: its title and
+/// description as text (the components as the datapack wrote them), its
+/// frame (`task`, `goal` or `challenge`), and whether it is announced in
+/// chat and hidden until earned.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AdvancementDisplay {
+    pub title: Text,
+    pub description: Text,
+    pub frame: String,
+    pub announce_to_chat: bool,
+    pub hidden: bool,
+}
+
+impl Game<'_> {
+    /// The display of the advancement `id` in the loaded tree; None for an
+    /// id the tree does not have, or one with no display. API @API:advancement_display@.
+    pub(super) fn native_advancement_display(&mut self, id: &str) -> Option<AdvancementDisplay> {
+        let tree = self.advancement_tree();
+        let advancement = &tree.list[*tree.by_id.get(id)?];
+        let display = advancement.display.as_ref()?;
+        Some(AdvancementDisplay {
+            title: text_of(&display.title),
+            description: text_of(&display.description),
+            frame: match &display.frame {
+                Frame::Task => "task",
+                Frame::Goal => "goal",
+                Frame::Challenge => "challenge",
+            }
+            .to_owned(),
+            announce_to_chat: display.announce,
+            hidden: display.hidden,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

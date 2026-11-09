@@ -29,6 +29,12 @@ pub enum NativeInventoryKind {
     Player,
     /// The ender chest's 27 slots.
     Ender,
+    /// The stack on the cursor: 1 slot. Live only: a player's cursor is not
+    /// in their file.
+    Cursor,
+    /// The 2x2 crafting grid: 4 slots, row by row. Live only: the grid is not
+    /// in their file.
+    Crafting,
 }
 
 impl NativeInventoryKind {
@@ -36,9 +42,86 @@ impl NativeInventoryKind {
         match self {
             Self::Player => 41,
             Self::Ender => 27,
+            Self::Cursor => 1,
+            Self::Crafting => 4,
+        }
+    }
+
+    /// Kinds only a player on the server has (`Cursor`, `Crafting`).
+    pub(crate) fn live_only(self) -> bool {
+        matches!(self, Self::Cursor | Self::Crafting)
+    }
+}
+
+/// Why a call on another player's inventories failed. Its `Display` is the
+/// text the mods' logs show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeInventoryError {
+    /// The player is in a turn of their own (call from a player's hook, or
+    /// from `native_menu_clicked` or `native_server_tick`).
+    InsidePlayerTurn,
+    /// No server is running.
+    NoServer,
+    /// The player is logging in.
+    LoggingIn,
+    /// The player is dead.
+    Dead,
+    /// The player is on the server (for a file made for an away player).
+    Online,
+    /// No world is open.
+    NoWorld,
+    /// The player has never played here: there is no file.
+    NoSavedPlayer,
+    /// The player has a file already.
+    HasFile,
+    /// The player is not on the server; the inventory is live only.
+    NotOnline,
+    /// Both players of a move are away.
+    BothAway,
+    /// The move's two inventories are the same one.
+    SameInventory,
+    /// The stack is not the one expected (it changed).
+    StackChanged,
+    /// The stack does not fit whole in the destination.
+    NoRoom,
+    /// The inventory takes `want` slots, not `got`.
+    WrongSize { want: usize, got: usize },
+    /// No such hotbar slot (0..9, `Player` only).
+    NoSuchHotbarSlot,
+    /// No such slot in this inventory.
+    NoSuchSlot,
+    /// A slot named twice in one take.
+    SlotNamedTwice,
+    /// The player's file could not be read or written.
+    File(String),
+}
+
+impl std::fmt::Display for NativeInventoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InsidePlayerTurn => write!(f, "inside a player's turn"),
+            Self::NoServer => write!(f, "no server"),
+            Self::LoggingIn => write!(f, "the player is logging in"),
+            Self::Dead => write!(f, "the player is dead"),
+            Self::Online => write!(f, "the player is on the server"),
+            Self::NoWorld => write!(f, "no world"),
+            Self::NoSavedPlayer => write!(f, "no saved player"),
+            Self::HasFile => write!(f, "the player has a file"),
+            Self::NotOnline => write!(f, "the player is not on the server"),
+            Self::BothAway => write!(f, "both players are away"),
+            Self::SameInventory => write!(f, "the same inventory"),
+            Self::StackChanged => write!(f, "that stack changed"),
+            Self::NoRoom => write!(f, "no room"),
+            Self::WrongSize { want, got } => write!(f, "{want} slots, not {got}"),
+            Self::NoSuchHotbarSlot => write!(f, "no such hotbar slot"),
+            Self::NoSuchSlot => write!(f, "no such slot"),
+            Self::SlotNamedTwice => write!(f, "a slot named twice"),
+            Self::File(e) => write!(f, "the player's file: {e}"),
         }
     }
 }
+
+impl std::error::Error for NativeInventoryError {}
 
 /// A player's inventory as `native_inventory` read it: its slots, and
 /// whether it is the live one (the player is on the server) or their file's.
@@ -59,15 +142,62 @@ fn file_slot(i: usize) -> Option<u8> {
 }
 
 fn guest_slots(g: &Guest, kind: NativeInventoryKind) -> Vec<Option<ItemStack>> {
-    menu::owner_slots(g, kind == NativeInventoryKind::Ender)
+    match kind {
+        NativeInventoryKind::Player | NativeInventoryKind::Ender => {
+            menu::owner_slots(g, kind == NativeInventoryKind::Ender)
+        }
+        NativeInventoryKind::Cursor => vec![g.carried.clone()],
+        NativeInventoryKind::Crafting => g.craft_grid.to_vec(),
+    }
 }
 
 fn set_guest_slots(g: &mut Guest, kind: NativeInventoryKind, s: Vec<Option<ItemStack>>) {
-    menu::set_owner_slots(g, kind == NativeInventoryKind::Ender, s);
+    match kind {
+        NativeInventoryKind::Player | NativeInventoryKind::Ender => {
+            menu::set_owner_slots(g, kind == NativeInventoryKind::Ender, s);
+        }
+        NativeInventoryKind::Cursor => g.carried = s.into_iter().next().flatten(),
+        NativeInventoryKind::Crafting => {
+            for (i, stack) in s.into_iter().take(4).enumerate() {
+                g.craft_grid[i] = stack;
+            }
+        }
+    }
+}
+
+/// The slots `guest_slots` reads, by reference (nothing is cloned), for
+/// `native_players_inventory_changes` to compare each tick.
+fn slot_refs(g: &Guest, kind: NativeInventoryKind) -> Vec<Option<&ItemStack>> {
+    match kind {
+        NativeInventoryKind::Player => (0..36)
+            .map(|i| g.inventory.get(i).and_then(Option::as_ref))
+            .chain([3, 2, 1, 0].map(|i| g.armor[i].as_ref()))
+            .chain(std::iter::once(g.offhand.as_ref()))
+            .collect(),
+        NativeInventoryKind::Ender => (0..27)
+            .map(|i| g.ender_items.get(i).and_then(Option::as_ref))
+            .collect(),
+        NativeInventoryKind::Cursor => vec![g.carried.as_ref()],
+        NativeInventoryKind::Crafting => g.craft_grid.iter().map(Option::as_ref).collect(),
+    }
+}
+
+/// Whether the slots `now` differ from what the mods last `heard` of them;
+/// when they do, `heard` becomes `now`. `native_players_inventory_changes`
+/// asks it once per player and kind each tick.
+fn heard_changed(heard: &mut Vec<Option<ItemStack>>, now: &[Option<&ItemStack>]) -> bool {
+    let same =
+        now.len() == heard.len() && now.iter().zip(heard.iter()).all(|(n, h)| *n == h.as_ref());
+    if !same {
+        *heard = now.iter().map(|n| (*n).cloned()).collect();
+    }
+    !same
 }
 
 fn level_slots(level: &Level, kind: NativeInventoryKind) -> Vec<Option<ItemStack>> {
     match kind {
+        // Live only: never read from a file (`native_inventory_side_for`).
+        NativeInventoryKind::Cursor | NativeInventoryKind::Crafting => vec![None; kind.size()],
         NativeInventoryKind::Player => {
             let mut s = vec![None; 41];
             for (slot, item, count, damage) in &level.inventory {
@@ -107,6 +237,8 @@ fn set_level_slots(level: &mut Level, kind: NativeInventoryKind, s: Vec<Option<I
             }
         }
         NativeInventoryKind::Ender => level.ender_items = s,
+        // Live only: never written to a file.
+        NativeInventoryKind::Cursor | NativeInventoryKind::Crafting => {}
     }
 }
 
@@ -141,12 +273,12 @@ impl Game<'_> {
     /// the server, else their file's. Err while they are logging in, dead,
     /// swapped in (inside a player's hook: call from `native_menu_clicked` or
     /// `native_server_tick`), or when they have never played here.
-    pub(super) fn native_inventory(
+    pub(super) fn native_inventory_typed(
         &self,
         uuid: u128,
         kind: NativeInventoryKind,
-    ) -> Result<NativeInventory, String> {
-        match self.native_inventory_side(uuid)? {
+    ) -> Result<NativeInventory, NativeInventoryError> {
+        match self.native_inventory_side_for(uuid, kind)? {
             Side::Live(i) => {
                 let host = self.lan.as_ref().expect("live");
                 Ok(NativeInventory {
@@ -161,29 +293,85 @@ impl Game<'_> {
         }
     }
 
-    fn native_inventory_side(&self, uuid: u128) -> Result<Side, String> {
+    fn native_inventory_side(&self, uuid: u128) -> Result<Side, NativeInventoryError> {
         if self.lan_acting.is_some() {
-            return Err("inside a player's turn".into());
+            return Err(NativeInventoryError::InsidePlayerTurn);
         }
         let Some(host) = self.lan.as_ref() else {
-            return Err("no server".into());
+            return Err(NativeInventoryError::NoServer);
         };
         if let Some(i) = host.hub.guests.iter().position(|g| g.uuid == uuid) {
             let g = &host.hub.guests[i];
             return if !g.placed {
-                Err("the player is logging in".into())
+                Err(NativeInventoryError::LoggingIn)
             } else if g.dead {
-                Err("the player is dead".into())
+                Err(NativeInventoryError::Dead)
             } else {
                 Ok(Side::Live(i))
             };
         }
         if self.world_root.as_os_str().is_empty() {
-            return Err("no world".into());
+            return Err(NativeInventoryError::NoWorld);
         }
         read_level(&self.world_root, uuid)
             .map(|l| Side::File(Box::new(l)))
-            .ok_or_else(|| "no saved player".into())
+            .ok_or(NativeInventoryError::NoSavedPlayer)
+    }
+
+    /// `native_inventory_side` for an inventory of `kind`: a live-only kind
+    /// (`Cursor`, `Crafting`) has no file, so an away player is Err.
+    fn native_inventory_side_for(
+        &self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+    ) -> Result<Side, NativeInventoryError> {
+        let side = self.native_inventory_side(uuid)?;
+        if kind.live_only() && matches!(side, Side::File(_)) {
+            return Err(NativeInventoryError::NotOnline);
+        }
+        Ok(side)
+    }
+
+    /// Creates the saved file of the player `uuid` (`name` is for the log),
+    /// for one who has never played here: a new player's state with full
+    /// health and food, no items and no position. Until they first join,
+    /// `native_inventory` and the helpers above read and change it; when they
+    /// join, they load it as a returning player. Err: no world, the player on
+    /// the server (`Online`), a file already (`HasFile`), or the file cannot
+    /// be written (`File`). API @API:create_player_file@.
+    pub(super) fn native_create_player_file(
+        &mut self,
+        uuid: u128,
+        name: &str,
+    ) -> Result<(), NativeInventoryError> {
+        if self.world_root.as_os_str().is_empty() {
+            return Err(NativeInventoryError::NoWorld);
+        }
+        if self
+            .lan
+            .as_ref()
+            .is_some_and(|h| h.hub.guests.iter().any(|g| g.uuid == uuid))
+        {
+            return Err(NativeInventoryError::Online);
+        }
+        if playerdata::exists(&self.world_root, uuid) {
+            return Err(NativeInventoryError::HasFile);
+        }
+        let _ = playerdata::directory(&self.world_root);
+        let level = Level {
+            player_uuid: Some(playerdata::uuid_ints(uuid)),
+            health: 20.0,
+            food: 20,
+            saturation: 5.0,
+            ..Level::default()
+        };
+        write_dat(
+            &playerdata::path(&self.world_root, uuid),
+            level.player_tag(),
+        )
+        .map_err(|e| NativeInventoryError::File(e.to_string()))?;
+        log::info!("Horizon: a player file is created for {name}");
+        Ok(())
     }
 
     /// Moves the stack in slot `from_slot` of `from`'s inventory `from_kind`,
@@ -193,29 +381,32 @@ impl Game<'_> {
     /// nothing moves and the Err says why. Each side is live or its file
     /// (`native_inventory`); at most one may be a file, which is written
     /// before the live side changes. Their screens follow with the tick's
-    /// sync.
-    pub(super) fn native_move_stack(
+    /// sync. Typed helpers: API @API:inventory_typed@.
+    pub(super) fn native_move_stack_typed(
         &mut self,
         from: (u128, NativeInventoryKind, usize),
         expected: &ItemStack,
         to: (u128, NativeInventoryKind),
-    ) -> Result<(), String> {
+    ) -> Result<(), NativeInventoryError> {
         let (from_uuid, from_kind, from_slot) = from;
         let (to_uuid, to_kind) = to;
         if from_uuid == to_uuid && from_kind == to_kind {
-            return Err("the same inventory".into());
+            return Err(NativeInventoryError::SameInventory);
         }
         // A just-disconnected player can already be absent from the hub.
         // Drain before reading or replacing their offline file.
         let _ = self.finish_player_autosaves(true);
-        let a = self.native_inventory_side(from_uuid)?;
+        let a = self.native_inventory_side_for(from_uuid, from_kind)?;
         let b = if from_uuid == to_uuid {
+            if to_kind.live_only() && matches!(a, Side::File(_)) {
+                return Err(NativeInventoryError::NotOnline);
+            }
             None
         } else {
-            Some(self.native_inventory_side(to_uuid)?)
+            Some(self.native_inventory_side_for(to_uuid, to_kind)?)
         };
         if matches!(a, Side::File(_)) && matches!(b, Some(Side::File(_))) {
-            return Err("both players are away".into());
+            return Err(NativeInventoryError::BothAway);
         }
         let items = self.res.items();
         let max = |s: &ItemStack| items.get(&s.item).map_or(64, |i| i.max_stack);
@@ -227,27 +418,32 @@ impl Game<'_> {
         let mut dst = read(b.as_ref().unwrap_or(&a), to_kind);
         match src.get_mut(from_slot) {
             Some(s) if s.as_ref() == Some(expected) => *s = None,
-            _ => return Err("that stack changed".into()),
+            _ => return Err(NativeInventoryError::StackChanged),
         }
         let room = match to_kind {
             NativeInventoryKind::Player => 36,
             NativeInventoryKind::Ender => 27,
+            NativeInventoryKind::Cursor => 1,
+            NativeInventoryKind::Crafting => 4,
         };
         if !super::native_menus::fit(&mut dst[..room], std::slice::from_ref(expected), &max) {
-            return Err("no room".into());
+            return Err(NativeInventoryError::NoRoom);
         }
         // The file first: when it can't be written, nothing has moved.
         let world = self.world_root.clone();
-        let write =
-            |side: Side, kind, slots: Vec<Option<ItemStack>>, uuid| -> Result<Side, String> {
-                if let Side::File(mut level) = side {
-                    set_level_slots(&mut level, kind, slots);
-                    write_dat(&playerdata::path(&world, uuid), level.player_tag())
-                        .map_err(|e| format!("the player's file: {e}"))?;
-                    return Ok(Side::File(level));
-                }
-                Ok(side)
-            };
+        let write = |side: Side,
+                     kind,
+                     slots: Vec<Option<ItemStack>>,
+                     uuid|
+         -> Result<Side, NativeInventoryError> {
+            if let Side::File(mut level) = side {
+                set_level_slots(&mut level, kind, slots);
+                write_dat(&playerdata::path(&world, uuid), level.player_tag())
+                    .map_err(|e| NativeInventoryError::File(e.to_string()))?;
+                return Ok(Side::File(level));
+            }
+            Ok(side)
+        };
         let (a, b) = match b {
             None => {
                 // Two inventories of one player: their file or live.
@@ -290,18 +486,21 @@ impl Game<'_> {
     /// `native_inventory`; a player on the server is sent their whole
     /// inventory at once. Err as `native_inventory`, or for a wrong number
     /// of slots or a `selected` past the hotbar. @API:set_inventory@.
-    pub(super) fn native_set_inventory(
+    pub(super) fn native_set_inventory_typed(
         &mut self,
         uuid: u128,
         kind: NativeInventoryKind,
         slots: Vec<Option<ItemStack>>,
         selected: Option<usize>,
-    ) -> Result<(), String> {
+    ) -> Result<(), NativeInventoryError> {
         if slots.len() != kind.size() {
-            return Err(format!("{} slots, not {}", kind.size(), slots.len()));
+            return Err(NativeInventoryError::WrongSize {
+                want: kind.size(),
+                got: slots.len(),
+            });
         }
         if selected.is_some_and(|s| s >= 9 || kind != NativeInventoryKind::Player) {
-            return Err("no such hotbar slot".into());
+            return Err(NativeInventoryError::NoSuchHotbarSlot);
         }
         let ((), live) = self.native_edit_slots(uuid, kind, |s, held| {
             *s = slots;
@@ -333,18 +532,18 @@ impl Game<'_> {
     /// their file; a player's screen follows with the tick's sync. Err as
     /// `native_inventory`, for no such slot, or when the slot changed.
     /// @API:set_inventory_slot@.
-    pub(super) fn native_set_inventory_slot(
+    pub(super) fn native_set_inventory_slot_typed(
         &mut self,
         uuid: u128,
         kind: NativeInventoryKind,
         slot: usize,
         expected: Option<&ItemStack>,
         new: Option<ItemStack>,
-    ) -> Result<Option<ItemStack>, String> {
+    ) -> Result<Option<ItemStack>, NativeInventoryError> {
         let (old, _) = self.native_edit_slots(uuid, kind, |s, _| {
-            let at = s.get_mut(slot).ok_or("no such slot")?;
+            let at = s.get_mut(slot).ok_or(NativeInventoryError::NoSuchSlot)?;
             if at.as_ref() != expected {
-                return Err("that stack changed".into());
+                return Err(NativeInventoryError::StackChanged);
             }
             Ok(std::mem::replace(at, new))
         })?;
@@ -357,18 +556,18 @@ impl Game<'_> {
     /// screen follows with the tick's sync. Err as `native_inventory`, for a
     /// slot named twice, or when one changed (nothing is taken then).
     /// @API:set_inventory_slot@.
-    pub(super) fn native_take_stacks(
+    pub(super) fn native_take_stacks_typed(
         &mut self,
         uuid: u128,
         slots: &[(usize, ItemStack)],
-    ) -> Result<Vec<ItemStack>, String> {
+    ) -> Result<Vec<ItemStack>, NativeInventoryError> {
         let (taken, _) = self.native_edit_slots(uuid, NativeInventoryKind::Player, |s, _| {
             for (k, (slot, stack)) in slots.iter().enumerate() {
                 if slots[..k].iter().any(|(other, _)| other == slot) {
-                    return Err("a slot named twice".into());
+                    return Err(NativeInventoryError::SlotNamedTwice);
                 }
                 if s.get(*slot).and_then(Option::as_ref) != Some(stack) {
-                    return Err("that stack changed".into());
+                    return Err(NativeInventoryError::StackChanged);
                 }
             }
             Ok(slots
@@ -387,11 +586,11 @@ impl Game<'_> {
         &mut self,
         uuid: u128,
         kind: NativeInventoryKind,
-        edit: impl FnOnce(&mut Vec<Option<ItemStack>>, &mut usize) -> Result<R, String>,
-    ) -> Result<(R, Option<usize>), String> {
+        edit: impl FnOnce(&mut Vec<Option<ItemStack>>, &mut usize) -> Result<R, NativeInventoryError>,
+    ) -> Result<(R, Option<usize>), NativeInventoryError> {
         // A just-disconnected player can already be absent from the hub.
         let _ = self.finish_player_autosaves(true);
-        match self.native_inventory_side(uuid)? {
+        match self.native_inventory_side_for(uuid, kind)? {
             Side::Live(i) => {
                 let g = &mut self.lan.as_mut().expect("live").hub.guests[i];
                 let mut slots = guest_slots(g, kind);
@@ -411,9 +610,41 @@ impl Game<'_> {
                     &playerdata::path(&self.world_root, uuid),
                     level.player_tag(),
                 )
-                .map_err(|e| format!("the player's file: {e}"))?;
+                .map_err(|e| NativeInventoryError::File(e.to_string()))?;
                 Ok((r, None))
             }
+        }
+    }
+
+    /// `inventory_changed` for the players on the server: each of their
+    /// inventory kinds whose slots differ from what the mods last heard is
+    /// heard once (`native_inventory_changed`; API @API:inventory_changed@), after the players' equipment
+    /// in each tick. A player new to the server counts from empty, as for
+    /// equipment. A player away is not checked: changes made to their file
+    /// come from the mods' own calls.
+    pub(super) fn native_players_inventory_changes(&mut self, host: &mut LanHost) {
+        const KINDS: [NativeInventoryKind; 4] = [
+            NativeInventoryKind::Player,
+            NativeInventoryKind::Ender,
+            NativeInventoryKind::Cursor,
+            NativeInventoryKind::Crafting,
+        ];
+        let mut changes = Vec::new();
+        for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+            let Some(play) = host.play.get_mut(&g.conn) else {
+                continue;
+            };
+            let heard = play
+                .inventory_heard
+                .get_or_insert_with(|| Box::new(KINDS.map(|k| vec![None; k.size()])));
+            for (i, kind) in KINDS.into_iter().enumerate() {
+                if heard_changed(&mut heard[i], &slot_refs(g, kind)) {
+                    changes.push((g.uuid, kind));
+                }
+            }
+        }
+        for (uuid, kind) in changes {
+            self.native_inventory_changed(uuid, kind);
         }
     }
 
@@ -450,6 +681,62 @@ impl Game<'_> {
     }
 }
 
+/// The helpers the mods of API 132 call, with their `String` errors as they
+/// were; each is its `_typed` helper (the same checks) with the error as text.
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
+impl Game<'_> {
+    pub(super) fn native_inventory(
+        &self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+    ) -> Result<NativeInventory, String> {
+        self.native_inventory_typed(uuid, kind)
+            .map_err(|e| e.to_string())
+    }
+
+    pub(super) fn native_move_stack(
+        &mut self,
+        from: (u128, NativeInventoryKind, usize),
+        expected: &ItemStack,
+        to: (u128, NativeInventoryKind),
+    ) -> Result<(), String> {
+        self.native_move_stack_typed(from, expected, to)
+            .map_err(|e| e.to_string())
+    }
+
+    pub(super) fn native_set_inventory(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        slots: Vec<Option<ItemStack>>,
+        selected: Option<usize>,
+    ) -> Result<(), String> {
+        self.native_set_inventory_typed(uuid, kind, slots, selected)
+            .map_err(|e| e.to_string())
+    }
+
+    pub(super) fn native_set_inventory_slot(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        slot: usize,
+        expected: Option<&ItemStack>,
+        new: Option<ItemStack>,
+    ) -> Result<Option<ItemStack>, String> {
+        self.native_set_inventory_slot_typed(uuid, kind, slot, expected, new)
+            .map_err(|e| e.to_string())
+    }
+
+    pub(super) fn native_take_stacks(
+        &mut self,
+        uuid: u128,
+        slots: &[(usize, ItemStack)],
+    ) -> Result<Vec<ItemStack>, String> {
+        self.native_take_stacks_typed(uuid, slots)
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// Another player's inventory in a menu, for server mods. API @API:inventory_menu@.
 #[allow(dead_code)]
 impl Game<'_> {
@@ -469,7 +756,8 @@ impl Game<'_> {
     /// that changes it (a click whose write fails is taken back whole). The
     /// menu closes once the target leaves, dies or, away, comes back. None
     /// for a viewer not here, the target being the viewer, logging in, dead or
-    /// never seen here, a layout longer than the rows' slots, a slot number
+    /// never seen here, a `Cursor` or `Crafting` kind (menus show only the
+    /// inventory and the ender chest), a layout longer than the rows' slots, a slot number
     /// past the inventory or one shown twice, and inside a player's turn
     /// (call it from `native_menu_clicked` or `native_server_tick`).
     /// API @API:inventory_menu@.
@@ -485,6 +773,7 @@ impl Game<'_> {
         let size = usize::from(rows.clamp(1, 6)) * 9;
         let mut seen = std::collections::HashSet::new();
         if viewer == uuid
+            || kind.live_only()
             || layout.len() > size
             || !layout
                 .iter()
@@ -660,6 +949,45 @@ mod tests {
             damage: 0,
             extra: None,
         }
+    }
+
+    /// `inventory_changed` is heard for a change only: an empty inventory
+    /// against the empty start, or the same slots again, is no change; a new
+    /// stack, or the same item in another count, is one, once.
+    #[test]
+    fn a_change_is_heard_once() {
+        let mut heard = vec![None; 4];
+        assert!(!heard_changed(&mut heard, &[None, None, None, None]));
+        let stick = ItemStack::new("minecraft:stick", 1);
+        assert!(heard_changed(&mut heard, &[None, Some(&stick), None, None]));
+        assert!(!heard_changed(
+            &mut heard,
+            &[None, Some(&stick), None, None]
+        ));
+        let sticks = ItemStack::new("minecraft:stick", 2);
+        assert!(heard_changed(
+            &mut heard,
+            &[None, Some(&sticks), None, None]
+        ));
+        assert_eq!(heard[1].as_ref(), Some(&sticks));
+    }
+
+    #[test]
+    fn cursor_and_crafting_are_live_only_and_their_errors_read_as_before() {
+        assert_eq!(NativeInventoryKind::Cursor.size(), 1);
+        assert_eq!(NativeInventoryKind::Crafting.size(), 4);
+        assert!(NativeInventoryKind::Cursor.live_only());
+        assert!(NativeInventoryKind::Crafting.live_only());
+        assert!(!NativeInventoryKind::Player.live_only());
+        assert!(!NativeInventoryKind::Ender.live_only());
+        assert_eq!(
+            NativeInventoryError::WrongSize { want: 41, got: 3 }.to_string(),
+            "41 slots, not 3"
+        );
+        assert_eq!(
+            NativeInventoryError::File("disk full".into()).to_string(),
+            "the player's file: disk full"
+        );
     }
 
     #[test]

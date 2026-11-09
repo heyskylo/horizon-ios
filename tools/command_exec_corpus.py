@@ -1715,6 +1715,49 @@ def aquatic_from_bucket():
     return ops
 
 
+def dispensed_spawn_egg_persistence():
+    """`SpawnEggItemBehavior.execute` spawns with `EntitySpawnReason.DISPENSER`
+    and never calls `Mob.setPersistenceRequired`: the mob saves
+    `PersistenceRequired: 0b`, as one from a spawn egg used by hand does. So
+    `Mob.checkDespawn` removes the zombie at once, far from every player,
+    while the pig, which is never removed when far away, stays. The elder
+    guardian's and copper golem's constructors require persistence (1b)."""
+    x, z, y = 5312, 5120, 300
+    # (dispenser x, mob, saved PersistenceRequired, or None once despawned)
+    eggs = [(x + 2, 'zombie', None), (x + 6, 'pig', 0), (x + 10, 'elder_guardian', 1),
+            (x + 14, 'copper_golem', 1)]
+    ops = [*setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+           {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+           *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
+    for bx, kind, _ in eggs:
+        ops += [cmd(f'/setblock {bx} {y} {z + 4} minecraft:dispenser[facing=south]'
+                    f'{{Items:[{{Slot:0b,id:"minecraft:{kind}_spawn_egg",count:1}}]}}', expect_result=1),
+                cmd(f'/setblock {bx} {y + 1} {z + 4} minecraft:redstone_block', expect_result=1)]
+    ops.append({'op': 'tick', 'n': 6})
+
+    def reads():
+        out = []
+        for _, kind, saved in eggs:
+            mob = f'@e[type=minecraft:{kind},x={x},y={y - 8},z={z},dx=16,dy=24,dz=16,limit=1]'
+            if saved is None:
+                out.append(cmd(f'/execute unless entity {mob}', expect_result=1))
+            else:
+                out += [cmd(f'/execute if entity {mob}', expect_result=1),
+                        cmd(f'/data get entity {mob} PersistenceRequired', expect_result=saved)]
+        return out
+
+    ops += reads()
+    # Unload the chunk (saving its mobs), then load it again.
+    ops += [*setup(f'/forceload remove {x} {z} {x + 15} {z + 15}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            *setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+            {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    ops += reads()
+    return ops + setup(f'/kill @e[type=!minecraft:player,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/fill {x} {y - 1} {z} {x + 15} {y + 1} {z + 15} minecraft:air',
+                       f'/forceload remove {x} {z} {x + 15} {z + 15}')
+
+
 
 
 def summoned_fangs_lifetime():
@@ -6847,6 +6890,7 @@ def groups():
         ('command minecart loaded success', command_minecart_loaded_success()),
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
+        ('dispensed spawn egg persistence', dispensed_spawn_egg_persistence()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
         ('seed sync proof', seed_sync_proof(cmd, setup)),
