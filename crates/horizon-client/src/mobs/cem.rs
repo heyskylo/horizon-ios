@@ -604,13 +604,10 @@ impl CemLayer {
                 // beside the pack's own.
                 hide_unnamed(node, &named);
             }
-            // A replacing entry stands in for the vanilla part; an attached one is its own.
-            let this = if p.attach {
-                bone.name.clone()
-            } else {
-                target.clone()
-            };
-            entries.push((this, target, p.animations.as_slice()));
+            // `this` is the entry's own bone, replacing or attached ("current custom model",
+            // `cem_animation.txt`); `part` the vanilla part it hangs on. Conquest's pig writes
+            // `this.tx` = its `translate`: on the vanilla head that flung the head 7 px off.
+            entries.push((bone.name.clone(), target, p.animations.as_slice()));
             node.children.push(bone);
         }
         let names = super::cem_anim::Names {
@@ -1016,6 +1013,24 @@ mod tests {
         assert_eq!(attached(&models, "llama#decor", "body"), Some(true));
         assert_eq!(attached(&models, "cow#main", "body"), Some(false));
         assert_eq!(attached(&models, "zombie_baby#main", "body"), Some(true));
+    }
+
+    #[test]
+    fn this_is_a_replacing_entrys_own_bone() {
+        // Conquest's pig: the head replaced, posed through `this`.
+        let pig = r#"{"models": [{"part": "head", "translate": [5, 9.7, -11],
+            "boxes": [{"coordinates": [-11, -14, 3, 8, 8, 8], "uvNorth": [8, 8, 16, 16]}],
+            "animations": [{"this.tx": "7"}]}]}"#;
+        let tree = plane("root", vec![plane("head", vec![])]);
+        let files = [("optifine/cem/pig.jem", pig)];
+        let models = models("this-bone", &files, &["pig#main"], &tree);
+        let layer = models.layer("pig#main").unwrap();
+        let mut poses = super::super::anim::Poses::new(&layer.model);
+        let animation = layer.animation.as_ref().unwrap();
+        animation.run_with(1, 1, |_| {}, &mut poses);
+        // `this.tx` writes the pack's bone; the vanilla head it replaces stays put.
+        assert_eq!(poses.get("cem#0")[0], 7.0);
+        assert_eq!(poses.get("head")[0], 0.0);
     }
 
     #[test]
