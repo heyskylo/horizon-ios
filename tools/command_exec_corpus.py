@@ -6989,8 +6989,10 @@ def groups():
         from vehicle_kill_corpus import vehicle_kill_contents
     try:
         from .vehicle_container_corpus import vehicle_containers
+        from .boat_loot_corpus import boat_loot
     except ImportError:
         from vehicle_container_corpus import vehicle_containers
+        from boat_loot_corpus import boat_loot
     try:
         from .vehicle_boolean_corpus import other_entity_boolean_flags, vehicle_boolean_flags
     except ImportError:
@@ -7073,6 +7075,7 @@ def groups():
         ('spectral saved duration', spectral_saved_duration(cmd, setup)),
         ('item Health short load', item_health_load(cmd, setup)),
         ('vehicle container saved fields', vehicle_containers(cmd)),
+        ('chest boat pending loot', boat_loot(cmd)),
         ('vehicle boolean save flags', vehicle_boolean_flags(cmd)),
         ('other entity boolean save flags', other_entity_boolean_flags(cmd)),
         ('macro source type error', macro_source_type_error()),

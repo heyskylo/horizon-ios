@@ -2513,6 +2513,7 @@ impl Game<'_> {
                 // AbstractBoat.remove: a killed boat drops its lead.
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                     self.release_vehicle_container(id);
+                    self.unpack_boat_loot(i, false);
                     let b = self.boats.remove(i);
                     // AbstractChestBoat.remove, after the live menu writes
                     // back its slots.
