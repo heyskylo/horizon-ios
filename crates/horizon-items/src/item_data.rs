@@ -2818,3 +2818,87 @@ mod charged_projectile_template_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod written_book_tests {
+    use super::*;
+
+    /// `WrittenBookContent.resolve`/`markResolved`: each page's selectors and
+    /// scores become their text, the book is marked resolved, and a resolved
+    /// book is left alone.
+    #[test]
+    fn a_written_books_pages_resolve_selectors_and_scores() {
+        let selector = Tag::compound([("selector", Tag::String("@p".into()))]);
+        let score = Tag::compound([(
+            "score",
+            Tag::compound([
+                ("name", Tag::String("*".into())),
+                ("objective", Tag::String("kills".into())),
+            ]),
+        )]);
+        let mut book = WrittenBook {
+            title: "t".into(),
+            author: "a".into(),
+            pages: vec!["@p".into(), "score".into(), "plain".into()],
+            page_tags: vec![selector, score, Tag::String("plain".into())],
+            resolved: false,
+            ..Default::default()
+        };
+        let mut asked = 0;
+        let changed = book.resolve(|tag| {
+            asked += 1;
+            if tag.get("selector").is_some() {
+                return Some("Steve".into());
+            }
+            tag.get("score").map(|_| "7".into())
+        });
+        assert!(changed, "the pages were rewritten");
+        assert!(book.resolved, "the book is marked resolved");
+        assert_eq!(asked, 2, "a plain page is not asked");
+        assert_eq!(book.pages, ["Steve", "7", "plain"]);
+        assert_eq!(
+            book.page_tags[0],
+            Tag::compound([("text", Tag::String("Steve".into()))])
+        );
+        // A resolved book is never resolved again.
+        assert!(!book.resolve(|_| Some("other".into())));
+        assert_eq!(book.pages, ["Steve", "7", "plain"]);
+    }
+
+    /// `WrittenBookContent.resolvePage`: a page whose resolved text passes
+    /// 32767 characters cancels the resolution, and the raw pages stay.
+    #[test]
+    fn an_over_long_resolved_page_leaves_the_pages_raw() {
+        let mut book = WrittenBook {
+            pages: vec!["x".into()],
+            page_tags: vec![Tag::compound([("selector", Tag::String("@p".into()))])],
+            ..Default::default()
+        };
+        let changed = book.resolve(|_| Some("y".repeat(32768)));
+        assert!(!changed);
+        assert!(book.resolved, "the book is still marked resolved");
+        assert_eq!(book.pages, ["x"], "the raw pages stay");
+    }
+
+    /// `WrittenBookContent.CODEC` keeps the resolved flag through a save and a
+    /// load.
+    #[test]
+    fn a_resolved_book_round_trips_its_flag() {
+        let book = WrittenBook {
+            title: "T".into(),
+            author: "A".into(),
+            pages: vec!["hi".into()],
+            page_tags: vec![Tag::String("hi".into())],
+            resolved: true,
+            ..Default::default()
+        };
+        let tag = written_book_tag(&book);
+        assert_eq!(tag.get("resolved"), Some(&Tag::Byte(1)));
+        assert_eq!(written_book_from_tag(&tag), book);
+        let unresolved = WrittenBook {
+            resolved: false,
+            ..book
+        };
+        assert_eq!(written_book_tag(&unresolved).get("resolved"), None);
+    }
+}
