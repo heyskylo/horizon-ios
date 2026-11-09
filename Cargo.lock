@@ -1587,6 +1587,7 @@ dependencies = [
  "horizon-core",
  "horizon-cosmetics",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-narrator",
  "horizon-optifine",

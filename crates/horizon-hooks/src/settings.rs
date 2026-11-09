@@ -186,10 +186,7 @@ mod tests {
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-hooks-{name}-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("horizon-hooks-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -212,7 +209,11 @@ mod tests {
         assert!(zoom.on());
         // `rumble:maybe` is no value it reads, and `zoom` in its file isn't its key.
         assert!(!pad.on());
-        assert_eq!(asked, ["horizon-extras.txt", "horizon-pad.txt"], "each file read once");
+        assert_eq!(
+            asked,
+            ["horizon-extras.txt", "horizon-pad.txt"],
+            "each file read once"
+        );
     }
 
     #[test]
@@ -236,8 +237,14 @@ mod tests {
         let zoom = Switch::new("horizon-extras.txt", "zoom");
         let stores: [&dyn Store; 2] = [&pad, &zoom];
         save_files(&stores, &dir, &["horizon-extras.txt"]);
-        assert!(!dir.join("horizon-pad.txt").exists(), "defaults make no file");
-        assert!(!dir.join("horizon-extras.txt").exists(), "the engine writes that one");
+        assert!(
+            !dir.join("horizon-pad.txt").exists(),
+            "defaults make no file"
+        );
+        assert!(
+            !dir.join("horizon-extras.txt").exists(),
+            "the engine writes that one"
+        );
         pad.set(true);
         save_files(&stores, &dir, &["horizon-extras.txt"]);
         assert_eq!(
