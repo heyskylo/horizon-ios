@@ -30,10 +30,12 @@ class ReadmeTests(unittest.TestCase):
         self.assertEqual(pg.written(block), (25, [20, 5, 0]))
 
     def test_rewrite_replaces_the_block_and_the_badge(self):
-        text = ("<p>\n  <img src=\"https://img.shields.io/badge/vanilla%20parity-100%25-F0795A\" alt=\"x\">\n</p>\n\n"
-                "## Project status\n\nThe table.\n")
+        text = ("<p align=\"center\">\n  <img src=\"https://img.shields.io/badge/other-1-F0795A\" alt=\"x\">\n</p>\n\n"
+                "# Horizon\n\n## Project status\n\nThe table.\n")
         once = pg.rewrite(text, pg.block(lists(7)), 7)
         self.assertIn("player--visible%20gaps-7%20open-", once)
+        self.assertLess(once.index("badge/other-1"), once.index("player--visible%20gaps-7"))
+        self.assertLess(once.index("player--visible%20gaps-7"), once.index("</p>\n\n# Horizon"))
         self.assertIn("## Project status\n\n**Player-visible gaps: 7 open**", once)
         twice = pg.rewrite(once, pg.block(lists(3)), 3)
         self.assertEqual(twice.count("**Player-visible gaps:"), 1)
@@ -51,7 +53,7 @@ class ReadmeTests(unittest.TestCase):
         status = text.split("## Project status", 1)[1]
         self.assertTrue(status.lstrip().startswith("**Player-visible gaps:"), "the gaps come first under Project status")
         self.assertNotIn("<!--", status.split("###", 1)[0], "the website prints HTML comments of this intro")
-        self.assertTrue(re.search(r"^### Java parity: \d+%$", status, re.M), "the site still reads this heading")
+        self.assertNotRegex(text, r"(?im)^#+ .*parity[^\n]*\d%", "no parity percentage heading (decided 2026-11-09)")
 
 
 if __name__ == "__main__":
