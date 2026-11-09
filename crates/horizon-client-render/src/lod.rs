@@ -2680,6 +2680,7 @@ impl Lod {
             }
             if let Some((columns, mask)) = self.kept.take(&key) {
                 self.ready.insert(key, columns);
+                self.sync_sample(key);
                 if let Some(mask) = mask {
                     self.detail_masks.insert(key, mask);
                 }
