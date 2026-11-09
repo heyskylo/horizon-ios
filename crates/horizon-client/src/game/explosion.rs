@@ -2050,7 +2050,8 @@ mod explicit_source_tests {
         game.creative = false;
         game.ui.difficulty = 2;
         game.build_registries();
-        for mode in 0..4 {
+        for mode in 0..5 {
+            let nested = mode == 4;
             game.combat = Default::default();
             game.mobs.clear();
             game.orbs.clear();
@@ -2058,7 +2059,7 @@ mod explicit_source_tests {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(10.5, 64.0, 8.5)).unwrap());
             let kind = game.res.mob_types().get("minecraft:husk").unwrap().clone();
             let species = kind.species;
-            if mode == 2 {
+            if mode == 2 || nested {
                 game.mobs
                     .push(Mob::new(43, kind, Vec3::new(40.0, 64.0, 40.0), 0.0));
             }
@@ -2071,17 +2072,43 @@ mod explicit_source_tests {
                 guest: None,
                 species: (mode != 1).then_some(species),
             });
-            game.server_explode_from_cause(
-                [8.5, 64.0, 8.5],
-                2.0,
-                BlockInteraction::Keep,
-                false,
-                ExplosionSource::default()
-                    .with_entity(7, "minecraft:end_crystal")
-                    .with_silence(true),
-                Some(cause),
-            )
-            .unwrap();
+            if nested {
+                game.options.dedicated = Some(Vec::new());
+                game.combat.explicit_explosion_cause = Some(cause);
+                game.combat.explicit_explosion_direct = Some(Text::literal("Outer"));
+                game.combat.blast_owner = Some((99, Text::literal("Outer")));
+                game.combat.blast_guest = Some(17);
+                let center = [8.5, 64.0, 8.5];
+                assert!(game.native_explode(
+                    "minecraft:overworld",
+                    center,
+                    2.0,
+                    false,
+                    NativeBlast::Keep
+                ));
+                assert!(matches!(
+                    game.combat.explicit_explosion_cause,
+                    Some(Some(_))
+                ));
+                assert!(game.combat.explicit_explosion_direct.is_some());
+                assert_eq!(
+                    game.combat.blast_owner.as_ref().map(|owner| owner.0),
+                    Some(99)
+                );
+                assert_eq!(game.combat.blast_guest, Some(17));
+            } else {
+                game.server_explode_from_cause(
+                    [8.5, 64.0, 8.5],
+                    2.0,
+                    BlockInteraction::Keep,
+                    false,
+                    ExplosionSource::default()
+                        .with_entity(7, "minecraft:end_crystal")
+                        .with_silence(true),
+                    Some(cause),
+                )
+                .unwrap();
+            }
             let events = std::mem::take(&mut game.player.as_mut().unwrap().events);
             game.record_combat(&events);
             assert_eq!(
@@ -2089,34 +2116,31 @@ mod explicit_source_tests {
                     .last_blow()
                     .map(|(kind, id)| (kind.to_owned(), id)),
                 Some((
-                    if mode == 0 {
+                    if mode == 0 || nested {
                         "minecraft:explosion"
                     } else {
                         "minecraft:player_explosion"
                     }
                     .into(),
-                    if mode == 0 { 0 } else { 43 }
+                    if mode == 0 || nested { 0 } else { 43 }
                 ))
             );
             assert_eq!(
                 game.combat.kill_credit(game.world.game_time),
                 (mode == 2).then_some(43)
             );
-            if mode == 1 || mode == 3 {
+            if mode == 1 || mode == 3 || nested {
                 let death = game
                     .combat_death_message_for(Text::literal("Victim"))
                     .component();
-                assert_eq!(death["with"][1]["text"].as_str(), Some("Igniter"));
+                if nested {
+                    assert_eq!(death["with"].as_array().unwrap().len(), 1);
+                } else {
+                    assert_eq!(death["with"][1]["text"].as_str(), Some("Igniter"));
+                }
             }
             assert_eq!(game.combat.explosion_owner, Some(99));
-            assert!(game.combat.explicit_explosion_cause.is_none());
+            assert_eq!(game.combat.explicit_explosion_cause.is_some(), nested);
         }
-        game.options.dedicated = Some(Vec::new());
-        game.combat.explicit_explosion_cause = Some(None);
-        game.combat.blast_guest = Some(17);
-        let center = [8.5, 64.0, 8.5];
-        assert!(game.native_explode("minecraft:overworld", center, 0.1, false, NativeBlast::Keep));
-        assert_eq!(game.combat.blast_guest, Some(17));
-        assert!(matches!(game.combat.explicit_explosion_cause, Some(None)));
     }
 }
