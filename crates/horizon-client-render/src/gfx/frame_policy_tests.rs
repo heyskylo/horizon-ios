@@ -1,5 +1,5 @@
-//! The frame policy: which frame a renderer draws (`frame_configuration`), when it must be made
-//! again (`frame_follows`), and what follows from the frame chosen.
+//! The frame policy: which frame a renderer draws (`frame_configuration`), and what follows
+//! from the frame chosen.
 
 #[test]
 fn float_frames_never_schedule_light_mark_passes() {
@@ -125,78 +125,6 @@ fn one_tone_curve_runs_on_the_layered_world() {
     // No world (the title screen), or no layered frame (SDR, the compatibility frames).
     assert!(!horizon_tone_curve(true, false, false));
     assert!(!horizon_tone_curve(false, true, false));
-}
-
-#[test]
-fn frame_follows_requires_a_rebuild_when_only_layering_changes() {
-    use super::{LINEAR_FRAME, frame_follows};
-    use wgpu::TextureFormat::Bgra8Unorm;
-
-    let device = (true, true, true, true);
-    assert!(frame_follows(
-        (LINEAR_FRAME, true),
-        true,
-        device,
-        Bgra8Unorm,
-        false,
-        true
-    ));
-    assert!(!frame_follows(
-        (LINEAR_FRAME, true),
-        true,
-        device,
-        Bgra8Unorm,
-        true,
-        false
-    ));
-    assert!(frame_follows(
-        (LINEAR_FRAME, false),
-        true,
-        device,
-        Bgra8Unorm,
-        true,
-        false
-    ));
-    // HDR turned on under a 0.2 pack: the layered frame.
-    assert!(!frame_follows(
-        (LINEAR_FRAME, false),
-        true,
-        device,
-        Bgra8Unorm,
-        true,
-        true
-    ));
-    assert!(frame_follows(
-        (LINEAR_FRAME, true),
-        true,
-        device,
-        Bgra8Unorm,
-        true,
-        true
-    ));
-    assert!(!frame_follows(
-        (LINEAR_FRAME, false),
-        true,
-        device,
-        Bgra8Unorm,
-        false,
-        true
-    ));
-}
-
-#[test]
-fn hdr_availability_refresh_rebuilds_a_frame_created_in_sdr() {
-    use super::{LINEAR_FRAME, frame_follows, hdr::Output, update_hdr_output};
-    use wgpu::TextureFormat::Bgra8Unorm;
-
-    let mut output = None;
-    let mut device = (false, true, true, true);
-    let sdr = (Bgra8Unorm, false);
-    let follows = |frame, device, on| frame_follows(frame, on, device, Bgra8Unorm, false, on);
-    assert!(follows(sdr, device, false));
-    update_hdr_output(&mut output, &mut device, Some(Output::Pq));
-    assert!(!follows(sdr, device, true));
-    assert!(follows((LINEAR_FRAME, true), device, true));
 }
 
 #[test]

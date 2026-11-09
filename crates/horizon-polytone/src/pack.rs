@@ -399,10 +399,53 @@ pub fn overlay_active(entry: &Json, configs: &Configs, formats_apply: bool) -> b
     }
 }
 
+/// A pack's `sounds.json` without the entries whose `polytone_condition` doesn't hold (wiki
+/// "Custom Sound Events", "Sounds Load Conditions"); an invalid condition drops its entry too, as an
+/// overlay's does. `None` when nothing is dropped (or the file isn't a JSON object).
+pub fn sounds_without_unmet(text: &[u8], configs: &Configs) -> Option<Vec<u8>> {
+    let Ok(Json::Object(mut events)) = serde_json::from_slice::<Json>(text) else {
+        return None;
+    };
+    let before = events.len();
+    events.retain(
+        |name, def| match def.get("polytone_condition").map(Condition::parse) {
+            None => true,
+            Some(Ok(condition)) => condition.holds(configs),
+            Some(Err(e)) => {
+                log::warn!("sounds.json {name}: {e}");
+                false
+            }
+        },
+    );
+    (events.len() != before).then(|| serde_json::to_vec(&Json::Object(events)).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sound_entries_with_unmet_conditions_are_dropped() {
+        let text = json!({
+            "block.anvil.land": {"replace": true, "polytone_condition": {"require_config": "pack:leaves"}, "sounds": ["a"]},
+            "block.anvil.use": {"polytone_condition": "config('pack:leaves') == 'off'", "sounds": ["b"]},
+            "block.anvil.break": {"polytone_condition": "this is not an expression (", "sounds": ["c"]},
+            "block.anvil.fall": {"sounds": ["d"]}
+        })
+        .to_string();
+        let kept: Json =
+            serde_json::from_slice(&sounds_without_unmet(text.as_bytes(), &configs()).unwrap())
+                .unwrap();
+        let mut names: Vec<&String> = kept.as_object().unwrap().keys().collect();
+        names.sort();
+        assert_eq!(names, ["block.anvil.fall", "block.anvil.land"]);
+        // A file without conditions is left as it is.
+        assert_eq!(
+            sounds_without_unmet(br#"{"x": {"sounds": []}}"#, &configs()),
+            None
+        );
+    }
 
     fn configs() -> Configs {
         let mut c = Configs::default();

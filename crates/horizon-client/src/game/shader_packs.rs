@@ -9,7 +9,7 @@ use horizon_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
 use horizon_client::mod_list::ModList;
 use horizon_client::shader_options::ShaderOptions;
 use horizon_client::text::Text;
-use horizon_shader_api::{Api, Blend};
+use horizon_shader_api::Api;
 use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
 use super::native_shaders::{fingerprint, outcome, refused, remember};
@@ -99,10 +99,20 @@ pub(crate) struct PickedPack {
     /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`, with its `[frame] blend`:
     /// the frame is float.
     pub linear: Option<horizon_shader_api::Blend>,
-    /// HDR is on under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the
-    /// frame is the layered float one where HDR output is offered
-    /// (docs/design/hdr-linear-light.md, The HUD and menus).
+    /// Under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is the
+    /// layered float one where HDR output is on (docs/design/hdr-linear-light.md, The HUD and
+    /// menus; the renderer decides, `FrameRequest::hdr_float`).
     pub hdr_float: bool,
+}
+impl PickedPack {
+    /// What it asks of the renderer's frame.
+    pub(crate) fn frame(self) -> horizon_client::gfx::FrameRequest {
+        horizon_client::gfx::FrameRequest {
+            linear_pack: self.linear.is_some(),
+            linear_blend: self.linear == Some(horizon_shader_api::Blend::Linear),
+            hdr_float: self.hdr_float,
+        }
+    }
 }
 
 pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -> PickedPack {
@@ -127,9 +137,7 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
     PickedPack {
         draws_flat: active && pack_draws_flat(&path),
         linear,
-        hdr_float: (!active || linear.is_some())
-            && settings.horizon.hdr_wanted()
-            && super::native_shaders::linear_frame_switch(),
+        hdr_float: (!active || linear.is_some()) && super::native_shaders::linear_frame_switch(),
     }
 }
 
@@ -256,7 +264,7 @@ impl Game<'_> {
         {
             match report {
                 Ok(Some((programs, notes))) => {
-                    remember(&path, fingerprint(&path), Some((Api::V0_1, Blend::Gamma)));
+                    remember(&path, fingerprint(&path), Some(Api::V0_1));
                     for note in notes {
                         log::warn!("shader pack {name}: {note}");
                     }
@@ -1098,22 +1106,23 @@ mod native_pack_tests {
                     .replace("api = \"0.1\"", &format!("api = \"{api}\"")),
             )
             .unwrap();
-            remember(&path, fingerprint(&path), Some((api, Blend::Gamma)));
+            remember(&path, fingerprint(&path), Some(api));
             let shape = picked_pack_shape(&settings);
             assert_eq!(shape.linear.is_some(), switch && api == Api::V0_2);
             assert_eq!(shape.hdr_float, switch && api == Api::V0_2);
         }
-        // The frame's blend comes with it, so a pack that changes it gets a frame made again.
+        // The frame's blend comes with it: the frame a pack that changes it asks for is
+        // another, so the game makes the renderer again (`follow_frame`).
         let manifest = path.join(horizon_shader_api::MANIFEST);
         let text = std::fs::read_to_string(&manifest).unwrap();
         std::fs::write(&manifest, text.clone() + "[frame]\nblend = \"linear\"\n").unwrap();
-        remember(&path, fingerprint(&path), Some((Api::V0_2, Blend::Linear)));
-        assert_eq!(
-            picked_pack_shape(&settings).linear,
-            switch.then_some(Blend::Linear)
-        );
+        remember(&path, fingerprint(&path), Some(Api::V0_2));
+        let shape = picked_pack_shape(&settings);
+        assert_eq!(shape.linear, switch.then_some(Blend::Linear));
+        assert_eq!(shape.frame().linear_blend, switch);
         std::fs::write(&manifest, text).unwrap();
-        remember(&path, fingerprint(&path), Some((Api::V0_2, Blend::Gamma)));
+        remember(&path, fingerprint(&path), Some(Api::V0_2));
+        assert!(!picked_pack_shape(&settings).frame().linear_blend);
         settings.mods.disabled.insert("frame_owner".into());
         let shape = picked_pack_shape(&settings);
         assert_eq!(shape.linear, None);
@@ -1122,7 +1131,7 @@ mod native_pack_tests {
         assert_eq!(picked_pack_shape(&settings).linear.is_some(), switch);
         remember(&path, fingerprint(&path), None);
         assert_eq!(picked_pack_shape(&settings).hdr_float, switch);
-        remember(&path, fingerprint(&path), Some((Api::V0_2, Blend::Gamma)));
+        remember(&path, fingerprint(&path), Some(Api::V0_2));
         std::fs::remove_dir_all(root).unwrap();
         let missing = picked_pack_shape(&settings);
         assert_eq!(missing.linear, None);

@@ -7,14 +7,12 @@
 //! as it is instead of decoded. The tonemap encodes the picture into gamma again, so the hand,
 //! the camera overlays, the HUD, the screenshots and HDR output see the same either way.
 
-use horizon_shader_api::Blend;
-
-/// Whether a renderer with a frame of `format` stores linear light for the pack it was made
-/// for (`pack`: the blend of the 0.2 pack picked): only on the float frame. Where the device
-/// can't draw that, the 0.2 pack runs on the 8-bit frame, which keeps vanilla's gamma, as
-/// `"gamma"` does: eight bits of linear light would band in the darks.
-pub(super) fn stores_linear(pack: Option<Blend>, format: wgpu::TextureFormat) -> bool {
-    pack == Some(Blend::Linear) && format == super::LINEAR_FRAME
+/// Whether a frame of `format` stores linear light for a 0.2 pack that asks for it (`linear`,
+/// `FrameRequest::linear_blend`): only the float frame. Where the device can't draw that, the
+/// 0.2 pack runs on the 8-bit frame, which keeps vanilla's gamma, as `"gamma"` does: eight bits
+/// of linear light would band in the darks.
+pub(super) fn stores_linear(linear: bool, format: wgpu::TextureFormat) -> bool {
+    linear && format == super::LINEAR_FRAME
 }
 
 /// The constants of a pipeline of Horizon's that draws into the world's frame of `format`

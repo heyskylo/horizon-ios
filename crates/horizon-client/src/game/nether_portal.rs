@@ -1046,7 +1046,8 @@ impl Game<'_> {
                 return;
             }
             let uuid = self.uuid_for(id);
-            let tag = self.tridents[i].to_nbt(uuid, self.persist_raw(id));
+            let tag =
+                self.tridents[i].to_nbt(uuid, self.pack.assets.registry, self.persist_raw(id));
             self.tridents.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });

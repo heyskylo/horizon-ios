@@ -378,15 +378,36 @@ fn a_fading_section_mixes_toward_the_fog_in_gamma() {
     }
 }
 
+// The frame O1 resolves (`output::resolve_frame`) holds linear light only for a 0.2 pack that
+// asks for it, on the float frame. On a device without the float frame the pack draws anyway,
+// in gamma. A blend changed is another frame, so the game makes the renderer again
+// (`Renderer::frame_follows`).
 #[test]
 fn only_a_float_frame_holds_linear_light() {
-    use horizon_shader_api::Blend;
-    assert!(super::stores_linear(Some(Blend::Linear), LINEAR_FRAME));
-    assert!(!super::stores_linear(Some(Blend::Gamma), LINEAR_FRAME));
-    assert!(!super::stores_linear(None, LINEAR_FRAME));
-    // A device without a float frame draws the pack anyway, in gamma.
-    assert!(!super::stores_linear(
-        Some(Blend::Linear),
-        wgpu::TextureFormat::Rgba8Unorm
-    ));
+    use super::super::output::{FrameRequest, resolve_frame, tests::window};
+    let settings = crate::graphics::Graphics::default();
+    for float_frame in [false, true] {
+        for (linear_pack, linear_blend) in [(false, false), (true, false), (true, true)] {
+            let (mut caps, reading) = window(None, None);
+            caps.float_frame = float_frame;
+            let request = FrameRequest {
+                linear_pack,
+                linear_blend,
+                hdr_float: false,
+            };
+            let frame = resolve_frame(
+                &settings,
+                request,
+                caps,
+                reading,
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+            );
+            assert_eq!(frame.format == LINEAR_FRAME, float_frame && linear_pack);
+            assert_eq!(
+                frame.linear_light,
+                float_frame && linear_blend,
+                "float {float_frame}, linear {linear_blend}"
+            );
+        }
+    }
 }
