@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "panel_style",
+      "target": "horizon_client::game::native_panel::Game<'_>::native_panel_style"
+    }
+  ],
+  "rust_summary": "a native mod's item panel drawn with a recipe viewer's page buttons and search box (`native_panel_style`).",
+  "doc_summary": "`native_panel_style(mod_id, style)` (client) chooses how mod `mod_id`'s item panel (`native_panel_items`) draws its page buttons and search box: `NativePanelStyle::RecipeBook` (the default: the recipe book's page arrows and a plain search box) or `NativePanelStyle::Viewer` (square page buttons on a bar over the items and the viewer's search box, as Horizon's Recipes panel draws them), so a recipe viewer port looks like one. Only the drawing changes: the layout, the clicks and the events stay as they were. Kept for the session. Bundles need \"hooks\": @API:panel_style@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_panel.rs"
+  ]
+}
