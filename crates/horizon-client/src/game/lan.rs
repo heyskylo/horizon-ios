@@ -5245,11 +5245,8 @@ mod merchant_packet_tests {
         session.xp = 69;
         session.level = 2;
         session.profession = "minecraft:cleric".into();
-        let sequences = Session::sequences_needed(
-            &game.stations().trades,
-            &session.profession,
-            session.level,
-        );
+        let sequences =
+            Session::sequences_needed(&game.stations().trades, &session.profession, session.level);
         assert!(!sequences.is_empty(), "prepared cleric trade sets exist");
         for id in sequences {
             let random = horizon_client::merchant::sequence_random(0, &id);
