@@ -490,14 +490,14 @@ enum Subject<'a> {
 }
 
 /// What one expression runs against: its subject, the frame and the level.
-struct Ctx<'a> {
+struct Ctx<'a, 'l> {
     subject: Subject<'a>,
     random: &'a mut LegacyRandom,
     custom: &'a mut f64,
     customs: &'a mut BTreeMap<String, f64>,
     frame: &'a Frame,
     registry: &'a Registry,
-    level: Option<&'a ParticleLevel<'a>>,
+    level: Option<&'a ParticleLevel<'l>>,
     blocks: Vec<[i32; 3]>,
 }
 
@@ -515,7 +515,7 @@ fn axis(name: &str) -> usize {
     usize::from(name.as_bytes()[0] - b'x')
 }
 
-impl Ctx<'_> {
+impl Ctx<'_, '_> {
     fn position(&self) -> [f64; 3] {
         match &self.subject {
             Subject::Particle(p) => p.position,
@@ -683,7 +683,7 @@ impl Ctx<'_> {
     }
 }
 
-impl Host for Ctx<'_> {
+impl Host for Ctx<'_, '_> {
     fn root(&mut self, root: Root) -> V {
         match root {
             Root::Object => V::Object(SELF),
@@ -1662,6 +1662,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         // Air has no emitters; the torch fires its first emitter only.
@@ -1701,6 +1702,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         engine.polytone_animate(&level, [1, 64, 1]);
@@ -1722,6 +1724,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         engine.polytone_animate(&level, [1, 64, 1]);
@@ -1767,6 +1770,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let registry = Registry::read(&root, Default::default(), blocks);
         let frame = registry.frame.clone();
@@ -1820,6 +1824,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let registry = Registry::read(&root, Default::default(), blocks);
         let mut engine = engine(registry);
@@ -1853,6 +1858,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         let rect = crate::hud::Rect {
@@ -1905,6 +1911,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         let rect = crate::hud::Rect {
@@ -1966,6 +1973,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         engine.polytone_entity(&level, "minecraft:player", [1.0, 70.0, 1.0]);
@@ -2014,6 +2022,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         let rect = crate::hud::Rect {
@@ -2080,6 +2089,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let registry = Arc::new(Registry::read(&root, Default::default(), blocks));
         // The chunk's biome is id 0: plains, whose foliage is #336699.
@@ -2198,6 +2208,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         engine.polytone_entity(&level, "minecraft:player", [1.5, 70.0, 1.5]);
@@ -2276,6 +2287,7 @@ mod tests {
             facts: &scene.facts,
             collision: &scene.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = engine(Registry::read(&root, Default::default(), blocks));
         // The test chunk's biome is the table's first: a cold one first, then a warm one.
