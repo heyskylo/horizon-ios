@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "chat_decorate",
+      "target": "horizon_client_lib::lan::hub::chat::native_chat_decorate",
+      "neoforge": "net.neoforged.neoforge.event.ServerChatEvent (setMessage, the shown component)",
+      "side": "server",
+      "mod_api": {
+        "contract": "replace",
+        "out": "decorated"
+      }
+    }
+  ],
+  "rust_summary": "a player's chat line as shown, decorated by a mod (`native_chat_decorate`), sent as unsigned content so the signed body still verifies.",
+  "doc_summary": "`native_chat_decorate(player, name, message)` lets a mod replace the text shown for a chat message that `native_player_chat` let through: the mod's `Text` (styled, with click and hover events) takes the message's place in the line, and the signed body stays the original, so the signature still checks. The first mod to answer decides. Heard once per message, on a server, after `native_player_chat`. Bundles need \"hooks\": @API:chat_decorate@.",
+  "comments": ["crates/horizon-client/src/lan/hub/chat.rs"]
+}

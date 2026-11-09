@@ -1147,6 +1147,8 @@ mod tests {
             sound_play: |_, _, _, _| {},
             living_heal: |_, _, _| {},
             player_chat: |_, _, _, _, _| {},
+            player_chat_v2: |_, _, _, _, _, _| {},
+            chat_decorate: |_, _, _, _| {},
             living_breathe: |_, _, _, _, _| {},
             living_drown: |_, _, _, _, _, _| {},
             living_fall: |_, _, _, _, _| {},
