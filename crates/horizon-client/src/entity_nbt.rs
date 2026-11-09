@@ -9348,41 +9348,51 @@ mod piglin_live_anger_memory_tests {
     /// had angered came back calm after its chunk reloaded.
     #[test]
     fn a_saved_guarded_anger_loads_its_uuid_and_ticks() {
-        let mut raw = raw();
-        if let Tag::Compound(fields) = &mut raw {
-            fields.insert("id".into(), string("minecraft:piglin"));
-            fields.insert("Pos", doubles(&[0.0, 64.0, 0.0]));
-        }
+        // A whole saved piglin: its id, a position and the brain's memory.
+        let saved = |memory: Tag| {
+            Tag::compound([
+                ("id", Tag::String("minecraft:piglin".into())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(0.0f64.to_bits()),
+                        Tag::Double(64.0f64.to_bits()),
+                        Tag::Double(0.0f64.to_bits()),
+                    ]),
+                ),
+                (
+                    "Brain",
+                    Tag::compound([("memories", Tag::compound([("minecraft:angry_at", memory)]))]),
+                ),
+            ])
+        };
         let template = mob();
         let types = [(template.kind.id.clone(), template.kind.clone())].into();
-        let loaded = mob_from_nbt(&raw, &types, 2, None).unwrap();
+        let uuid = Tag::IntArray(vec![90, 91, 92, 93]);
+        let ticking = saved(Tag::compound([
+            ("value", uuid.clone()),
+            ("ttl", Tag::Long(99)),
+        ]));
+        let loaded = mob_from_nbt(&ticking, &types, 2, None).unwrap();
         assert_eq!(loaded.extra.anger, 99);
         assert_eq!(
             loaded.extra.piglin.guarded_angry_at,
             Some(Some([90, 91, 92, 93]))
         );
-        // `ExpirableValue` leaves the TTL out when it never expires: the
-        // counter holds the longest it can while the goal ticks it down.
-        let forever = Tag::compound([
-            ("id", string("minecraft:piglin")),
-            ("Pos", doubles(&[0.0, 64.0, 0.0])),
-            (
-                "Brain",
-                Tag::compound([(
-                    "memories",
-                    Tag::compound([(
-                        "minecraft:angry_at",
-                        Tag::compound([("value", Tag::IntArray(vec![1, 2, 3, 4]))]),
-                    )]),
-                )]),
-            ),
-        ]);
-        let loaded = mob_from_nbt(&forever, &types, 3, None).unwrap();
-        assert_eq!(loaded.extra.anger, i32::MAX);
-        assert_eq!(
-            loaded.extra.piglin.guarded_angry_at,
-            Some(Some([1, 2, 3, 4]))
-        );
+        // `ExpirableValue` leaves the TTL out when it never expires, and a
+        // long past the counter's range holds as long as it can: the counter
+        // keeps the longest it can while the goal ticks it down.
+        for memory in [
+            Tag::compound([("value", uuid.clone())]),
+            Tag::compound([("value", uuid.clone()), ("ttl", Tag::Long(1 << 40))]),
+        ] {
+            let loaded = mob_from_nbt(&saved(memory), &types, 3, None).unwrap();
+            assert_eq!(loaded.extra.anger, i32::MAX);
+            assert_eq!(
+                loaded.extra.piglin.guarded_angry_at,
+                Some(Some([90, 91, 92, 93]))
+            );
+        }
     }
 
     #[test]
