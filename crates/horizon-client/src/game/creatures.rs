@@ -4976,7 +4976,7 @@ impl Game<'_> {
     /// A projectile's hurt of `amount` on the boat or minecart `id`
     /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
     /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
-    fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
+    pub(super) fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
         let creative = p.owner == Some(Who::Player) && self.creative;
         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
             self.hurt_boat(i, amount, creative);

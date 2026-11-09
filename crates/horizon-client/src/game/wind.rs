@@ -151,6 +151,11 @@ impl Game<'_> {
                     );
                 }
             }
+            // A boat or a minecart (`VehicleEntity.hurtServer`): the point of
+            // damage shakes it, and the fifth one in a row breaks it.
+            Who::Mob(id) if !self.mobs.iter().any(|m| m.id == id) => {
+                self.hurt_vehicle(p, id, 1.0);
+            }
             Who::Mob(id) => {
                 let source = Damage {
                     kind: DamageKind::Thrown,
