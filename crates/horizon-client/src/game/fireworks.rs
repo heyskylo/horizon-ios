@@ -143,6 +143,23 @@ impl Rocket {
             on_ground: r.on_ground,
         }
     }
+    /// `Entity.load` over a live rocket (`/data merge`, `/data modify`): what
+    /// [`Self::from_nbt`] reads replaces its own; it keeps its id, rotation and
+    /// what it boosts.
+    pub(super) fn load_nbt(&mut self, r: RocketNbt) {
+        let loaded = Self::from_nbt(r);
+        self.position = loaded.position;
+        self.previous = loaded.position;
+        self.velocity = loaded.velocity;
+        self.life = loaded.life;
+        self.lifetime = loaded.lifetime;
+        self.explosions = loaded.explosions;
+        self.item = loaded.item;
+        self.angled = loaded.angled;
+        self.owner = loaded.owner;
+        self.left_owner = loaded.left_owner;
+        self.on_ground = loaded.on_ground;
+    }
     /// One tick of a server's client: the rocket flies on by itself between
     /// the server's updates (a rocket that follows an entity is placed by the
     /// caller).
