@@ -194,6 +194,7 @@ mod frame_gen;
 mod gpu_culling;
 mod hdr;
 mod hdr_icc;
+mod hdr_start;
 mod hdr_stats;
 pub(crate) mod hud_coverage;
 pub use hdr::{Calibration as HdrCalibration, Output as HdrOutput};
@@ -1538,6 +1539,8 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
+    /// The window's graphics driver (`hdr_start`); `None` offscreen.
+    hdr_driver: Option<String>,
     /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
     hdr_lighting_setting: bool,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
@@ -2985,11 +2988,13 @@ impl Renderer {
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),
         );
+        let hdr_driver = surface.is_some().then(|| output::window_driver(&info));
         let output_caps = output::OutputCapabilities {
             hdr: hdr_output,
             wide_frame: wide_ok,
             float_frame: float_ok,
             hud_layer: coverage_ok,
+            held: output::held(settings, hdr_driver.as_deref()),
         };
         let frame = output::resolve_frame(settings, request, output_caps, display, config.format);
         let (frame_format, hud_coverage, overlay_format) =
@@ -5350,6 +5355,7 @@ impl Renderer {
             output: output::resolve_output(settings, output_caps, display, frame, false),
             frame_kept_logged: false,
             hdr_marker: None,
+            hdr_driver,
             pack_post: None,
             pack_loading: None,
             native: None,
@@ -7149,7 +7155,7 @@ impl Renderer {
         output::resolve_frame(
             settings,
             request,
-            self.output_caps,
+            self.caps_for(settings),
             self.reading,
             self.config.format,
         )
@@ -7188,6 +7194,7 @@ impl Renderer {
         marker: &std::path::Path,
     ) {
         self.watch_hdr(settings.hdr);
+        self.hold_hdr_back(settings);
         let next = output::resolve_output(
             settings,
             self.output_caps,
@@ -7198,15 +7205,8 @@ impl Renderer {
         let [paper_white, peak, black] = next.nits;
         if next.encoding.is_some() != self.hdr.is_some() {
             // If the game dies before HDR output shows a frame, the marker is still there at
-            // the next start, which then comes up with HDR off.
-            if next.encoding.is_some() {
-                if self.surface.is_some() {
-                    let _ = std::fs::write(marker, "HDR output was being switched on\n");
-                    self.hdr_marker = Some(marker.to_owned());
-                }
-            } else if let Some(marker) = self.hdr_marker.take() {
-                let _ = std::fs::remove_file(marker);
-            }
+            // the next start, which then holds HDR output back on this driver.
+            self.mark_hdr_start(next.encoding.is_some(), marker);
             let frame = self.output.frame;
             self.hdr = next.encoding.map(|output| {
                 hdr::Hdr::new(
