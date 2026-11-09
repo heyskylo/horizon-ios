@@ -344,3 +344,6 @@ are adapted from the touch layout and touch helpers of
 [150a414b09a1](https://github.com/starling-client/starling/tree/150a414b09a18c900489d9462a7fc035dae744b7)
 (`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
 Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
+
+`crates/horizon-client-render/src/keypad.rs` is adapted from Starling's keypad profile
+(`crates/horizon-client-render/src/keypad.rs`) at the same commit.
