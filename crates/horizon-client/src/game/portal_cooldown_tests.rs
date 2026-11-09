@@ -43,9 +43,13 @@ fn portal_contact_and_waiting_handoff_match_vanilla_counters() {
     game.build_registries();
     game.options.dedicated = Some(Vec::new());
     game.world = horizon_client::world::World::new(game.res.facts().air, 1);
-    game.world
-        .chunks
-        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    for z in -2..=2 {
+        for x in -2..=2 {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(Chunk::empty(x, z)));
+        }
+    }
     let entry = BlockPos::new(4, 210, 4);
     let portal = game
         .pack
