@@ -112,6 +112,21 @@ impl Fonts {
         PxScale::from(px * font.height_unscaled() / upem)
     }
 }
+/// `text` without its `§` formatting codes (`StringDecomposer.iterateFormatted`
+/// skips the `§` and the character after it, a lone trailing `§` too).
+pub(crate) fn unformatted(text: &str) -> impl Iterator<Item = char> + '_ {
+    let mut chars = text.chars();
+    std::iter::from_fn(move || {
+        loop {
+            match chars.next()? {
+                '§' => {
+                    chars.next();
+                }
+                ch => return Some(ch),
+            }
+        }
+    })
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Key {
     Glyph(Face, u16, u16),
@@ -323,6 +338,8 @@ impl<'a> Ui<'a> {
     pub fn finish(self) {
         let pending = with_cache(self.atlas, |c| std::mem::take(&mut c.pending));
         self.batch.patches.extend(pending);
+        // Pack glyphs `layout` borrowed from the resource pack's font.
+        self.batch.patches.extend(self.atlas.font.take_patches());
     }
 
     // ---- geometry, snapped to physical pixels ----
@@ -425,24 +442,83 @@ impl<'a> Ui<'a> {
     }
 
     // ---- text ----
+    /// `text` laid out at `px` pixels to the em: its advance, the face's ascent
+    /// and descent, and (`draw`) its glyphs as `(x, y, w, h, rect)` from the pen
+    /// on the baseline, all in physical pixels. `§` codes are dropped (the
+    /// design system keeps its own colours). A character Geist lacks, such as a
+    /// pack's private-use icon, is the resource pack's default-font glyph:
+    /// vanilla's 9px line scaled onto Geist's, or at GUI scale as the pack
+    /// draws it when every character is such a glyph (a picture title).
+    fn layout(
+        &self,
+        face: Face,
+        px: f32,
+        text: &str,
+        draw: bool,
+    ) -> (f32, f32, f32, Vec<(f32, f32, f32, f32, Rect)>) {
+        let atlas = self.atlas;
+        let gui = self.scale;
+        with_cache(atlas, |c| {
+            let scale = c.fonts.scale(face, px);
+            let (ascent, descent) = {
+                let f = c.fonts.face(face).as_scaled(scale);
+                (f.ascent(), f.descent())
+            };
+            let chars: Vec<(char, Option<crate::font::Glyph>)> = unformatted(text)
+                .map(|ch| {
+                    let pack = (!ch.is_whitespace() && c.fonts.face(face).glyph_id(ch).0 == 0)
+                        .then(|| atlas.font.glyph(ch))
+                        // The pack lacks it too (its missing glyph): Geist's box, like vanilla's.
+                        .filter(|g| g.rect.is_some() || g.right <= 0.0);
+                    (ch, pack)
+                })
+                .collect();
+            let k = if chars.iter().all(|(_, g)| g.is_some()) {
+                gui
+            } else {
+                (ascent - descent) / 9.0
+            };
+            let (mut pen, mut prev, mut quads) = (0.0, None, Vec::new());
+            for (ch, pack) in chars {
+                if let Some(g) = pack {
+                    if let (true, Some(rect)) = (draw, g.rect) {
+                        // Vanilla's baseline is 7 below the line's top.
+                        let (x, y) = ((pen + g.left * k).round(), ((g.top - 7.0) * k).round());
+                        quads.push((x, y, (g.right - g.left) * k, (g.bottom - g.top) * k, rect));
+                    }
+                    pen += g.advance * k;
+                    prev = None;
+                    continue;
+                }
+                let (id, advance, kern) = {
+                    let font = c.fonts.face(face);
+                    let id = font.glyph_id(ch);
+                    let f = font.as_scaled(scale);
+                    (id, f.h_advance(id), prev.map_or(0.0, |p| f.kern(p, id)))
+                };
+                pen += kern;
+                if draw && !ch.is_whitespace() {
+                    let g = c.glyph(atlas, face, id, px);
+                    if let Some(rect) = g.rect {
+                        quads.push((
+                            (pen + g.left).round(),
+                            g.top,
+                            rect.w as f32,
+                            rect.h as f32,
+                            rect,
+                        ));
+                    }
+                }
+                pen += advance;
+                prev = Some(id);
+            }
+            (pen, ascent, descent, quads)
+        })
+    }
     /// The advance of `text` in dp.
     pub(crate) fn measure(&self, face: Face, size: f32, text: &str) -> f32 {
         let px = (size * self.density * 4.0).round() / 4.0;
-        with_cache(self.atlas, |c| {
-            let font = c.fonts.face(face);
-            let scaled = font.as_scaled(c.fonts.scale(face, px));
-            let mut w = 0.0;
-            let mut prev = None;
-            for ch in text.chars() {
-                let id = font.glyph_id(ch);
-                if let Some(p) = prev {
-                    w += scaled.kern(p, id);
-                }
-                w += scaled.h_advance(id);
-                prev = Some(id);
-            }
-            w / self.density
-        })
+        self.layout(face, px, text, false).0 / self.density
     }
     /// Draw a line of text in a `line`-tall box whose top is `y` (the
     /// launcher's line heights: about 1.45 × size for the interface);
@@ -458,52 +534,21 @@ impl<'a> Ui<'a> {
         text: &str,
     ) -> f32 {
         let px = (size * self.density * 4.0).round() / 4.0;
-        let real = color >> 24 != 0;
         let (x0, y0) = (self.px_x(x), self.px_y(y));
-        let box_px = line * self.density;
-        let atlas = self.atlas;
-        let density = self.density;
-        let mut quads = Vec::new();
-        let width = with_cache(atlas, |c| {
-            let scale = c.fonts.scale(face, px);
-            let (ascent, descent) = {
-                let f = c.fonts.face(face).as_scaled(scale);
-                (f.ascent(), f.descent())
-            };
-            let baseline = y0 + ((box_px - (ascent - descent)) / 2.0 + ascent).round();
-            let mut pen = x0;
-            let mut prev = None;
-            for ch in text.chars() {
-                let (id, advance, kern) = {
-                    let font = c.fonts.face(face);
-                    let id = font.glyph_id(ch);
-                    let f = font.as_scaled(scale);
-                    (id, f.h_advance(id), prev.map_or(0.0, |p| f.kern(p, id)))
-                };
-                pen += kern;
-                if real && !ch.is_whitespace() {
-                    let g = c.glyph(atlas, face, id, px);
-                    if let Some(rect) = g.rect {
-                        quads.push(((pen + g.left).round(), baseline + g.top, rect));
-                    }
-                }
-                pen += advance;
-                prev = Some(id);
-            }
-            (pen - x0) / density
-        });
+        let (width, ascent, descent, quads) = self.layout(face, px, text, color >> 24 != 0);
+        let baseline = y0 + ((line * self.density - (ascent - descent)) / 2.0 + ascent).round();
         let s = self.scale;
-        for (gx, gy, rect) in quads {
+        for (gx, gy, w, h, rect) in quads {
             self.batch.rect_uv(
-                gx / s,
-                gy / s,
-                rect.w as f32 / s,
-                rect.h as f32 / s,
+                (x0 + gx) / s,
+                (baseline + gy) / s,
+                w / s,
+                h / s,
                 rect,
                 color,
             );
         }
-        width
+        width / self.density
     }
     /// Text in a `1.45 × size` line box whose top is `y`.
     pub(crate) fn text(
@@ -760,6 +805,77 @@ mod tests {
         let mut batch = HudBatch::new([1280, 720]);
         draw_boot_log(&atlas, &mut batch, &[]);
         assert!(batch.vertices.is_empty() && batch.patches.is_empty());
+        reset_atlas();
+    }
+
+    /// The quads' top-left corners and UVs `text_line` draws for `text`.
+    fn drawn(atlas: &HudAtlas, text: &str) -> (f32, Vec<([f32; 2], [f32; 2])>) {
+        let mut batch = HudBatch::new([1280, 720]);
+        let mut ui = Ui::new(atlas, &mut batch, (0.0, 0.0));
+        let w = ui.text_line(Face::Medium, BODY, 20.0, 10.0, 10.0, color::TEXT, text);
+        let quads = batch
+            .vertices
+            .iter()
+            .step_by(6)
+            .map(|v| (v.pos, v.uv))
+            .collect();
+        (w, quads)
+    }
+
+    #[test]
+    fn section_sign_codes_are_formatting_not_text() {
+        reset_atlas();
+        let atlas = HudAtlas::boot();
+        // A pack's lang gives `menu.options` as "§6Options..." (vanilla draws it gold).
+        assert_eq!(drawn(&atlas, "§6Options..."), drawn(&atlas, "Options..."));
+        assert_eq!(drawn(&atlas, "§lA§r§"), drawn(&atlas, "A"));
+        reset_atlas();
+    }
+
+    #[test]
+    fn a_private_use_glyph_geist_lacks_is_the_packs_bitmap() {
+        let root = std::env::temp_dir().join(format!("hz-ui-pua-{}", std::process::id()));
+        let font = root.join("assets/minecraft/font");
+        let tex = root.join("assets/minecraft/textures/font");
+        std::fs::create_dir_all(&font).unwrap();
+        std::fs::create_dir_all(&tex).unwrap();
+        std::fs::write(
+            font.join("default.json"),
+            r#"{"providers":[{"type":"bitmap","file":"minecraft:font/icon.png","ascent":7,"chars":[""]}]}"#,
+        )
+        .unwrap();
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 8, 8);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&[255; 256])
+            .unwrap();
+        std::fs::write(tex.join("icon.png"), png).unwrap();
+        reset_atlas();
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let icon = atlas.font.glyph('\u{e238}');
+        let uv = icon
+            .rect
+            .map(|r| [r.u0, r.v0])
+            .expect("the pack draws U+E238");
+        // Alone (a picture label) and inside a Geist line, the quad is the pack's bitmap.
+        for text in ["\u{e238}", "Quit \u{e238}"] {
+            let (w, quads) = drawn(&atlas, text);
+            assert_eq!(quads.last().unwrap().1, uv, "{text:?}");
+            assert!(w > 0.0);
+        }
+        // Alone it is drawn as the pack draws it: 8 GUI pixels wide, advance 9.
+        let (w, quads) = drawn(&atlas, "\u{e238}");
+        assert_eq!(quads.len(), 1);
+        let mut batch = HudBatch::new([1280, 720]);
+        let ui = Ui::new(&atlas, &mut batch, (0.0, 0.0));
+        assert!(
+            (w * ui.density / ui.scale - icon.advance).abs() < 0.01,
+            "{w}"
+        );
         reset_atlas();
     }
 }

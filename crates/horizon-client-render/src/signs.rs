@@ -192,7 +192,12 @@ impl SignData {
         let side = |t: Option<&Tag>| -> SignText {
             let mut out = SignText::default();
             let Some(t) = t else { return out };
-            if let Some(Tag::List(messages)) = t.get("messages") {
+            if let Some(messages) = t.get("messages") {
+                // `SignText.CODEC` reads a side all or nothing: a messages
+                // field that is not a list leaves the side empty.
+                let Tag::List(messages) = messages else {
+                    return SignText::default();
+                };
                 for (i, m) in messages.iter().take(4).enumerate() {
                     out.lines[i] = component_text(m);
                     out.click[i] = click_event(m);
@@ -307,6 +312,27 @@ pub fn editor_sprite(folder: &str, wood: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `SignText.CODEC` reads messages as a list: a string field fails the
+    /// whole side, taking its colour and glow with it.
+    #[test]
+    fn messages_that_are_not_a_list_load_an_empty_side() {
+        let tag = Tag::compound([(
+            "front_text",
+            Tag::compound([
+                ("messages", Tag::String("not a list".into())),
+                ("color", Tag::String("red".into())),
+                ("has_glowing_text", Tag::Byte(1)),
+            ]),
+        )]);
+        let mut decoded = SignData::default();
+        decoded.decode(&tag);
+        assert_eq!(
+            decoded.front,
+            SignText::default(),
+            "a failed message list takes the side's colour and glow with it"
+        );
+    }
+
     #[test]
     fn waxed_and_glowing_text_take_any_number() {
         let tag = Tag::compound([

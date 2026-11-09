@@ -5,15 +5,17 @@
 //! It sends nothing when sending is turned off (`HORIZON_TELEMETRY_URL=off`) or with
 //! `HORIZON_NO_HEARTBEAT=1` (automated runs).
 //!
-//! It plugs into the game through its hooks ([`HOOKS`], `horizon_hooks`), as a Horizon crate
-//! does: it leaves the engine for the Horizon layer when the official executable ships (layer
-//! plan M5, docs/layers.md).
+//! A Horizon crate: it plugs into the game through the platform's hooks ([`HOOKS`]), which the
+//! official executable (`horizon-official`) registers (docs/layers.md, "How a Horizon crate plugs
+//! in"). horizon-client's plain executable has no ping.
+#![forbid(unsafe_code)]
+
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::Thread;
 use std::time::Duration;
 
-use horizon_hooks::{Hooks, Started};
+use horizon_platform::hooks::{Hooks, Started};
 use horizon_telemetry::live::{self, Ping};
 
 /// A world is open to LAN or to friends.
@@ -23,7 +25,7 @@ static PINGER: OnceLock<Thread> = OnceLock::new();
 /// After a failure the next ping waits longer, doubling up to this.
 const MAX_WAIT: Duration = Duration::from_secs(600);
 
-/// The ping's hooks, for `horizon_hooks::register`.
+/// The ping's hooks, for `horizon_platform::hooks::register`.
 pub static HOOKS: Heartbeat = Heartbeat;
 
 pub struct Heartbeat;

@@ -3,7 +3,7 @@
 //! Every question has a flag, so it also runs unattended (Docker, scripts).
 
 use crate::{config, config::Config, engine};
-use horizon_server_files::{
+use horizon_platform::server_files::{
     eula,
     java_properties::now_millis,
     user_lists::{OpEntry, OpList, WhiteEntry, WhiteList},

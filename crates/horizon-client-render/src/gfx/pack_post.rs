@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use glam::{DMat4, DVec3};
-use horizon_shaders::{Format, Group, Kind, Post, SHADOW_COLORS};
+use horizon_shaders::{BUFFERS, Format, Group, Kind, Post, SHADOW_COLORS};
 use smallvec::SmallVec;
 
 use super::pack_draw::DrawUniforms;
@@ -27,8 +27,6 @@ use super::pack_images;
 use super::pack_sky::PackSky;
 use super::pack_textures;
 use super::pack_uniforms::{self, FrameUniforms, PackInputs};
-
-const BUFFERS: usize = horizon_shaders::BUFFERS;
 
 mod packed;
 
@@ -56,6 +54,10 @@ mod sky_disc_blend_tests;
 #[cfg(test)]
 mod undrawn_terrain_tests;
 
+mod image_formats;
+use image_formats::{image_format, storage_formats_of};
+#[cfg(test)]
+mod full_outputs_tests;
 #[cfg(test)]
 mod shadow_faces_tests;
 
@@ -1827,98 +1829,6 @@ fn bindings(
     Some((entries, samplers, slots, reads, shadow_reads, images))
 }
 
-/// Makes each storage image of `module` in group 0 declare the format its layout entry binds:
-/// a `layout(r11f_g11f_b10f)` image whose texture is the `RGBA16F` stand-in (`bindings`).
-fn storage_formats_of(module: &mut naga::Module, entries: &[wgpu::BindGroupLayoutEntry]) {
-    let globals: Vec<_> = module.global_variables.iter().map(|(h, _)| h).collect();
-    for handle in globals {
-        let var = &module.global_variables[handle];
-        let Some(naga::ResourceBinding { group: 0, binding }) = var.binding else {
-            continue;
-        };
-        let naga::TypeInner::Image {
-            dim,
-            arrayed,
-            class: naga::ImageClass::Storage { format, access },
-        } = module.types[var.ty].inner
-        else {
-            continue;
-        };
-        let bound = entries.iter().find_map(|e| match e.ty {
-            wgpu::BindingType::StorageTexture { format, .. } if e.binding == binding => {
-                Some(format)
-            }
-            _ => None,
-        });
-        if format == naga::StorageFormat::Rg11b10Ufloat
-            && bound == Some(wgpu::TextureFormat::Rgba16Float)
-        {
-            let ty = module.types.insert(
-                naga::Type {
-                    name: module.types[var.ty].name.clone(),
-                    inner: naga::TypeInner::Image {
-                        dim,
-                        arrayed,
-                        class: naga::ImageClass::Storage {
-                            format: naga::StorageFormat::Rgba16Float,
-                            access,
-                        },
-                    },
-                },
-                naga::Span::UNDEFINED,
-            );
-            module.global_variables[handle].ty = ty;
-        }
-    }
-}
-
-/// The wgpu format of an image's format qualifier.
-fn image_format(qualifier: &str) -> Option<wgpu::TextureFormat> {
-    use wgpu::TextureFormat as T;
-    Some(match qualifier {
-        "rgba32f" => T::Rgba32Float,
-        "rgba16f" => T::Rgba16Float,
-        "rg32f" => T::Rg32Float,
-        "rg16f" => T::Rg16Float,
-        "r11f_g11f_b10f" => T::Rg11b10Ufloat,
-        "r32f" => T::R32Float,
-        "r16f" => T::R16Float,
-        "rgba16" => T::Rgba16Unorm,
-        "rgb10_a2" => T::Rgb10a2Unorm,
-        "rgba8" => T::Rgba8Unorm,
-        "rg16" => T::Rg16Unorm,
-        "rg8" => T::Rg8Unorm,
-        "r16" => T::R16Unorm,
-        "r8" => T::R8Unorm,
-        "rgba16_snorm" => T::Rgba16Snorm,
-        "rgba8_snorm" => T::Rgba8Snorm,
-        "rg16_snorm" => T::Rg16Snorm,
-        "rg8_snorm" => T::Rg8Snorm,
-        "r16_snorm" => T::R16Snorm,
-        "r8_snorm" => T::R8Snorm,
-        "rgba32i" => T::Rgba32Sint,
-        "rgba16i" => T::Rgba16Sint,
-        "rgba8i" => T::Rgba8Sint,
-        "rg32i" => T::Rg32Sint,
-        "rg16i" => T::Rg16Sint,
-        "rg8i" => T::Rg8Sint,
-        "r32i" => T::R32Sint,
-        "r16i" => T::R16Sint,
-        "r8i" => T::R8Sint,
-        "rgba32ui" => T::Rgba32Uint,
-        "rgba16ui" => T::Rgba16Uint,
-        "rgb10_a2ui" => T::Rgb10a2Uint,
-        "rgba8ui" => T::Rgba8Uint,
-        "rg32ui" => T::Rg32Uint,
-        "rg16ui" => T::Rg16Uint,
-        "rg8ui" => T::Rg8Uint,
-        "r32ui" => T::R32Uint,
-        "r16ui" => T::R16Uint,
-        "r8ui" => T::R8Uint,
-        _ => return None,
-    })
-}
-
 /// The value slot of the pack's custom uniform `name` for a program declaring it as GLSL type
 /// `ty`: after the frame's uniforms, in the order of `custom` (each with the type
 /// `shaders.properties` gives it). A `float`, `int`, `vec2`, `vec3` or `vec4` custom uniform
@@ -2806,10 +2716,21 @@ impl PackPost {
             .shadow
             .zip(shadow_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
+        // A GPU that refuses translucent terrain's program with the boats' water patches gets it
+        // without them (`Post::shadow_water_plain`), rather than no translucent shadows at all.
+        let mut plain = post.shadow_water_plain;
         let shadow_water = post
             .shadow_water
             .zip(shadow_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
+        let unpatched = shadow_water.is_none().then(|| plain.take()).flatten();
+        let unpatched_name = unpatched.as_ref().map(|p| p.name.clone());
+        let shadow_water = shadow_water.or_else(|| {
+            unpatched
+                .zip(shadow_geometry.as_ref())
+                .and_then(|(p, g)| build(p, Some(g)))
+        });
+        let water_unpatched = unpatched_name.filter(|_| shadow_water.is_some());
         let (hides_sky, hides_celestial) = (post.sky.is_some(), post.sky_textured.is_some());
         let sky = (post.sky.is_some() || post.sky_textured.is_some()).then(|| {
             let geometry = PackSky::new(device);
@@ -3366,6 +3287,17 @@ impl PackPost {
         let white = [255u8; 4];
         let black = [0u8; 4];
         let flat_normal = [128u8, 128, 255, 255];
+        // Said as what it is, not as a program skipped.
+        if let Some(name) = water_unpatched {
+            let skipped = format!("{name}: skipped: ");
+            if let Some(n) = notes.iter_mut().rev().find(|n| n.starts_with(&skipped)) {
+                *n = format!(
+                    "{name}: translucent terrain without the boats' water patches, as the GPU \
+                     refused it with them ({})",
+                    &n[skipped.len()..]
+                );
+            }
+        }
         let jobs = (pack.jobs.as_ref())
             .map(std::cell::RefCell::take)
             .unwrap_or_default();

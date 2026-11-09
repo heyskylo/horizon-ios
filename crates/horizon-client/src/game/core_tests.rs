@@ -1,4 +1,5 @@
 //! Unit tests that lived in game.rs's inline `tests` module.
+use super::inventory_input::drop_whole_stack;
 use super::*;
 use horizon_client::container_screen::{Button, Clicks, Release, Target};
 use horizon_client::keymapping::{KeyAction, SNEAK, SPRINT, ToggleKeys};
@@ -622,3 +623,6 @@ fn stack_drop_requires_ctrl_even_with_sprint_latched() {
         }
     }
 }
+
+#[path = "play_ping_tests.rs"]
+mod play_ping_tests;

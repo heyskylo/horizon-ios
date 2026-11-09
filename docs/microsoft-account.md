@@ -38,7 +38,8 @@ no Microsoft sign-in"); release builds have it.
    - Any build, at run time: the environment variable `HORIZON_MSA_CLIENT_ID` overrides the built-in
      value (empty or unset = not configured).
 
-Never use another application's client ID (the official launcher's or another launcher's).
+Never use another application's client ID (the official launcher's or another launcher's). The same
+holds the other way: forks and derived launchers may not use Horizon's (docs/forking.md#microsoft-sign-in-in-a-fork).
 
 ## Flow (launcher)
 

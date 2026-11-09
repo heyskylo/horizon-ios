@@ -209,7 +209,18 @@ impl Launcher {
                 n,
                 tr("Data folder"),
                 Some(div().font_family(theme::MONO).child(short(&backend::data_dir())).into_any_element()),
-                Some(move_button.into_any_element()),
+                Some(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(
+                            button("about-open-data", "Open", Kind::Secondary, &t).on_click(
+                                |_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()),
+                            ),
+                        )
+                        .child(move_button)
+                        .into_any_element(),
+                ),
                 &t,
             ))
             .child(text(theme::CAPTION).text_color(t.muted).child(tr(
