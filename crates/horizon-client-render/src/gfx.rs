@@ -2146,20 +2146,12 @@ fn describe_adapter(adapter: &wgpu::Adapter) {
 /// in one array.
 fn check_layers(adapter: &wgpu::Adapter, layers: u32) -> Result<u32> {
     let info = adapter.get_info();
-    let split = layer_split(
+    Ok(layer_split(
         adapter.limits().max_texture_array_layers,
         info.backend == wgpu::Backend::Gl,
         adapter_requested_split(&info, requested_split(), layers),
         layers,
-    )?;
-    if info.backend == wgpu::Backend::Metal && split > 512 && requested_split().is_none() {
-        // Ties a big pack's texture-corruption report to the lifted Metal cap (#8471, #12155).
-        log::warn!(
-            "Block sprites: {layers} layers need {split}-layer arrays on Metal (above 512) on {}",
-            info.name
-        );
-    }
-    Ok(split)
+    )?)
 }
 /// Whether the swapchain can take a window of `width` x `height`: each side from 1 to the
 /// device's `max_texture_dimension_2d` (`max`), else `Surface::configure` panics. 0 is a
@@ -2872,10 +2864,8 @@ impl Renderer {
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
         let split = check_layers(&adapter, layers)?;
-        if split < sprite_split() {
-            log::info!("Horizon: {split} block textures per array (the GPU's limit)");
-        }
         let info = adapter.get_info();
+        surface_setup::log_sprite_split(&info, split, layers);
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
         let size = window.inner_size();
         let max_side = device.limits().max_texture_dimension_2d;
