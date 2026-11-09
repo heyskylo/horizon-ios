@@ -24,7 +24,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import zipfile
 
 try:
@@ -40,22 +39,6 @@ except ImportError:
     import command_exec_corpus as corpus_module
 
 SEED = 1
-
-
-def fresh_work_dir(name):
-    """Keep each normal invocation's captures separate without reusing old output."""
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('--work-dir', type=Path)
-    options, _ = parser.parse_known_args()
-    if options.work_dir is None:
-        parent = lab.LOCAL / name
-        parent.mkdir(parents=True, exist_ok=True)
-        folder = Path(tempfile.mkdtemp(prefix='run-', dir=parent)) / 'capture'
-        sys.argv.extend(['--work-dir', str(folder)])
-    else:
-        folder = options.work_dir.resolve()
-    assert not folder.exists(), 'preserve previous capture attempts'
-    return folder
 
 
 def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, loot_tables=None, recipes=None):

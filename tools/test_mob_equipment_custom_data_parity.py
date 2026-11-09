@@ -126,7 +126,10 @@ def main():
     parser.add_argument('--reference-dir',type=Path)
     options,rest=parser.parse_known_args()
     sys.argv=[sys.argv[0],*rest]
-    folder=driver.fresh_work_dir('mob-equipment-custom-data-parity')
+    if '--work-dir' not in sys.argv:
+        parser.error('--work-dir must name a fresh capture directory')
+    folder=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve()
+    assert not folder.exists(),'preserve previous attempts'
     driver.corpus_module.groups=lambda:[('Named mob equipment custom_data',program())]
     driver.corpus_module.predicate_selector_fixtures=lambda groups:predicates()
     if '--allow-gaps' not in sys.argv:
