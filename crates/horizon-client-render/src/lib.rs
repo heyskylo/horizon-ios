@@ -63,6 +63,7 @@ pub mod hud_layout;
 pub mod hud_overlays;
 pub mod inventory_effects;
 pub mod java_text;
+mod jei_sprites;
 pub mod jigsaw_block;
 pub mod keypad;
 pub mod terrain_model;
