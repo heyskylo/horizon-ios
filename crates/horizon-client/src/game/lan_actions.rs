@@ -7,7 +7,7 @@
 //! block log, the level events and the entity tracker.
 use super::{
     Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen,
-    building_players::{BuildingPlayer, BuildingPlayers},
+    building_players::{BuildingPlayer, BuildingPlayers, HubBodies, shared},
     lan::LanHost,
     lan_crafting::MenuRemoval,
     respawn_anchor::RespawnConfig,
@@ -338,19 +338,61 @@ fn guest_open_windows(host: &LanHost, conn: u32) -> Vec<i32> {
     windows
 }
 
+fn building_player(g: &horizon_client::lan::guest::Guest) -> BuildingPlayer {
+    BuildingPlayer {
+        conn: Some(g.conn),
+        dimension: Dim::from_id(&g.dimension),
+        bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
+        borrowed: false,
+    }
+}
+
+thread_local! {
+    /// The hub's bodies for the turns of one `tick_guests`, built once instead
+    /// of for every turn (players x turns a tick). A guest's entry is refreshed
+    /// when its turn ends ([`refresh_building_player`]), so the turns after it
+    /// see it where it went (a pearl, a death, spectator mode).
+    static BUILDING_CACHE: std::cell::RefCell<Option<HubBodies>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// The hub's current bodies, across dimensions. A borrowed ancestor's
 /// live body takes precedence over this saved state until its turn returns.
-fn building_players(host: &LanHost) -> Vec<BuildingPlayer> {
-    host.hub
-        .guests
-        .iter()
-        .map(|g| BuildingPlayer {
-            conn: Some(g.conn),
-            dimension: Dim::from_id(&g.dimension),
-            bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
-            borrowed: false,
-        })
-        .collect()
+fn building_players(host: &LanHost) -> HubBodies {
+    let guests = &host.hub.guests;
+    let kept = BUILDING_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|list| {
+                list.len() == guests.len()
+                    && list
+                        .iter()
+                        .zip(guests)
+                        .all(|(p, g)| p.get().conn == Some(g.conn))
+            })
+            .cloned()
+    });
+    kept.unwrap_or_else(|| shared(guests.iter().map(building_player)))
+}
+
+/// Builds the hub's bodies once for the turns to come (`Some`), or drops them.
+pub(super) fn building_cache(host: Option<&LanHost>) {
+    let bodies = host.map(|host| shared(host.hub.guests.iter().map(building_player)));
+    BUILDING_CACHE.with(|c| *c.borrow_mut() = bodies);
+}
+
+/// The cached body of the guest `conn` as it is now in the hub, after a turn
+/// that may have moved, killed or changed it.
+fn refresh_building_player(host: &LanHost, conn: u32) {
+    BUILDING_CACHE.with(|c| {
+        if let Some(list) = c.borrow().as_ref()
+            && let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn)
+            && let Some(p) = list.get(i)
+            && p.get().conn == Some(conn)
+        {
+            p.set(building_player(&host.hub.guests[i]));
+        }
+    });
 }
 
 impl Game<'_> {
@@ -1228,6 +1270,7 @@ impl Game<'_> {
         }
         // The turn's teleports are in the hub now: the mods hear them.
         self.flush_teleport_notes(host);
+        refresh_building_player(host, conn);
         // An inner turn may move, kill or change a player's mode. Once its
         // body is back in the hub, refresh the restored outer snapshot while
         // keeping ancestor bodies that are still held by their GuestSwaps.
@@ -4169,6 +4212,12 @@ impl Game<'_> {
 
     /// Per tick, for every guest: dig, use items, pick up drops, die.
     pub(super) fn tick_guests(&mut self, host: &mut LanHost) {
+        building_cache(Some(host));
+        self.tick_guests_inner(host);
+        building_cache(None);
+    }
+
+    pub(super) fn tick_guests_inner(&mut self, host: &mut LanHost) {
         self.tick_guest_cameras(host);
         self.lan_merchant_tick(host);
         self.lan_stations_tick(host);
@@ -4213,6 +4262,7 @@ impl Game<'_> {
             self.guest_sleep_tick(host, gi);
             if host.hub.guests[gi].dead {
                 self.guest_tick_death(host, gi);
+                refresh_building_player(host, conn);
                 continue;
             }
             if self.on_server_trip(conn) {
@@ -4220,6 +4270,7 @@ impl Game<'_> {
                 // has loaded around the player or not: its respawn request
                 // is taken as soon as it comes.
                 self.guest_die(host, gi, conn);
+                refresh_building_player(host, conn);
                 continue;
             }
             // Native mods, at the start of ServerPlayer.tick: before the
@@ -4341,6 +4392,8 @@ impl Game<'_> {
                 self.guest_orbs(host, gi);
             }
             self.guest_die(host, gi, conn);
+            // The turns after this one see the guest where its turn left it.
+            refresh_building_player(host, conn);
         }
     }
 
