@@ -417,25 +417,44 @@ mod tests {
         let (widgets, ..) = ui.layout(&s, size.0, size.1);
         let slider = widgets
             .iter()
-            .find(|w| matches!(w.kind, WKind::Slider { opt: Opt::Page(0, 4), .. }))
+            .find(|w| {
+                matches!(
+                    w.kind,
+                    WKind::Slider {
+                        opt: Opt::Page(0, 4),
+                        ..
+                    }
+                )
+            })
             .expect("the volume's slider");
         let (x, y) = (slider.x + slider.w / 2.0, slider.y + 1.0);
         ui.click(&mut s, &atlas, x, y, size, [480, 240], false, false);
         let volume = *SAMPLE.volume.lock().unwrap();
         assert!((0.45..0.55).contains(&volume), "{volume}");
         assert!(ui.release().contains(&Event::Changed));
+        // The slider shows the page's value once let go.
         let (widgets, ..) = ui.layout(&s, size.0, size.1);
-        let shown = |kind: &WKind| match kind {
-            WKind::Slider { label, .. } => label.plain(),
-            WKind::Button { label, .. } => label.plain(),
-            _ => String::new(),
-        };
-        let percent = format!("{}%", (volume * 100.0).round());
-        assert!(widgets.iter().any(|w| shown(&w.kind).ends_with(&percent)));
+        let shown = widgets.iter().find_map(|w| match w.kind {
+            WKind::Slider {
+                opt: Opt::Page(0, 4),
+                value,
+                ..
+            } => Some(value),
+            _ => None,
+        });
+        assert_eq!(shown, Some(volume));
         // The page's tooltip for its switch.
         let switch = widgets
             .iter()
-            .find(|w| matches!(&w.kind, WKind::Button { act: Act::PageRow(0, 1), .. }))
+            .find(|w| {
+                matches!(
+                    &w.kind,
+                    WKind::Button {
+                        act: Act::PageRow(0, 1),
+                        ..
+                    }
+                )
+            })
             .expect("the switch");
         assert_eq!(
             tooltip_text(&s, switch).map(|t| t.plain()),
