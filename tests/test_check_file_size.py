@@ -49,7 +49,8 @@ class GitTests(unittest.TestCase):
 
             run("init", "-q", "-b", "main")
             (root / "big.rs").write_text("x\n" * 3100)
-            (root / "small.rs").write_text("y\n" * 10)
+            # UTF-8 that Windows' code page cannot decode (0x9d): `git show` output is read as UTF-8.
+            (root / "small.rs").write_bytes("// ”\n".encode() * 10)
             run("add", ".")
             run("commit", "-q", "-m", "base")
             run("checkout", "-q", "-b", "work")

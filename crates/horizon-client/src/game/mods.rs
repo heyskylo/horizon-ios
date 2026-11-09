@@ -969,10 +969,16 @@ mod tests {
         assert_eq!(verdict(&ruby, &manifest, true), switches_on_restart);
         assert_eq!(verdict(&ruby, &manifest, false), Some(Ok(())));
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
-        std::fs::File::open(&ruby)
-            .unwrap()
-            .set_modified(later)
-            .unwrap();
+        let mut folder = std::fs::OpenOptions::new();
+        folder.read(true);
+        // Windows opens a folder only with FILE_FLAG_BACKUP_SEMANTICS, and sets its time only
+        // with write access.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            folder.write(true).custom_flags(0x0200_0000);
+        }
+        folder.open(&ruby).unwrap().set_modified(later).unwrap();
         assert_eq!(verdict(&ruby, &manifest, false), switches_on_restart);
         std::fs::remove_dir_all(&dir).unwrap();
     }
