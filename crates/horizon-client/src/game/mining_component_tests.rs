@@ -139,3 +139,86 @@ fn mining_uses_admitted_stack_tools_and_actual_eye_immersion() {
     game.lan_acting = None;
     std::fs::remove_dir_all(scratch).unwrap();
 }
+
+/// A survival player on solid ground in an empty chunk, for `f`.
+fn with_survival_game(f: impl FnOnce(&mut Game<'_>)) {
+    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+    let settings = Settings::default();
+    let loaded = load_resources(
+        root.clone(),
+        None,
+        &root,
+        &settings,
+        std::time::Instant::now(),
+        false,
+        true,
+        &Progress::new(),
+        &mut |_, _| unreachable!(),
+    )
+    .unwrap();
+    let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+    options.resources = root.clone();
+    options.execution_role = super::execution_role::ExecutionRole::IntegratedServer;
+    let mut game = Game::new(
+        &loaded.resources,
+        loaded.pack,
+        loaded.gui.unwrap(),
+        options,
+        settings,
+        Audio::silent(&root),
+        None,
+    )
+    .unwrap();
+    game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 62.0, 4.5)).unwrap());
+    game.player.as_mut().unwrap().ground.on_ground = true;
+    game.creative = false;
+    game.build_registries();
+    game.set_allow_commands(true);
+    assert!(game.run_command("gamemode survival"));
+    game.world
+        .chunks
+        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    game.block_ticks
+        .add_empty_chunk(ChunkPos::new(0, 0))
+        .unwrap();
+    f(&mut game);
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn efficiency_applies_to_a_same_item_swap() {
+    with_survival_game(|game| {
+        let registry = game.pack.assets.registry;
+        let pos = [5, 63, 4];
+        // Player.getDestroySpeed: the tool's speed, plus Efficiency's
+        // mining_efficiency (level squared + 1) when that speed exceeds 1. The
+        // plain and the enchanted tool are the same item, so only the tick's
+        // detectEquipmentUpdates (the stack differs) hands the player the modifier.
+        for (block, hardness, tool, base) in [
+            ("minecraft:grass_block", 0.6_f32, "diamond_shovel", 8.0_f32),
+            ("minecraft:dirt", 0.5, "diamond_shovel", 8.0),
+            ("minecraft:stone", 1.5, "diamond_pickaxe", 8.0),
+        ] {
+            let state = registry.default_state(block).unwrap();
+            game.world.set(pos[0], pos[1], pos[2], state).unwrap();
+            assert!(game.run_command(&format!(
+                "item replace entity @s weapon.mainhand with minecraft:{tool}"
+            )));
+            game.tick_hand();
+            assert_eq!(
+                game.destroy_progress(pos),
+                base / hardness / 30.0,
+                "{block}"
+            );
+            assert!(game.run_command(&format!(
+                "item replace entity @s weapon.mainhand with minecraft:{tool}[minecraft:enchantments={{\"minecraft:efficiency\":3}}]"
+            )));
+            game.tick_hand();
+            assert_eq!(
+                game.destroy_progress(pos),
+                (base + 10.0) / hardness / 30.0,
+                "{block} with efficiency 3"
+            );
+        }
+    });
+}

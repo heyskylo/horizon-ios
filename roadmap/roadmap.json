@@ -215,7 +215,7 @@
    "status": "now",
    "area": "mods",
    "plain": "Mods for Horizon, as one line of work led by the modding team: native mods the launcher builds into your game, mods on servers, mod screens and settings, tools for mod makers, the registry and machines.",
-   "dev": "One item for all modding work (#3911), led by levzzz5154 with vladislav_hagen; the order between the parts is theirs. Native mods on stable hook points (game/native_hooks.rs, #3345, #3346, #3434, #3435) built by the launcher (#3388, #3855); server-side hooks (#3878, #3706); mod-owned screens, input and drawing; tools for mod makers (templates, `native.py check`); the registry (#1634, #1642, #1659); machines with inventories and menus (#1189); mods that read and change the world through the server. docs/native-mods.md.",
+   "dev": "One item for all modding work (#3911), led by levzzz5154; the order between the parts is theirs. Native mods on stable hook points (game/native_hooks.rs, #3345, #3346, #3434, #3435) built by the launcher (#3388, #3855); server-side hooks (#3878, #3706); mod-owned screens, input and drawing; tools for mod makers (templates, `native.py check`); the registry (#1634, #1642, #1659); machines with inventories and menus (#1189); mods that read and change the world through the server. docs/native-mods.md.",
    "links": [
     "#3855",
     "#3351",

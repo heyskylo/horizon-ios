@@ -24,6 +24,7 @@ use horizon_client::{
         menu::{Rules, Slots},
     },
     motion::{MotionEvent, MotionWorld, PlayerMotion},
+    particles::TrackingTarget,
     pose::Dimensions,
 };
 use horizon_core::{
@@ -104,6 +105,9 @@ pub(super) struct GuestPlay {
     /// The equipment the mods last heard this guest wear (`native_players_equipment`), by
     /// `EquipmentSlot`: main hand, off hand, feet, legs, chest, head.
     pub(super) equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 6]>>,
+    /// The slots of the guest's inventories the mods last heard (`native_players_inventory_changes`),
+    /// by `NativeInventoryKind`: Player, Ender, Cursor, Crafting.
+    pub(super) inventory_heard: Option<Box<[Vec<Option<crate::items::ItemStack>>; 4]>>,
     /// What the guest's body was given for its effects and enchantments.
     potions: super::potions::BodyPotions,
     /// `ServerPlayer.getStats` and the inventory `inventory_changed` last saw.
@@ -1180,9 +1184,9 @@ impl Game<'_> {
         if let Some(body) = totem {
             let id = host.hub.guests[i].entity_id;
             host.hub
-                .entity_event(id, super::totem::TOTEM_EVENT, body.at);
+                .entity_event(id, super::totem::TOTEM_EVENT, body.bounds.feet);
             if self.player.is_some() {
-                self.totem_event(body, false);
+                self.totem_event(TrackingTarget::Entity(id), body);
             }
         }
         host.play.insert(conn, play);
@@ -3990,6 +3994,7 @@ impl Game<'_> {
         // empty: the mods hear each worn item again from empty (`native_players_equipment`).
         if let Some(play) = host.play.get_mut(&conn) {
             play.equipment_heard = None;
+            play.inventory_heard = None;
             play.level_up_sound = Default::default();
         }
         // PlayerList.respawn: a server's player comes back in its respawn
@@ -4178,6 +4183,7 @@ impl Game<'_> {
         self.tick_lan_mount_menus(host);
         self.tick_player_menus(host);
         self.native_players_equipment(host);
+        self.native_players_inventory_changes(host);
         self.announce_guest_advancements(host);
         // ServerLevel.tickNonPassenger calls Entity.commonTick for each player,
         // including spectators and players whose client has not loaded yet.
@@ -4445,15 +4451,17 @@ impl Game<'_> {
             // ServerPlayer.die: with showDeathMessages, the message goes to
             // the dying player's death screen and to everyone the team lets
             // see it; without it, the death screen gets an empty one.
+            let me = self.player_text(&name, uuid);
+            let text = match cause {
+                Some(key) => horizon_client::text::Text::translate(&key, &[me]),
+                None if at[1] < f64::from(self.world.bottom_y() - 64) => {
+                    horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
+                }
+                None => self.guest_death_message(conn, me),
+            };
+            // The rendered message, whether or not death messages are shown.
+            self.native_player_died_v2(uuid, &name, &text);
             let message = if self.ui.rules.bool("show_death_messages") {
-                let me = self.player_text(&name, uuid);
-                let text = match cause {
-                    Some(key) => horizon_client::text::Text::translate(&key, &[me]),
-                    None if at[1] < f64::from(self.world.bottom_y() - 64) => {
-                        horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
-                    }
-                    None => self.guest_death_message(conn, me),
-                };
                 let message = horizon_client::lan::data::component_nbt(&text.component());
                 let board = &self.score.board;
                 host.hub.system_message_to(message.clone(), |other| {
@@ -5104,6 +5112,10 @@ impl Game<'_> {
                     });
                 from = to;
             }
+            // handleMovePlayer moves the player before it checks the fall: a
+            // cobweb or a sweet berry bush it moves through has already made it
+            // forget the fall (`makeStuckInBlock`), so landing in one is safe.
+            let _ = w.server_stuck_in_blocks(start);
             for (moved, on_ground) in moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
                 let landed = (|| -> horizon_client::Result<()> {

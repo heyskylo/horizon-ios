@@ -240,7 +240,10 @@ class VanillaClient:
         command[command.index('net.minecraft.client.main.Main')] = 'dev.horizonlab.parity.VanillaTickScript'
         self.log = open(log, 'w')
         self.ready, self.done = threading.Event(), {}
-        self.process = subprocess.Popen(command, cwd=args.game_dir, env=screen_env(vanilla_client.environment()), text=True,
+        # Its window opens without the focus (SDL's hint), so it takes neither the keyboard nor the pointer of
+        # whoever is at the computer; VanillaTickScript keeps their input out once it runs.
+        env = dict(screen_env(vanilla_client.environment()), SDL_WINDOW_ACTIVATE_WHEN_SHOWN='0')
+        self.process = subprocess.Popen(command, cwd=args.game_dir, env=env, text=True,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         threading.Thread(target=self.pump, daemon=True).start()
 

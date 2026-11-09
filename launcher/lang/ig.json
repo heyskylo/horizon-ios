@@ -1180,7 +1180,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Mkpado",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.",
@@ -1259,5 +1258,11 @@
   "Recommended": "Akwadoro",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Ụdị ochie, {version}, na-ewu na Horizon ị na-egwu: ịwụnye na-ahọrọ ya",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ụdị {version} ewughị, na-anwale {older}",
-  "Use recommended (kept at {version})": "Jiri nke a tụrụ aro (edobere na {version})"
+  "Use recommended (kept at {version})": "Jiri nke a tụrụ aro (edobere na {version})",
+  "Only what works on {instance}": "Naanị ihe na-arụ ọrụ na {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Ezoro ụdị {count} na-adịghị arụ ọrụ na {instance}",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Emere maka Horizon {pin}: launcher na-ewu ya na {yours}, nke ị na-egwu, na {pin} naanị ma ọ bụrụ na ọ naghị compile ebe ahụ",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} ewughị na Horizon ị na-egwu: na-ewu na nke e mere ha maka ya",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Na nwube ikpeazụ, na Horizon {commit} maka {mods}, ọ bụghị na {horizon}",
+  "In the last build, on {horizon}": "Na nwube ikpeazụ, na {horizon}"
 }

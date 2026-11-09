@@ -45,7 +45,7 @@ pub fn main() -> horizon_client::Result<()> {
                 .as_ref()
                 .map_or("-".to_owned(), |(id, l)| format!("{id}:{l}"));
             let applied = if cost > 0 {
-                let list = stations::enchantment_list(&e, &items, seed, i, cost, item);
+                let list = stations::enchantment_list(&e, &items, seed, i, cost, &stack);
                 if list.is_empty() {
                     "-".to_owned()
                 } else {
