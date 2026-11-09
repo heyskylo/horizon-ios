@@ -316,6 +316,8 @@ fn an_interact_packet_cannot_name_a_mob_the_pick_would_refuse() {
     assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
 }
 
+#[path = "pet_order_tests.rs"]
+mod pet_order_tests;
 /// The packet's location is `EntityHitResult.getLocation() -
 /// entity.position()`, the point the view ray met the box at measured
 /// from the mob's feet (`MultiPlayerGameMode.interact`). The old fixed
