@@ -131,7 +131,7 @@ EnchantmentMenu.<init>	inline	crates/horizon-client/src/game/stations.rs::Game::
 EnchantmentMenu.getGoldCount	inline	crates/horizon-client/src/menu.rs::Menu::enchant_click	the lapis count is checked against the enchant cost there
 EnchantmentMenu.removed	inline	crates/horizon-client/src/game/stations.rs::Game::close_station	the inputs go back when the table closes
 EnchantmentMenu.quickMoveStack	port	crates/horizon-client/src/menu.rs::Menu::quick_move	shift-click for the enchanting slots, with lapis and the item slot
-FurnaceResultSlot.remove	port	crates/horizon-client/src/game.rs::Game::award_furnace_recipes	the furnace output's experience is awarded from the recorded recipe uses; gap: minor: no per-slot taken count
+FurnaceResultSlot.remove	port	crates/horizon-client/src/game/item_entities.rs::Game::award_furnace_recipes	the furnace output's experience is awarded from the recorded recipe uses; gap: minor: no per-slot taken count
 GrindstoneMenu.mergeItems	port	crates/horizon-client/src/stations.rs::grindstone_result	two repairable items merge into one with the summed durability
 GrindstoneMenu.mergeEnchantsFrom	inline	crates/horizon-client/src/stations.rs::grindstone_result	the second item's enchantments merge in, curses only when the target lacks them
 GrindstoneMenu.removed	inline	crates/horizon-client/src/game/stations.rs::Game::close_station	the repair inputs go back when the grindstone closes
