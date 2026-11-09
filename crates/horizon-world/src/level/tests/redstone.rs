@@ -767,6 +767,70 @@ fn a_door_opens_with_power_beside_either_half_and_closes_without_it() {
     }
 }
 
+/// `DoorBlock.neighborChanged`: `signal = hasNeighborSignal(pos) ||
+/// hasNeighborSignal(the other half's position)`. A half also reads the power beside
+/// its other half, which matters when the block update reaches only this one: power
+/// stands beside the lower half (written raw, so nothing was told), a block is then
+/// placed beside the upper half, and the upper half, asked alone, opens.
+#[test]
+fn a_door_half_also_reads_the_power_beside_its_other_half() {
+    for (asked, other, source, poke, what) in [
+        (
+            (0, 6, 0),
+            (0, 5, 0),
+            (1, 5, 0),
+            (-1, 6, 0),
+            "the upper half, power beside the lower",
+        ),
+        (
+            (0, 5, 0),
+            (0, 6, 0),
+            (1, 6, 0),
+            (-1, 5, 0),
+            "the lower half, power beside the upper",
+        ),
+    ] {
+        let mut w = world!();
+        w.floor(4, 4, "stone");
+        let (lower, upper) = (
+            w.id(
+                "oak_door",
+                &[("facing", "north"), ("half", "lower"), ("hinge", "left")],
+            ),
+            w.id(
+                "oak_door",
+                &[("facing", "north"), ("half", "upper"), ("hinge", "left")],
+            ),
+        );
+        w.put(BlockPos::new(0, 5, 0), lower);
+        w.put(BlockPos::new(0, 6, 0), upper);
+        w.put(
+            BlockPos::new(source.0, source.1, source.2),
+            w.id("redstone_block", &[]),
+        );
+        let (asked, other) = (
+            BlockPos::new(asked.0, asked.1, asked.2),
+            BlockPos::new(other.0, other.1, other.2),
+        );
+        assert_eq!(
+            w.prop(asked, "open"),
+            "false",
+            "{what}: nothing has told it yet"
+        );
+        w.set(BlockPos::new(poke.0, poke.1, poke.2), w.id("stone", &[]));
+        assert_eq!(
+            w.prop(asked, "open"),
+            "true",
+            "{what}: asked alone, it opens"
+        );
+        assert_eq!(
+            w.prop(other, "open"),
+            "true",
+            "{what}: and the other half follows"
+        );
+    }
+}
+
 /// `TrapDoorBlock` and `FenceGateBlock` take `POWERED` and `OPEN` from
 /// `hasNeighborSignal` of their own position, and give both up with it.
 #[test]
