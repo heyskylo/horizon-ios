@@ -621,14 +621,9 @@ pub fn mob_to_nbt(
         ("Air", Tag::Short(m.air as i16)),
         ("Health", Tag::Float(m.health.max(0.0).to_bits())),
         ("AbsorptionAmount", Tag::Float(m.absorption.to_bits())),
-        (
-            "HurtTime",
-            Tag::Short(m.hurt_time.clamp(0, i32::from(i16::MAX)) as i16),
-        ),
-        (
-            "DeathTime",
-            Tag::Short(m.death_time.clamp(0, i32::from(i16::MAX)) as i16),
-        ),
+        // LivingEntity.addAdditionalSaveData: (short) casts, nothing clamped.
+        ("HurtTime", Tag::Short(m.hurt_time as i16)),
+        ("DeathTime", Tag::Short(m.death_time as i16)),
         // Mob.addAdditionalSaveData writes the current virtual getter, not raw input.
         ("CanPickUpLoot", Tag::Byte(i8::from(m.can_pick_up_loot()))),
         ("PersistenceRequired", Tag::Byte(i8::from(m.persistent))),
