@@ -678,7 +678,12 @@ impl Game<'_> {
             }
             SpawnYaw::Fixed(yaw) => yaw,
         };
-        let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), yaw);
+        // The mob's own random (Entity.random): its UUID first, then LivingEntity's
+        // yaw draw, apart from the spawn yaw above, which comes from the level's.
+        let (own, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(self.next_entity, uuid);
+        let position = Vec3::new(at[0], at[1], at[2]);
+        let mut mob = Mob::with_random(self.next_entity, t, position, yaw, own);
         mob.persistent = persistent;
         if finalize {
             let facts = self.biome_facts(

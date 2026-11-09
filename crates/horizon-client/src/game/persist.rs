@@ -956,8 +956,10 @@ impl Game<'_> {
     /// A saved armor stand.
     pub(super) fn load_armor_stand(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         self.next_entity += 1;
+        // Its own random makes its UUID, kept unless the tag has one.
+        let (_, fresh) = horizon_client::mobs::living_random();
         if let Some(a) = entity_nbt::armor_stand_from_nbt(&tag, self.next_entity) {
-            self.remember(a.id, uuid, tag);
+            self.remember(a.id, Some(uuid.unwrap_or(fresh)), tag);
             self.armor_stands.push(a);
         }
     }
@@ -1074,11 +1076,14 @@ impl Game<'_> {
         } else {
             None
         };
-        let mut m = entity_nbt::mob_from_nbt(
+        // The mob's own random makes its UUID, kept unless the tag has one.
+        let (own, fresh) = horizon_client::mobs::living_random();
+        let mut m = entity_nbt::mob_from_nbt_with_random(
             &tag,
             self.res.mob_types(),
             self.next_entity,
             Some(self.pack.assets.registry),
+            own,
         )?;
         if horizon_client::mobs::camel::is_camel(m.species()) {
             horizon_client::mobs::camel::finish_load(&mut m, self.world.game_time);
@@ -1117,7 +1122,7 @@ impl Game<'_> {
             }
         }
         let id = m.id;
-        self.remember(id, uuid, tag);
+        self.remember(id, Some(uuid.unwrap_or(fresh)), tag);
         self.mobs.push(m);
         if finalize {
             self.enchant_spawn_equipment(id);

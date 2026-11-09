@@ -1992,10 +1992,22 @@ pub fn mob_from_nbt(
     id: u32,
     registry: Option<&BlockRegistry>,
 ) -> Option<Mob> {
+    let position = position(tag)?;
+    let random = crate::mobs::entity_random(id, position);
+    mob_from_nbt_with_random(tag, types, id, registry, random)
+}
+/// `mob_from_nbt` for a mob with its own random given (`Mob::with_random`).
+pub fn mob_from_nbt_with_random(
+    tag: &Tag,
+    types: &HashMap<String, Arc<MobType>>,
+    id: u32,
+    registry: Option<&BlockRegistry>,
+    random: horizon_core::random::LegacyRandom,
+) -> Option<Mob> {
     let kind = types.get(&self::kind(tag)?)?.clone();
     let position = position(tag)?;
     let [yaw, pitch] = rotation(tag);
-    let mut m = Mob::new(id, kind, position, yaw);
+    let mut m = Mob::with_random(id, kind, position, yaw, random);
     m.velocity = motion(tag);
     m.head_pitch = pitch;
     // LivingEntity.readAdditionalSaveData: `setSharedFlag(7, getBooleanOr(FallFlying, false))`.
