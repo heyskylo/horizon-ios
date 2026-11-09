@@ -3813,6 +3813,13 @@ a dimension.
 - `level.seed(host)`, `difficulty` (`"normal"`, as `/difficulty` names it), `game_rule(host, "keep_inventory")` (a
   `GameRuleValue`, `Bool` or `Int`; None for an unknown rule), `weather` (rain and thunder levels, 0.0 to 1.0; both 0
   where the level has no weather), `is_raining` and `is_thundering` read its world settings.
+- `level.set_day_time(host, ticks)` is `/time set` on the overworld clock (mods hear `time_skip` with cause `mod` and can
+  keep the old time), `set_game_rule(host, "advance_time", GameRuleValue::Bool(false))` is `/gamerule` (`advance_time` and
+  `advance_weather` freeze and unfreeze the day clock and the weather cycle), and `set_weather(host, clear_time,
+  weather_time, raining, thundering)` is `/weather` (`ServerLevel.setWeatherParameters`; mods hear `weather_change` and
+  `thunder_change` and can keep the old state). They return false for a negative time, an unknown rule or a value of the
+  wrong kind or range, a level without weather or not the one in place, a client, a handle of an earlier open, or when a
+  mod kept the old state. Bundles need `"hooks": @API:level_world_setters@`.
 - `host.living(entity)` gives a `LivingRef` for a mob, a player, an armor stand or the dragon (vanilla's
   `LivingEntity`); `living.entity()` goes back. `living.equipment(host, EquipmentSlot::Head)` and `hand_item(host,
   Hand::Main)` read its equipment (an empty slot reads as `None`); `set_equipment(host, slot, stack)` puts a stack in a
