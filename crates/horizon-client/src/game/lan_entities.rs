@@ -611,9 +611,6 @@ impl Game<'_> {
         self.potions.thrown_ids().for_each(&mut give);
         self.end.eye_ids().for_each(&mut give);
         self.breath_clouds.iter_mut().for_each(|b| give(&mut b.id));
-        self.dragon_fireballs
-            .iter_mut()
-            .for_each(|b| give(&mut b.id));
     }
 
     /// Primed TNT, falling blocks, projectiles, tridents, firework rockets and
@@ -648,7 +645,7 @@ impl Game<'_> {
                 "minecraft:falling_block",
                 at(f.position),
                 0.0,
-                false,
+                f.on_ground,
             );
             e.velocity = at(f.velocity);
             // getAddEntityPacket: the block state; DATA_START_POS.
@@ -664,16 +661,12 @@ impl Game<'_> {
         for p in self.creatures.projectiles.iter().filter(|p| p.id > after) {
             use horizon_client::projectiles::ProjectileKind as K;
             // A spectral arrow is its own entity type.
-            let kind = if p.is_spectral_arrow() {
-                "minecraft:spectral_arrow"
-            } else {
-                p.kind.id()
-            };
+            let kind = p.entity_type();
             let data = match p.guest.and_then(|conn| hub.guest(conn)) {
                 Some(g) => g.entity_id,
                 None => owner(p.owner),
             };
-            let e = add_state(out, p.id, kind, at(p.position), p.yaw, false);
+            let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.on_ground);
             e.pitch = p.pitch;
             e.velocity = at(p.velocity);
             e.needs_sync = p.needs_sync;
@@ -809,7 +802,14 @@ impl Game<'_> {
                 Some(g) => g.entity_id,
                 None => owner(Some(horizon_client::mobs::Who::Player)),
             };
-            let e = add_state(out, t.id, "minecraft:trident", at(t.position), t.yaw, false);
+            let e = add_state(
+                out,
+                t.id,
+                "minecraft:trident",
+                at(t.position),
+                t.yaw,
+                t.on_ground,
+            );
             e.pitch = t.pitch;
             e.velocity = at(t.velocity);
             // Projectile.getAddEntityPacket: the owner's id, the guest's that
@@ -848,7 +848,7 @@ impl Game<'_> {
                 "minecraft:firework_rocket",
                 at(r.position),
                 0.0,
-                false,
+                r.on_ground,
             );
             e.velocity = at(r.velocity);
             // DATA_ID_FIREWORKS_ITEM once set from a stack, DATA_ATTACHED_TO_TARGET,
@@ -899,11 +899,6 @@ impl Game<'_> {
             ),
             None,
         );
-        for b in self.dragon_fireballs.iter().filter(|b| b.id > after) {
-            let p = b.position;
-            let e = add_state(out, b.id, "minecraft:dragon_fireball", at(p), 0.0, false);
-            e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];
-        }
         for b in self.breath_clouds.iter().filter(|b| b.id > after) {
             // The hub is out of `self.lan` while these states are built, so
             // the particle must be encoded through the hub passed in: going

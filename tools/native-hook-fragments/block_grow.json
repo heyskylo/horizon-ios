@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "block_grow",
+      "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_block_grow",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a crop, stem, cactus, sugar cane, bamboo, mushroom or vine growing or spreading (`native_block_grow`).",
+  "doc_summary": "`native_block_grow(dimension, pos, from, to, cancel)` is asked before a growth or spread step at `pos` in `dimension`: the block changes from `from` to `to`, block names with their properties. Set `cancel` to leave it as it is. Covers crop, stem, cactus, sugar cane and bamboo growth, grass spreading onto dirt, mushroom and vine spread; not sapling trees, nether wart, sweet berries, mangrove propagules or sculk. Bundles need \"hooks\": @API:block_grow@.",
+  "comments": []
+}

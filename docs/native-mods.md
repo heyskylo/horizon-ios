@@ -1797,6 +1797,13 @@ API 412 adds `native_force_chunk(owner, chunk, hold)` holds a chunk of the level
 
 API 413 adds `native_force_chunk_in(owner, dimension, chunk, hold)`, `native_force_chunk` for a named level, which opens and ticks a level not open yet, so a mod can pre-generate the Nether and the End with nobody there. Bundles need "hooks": 413.
 
+API 414 adds a held world through `native_world_hold`: once a frame a client mod can hold the terrain's picture, all of it or
+only inside circles; sections on screen that change are meshed and uploaded but wait beside the ones drawn, and
+letting go shows them all on one frame ([Holding the world's picture](#holding-the-worlds-picture)). Bundles need
+`"hooks": 414`.
+
+API 415 adds a world warp through `native_world_warp`: once a frame a client mod may give WGSL (`world_warp(pos, section) -> Warped`, and optionally `world_fragment(f) -> Painted` after a line `// [fragments]`) that every terrain vertex, far terrain's tiles included, and entity vertex goes through, with sixteen floats it reads as `warp.params`. While it is on the frame culls nothing by where it was. A frame without one costs nothing more ([World warps](#world-warps)). Bundles need "hooks": 415.
+
 ## What the launcher does
 
 **Developing a mod?** Run `horizon-launcher settings native-profile dev` once, or pick "Dev build" in the Mods page's
@@ -2675,6 +2682,20 @@ server only.
   `native_player_view_distance(uuid)` is the distance the player has now. Both answer false/None for a player not online
   and inside a guest's packet hook, where the hub is taken out: call them from a tick or console hook. API
   @API:player_view_distance@.
+- **`native_set_player_fake(uuid, fake)`** (`native_view_distance.rs`): marks the player as a fake player, a mod's bot
+  with no client, or not. A fake player keeps only a small area loaded and ticking around it (its view distance plus
+  one, at most the server's plus one), its packets are cut to the few a bot needs (position, entity motion, the chunk
+  batch end, keep-alive, ping, combat kill and respawn), and it does not count for natural mob spawning. The mark lasts
+  until the player leaves. False off a server, for a player not online, and inside a guest's packet hook: call it from a
+  tick or console hook. API @API:set_player_fake@.
+- **`native_expect_fake_player(name, fake)`** (`native_view_distance.rs`): says that a player named `name` (any case)
+  will join as a fake player, or not any more. The player is fake from its first packet on, so its join sends and
+  builds nothing a client-less player cannot read (no login records, recipe book, command tree, player list or
+  advancements). False off a server. API @API:expect_fake_player@.
+- **`native_is_player_fake(uuid)`** (`native_view_distance.rs`): whether the player is a fake player, a mod's bot with no
+  client (marked by `native_set_player_fake`, or announced by name with `native_expect_fake_player`, which makes it fake from
+  its first packet on). False off a server and for a player not online; for a join hook that gets only a uuid. API
+  @API:is_player_fake@.
 - **`native_chunk_snapshot(dimension, [x, z])`** (`native_chunk_snapshot.rs`): a `NativeChunkSnapshot` of a loaded
   chunk of a level that is open (in place or with nobody in it), None for a chunk not loaded (nothing is loaded for
   it). It shares the chunk's sections until the level changes them, so it is cheap to take on the server thread and
@@ -2847,6 +2868,14 @@ tick later with a command.
   `expected`, and returns what was there (Bukkit's `setItem`); the second takes the stacks out of the given `Player`
   slots, each of which must still hold exactly its stack, all or none (a stake, a trade, a fine with enchanted gear).
   A player's screen follows with the tick's sync.
+- **`native_player_inventory_changed(player, stacks)`**: a player's inventory changed, heard at the moment vanilla's
+  `InventoryChangeTrigger` is checked (the per-tick check found another item or count in a slot), before any criterion
+  is looked at and whether or not any advancement uses `inventory_changed`. `stacks` are the 41 slots in
+  `native_inventory`'s `Player` numbering: 0..36 the main inventory (0..9 the hotbar), 36..40 the armour (feet, legs,
+  chest, head), 40 the off hand. It also fires at a player's first check after joining, so a mod sees what they log in
+  with. The player's state is swapped in. Heard for the single player, LAN guests and a dedicated server's players,
+  never on a client of a remote server: what quest, collection and "obtain an item" mods need instead of polling
+  every inventory. Bundles need `"hooks": @API:player_inventory_changed@`.
 
 #### Server hooks for plugin ports: login and profiles
 
@@ -3001,6 +3030,8 @@ None.
   and `hidden` level server mods set (Bukkit's `getPing`, `isOnGround`, `getAllowFlight`, `isFlying`,
   `isSneaking`, `getEyeHeight`, `getDisplayName`). For the acting player, `latency`, `nickname`, `hidden` and
   `address` read 0 or None while the hub is out of reach. Bundles need `"hooks": @API:server_player_state@`.
+- **`NativeServerPlayer.fake`** is true for a fake player, a mod's bot with no client (`native_set_player_fake`), so a
+  mod can leave out what only a client would show. Bundles need `"hooks": @API:server_player_fake@`.
 - Helper **`native_player_client(uuid) -> Option<NativeClientInfo>`** (`host.player_client`): the client's brand,
   language, the view distance it asks for, chat visibility, main hand and particle setting, the chunks the server
   sent it and its wire bytes in and out (Paper's `getClientBrandName`, `locale`, `getClientViewDistance`). It
@@ -4034,13 +4065,36 @@ and `id` say which:
 - `tutorial`: the hint, `move`, `look`, `find_tree`, `punch_tree`, `open_inventory`, `craft_planks` or `socialInteractions`;
 - `system`: `narrator_toggle`, `pack_load_failure`, `pack_download` (a server pack batch's progress), `low_disk_space`,
   `chunk_load_failure` or `chunk_save_failure`;
-- `now_playing`: an empty id, each time the music toast shows a new song.
+- `now_playing`: an empty id, each time the music toast shows a new song;
+- `mod`: a mod's own toast (`native_add_toast`, below), with the id the mod gave it.
 
 Set `cancel` and the toast isn't queued, shown or sounded. As in vanilla, an update to a toast already queued or shown
 is not an add: more recipes joining the recipe toast, or a system toast taking new text (`SystemToast.addOrUpdate`).
 A cancelled tutorial hint isn't asked again while it stays the current hint; a cancelled system toast is asked again at
 its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
 Bundles need `"hooks": @API:toast_add@`.
+
+### Toasts a mod shows
+
+`native_push_voice(mod_id, source, samples, sample_rate, at)` (client, `host.push_voice`) plays a
+mod's own audio, such as a proximity voice chat's: mono samples from -1 to 1 at `sample_rate` hertz.
+`source` is the mod's own id for a speaker (a player's UUID, say): each source's blocks play one
+after another, in the order they were pushed, while different sources play at the same time. `at`
+is where they were spoken, for direction and a linear fade to silence at 48 blocks; none plays them
+centred. A source holds at most two seconds, and a burst past that is refused rather than delayed;
+at most 64 sources play at once. False when nothing was queued: on a server, without an audio
+device, with nothing to play or past a cap. Bundles need `"hooks": @API:push_voice@`.
+
+`native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own
+in the five slots the advancement, recipe and system toasts share, drawn as vanilla's `AdvancementToast`: the item
+`icon` at 16 pixels (an unknown item draws none), `title` where the advancement toast's frame label goes ("Advancement
+Made!"), yellow, and `description` under it in white. A description longer than one line is wrapped at 125 pixels and
+fades in after the title, as an advancement's long title does. With `challenge` the title is pink and the challenge
+sound plays as the toast leaves the queue. It stays up as long as an advancement toast (5 seconds times the
+notification time setting). `native_toast_add` hears it first as kind `mod` with the mod's `id` (`mymod:quest/first`),
+so a pack can hide them. True when queued; false on a server, without a window and when cancelled. A quest mod's
+server half tells the player's client half (mod messages) and the client half calls it. Bundles need
+`"hooks": @API:add_toast@`.
 
 ### The client's tick
 
@@ -4134,6 +4188,28 @@ game.native_play_local_sound("ironfall:ear.ringing", eye, 1.0, 1.0, 0);
 
 Bundles need `"hooks": @API:muffle_sounds@`.
 
+### Fireworks a client mod draws
+
+`native_client_fireworks(at, velocity, explosions)` (client, `host.client_fireworks`) draws a firework's explosions at
+`at` in this client's world as `ClientLevel.createFireworks` does when a rocket explodes (vanilla's client-only
+`FireworkParticles.Starter`): each `FireworkExplosion` in turn, two ticks apart, with its `shape` (`SmallBall`,
+`LargeBall`, `Star`, `Creeper`, `Burst`), `colors` and `fade` (RGB, as the `firework_explosion` component's), `trail`
+and `twinkle`, the flash, and the blast (large for three or more explosions or a large ball, far past 16 blocks) and
+twinkle sounds. No explosions puffs a little smoke, as vanilla's. `velocity` is a rocket's, which the sparks carry.
+Only the picture and the sound: there is no rocket entity, no damage or knockback, nothing on the server, and other
+players see nothing. A mod that celebrates with them has its server half tell each nearby client half (mod messages)
+to draw it. `FireworkExplosion` and `FireworkShape` are in `mod_api`. True when queued; false on a server, without a
+client player or level, for non-finite numbers and for more than 64 explosions. Bundles need
+`"hooks": @API:client_fireworks@`.
+
+```rust,ignore
+use horizon_client::mod_api::{FireworkExplosion, FireworkShape};
+let star = FireworkExplosion {
+    shape: FireworkShape::Star, colors: vec![0xFFD700], fade: vec![0xFFFFFF], trail: true, twinkle: false,
+};
+host.client_fireworks([x, y + 3.0, z], [0.0, 0.0, 0.0], &[star]);
+```
+
 ### Fluid currents
 
 `native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
@@ -4147,8 +4223,9 @@ Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water 
 than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
 and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
 a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
-cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
-mod's fluid yet, and no buckets of one.
+fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
+and may be named in fluid tags; tanks still take undeclared ids as before. A cauldron takes only water and lava, and the
+world itself has only vanilla's fluids: no source or flowing blocks of a mod's fluid yet, and no buckets of one.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
@@ -4607,7 +4684,7 @@ fn world_hold(&self, _host: &dyn Host, event: &mut WorldHoldEvent<'_>) {
 - Each player's game is asked for itself (splitscreen: one hold per player). The debug census lists
   `held_section_vertices`.
 
-Bundles need `"hooks": @API:world_hold@`.
+Bundles need `"hooks": 414`.
 
 ### Block textures
 
@@ -4838,6 +4915,13 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+The package may depend on the bundle's own `[[crate]]`s by path, a sibling folder of the package in the bundle
+(`shared = { path = "../shared" }` from `engine/`, where `shared` is a `[[crate]]` with `path = "shared"`). The
+launcher points that dependency at the crate's staged copy, `native-crates/<mod>/<crate>`, so the crate is built once
+with the game, as a `[[crate]]`'s own is. Any other path is refused, since only the package's folder is copied.
+A crate used this way follows the same rules as a `[[crate]]`: no `horizon-client`, and only crates in Horizon's
+`Cargo.lock`.
 
 Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
 on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
@@ -5257,3 +5341,7 @@ unchanged. The list has already been shuffled; entity knockback and the shuffle'
 random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
 This is separate from `explosion_detonate`, and does not cancel the burst's sound,
 particles or entity effects. The pending fragment assigns its API number at merge.
+
+### Advancement displays
+
+The pending `advancement_display` helper (`host.advancement_display`) returns an `AdvancementDisplay` for an advancement id in the loaded tree: `title` and `description` as `Text` (the components as the datapack wrote them), `frame` as `task`, `goal` or `challenge`, `announce_to_chat` and `hidden`. It is None for an unknown id or one without a display. The helper loads the tree on first use, so it is for server-side reads, not hot paths. The pending fragment assigns its API number at merge (`@API:advancement_display@`).

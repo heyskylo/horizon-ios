@@ -442,6 +442,143 @@ pub struct MobEffect {
     pub color: u32,
 }
 
+/// The vanilla fluids a mod fluid copies: how it flows, what it does to
+/// mobs and how it meets other fluids, as a content block copies a block.
+pub const FLUID_TEMPLATES: [&str; 2] = ["minecraft:water", "minecraft:lava"];
+
+/// A fluid the mod adds: NeoForge's `FluidType` and `BaseFlowingFluid.Properties`
+/// over a copy of a [`FLUID_TEMPLATES`] fluid, drawn as its `FluidModel`. Like
+/// vanilla's, it is two fluids: the source `<mod id>:<path>` and the flowing
+/// [`Fluid::flowing_id`]. A number left out is the template's.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Fluid {
+    /// `<mod id>:<path>`, the source fluid.
+    #[serde(skip)]
+    pub id: String,
+    pub template: String,
+    /// `FluidType.Properties`.
+    #[serde(default)]
+    pub light_level: Option<u8>,
+    #[serde(default)]
+    pub density: Option<i32>,
+    #[serde(default)]
+    pub viscosity: Option<i32>,
+    #[serde(default)]
+    pub temperature: Option<i32>,
+    #[serde(default)]
+    pub motion_scale: Option<f64>,
+    #[serde(default)]
+    pub fall_distance_modifier: Option<f32>,
+    #[serde(default)]
+    pub can_push_entity: Option<bool>,
+    #[serde(default)]
+    pub can_swim: Option<bool>,
+    #[serde(default)]
+    pub can_drown: Option<bool>,
+    #[serde(default)]
+    pub can_extinguish: Option<bool>,
+    #[serde(default)]
+    pub can_convert_to_source: Option<bool>,
+    #[serde(default)]
+    pub supports_boating: Option<bool>,
+    #[serde(default)]
+    pub can_hydrate: Option<bool>,
+    /// `BaseFlowingFluid.Properties`: ticks between spreads, how far it looks
+    /// for a way down, and the levels it loses per block.
+    #[serde(default)]
+    pub tick_rate: Option<u32>,
+    #[serde(default)]
+    pub slope_find_distance: Option<u32>,
+    #[serde(default)]
+    pub level_decrease_per_block: Option<u32>,
+    #[serde(default)]
+    pub explosion_resistance: Option<f32>,
+    /// The mod's item that is its bucket, and the mod's block that holds it in
+    /// the world: neither is required.
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub block: Option<String>,
+    /// `FluidModel`: the still, flowing and overlay sprites (texture ids in the
+    /// block atlas, `<namespace>:block/...`), and an ARGB tint over them.
+    pub still: String,
+    pub flowing: String,
+    #[serde(default)]
+    pub overlay: Option<String>,
+    #[serde(default)]
+    pub tint: Option<u32>,
+}
+
+impl Fluid {
+    /// The flowing fluid's id: `flowing_` before the path's last part, as
+    /// vanilla's `minecraft:flowing_water` (`ruby:molten/flowing_iron`).
+    pub fn flowing_id(&self) -> String {
+        match self.id.rsplit_once('/') {
+            Some((dir, last)) => format!("{dir}/flowing_{last}"),
+            None => {
+                let (ns, path) = self.id.split_once(':').unwrap_or(("", &self.id));
+                format!("{ns}:flowing_{path}")
+            }
+        }
+    }
+}
+
+/// A fluid's own fields; `bucket` and `block` are checked against the mod's
+/// items and blocks by the caller.
+fn check_fluid(fluid: &Fluid) -> Result<(), String> {
+    if !FLUID_TEMPLATES.contains(&fluid.template.as_str()) {
+        return Err(format!(
+            "template {:?} is not one of {FLUID_TEMPLATES:?}",
+            fluid.template
+        ));
+    }
+    if fluid.light_level.is_some_and(|l| l > 15) {
+        return Err("light_level is 0 to 15".into());
+    }
+    if fluid.tick_rate == Some(0) {
+        return Err("tick_rate is at least 1".into());
+    }
+    if fluid
+        .slope_find_distance
+        .is_some_and(|d| !(1..=8).contains(&d))
+    {
+        return Err("slope_find_distance is 1 to 8".into());
+    }
+    // A level runs 1 to 8: dropping 8 a block, a fluid could not leave its source.
+    if fluid
+        .level_decrease_per_block
+        .is_some_and(|d| !(1..=7).contains(&d))
+    {
+        return Err("level_decrease_per_block is 1 to 7".into());
+    }
+    let non_negative = |v: Option<f64>| v.is_none_or(|v| v.is_finite() && v >= 0.0);
+    if !non_negative(fluid.motion_scale) {
+        return Err("motion_scale is a number 0 or more".into());
+    }
+    if !non_negative(fluid.explosion_resistance.map(f64::from)) {
+        return Err("explosion_resistance is a number 0 or more".into());
+    }
+    if fluid.fall_distance_modifier.is_some_and(|v| !v.is_finite()) {
+        return Err("fall_distance_modifier is a number".into());
+    }
+    let id_like = |s: &str| {
+        s.split_once(':')
+            .is_some_and(|(n, p)| !n.is_empty() && !p.is_empty())
+    };
+    let textures = [
+        ("still", Some(&fluid.still)),
+        ("flowing", Some(&fluid.flowing)),
+        ("overlay", fluid.overlay.as_ref()),
+    ];
+    for (key, texture) in textures {
+        if texture.is_some_and(|t| !id_like(t)) {
+            return Err(format!("{key} is a texture id (namespace:path)"));
+        }
+    }
+    Ok(())
+}
+
 /// the vanilla entity types a mod's type may copy: thrown item
 /// projectiles (`ThrowableItemProjectile`), then living mobs
 /// ([`LIVING_TEMPLATES`]).
@@ -590,6 +727,8 @@ pub struct Content {
     pub blocks: Vec<Block>,
     pub items: Vec<Item>,
     pub effects: Vec<MobEffect>,
+    /// Its fluids, by id ([`Fluid`]).
+    pub fluids: Vec<Fluid>,
     /// Its creative inventory tabs, by id.
     pub creative_tabs: Vec<CreativeTab>,
     pub entity_types: Vec<EntityType>,
@@ -707,6 +846,7 @@ impl Content {
             blocks: Vec::new(),
             items: Vec::new(),
             effects: Vec::new(),
+            fluids: Vec::new(),
             creative_tabs: Vec::new(),
             entity_types: Vec::new(),
             menu_types: Vec::new(),
@@ -725,6 +865,7 @@ impl Content {
             blocks: Vec::new(),
             items: Vec::new(),
             effects: Vec::new(),
+            fluids: Vec::new(),
             creative_tabs: Vec::new(),
             entity_types: Vec::new(),
             menu_types: Vec::new(),
@@ -837,6 +978,7 @@ impl Content {
         let mut blocks = Vec::new();
         let mut items = Vec::new();
         let mut effects = Vec::new();
+        let mut fluids = Vec::new();
         let mut tabs = Vec::new();
         let mut types = Vec::new();
         let mut menus = Vec::new();
@@ -861,7 +1003,7 @@ impl Content {
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/{id}/horizon/"
+                    "{name}: blocks, items, mob effects, fluids, entity types and menu types are declared in data/{id}/horizon/"
                 ));
             }
             let Some(decl) = (own && top == "data")
@@ -883,6 +1025,8 @@ impl Content {
                 items.push((item, name.clone()));
             } else if let Some(effect) = parse("mob_effect") {
                 effects.push((effect, name.clone()));
+            } else if let Some(fluid) = parse("fluid") {
+                fluids.push((fluid, name.clone()));
             } else if let Some(tab) = parse("creative_tab") {
                 tabs.push((tab, name.clone()));
             } else if let Some(kind) = parse("entity_type") {
@@ -891,7 +1035,7 @@ impl Content {
                 menus.push((menu, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, fluid/, creative_tab/, entity_type/ and menu/*.json only"
                 ));
             }
         }
@@ -970,6 +1114,34 @@ impl Content {
                 return Err(format!("{name}: color is RGB, 0 to 16777215 (0xFFFFFF)"));
             }
             self.effects.push(MobEffect { id: effect, ..file });
+        }
+        // After every block and item: a fluid's bucket and block are the mod's own.
+        let mut fluid_ids = BTreeSet::new();
+        for (fluid, name) in fluids {
+            let file: Fluid =
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            let fluid = Fluid { id: fluid, ..file };
+            check_fluid(&fluid).map_err(|e| format!("{name}: {e}"))?;
+            if let Some(bucket) = fluid.bucket.as_ref().filter(|b| !ids.contains(*b)) {
+                return Err(format!(
+                    "{name}: bucket {bucket:?} is not one of this mod's items"
+                ));
+            }
+            if let Some(block) = &fluid.block
+                && !self.blocks.iter().any(|b| &b.id == block)
+            {
+                return Err(format!(
+                    "{name}: block {block:?} is not one of this mod's blocks"
+                ));
+            }
+            for id in [fluid.id.clone(), fluid.flowing_id()] {
+                if !fluid_ids.insert(id.clone()) {
+                    return Err(format!(
+                        "{name}: fluid {id} is declared twice (a source and another's flowing form)"
+                    ));
+                }
+            }
+            self.fluids.push(fluid);
         }
         // After every item, so a remainder may be declared in a later file.
         for (name, rest) in remainders {
@@ -1841,6 +2013,139 @@ capabilities = ["registries"]
             let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
             assert!(e.contains(why), "{case}: {e}");
         }
+    }
+
+    #[test]
+    fn fluids_copy_water_or_lava_and_name_their_flowing_form() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/item/honey_bucket.json",
+                br#"{"template": "minecraft:water_bucket"}"#,
+            ),
+            (
+                "data/ruby/horizon/block/honey.json",
+                br#"{"template": "minecraft:water"}"#,
+            ),
+            (
+                "data/ruby/horizon/fluid/honey.json",
+                br#"{"template": "minecraft:water", "viscosity": 6000, "tick_rate": 20,
+                    "level_decrease_per_block": 2, "can_swim": false, "bucket": "ruby:honey_bucket",
+                    "block": "ruby:honey", "still": "ruby:block/honey_still",
+                    "flowing": "ruby:block/honey_flow", "tint": 4294949120}"#,
+            ),
+            (
+                "data/ruby/horizon/fluid/molten/iron.json",
+                br#"{"template": "minecraft:lava", "light_level": 15,
+                    "still": "ruby:block/iron_still", "flowing": "ruby:block/iron_flow"}"#,
+            ),
+        ];
+        let content = hmod("fluids", MANIFEST_TEXT, files).unwrap();
+        let fluids: Vec<_> = content
+            .fluids
+            .iter()
+            .map(|f| (f.id.as_str(), f.flowing_id(), f.template.as_str()))
+            .collect();
+        assert_eq!(
+            fluids,
+            [
+                (
+                    "ruby:honey",
+                    "ruby:flowing_honey".to_owned(),
+                    "minecraft:water"
+                ),
+                (
+                    "ruby:molten/iron",
+                    "ruby:molten/flowing_iron".to_owned(),
+                    "minecraft:lava"
+                ),
+            ]
+        );
+        let honey = &content.fluids[0];
+        assert_eq!(
+            (honey.viscosity, honey.tick_rate, honey.can_swim),
+            (Some(6000), Some(20), Some(false))
+        );
+        // Left out, a number is the template's.
+        assert_eq!((honey.density, content.fluids[1].tick_rate), (None, None));
+        let textures = r#""still": "ruby:block/a", "flowing": "ruby:block/b""#;
+        for (case, file, why) in [
+            (
+                "fluid-template",
+                r#""template": "minecraft:honey""#,
+                "not one of",
+            ),
+            (
+                "fluid-light",
+                r#""template": "minecraft:lava", "light_level": 16"#,
+                "light_level is 0 to 15",
+            ),
+            (
+                "fluid-rate",
+                r#""template": "minecraft:water", "tick_rate": 0"#,
+                "tick_rate is at least 1",
+            ),
+            (
+                "fluid-drop",
+                r#""template": "minecraft:water", "level_decrease_per_block": 8"#,
+                "1 to 7",
+            ),
+            (
+                "fluid-slope",
+                r#""template": "minecraft:water", "slope_find_distance": 9"#,
+                "1 to 8",
+            ),
+            (
+                "fluid-motion",
+                r#""template": "minecraft:water", "motion_scale": -1"#,
+                "0 or more",
+            ),
+            (
+                "fluid-bucket",
+                r#""template": "minecraft:water", "bucket": "minecraft:bucket""#,
+                "this mod's items",
+            ),
+            (
+                "fluid-block",
+                r#""template": "minecraft:water", "block": "ruby:nothing""#,
+                "this mod's blocks",
+            ),
+            (
+                "fluid-key",
+                r#""template": "minecraft:water", "colour": 1"#,
+                "unknown field",
+            ),
+        ] {
+            let body = format!("{{{file}, {textures}}}");
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/fluid/a.json", body.as_bytes())];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+        // Without its textures a fluid can't be drawn.
+        let files: &[(&str, &[u8])] = &[(
+            "data/ruby/horizon/fluid/a.json",
+            br#"{"template": "minecraft:water"}"#,
+        )];
+        assert!(
+            hmod("fluid-sprites", MANIFEST_TEXT, files)
+                .unwrap_err()
+                .contains("missing field")
+        );
+        // A source may not take another fluid's flowing id.
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/fluid/oil.json",
+                br#"{"template": "minecraft:water", "still": "a:b", "flowing": "a:c"}"#,
+            ),
+            (
+                "data/ruby/horizon/fluid/flowing_oil.json",
+                br#"{"template": "minecraft:water", "still": "a:b", "flowing": "a:c"}"#,
+            ),
+        ];
+        assert!(
+            hmod("fluid-twice", MANIFEST_TEXT, files)
+                .unwrap_err()
+                .contains("declared twice")
+        );
     }
 
     #[test]
