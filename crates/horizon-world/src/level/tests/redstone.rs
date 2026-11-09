@@ -416,3 +416,45 @@ fn a_target_block_gives_vanillas_strength_for_where_a_projectile_hit() {
         assert_eq!(w.prop(pos, "power"), expected.to_string(), "{location:?}");
     }
 }
+/// An arrow's hit holds the output 20 ticks and anything else's 8, and a hit while
+/// the output is held changes nothing (`hasScheduledTick`), the new strength
+/// included.
+#[test]
+fn a_target_block_holds_its_output_for_20_ticks_for_an_arrow_and_8_otherwise() {
+    let centre = [3.5, 6.0, 7.5];
+    let edge = [3.99, 6.0, 7.5];
+    for (arrow, held) in [(true, 20), (false, 8)] {
+        let mut w = world!();
+        let pos = BlockPos::new(3, 5, 7);
+        w.set(pos, w.id("target", &[]));
+        let hit = |w: &mut World, at: [f64; 3]| {
+            w.f.behaviours.target_projectile_hit(
+                &mut w.level,
+                &mut w.ticks,
+                pos,
+                at,
+                [0, 1, 0],
+                arrow,
+            )
+        };
+        assert_eq!(hit(&mut w, centre), Some(15));
+        // A second, weaker hit while it is held is answered but changes nothing.
+        w.tick();
+        assert_eq!(hit(&mut w, edge), Some(1), "its strength is still reported");
+        assert_eq!(
+            w.prop(pos, "power"),
+            "15",
+            "arrow: {arrow}: held at the first hit's"
+        );
+        for tick in 2..held {
+            w.tick();
+            assert_eq!(w.prop(pos, "power"), "15", "arrow: {arrow}, tick {tick}");
+        }
+        w.tick();
+        assert_eq!(
+            w.prop(pos, "power"),
+            "0",
+            "arrow: {arrow}, after {held} ticks"
+        );
+    }
+}
