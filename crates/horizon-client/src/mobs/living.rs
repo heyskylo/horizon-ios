@@ -2075,21 +2075,18 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 #[path = "living_tests.rs"]
 mod tests;
-/// `Entity.move`'s fall-reset ray along a move from `from`, up to 8 blocks:
-/// `ClipContext.Block.FALLDAMAGE_RESETTING` (a tagged block clips as a full
-/// block) and `ClipContext.Fluid.WATER` (the water's shape). Either one
-/// hitting ends the ray.
+/// `Entity.move`'s fall-reset ray for a mob, with the world's
+/// `minecraft:fall_damage_resetting` blocks.
 fn fall_reset_hit(w: &MobWorld, from: Vec3, moved: Vec3) -> bool {
-    let to = from.add_vector(moved.normalize().scale(moved.length().min(8.0)));
     let reset = w.block_tags.get("minecraft:fall_damage_resetting");
-    let hit = horizon_core::geometry::traverse_blocks(from, to, 1_000_000, |p| {
-        let water = crate::entities::water_clip(w.world, w.fluid_tables, from, to, p);
-        let name = &w.facts.get(w.world.block(p.x, p.y, p.z)).name;
-        let tagged = reset.is_some_and(|t| t.contains(&**name))
-            && horizon_core::geometry::VoxelShape::block()
-                .clip(from, to, p)
-                .is_some();
-        (water || tagged).then_some(())
-    });
-    matches!(hit, Ok(Some(())))
+    crate::entities::fall_reset_hit(
+        w.world,
+        w.fluid_tables,
+        |p| {
+            let name = &w.facts.get(w.world.block(p.x, p.y, p.z)).name;
+            reset.is_some_and(|t| t.contains(&**name))
+        },
+        from,
+        moved,
+    )
 }
