@@ -47,7 +47,12 @@ impl Game<'_> {
         consumable: &ItemConsumable,
         stack: &ItemStack,
     ) {
-        self.emit_consume(consumable, stack, 16);
+        let consumable = {
+            let mut consumable = consumable.clone();
+            if let Some(animation) = horizon_client::item_sync::consumable_animation(stack) {
+                consumable.animation = animation;
+        };
+        self.emit_consume(&consumable, stack, 16);
         // ServerPlayer: the used statistic and the consume_item trigger.
         self.award_stat("used", &stack.item, 1);
         self.trigger_item("minecraft:consume_item", stack);

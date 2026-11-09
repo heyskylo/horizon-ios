@@ -200,6 +200,31 @@ pub fn food(stack: &ItemStack, default: Option<(u32, f32)>) -> Option<(u32, f32)
     }
     default
 }
+/// `Consumable.animation` from the stack's `consumable` component.
+pub fn consumable_animation(stack: &ItemStack) -> Option<horizon_world::consumable::UseAnimation> {
+    use horizon_world::consumable::UseAnimation;
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    let Some(Tag::String(animation)) = data
+        .and_then(|d| d.other("minecraft:consumable"))
+        .and_then(|c| c.get("animation"))
+    else {
+        return None;
+    };
+    Some(match &*animation.to_string_lossy() {
+        "drink" => UseAnimation::Drink,
+        "block" => UseAnimation::Block,
+        "bow" => UseAnimation::Bow,
+        "spear" => UseAnimation::Spear,
+        "toot_horn" => UseAnimation::TootHorn,
+        "brush" => UseAnimation::Brush,
+        "bundle" => UseAnimation::Bundle,
+        "none" => UseAnimation::None,
+        _ => UseAnimation::Eat,
+    })
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -1113,6 +1138,24 @@ mod tests {
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
         assert_eq!(food(&stack, Some((4, 2.4))), None);
+    }
+
+    #[test]
+    fn consumable_animation_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([("animation", Tag::String("drink".into()))])),
+        );
+        assert_eq!(
+            consumable_animation(&stack),
+            Some(horizon_world::consumable::UseAnimation::Drink)
+        );
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_animation(&stack), None);
     }
 
     #[test]
