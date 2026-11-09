@@ -153,3 +153,4 @@ Zombie.ZombieAttackTurtleEggGoal.playDestroyProgressSound	inline	crates/horizon-
 Zombie.ZombieAttackTurtleEggGoal.playBreakSound	inline	crates/horizon-client/src/mobs/undead.rs::AttackTurtleEgg::tick	turtle egg break sound when the egg breaks
 SpellcasterIllager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	SpellTicks binds to the existing live counter, default zero
 SpellcasterIllager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	SpellTicks saves the live Int counter including zero and negative values
+Evoker.EvokerWololoSpellGoal.canUse	port	crates/horizon-client/src/mobs/illager.rs::UseSpell::can_use	wololo branch: blue sheep range scaled by visibility, floor 2
