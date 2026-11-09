@@ -120,16 +120,6 @@ impl Game<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn rain_and_thunder_start_above_vanillas_thresholds() {
-        assert_eq!(super::weather_flags((0.2, 0.0)), (false, false));
-        assert_eq!(super::weather_flags((0.21, 0.9)), (true, false));
-        assert_eq!(super::weather_flags((1.0, 0.95)), (true, true));
-    }
-}
-
 // The clock and weather changes `/time set` and `/weather` make, shared with the setters above.
 impl Game<'_> {
     /// `/time set` on `clock`: the mods hear `time_skip` first and can keep `from`; the clock's
@@ -189,5 +179,15 @@ impl Game<'_> {
             }
         }
         !cancel
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rain_and_thunder_start_above_vanillas_thresholds() {
+        assert_eq!(super::weather_flags((0.2, 0.0)), (false, false));
+        assert_eq!(super::weather_flags((0.21, 0.9)), (true, false));
+        assert_eq!(super::weather_flags((1.0, 0.95)), (true, true));
     }
 }
