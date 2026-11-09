@@ -827,3 +827,83 @@ fn redstone_wire_connects_to_each_neighbour_by_that_blocks_own_rule() {
         assert_eq!(w.prop(wire, "south"), "none", "south: {what}");
     }
 }
+
+/// `RedStoneWireBlock.getConnectingSide`: a wire climbs onto a block beside it
+/// (`UP`) only if nothing conductive sits on top of the wire itself, and steps down
+/// to a wire below a gap (`SIDE`) only if the block beside it is not conductive: a
+/// solid block there cuts the connection. The wire is placed by an item, which
+/// computes its connections (`getStateForPlacement`); with none at all it is drawn
+/// as a cross, so `north` tells a real connection on the east-west axis (none) from
+/// a cut one (side).
+#[test]
+fn redstone_wire_climbs_and_descends_only_where_nothing_conductive_cuts_it() {
+    type Setup = fn(&mut World);
+    // (what stands, the wire's east side, whether it has a real connection)
+    let cases: [(&str, &str, bool, Setup); 4] = [
+        ("a wire on top of the block beside it", "up", true, |w| {
+            let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+            w.set(BlockPos::new(1, 5, 0), stone);
+            w.set(BlockPos::new(1, 6, 0), wire);
+        }),
+        (
+            "the same under a roof over the first wire",
+            "side",
+            false,
+            |w| {
+                let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+                w.set(BlockPos::new(1, 5, 0), stone);
+                w.set(BlockPos::new(0, 6, 0), stone);
+                w.set(BlockPos::new(1, 6, 0), wire);
+            },
+        ),
+        ("a wire one step down across a gap", "side", true, |w| {
+            let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+            w.set(BlockPos::new(1, 3, 0), stone);
+            w.set(BlockPos::new(1, 4, 0), wire);
+        }),
+        (
+            "a wire one step down under a solid block",
+            "side",
+            false,
+            |w| {
+                let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+                w.set(BlockPos::new(1, 3, 0), stone);
+                w.set(BlockPos::new(1, 5, 0), stone);
+                w.set(BlockPos::new(1, 4, 0), wire);
+            },
+        ),
+    ];
+    for (what, east, connected, build) in cases {
+        let mut w = world!();
+        w.set(BlockPos::new(0, 4, 0), w.id("stone", &[]));
+        build(&mut w);
+        let placed = w.place(
+            "redstone",
+            BlockPos::new(0, 4, 0),
+            Direction::Up,
+            0.0,
+            0.0,
+            0.0,
+        );
+        assert!(
+            matches!(placed, PlaceOutcome::Placed { .. }),
+            "{what}: placed"
+        );
+        let wire = BlockPos::new(0, 5, 0);
+        if connected {
+            assert_eq!(w.prop(wire, "east"), east, "{what}: east");
+            assert_eq!(
+                w.prop(wire, "north"),
+                "none",
+                "{what}: a real connection, not a cross"
+            );
+        } else {
+            assert_ne!(w.prop(wire, "east"), "up", "{what}: it does not climb");
+            assert_eq!(
+                w.prop(wire, "north"),
+                "side",
+                "{what}: no connection, so a cross"
+            );
+        }
+    }
+}
