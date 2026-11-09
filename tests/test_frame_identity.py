@@ -225,10 +225,12 @@ class HdrGateTests(unittest.TestCase):
         self.assertTrue(all('the SDR screenshot isn\'t HDR off\'s within rounding' in p for p in moved_problems))
 
     def test_only_where_the_sun_passes_white_is_the_hdr_shot_brighter_and_hdr_off_not_the_picture(self):
-        self.vanilla = picture(4, 4, 8)
         sun = {(0, 0), (1, 0), (0, 1), (1, 1)}
+        # 🤖 Agent: HDR off clips the sun's blue.
+        self.vanilla = [bytes(255 if (x // 3, y) in sun and x % 3 == 2 else v for x, v in enumerate(r))
+                        for y, r in enumerate(picture(4, 4, 8))]
         # 🤖 Agent: The screenshot clips the sun and its later blends differ from HDR off's, there only.
-        moved = [bytes(min(v + 3, 255) if x // 3 in (0, 1) and y in (0, 1) else v for x, v in enumerate(r))
+        moved = [bytes(min(v + 3, 255) if (x // 3, y) in sun else v for x, v in enumerate(r))
                  for y, r in enumerate(self.vanilla)]
         problems = self.unlit(moved, self.hdr(moved, sun=sun))
         self.assertEqual(identity.above_white(self.dir / 'float_unlit.sun-hdr.png', 203), sun)
@@ -238,6 +240,14 @@ class HdrGateTests(unittest.TestCase):
         brighter = self.hdr(self.vanilla, darker=-8, sun=sun)
         self.assertIn('float_unlit.hud_sun: the HDR shot isn\'t its SDR screenshot\'s picture: 12 pixels',
                       '\n'.join(self.unlit(self.vanilla, brighter)))
+        # 🤖 Agent: Light the build lifts above white where HDR off didn't clip excuses nothing.
+        self.vanilla = picture(4, 4, 8)
+        moved = [bytes(min(v + 3, 255) if (x // 3, y) in sun else v for x, v in enumerate(r))
+                 for y, r in enumerate(self.vanilla)]
+        lifted = '\n'.join(self.unlit(moved, self.hdr(moved, sun=sun)))
+        for scene in ('sun', 'hud_sun'):
+            self.assertIn(f'float_unlit.{scene}: the SDR screenshot isn\'t HDR off\'s within rounding', lifted)
+            self.assertIn(f'float_unlit.{scene}: the HDR shot isn\'t its SDR screenshot\'s picture: 4 pixels', lifted)
 
 
 class BaseTests(unittest.TestCase):

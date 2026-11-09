@@ -588,6 +588,12 @@ def above_white(path, paper):
             if max(sum(m * nits[c] for m, c in zip(row, h)) for row in BT709) > 1}
 
 
+def clipped(path):
+    """The pixels, (x, y), of an 8-bit shot with a channel at 255."""
+    width, sdr = pixels(path)
+    return {(i % width, i // width) for i, p in enumerate(sdr) if 255 in p}
+
+
 def setting(name, key, default=None):
     """A session's value of a horizon-graphics.txt key, after GRAPHICS's, else the game's default."""
     graphics = GRAPHICS + SESSIONS[name][0]
@@ -597,8 +603,8 @@ def setting(name, key, default=None):
 def hdr_gates(shots, sessions):
     """With HDR Lighting off (float_unlit), the picture is SDR's: its SDR screenshot is HDR off's within a step of
     rounding (two in at most 1 pixel in 10 000, where the float frame blends several times), and its HDR shot is
-    that screenshot's picture. Where the sun's light passes white (above_white of the sun shot, in sun and hud_sun),
-    the screenshot clips it and the HDR shot keeps it, so there the HDR shot is only never darker; and the later
+    that screenshot's picture. Where the sun's light passes white (above_white of the sun shot, in sun and hud_sun)
+    and HDR off clips it too, the screenshot clips it and the HDR shot keeps it, so there the HDR shot is only never darker; and the later
     blends over that light come out brighter than vanilla's over its clipped sky (Why gamma storage), so there the
     screenshot isn't held to HDR off.
     With HDR Lighting on, the SDR screenshot is the HDR shot through its shoulder (in the world scenes, outside the
@@ -632,10 +638,13 @@ def hdr_gates(shots, sessions):
             if not lighting:
                 hot = set()
                 if scene in OFF:
-                    if not (shots / f'{name}.sun-hdr.png').exists():
-                        problems.append(f'{name}.{scene}: no sun shot to find where light passes white')
+                    sun, plain_sun = shots / f'{name}.sun-hdr.png', shots / 'vanilla.sun.png'
+                    if not sun.exists() or not plain_sun.exists():
+                        problems.append(f'{name}.{scene}: no sun shots to find where light passes white')
                         continue
-                    hot = above_white(shots / f'{name}.sun-hdr.png', paper)
+                    # 🤖 Agent: Only where HDR off clipped too: HDR off's shot is the base's, byte for byte, so a
+                    # build that wrongly lifts light above white can't excuse it.
+                    hot = above_white(sun, paper) & clipped(plain_sun)
                 if 'vanilla' in sessions:
                     width, plain = pixels(shots / f'vanilla.{scene}.png')
                     _, unlit = pixels(shots / f'{name}.{scene}.png')
