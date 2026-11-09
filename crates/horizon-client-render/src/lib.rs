@@ -86,6 +86,8 @@ pub mod options_fixes;
 pub mod options_ui;
 pub mod overlay;
 pub mod pack_browser;
+pub mod pack_formats;
+pub mod pack_hooks;
 pub mod pack_options_ui;
 pub mod pack_palette;
 pub mod pack_screen;

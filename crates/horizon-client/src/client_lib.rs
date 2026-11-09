@@ -19,7 +19,7 @@ pub use horizon_client_render::{
     hdr_calibration, hud, hud_kit, hud_layout, hud_overlays, inventory_effects, java_text,
     jigsaw_block, json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap,
     mipmap, mod_browser, mod_list, model_library, models, multiline_edit, native_emissive,
-    options_file, options_fixes, options_ui, overlay, pack_browser, pack_palette, pack_screen,
+    options_file, options_fixes, options_ui, overlay, pack_browser, pack_formats, pack_hooks, pack_palette, pack_screen,
     packs, pad_cursor, pad_glyph, par, particles, poi_sections, polytone_colors, polytone_post,
     post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud, random_source, screen_draw,
     screen_effects, sculk, section_mask, server_terrain, settings, shader_options,
