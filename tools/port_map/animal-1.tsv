@@ -1,4 +1,5 @@
 AbstractFish.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	FromBucket always written; tadpole getter is always true
+AbstractFish.removeWhenFarAway	port	crates/horizon-client/src/mobs/aquatic.rs::named_keeps_it	`!fromBucket() && !hasCustomName()`: the bucket flag is persistence in check_despawn, the name keeps it there too
 AbstractFish.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	FromBucket via read_variant defaults false; tadpole ignores loaded input
 AgeableWaterCreature.handleAirSupply	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	the needs_water branch of base_tick; dolphins override it to nothing and refill air in aquatic.rs
 AgeableWaterCreature.checkSurfaceAgeableWaterCreatureSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::surface_water	
@@ -43,6 +44,7 @@ ArmadilloAi.initCoreActivity	inline	crates/horizon-client/src/mobs/armadillo.rs:
 ArmadilloAi.initIdleActivity	inline	crates/horizon-client/src/mobs/armadillo.rs::register	gap: only look, stroll and random look; no AnimalMakeLove, FollowTemptation or BabyFollowAdult, so armadillos never seek a partner, follow food or have babies follow adults
 ArmadilloAi.initScaredActivity	inline	crates/horizon-client/src/mobs/armadillo.rs::server_ai_step	the PANIC activity and ArmadilloBallUp
 Axolotl.<init>	port	crates/horizon-client/src/mobs/aquatic.rs::register	the Axolotl arm: smooth swimming move and look control, amphibious navigation, water malus 0
+Axolotl.removeWhenFarAway	port	crates/horizon-client/src/mobs/aquatic.rs::named_keeps_it	the same pair as AbstractFish's
 Axolotl.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	variant and playing_dead; from_bucket is not synced
 Axolotl.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Variant and FromBucket are written
 Axolotl.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_variant	Variant and FromBucket are read
