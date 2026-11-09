@@ -100,13 +100,13 @@ pub struct HudAtlas {
     pub glint_armor: (Vec<u8>, u32, u32),
     /// A resource pack's own `core/text` shader for the GUI's text, translated;
     /// none draws the text natively.
-    pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    pub text_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
     /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
     /// none draws the outline natively.
-    pub lines_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    pub lines_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
     /// The packs' `core/sky` and `core/stars`, when a pack replaces them.
-    pub sky_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
-    pub stars_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    pub sky_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
+    pub stars_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
     /// The packs' Polytone screen sprite modifiers.
     pub sprite_modifiers: std::sync::Arc<sprite_modifiers::SpriteModifiers>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
@@ -1427,32 +1427,7 @@ impl HudAtlas {
         }
         if full {
             // Official Recipes artwork from Just Enough Items, under MIT.
-            for (name, png) in [
-                (
-                    "button_enabled_v2",
-                    include_bytes!("jei_recipes/button_enabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_disabled_v2",
-                    include_bytes!("jei_recipes/button_disabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_highlight_v2",
-                    include_bytes!("jei_recipes/button_highlight_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_previous_v2",
-                    include_bytes!("jei_recipes/icons/arrow_previous_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_next_v2",
-                    include_bytes!("jei_recipes/icons/arrow_next_v2.png").as_slice(),
-                ),
-                (
-                    "search_background_v2",
-                    include_bytes!("jei_recipes/search_background_v2.png").as_slice(),
-                ),
-            ] {
+            for (name, png) in crate::jei_sprites::SPRITES {
                 let (width, height, rgba) = decode_bytes(png)?;
                 images.push((format!("horizon/jei/{name}"), width, height, rgba));
             }
@@ -2895,7 +2870,7 @@ impl HudRenderer {
     pub fn set_text_shader(
         &mut self,
         device: &wgpu::Device,
-        shader: Option<&horizon_shaders::CoreProgram>,
+        shader: Option<&crate::core_shader::CoreProgram>,
     ) {
         self.pack_text = shader.and_then(|shader| {
             pack_text::PackText::new(device, self.format, &self.atlas_view, shader, self.coverage)
