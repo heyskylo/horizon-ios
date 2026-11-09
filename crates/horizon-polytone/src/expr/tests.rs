@@ -236,6 +236,8 @@ fn reads_only_names_what_a_program_may_read() {
 struct Kinds {
     age: f64,
     seen: Vec<String>,
+    /// Answers `o.age` and `o.life` by field too, as the particles' host does.
+    fields: bool,
 }
 impl Host for Kinds {
     fn root(&mut self, root: Root) -> Value {
@@ -262,6 +264,16 @@ impl Host for Kinds {
     }
     fn function(&mut self, _: &str, _: &[Value]) -> Result<Value, String> {
         Ok(Value::Null)
+    }
+    fn field(&mut self, root: Root, field: Field) -> Option<Value> {
+        if !self.fields || root != Root::Object {
+            return None;
+        }
+        match field {
+            Field::Age => Some(Value::Num(self.age)),
+            Field::Life => Some(Value::Num(140.0)),
+            _ => None,
+        }
     }
 }
 
@@ -299,14 +311,19 @@ fn the_fast_path_answers_what_the_interpreter_does() {
     ];
     for src in corpus {
         let program = Program::compile(src).unwrap();
-        for age in [0.0, 3.0, 45.0, 75.0, 139.0] {
+        let cases = [0.0, 3.0, 45.0, 75.0, 139.0]
+            .into_iter()
+            .flat_map(|a| [(a, false), (a, true)]);
+        for (age, fields) in cases {
             let mut fast_host = Kinds {
                 age,
                 seen: Vec::new(),
+                fields,
             };
             let mut slow_host = Kinds {
                 age,
                 seen: Vec::new(),
+                fields,
             };
             let fast = program.eval(&mut fast_host);
             let slow = program.interpret(&mut slow_host);
@@ -315,7 +332,10 @@ fn the_fast_path_answers_what_the_interpreter_does() {
                 (a, b) => a == b,
             };
             assert!(same, "{src} at {age}: fast {fast:?}, interpreter {slow:?}");
-            assert_eq!(fast_host.seen, slow_host.seen, "{src} at {age}: the calls");
+            // A field the host answers skips its call; the interpreter makes it by name.
+            if !fields {
+                assert_eq!(fast_host.seen, slow_host.seen, "{src} at {age}: the calls");
+            }
         }
     }
     // The fast path covers the particles' and colormaps' plain arithmetic.

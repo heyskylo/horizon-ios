@@ -69,6 +69,36 @@ impl Root {
     }
 }
 
+/// A method without arguments that expressions read most, resolved when the program compiles so
+/// a host can answer it without comparing names ([`Host::field`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Age,
+    Life,
+    Custom,
+    X,
+    Y,
+    Z,
+    Temperature,
+    Downfall,
+}
+
+impl Field {
+    pub(crate) fn of(name: &str) -> Option<Self> {
+        Some(match name {
+            "age" => Self::Age,
+            "life" => Self::Life,
+            "custom" => Self::Custom,
+            "x" => Self::X,
+            "y" => Self::Y,
+            "z" => Self::Z,
+            "temperature" => Self::Temperature,
+            "downfall" => Self::Downfall,
+            _ => return None,
+        })
+    }
+}
+
 /// What the game answers while an expression runs.
 pub trait Host {
     fn root(&mut self, root: Root) -> Value;
@@ -77,6 +107,12 @@ pub trait Host {
     fn method(&mut self, target: &Value, name: &str, args: &[Value]) -> Result<Value, String>;
     /// A global function of the game's (`config`, `colormap`, `modOn`, `date*`).
     fn function(&mut self, name: &str, args: &[Value]) -> Result<Value, String>;
+    /// `root.field()` answered without its name, or `None` to answer it through [`Self::method`]:
+    /// a host that answers must give what `method` would.
+    fn field(&mut self, root: Root, field: Field) -> Option<Value> {
+        let _ = (root, field);
+        None
+    }
 }
 
 type MathFn = fn(&[f64]) -> f64;

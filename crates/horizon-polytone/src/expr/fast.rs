@@ -5,7 +5,7 @@
 //! (strings, objects, `==` on a method's value, locals, game functions) keeps the interpreter.
 
 use super::parse::{BinOp, Expr, Stmt};
-use super::{Host, MathFn, Root, Value};
+use super::{Field, Host, MathFn, Root, Value};
 use std::sync::Arc;
 
 /// What a node gives: always a number, always a boolean, or whatever a host method answers.
@@ -36,6 +36,8 @@ pub(super) enum Num {
     Cond(Box<Num>, Box<Num>, Box<Num>),
     Call(MathFn, Vec<Num>),
     Method(Root, Arc<str>, Vec<Arg>),
+    /// A method without arguments the host may answer by [`Field`] (its name otherwise).
+    Field(Root, Field, Arc<str>),
 }
 
 /// The fast form of a whole program, with the kind of value it gives.
@@ -57,18 +59,28 @@ impl Fast {
         let root = Num::of(e)?;
         let kind = root.kind();
         // A method at the top hands back its own value; elsewhere the kind must be known.
-        (kind != Kind::Unknown || matches!(root, Num::Method(..))).then_some(Self { root, kind })
+        (kind != Kind::Unknown || matches!(root, Num::Method(..) | Num::Field(..)))
+            .then_some(Self { root, kind })
     }
 
     pub(super) fn eval(&self, host: &mut dyn Host) -> Result<Value, String> {
-        if let Num::Method(root, name, args) = &self.root {
-            return call(host, *root, name, args);
+        match &self.root {
+            Num::Method(root, name, args) => return call(host, *root, name, args),
+            Num::Field(root, field, name) => return field_value(host, *root, *field, name),
+            _ => {}
         }
         let n = self.root.eval(host)?;
         Ok(match self.kind {
             Kind::Bool => Value::Bool(n != 0.0),
             _ => Value::Num(n),
         })
+    }
+}
+
+fn field_value(host: &mut dyn Host, root: Root, field: Field, name: &str) -> Result<Value, String> {
+    match host.field(root, field) {
+        Some(value) => Ok(value),
+        None => call(host, root, name, &[]),
     }
 }
 
@@ -97,6 +109,7 @@ impl Arg {
         Ok(match self {
             Self::Value(v) => v.clone(),
             Self::Method(Num::Method(root, name, args)) => call(host, *root, name, args)?,
+            Self::Method(Num::Field(root, field, name)) => field_value(host, *root, *field, name)?,
             Self::Method(n) | Self::Num(n, false) => Value::Num(n.eval(host)?),
             Self::Num(n, true) => Value::Bool(n.eval(host)? != 0.0),
         })
@@ -140,6 +153,9 @@ impl Num {
                 let Expr::Root(root) = **target else {
                     return None;
                 };
+                if let (true, Some(field)) = (args.is_empty(), Field::of(name)) {
+                    return Some(Self::Field(root, field, name.clone()));
+                }
                 let args = args
                     .iter()
                     .map(|a| match a {
@@ -147,7 +163,9 @@ impl Num {
                         other => {
                             let n = Self::of(other)?;
                             match n.kind() {
-                                Kind::Unknown if matches!(n, Self::Method(..)) => {
+                                Kind::Unknown
+                                    if matches!(n, Self::Method(..) | Self::Field(..)) =>
+                                {
                                     Some(Arg::Method(n))
                                 }
                                 // A ternary between method values: the interpreter's own value.
@@ -174,7 +192,7 @@ impl Num {
                 (x, y) if x == y => x,
                 _ => Kind::Unknown,
             },
-            Self::Method(..) => Kind::Unknown,
+            Self::Method(..) | Self::Field(..) => Kind::Unknown,
         }
     }
 
@@ -226,6 +244,7 @@ impl Num {
                 f(&nums)
             }
             Self::Method(root, name, args) => call(host, *root, name, args)?.num(),
+            Self::Field(root, field, name) => field_value(host, *root, *field, name)?.num(),
         })
     }
 
@@ -234,6 +253,7 @@ impl Num {
     fn truthy(&self, host: &mut dyn Host) -> Result<bool, String> {
         match self {
             Self::Method(root, name, args) => Ok(call(host, *root, name, args)?.truthy()),
+            Self::Field(root, field, name) => Ok(field_value(host, *root, *field, name)?.truthy()),
             Self::Cond(c, a, b) => {
                 if c.truthy(host)? {
                     a.truthy(host)
