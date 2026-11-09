@@ -1,6 +1,7 @@
 //! The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer,
 //! the HUD, menus and settings. Gameplay (horizon-client) builds on it; nothing here reaches gameplay.
 #![forbid(unsafe_code)]
+pub mod android_gamepad;
 pub mod assets;
 pub mod atlas_sources;
 pub mod audio;
