@@ -458,3 +458,87 @@ fn a_target_block_holds_its_output_for_20_ticks_for_an_arrow_and_8_otherwise() {
         );
     }
 }
+/// One cycle of a lever that switches a torch's support block: on, long enough for
+/// the torch's two-tick delay to go off, then off and long enough to come back.
+///
+/// The lever is clicked, not rewritten: `LeverBlock.pull` is what updates the
+/// neighbours of the block it is attached to, so a plain `setBlock` of a powered
+/// lever never reaches the torch above that block.
+fn torch_cycle(w: &mut World, lever: BlockPos, wait: u32) {
+    w.use_block(lever);
+    for _ in 0..wait {
+        w.tick();
+    }
+    w.use_block(lever);
+    for _ in 0..wait {
+        w.tick();
+    }
+}
+/// `RedstoneTorchBlock`: turning off adds a toggle; with eight of them inside the
+/// last 60 ticks (`MAX_RECENT_TOGGLES`, `RECENT_TOGGLE_TIMER`) the torch burns out
+/// and `isToggledTooFrequently` keeps it dark; the tick it schedules 160 ticks out
+/// (`RESTART_DELAY`) lights it once the toggles have aged. Seven quick cycles leave
+/// it working; eight slow ones, each longer than the window allows, never burn it.
+#[test]
+fn a_torch_toggled_eight_times_in_sixty_ticks_burns_out_and_relights_after_160() {
+    let build = |w: &mut World| -> (BlockPos, BlockPos) {
+        let stone = w.id("stone", &[]);
+        let torch = BlockPos::new(0, 5, 0);
+        w.set(BlockPos::new(0, 4, 0), stone);
+        w.set(torch, w.id("redstone_torch", &[("lit", "true")]));
+        // A lever on the side of the support block powers it strongly, so the torch sees it.
+        let lever = BlockPos::new(1, 4, 0);
+        w.set(
+            lever,
+            w.id("lever", &[("face", "wall"), ("facing", "east")]),
+        );
+        (torch, lever)
+    };
+
+    // Seven cycles of 3 ticks each: 42 ticks, short of eight toggles.
+    let mut w = world!();
+    let (torch, lever) = build(&mut w);
+    for _ in 0..7 {
+        torch_cycle(&mut w, lever, 3);
+    }
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(w.prop(torch, "lit"), "true", "seven toggles: still working");
+
+    // The eighth, inside the same window: it goes out and stays out, though nothing
+    // powers its support any longer.
+    torch_cycle(&mut w, lever, 3);
+    for _ in 0..30 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(torch, "lit"),
+        "false",
+        "the eighth toggle burned it out"
+    );
+    // 160 ticks after it burned out its restart tick finds the toggles aged and relights it.
+    for _ in 0..200 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(torch, "lit"),
+        "true",
+        "relit after the restart delay"
+    );
+
+    // Eight cycles 12 ticks apart: every toggle but the last few has aged out of the 60-tick window.
+    let mut w = world!();
+    let (torch, lever) = build(&mut w);
+    for _ in 0..8 {
+        torch_cycle(&mut w, lever, 6);
+    }
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(torch, "lit"),
+        "true",
+        "eight toggles spread over 96 ticks never burn it out"
+    );
+}
