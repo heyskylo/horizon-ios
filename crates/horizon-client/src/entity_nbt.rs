@@ -10671,41 +10671,20 @@ mod equine_temper_preservation_tests {
         Arc::make_mut(&mut kind).species = Species::Ravager;
         let types = [("minecraft:ravager".into(), kind)].into();
         // Before its first aiStep a roaring ravager has no movement_speed
-        // instance; a saved base (here mid-ramp after a roar) loads back as is.
-        let roaring = mob_from_nbt(
-            &Tag::compound([
-                ("id", string("minecraft:ravager")),
-                ("Pos", doubles(&[0.0, 0.0, 0.0])),
-                ("RoarTick", Tag::Int(10)),
-            ]),
-            &types,
-            2,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            mob_to_nbt(&roaring, [0; 4], None, None, |_| None).get("attributes"),
-            Some(&Tag::List(vec![]))
-        );
+        // instance; a saved base (mid-ramp after a roar) loads back as is.
         let speed = Tag::List(vec![Tag::compound([
             ("id", string("minecraft:movement_speed")),
             ("base", Tag::Double(0.10317f64.to_bits())),
         ])]);
-        let ramping = mob_from_nbt(
-            &Tag::compound([
-                ("id", string("minecraft:ravager")),
-                ("Pos", doubles(&[0.0, 0.0, 0.0])),
-                ("attributes", speed.clone()),
-            ]),
-            &types,
-            3,
-            None,
-        )
-        .unwrap();
-        assert_eq!(ramping.attrs.speed, 0.10317);
-        assert_eq!(
-            mob_to_nbt(&ramping, [0; 4], None, None, |_| None).get("attributes"),
-            Some(&speed)
-        );
+        for (key, value, saved) in [
+            ("RoarTick", Tag::Int(10), Tag::List(vec![])),
+            ("attributes", speed.clone(), speed),
+        ] {
+            let pos = ("Pos", doubles(&[0.0, 0.0, 0.0]));
+            let tag = Tag::compound([("id", string("minecraft:ravager")), pos, (key, value)]);
+            let ravager = mob_from_nbt(&tag, &types, 2, None).unwrap();
+            let nbt = mob_to_nbt(&ravager, [0; 4], None, None, |_| None);
+            assert_eq!(nbt.get("attributes"), Some(&saved));
+        }
     }
 }
