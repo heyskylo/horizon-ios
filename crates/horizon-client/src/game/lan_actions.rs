@@ -6387,21 +6387,8 @@ fn bundle_inventory_slot(slot: usize, own: Option<usize>) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod bundle_slot_tests {
-    use super::bundle_inventory_slot;
-
-    /// A crafting table (10 slots of its own) and an enchanting table (2): the first
-    /// inventory slot and the last hotbar slot map to 9 and 44; their own slots to none.
-    #[test]
-    fn station_menus_map_to_the_inventory_menu() {
-        assert_eq!(bundle_inventory_slot(10, Some(10)), Some(9));
-        assert_eq!(bundle_inventory_slot(45, Some(10)), Some(44));
-        assert_eq!(bundle_inventory_slot(2, Some(2)), Some(9));
-        assert_eq!(bundle_inventory_slot(5, Some(10)), None);
-        assert_eq!(bundle_inventory_slot(46, Some(10)), None);
-        assert_eq!(bundle_inventory_slot(45, None), Some(45));
-    }
-}
+#[path = "bundle_slot_tests.rs"]
+mod bundle_slot_tests;
 
 /// Where the server aims a guest's attack or interact on a mob. The packet names only the
 /// entity, so the server picked the mob's centre; a slab, trapdoor, stair or fence between the
@@ -7278,6 +7265,10 @@ mod guest_close_listener_tests {
         drop(receivers);
     }
 }
+
+#[cfg(test)]
+#[path = "boat_holder_movement_tests.rs"]
+mod boat_holder_movement_tests;
 
 #[cfg(test)]
 mod item_on_block_cooldown_tests {
