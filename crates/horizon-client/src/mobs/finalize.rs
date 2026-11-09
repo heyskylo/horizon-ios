@@ -537,10 +537,7 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 pub fn made_at_load(m: &Mob) -> Vec<Attr> {
     let s = m.species();
     let mut made = Vec::new();
-    if super::doors::is_zombie(s)
-        || matches!(s, Species::Piglin | Species::Enderman)
-        || m.age > 0
-    {
+    if super::doors::is_zombie(s) || matches!(s, Species::Piglin | Species::Enderman) || m.age > 0 {
         made.push(Attr::MovementSpeed);
     }
     if s == Species::Wolf {
