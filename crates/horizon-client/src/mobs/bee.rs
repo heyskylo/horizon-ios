@@ -1446,4 +1446,39 @@ mod tests {
             }
         });
     }
+
+    /// `NeutralMob.addPersistentAngerSaveData` and
+    /// `readPersistentAngerSaveData`: `anger_end_time` and `angry_at`, the
+    /// reference to the player the bee is angry at (`Bee` keeps the anger
+    /// itself). `mob_to_nbt`/`mob_from_nbt` are the pair `Game::mob_tree_nbt`
+    /// and `Game::load_mob` go through. Horizon modelled the target in
+    /// `Bee.angry_at` and wrote only the timer, so a bee that had stung a
+    /// player came back with its anger still counting but no one to attack.
+    #[test]
+    fn a_bees_anger_target_survives_a_save() {
+        use crate::entity_nbt::{mob_from_nbt, mob_to_nbt, player_uuid};
+        use horizon_world::nbt::Tag;
+        let mut m = bee();
+        {
+            let b = super::st(&mut m);
+            b.anger_end = 500;
+            b.angry_at = Some(Who::Player);
+        }
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert_eq!(
+            saved.get("angry_at"),
+            Some(&Tag::IntArray(player_uuid().to_vec())),
+            "the save names the player"
+        );
+        let types = std::collections::HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
+        let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
+        let b = super::get(&back).unwrap();
+        assert_eq!(b.angry_at, Some(Who::Player), "the reloaded target");
+        assert_eq!(b.anger_end, 500, "the reloaded timer");
+        // `storeNullable`: a calm bee writes no `angry_at`, even over a
+        // compound that still names one.
+        let calm = bee();
+        let saved = mob_to_nbt(&calm, [1, 2, 3, 4], Some(&saved), None, |_| None);
+        assert_eq!(saved.get("angry_at"), None, "no target, no key");
+    }
 }
