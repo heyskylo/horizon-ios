@@ -159,13 +159,23 @@ impl Banners {
     }
     /// `LoomMenu.isDyeItem`: the dye colour of a loom dye.
     pub fn loom_dye(&self, items: &Items, stack: &ItemStack) -> Option<Arc<str>> {
-        let tagged = items
+        if !items
             .item_tags
             .get("minecraft:loom_dyes")
-            .is_some_and(|t| t.contains(&*stack.item));
-        tagged
-            .then(|| self.dyes.get(&stack.item).cloned())
-            .flatten()
+            .is_some_and(|t| t.contains(&*stack.item))
+        {
+            return None;
+        }
+        let data = stack.data();
+        if data.is_some_and(|d| d.other("!minecraft:dye").is_some()) {
+            return None;
+        }
+        if let Some(Tag::String(color)) = data.and_then(|d| d.other("minecraft:dye")) {
+            return Some(Arc::from(
+                color.to_string_lossy().trim_start_matches("minecraft:"),
+            ));
+        }
+        self.dyes.get(&stack.item).cloned()
     }
     /// `LoomMenu.isPatternItem`.
     pub fn is_pattern_item(&self, items: &Items, stack: &ItemStack) -> bool {
@@ -243,6 +253,27 @@ mod tests {
         assert_eq!(b.selectable(None).len(), 1);
         let item = ItemStack::new("minecraft:flower_banner_pattern", 1);
         assert_eq!(&*b.selectable(Some(&item))[0], "minecraft:flower");
+    }
+    #[test]
+    fn prepared_dye_component() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let items = Items::tags_only(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        let b = Banners::load(&root);
+        let mut dye = ItemStack::new("minecraft:white_dye", 1);
+        assert_eq!(&*b.loom_dye(&items, &dye).unwrap(), "white");
+        dye.data_mut()
+            .set_other("minecraft:dye", Some(Tag::String("red".into())));
+        assert_eq!(&*b.loom_dye(&items, &dye).unwrap(), "red");
+        dye.data_mut().set_other(
+            "!minecraft:dye",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(b.loom_dye(&items, &dye).is_none());
     }
     #[test]
     fn banner_colour_comes_from_the_item() {
