@@ -249,6 +249,55 @@ it. Mods loaded as WebAssembly run as separate modules, not linked into the exec
 These stay without it: builds of this repository from source, horizon-plain, and `packaging/server/install.sh`
 and `install.ps1` (the dedicated server). The server's anticheat and chat filter are platform features.
 
+## How a Horizon crate plugs in
+
+The seam's points 1-3 above, as they work today (layer plan M5).
+
+| Crate | Layer | Holds |
+|---|---|---|
+| `horizon-hooks` | engine | The `Hooks` trait, `register`, and the engine's dispatch (`horizon_hooks::engine`) |
+| `horizon-platform` | platform | `horizon_platform::hooks`: `Hooks`, `Started`, `register`, without the dispatch |
+| `horizon-game` | platform | The game for an executable to start: `horizon_game::main()`, the allocator, the mod API mark. The platform's own parts register here as they leave the engine (M6) |
+| `horizon-official` | Horizon | The official executable: `register()` adds the Horizon crates' hooks, then it runs `horizon_game::main()` |
+
+A Horizon crate that runs in the game:
+
+1. depends on `horizon-platform` (never on an engine crate) and implements `Hooks` on a `static`, only the methods it
+   needs: every method has an empty default;
+
+   ```rust
+   use horizon_platform::hooks::{Hooks, Started};
+
+   pub static HOOKS: Ping = Ping;
+   pub struct Ping;
+
+   impl Hooks for Ping {
+       fn started(&self, game: &Started<'_>) { /* someone is playing: game.version */ }
+       fn published(&self, open: bool) { /* the world was opened to LAN or friends, or closed */ }
+   }
+   ```
+
+2. is added to `horizon-official`'s dependencies and to its `register()`:
+   `horizon_platform::hooks::register(&my_crate::HOOKS)`.
+
+Registration happens before the game runs: the engine seals the list as it starts (`entry::main`), and a later
+`register` returns `TooLate`. Hooks run in the order they registered, on the render thread unless the method says
+otherwise, and must return quickly. With nothing registered a dispatch is one load and an empty loop, so the plain
+build pays nothing.
+
+The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
+`published` (the world opened to or closed from LAN or friends, on change) and `shutdown` (the window closed, the
+world saved). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+`horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
+the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
+context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
+that belongs to one subsystem (an input source, the compositor) lives in the engine crate that owns it, with the
+same shape: registered before the game runs, read-only after.
+
+Until the official executable is what players get, horizon-client's own executable still registers the "I'm
+playing" ping (`heartbeat.rs`) through the same hooks, and nothing leaves the shipped game: a part moves to a
+Horizon crate registered by `horizon-official` once the release builds ship that executable under the game's name.
+
 ## Extras that may leave the game
 
 Horizon's extras are Horizon-layer code. Each one is a candidate to become an optional native mod that players add
