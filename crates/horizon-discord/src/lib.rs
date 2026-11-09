@@ -1,11 +1,15 @@
 //! Discord Rich Presence: "Playing Horizon" on the player's Discord profile, with what they are
 //! doing (docs/native-client.md). A thread of its own talks to the Discord app on this computer
 //! through its local IPC socket (Discord's RPC docs: `discord-ipc-N`, frames of opcode u32 LE +
-//! length u32 LE + JSON). The game only calls [`set`] each frame: a change wakes the thread,
+//! length u32 LE + JSON). The game says what the player does on each change ([`set`]), which wakes the thread,
 //! which connects when Discord runs, retries every 15 s when it doesn't, keeps under Discord's
 //! update limit and clears the activity on quit. Nothing is sent with the setting off,
-//! or with `HORIZON_NO_DISCORD=1`. It uses nothing else of the game (docs/layers.md: Horizon layer):
-//! `game/discord.rs` says what the player does.
+//! or with `HORIZON_NO_DISCORD=1`.
+//!
+//! A Horizon crate (docs/layers.md): the game tells it what the player does through the
+//! platform's hooks ([`HOOKS`]: `client_started`, `activity`, `shutdown`), which the official
+//! executable (`horizon-official`) registers. horizon-client's own executable has no presence.
+#![forbid(unsafe_code)]
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -15,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use horizon_command::args::GameMode;
+use horizon_platform::hooks::{self, Activity, Dimension, GameMode, Hooks, Play};
 
 /// The "Horizon" application on Discord's developer portal (public: it names the game). Its
 /// Rich Presence assets: `horizon`, the logo.
@@ -40,24 +44,38 @@ const CLOSE: u32 = 2;
 const PING: u32 = 3;
 const PONG: u32 = 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dimension {
-    Overworld,
-    Nether,
-    End,
-}
+/// The presence's hooks, for `horizon_platform::hooks::register`.
+pub static HOOKS: Presence = Presence;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Play {
-    Singleplayer,
-    /// A server or someone else's LAN world. Its address and name are never shown.
-    Multiplayer,
-    /// This world is open to LAN or friends; `players` counts the host, `max` is how many
-    /// may join.
-    Hosting {
-        players: usize,
-        max: usize,
-    },
+pub struct Presence;
+
+impl Hooks for Presence {
+    /// Starts the presence thread with the game's window (never for a dedicated server).
+    fn client_started(&self, client: &hooks::Client) {
+        start(client.automated);
+    }
+
+    fn activity(&self, now: Activity) {
+        set(match now {
+            Activity::Menus => Status::Menus,
+            Activity::World {
+                play,
+                dimension,
+                mode,
+            } => Status::World {
+                play,
+                dimension,
+                mode,
+            },
+            // Hidden, and anything a later game says that this crate doesn't know yet.
+            _ => Status::Off,
+        });
+    }
+
+    /// On quit: the activity is cleared.
+    fn shutdown(&self) {
+        stop();
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,16 +132,14 @@ static THREAD: OnceLock<Thread> = OnceLock::new();
 
 /// Starts the presence thread, once: when the game starts, never for a dedicated server.
 /// `automated` runs (offscreen, benchmarks) only talk to a test's fake Discord.
-pub fn start(enabled: bool, automated: bool) {
+/// The status [`set`] gave before, the switch included, is the first one sent.
+pub fn start(automated: bool) {
     let fake_discord = std::env::var_os(IPC_DIR_ENV).is_some();
     if THREAD.get().is_some()
         || std::env::var_os("HORIZON_NO_DISCORD").is_some_and(|v| v != "0")
         || (automated && !fake_discord)
     {
         return;
-    }
-    if !enabled {
-        lock().wanted.status = Status::Off;
     }
     match std::thread::Builder::new()
         .name("Discord presence".into())
@@ -136,12 +152,10 @@ pub fn start(enabled: bool, automated: bool) {
     }
 }
 
-/// What the player does now; only a change wakes the thread. Free without [`start`].
+/// What the player does now; only a change wakes the thread. Kept for [`start`] before it.
 pub fn set(status: Status) {
-    let Some(thread) = THREAD.get() else {
-        return;
-    };
-    if lock().wanted.update(status, unix_now()) {
+    let changed = lock().wanted.update(status, unix_now());
+    if let Some(thread) = THREAD.get().filter(|_| changed) {
         thread.unpark();
     }
 }
