@@ -1488,6 +1488,11 @@ pub fn mob_to_nbt(
         }
         _ => {}
     }
+    // `Frog`'s `IS_PREGNANT` memory: `Brain.Packed` saves every memory, and
+    // `mob_from_nbt` reads this one back into the frog's memories.
+    if m.species() == S::Frog {
+        write_frog_memories(m, map);
+    }
     // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
     if m.species() == S::Bogged {
         map.insert("sheared".into(), Tag::Byte(i8::from(m.extra.sheared)));
@@ -6516,6 +6521,35 @@ fn write_axolotl_memories(m: &Mob, map: &mut Compound) {
         } else {
             memories.remove(&key.into());
         }
+    }
+}
+/// `Frog`'s brain memory `IS_PREGNANT`, which `Brain.Packed` writes beside the
+/// other memories and `mob_from_nbt` reads back into the frog's memories. The
+/// memory is a `Unit`: its value is an empty compound, with no TTL.
+fn write_frog_memories(m: &Mob, map: &mut Compound) {
+    let brain = map
+        .entry("Brain".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(brain, Tag::Compound(_)) {
+        *brain = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(brain) = brain else { return };
+    let memories = brain
+        .entry("memories".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(memories, Tag::Compound(_)) {
+        *memories = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(memories) = memories else {
+        return;
+    };
+    if crate::mobs::frog::is_pregnant(m) {
+        memories.insert(
+            "minecraft:is_pregnant".into(),
+            Tag::compound([("value", Tag::Compound(Compound::new()))]),
+        );
+    } else {
+        memories.remove(&"minecraft:is_pregnant".into());
     }
 }
 /// Saved variants and fish/axolotl bucket flags. Missing variants use a
