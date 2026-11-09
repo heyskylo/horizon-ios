@@ -6543,6 +6543,27 @@ def beacon_levels_load():
                        f'/forceload remove {x0} {z0}')
 
 
+def zombie_villager_summoned_data():
+    """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
+    leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
+    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob."""
+    x0, y0, z0 = 3776, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    subjects = ['NoAI:1b', 'NoAI:1b,VillagerDataFinalized:1b',
+                'NoAI:1b,VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}']
+    for n, fields in enumerate(subjects, 1):
+        uuid = f'000033ce-0000-0000-0000-{n:04x}00000001'
+        ops.append(cmd(f'/summon zombie_villager {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13262,0,{n},1],{fields}}}',
+                       expect_result=1))
+        ops.append(cmd(f'/data get entity {uuid} VillagerDataFinalized'))
+        ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
+        if n == 3:
+            ops.append(cmd(f'/data get entity {uuid} VillagerData'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7122,6 +7143,7 @@ def groups():
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('beacon levels load', beacon_levels_load()),
+        ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
