@@ -3920,6 +3920,7 @@ impl Renderer {
             overlay_format,
             &atlas_view,
             &glint_view,
+            &glint_armor_view,
             &glint_sampler,
             hud_coverage,
         )?;
