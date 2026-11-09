@@ -17,6 +17,8 @@ use crate::{
     ui,
 };
 
+mod shell_pages;
+
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
@@ -879,15 +881,7 @@ impl Opt {
                 gamepad::TextKeyboard::Horizon => "horizon.options.keyboard.horizon",
                 gamepad::TextKeyboard::Steam => "horizon.options.keyboard.steam",
             }),
-            Opt::PadRadialMode => tr(match s.controller.radial_mode {
-                gamepad::RadialMode::Hold => "options.key.hold",
-                gamepad::RadialMode::Toggle => "options.key.toggle",
-            }),
-            Opt::PadRadialStick => tr(match s.controller.radial_stick {
-                gamepad::RadialStick::Right => "horizon.options.radial_stick.right",
-                gamepad::RadialStick::Left => "horizon.options.radial_stick.left",
-                gamepad::RadialStick::Either => "horizon.options.radial_stick.either",
-            }),
+            Opt::PadRadialMode | Opt::PadRadialStick => self.radial_text(s),
             _ => Text::empty(),
         }
     }
@@ -1207,24 +1201,7 @@ impl Opt {
                     .unwrap_or(0) as u8;
                 s.controller.keyboard = all[usize::from(next(i, 3))];
             }
-            Opt::PadRadialMode => {
-                let all = gamepad::RadialMode::ALL;
-                let i = all
-                    .iter()
-                    .position(|m| *m == s.controller.radial_mode)
-                    .unwrap_or(0) as u8;
-                s.controller.radial_mode = all[usize::from(next(i, all.len() as u8))];
-            }
-            Opt::PadRadialStick => {
-                let all = gamepad::RadialStick::ALL;
-                let i = all
-                    .iter()
-                    .position(|k| *k == s.controller.radial_stick)
-                    .unwrap_or(0) as u8;
-                // An opener under the thumb that now selects goes unbound.
-                s.controller
-                    .set_radial_stick(all[usize::from(next(i, all.len() as u8))]);
-            }
+            Opt::PadRadialMode | Opt::PadRadialStick => self.radial_step(s, back),
             _ => {}
         }
         if self.affects_preset() {
@@ -2153,12 +2130,7 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
-                Page::ControllerRadialName => self
-                    .radial
-                    .screen
-                    .naming
-                    .as_ref()
-                    .is_some_and(|n| n.typing()),
+                Page::ControllerRadialName => self.radial_name_typing(),
                 _ => match self.shell() {
                     Some(shell) => shell.typing(),
                     None => self.settings_search_active(),
@@ -2291,170 +2263,15 @@ impl OptionsUi {
             self.studio.refresh();
         }
     }
-    /// The open page's screen on the settings shell. This, with `shell_mut`, is all a screen
-    /// needs here: drawing, clicks, the wheel, a stick's scrolling, keys and typing all go
-    /// through them, so no input path can miss one.
-    fn shell(&self) -> Option<&dyn shell::Hosted> {
-        match self.page() {
-            Page::Extras => Some(&self.extras),
-            page if Self::graphics_page(page).is_some() => Some(&self.graphics),
-            Page::ControllerRadial => Some(&self.radial),
-            Page::ControllerRadialPick => Some(&self.radial_pick),
-            page if Self::controller_page(page).is_some() => Some(&self.controller),
-            page if Self::shader_page(page).is_some() => Some(&self.shader),
-            _ => None,
-        }
-    }
-    fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
-        match self.page() {
-            Page::Extras => Some(&mut self.extras),
-            page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
-            Page::ControllerRadial => Some(&mut self.radial),
-            Page::ControllerRadialPick => Some(&mut self.radial_pick),
-            page if Self::controller_page(page).is_some() => Some(&mut self.controller),
-            page if Self::shader_page(page).is_some() => Some(&mut self.shader),
-            _ => None,
-        }
-    }
-    /// Where the open shell screen asked the focus to open (a radial slot's list, on the slot's
-    /// action), for a controller's focus to land there.
-    pub fn shell_opened_focus(&self) -> Option<[f32; 4]> {
-        self.shell()?.opened_focus()
-    }
-    /// The clicks until it is set back are a controller's Left or Right on a row: a choice of a
-    /// settings shell steps, rather than opens.
-    pub fn pad_clicks_step(&mut self, on: bool) {
-        if on {
-            if let Some(shell) = self.shell_mut() {
-                shell.clicks_step(true);
-            }
-            return;
-        }
-        // Every shell: the click may have changed the page.
-        let shells: [&mut dyn shell::Hosted; 5] = [
-            &mut self.extras,
-            &mut self.graphics,
-            &mut self.controller,
-            &mut self.radial,
-            &mut self.radial_pick,
-        ];
-        for shell in shells {
-            shell.clicks_step(false);
-        }
-    }
-    /// The controller's focus landed there.
-    pub fn clear_shell_opened_focus(&mut self) {
-        if let Some(shell) = self.shell_mut() {
-            shell.clear_opened_focus();
-        }
-    }
     /// A controller's or the keyboard's focus landed on `rect`: a row of a shell screen's list
     /// that is partly hidden scrolls all into view. How far it moved down, when it moved.
     pub fn reveal(&mut self, s: &Settings, size: (f32, f32), rect: [f32; 4]) -> Option<f32> {
         self.shell_mut()?.reveal(s, size, rect)
     }
-    /// The window's size, for the graphics and controller screens' rows that step an option
-    /// (`Opt::cycle`, which a fullscreen resolution needs): before each input that can press one.
-    fn shell_framebuffers(&mut self) {
-        self.graphics.screen.framebuffer = self.framebuffer;
-        self.controller.screen.framebuffer = self.framebuffer;
-    }
-    /// Who and what Controller Settings is about: the game sets it before each draw.
-    pub fn set_controller_context(&mut self, context: crate::controller_ui::Context) {
-        self.controller.screen.context = context;
-    }
-    /// The binding the screen waits on: a controller button's, else a key's.
-    fn waiting(&self) -> Option<shell::Capture> {
-        let pad = self.selected_pad_action.map(shell::Capture::Pad);
-        pad.or(self.selected_key.map(shell::Capture::Key))
-    }
-    /// What a shell screen's outputs do to these options.
-    fn shell_events(&mut self, s: &mut Settings, outputs: Vec<shell::Output>) -> Vec<Event> {
-        let mut events = Vec::new();
-        for output in outputs {
-            match output {
-                shell::Output::Event(event) => events.push(event),
-                shell::Output::Bind(shell::Capture::Key(name)) => self.selected_key = Some(name),
-                shell::Output::Bind(shell::Capture::Pad(action)) => {
-                    self.selected_pad_action = Some(action)
-                }
-                shell::Output::Push(page) => {
-                    if page == Page::HdrCalibration {
-                        self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
-                    }
-                    self.push(page);
-                    // A slot's list, for the slot, opening on what it holds.
-                    if page == Page::ControllerRadialPick
-                        && let Some(at) = self.radial.screen.picking.take()
-                    {
-                        let row = self.radial_pick.screen.open_on(at, &s.controller.radial);
-                        self.radial_pick.focus_soon(row);
-                    }
-                }
-                shell::Output::Done => {
-                    // Back from a slot's list, the focus is on the slot.
-                    let slot = (self.page() == Page::ControllerRadialPick)
-                        .then(|| self.radial_pick.screen.at());
-                    events.extend(self.back(s));
-                    if let Some((page, slot)) = slot {
-                        self.radial
-                            .focus_soon(crate::radial_editor::RadialRow::Slot(page, slot));
-                    }
-                }
-            }
-        }
-        // A pick on a slot's list is a change of the radial page's, which its Undo takes back.
-        if self.radial_pick.screen.take_picked() {
-            self.radial.changed_elsewhere();
-        }
-        // A radial page added or deleted: the one to show now.
-        if let Some(page) = self.radial.screen.take_shown() {
-            self.radial.show(page);
-        }
-        events
-    }
-    /// What a press on a radial page's name does here.
-    fn name_events(&mut self, named: crate::radial_editor::Named, s: &mut Settings) -> Vec<Event> {
-        use crate::radial_editor::Named;
-        let mut events = vec![Event::ButtonClick];
-        match named {
-            Named::Nothing => return Vec::new(),
-            Named::Done => {
-                let entry = self.radial.screen.naming.take();
-                if entry.is_some_and(|entry| entry.apply(&mut s.controller.radial)) {
-                    self.radial.changed_elsewhere();
-                }
-                events.push(Event::Changed);
-                events.extend(self.back(s));
-            }
-            Named::Back => events.extend(self.back(s)),
-        }
-        events
-    }
-    /// Where the shader screen opens for `page`, if it is one of its pages.
-    fn shader_page(page: Page) -> Option<crate::shader_ui::Tab> {
-        match page {
-            Page::ShaderPacks => Some(crate::shader_ui::Tab::Packs),
-            Page::ShaderOptions => Some(crate::shader_ui::Tab::Screen(0)),
-            _ => None,
-        }
-    }
-    /// Where the controller screen opens for `page`, if it is one of its pages.
-    fn controller_page(page: Page) -> Option<crate::controller_ui::Page> {
-        match page {
-            Page::Controller => Some(crate::controller_ui::Page::General),
-            Page::PadBinds => Some(crate::controller_ui::Page::Bindings),
-            _ => None,
-        }
-    }
     /// Whether a video settings screen is open, Horizon's or vanilla's: the fullscreen mode
     /// waits for it to close, and Ctrl with the wheel steps the GUI scale.
     pub fn video_open(&self) -> bool {
         self.page() == Page::Video || Self::graphics_page(self.page()).is_some()
-    }
-    /// Whether the controller screen is open: a controller button pressed now may bind.
-    pub fn controller_open(&self) -> bool {
-        Self::controller_page(self.page()).is_some()
     }
     /// Where the graphics screen opens for `page`, if it is one of its pages.
     fn graphics_page(page: Page) -> Option<crate::graphics_ui::Page> {
@@ -3798,11 +3615,7 @@ impl OptionsUi {
         }
         let waiting = self.waiting();
         let in_world = self.in_world;
-        self.radial.screen.glyphs = self.pad_glyphs;
-        if self.page() == Page::ControllerRadialName
-            && let Some(entry) = &mut self.radial.screen.naming
-        {
-            entry.draw(batch, atlas, cursor, in_world);
+        if self.draw_radial_name(batch, atlas, cursor, in_world) {
             return;
         }
         if let Some(shell) = self.shell_mut() {
@@ -4157,12 +3970,7 @@ impl OptionsUi {
             return self.calibration_outcome(s, outcome);
         }
         if self.page() == Page::ControllerRadialName {
-            let entry = self.radial.screen.naming.as_mut();
-            let named = match entry.filter(|_| !drag && !right) {
-                Some(entry) => entry.click(atlas, (x, y), size),
-                None => crate::radial_editor::Named::Nothing,
-            };
-            return self.name_events(named, s);
+            return self.click_radial_name(s, atlas, (x, y), size, drag || right);
         }
         if self.shell().is_some() {
             // Waiting on a controller button: a click cancels the wait.
@@ -4863,9 +4671,7 @@ impl OptionsUi {
         } else if self.page() == Page::SplitProfiles {
             self.split_profiles.type_text(text);
         } else if self.page() == Page::ControllerRadialName {
-            if let Some(entry) = &mut self.radial.screen.naming {
-                entry.type_text(text);
-            }
+            self.type_radial_name(text);
         } else if let Some(shell) = self.shell_mut() {
             if shell.typing() {
                 shell.type_text(text);
@@ -4902,8 +4708,7 @@ impl OptionsUi {
             return self.split_profiles.shortcut(shortcut, clipboard);
         }
         if self.page() == Page::ControllerRadialName {
-            let entry = self.radial.screen.naming.as_mut();
-            return entry.is_some_and(|entry| entry.shortcut(shortcut, clipboard));
+            return self.radial_name_shortcut(shortcut, clipboard);
         }
         if let Some(shell) = self.shell_mut() {
             return shell.shortcut(shortcut, clipboard);
@@ -5018,13 +4823,7 @@ impl OptionsUi {
             return Vec::new();
         }
         if self.page() == Page::ControllerRadialName {
-            let named = match &mut self.radial.screen.naming {
-                Some(entry) => entry.key(key, text),
-                // Nothing to name: Escape still leaves.
-                None if key == K::Escape => crate::radial_editor::Named::Back,
-                None => crate::radial_editor::Named::Nothing,
-            };
-            return self.name_events(named, s);
+            return self.radial_name_key(s, key, text);
         }
 
         // The size it was drawn at; before the first draw, one its keys can lay out at.
