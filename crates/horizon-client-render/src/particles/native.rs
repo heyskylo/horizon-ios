@@ -124,6 +124,7 @@ mod tests {
             facts: &facts,
             collision: &collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut e = engine();
         let mut p = e

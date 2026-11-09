@@ -22,6 +22,7 @@ pub mod pages;
 pub mod players;
 mod registry;
 pub mod settings;
+pub mod tunnel;
 
 use registry::Registry;
 use std::cell::Cell;
@@ -46,7 +47,7 @@ pub trait Hooks: Sync {
     /// Once a frame, before drawing: `sprites` takes the pictures the crate's
     /// [`players::Sprites`] lacked. Only a window's game calls it (each splitscreen player in
     /// turn, [`seat`]), never the integrated server's thread or a dedicated server; so are the
-    /// methods below.
+    /// player methods below (not [`Hooks::tunnel`]).
     fn frame(&self, _frame: &players::Frame, _sprites: &mut dyn players::SpriteStore) {}
 
     /// Once a client tick while a world is shown: the player models in view.
@@ -75,6 +76,13 @@ pub trait Hooks: Sync {
 
     /// Draws on a player model, after its vanilla layers, each time it is drawn.
     fn player_layers(&self, _model: &players::PlayerModel, _draw: &mut dyn players::PlayerDraw) {}
+
+    /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
+    /// offers one is used. Asked on the network thread when joining and on the game thread when
+    /// an address is shown, never per frame.
+    fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
+        None
+    }
 }
 
 /// What [`Hooks::started`] gets.
@@ -216,6 +224,11 @@ pub mod engine {
         for hooks in all() {
             hooks.tick(models);
         }
+    }
+
+    /// [`Hooks::tunnel`]: the first registered hook's resolver.
+    pub fn tunnel() -> Option<&'static dyn tunnel::Resolver> {
+        all().iter().find_map(|hooks| hooks.tunnel())
     }
 }
 
