@@ -874,6 +874,14 @@ as `/summon` does, and `native_move_entity`, `native_set_display` (a display's t
 `native_remove_entity` move, pose and remove displays, markers and interactions: models that move, from a mod's own
 item models. Bundles that use them need `"hooks": 59`.
 
+`native_summon_with_uuid(dimension, kind, pos, nbt, uuid)` is `native_summon` with a UUID the mod picks for the root (the
+entity answers to it in `native_entity_by_uuid` afterwards); nothing is spawned, and None comes back, when an entity of any
+loaded level or a server's player already holds it or a passenger's `UUID` in `nbt` is taken (`/summon`'s "duplicate
+UUIDs"). Passengers in `nbt` are spawned and mounted as in `/summon`; mount and dismount are `native_mount`,
+`native_dismount` and `native_eject_passengers`, and an item frame's `ItemRotation` and a hanging entity's `Facing` change
+through `native_entity_merge_nbt` (`/data merge entity`, which refuses players). Bundles need
+`"hooks": @API:native_summon_with_uuid@`.
+
 API 60 adds `native_item_bar(stack, bar)`: the small bar `GuiGraphicsExtractor.itemDecorations` draws under an item,
 wherever the game shows one. `bar` arrives holding
 vanilla's choice (the damage bar, or a bundle's fullness, already applied); set it to a width `0..=13` and an

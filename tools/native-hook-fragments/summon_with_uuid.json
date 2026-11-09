@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "summon_with_uuid", "target": "horizon_client::game::native_entities::Game<'_>::native_summon_with_uuid"}
+  ],
+  "rust_summary": "`native_summon_with_uuid`: `native_summon` with a UUID the mod chooses for the root, refused when an entity or a player holds it.",
+  "doc_summary": "`native_summon_with_uuid(dimension, kind, pos, nbt, uuid)`: `native_summon` for a root with the UUID the mod chooses; nothing is spawned when an entity of any loaded level or a player holds it, or a passenger's UUID is taken (`/summon`'s \"duplicate UUIDs\"). Bundles need \"hooks\": @API:native_summon_with_uuid@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entities.rs"
+  ]
+}
