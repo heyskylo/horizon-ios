@@ -33,6 +33,13 @@ pub fn json_text<T: Serialize>(reply: &T) -> Result<String, String> {
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(link) = path
+        .to_str()
+        .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
+    {
+        return crate::sharing::download(link);
+    }
     std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 

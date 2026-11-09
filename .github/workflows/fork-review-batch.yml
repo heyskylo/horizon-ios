@@ -13,7 +13,7 @@ concurrency:
   group: fork-review-batch
 jobs:
   update:
-    if: github.repository == 'UMCEKO/horizon'
+    if: github.repository == 'sunrise-org/horizon'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

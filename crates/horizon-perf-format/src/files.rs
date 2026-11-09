@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 
 /// Where the web UI that opens a capture lives.
-pub const PERF_UI_URL: &str = "https://horizon-perf.umceko.com/perf";
+pub const PERF_UI_URL: &str = "https://playsunrise.net/perf";
 /// Captures a `reports/` folder keeps.
 pub const KEEP_FILES: usize = 30;
 pub const KEEP_BYTES: u64 = 1 << 30;
