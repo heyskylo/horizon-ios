@@ -132,7 +132,10 @@ mod tests {
 
     impl Hooks for Recorder {
         fn started(&self, game: &Started<'_>) {
-            self.0.lock().unwrap().push(format!("started {}", game.version));
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("started {}", game.version));
         }
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
