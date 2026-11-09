@@ -6704,7 +6704,7 @@ impl Game<'_> {
         if self.studio.replay.is_none() {
             self.tick_player_model();
         }
-        self.tick_emotes();
+        self.client_hooks_tick();
         if !dead {
             self.remote_tick_using();
         }
@@ -10687,17 +10687,11 @@ impl Game<'_> {
     /// The profile name of another player the server sent, by entity id.
     /// The UUID of another player's entity in the level.
     pub(super) fn remote_player_uuid(&self, id: u32) -> Option<u128> {
-        let r = self.remote.as_ref()?;
-        let uuid = *r.level_players.get(&(id as i32))?;
-        (uuid != r.profile).then_some(uuid)
+        self.remote.as_ref()?.player_uuid(id)
     }
     pub(super) fn remote_player_name(&self, id: u32) -> Option<&str> {
         let r = self.remote.as_ref()?;
-        let uuid = r.level_players.get(&(id as i32))?;
-        if *uuid == r.profile {
-            return None;
-        }
-        r.level_player_name(id as i32, uuid)
+        r.level_player_name(id as i32, &r.player_uuid(id)?)
     }
     /// Status for `horizon-ctl status`.
     /// The other players' entities in the level and their names (their
@@ -11477,6 +11471,11 @@ impl Remote {
     /// The local player's profile UUID.
     pub(super) fn profile(&self) -> u128 {
         self.profile
+    }
+    /// Another player's profile UUID, by their entity id (None for the local player).
+    pub(super) fn player_uuid(&self, id: u32) -> Option<u128> {
+        let uuid = *self.level_players.get(&(id as i32))?;
+        (uuid != self.profile).then_some(uuid)
     }
     /// The entity id of a player in the level, by profile UUID.
     pub(super) fn player_entity(&self, uuid: u128) -> Option<u32> {

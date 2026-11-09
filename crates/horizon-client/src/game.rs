@@ -373,6 +373,7 @@ mod place_feature_tests;
 mod play_input;
 mod play_keys;
 mod player_equip;
+pub(crate) mod player_hooks;
 mod player_spawn;
 mod pointer_capture;
 #[cfg(test)]
@@ -7455,7 +7456,6 @@ impl Game<'_> {
         self.spawn_phantoms();
         self.tick_advancements();
         self.tick_player_model();
-        self.tick_emotes();
         Ok(())
     }
 
