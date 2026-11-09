@@ -855,7 +855,7 @@ impl Game<'_> {
     /// One item modifier (a typed object, a list or a datapack reference)
     /// applied to a stack; `None` when the stack ends up empty.
     fn apply_item_modifier(
-        &self,
+        &mut self,
         m: &serde_json::Value,
         stack: Option<ItemStack>,
         rng: &mut horizon_core::random::LegacyRandom,
@@ -885,8 +885,8 @@ impl Game<'_> {
             Value::Array(list) => list.iter().fold(stack, |s, f| {
                 self.apply_item_modifier(f, s, rng, this, origin, depth + 1)
             }),
-            Value::String(id) => match self.fns.store.item_modifiers.get(id) {
-                Some(f) => self.apply_item_modifier(f, stack, rng, this, origin, depth + 1),
+            Value::String(id) => match self.fns.store.item_modifiers.get(id).cloned() {
+                Some(f) => self.apply_item_modifier(&f, stack, rng, this, origin, depth + 1),
                 None => stack,
             },
             Value::Object(_) => {
@@ -906,6 +906,14 @@ impl Game<'_> {
                             .fold(Some(stack), |s, f| {
                                 self.apply_item_modifier(f, s, rng, this, origin, depth + 1)
                             });
+                    }
+                    "minecraft:exploration_map" => {
+                        if stack.count > 0 {
+                            let map = horizon_world::loot::ExplorationMap::from_json(m);
+                            // A failed command search keeps the input; pending loot's
+                            // caller owns its separate filtered/drop policy.
+                            self.materialize_exploration_map(&mut stack, &map, origin);
+                        }
                     }
                     "minecraft:set_count" => {
                         let n = int(&m["count"], rng);

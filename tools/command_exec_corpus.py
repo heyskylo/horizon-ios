@@ -986,6 +986,36 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def rocket_data_merge():
+    """#13083: /data merge and /data modify on a firework rocket run Entity.load over it
+    (FireworkRocketEntity.readAdditionalSaveData: Life, LifeTime, FireworksItem, ShotAtAngle;
+    Entity.load: Motion, Rotation, OnGround, Tags; Projectile: HasBeenShot, 0b until its first tick
+    posts the shot). Frozen, then ticks: an angled rocket keeps its motion, and its Rotation eases
+    toward it (Projectile.updateRotation)."""
+    sel = '@e[tag=rocket_merge,limit=1]'
+    ops = setup('/forceload add 384 384', '/tick freeze',
+                '/summon firework_rocket 384.5 230 384.5 {LifeTime:200,Tags:["rocket_merge"]}')
+    ops += [{'op': 'settle', 'required_chunks': [[24, 24]]}]
+    ops += [cmd(f'/data get entity {sel} HasBeenShot'),
+            cmd(f'/data merge entity {sel} {{LifeTime:77,Life:5,ShotAtAngle:1b,Motion:[0.1d,0.2d,0.3d],OnGround:1b,'
+                'Rotation:[90f,10f]}'),
+            cmd(f'/data modify entity {sel} Life set value 9'),
+            cmd(f'/data merge entity {sel} {{FireworksItem:{{id:"minecraft:firework_rocket",count:3,'
+                'components:{"minecraft:fireworks":{flight_duration:2b}}}}'),
+            cmd(f'/data merge entity {sel} {{Tags:["rocket_merge","rocket_merged"]}}')]
+    for key in ('LifeTime', 'Life', 'ShotAtAngle', 'Motion', 'Rotation', 'OnGround', 'FireworksItem', 'Tags'):
+        ops.append(cmd(f'/data get entity {sel} {key}'))
+    ops += setup('/tick unfreeze')
+    ops.append({'op': 'tick', 'n': 1})
+    ops += [cmd(f'/data get entity {sel} Pos'), cmd(f'/data get entity {sel} Life'),
+            cmd(f'/data get entity {sel} HasBeenShot'), cmd(f'/data get entity {sel} Rotation')]
+    # Projectile.updateRotation eases a fifth of the way toward the motion each tick.
+    for _ in range(2):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity {sel} Rotation'))
+    return ops + setup('/kill @e[type=minecraft:firework_rocket]', '/forceload remove 384 384')
+
+
 def teleport_lands():
     """TeleportCommand.performTeleport after a successful teleportTo: unless the target is a living
     entity that is fall-flying, its vertical motion is zeroed (multiply(1, 0, 1)) and it is on the
@@ -6466,6 +6496,58 @@ def primed_tnt_fall():
     return ops
 
 
+def loaded_dead_mob():
+    """#13199: `LivingEntity.readAdditionalSaveData` reads `Health` through `setHealth`, which
+    clamps a negative value to 0 and keeps the body: a mob summoned dead is there, `/data` reads
+    it, and `tickDeath` removes it once `DeathTime` reaches 20."""
+    x0, y0, z0 = 3712, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    subjects = [('ocelot', 'Health:0.0f,PersistenceRequired:1b'), ('mannequin', 'Health:-1.0f'),
+                ('zombie', 'Health:0.0f,DeathTime:5s')]
+    uuids = []
+    for n, (kind, fields) in enumerate(subjects, 1):
+        uuid = f'000033cf-0000-0000-0000-{n:04x}00000001'
+        uuids.append(uuid)
+        ops.append(cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13263,0,{n},1],{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        for uuid in uuids:
+            ops.append(cmd(f'/execute if entity {uuid}'))
+            ops.append(cmd(f'/data get entity {uuid} Health'))
+            ops.append(cmd(f'/data get entity {uuid} DeathTime'))
+
+    reads()
+    for ticks in (1, 13, 5, 1):
+        ops.append({'op': 'tick', 'n': ticks})
+        reads()
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def zombie_villager_summoned_data():
+    """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
+    leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
+    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob."""
+    x0, y0, z0 = 3776, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    subjects = ['NoAI:1b', 'NoAI:1b,VillagerDataFinalized:1b',
+                'NoAI:1b,VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}']
+    for n, fields in enumerate(subjects, 1):
+        uuid = f'000033ce-0000-0000-0000-{n:04x}00000001'
+        ops.append(cmd(f'/summon zombie_villager {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13262,0,{n},1],{fields}}}',
+                       expect_result=1))
+        ops.append(cmd(f'/data get entity {uuid} VillagerDataFinalized'))
+        ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
+        if n == 3:
+            ops.append(cmd(f'/data get entity {uuid} VillagerData'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7044,6 +7126,8 @@ def groups():
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('zombie villager summoned data', zombie_villager_summoned_data()),
+        ('loaded dead mob', loaded_dead_mob()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
@@ -7134,6 +7218,7 @@ def groups():
         ('vehicle fall clip', vehicle_fall_clip()),
         ('projectile saved ground', projectile_saved_ground()),
         ('teleport lands', teleport_lands()),
+        ('rocket data merge', rocket_data_merge()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         # Last: it leaves the player in other food than it found.

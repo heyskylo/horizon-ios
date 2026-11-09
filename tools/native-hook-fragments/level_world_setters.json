@@ -1,0 +1,25 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "level_set_day_time",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_set_day_time",
+      "receiver": "level"
+    },
+    {
+      "name": "level_set_game_rule",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_set_game_rule",
+      "receiver": "level"
+    },
+    {
+      "name": "level_set_weather",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_set_weather",
+      "receiver": "level"
+    }
+  ],
+  "rust_summary": "setters for a level's day time, game rules and weather through a `LevelRef`, the code paths of `/time set`, `/gamerule` and `/weather`.",
+  "doc_summary": "`level.set_day_time(host, ticks)`, `set_game_rule(host, name, value)` and `set_weather(host, clear_time, weather_time, raining, thundering)`: `/time set`, `/gamerule` (`advance_time` and `advance_weather` freeze the day clock and the weather cycle) and `/weather`. Bundles need \"hooks\": @API:level_world_setters@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_level_world.rs"
+  ]
+}

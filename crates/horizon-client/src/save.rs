@@ -612,7 +612,7 @@ pub use horizon_items::item_nbt::{
 };
 /// The block entity type ID for the block it sits in (a chest-like container
 /// is a chest, trapped chest or barrel).
-fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
+pub fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
     match (e, block) {
         (
             crate::containers::BlockEntity::Chest(_),
@@ -6743,9 +6743,8 @@ mod tests {
         };
         assert_eq!(*back, c);
         // The update tag a server's clients get: the items alone.
-        let update =
-            crate::lan::chunks::entity_tag(&crate::containers::BlockEntity::Campfire(Box::new(c)))
-                .expect("update tag");
+        let campfire = crate::containers::BlockEntity::Campfire(Box::new(c));
+        let update = crate::lan::chunks::entity_tag(&campfire, false).expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
     /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to
