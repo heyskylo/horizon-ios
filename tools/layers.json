@@ -114,13 +114,6 @@
     "horizon-client-render -> horizon-polytone",
     "horizon-client-render -> horizon-shader-api",
     "horizon-client-render -> horizon-shaders",
-    "horizon-client-render -> horizon-theme",
-    "horizon-launcher -> horizon-core",
-    "horizon-launcher -> horizon-prepare",
-    "horizon-launcher -> horizon-protocol",
-    "horizon-launcher -> horizon-world",
-    "horizon-server -> horizon-core",
-    "horizon-server -> horizon-server-files",
-    "horizon-server -> horizon-world"
+    "horizon-client-render -> horizon-theme"
   ]
 }
