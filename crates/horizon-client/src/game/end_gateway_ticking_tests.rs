@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 fn item(id: u32, at: Vec3) -> ItemEntity {
     ItemEntity {
+        random: horizon_core::random::LegacyRandom::new(0),
         rotation: [0.0, 0.0],
         join: Default::default(),
         no_gravity: true,
