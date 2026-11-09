@@ -125,8 +125,8 @@ PriorityProvider.Selector.codec	skip:java		record codec for a variant selector's
 VariantUtils.getDefaultOrAny	port	crates/horizon-client/src/mobs/finalize.rs::variant_index	gap: minor: name to index with unknown names falling back to index 0; no registry holder lookup
 VariantUtils.writeVariant	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	the variant key is written with the rest of the mob's save data
 VariantUtils.readVariant	port	crates/horizon-client/src/entity_nbt.rs::read_variant	reads the variant key from the save
-ContainerEntity.addChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	writes the cart's items and any loot table
-ContainerEntity.readChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	reads the cart's items from the save
+ContainerEntity.addChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::to_nbt	writes the cart's items and any loot table
+ContainerEntity.readChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::from_nbt	reads the cart's items from the save
 ContainerEntity.chestVehicleDestroyed	port	crates/horizon-client/src/game/minecarts.rs::Game::hurt_cart	with entity_drops on, the second Containers.dropContents of the container remove() already emptied, which only draws each slot's spot; gap: a player's hit on a container minecart angers no piglins (the chest boat does it in strike_boat)
 ContainerEntity.unpackChestVehicleLootTable	port	crates/horizon-client/src/game/minecarts.rs::Game::unpack_cart_loot	opening a chest minecart rolls the loot table it still holds, firing `player_generates_container_loot`, and the cart keeps its items from then on
 ContainerEntity.isChestVehicleEmpty	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::container_signal	the comparator signal reads the slots' emptiness; gap: minor: no separate empty test
