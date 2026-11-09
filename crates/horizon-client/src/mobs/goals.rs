@@ -841,7 +841,7 @@ impl Goal for Float {
         JUMP
     }
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
+        m.floats()
     }
     fn every_tick(&self) -> bool {
         true
