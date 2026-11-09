@@ -2139,17 +2139,16 @@ impl MotionWorld<'_, '_, '_> {
             m.z * f64::from(0.99_f32),
         );
         let movement = self.player.velocity;
-        let before_h = (movement.x * movement.x + movement.z * movement.z).sqrt();
         self.move_self(movement)?;
         // LivingEntity.handleFallFlyingCollisions: the fall-damage sound plays
         // on both sides (a glider's own travel is client-side, and the sound
         // must reach its own ears, #8906), only the server hurts, and it
-        // compares the delta before the move with the one after it (where
-        // `Entity.move` zeroes the collided axes).
+        // compares the horizontal speed before `updateFallFlyingMovement`
+        // with the delta `Entity.move` leaves (the collided axes zeroed).
         if self.player.collision.horizontal {
             let v = self.player.velocity;
             let after_h = (v.x * v.x + v.z * v.z).sqrt();
-            let dmg = fly_into_wall_damage(before_h, after_h);
+            let dmg = fly_into_wall_damage(move_h, after_h);
             if dmg > 0.0 {
                 let first = self.player.events.len();
                 // getFallDamageSound((int) dmg)
