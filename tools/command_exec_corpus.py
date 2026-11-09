@@ -6525,6 +6525,23 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def falling_block_fall_float():
+    """#13701: `Entity.checkFallDamage` adds each step down narrowed to a float (`fallDistance -= (float)ya`);
+    a falling block never runs `baseTick`, so it is never in water and every step counts."""
+    x0, y0, z0 = 4096 - 64, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    sel = '@e[type=minecraft:falling_block,tag=fb_fall,limit=1]'
+    for block, y in (('sand', y0 + 6.5), ('anvil', y0 + 3.5)):
+        ops.append(cmd(f'/summon falling_block {x0 + 8}.5 {y} {z0 + 8}.5 '
+                       f'{{BlockState:{{Name:"minecraft:{block}"}},Time:1,Tags:["fb_fall"]}}', expect_result=1))
+        for _ in range(6):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {sel} fall_distance'))
+            ops.append(cmd(f'/data get entity {sel} Pos[1]'))
+        ops.append(cmd(f'/kill @e[type=minecraft:falling_block,tag=fb_fall]', False))
+        ops.append(cmd(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', False))
+    return ops + setup(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', f'/forceload remove {x0} {z0}')
 
 
 def loaded_ticket_removal(blocks=False):
@@ -7106,6 +7123,7 @@ def groups():
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('falling block fall float', falling_block_fall_float()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
