@@ -1437,7 +1437,7 @@ impl Game<'_> {
         edit.bordered = false;
         edit.focused = true;
         edit.text_color = u32::MAX;
-        edit.max_length = ANVIL_NAME_CHARS;
+        edit.max_length = anvil::NAME_CHARS;
         edit.draw(batch, &self.gui.atlas, None);
     }
 

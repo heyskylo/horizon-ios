@@ -3,7 +3,7 @@
 use super::Station;
 
 /// `AnvilScreen`: `name.setMaxLength(50)`.
-const NAME_CHARS: usize = 50;
+pub(super) const NAME_CHARS: usize = 50;
 
 /// `AnvilScreen.init`: the unbordered box of 50 at the menu's name position,
 /// focused; `slotChanged` makes it editable once the input slot has an item.
