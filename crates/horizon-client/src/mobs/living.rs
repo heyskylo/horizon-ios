@@ -723,6 +723,12 @@ impl Mob {
         let length = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z;
         let wanted_length = wanted.x * wanted.x + wanted.y * wanted.y + wanted.z * wanted.z;
         if length > 1.0e-7 || wanted_length - length < 1.0e-7 {
+            // A move of a block or more through water or a reset block (a
+            // vine, a ladder) resets the fall before the move's drop counts.
+            if self.fall_distance != 0.0 && length >= 1.0 && fall_reset_hit(w, self.position, moved)
+            {
+                self.fall_distance = 0.0;
+            }
             self.position = Vec3::new(
                 self.position.x + moved.x,
                 self.position.y + moved.y,
@@ -2069,3 +2075,21 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 #[path = "living_tests.rs"]
 mod tests;
+/// `Entity.move`'s fall-reset ray along a move from `from`, up to 8 blocks:
+/// `ClipContext.Block.FALLDAMAGE_RESETTING` (a tagged block clips as a full
+/// block) and `ClipContext.Fluid.WATER` (the water's shape). Either one
+/// hitting ends the ray.
+fn fall_reset_hit(w: &MobWorld, from: Vec3, moved: Vec3) -> bool {
+    let to = from.add_vector(moved.normalize().scale(moved.length().min(8.0)));
+    let reset = w.block_tags.get("minecraft:fall_damage_resetting");
+    let hit = horizon_core::geometry::traverse_blocks(from, to, 1_000_000, |p| {
+        let water = crate::entities::water_clip(w.world, w.fluid_tables, from, to, p);
+        let name = &w.facts.get(w.world.block(p.x, p.y, p.z)).name;
+        let tagged = reset.is_some_and(|t| t.contains(&**name))
+            && horizon_core::geometry::VoxelShape::block()
+                .clip(from, to, p)
+                .is_some();
+        (water || tagged).then_some(())
+    });
+    matches!(hit, Ok(Some(())))
+}
