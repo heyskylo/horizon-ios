@@ -1781,9 +1781,10 @@ impl Game<'_> {
             near.clear();
             near.extend(0..self.carts.len() as u32);
         }
-        for &j in &near {
+        let allowed = self.cart_push_allowed(&self.carts, i, &near);
+        for (k, &j) in near.iter().enumerate() {
             let j = j as usize;
-            if j == i || !hitbox.intersects(self.carts[j].bounds()) {
+            if !allowed[k] || j == i || !hitbox.intersects(self.carts[j].bounds()) {
                 continue;
             }
             // AbstractMinecart.push(entity): `this` is cart j, `entity` cart i.
@@ -1843,9 +1844,8 @@ impl Game<'_> {
         self.pickup_from_cart(i, index);
     }
     /// `OldMinecartBehavior.pushAndPickupEntities` for living entities in cart
-    /// `i`'s box (0.2 wider on each side): only a rideable cart moving at
-    /// `horizontalDistanceSqr() >= 0.01` picks up; an eligible mob boards an
-    /// empty cart (`startRiding`); others get `Entity.push`.
+    /// `i`'s box (0.2 wider on each side): an eligible mob boards a moving
+    /// rideable cart (`startRiding`); others get `Entity.push`.
     fn pickup_from_cart(&mut self, i: usize, index: &mut CartIndex) {
         let v = self.carts[i].velocity;
         if self.carts[i].kind != CartKind::Rideable || v.x * v.x + v.z * v.z < 0.01 {
@@ -1872,10 +1872,10 @@ impl Game<'_> {
         let candidates: Vec<u32> = if near.is_empty() {
             Vec::new()
         } else {
-            let teams = self.mob_teams();
+            let (teams, own) = (self.mob_teams(), self.team_with_owner(id, || None));
             near.iter()
                 .map(|&j| &self.mobs[j as usize])
-                .filter(|m| m.pushable() && pushable_by(None, teams.of(Who::Mob(m.id)), true))
+                .filter(|m| m.pushable() && pushable_by(own, teams.of(Who::Mob(m.id)), true))
                 .map(|m| m.id)
                 .collect()
         };
@@ -3884,6 +3884,127 @@ mod cart_push_tests {
         );
         assert_eq!(cart(1).loot.as_ref(), Some(&loot));
         assert_eq!(cart(2).loot, None);
+    }
+
+    /// `OldMinecartBehavior.pushAndPickupEntities` for carts: a moving rideable
+    /// cart only pushes what `EntitySelector.pushableBy(cart)` allows, by its
+    /// own team's collision rule and the target's; a still cart keeps vanilla's
+    /// unfiltered minecart push.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_moving_carts_team_rules_which_carts_it_pushes() {
+        use crate::game::{Game, commands::Target};
+        use horizon_client::scoreboard::CollisionRule;
+
+        /// Puts a cart on a team of its own, as `/team join` would.
+        fn on_a_team(game: &mut Game<'_>, id: u32, rule: CollisionRule) {
+            let name = game.holder_name(Target::Cart(id)).expect("a cart's UUID");
+            let team = format!("cart-{id}");
+            game.score.board.add_team(&team).collision_rule = rule;
+            game.score.board.add_to_team(&name, &team);
+        }
+        /// Pushes with cart `pusher` moving at `velocity`, and returns the
+        /// target's velocity afterwards.
+        fn push_apart(game: &mut Game<'_>, pusher: usize, target: usize, velocity: Vec3) -> Vec3 {
+            game.carts[target].velocity = Vec3::ZERO;
+            game.carts[pusher].velocity = velocity;
+            let mut index = super::CartIndex::default();
+            game.push_from_cart(pusher, &mut index);
+            game.carts[target].velocity
+        }
+
+        let mut game = server_game();
+        // Cart 2 moves east, into cart 1's box; yaw 0 faces east, along the push.
+        game.carts.push(Minecart::new(
+            1,
+            CartKind::Rideable,
+            Vec3::new(8.5, 64.0, 8.5),
+        ));
+        game.carts.push(Minecart::new(
+            2,
+            CartKind::Rideable,
+            Vec3::new(8.1, 64.0, 8.5),
+        ));
+        let east = Vec3::new(0.2, 0.0, 0.0);
+        // No teams: the moving cart pushes the still one.
+        assert_ne!(
+            push_apart(&mut game, 1, 0, east),
+            Vec3::ZERO,
+            "the moving cart pushes the still one"
+        );
+        // The target's `never` rule holds the push back.
+        on_a_team(&mut game, 1, CollisionRule::Never);
+        assert_eq!(
+            push_apart(&mut game, 1, 0, east),
+            Vec3::ZERO,
+            "the target's collisionRule never keeps it off"
+        );
+        // The moving cart's own rule does too.
+        game.score.board.remove_team("cart-1");
+        on_a_team(&mut game, 2, CollisionRule::Never);
+        assert_eq!(
+            push_apart(&mut game, 1, 0, east),
+            Vec3::ZERO,
+            "the moving cart's collisionRule never keeps it off"
+        );
+        // Allies with `pushOwnTeam` do not push each other.
+        game.score.board.remove_team("cart-2");
+        on_a_team(&mut game, 1, CollisionRule::PushOwnTeam);
+        let name = game.holder_name(Target::Cart(2)).expect("a cart's UUID");
+        game.score.board.add_to_team(&name, "cart-1");
+        assert_eq!(
+            push_apart(&mut game, 1, 0, east),
+            Vec3::ZERO,
+            "pushOwnTeam keeps allies apart"
+        );
+        // A still cart is vanilla's else branch: no team filter at all.
+        assert_ne!(
+            push_apart(&mut game, 1, 0, Vec3::ZERO),
+            Vec3::ZERO,
+            "a still cart pushes the minecart in its box whatever the teams"
+        );
+    }
+
+    /// `EntitySelector.pushableBy(cart)` for mobs: a moving rideable cart on a
+    /// `never` team neither boards nor pushes the cow in its path.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_moving_carts_team_keeps_it_from_boarding_a_cow() {
+        use crate::game::commands::Target;
+        use horizon_client::{mobs::Mob, scoreboard::CollisionRule};
+
+        let mut game = server_game();
+        let kind = game.res.mob_types().get("minecraft:cow").cloned().unwrap();
+        let mut cart = Minecart::new(2, CartKind::Rideable, Vec3::new(8.5, 64.0, 8.5));
+        cart.velocity = Vec3::new(0.2, 0.0, 0.0);
+        game.carts.push(cart);
+        let at = Vec3::new(8.5, 64.0, 8.5);
+        game.mobs.push(Mob::new(7, kind, at, 0.0));
+        let mut index = super::CartIndex::default();
+        game.push_from_cart(0, &mut index);
+        assert_eq!(
+            game.mobs[0].extra.mount,
+            Some(2),
+            "the cow boards the empty moving cart"
+        );
+        game.mobs[0].extra.mount = None;
+        game.mobs[0].velocity = Vec3::ZERO;
+        // The cart's own `never` rule: no boarding and no push.
+        let name = game.holder_name(Target::Cart(2)).expect("a cart's UUID");
+        game.score.board.add_team("cart-2").collision_rule = CollisionRule::Never;
+        game.score.board.add_to_team(&name, "cart-2");
+        game.carts[0].velocity = Vec3::new(0.2, 0.0, 0.0);
+        let mut index = super::CartIndex::default();
+        game.push_from_cart(0, &mut index);
+        assert_eq!(
+            game.mobs[0].extra.mount, None,
+            "the cart's collisionRule never keeps the cow off"
+        );
+        assert_eq!(
+            game.mobs[0].velocity,
+            Vec3::ZERO,
+            "and the cow is not pushed either"
+        );
     }
 }
 
