@@ -1,4 +1,3 @@
-
 #[cfg(test)]
 mod connected_advancement_save_tests {
     use super::super::Game;
@@ -20,15 +19,17 @@ mod connected_advancement_save_tests {
         game.chat_capture.take().unwrap()
     }
     #[test]
-    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    #[ignore = "needs prepared resources and scratch homes"]
     fn save_commands_write_the_connected_nonowners_current_advancements() {
         use super::super::{execution_role::ExecutionRole, stats};
         use std::sync::{Arc, Mutex};
         let mut game = super::super::native_machines::tests::server_game();
         game.options.execution_role = ExecutionRole::DedicatedServer;
-        let dir = std::env::current_dir()
-            .unwrap()
-            .join("connected-advancement-save");
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-connected-advancement-save-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         game.world_root = dir.clone();
         game.save = Arc::new(horizon_client::save::SaveDir::new(
@@ -150,6 +151,7 @@ mod connected_advancement_save_tests {
                 failures.push((phase, root_saved, stone_saved, root_expected));
             }
         }
+        fs::remove_dir_all(&dir).unwrap();
         assert!(
             failures.is_empty(),
             "successful connected saves kept stale advancement progress: {failures:?}"
@@ -179,15 +181,17 @@ mod connected_advancement_preservation_tests {
     }
     // Added after baseline: actual command/model preservation, not new Java breadth.
     #[test]
-    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    #[ignore = "needs prepared resources and scratch homes"]
     fn empty_progress_missing_play_and_disconnect_wrapper_stay_distinct() {
         use super::super::{execution_role::ExecutionRole, stats};
         use std::sync::{Arc, Mutex};
         let mut game = super::super::native_machines::tests::server_game();
         game.options.execution_role = ExecutionRole::DedicatedServer;
-        let dir = std::env::current_dir()
-            .unwrap()
-            .join("advancement-preservation");
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-advancement-preservation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         game.world_root = dir.clone();
         game.save = Arc::new(horizon_client::save::SaveDir::new(
@@ -320,5 +324,6 @@ mod connected_advancement_preservation_tests {
             read()
         );
         game.lan = Some(host);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

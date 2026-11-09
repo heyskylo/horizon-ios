@@ -3,7 +3,7 @@
 
 Disconnect is an independent cross-check. Full files, timestamps and packets remain raw.
 """
-import argparse, hashlib, json, os, re, shutil, time
+import argparse, hashlib, json, os, re, shutil, tempfile, time
 from pathlib import Path
 try:
     from . import net_capture, test_locator_bar_parity as net
@@ -145,14 +145,28 @@ def run_side(label, command, client_command, build, world):
     return report
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--work-dir',type=Path,required=True);p.add_argument('--reference-only',action='store_true');p.add_argument('--reference-dir',type=Path);p.add_argument('--binary',type=Path);a=p.parse_args();a.work_dir.mkdir(parents=True,exist_ok=True)
-    if a.reference_dir:
-        meta=json.loads((a.reference_dir/'reference-client.json').read_text())
-        actual=run_side('native',[str(a.binary),'--resources',str(net.lab.LOCAL/'horizon-client/26.3'),'--dedicated','--nogui'],meta['command'],a.work_dir,Path(meta['world']))
-        compare={phase:actual['files'][phase]['progress']==wanted(state) for phase,_,state in PHASES}
-        result={'connected_file_gates':compare,'all_pass':all(compare.values()),'admitted':True};(a.work_dir/'comparison.json').write_text(json.dumps(result,indent=2)+'\n');print(result);return 0 if result['all_pass'] else 1
-    assert a.reference_only
-    _,_,java,_,client=net.sides('online-guest-advancement-'+a.work_dir.name,a.work_dir/'not-built')
-    world=generate(java,a.work_dir);report=run_side('java',java,client,a.work_dir,world)
-    (a.work_dir/'reference-client.json').write_text(json.dumps({'command':list(map(str,client)),'world':str(world)},indent=2)+'\n');print({'fresh_java_admitted':True,'command_records':report['command_records']});return 0
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--work-dir', type=Path, help='where both runs write (default: a new temporary folder)')
+    p.add_argument('--reference-only', action='store_true', help='run the vanilla side only')
+    p.add_argument('--reference-dir', type=Path, help="reuse a --reference-only run's folder instead of running vanilla")
+    p.add_argument('--binary', type=Path, help='the horizon-client to run (default: built with --profile fast)')
+    a = p.parse_args()
+    work = a.work_dir or Path(tempfile.mkdtemp(prefix='connected-guest-advancement-save-'))
+    work.mkdir(parents=True, exist_ok=True)
+    print('work dir', work)
+    # A vanilla-only run needs no Horizon build: a placeholder binary skips it.
+    binary = work/'not-built' if a.reference_only else a.binary
+    _, _, java, native, client = net.sides('online-guest-advancement-save', binary)
+    reference = a.reference_dir or work
+    if a.reference_dir is None:
+        world = generate(java, work); report = run_side('java', java, client, work, world)
+        (work/'reference-client.json').write_text(json.dumps({'command': list(map(str, client)), 'world': str(world)}, indent=2)+'\n')
+        print({'fresh_java_admitted': True, 'command_records': report['command_records']})
+        if a.reference_only: return 0
+    meta = json.loads((reference/'reference-client.json').read_text())
+    actual = run_side('native', list(map(str, native)), meta['command'], work, Path(meta['world']))
+    compare = {phase: actual['files'][phase]['progress'] == wanted(state) for phase, _, state in PHASES}
+    result = {'connected_file_gates': compare, 'all_pass': all(compare.values()), 'admitted': True}
+    (work/'comparison.json').write_text(json.dumps(result, indent=2)+'\n'); print(result)
+    return 0 if result['all_pass'] else 1
 if __name__=='__main__':raise SystemExit(main())
