@@ -114,9 +114,6 @@ impl Client {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Activity {
-    /// The player keeps it to themselves: the Discord switch in Horizon Settings is off. (The
-    /// switch moves to the Discord crate's own settings with the settings store.)
-    Hidden,
     /// On the title screen or another menu outside a world.
     Menus,
     World {
@@ -541,12 +538,12 @@ mod tests {
         for open in [false, true, true, true, false, false] {
             engine::published(open);
         }
-        for now in [
-            Activity::Menus,
-            Activity::Menus,
-            Activity::Hidden,
-            Activity::Hidden,
-        ] {
+        let world = Activity::World {
+            play: Play::Singleplayer,
+            dimension: Dimension::Nether,
+            mode: GameMode::Creative,
+        };
+        for now in [Activity::Menus, Activity::Menus, world, world] {
             engine::activity(now);
         }
         engine::shutdown();
@@ -591,7 +588,7 @@ mod tests {
                 "published true",
                 "published false",
                 "Menus",
-                "Hidden",
+                "World { play: Singleplayer, dimension: Nether, mode: Creative }",
                 "frame 4"
             ]
         );
