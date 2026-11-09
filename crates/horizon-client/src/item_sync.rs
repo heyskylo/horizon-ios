@@ -189,6 +189,23 @@ pub fn equippable(stack: &ItemStack, items: &crate::items::Items) -> Option<Equi
     out
 }
 
+/// `Equippable.equipSound` from the stack's component, else the item's.
+/// A present component without the field is the generic armour sound (None),
+/// not the prototype's.
+pub fn equip_sound(stack: &ItemStack, items: &crate::items::Items) -> Option<String> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
+        return None;
+    }
+    if let Some(tag) = data.and_then(|d| d.other("minecraft:equippable")) {
+        return match tag.get("equip_sound") {
+            Some(Tag::String(sound)) => Some(sound.to_string_lossy()),
+            _ => None,
+        };
+    }
+    items.get(&stack.item).and_then(|i| i.equip_sound.clone())
+}
+
 /// `Equippable.damageOnHurt`: a present component's field (default true),
 /// a removed component false, else the item's prototype.
 pub fn damage_on_hurt(stack: &ItemStack, default: bool) -> bool {
@@ -969,9 +986,48 @@ pub fn profile_tag(p: &Profile) -> Tag {
 mod tests {
     use super::*;
     use horizon_protocol::registry::Ids;
+    use std::path::Path;
 
-    /// A chestplate a server made a glider: its patch adds `glider` and an
-    /// `equippable` for the chest, or takes `glider` away again.
+    /// `Equippable.equipSound` is the stack's component's own: a replaced
+    /// component without one plays the generic sound, a removed one none.
+    #[test]
+    fn equippable_equip_sound_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:golden_helmet", 1);
+        stack.data_mut().set_other(
+            "minecraft:equippable",
+            Some(Tag::compound([("slot", Tag::String("head".into()))])),
+        );
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let items =
+            crate::items::Items::tags_only(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        assert_eq!(equip_sound(&stack, &items), None);
+        stack.data_mut().set_other(
+            "minecraft:equippable",
+            Some(Tag::compound([
+                ("slot", Tag::String("head".into())),
+                (
+                    "equip_sound",
+                    Tag::String("minecraft:item.armor.equip_gold".into()),
+                ),
+            ])),
+        );
+        assert_eq!(
+            equip_sound(&stack, &items).as_deref(),
+            Some("minecraft:item.armor.equip_gold")
+        );
+        stack.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(equip_sound(&stack, &items), None);
+    }
+    /// `Equippable.damageOnHurt` is the stack's component's own: true when a
+    /// replaced component leaves it out, false when the component is removed.
     #[test]
     fn equippable_damage_on_hurt_comes_from_the_stack() {
         let mut stack = ItemStack::new("minecraft:golden_helmet", 1);
@@ -995,6 +1051,8 @@ mod tests {
         );
         assert!(!damage_on_hurt(&stack, true));
     }
+    /// A chestplate a server made a glider: its patch adds `glider` and an
+    /// `equippable` for the chest, or takes `glider` away again.
     #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
