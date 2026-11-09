@@ -10,7 +10,7 @@ use crate::{
 use horizon_platform::{
     hooks::{
         Hooks,
-        tunnel::{self, Opened, Progress, Resolver},
+        tunnel::{Opened, Progress, Resolver},
     },
     version::{PROTOCOL_VERSION, VANILLA_VERSION},
 };
@@ -93,7 +93,8 @@ impl Resolver for Invites {
 
 #[cfg(test)]
 mod tests {
-    use super::{Invites, Resolver, tunnel};
+    use super::{Invites, Resolver};
+    use horizon_platform::hooks::tunnel;
     use crate::{
         code::Code,
         invite::{self, Invite},
