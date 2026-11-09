@@ -7718,48 +7718,6 @@ impl Game<'_> {
     pub(super) fn vehicle_attack_sounds(&mut self, area: Aabb, magic: Option<i32>) {
         self.attack_effects(area, None, false, mace::Spared::Nothing, magic);
     }
-    /// ServerExplosion: rays from a 16^3 grid lose (resistance + 0.3) * 0.3 per step.
-    /// A mob explosion (`ServerLevel.explode` with `ExplosionInteraction.MOB`:
-    /// blocks are kept without mobGriefing, else the mob_explosion_drop_decay
-    /// rule picks decay).
-    fn explode(
-        &mut self,
-        center: [f64; 3],
-        radius: f32,
-        source: explosion::ExplosionSource,
-    ) -> Result<()> {
-        self.explode_mob(center, radius, false, source)
-    }
-    /// `ServerLevel.explode` with `ExplosionInteraction.MOB` and the caller's fire flag.
-    fn explode_mob(
-        &mut self,
-        center: [f64; 3],
-        radius: f32,
-        fire: bool,
-        source: explosion::ExplosionSource,
-    ) -> Result<()> {
-        let interaction = if !self.ui.rules.bool("mob_griefing") {
-            explosion::BlockInteraction::Keep
-        } else {
-            self.destroy_type("mob_explosion_drop_decay")
-        };
-        self.server_explode_from(center, radius, interaction, fire, source)
-    }
-    /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
-    /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
-    fn explode_sulfur_cube(
-        &mut self,
-        center: [f64; 3],
-        radius: f32,
-        source: explosion::ExplosionSource,
-    ) -> Result<()> {
-        let interaction = if !self.ui.rules.bool("mob_griefing") {
-            explosion::BlockInteraction::Keep
-        } else {
-            self.destroy_type("tnt_explosion_drop_decay")
-        };
-        self.server_explode_from(center, radius, interaction, false, source)
-    }
     /// Copies of a save batch carrying its live block entities and save data.
     fn with_entities<'a>(
         &self,
