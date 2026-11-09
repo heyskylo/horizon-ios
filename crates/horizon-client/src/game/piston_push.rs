@@ -715,7 +715,10 @@ impl Game<'_> {
         let Target::Entity(handle) = target else {
             return;
         };
-        if let EntityHandle::Mob(i) = handle {
+        if let EntityHandle::Mob(i) = handle
+            && !self.options.execution_role.is_client()
+            && self.remote.is_none()
+        {
             self.mobs[i].restitute_movement(&self.world, &self.motion.blocks, limited, resolved);
             return;
         }
@@ -757,6 +760,12 @@ impl Game<'_> {
     /// away included, on ground only when the push's downward part was blocked.
     fn set_pushed_on_ground(&mut self, target: Target, wanted: Vec3, moved: Vec3) {
         if let Target::Entity(handle) = target {
+            // The new mob hook is authoritative; preserve the client movement path.
+            if matches!(handle, EntityHandle::Mob(_))
+                && (self.options.execution_role.is_client() || self.remote.is_some())
+            {
+                return;
+            }
             let on_ground = wanted.y < 0.0 && wanted.y != moved.y;
             with_entity_mut!(self, handle, entity => entity.set_piston_on_ground(on_ground));
         }
