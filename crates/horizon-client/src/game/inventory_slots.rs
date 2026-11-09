@@ -117,6 +117,12 @@ impl Game<'_> {
         let mut bar = horizon_client::bundle::Contents::of(self.items(), stack)
             .map(|c| c.bar())
             .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage));
+        // A Polytone pack's durability bar colour (`item_modifiers`, `bar_color`).
+        if let Some((_, color)) = bar.as_mut().filter(|_| stack.damage > 0 && max_damage > 0) {
+            let damage = stack.damage as f32 / max_damage as f32;
+            *color =
+                horizon_client::pack_palette::item_bar_color(&stack.item, damage).unwrap_or(*color);
+        }
         // Client-only: a mod may replace or hide the bar vanilla just chose.
         self.native_item_bar(stack, &mut bar);
         let decorations = hud_overlays::ItemDecorations {
