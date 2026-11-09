@@ -185,7 +185,7 @@ impl Game<'_> {
         let output = self
             .renderer
             .as_ref()
-            .map_or(Default::default(), |r| *r.output());
+            .map_or(Default::default(), |r| r.output());
         ui.draw(&self.settings, output, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
         self.show_calibration(batch.height);

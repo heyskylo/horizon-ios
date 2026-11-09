@@ -105,6 +105,9 @@ pub struct EffectiveOutput {
     pub(crate) nits: [f32; 3],
     /// The HUD and menus' brightness, as a share of paper white.
     pub(crate) ui_brightness: f32,
+    /// The running shader pack lights the world itself: Horizon lifts none of it, so HDR
+    /// Lighting has nothing to switch (`with_pack`).
+    pub(crate) pack_lights: bool,
 }
 impl Default for EffectiveOutput {
     fn default() -> Self {
@@ -126,7 +129,22 @@ impl EffectiveOutput {
         },
         nits: [203.0, 1000.0, 0.0],
         ui_brightness: 1.0,
+        pack_lights: false,
     };
+    /// This output under the running shader pack: a `shaders/` one (`shaders`), or one of
+    /// Horizon's own of API `native`. Under a 0.1 pack on the 8- or 16-bit frame the last pass
+    /// still lifts the light sources and the sun its marks hold (`lifts_world` in
+    /// `Renderer::render`); under the rest Horizon lifts nothing.
+    pub(crate) fn with_pack(self, shaders: bool, native: Option<horizon_shader_api::Api>) -> Self {
+        let pack_lights = shaders
+            || native.is_some_and(|api| {
+                api != horizon_shader_api::Api::V0_1 || self.frame.format == super::LINEAR_FRAME
+            });
+        Self {
+            pack_lights,
+            ..self
+        }
+    }
     /// Whether the destination offers HDR output.
     pub fn hdr_offered(&self) -> bool {
         self.offered.is_some()
@@ -226,6 +244,7 @@ pub(crate) fn resolve_output(
             settings.black_level_nits(),
         ],
         ui_brightness: settings.hdr_ui_brightness as f32 / 100.0,
+        pack_lights: false,
     }
 }
 

@@ -1129,7 +1129,8 @@ impl Item {
     /// active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
     /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
-    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
+    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't. HDR
+    /// Lighting has nothing to switch where the running shader pack lights the world itself.
     fn blocked(self, s: &Settings, out: &EffectiveOutput) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -1156,6 +1157,9 @@ impl Item {
                 | H::HdrLighting
                 | H::HdrSmoothGradients,
             ) if !out.requests_hdr(s.horizon.hdr) => Some("Turn HDR on to use it."),
+            Item::Horizon(H::HdrLighting) if out.pack_lights => {
+                Some("The shader pack lights the world itself.")
+            }
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
             {

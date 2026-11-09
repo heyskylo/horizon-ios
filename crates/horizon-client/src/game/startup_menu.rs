@@ -1256,7 +1256,7 @@ impl Loading {
             let output = self
                 .renderer
                 .as_ref()
-                .map_or(Default::default(), |r| *r.output());
+                .map_or(Default::default(), |r| r.output());
             self.menu
                 .options
                 .draw(&self.settings, output, batch, &gui.atlas, self.menu.cursor);
