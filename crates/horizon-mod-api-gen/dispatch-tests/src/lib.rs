@@ -459,6 +459,37 @@ mod tests {
     }
 
     #[test]
+    fn permission_check_tells_a_false_answer_from_not_set() {
+        struct Provider(Option<bool>);
+        impl Hooks for Provider {
+            fn permission_check(
+                &self,
+                _: &dyn Host,
+                event: &mut PermissionCheckEvent<'_>,
+            ) -> Option<bool> {
+                if event.node == "example.node" {
+                    self.0
+                } else {
+                    None
+                }
+            }
+        }
+        let denies: Vec<Box<dyn Hooks>> = vec![Box::new(Provider(Some(false)))];
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &denies, 1, "example.node", 0, &mut result);
+        assert_eq!(result, Some(false), "set to false is not unset");
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &denies, 1, "other.node", 0, &mut result);
+        assert_eq!(
+            result, None,
+            "a node the provider doesn't answer is not set"
+        );
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &[], 1, "example.node", 0, &mut result);
+        assert_eq!(result, None, "no provider: not set");
+    }
+
+    #[test]
     fn item_model_property_dispatches_borrowed_stack_and_preserves_unhandled_answers() {
         struct Property;
         impl Hooks for Property {
