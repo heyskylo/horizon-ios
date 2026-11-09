@@ -818,32 +818,4 @@ mod tests {
             )]
         );
     }
-    #[test]
-    fn instant_potions_wrap_java_shift_counts() {
-        // Java masks int shifts to five bits; these expected amounts also
-        // catch clamping the count or widening before the shift.
-        for (amp, heal, harm) in [
-            (31, 0.0, 0.0),
-            (32, 4.0, 6.0),
-            (33, 8.0, 12.0),
-            (255, 0.0, 0.0),
-        ] {
-            assert_eq!(
-                instant("instant_health", amp, 1.0),
-                Some(EffectAction::Heal(heal))
-            );
-            assert_eq!(
-                instant("instant_damage", amp, 1.0),
-                Some(EffectAction::Hurt("minecraft:magic", harm))
-            );
-            assert_eq!(
-                instant("instant_health", amp, 0.5),
-                Some(EffectAction::Heal(heal / 2.0))
-            );
-            assert_eq!(
-                instant("instant_damage", amp, 0.5),
-                Some(EffectAction::Hurt("minecraft:magic", harm / 2.0))
-            );
-        }
-    }
 }

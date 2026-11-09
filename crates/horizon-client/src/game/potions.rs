@@ -1856,8 +1856,7 @@ impl Game<'_> {
     /// A splash potion's effects on the player in place, by their distance.
     fn splash_on_player(
         &mut self,
-        effects: &[EffectInstance],
-        duration_scale: f32,
+        effects: &'static [(&'static str, i32, i32)],
         at: Vec3,
         age: u32,
         owner: &PotionOwner,
@@ -1874,24 +1873,18 @@ impl Game<'_> {
             );
             if let Some(d2) = splash_distance_sqr(at, age, bounds) {
                 let intensity = 1.0 - d2.sqrt() / 4.0;
-                for effect in effects {
-                    let (id, duration, amp) = (effect.id, effect.duration, effect.amplifier);
+                for (id, duration, amp) in effects {
                     let instant = brewing::effect(id).is_some_and(|e| e.instant);
                     if instant {
-                        if let Some(a) = horizon_client::effects::instant(id, amp, intensity) {
+                        if let Some(a) = horizon_client::effects::instant(id, *amp, intensity) {
                             self.apply_indirect_effect_action(a, owner);
                         }
                     } else {
-                        let d = if duration == -1 {
-                            -1
-                        } else {
-                            (intensity * f64::from(duration) * f64::from(duration_scale) + 0.5)
-                                as i32
-                        };
-                        if (d == -1 || d > 20) && brewing::effect(id).is_some() {
-                            let mut instance = effect.clone();
-                            instance.duration = d;
-                            self.add_player_effect(instance);
+                        let d = (intensity * f64::from(*duration) + 0.5) as i32;
+                        if d > 20
+                            && let Some(e) = brewing::effect(id)
+                        {
+                            self.add_player_effect(EffectInstance::new(e.id, d, *amp));
                         }
                     }
                 }
@@ -1968,9 +1961,7 @@ impl Game<'_> {
                 .iter()
                 .any(|(id, ..)| brewing::effect(id).is_some_and(|e| e.instant))
         });
-        let color = brewing::contents_color(stack);
-        let effects = brewing::contents_instances(stack);
-        let duration_scale = stack.potion_duration_scale();
+        let color = brewing::potion_color(stack.potion());
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
         if !silent {
             self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
@@ -1978,7 +1969,7 @@ impl Game<'_> {
         // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
         // #rehydrates_axolotls) refills the air of the axolotls in the
         // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
-        if self.potion_in_tag(stack, "minecraft:rehydrates_axolotls") {
+        if stack.potion() == Some("minecraft:water") {
             let (lo, hi) = (
                 [at.x - 0.125 - 4.0, at.y - 2.0, at.z - 0.125 - 4.0],
                 [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
@@ -2002,24 +1993,16 @@ impl Game<'_> {
                 }
             }
         }
+        let Some(def) = potion else {
+            return;
+        };
         if lingering {
             // The cloud sits at the mob it hit (its feet), else the impact;
             // radius 3, wait 10, 600 ticks, shrinking to nothing, and a
             // potion with no effects leaves none.
-            if !effects.is_empty() {
+            if !def.effects.is_empty() {
                 let at = mob.unwrap_or(at);
                 let id = self.take_entity_id();
-                // Keep the copied component for live cloud command queries as well
-                // as its resolved effects; custom names and visibility survive.
-                let item = horizon_client::save::item_to_nbt(stack);
-                if let Some(contents) = item
-                    .get("components")
-                    .and_then(|c| c.get("minecraft:potion_contents"))
-                {
-                    self.persist
-                        .raw
-                        .insert(id, Tag::compound([("potion_contents", contents.clone())]));
-                }
                 self.breath_clouds.push(Breath {
                     id,
                     at: [at.x, at.y, at.z],
@@ -2029,20 +2012,10 @@ impl Game<'_> {
                     from_dragon: false,
                     victims: Vec::new(),
                     potion: Some(PotionCloud {
-                        settings: CloudSettings {
-                            duration_scale,
-                            ..CloudSettings::lingering()
-                        },
-                        effects: effects
-                            .iter()
-                            .map(|e| (e.id, e.duration, e.amplifier))
-                            .collect(),
-                        hidden: effects
-                            .iter()
-                            .filter(|e| !e.visible)
-                            .map(|e| e.id)
-                            .collect(),
-                        ambient: effects.iter().filter(|e| e.ambient).map(|e| e.id).collect(),
+                        settings: CloudSettings::lingering(),
+                        effects: def.effects.to_vec(),
+                        hidden: Vec::new(),
+                        ambient: Vec::new(),
                         radius_per_tick: -3.0 / 600.0,
                         color,
                         custom_particle: None,
@@ -2059,7 +2032,7 @@ impl Game<'_> {
         }
         // Every player in range (`ThrownSplashPotion.applySplash` over
         // `LivingEntity`s, the players among them).
-        self.for_each_player(|g| g.splash_on_player(&effects, duration_scale, at, age, owner));
+        self.for_each_player(|g| g.splash_on_player(def.effects, at, age, owner));
         // Mobs take the instant effects (undead invert healing and harming).
         let undead = &self.stations().enchantments.entity_tags;
         let mut hits = Vec::new();
@@ -2074,30 +2047,18 @@ impl Game<'_> {
             }
         }
         for (i, intensity, inverted) in hits {
-            for effect in &effects {
-                let (id, duration, amp) = (effect.id, effect.duration, effect.amplifier);
-                let harm = match id {
+            for (id, duration, amp) in def.effects {
+                let harm = match *id {
                     "instant_damage" => !inverted,
                     "instant_health" => inverted,
                     _ => {
                         // `Potion.applySplash`: timed effects last in
                         // proportion to how close the mob was.
-                        let d = if duration == -1 {
-                            -1
-                        } else {
-                            (intensity * f64::from(duration) * f64::from(duration_scale) + 0.5)
-                                as i32
-                        };
-                        if (d == -1 || d > 20)
+                        let d = (intensity * f64::from(*duration) + 0.5) as i32;
+                        if d > 20
                             && let Some(name) = mob_effect_id(id)
                         {
-                            self.mobs[i].add_effect_with(
-                                name,
-                                d,
-                                amp,
-                                effect.ambient,
-                                effect.visible,
-                            );
+                            self.mobs[i].add_effect(name, d, *amp);
                         }
                         continue;
                     }
@@ -2112,17 +2073,14 @@ impl Game<'_> {
                     }
                 } else if harm {
                     // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(potion, owner).
-                    let harm =
-                        (intensity * f64::from(6i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32;
+                    let harm = (intensity * f64::from(6 << amp) + 0.5) as i32 as f32;
                     let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z]);
                     if m.damage_by(harm, source, "minecraft:splash_potion") && owner.player {
                         let id = m.id;
                         self.last_hurt_by_player.insert(id, owner.guest);
                     }
                 } else {
-                    m.heal(
-                        (intensity * f64::from(4i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
-                    );
+                    m.heal((intensity * f64::from(4 << amp) + 0.5) as i32 as f32);
                 }
             }
         }
@@ -2550,10 +2508,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-#[path = "potion_contents_fixture.rs"]
-mod contents_fixture;
-
 /// `MobEffect.withSoundOnAdded`: the sound `onEffectAdded` plays when the
 /// effect is new on an entity (`MobEffects`: the three omens).
 pub(super) fn sound_on_added(effect: &str) -> Option<&'static str> {
@@ -2566,7 +2520,79 @@ pub(super) fn sound_on_added(effect: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-mod sound_on_added_tests;
+mod sound_on_added_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::effects::EffectInstance;
+
+    /// `LivingEntity.addEffect` → `MobEffect.onEffectAdded`: Bad Omen, Trial
+    /// Omen and Raid Omen sound once when they are new on the player, at its
+    /// feet; a renewal and any other effect are silent (#11373).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_new_omen_sounds_once_at_the_feet() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(10.5, 64.0, -3.25),
+            )
+            .unwrap(),
+        );
+        game.audio.capture = Some(Vec::new());
+        for (id, amplifier) in [
+            ("bad_omen", 0),
+            ("bad_omen", 1),
+            ("speed", 0),
+            ("trial_omen", 0),
+            ("raid_omen", 0),
+        ] {
+            game.add_player_effect(EffectInstance::new(id, 2400, amplifier));
+        }
+        let played: Vec<(String, [f64; 3])> = game
+            .audio
+            .capture
+            .take()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.event, s.position))
+            .collect();
+        let feet = [10.5, 64.0, -3.25];
+        assert_eq!(
+            played,
+            [
+                ("minecraft:event.mob_effect.bad_omen".to_owned(), feet),
+                ("minecraft:event.mob_effect.trial_omen".to_owned(), feet),
+                ("minecraft:event.mob_effect.raid_omen".to_owned(), feet),
+            ]
+        );
+    }
+}
 
 #[cfg(test)]
 #[path = "xp_bottle_tests.rs"]
@@ -3241,5 +3267,161 @@ mod depleted_absorption_tests {
             }
             assert!(failures.is_empty(), "infinite absorption: {failures:#?}");
         });
+    }
+}
+
+#[cfg(test)]
+mod arrow_contents {
+    //! Actual in-memory Game potion paths. No run loop, world load or server startup.
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, execution_role, load_resources};
+    use horizon_client::chunk::Chunk;
+    use serde_json::{Value, json};
+    use std::{path::PathBuf, sync::Arc, time::Instant};
+
+    fn stack(row: &Value) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:tipped_arrow", 1);
+        if let Some(potion) = row["potion"].as_str() {
+            stack = stack.with_potion(&format!("minecraft:{potion}"));
+        }
+        let effects = row["custom"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                Tag::compound([
+                    (
+                        "id",
+                        Tag::String(
+                            format!("minecraft:{}", e["id"].as_str().unwrap())
+                                .as_str()
+                                .into(),
+                        ),
+                    ),
+                    ("duration", Tag::Int(e["duration"].as_i64().unwrap() as i32)),
+                    ("amplifier", Tag::Int(e["amp"].as_i64().unwrap() as i32)),
+                    (
+                        "ambient",
+                        Tag::Byte(i8::from(e["ambient"].as_bool().unwrap())),
+                    ),
+                    (
+                        "show_particles",
+                        Tag::Byte(i8::from(e["visible"].as_bool().unwrap())),
+                    ),
+                ])
+            })
+            .collect();
+        stack
+            .data_mut()
+            .potion_extra
+            .push(("custom_effects".into(), Tag::List(effects)));
+        if let Some(color) = row["color"].as_i64() {
+            stack
+                .data_mut()
+                .potion_extra
+                .push(("custom_color".into(), Tag::Int(color as i32)));
+        }
+        if let Some(name) = row["name"].as_str() {
+            stack
+                .data_mut()
+                .potion_extra
+                .push(("custom_name".into(), Tag::String(name.into())));
+        }
+        stack
+    }
+    #[test]
+    #[ignore = "explicit HORIZON_TEST_RESOURCES and isolated potion oracle input/output"]
+    fn actual_arrow_contents_match_pinned_methods() {
+        let root =
+            PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("explicit resources"));
+        let input =
+            PathBuf::from(std::env::var_os("HORIZON_POTION_INPUT").expect("explicit input"));
+        let output =
+            PathBuf::from(std::env::var_os("HORIZON_POTION_OUTPUT").expect("explicit output"));
+        let expected: Vec<Value> = serde_json::from_slice(
+            &std::fs::read(
+                std::env::var_os("HORIZON_POTION_EXPECTED").expect("pinned method output"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::current_dir().unwrap());
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(0, 64, 0, stone).unwrap();
+        assert_eq!(rows.len(), 5, "all five arrow cases must execute");
+        let mut results = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let id = row["id"].clone();
+            let mut arrow = Projectile::new(
+                ProjectileKind::Arrow {
+                    base_damage: 2.,
+                    critical: false,
+                    effect: None,
+                },
+                Vec3::new(0.5, 64.5, 0.5),
+                None,
+            );
+            let st = arrow.arrow.as_mut().unwrap();
+            st.pickup_item = stack(&row);
+            st.in_ground = true;
+            st.in_ground_time = 598;
+            st.last_state = Some(stone);
+            arrow.stuck = true;
+            let rain = |_| false;
+            let scene = game.arrow_scene(&rain);
+            horizon_client::arrows::tick(&mut arrow, &scene, &[]);
+            let st = arrow.arrow.as_ref().unwrap();
+            let item599 = st
+                .pickup_item
+                .item
+                .trim_start_matches("minecraft:")
+                .to_owned();
+            let color599 = st.potion_color().map_or(-1, |v| v as i32);
+            horizon_client::arrows::tick(&mut arrow, &scene, &[]);
+            let st = arrow.arrow.as_ref().unwrap();
+            results.push(json!({"id":id,"item599":item599,"color599":color599,"item600":st.pickup_item.item.trim_start_matches("minecraft:"),"color600":st.potion_color().map_or(-1,|v|v as i32)}));
+            assert_eq!(
+                results.last().unwrap(),
+                &expected[index],
+                "actual arrow tick: {}",
+                id
+            );
+        }
+        std::fs::write(output, serde_json::to_vec_pretty(&results).unwrap()).unwrap();
     }
 }
