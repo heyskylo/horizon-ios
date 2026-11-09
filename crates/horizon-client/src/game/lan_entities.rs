@@ -881,6 +881,7 @@ impl Game<'_> {
             );
             e.pitch = t.pitch;
             e.velocity = at(t.velocity);
+            e.needs_sync = t.needs_sync;
             // Projectile.getAddEntityPacket: the owner's id, the guest's that
             // threw it.
             e.data = data;
