@@ -2056,6 +2056,11 @@ fn pairs(opts: &[Opt]) -> Vec<Row> {
         .collect()
 }
 impl OptionsUi {
+    /// The output of the renderer the options are shown for: the graphics screen's rows and
+    /// calibration read its offer and report, not another window's.
+    pub fn set_output(&mut self, output: crate::gfx::EffectiveOutput) {
+        self.graphics.screen.output = output;
+    }
     /// No widget keeps the highlight a click gave it; a focus the keyboard
     /// moved stays.
     pub fn clear_click_focus(&mut self) {
@@ -2296,7 +2301,10 @@ impl OptionsUi {
                 }
                 shell::Output::Push(page) => {
                     if page == Page::HdrCalibration {
-                        self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
+                        self.calibration = Some(crate::hdr_calibration::Calibration::new(
+                            s,
+                            &self.graphics.screen.output,
+                        ));
                     }
                     self.push(page);
                 }

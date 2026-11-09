@@ -1,0 +1,496 @@
+//! The output each renderer owns (docs/design/hdr-linear-light.md): what its destination
+//! offers and its display reports, resolved with the settings and the pack into one snapshot
+//! that the settings screens, calibration, F3 and the frame read. Nothing here is shared
+//! between renderers. A split view or an offscreen renderer never changes what a window
+//! offers or reports.
+use super::hdr::Output;
+use crate::graphics::{Graphics, HdrMode, Reported};
+
+/// What a renderer's destination and device can draw and present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OutputCapabilities {
+    /// The HDR output the destination presents: its surface's, or offscreen the one
+    /// `HORIZON_HDR_OUTPUT` names (`hdr::offscreen_output`).
+    pub hdr: Option<Output>,
+    /// The device draws, blends and filters the 16-bit frame (Smooth Gradients).
+    pub wide_frame: bool,
+    /// The same for the float frame (`LINEAR_FRAME`).
+    pub float_frame: bool,
+    /// The device keeps the HUD on a layer of its own (`hud_coverage::supported`).
+    pub hud_layer: bool,
+}
+
+/// What the system last reported for a renderer's display: its luminance, and whether it
+/// shows HDR (`None`: it doesn't say, or nobody asked, as with HDR Off and offscreen).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DisplayReading {
+    pub(crate) luminance: Option<Reported>,
+    pub(crate) hdr: Option<bool>,
+}
+impl DisplayReading {
+    /// The watch stopped (HDR Off asks the system nothing): no system report. The luminance
+    /// it last reported stays, which the settings' Auto values show.
+    pub(crate) fn stop_watching(&mut self) {
+        self.hdr = None;
+    }
+}
+
+/// What the picked pack asks of the frame (`picked_pack_shape`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameRequest {
+    /// A shader API 0.2 pack is picked under `HORIZON_HDR_FRAME=float`: its frame is float.
+    pub linear_pack: bool,
+    /// Under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is
+    /// the layered float one wherever HDR output goes.
+    pub hdr_float: bool,
+}
+
+/// What a renderer's frame is drawn in, and what the hand, overlays and HUD draw on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameConfiguration {
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) overlay_format: wgpu::TextureFormat,
+    /// The layered float HDR frame: an 8-bit HUD target and an R8 coverage target beside it.
+    pub(crate) hud_layer: bool,
+}
+
+/// The display a 0.2 pack's `Frame` describes (docs/api/shaders-reference-0.2.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DisplayValues {
+    pub hdr: bool,
+    /// The peak over paper white, at least 1.
+    pub headroom: f32,
+    pub paper_white: f32,
+    pub peak: f32,
+    pub black_level: f32,
+}
+impl DisplayValues {
+    pub const SDR: Self = Self {
+        hdr: false,
+        headroom: 1.0,
+        paper_white: 80.0,
+        peak: 80.0,
+        black_level: 0.0,
+    };
+    /// The values HDR output's last pass maps to: the headroom never below 1, and the black
+    /// level never above paper white.
+    fn hdr([paper_white, peak, black]: [f32; 3]) -> Self {
+        let paper_white = paper_white.max(1.0);
+        let headroom = (peak / paper_white).max(1.0);
+        Self {
+            hdr: true,
+            headroom,
+            paper_white,
+            peak: paper_white * headroom,
+            black_level: black.clamp(0.0, paper_white),
+        }
+    }
+}
+
+/// One renderer's output as applied, with what its destination offers and reports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectiveOutput {
+    /// The HDR output this renderer's destination offers.
+    pub(crate) offered: Option<Output>,
+    /// What this renderer's display last reported (`DisplayReading`).
+    pub(crate) system_hdr: Option<bool>,
+    pub(crate) reported: Option<Reported>,
+    /// The device draws the 16-bit frame (Smooth Gradients).
+    pub(crate) wide_frame_supported: bool,
+    /// The HDR output presented; `None` is SDR.
+    pub(crate) encoding: Option<Output>,
+    pub(crate) frame: FrameConfiguration,
+    /// Paper white, peak and black level in nits, as HDR output's last pass and its
+    /// metadata take them, while it is on.
+    pub(crate) nits: [f32; 3],
+    /// The HUD and menus' brightness, as a share of paper white.
+    pub(crate) ui_brightness: f32,
+}
+impl Default for EffectiveOutput {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+impl EffectiveOutput {
+    /// No destination yet: nothing offered or reported, SDR on an 8-bit frame.
+    pub(crate) const NONE: Self = Self {
+        offered: None,
+        system_hdr: None,
+        reported: None,
+        wide_frame_supported: false,
+        encoding: None,
+        frame: FrameConfiguration {
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            overlay_format: wgpu::TextureFormat::Bgra8Unorm,
+            hud_layer: false,
+        },
+        nits: [203.0, 1000.0, 0.0],
+        ui_brightness: 1.0,
+    };
+    /// Whether the destination offers HDR output.
+    pub fn hdr_offered(&self) -> bool {
+        self.offered.is_some()
+    }
+    /// Whether HDR output is presented.
+    pub fn hdr_on(&self) -> bool {
+        self.encoding.is_some()
+    }
+    /// Whether `mode` asks for HDR here: On always, Auto where the destination offers it and
+    /// the display reports HDR. The output still needs an offer and a frame that can take it.
+    pub fn requests_hdr(&self, mode: HdrMode) -> bool {
+        requests_hdr(mode, self.offered.is_some(), self.system_hdr)
+    }
+    /// What a 0.2 pack's `Frame` describes: the HDR display on the layered frame, whose
+    /// picture is light; SDR otherwise, where the frame holds SDR's picture, the one HDR
+    /// output's last pass expands.
+    pub(crate) fn display(&self) -> DisplayValues {
+        if self.encoding.is_some() && self.frame.hud_layer {
+            DisplayValues::hdr(self.nits)
+        } else {
+            DisplayValues::SDR
+        }
+    }
+    /// This output drawn somewhere HDR output doesn't go (a scaled screenshot's frame): the
+    /// same frame, SDR.
+    pub(crate) fn sdr(self) -> Self {
+        Self {
+            encoding: None,
+            ..self
+        }
+    }
+}
+
+fn requests_hdr(mode: HdrMode, offered: bool, system: Option<bool>) -> bool {
+    match mode {
+        HdrMode::Off => false,
+        HdrMode::On => true,
+        HdrMode::Auto => offered && system == Some(true),
+    }
+}
+
+/// The frame a renderer made now draws in, for `settings`, the pack's `request`, what the
+/// destination and device can do (`caps`) and what the display reports.
+pub(crate) fn resolve_frame(
+    settings: &Graphics,
+    request: FrameRequest,
+    caps: OutputCapabilities,
+    reading: DisplayReading,
+    swapchain: wgpu::TextureFormat,
+) -> FrameConfiguration {
+    let wanted = requests_hdr(settings.hdr, caps.hdr.is_some(), reading.hdr);
+    let (format, hud_layer) = super::frame_configuration(
+        wanted && settings.hdr_smooth_gradients,
+        (
+            caps.hdr.is_some(),
+            caps.wide_frame,
+            caps.float_frame,
+            caps.hud_layer,
+        ),
+        swapchain,
+        request.linear_pack,
+        request.hdr_float && wanted,
+    );
+    FrameConfiguration {
+        format,
+        overlay_format: super::overlay_format(format, hud_layer, swapchain),
+        hud_layer,
+    }
+}
+
+/// The output `settings` ask for on `frame`, the frame the renderer has: HDR output where the
+/// mode asks for it, the destination offers it, presents (`presents`: a surface, or an
+/// offscreen target), and the overlays draw on the frame (a 0.2 pack's float frame without
+/// the HUD's layer finishes on 8 bits first, so it is SDR).
+pub(crate) fn resolve_output(
+    settings: &Graphics,
+    caps: OutputCapabilities,
+    reading: DisplayReading,
+    frame: FrameConfiguration,
+    presents: bool,
+) -> EffectiveOutput {
+    let wanted = requests_hdr(settings.hdr, caps.hdr.is_some(), reading.hdr);
+    EffectiveOutput {
+        offered: caps.hdr,
+        system_hdr: reading.hdr,
+        reported: reading.luminance,
+        wide_frame_supported: caps.wide_frame,
+        encoding: caps
+            .hdr
+            .filter(|_| wanted && presents && frame.overlay_format == frame.format),
+        frame,
+        nits: [
+            settings.paper_white_nits(reading.luminance) as f32,
+            settings.peak_nits(reading.luminance) as f32,
+            settings.black_level_nits(),
+        ],
+        ui_brightness: settings.hdr_ui_brightness as f32 / 100.0,
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::gfx::{LINEAR_FRAME, WIDE_FRAME};
+    use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb};
+
+    /// A window whose display offers `hdr` and reports `system` HDR at 400/1000 nits, on a
+    /// device that draws every frame.
+    pub(crate) fn window(
+        hdr: Option<Output>,
+        system: Option<bool>,
+    ) -> (OutputCapabilities, DisplayReading) {
+        (
+            OutputCapabilities {
+                hdr,
+                wide_frame: true,
+                float_frame: true,
+                hud_layer: true,
+            },
+            DisplayReading {
+                luminance: Some(Reported {
+                    paper_white: 400,
+                    peak: 1000,
+                }),
+                hdr: system,
+            },
+        )
+    }
+    /// The snapshot a renderer of `caps` and `reading` applies for `settings`, on the frame it
+    /// would be made with.
+    pub(crate) fn snapshot(
+        settings: &Graphics,
+        request: FrameRequest,
+        caps: OutputCapabilities,
+        reading: DisplayReading,
+    ) -> EffectiveOutput {
+        let frame = resolve_frame(settings, request, caps, reading, Bgra8UnormSrgb);
+        resolve_output(settings, caps, reading, frame, true)
+    }
+
+    /// Every mode against every offer, system report, pack and device: HDR output only where
+    /// the mode asks for it and the destination offers it, and the frame each combination
+    /// draws in, as `Renderer::new` picked it before the snapshot.
+    #[test]
+    fn the_resolver_picks_one_output_and_frame_for_each_combination() {
+        let no_pack = FrameRequest {
+            linear_pack: false,
+            hdr_float: true,
+        };
+        let pack_0_2 = FrameRequest {
+            linear_pack: true,
+            hdr_float: true,
+        };
+        // A 0.1 pack, or none without the float switch; a refused, missing or disabled
+        // pick asks as no pack does (`picked_pack_shape`).
+        let legacy = FrameRequest::default();
+        for mode in HdrMode::ALL {
+            for hdr in [None, Some(Output::Pq), Some(Output::ScRgb)] {
+                for system in [None, Some(false), Some(true)] {
+                    for (request, name) in
+                        [(no_pack, "no pack"), (pack_0_2, "0.2"), (legacy, "0.1")]
+                    {
+                        for (float_frame, hud_layer) in
+                            [(true, true), (true, false), (false, true), (false, false)]
+                        {
+                            for smooth in [false, true] {
+                                let settings = Graphics {
+                                    hdr: mode,
+                                    hdr_smooth_gradients: smooth,
+                                    ..Graphics::default()
+                                };
+                                let (mut caps, reading) = window(hdr, system);
+                                (caps.float_frame, caps.hud_layer) = (float_frame, hud_layer);
+                                let out = snapshot(&settings, request, caps, reading);
+                                let wanted = match mode {
+                                    HdrMode::Off => false,
+                                    HdrMode::On => true,
+                                    HdrMode::Auto => hdr.is_some() && system == Some(true),
+                                };
+                                let layered = request.hdr_float
+                                    && wanted
+                                    && hdr.is_some()
+                                    && float_frame
+                                    && hud_layer;
+                                let format = if float_frame && (request.linear_pack || layered) {
+                                    LINEAR_FRAME
+                                } else if wanted && smooth && hdr.is_some() {
+                                    WIDE_FRAME
+                                } else {
+                                    Bgra8Unorm
+                                };
+                                let case = format!(
+                                    "{mode:?} {hdr:?} {system:?} {name} float {float_frame} \
+                                     layer {hud_layer} smooth {smooth}"
+                                );
+                                assert_eq!(out.frame.format, format, "{case}");
+                                assert_eq!(out.frame.hud_layer, layered, "{case}");
+                                // A 0.2 pack's float frame without the layer finishes on 8 bits.
+                                let overlays = if format == LINEAR_FRAME && !layered {
+                                    Bgra8Unorm
+                                } else {
+                                    format
+                                };
+                                assert_eq!(out.frame.overlay_format, overlays, "{case}");
+                                let encoding = hdr.filter(|_| wanted && overlays == format);
+                                assert_eq!(out.encoding, encoding, "{case}");
+                                assert_eq!(out.requests_hdr(mode), wanted, "{case}");
+                                assert_eq!((out.offered, out.system_hdr), (hdr, system), "{case}");
+                                // A 0.2 pack sees the HDR display only on the layered frame.
+                                assert_eq!(
+                                    out.display().hdr,
+                                    encoding.is_some() && layered,
+                                    "{case}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Nothing is presented without a surface or an offscreen target, and the requested mode
+    /// stays as it was: only the output follows.
+    #[test]
+    fn a_destination_that_presents_nothing_is_sdr() {
+        let settings = Graphics {
+            hdr: HdrMode::On,
+            ..Graphics::default()
+        };
+        let (caps, reading) = window(Some(Output::Pq), Some(true));
+        let frame = resolve_frame(
+            &settings,
+            FrameRequest::default(),
+            caps,
+            reading,
+            Bgra8Unorm,
+        );
+        assert_eq!(
+            resolve_output(&settings, caps, reading, frame, false).encoding,
+            None
+        );
+        assert_eq!(
+            resolve_output(&settings, caps, reading, frame, true).encoding,
+            Some(Output::Pq)
+        );
+        assert_eq!(settings.hdr, HdrMode::On);
+    }
+
+    /// Auto's paper white and peak are this display's report; the player's own values win.
+    #[test]
+    fn auto_levels_follow_this_renderers_report() {
+        let mut settings = Graphics {
+            hdr: HdrMode::On,
+            ..Graphics::default()
+        };
+        let (caps, reading) = window(Some(Output::Pq), Some(true));
+        let frame = resolve_frame(
+            &settings,
+            FrameRequest::default(),
+            caps,
+            reading,
+            Bgra8Unorm,
+        );
+        let out = resolve_output(&settings, caps, reading, frame, true);
+        assert_eq!(out.nits, [400.0, 1000.0, 0.0]);
+        let unreported = DisplayReading::default();
+        assert_eq!(
+            resolve_output(&settings, caps, unreported, frame, true).nits,
+            [203.0, 1000.0, 0.0]
+        );
+        (settings.hdr_paper_white, settings.hdr_peak) = (250, 1500);
+        assert_eq!(
+            resolve_output(&settings, caps, reading, frame, true).nits,
+            [250.0, 1500.0, 0.0]
+        );
+    }
+
+    /// Two renderers' states, a window's and an offscreen one's, made and changed in turn:
+    /// neither's offer or report shows in the other's snapshot, and the offscreen one
+    /// stopping its watch (HDR Off) leaves the window's report alone.
+    #[test]
+    fn two_renderers_keep_their_own_offer_and_report() {
+        let auto = Graphics {
+            hdr: HdrMode::Auto,
+            ..Graphics::default()
+        };
+        let (window_caps, mut window_reading) = window(Some(Output::Pq), Some(true));
+        let window_frame = resolve_frame(
+            &auto,
+            FrameRequest::default(),
+            window_caps,
+            window_reading,
+            Bgra8Unorm,
+        );
+        let window_output =
+            |reading| resolve_output(&auto, window_caps, reading, window_frame, true);
+        let before = window_output(window_reading);
+        assert_eq!(before.encoding, Some(Output::Pq));
+        // The offscreen renderer is made after: it offers nothing and nothing reported.
+        let (offscreen_caps, _) = window(None, None);
+        let mut offscreen_reading = DisplayReading::default();
+        let offscreen_frame = resolve_frame(
+            &auto,
+            FrameRequest::default(),
+            offscreen_caps,
+            offscreen_reading,
+            Bgra8Unorm,
+        );
+        let offscreen = resolve_output(
+            &auto,
+            offscreen_caps,
+            offscreen_reading,
+            offscreen_frame,
+            true,
+        );
+        assert_eq!(
+            (offscreen.offered, offscreen.reported, offscreen.encoding),
+            (None, None, None)
+        );
+        assert_eq!(window_output(window_reading), before);
+        // The offscreen renderer's watch stops; the window's report stays.
+        offscreen_reading.stop_watching();
+        assert_eq!(window_output(window_reading), before);
+        // The window's display changes its report; the offscreen renderer still has none.
+        window_reading.luminance = Some(Reported {
+            paper_white: 300,
+            peak: 800,
+        });
+        assert_eq!(window_output(window_reading).nits[..2], [300.0, 800.0]);
+        assert_eq!(
+            resolve_output(
+                &auto,
+                offscreen_caps,
+                offscreen_reading,
+                offscreen_frame,
+                true
+            )
+            .reported,
+            None
+        );
+        // The window's own watch stopping clears its system report, not its luminance (the
+        // settings' Auto values keep showing what the display last said).
+        window_reading.stop_watching();
+        let stopped = window_output(window_reading);
+        assert_eq!((stopped.system_hdr, stopped.encoding), (None, None));
+        assert_eq!(stopped.reported, window_reading.luminance);
+    }
+
+    /// What a 0.2 pack reads of the display: the headroom the tone curve eases into, never
+    /// below 1, and the black Horizon lifts after it, never above paper white.
+    #[test]
+    fn the_display_a_pack_reads_is_the_one_the_curve_maps_to() {
+        let d = DisplayValues::hdr([203.0, 1000.0, 0.05]);
+        assert_eq!(
+            (d.headroom, d.paper_white, d.black_level),
+            (1000.0 / 203.0, 203.0, 0.05)
+        );
+        assert!((d.peak - 1000.0).abs() < 1e-3, "{}", d.peak);
+        // A peak under paper white has no headroom: the display tops out at white.
+        let d = DisplayValues::hdr([203.0, 150.0, 400.0]);
+        assert_eq!(
+            (d.headroom, d.paper_white, d.peak, d.black_level),
+            (1.0, 203.0, 203.0, 203.0)
+        );
+    }
+}

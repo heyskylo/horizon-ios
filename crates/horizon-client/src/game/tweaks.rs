@@ -461,7 +461,10 @@ impl Game<'_> {
         if self.screen != Screen::Playing
             || self.title.is_some()
             || self.settings.horizon.hdr_key != name
-            || !horizon_client::graphics::hdr_offered()
+            || !self
+                .renderer
+                .as_ref()
+                .is_some_and(|r| r.output().hdr_offered())
         {
             return false;
         }
