@@ -37,6 +37,8 @@ pub struct Registry {
     blocks: &'static BlockRegistry,
     /// Each custom particle type's colormap (`colormap`), by type id.
     tints: HashMap<String, Arc<Tint>>,
+    /// The tags modifiers' `targets` and emitters' `biomes` name.
+    tags: crate::pack_tags::Tags,
     /// Each model particle type's faces (`model`), by type id.
     models: HashMap<String, Arc<super::polytone_model::ParticleModel>>,
     /// Sound ids as the engine's sound queue holds them, interned once.
@@ -213,7 +215,8 @@ impl Registry {
                 }
             }
         }
-        // Each block's modifiers: the highest priority ones (block tags aren't resolved here).
+        // Each block's modifiers: the highest priority ones.
+        let tags = crate::pack_tags::Tags::new(pack_root);
         let mut by_name: HashMap<&str, Option<Arc<[Arc<BlockEmitters>]>>> = HashMap::new();
         let block_emitters = (0..blocks.len() as u32)
             .map(|i| {
@@ -226,7 +229,10 @@ impl Registry {
                     .or_insert_with(|| {
                         let aimed: Vec<_> = modifiers
                             .iter()
-                            .filter(|m| m.targets.matches(name, |_| false))
+                            .filter(|m| {
+                                m.targets
+                                    .matches(name, |tag| tags.contains("block", tag, name))
+                            })
                             .collect();
                         let top = aimed.iter().map(|m| m.priority).max()?;
                         Some(
@@ -270,6 +276,7 @@ impl Registry {
             blocks,
             tints,
             models,
+            tags,
             sound_names: Mutex::default(),
             sounds: Mutex::default(),
             particle_modifiers,
@@ -290,7 +297,7 @@ impl Registry {
     }
 
     /// The particle modifiers aimed at a particle type (`minecraft:flame`), in the order read;
-    /// particle tags aren't resolved here.
+    /// `#tags` in `targets` are particle type tags.
     fn modifiers_for(&self, id: &str) -> Arc<[usize]> {
         let mut cache = self
             .modifiers_by_type
@@ -300,7 +307,12 @@ impl Registry {
             return found.clone();
         }
         let found: Arc<[usize]> = (0..self.particle_modifiers.len())
-            .filter(|&i| self.particle_modifiers[i].0.targets.matches(id, |_| false))
+            .filter(|&i| {
+                self.particle_modifiers[i]
+                    .0
+                    .targets
+                    .matches(id, |tag| self.tags.contains("particle_type", tag, id))
+            })
             .collect();
         cache.insert(id.to_owned(), found.clone());
         found
@@ -337,8 +349,8 @@ impl Registry {
         }
     }
 
-    /// The entity modifiers aimed at an entity type (`minecraft:player`); entity tags aren't
-    /// resolved here.
+    /// The entity modifiers aimed at an entity type (`minecraft:player`); `#tags` in `targets`
+    /// are entity type tags.
     fn entity_emitters(&self, entity: &str) -> Arc<[Arc<EntityEmitters>]> {
         let mut cache = self
             .entity_emitters
@@ -349,7 +361,10 @@ impl Registry {
             .or_insert_with(|| {
                 self.entity_modifiers
                     .iter()
-                    .filter(|m| m.targets.matches(entity, |_| false))
+                    .filter(|m| {
+                        m.targets
+                            .matches(entity, |tag| self.tags.contains("entity_type", tag, entity))
+                    })
                     .cloned()
                     .collect()
             })
@@ -820,7 +835,7 @@ fn state_matches(predicate: &Json, ctx: &Ctx, at: [i32; 3]) -> bool {
     }
 }
 
-/// Whether `biomes` (an id, a list of ids, or a tag, which isn't resolved here) holds the biome
+/// Whether `biomes` (an id, a `#tag`, or a list of them) holds the biome
 /// at `at`.
 fn biome_matches(biomes: &Json, ctx: &Ctx, at: [i32; 3]) -> bool {
     let Some(biome) = ctx.biome(at) else {
@@ -833,9 +848,14 @@ fn biome_matches(biomes: &Json, ctx: &Ctx, at: [i32; 3]) -> bool {
             format!("minecraft:{s}")
         }
     };
+    // An id, or a `#tag` of biomes.
+    let holds = |entry: &str| match entry.strip_prefix('#') {
+        Some(tag) => ctx.registry.tags.contains("worldgen/biome", tag, &biome),
+        None => id(entry) == biome,
+    };
     match biomes {
-        Json::String(s) => id(s) == biome,
-        Json::Array(list) => list.iter().filter_map(Json::as_str).any(|s| id(s) == biome),
+        Json::String(s) => holds(s),
+        Json::Array(list) => list.iter().filter_map(Json::as_str).any(holds),
         _ => true,
     }
 }
@@ -2118,6 +2138,64 @@ mod tests {
         );
         assert_eq!((p.lifetime, p.size), (33, 0.75));
         assert!(matches!(p.sprite, Sprite::Index(20)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn block_and_biome_tags_pick_where_an_emitter_runs() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/spark.json",
+                serde_json::json!({"has_physics": false}),
+            ),
+            (
+                "assets/test/polytone/block_modifiers/shiny.json",
+                serde_json::json!({
+                    "targets": ["#test:shiny"],
+                    "particle_emitters": [{
+                        "particle": "test:spark", "chance": "1", "biomes": "#test:warm",
+                        "spawn_location": "lower_corner", "y": "1"
+                    }]
+                }),
+            ),
+            (
+                "data/test/tags/block/shiny.json",
+                serde_json::json!({"values": ["minecraft:torch"]}),
+            ),
+            (
+                "data/test/tags/worldgen/biome/warm.json",
+                serde_json::json!({"values": ["#test:hot", "minecraft:plains"]}),
+            ),
+            (
+                "data/test/tags/worldgen/biome/hot.json",
+                serde_json::json!({"values": ["minecraft:desert"]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        // The test chunk's biome is the table's first: a cold one first, then a warm one.
+        let first = |name: &str| {
+            Arc::new(crate::biome::Biomes::from_jsons(&[(
+                name,
+                serde_json::json!({}),
+            )]))
+        };
+        let registry = engine.polytone.clone().unwrap();
+        registry.set_biomes(&first("minecraft:snowy_plains"));
+        engine.polytone_animate(&level, [1, 64, 1]);
+        assert!(engine.pending.is_empty(), "outside #test:warm");
+        // `#test:warm` holds the desert through the nested `#test:hot`.
+        registry.set_biomes(&first("minecraft:desert"));
+        engine.polytone_animate(&level, [1, 64, 1]);
+        assert_eq!(engine.pending.len(), 1);
+        assert_eq!(engine.pending[0].position, [1.0, 65.0, 1.0]);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
