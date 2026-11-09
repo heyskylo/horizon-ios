@@ -44,6 +44,12 @@ Cases:
 - pause_icon: the pause menu's icons are targets, and A presses one.
 - studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
+- controller_settings_pad: Controller Settings on the settings shell, by the pad alone: its pages, the D-pad through
+  every page and its rows, the strip describing the focused row, A changing Vibration, X undoing it, B leaving.
+- controller_bind: A on Bindings' Jump waits for a button (the row and the strip say so, Start cancels and leaves no
+  Undo), the next button binds and saves it with an Undo, Right and A reset it and the Undo goes.
+- controller_settings_keys: the keys: Tab to the search, typing finds a row by what it does, the focus off and back
+  keeps the search, a pad press gives the keys back, Escape leaves.
 - controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
   again goes back to By Position.
 - nintendo_letters: a Nintendo pad going by its letters shows the letter of the button that acts on the title's
@@ -55,6 +61,9 @@ Cases:
   turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
 - shell_choice_step: on Graphics, Left and Right on a focused choice (Preset) step it back and on, from the D-pad
   and the arrow keys alike, and the focus stays; up and down leave the row, and LB goes to the page list.
+- shader_screens: Shaders, on the settings shell, with a pack of more screens than its page list has rows for: they
+  collapse into one `‹ Name ›` strip, RB walks every one and round to the pack list, LB from the first goes back to
+  it, and Undo shows once the pack is picked.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
@@ -1374,6 +1383,9 @@ def open_controller(game, page=None):
             game.pad('rb')
 
 
+VIBRATION_ABOUT = 'Rumble when something happens to you.'
+
+
 def controller_saved(game):
     path = game.game_home / 'horizon-controller.txt'
     return path.read_text() if path.exists() else ''
@@ -1432,6 +1444,7 @@ def controller_settings_pad(args, name):
                 break
             game.pad('down')
         check('vibration' in (game.focused_label() or '').lower(), f'never reached Vibration: {game.focused_label()}')
+        check(has_label(game, VIBRATION_ABOUT), f'the strip does not describe the focused row: {labels(game)}')
         game.pad('south')
         check(has_label(game, 'Undo'), 'no Undo after a change')
         check('vibration:false' in controller_saved(game), f'not saved: {controller_saved(game)}')
@@ -1461,16 +1474,22 @@ def controller_bind(args, name):
         check('jump' in (game.focused_label() or '').lower(), f'never reached Jump: {game.focused_label()}')
         game.pad('south')
         check(has_label(game, '> '), f'A did not start the wait: {labels(game)}')
+        check(has_label(game, 'cancels'), f'the strip does not say what cancels the wait: {labels(game)}')
+        shot(game, 'controller-waiting')
         game.pad('start')
         check(not has_label(game, '> '), 'Start did not cancel the wait')
         check(has_label(game, 'Editing:'), 'Start left the screen instead of cancelling')
+        check(not has_label(game, 'Undo'), 'a cancelled wait left an Undo')
         game.pad('south')
         game.pad('rs')
         check('key.jump' in controller_saved(game), f'the binding was not saved: {controller_saved(game)}')
+        check(has_label(game, 'Undo'), 'no Undo after a binding')
+        check(has_label(game, 'This button also does'), f'the strip does not say the button is shared: {labels(game)}')
         shot(game, 'controller-bound')
         game.pad('right')
         game.pad('south')
         check('key.jump' not in controller_saved(game), f'reset did not clear it: {controller_saved(game)}')
+        check(not has_label(game, 'Undo'), 'Undo stayed with the binding back on its default')
         check((game.menu()['focus'] or {}).get('kind') != 'field', f'reset sent the focus to the search: {game.menu()["focus"]}')
     finally:
         game.quit()
@@ -1527,6 +1546,16 @@ def controller_settings_keys(args, name):
         game.ctl('key', 'up', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Look Sensitivity'), 'coming back to the search cleared it')
+        # The pad moves the focus off the field (its first press lands it), which gives the keys back: typing
+        # changes nothing.
+        for _ in range(3):
+            game.pad('down')
+            if (game.menu()['focus'] or {}).get('kind') not in (None, 'field'):
+                break
+        check((game.menu()['focus'] or {}).get('kind') not in (None, 'field'), f"the pad stayed on the field: {game.menu()['focus']}")
+        game.ctl('type', 'zzz')
+        time.sleep(SETTLE)
+        check(has_label(game, 'Vibration'), f'the search kept the keys after the pad left it: {labels(game)}')
         game.ctl('key', 'esc', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Editing:'), 'Escape did not leave the screen')
@@ -1791,6 +1820,58 @@ def extras_shell_edges(args, name):
         check(after and after != before and after.split(':')[0] == before.split(':')[0],
               f'A on the half-hidden row left it {before} -> {after}')
         shot(game, 'extras-revealed')
+    finally:
+        game.quit()
+    return check.failures
+
+
+# A shader pack with more screens than Shaders' page list has rows for in a 427x240 GUI view.
+MANY_SCREENS = [f'S{i:02}' for i in range(12)]
+
+
+def seed_many_screens(game_home):
+    pack = game_home / 'shaderpacks' / 'ManyScreens' / 'shaders'
+    pack.mkdir(parents=True)
+    options = [f'O_{name}' for name in MANY_SCREENS]
+    (pack / 'final.fsh').write_text('#version 120\n' + ''.join(f'#define {o}\n#ifdef {o}\n#endif\n' for o in options)
+                                    + 'void main() { gl_FragColor = vec4(1.0); }\n')
+    (pack / 'shaders.properties').write_text(
+        'screen = ' + ' '.join(f'[{name}]' for name in MANY_SCREENS) + '\n'
+        + ''.join(f'screen.{name} = {o}\n' for name, o in zip(MANY_SCREENS, options)))
+
+
+def open_tab(game):
+    """The label of the page list's lit tab."""
+    lit = [tuple(t['rect']) for t in game.menu()['targets'] if t['kind'] == 'tab*']
+    return next((w.get('label') for w in game.widgets() if tuple(w['bounds']) in lit), None)
+
+
+def shader_screens(args, name):
+    game = Game(args, name, seed=seed_many_screens)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'shader-packs')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # On the settings shell a pack is a tick box: "ManyScreens: Off".
+        pack = next((w for w in game.widgets() if (w.get('label') or '').startswith('ManyScreens')), None)
+        check(pack is not None, f'no ManyScreens pack: {labels(game)}')
+        game.ctl('click', pack['id'])
+        time.sleep(SETTLE)
+        # RB from the pack list through every screen, none left out, and round to the pack list.
+        walked = []
+        for _ in range(len(MANY_SCREENS) + 2):
+            game.pad('rb')
+            walked.append(open_tab(game))
+        packs = walked[-1]
+        check(walked[1:-1] == MANY_SCREENS, f'RB walked {walked}')
+        # LB back from the first screen leaves the strip for the pack list.
+        game.pad('rb')
+        game.pad('lb')
+        check(open_tab(game) == packs, f'LB from {walked[0]} went to {open_tab(game)}')
+        # Picking the pack is a change the shell's Undo puts back.
+        check(has_label(game, 'Undo'), f'no Undo after picking a pack: {labels(game)}')
     finally:
         game.quit()
     return check.failures
@@ -3221,6 +3302,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
          'shell_choice_step': shell_choice_step,
+         'shader_screens': shader_screens,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'nintendo_letters': nintendo_letters,

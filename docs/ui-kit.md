@@ -10,13 +10,15 @@ inputs once a frame and the overlays draw with them. It is immediate mode, with 
 own. Vanilla's display lists (`hud_layout`, `screen_draw`) never use it: they are vanilla's, and
 parity-tested against it.
 
-The kit grows a piece at a time, each with an overlay that needs it. Today it has three:
+The kit grows a piece at a time, each with something on screen that needs it:
 
 | Piece | What it gives |
 |---|---|
 | `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
 | `hud_kit::plate` | `Plate`: the box behind a notice's text |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
+| `settings_shell` | `Shell`: a searchable settings screen (Extras, Graphics, Controller Settings, Shaders) a `Screen` describes; it draws and drives it, binding rows included |
+| `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page |
 
 All sizes are GUI px from the view's top left, and an area is `[x, y, w, h]`.
 
@@ -133,3 +135,131 @@ family.
   `pad connection connected nintendo` raises a Nintendo pad's notice. With `nintendoLetters:true` in
   the seeded `horizon-controller.txt`, that is letter mode with no real pad (`tools/pad_menu_e2e.py`,
   `nintendo_letters`). `pad status` lists each declared glyph's part (`button`), `label` and `sprite`.
+
+## The settings shell
+
+### Moving a screen onto the shell
+
+A settings screen on the shell describes its pages, groups and rows, and says what a press does. The
+shell (`settings_shell::Shell`) does the rest: drawing, the mouse, one scroll path, the keyboard's focus
+and the controller's targets, the search, the strip that describes a row, Undo, and a binding's wait. A
+fix there reaches every screen on it. `extras_ui.rs` is the smallest example, `graphics_ui.rs` has
+sliders, costs and greyed rows, `controller_ui.rs` has bindings and lines to read, and `shader_ui.rs` has
+pages read from a shader pack, rows that link to pages out of the page list, and Apply.
+
+1. **Name the rows and the pages.** `type Row` is an id for a row (an enum over the settings), `type
+   Page` one for a page (`()` for a screen of one page, which then shows no page list).
+2. **Describe them** in `Screen::sheets`, afresh from the settings: a `Sheet` per page (`Sheet::new`), its `Group`s,
+   and a `Row` each, with its `Value`: `Switch`, `Choice` (stepped by a press, Shift back, and Left and
+   Right), `Slider`, `Binding`, `Read` (a value the focus reaches, which nothing presses), `Press` or
+   `Note`. A row says what it does (`about`), what its chosen value does (`chosen`), and why it is greyed
+   (`blocked`); the strip shows them and the search finds them.
+3. **Say what a press does** in `press`, `slide`, `wheel_step` and, for a binding row's reset button,
+   `reset`, as `Output`s: an `Event` for the game, `Push` another page, `Done`. The shell has already
+   played the click. `side` gives lines to show under the page list, such as whose settings these are
+   (Controller Settings: "Editing: <player>" and the controller the game sees); they are read-only.
+   `link` makes a row open a page (Shaders' links to a pack's screens): the shell opens it alone, and
+   Escape goes back. A slider's `slider_released` says what its change does once the drag ends, or a key stepped
+   it (a Horizon shader pack saves its options once a drag).
+4. **Fingerprint what the rows read** in `stamp` (`stamp_of`), besides the presses: the rows are built
+   again only when it changes.
+5. **Undo**, if the screen has it: `undoes`, and `undo` puts back what the screen changes from the
+   settings it opened with, and says what else that does (Shaders saves a pack's options again).
+   `differs` lets Undo show exactly while something differs, a binding the game made meanwhile
+   included. **Apply**, for changes that wait: `pending` shows it beside Undo, and `apply` does them.
+6. **Host it**: a `Shell` of it on `OptionsUi`, named in `OptionsUi::shell` and `shell_mut`, and opened
+   at its page with `Shell::show`. Every input goes through those two, so a screen can't take the wheel
+   and miss the stick.
+7. **Delete** the screen's own drawing, scrolling, focus, search and click code.
+
+What the old screen's tests checked moves to tests on the `Shell` of the new one: press a row with
+`click` at `point_at`, walk with `key`, and read `listed`, `row_labels`, `focused` and `changed`.
+
+### Binding rows
+
+`Value::Binding` is a row that binds a key or a controller button. The screen says what it binds and
+what it is bound to now; the shell starts the wait when it is pressed, marks the row ("> A <") while the
+host waits, draws the controller button's art (`pad_glyph::Glyph`), says in the strip that it is unbound
+or what else its button does, and draws the row's reset.
+
+- `Capture::Key(name)`: a key or a mouse button, as on Key Binds. The host waits (`selected_key`), and
+  Escape unbinds.
+- `Capture::Pad(action)`: a controller button. The host waits (`selected_pad_action`); the game binds the
+  next button pressed, Start cancels, a click or another key cancels, and the keyboard's Escape unbinds.
+- `shared`: what else the same button does, which the strip lists and the row marks "[ ]" in yellow.
+- `reset`: `Reset::None` (no button), `Reset::Default` (greyed) or `Reset::Changed` (live) for a reset
+  button at the row's end; pressed (a click, or Right then Enter or A), it calls `Screen::reset`.
+
+A press gives `Output::Bind(capture)`; the host's `shell_events` starts the wait, and passes what it waits
+on back to `Hosted::draw`.
+
+```rust
+// A key, as Extras' sort key and Graphics' HDR shortcut have it:
+Row::new(row, name, Value::Binding(Binding::key(extras::SORT_KEY, key_name)))
+
+// A controller button, as Controller Settings > Bindings has each action, in the player's
+// `Glyphs` the game hands the screen (`ui.options.pad_glyphs`):
+let shown = Shown::Pad {
+    glyph: Glyph::of(GlyphOf::Bound(action), &s.controller, glyphs),
+    cancel: Glyph::menu(MenuJob::Start, glyphs),
+};
+let binding = Binding {
+    capture: Capture::Pad(action),
+    shown,
+    shared, // the other actions on its button, by name
+    reset: if s.controller.is_default(action) { Reset::Default } else { Reset::Changed },
+};
+Row::new(Item::Bind(action), name, Value::Binding(binding))
+```
+
+### The page list
+
+A screen of two pages or more has a page list down the left, a page under the last. A `Sheet` with
+`listed: false` isn't in it (it opens from a link, and the list lights the page the link was on), and
+one with a `heading` has a line over it that starts a section, as Shaders names the picked pack over its
+screens. When the pages and lines don't fit above the foot (`Columns::page_room`), the last section
+collapses into one `hud_kit::tabs::collapsed` row ([Tabs](#tabs)); pages that fit look as they always
+did. In the row:
+
+- Left of the name picks the page before, the name the one shown, right of it the page after. While
+  searching, before and after are the nearest pages with matches; an arrow with none is dimmed and picks
+  nothing.
+- Each part is a `Tab` target for a controller (the name lit while its page is open), so RB and LB step
+  through every page, and past the section's ends to the pages before it. The arrows are recorded as
+  vanilla's Previous Page and Next Page for the widget tree and the narrator.
+- The open page's row has the list's open look (plate and accent bar), and the focus ring goes round the
+  whole row.
+
+The row is laid out as it is drawn (the arrows sit either side of a name as wide as the font draws it), so
+a press or a key picks from the list as last drawn.
+
+### Shell tests
+
+- A screen on the shell is tested through its `Shell`: `controller_ui`'s tests press a binding and read
+  the row's "> A <", the strip, the art drawn in its row, and Undo putting a binding back.
+- `settings_shell`'s own tests use small screens of their own: `Pages` has more pages than a short view
+  holds, a section line, a page out of the list and Apply. Draw it (`page_places`, `strip_ends`,
+  `lit_page`), then press the places.
+
+## Tabs
+
+`hud_kit::tabs::collapsed(atlas, names, selected, area)` lays out a page list in one row: the
+selected name between `‹ ›` arrows, cut to the room between them, with a pip per page under the
+row, the selected one white. `tabs::draw(batch, atlas, &strip)` paints it.
+
+- `has_prev` and `has_next` say whether there is a page either way; an arrow without one is drawn
+  dimmed (`ARROW_OFF`). A screen may change them, as the settings shell's search does.
+- When the pips don't all fit across the area, the ones shown are a window round the selected
+  page's, so they never leave the row's width.
+- It only lays out and paints: what a click or a bumper does is the screen's.
+
+### Where it is used
+
+The settings shell's page list (above) collapses into it when its pages don't fit: Shaders' pack
+screens in a short view (four fit at 427x240 GUI px: an 854x480 window at GUI scale 2, or 720p at its
+automatic scale; packs such as BSL have about ten).
+
+Tests: `hud_kit::tabs` (centring, cutting, dimmed ends, the pip window), `settings_shell` (a short view
+leaves no page out and a tall one keeps the list, the arrows walk every page, search skips pages without
+matches, the parts are `Tab` targets), and `tools/pad_menu_e2e.py --only shader_screens` (RB through
+every screen of a twelve-screen pack in a real game).

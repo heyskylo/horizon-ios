@@ -50,6 +50,8 @@ pub(super) enum Event {
     Checked((SourceId, String), Result<Box<Check>, String>),
     /// What a Horizon registry project says before install: signed or not, what it may do.
     About(HashMap<String, Vec<String>>),
+    /// Registry native mods' [`horizon::works_on`] in the selected instance, by id.
+    Works(HashMap<String, (bool, String)>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
     /// What the automatic updates did (`horizon::auto`), and the instances (ids) whose native
@@ -127,6 +129,9 @@ pub(super) struct Mods {
     pub(super) checks: HashMap<(SourceId, String), Checking>,
     /// Horizon registry projects' trust and capabilities, by id ([`horizon::trust_and_capabilities`]).
     pub(super) about: HashMap<String, Vec<String>>,
+    /// Whether a registry native mod works on the selected instance, and how, by id
+    /// ([`horizon::works_on`]).
+    pub(super) works: HashMap<String, (bool, String)>,
     /// The project page, filters and images.
     pub(super) browse: super::mods_project::Browse,
     pub(super) tx: Sender<Event>,
@@ -221,6 +226,7 @@ impl Mods {
             shown: None,
             checks: HashMap::new(),
             about: HashMap::new(),
+            works: HashMap::new(),
             browse: Default::default(),
             tx,
             rx,
@@ -439,6 +445,10 @@ impl Launcher {
                     m.about.extend(about);
                     m.results_list.reset();
                 }
+                Event::Works(works) => {
+                    m.works.extend(works);
+                    m.results_list.reset();
+                }
                 Event::AutoUpdated(lines, rebuild) => {
                     m.rebuild.extend(rebuild);
                     if !lines.is_empty() {
@@ -529,22 +539,30 @@ impl Launcher {
             let result = browser::source(source)
                 .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|s| s.search(&query));
+            let instance = horizon_launcher::instances::selected();
             let about: HashMap<String, Vec<String>> = match (&result, source) {
+                (Ok(found), SourceId::Horizon) => found
+                    .iter()
+                    .map(|p| {
+                        let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
+                        (p.id.clone(), lines)
+                    })
+                    .collect(),
+                _ => HashMap::new(),
+            };
+            let works = match (&result, source) {
                 (Ok(found), SourceId::Horizon) => {
-                    let instance = horizon_launcher::instances::selected();
-                    found
-                        .iter()
-                        .map(|p| {
-                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
-                            (p.id.clone(), lines)
-                        })
-                        .collect()
+                    let ids: Vec<String> = found.iter().map(|p| p.id.clone()).collect();
+                    horizon::works_lines(&ids, &instance)
                 }
                 _ => HashMap::new(),
             };
             let _ = tx.send(Event::Found(search, offset, result));
             if !about.is_empty() {
                 let _ = tx.send(Event::About(about));
+            }
+            if !works.is_empty() {
+                let _ = tx.send(Event::Works(works));
             }
         });
     }
@@ -1085,6 +1103,16 @@ impl Launcher {
             self.mods_check_updates();
         }
         if !self.mods.loaded || (home.is_some() && self.mods.home != home) {
+            // Another instance: what works there, its versions and the last message differ.
+            if self.mods.loaded {
+                self.mods.about.clear();
+                self.mods.works.clear();
+                self.mods.message = None;
+                if let Some(open) = self.mods.browse.open.as_ref().map(|o| o.project.clone()) {
+                    self.mods_open(open);
+                }
+                self.mods_search(0);
+            }
             self.mods.checked_for = plays;
             self.mods.home = home;
             self.mods.reload_installed();
@@ -1096,6 +1124,17 @@ impl Launcher {
             self.mods_taken_down();
             self.mods.loaded = true;
         }
+    }
+
+    /// Find mods from an instance: the registry's mods, only those that work on it, as a list.
+    pub(super) fn mods_find_for_instance(&mut self) {
+        self.mods_set_kind(PackKind::Mod);
+        let m = &mut self.mods;
+        m.source = source_for(PackKind::Mod);
+        m.browse.open = None;
+        m.picked = None;
+        m.browse.filters.works_on = true;
+        self.mods_search(0);
     }
 
     /// Opens a kind's tab: its first source, its own filters, a new search.
