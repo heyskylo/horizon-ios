@@ -684,6 +684,9 @@ impl Game<'_> {
             [white.u1, white.v0],
             [white.u0, white.v0],
         ];
+        // A Polytone pack's `entity/lead.png`: each of the 24 segments, from the leashed end,
+        // takes its row of the texture, unshaded (measured on the real mod).
+        let lead = atlas.sprites.get("entity/lead").copied();
         let lerp3 = |a: horizon_core::geometry::Vec3, b: horizon_core::geometry::Vec3| {
             glam::DVec3::new(
                 a.x + (b.x - a.x) * alpha,
@@ -826,9 +829,21 @@ impl Game<'_> {
                         };
                         let (a0, b0) = point(step, fudge);
                         let (a1, b1) = point(step + 1, fudge);
-                        let color = shade(step);
+                        let (color, rows) = match lead {
+                            Some(r) => {
+                                let v = |s: i32| r.v0 + (r.v1 - r.v0) * s as f32 / 24.0;
+                                let (top, bottom) = (v(step), v(step + 1));
+                                let near =
+                                    [[r.u0, top], [r.u1, top], [r.u1, bottom], [r.u0, bottom]];
+                                let far =
+                                    [[r.u0, bottom], [r.u1, bottom], [r.u1, top], [r.u0, top]];
+                                (0xFFFF_FFFF, [near, far])
+                            }
+                            None => (shade(step), [uv; 2]),
+                        };
                         // Both faces: the leash is not culled.
-                        for quad in [[a0, b0, b1, a1], [a1, b1, b0, a0]] {
+                        for (quad, uv) in [[a0, b0, b1, a1], [a1, b1, b0, a0]].into_iter().zip(rows)
+                        {
                             for (v, uv) in quad.iter().zip(uv) {
                                 out.push(Vertex {
                                     normal: [0; 4],

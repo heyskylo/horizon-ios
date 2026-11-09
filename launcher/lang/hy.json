@@ -1264,5 +1264,7 @@
   "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Ստեղծված է Horizon {pin}-ի համար. գործարկիչը այն կառուցում է քո խաղացած {yours}-ի վրա, իսկ {pin}-ի վրա միայն եթե այնտեղ չի կոմպիլյացվում",
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods}-ը չկառուցվեցին քո խաղացած Horizon-ի վրա. կառուցվում է այն տարբերակի վրա, որի համար ստեղծված են",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Վերջին կառուցման մեջ՝ Horizon {commit}-ի վրա {mods}-ի համար, ոչ {horizon}-ի վրա",
-  "In the last build, on {horizon}": "Վերջին կառուցման մեջ՝ {horizon}-ի վրա"
+  "In the last build, on {horizon}": "Վերջին կառուցման մեջ՝ {horizon}-ի վրա",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

@@ -1264,5 +1264,7 @@
   "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "ทำมาสำหรับ Horizon {pin}: ลอนเชอร์จะบิลด์บน {yours} ที่คุณเล่น และบน {pin} เฉพาะเมื่อคอมไพล์ที่นั่นไม่ผ่าน",
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} บิลด์บน Horizon ที่คุณเล่นไม่ผ่าน: กำลังบิลด์บนเวอร์ชันที่ทำมาให้",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ในการบิลด์ล่าสุด บน Horizon {commit} เพื่อ {mods} ไม่ใช่บน {horizon}",
-  "In the last build, on {horizon}": "ในการบิลด์ล่าสุด บน {horizon}"
+  "In the last build, on {horizon}": "ในการบิลด์ล่าสุด บน {horizon}",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

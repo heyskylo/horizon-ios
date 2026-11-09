@@ -6,7 +6,7 @@ EndCrystalRenderer.submit	port	crates/horizon-client/src/game/end.rs::Game::end_
 EndCrystalRenderer.extractRenderState	inline	crates/horizon-client/src/game/end.rs::Game::end_crystal_geometry	age, show-bottom and beam target read from the crystal there
 EndCrystalRenderer.shouldRender	inline	crates/horizon-client/src/game/end.rs::Game::end_crystal_geometry	gap: minor: no frustum test; crystals within 256 blocks always draw, beam included
 EnderDragonRenderer.submit	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_geometry	
-EnderDragonRenderer.submitRays	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_rays	
+EnderDragonRenderer.submitRays	port	crates/horizon-client/src/game/dragon/death_render.rs::dragon_rays	
 EnderDragonRenderer.submitCrystalBeams	port	crates/horizon-client/src/game/dragon.rs::Game::crystal_beam	
 EnderDragonRenderer.extractRenderState	inline	crates/horizon-client/src/game/dragon.rs::Game::dragon_geometry	flap, death fade, hurt overlay, nearest-crystal beam and egg distance read there
 EndermanRenderer.getRenderOffset	port	crates/horizon-client/src/mobs/render.rs::enderman_render_offset	EndermanRenderer.getRenderOffset's random side offset for a creepy enderman, 0.02 * minecraft:scale per axis
@@ -48,7 +48,7 @@ FishingHookRenderer.extractRenderState	port	crates/horizon-client/src/game/fishi
 FoxRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::fox	crouch, sleep, sit, faceplant, pounce and head roll
 FrogRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::frog	jump, croak, tongue and swim animations; climate texture in mobs/render.rs::body
 GiantMobRenderer.extractRenderState	port	crates/horizon-client/src/mobs/anim.rs::humanoid	gap: minor: giant model comes from the species table (giant#main), not a separate renderer
-GlowSquidRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: player: glow squid dark-tick light is not read, so its body never brightens in the dark
+GlowSquidRenderer.getBlockLightLevel	port	crates/horizon-client/src/mobs/aquatic.rs::glow_squid_block_light	the block light a glow squid is drawn with: a clamped lerp over the remaining dark ticks, maxed with the block light; mob_geometry writes it into the second light byte
 GoatRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::goat	horns and ramming head pitch
 GuardianRenderer.shouldRender	skip:other		frustum culling of the beam only; the guardian body is culled by the entity culler
 GuardianRenderer.getPosition	inline	crates/horizon-client/src/mobs/guardian.rs::beam_geometry	target and eye positions
@@ -115,7 +115,7 @@ PufferfishRenderer.setupRotations	port	crates/horizon-client/src/mobs/render.rs:
 RabbitRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::rabbit	hop and idle head-tilt animations; Toast name in mobs/render.rs::body
 RavagerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/ravager.rs::anim	stun, bite and roar clocks
 SalmonRenderer.setupRotations	port	crates/horizon-client/src/mobs/aquatic.rs::rotations	the 4.3-amplitude swim wiggle and the flop
-SheepRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::sheep_wool_rgb	gap: player: sheep named jeb_ do not cycle their wool colour; head eat and sheared state read elsewhere
+SheepRenderer.extractRenderState	inline	crates/horizon-client/src/mobs/render.rs::layers	the sheep's extra layers: a jeb_ custom name takes jeb_wool_rgb(age), else pack_dyes::sheep_wool(color); the undercoat and sheared rules are in the same arm, head eat and age elsewhere
 ShulkerBulletRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: minor: drawn as a spark sprite, not the spinning two-layer model
 ShulkerBulletRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	15 block light wherever the bullet flies; the same pass carries `EntityRenderer.getBlockLightLevel`'s isOnFire rule and `getPackedLightCoords`' eye probe
 ShulkerBulletRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	rotation read there

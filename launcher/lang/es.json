@@ -1264,5 +1264,7 @@
   "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Hecho para Horizon {pin}: el launcher lo compila en {yours}, el que juegas, y en {pin} solo si allí no compila",
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} no compilaron en el Horizon que juegas: se compila en el que fueron hechos",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "En la última compilación, en Horizon {commit} por {mods}, no en {horizon}",
-  "In the last build, on {horizon}": "En la última compilación, en {horizon}"
+  "In the last build, on {horizon}": "En la última compilación, en {horizon}",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }
