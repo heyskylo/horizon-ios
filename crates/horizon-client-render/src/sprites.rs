@@ -127,6 +127,9 @@ pub struct Sprites {
     /// textures under their own names, and one layer serves them all (the GPU's array may
     /// hold as few as 2048).
     still: std::collections::HashMap<StillKey, u32>,
+    /// Names a connected-texture rule matches by name (`matchTiles`, `connectTiles`): each keeps a
+    /// layer of its own ([`Sprites::keep_apart`]).
+    apart: std::collections::HashSet<String>,
     /// Decoded textures kept on disk between launches ([`Sprites::with_disk_cache`]).
     disk: Option<crate::sprite_cache::SpriteCache>,
     /// Textures [`Sprites::prefetch`] decoded ahead of their insert, by sprite name or
@@ -217,6 +220,13 @@ impl Sprites {
             disk: crate::sprite_cache::SpriteCache::open(root),
             ..Self::default()
         }
+    }
+    /// Keeps each of `names` on a layer of its own, never shared with an identical texture: the
+    /// connected-texture rules that name them find their faces by layer, so a texture sharing it
+    /// would be matched too (a tile a rule chains onto, and a model's transparent placeholder
+    /// with the same pixels). Before the textures that bear these names are inserted.
+    pub fn keep_apart(&mut self, names: impl IntoIterator<Item = String>) {
+        self.apart.extend(names);
     }
     /// Write what this run decoded to the cache file.
     pub fn save_disk_cache(&mut self) {
@@ -686,23 +696,24 @@ impl Sprites {
                     .is_some_and(|(_, p)| p.starts_with("item/")),
             dither_cutouts: crate::mipmap::dither_cutouts(),
         };
-        let still = (animation.is_none() && frames.len() == 1).then(|| {
-            use std::hash::{Hash, Hasher};
-            let mut frame = std::collections::hash_map::DefaultHasher::new();
-            frames[0].hash(&mut frame);
-            let mut maps = std::collections::hash_map::DefaultHasher::new();
-            pbr.hash(&mut maps);
-            StillKey {
-                frame: frame.finish(),
-                pbr: maps.finish(),
-                side,
-                settings: [
-                    settings.strategy as u32,
-                    settings.alpha_cutoff_bias.to_bits(),
-                ],
-                flags: [settings.has_transparent, settings.item, opaque, translucent],
-            }
-        });
+        let still =
+            (animation.is_none() && frames.len() == 1 && !self.apart.contains(name)).then(|| {
+                use std::hash::{Hash, Hasher};
+                let mut frame = std::collections::hash_map::DefaultHasher::new();
+                frames[0].hash(&mut frame);
+                let mut maps = std::collections::hash_map::DefaultHasher::new();
+                pbr.hash(&mut maps);
+                StillKey {
+                    frame: frame.finish(),
+                    pbr: maps.finish(),
+                    side,
+                    settings: [
+                        settings.strategy as u32,
+                        settings.alpha_cutoff_bias.to_bits(),
+                    ],
+                    flags: [settings.has_transparent, settings.item, opaque, translucent],
+                }
+            });
         if let Some(&same) = still.as_ref().and_then(|k| self.still.get(k)) {
             self.layers.insert(name.to_owned(), same);
             return Ok(same);
@@ -1280,6 +1291,40 @@ mod tests {
         assert_eq!((sprites.opaque.len(), sprites.mips.len()), (3, 3));
         sprites.finish();
         assert_eq!(sprites.pixels.len(), 3 * 16 * 16 * 4);
+    }
+    #[test]
+    fn a_texture_a_connected_rule_matches_keeps_a_layer_of_its_own() {
+        // A resource pack's transparent placeholders: a model's layer and a tile another
+        // connected-texture rule chains onto (`matchTiles=./19.png`) have the same pixels. The
+        // rule finds its faces by layer, so the one it names can't share the others'.
+        let root =
+            std::env::temp_dir().join(format!("horizon-sprite-apart-{}", std::process::id()));
+        let directory = root.join("assets/a/textures/block");
+        fs::create_dir_all(&directory).unwrap();
+        let write = |name: &str| {
+            let mut encoder =
+                png::Encoder::new(File::create(directory.join(name)).unwrap(), 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[0; 16 * 16 * 4])
+                .unwrap();
+        };
+        for name in ["placeholder.png", "named.png", "again.png"] {
+            write(name);
+        }
+        let mut sprites = Sprites::default();
+        sprites.keep_apart(["a:block/named".to_owned()]);
+        let placeholder = sprites.insert(&root, "a:block/placeholder").unwrap();
+        let named = sprites.insert(&root, "a:block/named").unwrap();
+        let again = sprites.insert(&root, "a:block/again").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        // The named one alone; the others still share.
+        assert_ne!(named, placeholder);
+        assert_eq!(again, placeholder);
+        assert_eq!(sprites.count(), 2);
     }
     #[test]
     fn a_32px_only_atlas_does_not_add_an_extra_mipmap() {

@@ -320,6 +320,16 @@ impl RenderAssets {
             }
             None => crate::model_library::ParsedModels::default(),
         };
+        // Connected-texture rules find their faces by sprite layer: what they match by name keeps a
+        // layer of its own, decided before the models insert their textures.
+        let ctm_rules = if draws {
+            horizon_optifine::ctm::load(root)
+        } else {
+            Vec::new()
+        };
+        sprites.keep_apart(crate::connected::ConnectedTextures::matched_sprites(
+            &ctm_rules,
+        ));
         let mut models = if draws {
             let _step = crate::spans::startup::step("core.models_bake");
             crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
@@ -359,6 +369,7 @@ impl RenderAssets {
             let mut found = Vec::new();
             crate::connected::ConnectedTextures::load(
                 root,
+                ctm_rules,
                 registry,
                 &mut sprites,
                 |state, face| {
