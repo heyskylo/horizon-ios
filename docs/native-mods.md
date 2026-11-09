@@ -3421,7 +3421,7 @@ Bundles need "hooks": @API:hurt_entity@.
 For a mod that generates terrain of its own (a custom world generator, a far lands border, a void world with climate
 biomes) in some chunks or all of them, as Bukkit's `ChunkGenerator` does.
 
-- **`native_set_biomes(dimension, entries)`** (`native_biome_edit.rs`): sets biome cells in the loaded chunks of the
+- **`native_set_biomes(dimension, entries)`** (`native_biome_colors/native_biome_edit.rs`): sets biome cells in the loaded chunks of the
   level being ticked, as `/fillbiome` does. `entries` is a list of `([qx, qy, qz], biome id)`: a cell is 4x4x4 blocks
   and its position is the block coordinate shifted right by 2 (`qy` counts from world height 0, so it may be
   negative). The columns changed are saved and their biomes sent to the players who have them

@@ -2,7 +2,7 @@
 //! `native_set_block` is, that sets biome cells (4x4x4 blocks) in loaded
 //! chunks and sends the changed columns' biomes to the players who see them,
 //! as `/fillbiome` does.
-use super::Game;
+use super::super::Game;
 use horizon_client::world::World;
 use std::collections::{BTreeSet, HashMap};
 
@@ -74,7 +74,7 @@ impl Game<'_> {
     /// already holds the biome isn't), or why nothing was: another dimension,
     /// a client of a server, or a biome id the level doesn't have (the whole
     /// call is refused, with nothing changed). API @API:set_biomes@.
-    pub(super) fn native_set_biomes(
+    pub(in crate::game) fn native_set_biomes(
         &mut self,
         dimension: &str,
         entries: &[([i32; 3], String)],

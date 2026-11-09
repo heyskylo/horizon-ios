@@ -261,7 +261,6 @@ mod music;
 mod names;
 mod narrator;
 mod native_biome_colors;
-mod native_biome_edit;
 pub mod native_block_entity_draw;
 mod native_block_sprites;
 mod native_bots;
