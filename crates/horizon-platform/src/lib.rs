@@ -48,10 +48,11 @@ pub use horizon_server_files as server_files;
 pub mod hooks {
     /// The players the game shows (`horizon_hooks::players`): the views [`Hooks::frame`] and
     /// [`Hooks::tick`] get, the pose a crate lays over a player's body, what goes by their names,
-    /// the crate's sprites and the camera.
+    /// the crate's sprites, the camera, and what a crate draws on them.
     pub use horizon_hooks::players::{
-        BODY_PARTS, Badge, BodyPose, CameraOverride, CameraView, Frame, Gear, Kind, Mark,
-        NameDecoration, PlayerModel, PlayerModels, SpriteStore, Sprites,
+        BODY_PARTS, Badge, BodyPose, Bone, CameraOverride, CameraView, Frame, Gear, Kind, Mark,
+        Mesh, NameDecoration, PartPoses, Pass, PlayerDraw, PlayerModel, PlayerModels, Quad,
+        SpriteStore, Sprites,
     };
     pub use horizon_hooks::{Hooks, Started, TooLate, register, seat};
 }
