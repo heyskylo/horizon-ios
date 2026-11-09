@@ -11,7 +11,7 @@ use horizon_client::{
     entities::ArmorStand,
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Mob, Part, Who, anim::Poses},
+    mobs::{Mob, Part, anim::Poses},
     trims::{TrimOverride, TrimRegistry, TrimTexture},
 };
 use horizon_core::{
@@ -806,7 +806,12 @@ impl Game<'_> {
     /// creative player breaks it, otherwise the first hit wobbles it and a
     /// second within five ticks breaks it.
     pub(super) fn punch_armor_stand(&mut self, i: usize) -> bool {
-        self.break_armor_stand_by_hit(i, self.creative, false, Some(Who::Player))
+        self.break_armor_stand_by_hit(
+            i,
+            self.creative,
+            false,
+            Some(super::commands::Target::Player),
+        )
     }
     /// The end of `ArmorStand.hurtServer` for a source in
     /// `#can_break_armor_stand` or `#always_kills_armor_stands`, which returns
@@ -819,7 +824,7 @@ impl Game<'_> {
         i: usize,
         creative: bool,
         always_kills: bool,
-        by: Option<Who>,
+        by: Option<super::commands::Target>,
     ) -> bool {
         let time = self.world.game_time;
         let at = self.armor_stands[i].position;
@@ -874,11 +879,15 @@ impl Game<'_> {
         true
     }
     /// `Entity.gameEvent(event, attributedTo)` for a stand at `at`: the
-    /// causing player or mob, else the stand itself (which no listener tells
-    /// apart from none).
-    fn stand_game_event(&mut self, event: &'static str, at: [f64; 3], by: Option<Who>) {
-        let ctx = self.who_context(by, None);
-        self.post_game_event(event, at, ctx);
+    /// causing player (a LAN guest too) or mob, else the stand itself (which
+    /// no listener tells apart from none).
+    fn stand_game_event(
+        &mut self,
+        event: &'static str,
+        at: [f64; 3],
+        by: Option<super::commands::Target>,
+    ) {
+        self.entity_event_by(event, at, by);
     }
     pub(super) fn tick_armor_stands(&mut self) -> Result<()> {
         let mut dead = Vec::new();
@@ -1326,9 +1335,10 @@ impl Game<'_> {
         if !may_build {
             return false;
         }
+        // ArmorStand.hurtServer attributes its game events to the source
+        // entity: the player, a LAN guest or the mob.
         let by = match causing {
-            Some(Target::Player) => Some(Who::Player),
-            Some(Target::Mob(mob)) => Some(Who::Mob(mob)),
+            Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
             _ => None,
         };
         self.break_armor_stand_by_hit(i, creative, always_kills, by)
