@@ -55,7 +55,7 @@ ContainerHelper.clearOrCountMatchingItems	port	crates/horizon-client/src/game/co
 DifficultyInstance.isHard	skip:other		no vanilla caller (isHarderThan is what Illusioner uses)
 DifficultyInstance.getSpecialMultiplier	port	crates/horizon-client/src/mobs/spawning.rs::LocalDifficulty::special	
 DifficultyInstance.calculateDifficulty	port	crates/horizon-client/src/mobs/spawning.rs::LocalDifficulty::new	
-InteractionHand.asArm	inline	crates/horizon-client/src/mobs/ai.rs::Mob::swing_hand	off_hand != main arm left; the player's first person hand does the same in game.rs hand_geometry
+InteractionHand.asArm	inline	crates/horizon-client/src/mobs/ai.rs::Mob::swing_hand	off_hand != main arm left; the player's first person hand does the same in game/frame_geometry.rs hand_geometry
 InteractionResult.Success.heldItemTransformedTo	skip:java		result builder; Horizon replaces the held item in place where the item is used
 ItemStackWithSlot.isValidInContainer	port	crates/horizon-client-core/src/block_entity_nbt.rs::items	slots outside 0..size are dropped when items load
 LockCode.canUnlock	port	crates/horizon-client/src/advancements.rs::can_unlock	checked when a container opens (game/advancements.rs container_locked_for from lan_actions.rs): a spectator opens any container, otherwise the main hand must match the lock predicate
