@@ -278,11 +278,16 @@ impl ChunkTickets {
             }
             cache.1.clone()
         });
+        // Callers ask once per entity: remember each chunk's answer, so an
+        // entity costs one lookup instead of the 25 of its neighbourhood.
+        let surrounded = std::cell::RefCell::new(crate::fast_hash::FxHashMap::default());
         move |x, z| {
             levels.entity_ticking_at(x, z)
                 && resident.as_ref().is_none_or(|keys| {
                     let (cx, cz) = (x >> 4, z >> 4);
-                    (cz - 2..=cz + 2).all(|z| (cx - 2..=cx + 2).all(|x| keys.contains(&(x, z))))
+                    *surrounded.borrow_mut().entry((cx, cz)).or_insert_with(|| {
+                        (cz - 2..=cz + 2).all(|z| (cx - 2..=cx + 2).all(|x| keys.contains(&(x, z))))
+                    })
                 })
         }
     }
