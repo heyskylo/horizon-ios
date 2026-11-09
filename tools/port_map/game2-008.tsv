@@ -113,7 +113,7 @@ ItemStack.matchesIgnoringComponents	port	crates/horizon-items/src/item_data.rs::
 ItemStack.lenientOptionalFieldOf	skip:java		codec helper
 ItemStack.hashItemAndComponents	skip:java		hash for collections
 ItemStack.hashStackList	skip:java		hash for collections
-ItemStack.onCraftedBy	inline	crates/horizon-client/src/game.rs::Game::click_inventory	gap: minor: other station result takes still omit crafted counts; the inventory grid and merchant result callbacks award through Game::award_stat
+ItemStack.onCraftedBy	inline	crates/horizon-client/src/game/menu_clicks.rs::Game::click_inventory	gap: minor: other station result takes still omit crafted counts; the inventory grid and merchant result callbacks award through Game::award_stat
 ItemStack.set	skip:other		component write; Horizon stores component data in typed fields
 ItemStack.update	skip:java		functional update helper
 ItemStack.applyComponentsAndValidate	missing		a validated component patch has no single counterpart: `/item modify` goes through its own path
