@@ -147,3 +147,34 @@ def frame_maps(cmd, setup):
     return ops + setup('/kill @e[tag=frame_map_1]', '/kill @e[tag=frame_map_3]',
                        '/scoreboard objectives remove frame_maps', '/clear @s', '/gamemode creative',
                        '/forceload remove -32 -32 31 31', '/tick unfreeze')
+
+
+def treasure_map_copies(cmd, setup):
+    """A same-id copy without components must not remove a treasure map's X."""
+    ops = []
+    def run(command, result=1):
+        ops.append(cmd(command, expect_result=result))
+    def step():
+        ops.append({'op': 'map_carried'})
+    def state():
+        ops.append({'op': 'map_state', 'id': 0, 'red_x': True,
+                    'expect_map': 'scale=0,locked=false,center=0,0,red_x=1'})
+    run('/tick freeze')
+    ops.extend(setup('/gamemode survival', '/clear @s', '/tp @s 4.5 100 4.5 0 0',
+                     '/forceload add 0 0 15 15'))
+    ops.append({'op': 'settle', 'required_chunks': [[0, 0]]})
+    run('/item replace entity @s weapon.mainhand with map')
+    ops.append({'op': 'use_item'})
+    run('/execute if items entity @s weapon.mainhand filled_map[map_id=0]')
+    target = 'filled_map[map_id=0,map_decorations={"+":{type:"minecraft:red_x",x:20.0d,z:30.0d,rotation:180.0f}}]'
+    run('/item replace entity @s weapon.mainhand with ' + target)
+    step()
+    state()
+    run('/item replace entity @s hotbar.1 with filled_map[map_id=0]')
+    step()
+    state()
+    # Retain the target even when only the undecorated copy remains.
+    run('/item replace entity @s weapon.mainhand with air')
+    step()
+    state()
+    return ops

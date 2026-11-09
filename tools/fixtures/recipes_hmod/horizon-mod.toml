@@ -1,0 +1,7 @@
+id = "recipe_pilot"
+name = "Recipe Pilot"
+version = "0.1.0"
+description = "Original content fixture for the Recipes LAN scenario"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]

@@ -254,8 +254,9 @@ impl Goal for SpiderAttack {
         self.0.flags()
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        // SpiderAttackGoal.canUse: not while it carries a rider.
-        self.0.can_use(m, cx) && m.extra.rider.is_none()
+        // SpiderAttackGoal.canUse: not while it is a vehicle (`isVehicle`:
+        // a player or a mob on its back).
+        self.0.can_use(m, cx) && m.rider.is_none() && m.extra.rider.is_none()
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if mob_brightness(m, cx.w) >= 0.5 && m.random.next_int_bound(100).unwrap_or(1) == 0 {
@@ -361,7 +362,8 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.swell = (m.swell + dir).max(0);
     if m.swell >= m.max_swell {
         m.swell = m.max_swell;
-        let radius = if m.extra.charged { 6.0 } else { 3.0 };
+        // explodeCreeper: `explosionRadius * (isPowered() ? 2.0F : 1.0F)`.
+        let radius = f32::from(m.extra.explosion_radius) * if m.extra.charged { 2.0 } else { 1.0 };
         let name = match &m.custom_name {
             Some(name) => crate::text::Text::literal(name.clone()),
             None => crate::text::Text::translate(
@@ -374,11 +376,13 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
             charged: m.extra.charged,
             name,
             in_water: m.fluids.in_water,
+            kind: m.kind.id.clone(),
         });
         events.push(MobEvent::Explode(
             [m.position.x, m.position.y, m.position.z],
             radius,
             m.species(),
+            m.silent,
         ));
         // Creeper.spawnLingeringCloud: the effects it has make a cloud where it stood, after the
         // blast. A hidden effect (`hideParticles`) takes no part in the cloud's colour.
@@ -425,5 +429,54 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
             });
         }
         m.removed = true;
+    }
+}
+
+#[cfg(test)]
+mod spider_vehicle_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::geometry::Vec3;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `SpiderAttackGoal.canUse` is `super.canUse() && !isVehicle()`: a spider
+    /// with a player (or a mob) on its back does not start the attack goal.
+    #[test]
+    fn a_spider_carrying_a_player_does_not_start_its_attack() {
+        let mut outcomes = None;
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:spider"].clone());
+            let mut truth = Vec::new();
+            for rider in [false, true] {
+                let mut world = w.clone();
+                world.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.target = Some(Who::Player);
+                if rider {
+                    m.rider = Some(super::super::equine::Rider::default());
+                }
+                m.ai.goals.add(4, SpiderAttack(MeleeAttack::new(1.0, true)));
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                truth.push(goals.is_running("SpiderAttack"));
+                m.ai.goals = goals;
+            }
+            outcomes = Some(truth);
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some(vec![true, false]),
+            "a free spider attacks; a spider carrying a player is a vehicle and does not"
+        );
     }
 }

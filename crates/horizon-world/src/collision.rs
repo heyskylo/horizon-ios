@@ -6,6 +6,7 @@
 use crate::{
     DATA_VERSION,
     chunk::BlockSection,
+    collision_context::EntityContextKind,
     compression::invalid,
     nbt::Tag,
     registry::{BlockRegistry, BlockStateId, BlockTable},
@@ -61,6 +62,8 @@ pub struct CachedCollisionRegistry<'r> {
     state_shapes: Vec<i32>,
     grid_count: usize,
     canonical_identities: bool,
+    contexts: HashMap<BlockStateId, [Option<usize>; 9]>,
+    outline_edges: HashMap<usize, Vec<[f64; 6]>>,
 }
 impl<'r> CachedCollisionRegistry<'r> {
     pub fn registry(&self) -> &'r BlockRegistry {
@@ -77,7 +80,8 @@ impl<'r> CachedCollisionRegistry<'r> {
         let Some(Tag::List(entries)) = tag.get("shapes") else {
             return Err(invalid("missing collision shapes"));
         };
-        if entries.len() > registry.len() {
+        // Each state can add four outline, four collision and one interaction shape.
+        if entries.len() > registry.len().saturating_mul(10) {
             return Err(invalid("too many cached collision shapes"));
         }
         let mut shapes = Vec::with_capacity(entries.len());
@@ -216,13 +220,125 @@ impl<'r> CachedCollisionRegistry<'r> {
         {
             return Err(invalid("invalid cached shape mapping"));
         }
+        let mut contexts = HashMap::new();
+        let mut outline_edges = HashMap::new();
+        if let Some(rows) = tag.get("context_shapes") {
+            let Tag::List(rows) = rows else {
+                return Err(invalid("context shapes is not a list"));
+            };
+            if rows.len() > registry.len() {
+                return Err(invalid("too many context shape rows"));
+            }
+            const KEYS: [&str; 9] = [
+                "outline_item",
+                "outline_player",
+                "outline_living",
+                "outline_other",
+                "collision_item",
+                "collision_player",
+                "collision_living",
+                "collision_other",
+                "interaction",
+            ];
+            for row in rows {
+                let Some(Tag::Int(state)) = row.get("state") else {
+                    return Err(invalid("context shape missing state"));
+                };
+                if *state < 0 || *state as usize >= registry.len() {
+                    return Err(invalid("context shape state outside registry"));
+                }
+                let Tag::Compound(fields) = row else {
+                    return Err(invalid("context shape row is not a compound"));
+                };
+                if fields.keys().any(|key| {
+                    key.to_string()
+                        .map_or(true, |key| key != "state" && !KEYS.contains(&key.as_str()))
+                }) {
+                    return Err(invalid("unknown context shape field"));
+                }
+                let mut ids = [None; 9];
+                for (i, key) in KEYS.into_iter().enumerate() {
+                    let Some(id) = row.get(key) else {
+                        continue;
+                    };
+                    let Tag::Int(id) = id else {
+                        return Err(invalid("context shape reference is not an int"));
+                    };
+                    if *id < 0 || *id as usize >= shapes.len() {
+                        return Err(invalid("context shape reference outside shapes"));
+                    }
+                    ids[i] = Some(*id as usize);
+                    if i < 4 {
+                        outline_edges
+                            .entry(*id as usize)
+                            .or_insert_with(|| shapes[*id as usize].edges());
+                    }
+                }
+                if ids.iter().all(Option::is_none)
+                    || contexts.insert(BlockStateId(*state as u32), ids).is_some()
+                {
+                    return Err(invalid("empty or duplicate context shape row"));
+                }
+            }
+        }
         Ok(Self {
             registry,
             shapes,
             state_shapes: state_shapes.clone(),
             grid_count: grids.len(),
             canonical_identities,
+            contexts,
+            outline_edges,
         })
+    }
+    pub fn has_context_shapes(&self, state: BlockStateId) -> bool {
+        self.contexts.contains_key(&state)
+    }
+    fn context_shape_id(
+        &self,
+        state: BlockStateId,
+        kind: EntityContextKind,
+        offset: usize,
+    ) -> Option<usize> {
+        let kind = kind.index()?;
+        self.contexts.get(&state)?[offset + kind]
+    }
+    /// A declared outline override for an actual entity; no entity uses the ordinary outline.
+    pub fn context_outline_shape(
+        &self,
+        state: BlockStateId,
+        kind: EntityContextKind,
+    ) -> Option<&VoxelShape> {
+        Some(&self.shapes[self.context_shape_id(state, kind, 0)?])
+    }
+    pub fn context_outline_edges(
+        &self,
+        state: BlockStateId,
+        kind: EntityContextKind,
+    ) -> Option<&[[f64; 6]]> {
+        Some(
+            self.outline_edges
+                .get(&self.context_shape_id(state, kind, 0)?)?
+                .as_slice(),
+        )
+    }
+    pub fn context_collision_shape(
+        &self,
+        state: BlockStateId,
+        kind: EntityContextKind,
+    ) -> Option<&VoxelShape> {
+        Some(&self.shapes[self.context_shape_id(state, kind, 4)?])
+    }
+    pub fn interaction_shape(&self, state: BlockStateId) -> Option<&VoxelShape> {
+        Some(&self.shapes[self.contexts.get(&state)?[8]?])
+    }
+    /// Every declared physical variant participates in conservative cursor metadata.
+    pub fn collision_variants(&self, state: BlockStateId) -> impl Iterator<Item = &VoxelShape> {
+        self.contexts
+            .get(&state)
+            .into_iter()
+            .flat_map(|ids| ids[4..8].iter())
+            .filter_map(|id| id.map(|id| &self.shapes[id]))
     }
     /// Older exports omit native canonical identities. Such imports retain their
     /// local alias graph but cannot support identity-dependent world iteration.

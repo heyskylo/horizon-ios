@@ -79,15 +79,34 @@ impl Launcher {
                 })),
             );
         }
-        let header = div()
-            .flex()
-            .items_end()
-            .justify_between()
-            .gap(px(20.))
-            .pt(px(40. - crate::glass::CONTENT_INSET))
-            .mb(px(28.))
-            .child(head.min_w_0())
-            .child(tabs);
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
+        let header = if wide {
+            div()
+                .flex()
+                .flex_row()
+                .items_end()
+                .justify_between()
+                .gap(px(20.))
+                .pt(px(40. - crate::glass::CONTENT_INSET))
+                .mb(px(28.))
+                .child(head.min_w_0())
+                .child(tabs)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(px(16.))
+                .pt(px(40. - crate::glass::CONTENT_INSET))
+                .mb(px(28.))
+                .child(head.w_full().min_w_0())
+                .child(
+                    tabs.id("mods-kind-tabs")
+                        .w_full()
+                        .overflow_x_scroll()
+                        .on_scroll(|_, _, cx| cx.stop_propagation()),
+                )
+        };
 
         // Installation can pause for consent in either view. Keep the notice before
         // the project or results, rather than below a potentially long detail card.
@@ -110,6 +129,11 @@ impl Launcher {
         let java = self.mods.java_for(self.mods.kind).is_some();
         let registry = self.mods.source == SourceId::Horizon && !java;
         let everything = self.mods.everything;
+        let works_on = self.mods.browse.filters.works_on;
+        let instance_name = self
+            .selected_instance()
+            .map(|i| i.name.clone())
+            .unwrap_or_default();
         let extras = div()
             .flex()
             .flex_col()
@@ -134,6 +158,33 @@ impl Launcher {
                         .child(ui::text(13., FontWeight::NORMAL, 0.7).child(tr("Show everything")))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.mods.everything = !this.mods.everything;
+                            this.mods_search(0);
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(registry, |d| {
+                d.child(
+                    div()
+                        .id("mods-works-on")
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .cursor_pointer()
+                        .child(ui::toggle(
+                            "mods-works-on-switch",
+                            works_on,
+                            ui::look().accent,
+                            ui::look().on_accent,
+                            &t,
+                        ))
+                        .child(ui::text(13., FontWeight::NORMAL, 0.7).child(trf(
+                            "Only what works on {instance}",
+                            &[("instance", &instance_name)],
+                        )))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            let filters = &mut this.mods.browse.filters;
+                            filters.works_on = !filters.works_on;
                             this.mods_search(0);
                             cx.notify();
                         })),
@@ -166,15 +217,15 @@ impl Launcher {
         let detail = self.glass_mod_detail(&instance, cx).map(|d| {
             let down = self.mods_sticky.offset(&self.content_scroll.handle);
             d.flex_none()
-                .w(px(DETAIL))
-                .top(px(down))
+                .when(wide, |d| d.w(px(DETAIL)).top(px(down)))
+                .when(!wide, |d| d.w_full())
                 .child(self.mods_sticky.panel())
         });
         let cards = div()
             .relative()
             .flex()
-            .items_start()
-            .gap(px(10.))
+            .when(wide, |d| d.flex_row().items_start().gap(px(10.)))
+            .when(!wide, |d| d.flex_col().gap(px(10.)))
             .child(self.mods_sticky.row(&self.content_scroll.handle))
             .child(list)
             .children(detail);
@@ -415,7 +466,12 @@ impl Launcher {
             };
             // The registry's rows end with downloads, the others' with how they run (`compat`).
             let right = if p.source == SourceId::Horizon {
-                ui::text(13., FontWeight::NORMAL, 0.5).child(count(p.downloads).to_uppercase())
+                ui::text(13., FontWeight::NORMAL, 0.5)
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .children(super::mods_page::github_stars(&p.id, &t))
+                    .child(count(p.downloads).to_uppercase())
             } else {
                 let support = m.support(&p);
                 let tone = match support {
@@ -473,6 +529,17 @@ impl Launcher {
                             ui::text(13., FontWeight::NORMAL, 0.6)
                                 .truncate()
                                 .child(p.summary.clone()),
+                        )
+                        .children(
+                            m.works
+                                .get(&p.id)
+                                .filter(|_| p.source == SourceId::Horizon)
+                                .map(|(works, line)| {
+                                    ui::text(12., FontWeight::NORMAL, ink::FULL)
+                                        .truncate()
+                                        .text_color(if *works { ui::live() } else { white(0.4) })
+                                        .child(line.clone())
+                                }),
                         ),
                 )
                 .child(right.flex_none())

@@ -2,7 +2,8 @@
 //! player read out of this one and sent away: the control endpoint's
 //! `player-expect`, `player-drop`, `player-export`, `player-release` and
 //! `player-confirm` (`game/dedicated/transfer.rs` runs them; `player-import` is
-//! `import.rs`'s).
+//! `import.rs`'s), and `transfer-status`, the counts a proxy reads before it sends
+//! players here.
 //!
 //! A proxy that moves a player between two servers first tells the target
 //! server who is coming (`player-expect <uuid>`); the player's next login is then
@@ -25,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// `server.toml`'s `[transfer]`, as horizon-server passes it: `--transfers
-/// expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30,max_hold_seconds=60`.
+/// expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30,max_hold_seconds=60,stop_wait_seconds=10`.
 /// A key left out keeps its default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -41,6 +42,8 @@ pub struct Settings {
     /// Server ticks a held player may wait for its hand-over before the server
     /// drops it.
     pub max_hold_ticks: u64,
+    /// How long a stop waits for a proxy to move the players out ([`StopWait`]); zero stops at once.
+    pub stop_wait: Duration,
 }
 
 impl Default for Settings {
@@ -51,13 +54,14 @@ impl Default for Settings {
             max_expected: 64,
             max_freeze_ticks: 20 * 30,
             max_hold_ticks: 20 * 60,
+            stop_wait: Duration::from_secs(10),
         }
     }
 }
 
 impl Settings {
     /// Reads `--transfers`' value: `key=value` pairs separated by commas, each a
-    /// whole number above zero.
+    /// whole number above zero, but `stop_wait_seconds`, which is zero to [`MAX_STOP_WAIT`].
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut s = Self::default();
         for pair in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -69,9 +73,16 @@ impl Settings {
                 .trim()
                 .parse()
                 .ok()
-                .filter(|n| *n > 0)
+                .filter(|n| *n > 0 || key == "stop_wait_seconds")
                 .ok_or_else(|| format!("{key} must be a whole number above zero"))?;
             match key {
+                "stop_wait_seconds" if n > MAX_STOP_WAIT.as_secs() => {
+                    return Err(format!(
+                        "stop_wait_seconds is above {}",
+                        MAX_STOP_WAIT.as_secs()
+                    ));
+                }
+                "stop_wait_seconds" => s.stop_wait = Duration::from_secs(n),
                 "expect_seconds" => s.expect = Duration::from_secs(n),
                 "max_expect_seconds" => s.max_expect = Duration::from_secs(n),
                 "max_expected" => {
@@ -90,6 +101,15 @@ impl Settings {
         if s.expect > s.max_expect {
             return Err("expect_seconds is above max_expect_seconds".into());
         }
+        // A stop's wait is cut at STOP_WAIT_LIMIT: past it, no hand-over could start during the wait.
+        if !s.stop_wait.is_zero()
+            && s.stop_wait.as_secs() + s.max_freeze_ticks / 20 > STOP_WAIT_LIMIT.as_secs()
+        {
+            return Err(format!(
+                "stop_wait_seconds and max_freeze_seconds add up to more than {}",
+                STOP_WAIT_LIMIT.as_secs()
+            ));
+        }
         Ok(s)
     }
 }
@@ -101,6 +121,12 @@ impl Settings {
 pub struct Transfers {
     pub settings: Settings,
     pub expected: Arc<Mutex<Expectations>>,
+    /// The server has begun to stop (`/stop` or a stop signal; the game sets it, and a stop is not
+    /// taken back): no player is expected, imported or placed any more, but the players here can
+    /// still be exported and released, which is their way out.
+    pub stopping: bool,
+    /// The wait of that stop, while it lasts.
+    pub stop_wait: Option<StopWait>,
 }
 
 impl Transfers {
@@ -109,7 +135,12 @@ impl Transfers {
             settings.max_expected,
             settings.max_expect,
         )));
-        Self { settings, expected }
+        Self {
+            settings,
+            expected,
+            stopping: false,
+            stop_wait: None,
+        }
     }
 
     /// The table, locked. A thread that panicked while holding it left it
@@ -117,6 +148,95 @@ impl Transfers {
     pub fn table(&self) -> std::sync::MutexGuard<'_, Expectations> {
         self.expected.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// The longest `stop_wait_seconds` may be.
+pub const MAX_STOP_WAIT: Duration = Duration::from_secs(60);
+
+/// The longest a stop waits, a hand-over's freeze included: horizon-server kills a game that has not
+/// stopped within 120 s (its `STOP_TIMEOUT`), and the saves need the rest.
+pub const STOP_WAIT_LIMIT: Duration = Duration::from_secs(90);
+
+/// A stop with `[transfer]` on and players here waits, so a proxy told the server is stopping
+/// (`server/stopping`) can move them out first: no login comes in, the server ticks on and answers the
+/// proxy's requests. The wait ends as soon as no player is left, at `until` when no hand-over is frozen,
+/// and at `limit` whatever is under way: `until` and a freeze's longest time, so a hand-over started in
+/// time can finish, within [`STOP_WAIT_LIMIT`]. No freeze starts that the limit would cut: a player whose
+/// source saved it after the target placed it would be on both servers.
+///
+/// A freeze lasts `max_freeze_ticks` ticks, not seconds: its length in time is reckoned at the tick
+/// length the server has now (`period`, [`tick_period`]), which the game sets again at every tick, so a
+/// slow server or `/tick rate 10` refuses a freeze sooner. A server that slows down after a freeze began
+/// can still reach the limit with it: that is the warning of the stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopWait {
+    pub until: Instant,
+    pub limit: Instant,
+    freeze_ticks: u64,
+    /// The length of a tick now.
+    pub period: Duration,
+}
+
+impl StopWait {
+    /// The wait of a stop at `now`, if the settings make one, with ticks of `period`.
+    pub fn start(settings: &Settings, now: Instant, period: Duration) -> Option<Self> {
+        let freeze = freeze_time(settings.max_freeze_ticks, period);
+        (!settings.stop_wait.is_zero()).then(|| Self {
+            until: now + settings.stop_wait,
+            limit: now
+                + settings
+                    .stop_wait
+                    .saturating_add(freeze)
+                    .min(STOP_WAIT_LIMIT),
+            freeze_ticks: settings.max_freeze_ticks,
+            period,
+        })
+    }
+
+    /// Whether the stop goes on now, with these players placed and frozen here.
+    pub fn over(&self, now: Instant, placed: usize, frozen: usize) -> bool {
+        placed == 0 || (now >= self.until && frozen == 0) || now >= self.limit
+    }
+
+    /// Whether a hand-over that starts now would end before the limit, at the tick length of now.
+    pub fn may_freeze(&self, now: Instant) -> bool {
+        now.checked_add(freeze_time(self.freeze_ticks, self.period))
+            .is_some_and(|end| end <= self.limit)
+    }
+}
+
+/// How long `ticks` ticks of `period` take.
+fn freeze_time(ticks: u64, period: Duration) -> Duration {
+    period.saturating_mul(u32::try_from(ticks).unwrap_or(u32::MAX))
+}
+
+/// The length of a tick: the rate's (`target`, which `/tick rate` sets), or longer when the server
+/// is slower than that (`tps`, the ticks it made a second lately; 0 when unknown).
+pub fn tick_period(target: Duration, tps: f64) -> Duration {
+    let measured = if tps > 0.0 {
+        Duration::try_from_secs_f64(1.0 / tps).unwrap_or(Duration::MAX)
+    } else {
+        Duration::ZERO
+    };
+    measured.max(target)
+}
+
+/// The players placed here (a player a `moved` release took out is not counted) and those of them
+/// frozen for a hand-over.
+pub fn placed_and_frozen(hub: &Hub) -> (usize, usize) {
+    let here = || hub.guests.iter().filter(|g| g.placed && !g.released);
+    (
+        here().count(),
+        here().filter(|g| g.handover.is_some()).count(),
+    )
+}
+
+/// The log line of a stop that waits.
+pub fn stop_wait_line(wait: Duration) -> String {
+    format!(
+        "Stopping in {} s: a proxy may move the players out first",
+        wait.as_secs()
+    )
 }
 
 /// Why an expectation could not be recorded.
@@ -216,6 +336,19 @@ impl Expectations {
         self.until.len()
     }
 
+    /// How many expectations are still alive at `now`, without sweeping the others.
+    pub fn alive(&self, now: Instant) -> usize {
+        self.holding(None, now)
+    }
+
+    /// The places the live expectations of players other than `except` hold at `now`.
+    pub fn holding(&self, except: Option<u128>, now: Instant) -> usize {
+        self.until
+            .iter()
+            .filter(|(uuid, deadline)| Some(**uuid) != except && now < **deadline)
+            .count()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.until.is_empty()
     }
@@ -266,6 +399,16 @@ pub fn held_too_long(since: u64, now: u64, max: u64) -> bool {
 /// `now`, for a freeze of at most `max` ticks.
 pub fn frozen_too_long(since: u64, now: u64, max: u64) -> bool {
     now.saturating_sub(since) >= max
+}
+
+/// `player-export <uuid> freeze` during a stop's wait: refused once a hand-over that starts now could
+/// not finish before the stop's limit ([`StopWait`]). A player already frozen is answered as before.
+pub fn check_freeze(hub: &Hub, i: usize, now: Instant) -> Result<(), &'static str> {
+    let wait = hub.transfers.as_ref().and_then(|t| t.stop_wait);
+    if hub.guests[i].handover.is_none() && wait.is_some_and(|w| !w.may_freeze(now)) {
+        return Err("the server is stopping: no hand-over starts this late");
+    }
+    Ok(())
 }
 
 /// Why the connected player `uuid` cannot be exported now, or the index of its
@@ -506,15 +649,28 @@ fn error(message: &str) -> serde_json::Value {
 /// The reply to every `player-*` request on a server with transfers off.
 pub const OFF: &str = "transfers are off on this server";
 
+/// The reply to `player-expect` when the players here and those expected take every place.
+pub const FULL: &str = "the server is full";
+
+/// The reply to `player-expect`, `player-import` and `player-confirm` once the server has begun
+/// to stop: a player must not arrive on a server that is about to close.
+pub const STOPPING: &str = "the server is stopping";
+
 /// `player-expect <uuid> [seconds]`: the player will log in within that time
 /// (`[transfer]`'s `expect_seconds` by default, `max_expect_seconds` at most).
 /// The reply says whether an earlier expectation was renewed. The login uses
 /// the expectation up when it starts; one that no login used is reported when
-/// it runs out.
+/// it runs out. Each expectation holds a place: once the places the player limit
+/// counts and those of the other expected players reach `max-players`, the
+/// request is refused as full, unless the player is an op who bypasses the limit
+/// (`PlayerList.canPlayerLogin`). It is refused too once the server has begun to stop.
 pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Value {
     let Some(transfers) = &hub.transfers else {
         return error(OFF);
     };
+    if transfers.stopping {
+        return error(STOPPING);
+    }
     let mut parts = args.split_whitespace();
     let Some(uuid) = parts.next().and_then(parse_uuid) else {
         return error("player-expect needs the player's unique id");
@@ -532,7 +688,18 @@ pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Va
     if hub.guests.iter().any(|g| g.uuid == uuid) {
         return error("that player is already connected to this server");
     }
+    let shared = &hub.lan.shared;
+    let (online, max_players) = (shared.online(), shared.max_players());
+    let bypass = shared
+        .config
+        .bypasses_limit
+        .as_ref()
+        .is_some_and(|b| b(uuid));
     let mut table = transfers.table();
+    // A renewal holds no second place.
+    if !bypass && online + table.holding(Some(uuid), now) >= max_players {
+        return error(FULL);
+    }
     match table.expect(uuid, ttl, now) {
         Ok(renewed) => serde_json::json!({
             "ok": true,
@@ -541,6 +708,29 @@ pub fn expect_request(hub: &mut Hub, args: &str, now: Instant) -> serde_json::Va
         }),
         Err(ExpectError::Full) => error("too many players are expected at once"),
     }
+}
+
+/// `transfer-status`: what a proxy reads before it sends players here. The players placed, held
+/// and expected, the hand-overs under way, the places taken (what the player limit counts: the
+/// placed, the held and the logins still joining) and the limit, and whether a login would be
+/// refused as full. Counts only: no name, no unique id.
+pub fn status_request(hub: &Hub, now: Instant) -> serde_json::Value {
+    let Some(transfers) = &hub.transfers else {
+        return error(OFF);
+    };
+    let (online, max_players) = (hub.lan.shared.online(), hub.lan.shared.max_players());
+    let (placed, frozen) = placed_and_frozen(hub);
+    serde_json::json!({
+        "ok": true,
+        "players": placed,
+        "held": hub.guests.iter().filter(|g| g.held).count(),
+        "expected": transfers.table().alive(now),
+        "frozen": frozen,
+        "online": online,
+        "max_players": max_players,
+        "full": online >= max_players,
+        "stopping": transfers.stopping,
+    })
 }
 
 /// `player-drop <uuid> [hand-over]`: forgets the expectation of that player, and
@@ -585,7 +775,8 @@ pub fn drop_request(hub: &mut Hub, args: &str) -> serde_json::Value {
 /// `player-confirm <uuid> <hand-over>`: the held player whose record of that hand-over was
 /// imported, ready to be placed (`Hub::imported_arrival`). The game writes its file, then places
 /// it (`Hub::confirm_arrival`). Until then `player-drop` removes it without a save or a word to
-/// anyone.
+/// anyone. Once the server has begun to stop it is refused, though a retry after the commit is
+/// still answered.
 pub fn confirm_args(hub: &Hub, args: &str) -> Result<(u128, u128), String> {
     let mut parts = args.split_whitespace();
     let Some(uuid) = parts.next().and_then(parse_uuid) else {
@@ -598,6 +789,9 @@ pub fn confirm_args(hub: &Hub, args: &str) -> Result<(u128, u128), String> {
         return Err("player-confirm takes a unique id and a hand-over id".into());
     }
     if hub.placed_arrival(uuid, id).is_none() {
+        if hub.transfers.as_ref().is_some_and(|t| t.stopping) {
+            return Err(STOPPING.into());
+        }
         hub.imported_arrival(uuid, id)?;
     }
     Ok((uuid, id))
@@ -778,9 +972,97 @@ mod tests {
             "expect_seconds",
             "colour=blue",
             "expect_seconds=90",
+            "stop_wait_seconds=61",
+            "max_freeze_seconds=81",
+            "stop_wait_seconds=60,max_freeze_seconds=31",
         ] {
             assert!(Settings::parse(bad).is_err(), "{bad:?} was taken");
         }
+        // A stop that does not wait is zero seconds.
+        assert_eq!(Settings::default().stop_wait, secs(10));
+        assert_eq!(
+            Settings::parse("stop_wait_seconds=0").unwrap().stop_wait,
+            secs(0)
+        );
+        assert_eq!(
+            Settings::parse("stop_wait_seconds=60").unwrap().stop_wait,
+            secs(60)
+        );
+        // The two fit in the stop's limit, or the stop does not wait.
+        assert!(Settings::parse("stop_wait_seconds=60,max_freeze_seconds=30").is_ok());
+        assert!(Settings::parse("stop_wait_seconds=0,max_freeze_seconds=300").is_ok());
+    }
+
+    /// A stop's wait ends when nobody is left, at its time when no hand-over is frozen, and at its
+    /// limit (its time and a freeze's) whatever is under way; no freeze starts that the limit would
+    /// cut. Zero seconds is no wait.
+    #[test]
+    fn a_stop_waits_for_the_players_to_be_moved_out_but_not_for_ever() {
+        let now = Instant::now();
+        let settings = Settings::default();
+        let tick = Duration::from_millis(50);
+        let wait = StopWait::start(&settings, now, tick).unwrap();
+        assert_eq!((wait.until, wait.limit), (now + secs(10), now + secs(40)));
+        assert!(!wait.over(now, 2, 0));
+        assert!(wait.over(now, 0, 0), "nobody is left");
+        assert!(!wait.over(now + secs(9), 2, 0));
+        assert!(
+            wait.over(now + secs(10), 2, 0),
+            "its time, and no hand-over"
+        );
+        assert!(!wait.over(now + secs(39), 2, 1), "a hand-over may finish");
+        assert!(wait.over(now + secs(40), 2, 1), "the limit");
+        assert!(wait.may_freeze(now + secs(10)));
+        assert!(!wait.may_freeze(now + secs(11)));
+        // However long the settings, the whole wait fits in the supervisor's time for a stop.
+        let long = Settings {
+            stop_wait: secs(60),
+            max_freeze_ticks: 20 * 300,
+            ..Settings::default()
+        };
+        let wait = StopWait::start(&long, now, tick).unwrap();
+        assert_eq!(wait.limit, now + STOP_WAIT_LIMIT);
+        assert!(!wait.may_freeze(now), "a freeze of 300 s would be cut");
+        let none = Settings {
+            stop_wait: secs(0),
+            ..Settings::default()
+        };
+        assert_eq!(StopWait::start(&none, now, tick), None);
+    }
+
+    /// A freeze lasts ticks: at 10 ticks a second it lasts twice as long, the limit with it, and a
+    /// server that slows down during the wait refuses a freeze it would have let start at 20.
+    #[test]
+    fn a_stop_reckons_a_freeze_at_the_tick_length_of_now() {
+        let now = Instant::now();
+        let slow = Duration::from_millis(100);
+        let wait = StopWait::start(&Settings::default(), now, slow).unwrap();
+        assert_eq!((wait.until, wait.limit), (now + secs(10), now + secs(70)));
+        assert!(wait.may_freeze(now + secs(10)));
+        assert!(!wait.may_freeze(now + secs(11)));
+        let mut wait =
+            StopWait::start(&Settings::default(), now, Duration::from_millis(50)).unwrap();
+        assert!(wait.may_freeze(now));
+        wait.period = slow;
+        assert!(
+            !wait.may_freeze(now),
+            "60 s of freeze would pass the limit at 40 s"
+        );
+        // The tick length: the rate's, or longer when the server is slower than its rate.
+        let rate = Duration::from_millis(50);
+        assert_eq!(tick_period(rate, 20.0), rate);
+        assert_eq!(
+            tick_period(rate, 40.0),
+            rate,
+            "sprinting is not a shorter freeze"
+        );
+        assert_eq!(tick_period(rate, 10.0), Duration::from_millis(100));
+        assert_eq!(tick_period(rate, 0.0), rate, "no measure yet");
+        assert_eq!(
+            tick_period(Duration::from_millis(100), 20.0),
+            slow,
+            "/tick rate 10"
+        );
     }
 
     #[test]
@@ -841,10 +1123,13 @@ mod hub_tests {
     use std::time::{Duration, Instant};
 
     fn hub() -> Hub {
-        let config = NetConfig {
+        hub_with(NetConfig {
             announce: false,
             ..NetConfig::loopback(0, "ArrivalsTest".into(), 4)
-        };
+        })
+    }
+
+    fn hub_with(config: NetConfig) -> Hub {
         let mut sync = data::SyncData::empty();
         // The entity types the tracker names: the player, as id 0.
         sync.builtin.registries.insert(
@@ -898,6 +1183,7 @@ mod hub_tests {
                 latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             conn as i32,
             [0.5, 64.0, 0.5],
@@ -948,6 +1234,7 @@ mod hub_tests {
             entities: &[],
             next_entity: &mut next,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -971,6 +1258,7 @@ mod hub_tests {
             entities: &[],
             next_entity: next,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -1291,6 +1579,72 @@ mod hub_tests {
         assert_eq!(super::parse_uuid(""), None);
     }
 
+    /// `transfer-status` counts each kind of player once, takes the places from the player limit's
+    /// own count, and says the server is full once every place is taken.
+    #[test]
+    fn transfer_status_counts_the_players_and_the_places() {
+        let mut hub = hub();
+        let now = Instant::now();
+        assert_eq!(
+            super::status_request(&hub, now),
+            serde_json::json!({"ok": true, "players": 0, "held": 0, "expected": 0, "frozen": 0,
+                "online": 0, "max_players": 4, "full": false, "stopping": false})
+        );
+        let (mut placed, _a) = guest(1, 1, "Placed");
+        placed.placed = true;
+        let (mut frozen, _b) = guest(2, 2, "Frozen");
+        frozen.placed = true;
+        frozen.handover = Some(super::Handover {
+            id: 7,
+            since: 0,
+            record: serde_json::Value::Null,
+        });
+        let (mut held, _c) = guest(3, 3, "Held");
+        held.held = true;
+        // Moved to another server, and on its way out.
+        let (mut gone, _d) = guest(4, 4, "Gone");
+        gone.placed = true;
+        gone.released = true;
+        hub.guests.extend([placed, frozen, held, gone]);
+        table(&hub).expect(5, Duration::from_secs(10), now).unwrap();
+        // A login takes its place on the network thread (`try_admit`): three logins here.
+        let address = "127.0.0.1:25565".parse().unwrap();
+        for uuid in 1..=3 {
+            assert!(hub.lan.shared.try_admit(address, uuid, "p").is_none());
+        }
+        assert_eq!(
+            super::status_request(&hub, now),
+            serde_json::json!({"ok": true, "players": 2, "held": 1, "expected": 1, "frozen": 1,
+                "online": 3, "max_players": 4, "full": false, "stopping": false})
+        );
+        assert!(hub.lan.shared.try_admit(address, 6, "p").is_none());
+        let status = super::status_request(&hub, now);
+        assert_eq!(status["online"], 4);
+        assert_eq!(status["full"], true);
+        // An expectation past its time is not counted, though nothing swept it yet.
+        let later = super::status_request(&hub, now + Duration::from_secs(11));
+        assert_eq!(later["expected"], 0);
+        assert_eq!(table(&hub).len(), 1);
+    }
+
+    /// With `[transfer]` off it is refused like every request of a proxy, and its answer never
+    /// names a player.
+    #[test]
+    fn transfer_status_names_no_player_and_is_off_with_transfers() {
+        let mut hub = hub();
+        let (mut alex, _rx) = guest(1, UUID_N, "Alex");
+        alex.placed = true;
+        hub.guests.push(alex);
+        let text = super::status_request(&hub, Instant::now()).to_string();
+        let uuid = horizon_protocol::crypto::uuid_string(UUID_N);
+        assert!(!text.contains("Alex") && !text.contains(&uuid), "{text}");
+        hub.transfers = None;
+        assert_eq!(
+            super::status_request(&hub, Instant::now()),
+            serde_json::json!({ "error": super::OFF })
+        );
+    }
+
     #[test]
     fn player_expect_records_the_player_and_says_for_how_long() {
         let mut hub = hub();
@@ -1350,6 +1704,8 @@ mod hub_tests {
     #[test]
     fn player_expect_refuses_when_the_table_is_full() {
         let mut hub = hub();
+        // Places for every expectation: it is the table that is full, not the server.
+        hub.lan.shared.set_max_players(1000);
         let now = Instant::now();
         for n in 0..super::Settings::default().max_expected as u128 {
             let reply = super::expect_request(&mut hub, &format!("{:032x}", 1000 + n), now);
@@ -1360,6 +1716,107 @@ mod hub_tests {
             reply["error"].as_str().unwrap().contains("too many"),
             "{reply}"
         );
+    }
+
+    /// Each expectation holds a place: once the logins and the other expected players take every
+    /// place, a new expectation is refused as a login would be, though not for an op who bypasses
+    /// the limit. A renewal holds no second place, and one past its time frees its place.
+    #[test]
+    fn player_expect_refuses_a_full_server_and_the_expected_hold_their_places() {
+        const OP: u128 = 0xF;
+        let mut hub = hub_with(NetConfig {
+            announce: false,
+            bypasses_limit: Some(std::sync::Arc::new(|uuid| uuid == OP)),
+            ..NetConfig::loopback(0, "ArrivalsTest".into(), 2)
+        });
+        let now = Instant::now();
+        let expect = |hub: &mut Hub, uuid: u128, at: Instant| {
+            super::expect_request(hub, &format!("{uuid:032x}"), at)
+        };
+        let address = "127.0.0.1:25565".parse().unwrap();
+        assert!(hub.lan.shared.try_admit(address, 1, "p").is_none());
+        assert_eq!(expect(&mut hub, 2, now)["ok"], true);
+        assert_eq!(expect(&mut hub, 2, now)["renewed"], true);
+        let full = serde_json::json!({ "error": super::FULL });
+        assert_eq!(expect(&mut hub, 3, now), full);
+        assert_eq!(expect(&mut hub, OP, now)["ok"], true);
+        assert_eq!(table(&hub).len(), 2);
+        // Player 2's expectation ran out: its place is free again.
+        let later = now + Duration::from_secs(11);
+        assert_eq!(expect(&mut hub, 3, later)["ok"], true);
+        assert_eq!(expect(&mut hub, 4, later), full);
+        // A login gives a place back when it ends (`Shared::release`).
+        hub.lan.shared.release(1);
+        assert_eq!(expect(&mut hub, 4, later)["ok"], true);
+    }
+
+    /// Once the server has begun to stop, no player is expected, imported or placed any more, and
+    /// `transfer-status` says so; a player here can still be exported and released, which is its
+    /// way out, and a held one dropped.
+    #[test]
+    fn a_server_that_is_stopping_takes_no_one_in_but_lets_its_players_go() {
+        let stopping = serde_json::json!({ "error": super::STOPPING });
+        let stop = |hub: &mut Hub| hub.transfers.as_mut().unwrap().stopping = true;
+        let mut hub = hub();
+        let now = Instant::now();
+        stop(&mut hub);
+        assert_eq!(super::expect_request(&mut hub, UUID, now), stopping);
+        assert!(table(&hub).is_empty());
+        assert_eq!(super::status_request(&hub, now)["stopping"], true);
+        // A player here is exported and released as before.
+        let (mut mover, _rx) = guest(1, UUID_N, "Mover");
+        mover.placed = true;
+        hub.guests.push(mover);
+        assert!(super::export_record(&mut hub, 0, true, Default::default()).is_ok());
+        let (mut hub, _seen, _mine, h) = frozen_with_a_watcher();
+        stop(&mut hub);
+        let reply = super::release_request(&mut hub, &format!("{UUID} {h} moved"));
+        assert_eq!(reply["released"], "moved");
+        // The record of a held player cannot be imported...
+        let (record, mut hub, _seen, _mine) = held_in_a_second_hub();
+        stop(&mut hub);
+        let error =
+            import_player(&mut hub, UUID_N, &serde_json::json!({ "record": record })).unwrap_err();
+        assert_eq!(error, super::STOPPING);
+        assert!(hub.guests[1].held && !hub.guests[1].imported);
+        // ... nor one already imported confirmed, but it can be dropped.
+        let (mut hub, seen, _mine) = import_without_placing(serde_json::json!({}));
+        stop(&mut hub);
+        assert_eq!(confirm(&mut hub, UUID), stopping);
+        assert!(hub.guests[1].held && !hub.guests[1].placed);
+        assert_eq!(super::drop_request(&mut hub, UUID)["held"], true);
+        assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    /// During a stop's wait a player is exported, and frozen while a hand-over can still finish in
+    /// time; later only an export already frozen is answered.
+    #[test]
+    fn a_stop_lets_a_hand_over_start_only_while_it_can_finish() {
+        let (mut hub, _seen, _mine, _h) = frozen_with_a_watcher();
+        let now = Instant::now();
+        let transfers = hub.transfers.as_mut().unwrap();
+        transfers.stop_wait =
+            super::StopWait::start(&transfers.settings, now, Duration::from_millis(50));
+        assert_eq!(super::placed_and_frozen(&hub), (2, 1));
+        assert_eq!(
+            super::check_freeze(&hub, 0, now + Duration::from_secs(10)),
+            Ok(())
+        );
+        let late = now + Duration::from_secs(11);
+        assert!(super::check_freeze(&hub, 0, late).is_err());
+        assert_eq!(super::check_freeze(&hub, 1, late), Ok(()), "already frozen");
+    }
+
+    /// After the commit, a retry finds the player placed from that hand-over whatever came since:
+    /// a stop that began meanwhile does not turn the retry into a refusal.
+    #[test]
+    fn a_retry_after_the_commit_is_answered_on_a_server_that_is_stopping() {
+        let (mut hub, _seen, _mine) = import_without_placing(serde_json::json!({}));
+        let id = hub.guests[1].arrival_handover.unwrap();
+        let args = format!("{UUID} {}", super::handover_text(id));
+        assert_eq!(confirm(&mut hub, &args)["placed"], true);
+        hub.transfers.as_mut().unwrap().stopping = true;
+        assert_eq!(super::confirm_args(&hub, &args), Ok((UUID_N, id)));
     }
 
     /// Dropping a held player disconnects it and says nothing to the world.

@@ -145,7 +145,7 @@ TrimPatterns.register	skip:data		trim patterns are read from data
 CompositeSlotSource.createCodec	skip:java		
 CompositeSlotSource.group	port	crates/horizon-client/src/game/commands/items.rs::Game::slot_candidates	inline groups preserve ordered repeated slots; gap: minor: registered holder/tag sources and contents component adapters remain unsupported
 CountingModifier.accept	port	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item_modify	counts each slot set, limited to the max stack size
-RangeSlotSource.provide	port	crates/horizon-client/src/game/commands/items.rs::Game::slots_named	inline slot_range uses the addressed accessor; gap: minor: explicit context source overrides remain unsupported
+RangeSlotSource.provide	port	crates/horizon-client/src/game/commands/items.rs::Game::slots_named	inline slot_range uses the addressed accessor; gap: minor: explicit context source overrides remain unsupported; inline codec admission checks the global slot_ranges names, not target size
 SlotCollection.concat	inline	crates/horizon-client/src/game/commands/items.rs::Game::slot_candidates	ordered inline term expansion
 SlotCollection.of	port	crates/horizon-client/src/game/commands/items.rs::Game::slot_get	
 SlotCollection.FlatMapped.modifySlots	inline	crates/horizon-client/src/game/commands/items.rs::Game::cmd_item_modify	per-target slot loop

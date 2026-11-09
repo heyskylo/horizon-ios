@@ -23,8 +23,16 @@ Steps, in docs/server.md's order ("A hand-over, in order"), each checked:
 7. `player-release <uuid> <id> moved` on A: the player is out of A's world, without "left the game", and A
    writes no file for it, before or after it stops.
 
+`transfer-status` is read on the way: after 2 (B expects one player), after 4 (B holds it, A has it placed and
+frozen) and after 7 (the player is on B, A has nobody). B runs with `max-players=1`: a second player is refused
+as full after 2 (the expectation holds the place) and after 7 (the player takes it).
+
 Then the cancels: a hand-over from B back to A is aborted (`player-drop` on A, `player-release ... abort` on B)
 and the player plays on on B; a late `moved` for it is refused.
+
+Last, a stop during a move: A, with nobody on, stops at once. B is stopped with the player on it, waits
+(`stop_wait_seconds`), refuses a new arrival, and a third server C takes the player in the meantime. B stops by
+itself once the player is out, without writing its file again, and C's file holds the player's items.
 
 The engines run in a fresh folder with fresh HORIZON_HOME and XDG folders (lab.game_env), on free ports, with no
 window. Every request, reply (records shortened) and check goes to --out/steps.json, with both servers' logs.
@@ -77,7 +85,8 @@ def click_body(slot):
     return '00' + '00' + f'{slot:04x}' + '00' + '00' + '00' + '00'
 
 
-TRANSFERS = 'expect_seconds=20,max_expect_seconds=60,max_expected=8,max_freeze_seconds=30,max_hold_seconds=60'
+TRANSFERS = ('expect_seconds=20,max_expect_seconds=60,max_expected=8,max_freeze_seconds=30,max_hold_seconds=60,'
+             'stop_wait_seconds=10')
 
 
 class Failed(Exception):
@@ -251,12 +260,12 @@ class Relay:
 # ---- an engine and its control socket ------------------------------------------------------------
 
 class Engine:
-    def __init__(self, bins, resources, folder, out, label):
+    def __init__(self, bins, resources, folder, out, label, **extra):
         self.label = label
         self.folder = folder
         folder.mkdir(parents=True)
         self.port = lab.free_port()
-        props = dict(PROPERTIES, **{'server-port': str(self.port), 'motd': f'transfer e2e {label}'})
+        props = dict(PROPERTIES, **extra, **{'server-port': str(self.port), 'motd': f'transfer e2e {label}'})
         (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
         (folder / 'eula.txt').write_text('eula=true\n')
         (folder / 'forwarding.secret').write_bytes(SECRET + b'\n')
@@ -423,13 +432,18 @@ def run(bins, resources, scratch, out):
         relay_log.flush()
 
     a = Engine(bins, resources, scratch / 'a', out, 'a')
-    b = Engine(bins, resources, scratch / 'b', out, 'b')
+    # One place on B: the player moved there takes it.
+    b = Engine(bins, resources, scratch / 'b', out, 'b', **{'max-players': '1'})
+    stranger = str(offline_uuid('Stranger'))
+    # Where the player goes when B stops.
+    c = Engine(bins, resources, scratch / 'c', out, 'c')
     relays, bots = [], []
     try:
         a.ready()
         b.ready()
-        relay_a, relay_b = Relay(a.port, log), Relay(b.port, log)
-        relays += [relay_a, relay_b]
+        c.ready()
+        relay_a, relay_b, relay_c = Relay(a.port, log), Relay(b.port, log), Relay(c.port, log)
+        relays += [relay_a, relay_b, relay_c]
         steps.note('both engines up, transfers on, forwarding on', True, ports={'a': a.port, 'b': b.port})
 
         # 1. The player on A, through the proxy; a direct login is refused.
@@ -467,6 +481,13 @@ def run(bins, resources, scratch, out):
         # 2. B expects it.
         reply = b.ask(f'player-expect {player_uuid}')
         steps.check('2. player-expect on B', reply.get('ok') is True, reply=reply)
+        status = b.ask('transfer-status')
+        steps.check('2. transfer-status on B counts the player as expected, and B is not full',
+                    status.get('expected') == 1 and status.get('players') == 0 and status.get('full') is False,
+                    status=status)
+        reply = b.ask(f'player-expect {stranger}')
+        steps.check("2. B's one place is the expected player's: a second player-expect is refused as full",
+                    reply == {'error': 'the server is full'}, reply=reply)
 
         # 3. A exports it, frozen; a repeat answers the same bytes.
         reply = a.ask(f'player-export {player_uuid} freeze')
@@ -499,6 +520,13 @@ def run(bins, resources, scratch, out):
         b.server.wait_for(rf'{PLAYER} is held: it arrives from another server', 60)
         steps.check('4. the login on B is held, and announced to no one',
                     not any('joined the game' in l for l in b.server.since(mark_b)))
+        status = b.ask('transfer-status')
+        steps.check('4. transfer-status on B: held, no longer expected, and its place taken',
+                    status.get('held') == 1 and status.get('expected') == 0 and status.get('online') == 1,
+                    status=status)
+        status = a.ask('transfer-status')
+        steps.check('4. transfer-status on A: the player is placed and frozen',
+                    status.get('players') == 1 and status.get('frozen') == 1, status=status)
 
         # 5. Import without placing.
         request = json.dumps({'record': record, 'place': False})
@@ -551,6 +579,15 @@ def run(bins, resources, scratch, out):
         steps.check("7. A's connection of the player is closed", first.process.poll() is not None)
         late = a.ask(f'player-release {player_uuid} {handover} moved')
         steps.check('7. a repeated release is refused', 'error' in late, reply=late)
+        status_a, status_b = a.ask('transfer-status'), b.ask('transfer-status')
+        steps.check('7. transfer-status: the player is on B now, and A has nobody',
+                    status_b.get('players') == 1 and status_b.get('held') == 0
+                    and status_a.get('players') == 0 and status_a.get('frozen') == 0,
+                    a=status_a, b=status_b)
+        reply = b.ask(f'player-expect {stranger}')
+        steps.check('7. B is full with the player on it: player-expect is refused, and transfer-status says full',
+                    reply == {'error': 'the server is full'} and status_b.get('full') is True
+                    and status_b.get('stopping') is False, reply=reply)
 
         # The cancel: from B back to A, aborted.
         reply = a.ask(f'player-expect {player_uuid}')
@@ -578,12 +615,55 @@ def run(bins, resources, scratch, out):
         a_after = a_file.stat().st_mtime_ns if a_file.exists() else None
         steps.check('A wrote no file for the player after it moved away, even when it stopped',
                     a_after == a_before, before=a_before, after=a_after)
+        steps.check('stop: A, with nobody on, stops without a wait',
+                    not any('Stopping in' in l for l in a.server.since(0)))
+
+        # A stop during a move: B stops with the player on it, and the proxy moves it to C in the wait.
+        b.server.console('stop')
+        b.server.wait_for(r'Stopping in 10 s: a proxy may move the players out first', 10)
+        status = b.ask('transfer-status')
+        steps.check('stop: B waits with the player on it and says it is stopping',
+                    status.get('stopping') is True and status.get('players') == 1, status=status)
+        reply = b.ask(f'player-expect {stranger}')
+        steps.check('stop: B takes no one in during the wait', reply == {'error': 'the server is stopping'},
+                    reply=reply)
+        reply = b.ask(f'player-export {player_uuid} freeze')
+        record = reply.get('record') or {}
+        moving = record.get('handover')
+        steps.check('stop: player-export freeze on B during the wait', reply.get('ok') is True and moving,
+                    reply=short(reply))
+        reply = c.ask(f'player-expect {player_uuid}')
+        steps.check('stop: player-expect on C', reply.get('ok') is True, reply=reply)
+        fourth = Bot(bins, relay_c.port, out, 'fourth', 120)
+        bots.append(fourth)
+        c.server.wait_for(rf'{PLAYER} is held: it arrives from another server', 60)
+        reply = c.ask(f'player-import {player_uuid} {json.dumps({"record": record})}')
+        steps.check('stop: player-import on C places the player', reply.get('placed') is True, reply=reply)
+        b_before = b_file.stat().st_mtime_ns
+        reply = b.ask(f'player-release {player_uuid} {moving} moved')
+        steps.check('stop: player-release moved on B', reply.get('released') == 'moved', reply=reply)
+        try:
+            b.server.process.wait(30)
+        except subprocess.TimeoutExpired:
+            pass
+        steps.check('stop: B stops by itself once the player is out, as vanilla stops',
+                    b.server.process.poll() is not None
+                    and any('Stopping server' in l for l in b.server.since(0)))
+        b_after = b_file.stat().st_mtime_ns
+        steps.check("stop: B did not write the player's file again: there is one copy of it, on C",
+                    b_after == b_before, before=b_before, after=b_after)
+        c_file = c.world_file('data', player_uuid)
+        player = read_nbt(gzip.decompress(c_file.read_bytes())) if c_file.exists() else {}
+        steps.check("stop: C's file holds the player's items and experience",
+                    items_in(player, 'minecraft:diamond') == 5 and items_in(player, 'minecraft:oak_log') == 12
+                    and player.get('XpLevel') == 7,
+                    diamonds=items_in(player, 'minecraft:diamond'), level=player.get('XpLevel'))
     finally:
         for bot in bots:
             bot.stop()
         for relay in relays:
             relay.close()
-        for engine in (a, b):
+        for engine in (a, b, c):
             try:
                 engine.stop()
             except Exception:  # noqa: BLE001 - stopping what is left

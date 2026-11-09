@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -125,6 +128,36 @@ class NoteTests(unittest.TestCase):
         self.assertNotIn("@", text)  # names, never mentions
         self.assertIsNone(ov.note([]))
         self.assertTrue(ov.CLEARED.startswith(ov.MARKER))
+
+
+class PresentTests(unittest.TestCase):
+    def test_reports_held_commits_without_fetching_the_others(self):
+        def run(cwd, *args):
+            return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            server, clone = os.path.join(tmp, "server"), os.path.join(tmp, "clone")
+            run(tmp, "init", "-q", "-b", "main", server)
+            run(server, "config", "uploadpack.allowFilter", "true")
+            run(server, "config", "uploadpack.allowAnySHA1InWant", "true")
+            run(server, "commit", "-q", "--allow-empty", "-m", "one")
+            held = run(server, "rev-parse", "HEAD")
+            run(server, "commit", "-q", "--allow-empty", "-m", "two")
+            later = run(server, "rev-parse", "HEAD")
+            run(server, "branch", "-f", "old", held)
+            run(tmp, "clone", "-q", "--filter=blob:none", "--single-branch", "--branch", "old",
+                "file://" + server, clone)
+            cwd = os.getcwd()
+            os.chdir(clone)
+            try:
+                self.assertEqual(ov.present([held, later, ""]), {held})
+            finally:
+                os.chdir(cwd)
+            # The blobless clone would fetch a missing commit on any lookup; present() must not.
+            check = subprocess.run(["git", "cat-file", "-e", later], cwd=clone, capture_output=True,
+                                   env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
+            self.assertNotEqual(check.returncode, 0)
 
 
 class WorkflowTests(unittest.TestCase):

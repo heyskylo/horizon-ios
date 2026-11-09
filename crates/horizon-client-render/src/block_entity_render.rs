@@ -3,20 +3,22 @@
 //! decorated pots, conduits, enchanting-table and lectern books and copper
 //! golem statues, End portals and End gateways. Models are vanilla's baked `LayerDefinitions` layers
 //! (`entity-models.json`); transforms, animation and textures follow each
-//! vanilla renderer. Faces are lit like the `entity` shader: the lightmap at
-//! the block plus `minecraft_mix_light` with the level's two diffuse lights.
+//! vanilla renderer. Faces carry their tint and world normal: the entity
+//! shader (and a shader pack) applies `minecraft_mix_light` from the normal, as
+//! vanilla's does.
 use crate::{
     Result,
     bidi::visual,
     block_entity_anim::{self, EnchantingBook},
     breaking::entity_geometry,
     fast_hash::FxHashMap,
-    font::Glyph,
+    font::{Font, Glyph},
     gfx::mark_oit,
     hud::Rect,
     mesher::{CULL_BACK, Vertex},
     models::load_visibility,
     signs::{self, SignData, SignText},
+    text::{Style, Text},
     world::World,
 };
 use glam::{DVec3, Mat4, Quat, Vec3};
@@ -128,6 +130,14 @@ fn pack_color(rgb: u32, alpha: u32, brightness: f32) -> u32 {
     let c = |shift: u32| (((rgb >> shift) & 255) as f32 * brightness) as u32;
     alpha << 24 | c(0) << 16 | c(8) << 8 | c(16)
 }
+/// A world normal as `Vertex::normal` holds it: RGBA8_SNORM, `w` positive so
+/// the entity shader and a shader pack both shade by it. Block-entity models
+/// carry no normals of their own (vanilla computes each face's from its
+/// polygon, then `minecraft_mix_light` uses it in the shader).
+fn pack_normal(normal: Vec3) -> [i8; 4] {
+    let c = |v: f32| (v.clamp(-1.0, 1.0) * 127.0).round() as i8;
+    [c(normal.x), c(normal.y), c(normal.z), 127]
+}
 
 /// Everything a draw call needs besides the geometry.
 #[derive(Clone, Copy)]
@@ -165,6 +175,7 @@ pub fn draw_part(
         light,
         lights,
         glow,
+        ..
     } = paint;
     for poly in &part.polygons {
         let pos = poly.map(|v| m.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0));
@@ -177,11 +188,21 @@ pub fn draw_part(
         } else {
             normal
         };
-        let color = pack_color(tint, 255, diffuse(normal, lights));
+        // The colour is the tint alone when the caller shades by the level's
+        // lights: the entity shader applies `minecraft_mix_light` from the
+        // normal, as vanilla does, so a shader pack receives the unshaded
+        // colour Iris gives it (a baked shade would be applied a second time
+        // by the pack's lighting). Other lights (an item preview's
+        // `Lighting.Entry`) are not the shader's to know, so those stay baked
+        // into the colour, as before.
+        let baked = !(lights == diffuse_lights(false) || lights == diffuse_lights(true));
+        let brightness = if baked { diffuse(normal, lights) } else { 1.0 };
+        let color = pack_color(tint, 255, brightness);
+        let normal = if baked { [0; 4] } else { pack_normal(normal) };
         for (r, light) in std::iter::once((r, light)).chain(glow.map(|g| (g, FULL_BRIGHT))) {
             for (v, position) in poly.iter().zip(pos) {
                 out.push(Vertex {
-                    normal: [0; 4],
+                    normal,
                     pos: position.to_array(),
                     uv: [r.u0 + (r.u1 - r.u0) * v[3], r.v0 + (r.v1 - r.v0) * v[4]],
                     layer: 0,
@@ -600,30 +621,26 @@ fn frac(x: f32) -> f32 {
     x - x.floor()
 }
 
-/// `StringSplitter.splitLines(...).get(0)` for plain text: the first line,
-/// wrapped at the last space that fits or mid-word when none does.
-fn first_line(line: &str, max_width: f32, advance: &dyn Fn(char) -> f32) -> String {
+/// `StringSplitter.findLineBreak`: first line, with styled advances.
+fn first_line(line: &Text, max_width: f32, advance: &dyn Fn(char, &Style) -> f32) -> Text {
     let mut width = 0.0;
+    let mut visible = false;
     let mut last_space = None;
-    for (i, c) in line.char_indices() {
+    for (i, (c, style)) in line.chars().enumerate() {
         if c == '\n' {
-            return line[..i].to_owned();
+            return line.slice(0, i);
         }
         if c == ' ' {
             last_space = Some(i);
         }
-        width += advance(c);
-        if width > max_width {
-            let end = match last_space {
-                Some(s) if s > 0 => s,
-                _ if i > 0 => i,
-                // The first char alone is too wide: take that one char.
-                _ => c.len_utf8(),
-            };
-            return line[..end].to_owned();
+        let step = advance(c, style);
+        width += step;
+        if visible && width > max_width.max(1.0) {
+            return line.slice(0, last_space.unwrap_or(i));
         }
+        visible |= step != 0.0;
     }
-    line.to_owned()
+    line.clone()
 }
 
 /// `AbstractSignRenderer.isOutlineVisible`: the camera within 16 blocks of
@@ -641,7 +658,7 @@ fn sign_text_near(pos: [i32; 3], camera: DVec3) -> bool {
 /// `AbstractSignRenderer.submitSignText`: four centred lines, glowing text
 /// full-bright with an 8x outline in the dark colour. The font colours each
 /// glyph by its style (`Font.StringRenderOutput`): a line's own colour wins,
-/// else the sign's. A line is one call per run of one colour.
+/// else the sign's. Keep style boundaries for glyphs and decoration effects.
 fn sign_text_calls(
     scene: &Scene,
     data: &SignData,
@@ -653,27 +670,43 @@ fn sign_text_calls(
     let line_height = data.line_height();
     let midpoint = (4.0 * line_height / 2.0).floor();
     let dark = 0xFF00_0000 | text.dark_color();
-    let (color, outline, light) = if text.glowing {
+    let (color, outline, light, tier) = if text.glowing {
         let c = text.text_color();
         (
             0xFF00_0000 | c,
             if c == 0 || near { dark } else { 0 },
             240 | 240 << 8,
+            crate::mesher::LOW,
         )
     } else {
-        (dark, 0, vertex_light(packed))
+        (dark, 0, vertex_light(packed), 0)
     };
-    let advance = |c: char| (scene.glyph)(c).advance;
+    let advance = |c: char, style: &Style| {
+        let g = scene
+            .font
+            .map_or_else(|| (scene.glyph)(c), |f| f.glyph_styled(c, style));
+        g.advance + if style.is_bold() { g.offset } else { 0.0 }
+    };
     let mut calls: Vec<TextCall> = Vec::with_capacity(text.lines.len());
     for i in 0..text.lines.len() {
         // The line that fits, in the order it is drawn (getVisualOrder).
         let line = text.line_text(i);
-        let line = line.resolved();
-        let flat: String = line.chars().map(|(c, _)| c).collect();
-        let fits = first_line(&flat, data.max_line_width(), &advance);
-        let shown = line.slice(0, fits.chars().count());
+        let shown = if let Some(font) = scene.font {
+            font.split_formatted(&line, data.max_line_width())
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+                .resolved()
+                .into_owned()
+        } else {
+            first_line(&line.resolved(), data.max_line_width(), &advance)
+        };
         let shown = visual(&shown);
-        let width = shown.chars().map(|(c, _)| advance(c)).sum::<f32>().ceil();
+        let width = shown
+            .chars()
+            .map(|(c, s)| advance(c, s))
+            .sum::<f32>()
+            .ceil();
         let x = -((width as i32) / 2) as f32;
         let y = i as f32 * line_height - midpoint;
         let first = calls.len();
@@ -683,19 +716,22 @@ fn sign_text_calls(
                 .style
                 .color
                 .map_or(color, |rgb| 0xFF00_0000 | (rgb & 0xFF_FFFF));
-            match calls[first..].last_mut() {
-                Some(last) if last.color == run => last.text.push_str(&span.text),
-                _ => calls.push(TextCall {
-                    matrix: m,
-                    x: x + pen,
-                    y,
-                    text: span.text.clone(),
-                    color: run,
-                    outline,
-                    light,
-                }),
-            }
-            pen += span.text.chars().map(advance).sum::<f32>();
+            calls.push(TextCall {
+                matrix: m,
+                x: x + pen,
+                y,
+                text: span.text.clone(),
+                style: span.style.clone(),
+                color: run,
+                outline,
+                light,
+                tier,
+            });
+            pen += span
+                .text
+                .chars()
+                .map(|c| advance(c, &span.style))
+                .sum::<f32>();
         }
         if calls.len() == first {
             // A line with no text is still a call, of no glyphs.
@@ -704,13 +740,26 @@ fn sign_text_calls(
                 x,
                 y,
                 text: String::new(),
+                style: Style::default(),
                 color,
                 outline,
                 light,
+                tier,
             });
         }
     }
     calls
+}
+
+fn sign_text_animated(data: &SignData) -> bool {
+    [&data.front, &data.back].into_iter().any(|side| {
+        (0..side.lines.len()).any(|i| {
+            side.line_text(i)
+                .resolved()
+                .chars()
+                .any(|(c, s)| c != ' ' && s.obfuscated == Some(true))
+        })
+    })
 }
 
 /// How far the text of an outlined call sits in front of its outline, in
@@ -726,72 +775,131 @@ const TEXT_OVER_OUTLINE: f32 = 0.05;
 /// reader instead (a twentieth of a font pixel, invisible) rather than
 /// z-fighting with the outline under it.
 fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
-    text_vertices(scene.glyph, call, out);
+    let glyph = |c| {
+        let Some(font) = scene.font else {
+            return (scene.glyph)(c);
+        };
+        let g = font.glyph_styled(c, &call.style);
+        if call.style.obfuscated == Some(true) && c != ' ' {
+            font.random_glyph(&call.style, g.advance)
+        } else {
+            g
+        }
+    };
+    text_vertices(&glyph, scene.font.map(Font::white), call, out);
 }
 
-/// `draw_text` with the font's glyph cells and advances from `glyph`: the
+/// `BakedSheetGlyph.renderChar` / `Font.PreparedTextBuilder.accept`: the
 /// text of `call` as glyph quads in its matrix's plane, 1 unit a font pixel,
 /// y down as the font's, with its outline when it has one. A native mod's
 /// block entity draws its text this way (`native_draw_text`).
-pub fn text_vertices(glyph: &dyn Fn(char) -> Glyph, call: &TextCall, out: &mut Vec<Vertex>) {
-    let mut emit = |dx: f32, dy: f32, z: f32, argb: u32| {
-        let mut x = call.x + dx;
-        let y0 = call.y + dy;
-        for ch in call.text.chars() {
+pub fn text_vertices(
+    glyph: &dyn Fn(char) -> Glyph,
+    white: Option<Rect>,
+    call: &TextCall,
+    out: &mut Vec<Vertex>,
+) {
+    let bold = call.style.is_bold();
+    let mut quad = |corners: [(f32, f32); 4], cell: Rect, z: f32, argb: u32| {
+        let uvs = [
+            [cell.u0, cell.v1],
+            [cell.u1, cell.v1],
+            [cell.u1, cell.v0],
+            [cell.u0, cell.v0],
+        ];
+        let color = 0xFF00_0000 | (argb & 255) << 16 | (argb >> 8 & 255) << 8 | (argb >> 16 & 255);
+        for ((x, y), uv) in corners.into_iter().zip(uvs) {
+            out.push(Vertex {
+                normal: [0; 4],
+                pos: call.matrix.transform_point3(Vec3::new(x, y, z)).to_array(),
+                uv,
+                layer: u32::from(call.tier) << 16,
+                color,
+                light: call.light,
+                glint_uv: [0.0; 2],
+            });
+        }
+    };
+    let mut emit = |dx: f32, dy: f32, z: f32, argb: u32, outline: bool| {
+        let mut pen = call.x;
+        for (i, ch) in call.text.chars().enumerate() {
             let g = glyph(ch);
+            let x = pen + dx * g.offset;
+            let y = call.y + dy * g.offset;
+            let advance = g.advance + if bold { g.offset } else { 0.0 };
             if let Some(cell) = g.rect {
-                // BakedSheetGlyph: the glyph's own box from the pen, not a
-                // fixed 8x8 cell (a Unifont glyph is 0.5 units per texel).
-                let (x0, x1) = (x + g.left, x + g.right);
-                let (top, bottom) = (y0 + g.top, y0 + g.bottom);
-                let corners = [(x0, bottom), (x1, bottom), (x1, top), (x0, top)];
-                let uvs = [
-                    [cell.u0, cell.v1],
-                    [cell.u1, cell.v1],
-                    [cell.u1, cell.v0],
-                    [cell.u0, cell.v0],
-                ];
-                let c =
-                    0xFF00_0000 | (argb & 255) << 16 | (argb >> 8 & 255) << 8 | (argb >> 16 & 255);
-                for ((cx, cy), uv) in corners.into_iter().zip(uvs) {
-                    out.push(Vertex {
-                        normal: [0; 4],
-                        pos: call
-                            .matrix
-                            .transform_point3(Vec3::new(cx, cy, z))
-                            .to_array(),
-                        uv,
-                        layer: 0,
-                        color: c,
-                        light: call.light,
-
-                        glint_uv: [0.0, 0.0],
-                    });
+                let thick = if bold { 0.1 } else { 0.0 };
+                let shear = |v| {
+                    if call.style.is_italic() {
+                        1.0 - 0.25 * v
+                    } else {
+                        0.0
+                    }
+                };
+                for copy in 0..=usize::from(bold) {
+                    let x0 = x + copy as f32 * g.offset + g.left - thick;
+                    let x1 = x + copy as f32 * g.offset + g.right + thick;
+                    let top = y + g.top - thick;
+                    let bottom = y + g.bottom + thick;
+                    quad(
+                        [
+                            (x0 + shear(g.bottom), bottom),
+                            (x1 + shear(g.bottom), bottom),
+                            (x1 + shear(g.top), top),
+                            (x0 + shear(g.top), top),
+                        ],
+                        cell,
+                        z + copy as f32 * 0.001,
+                        argb,
+                    );
                 }
             }
-            x += g.advance;
+            // `Font.prepare8xTextOutline` discards effects: only the front
+            // text gets underline/strikethrough, including over spaces.
+            if !outline && let Some(white) = white {
+                let x0 = if i == 0 { x - 1.0 } else { x };
+                for (enabled, top) in [
+                    (call.style.strikethrough, 3.5),
+                    (call.style.underlined, 8.0),
+                ] {
+                    if enabled == Some(true) {
+                        quad(
+                            [
+                                (x0, y + top + 1.0),
+                                (x + advance, y + top + 1.0),
+                                (x + advance, y + top),
+                                (x0, y + top),
+                            ],
+                            white,
+                            z + 0.01,
+                            argb,
+                        );
+                    }
+                }
+            }
+            pen += advance;
         }
     };
     if call.outline != 0 {
-        for (dx, dy) in [
-            (-1.0, -1.0),
-            (0.0, -1.0),
-            (1.0, -1.0),
-            (-1.0, 0.0),
-            (1.0, 0.0),
-            (-1.0, 1.0),
-            (0.0, 1.0),
-            (1.0, 1.0),
-        ] {
-            emit(dx, dy, 0.0, call.outline);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if dx != 0 || dy != 0 {
+                    emit(dx as f32, dy as f32, 0.0, call.outline, true);
+                }
+            }
         }
     }
-    let z = if call.outline != 0 {
-        TEXT_OVER_OUTLINE
-    } else {
-        0.0
-    };
-    emit(0.0, 0.0, z, call.color);
+    emit(
+        0.0,
+        0.0,
+        if call.outline != 0 {
+            TEXT_OVER_OUTLINE
+        } else {
+            0.0
+        },
+        call.color,
+        false,
+    );
 }
 
 /// Block-entity fields the level ticks, at one position (vanilla's own field
@@ -824,12 +932,16 @@ pub struct TextCall {
     pub x: f32,
     pub y: f32,
     pub text: String,
+    pub style: Style,
     /// ARGB.
     pub color: u32,
     /// ARGB outline colour, 0 for none.
     pub outline: u32,
     /// Horizon packed light (sky*16 | block*16 << 8).
     pub light: u32,
+    /// HDR emission tier of its glyphs (`mesher::hdr_tier`), 0 for none: glowing sign text
+    /// shines in HDR output and in shader packs (`horizonTier`), as full-bright text does in SDR.
+    pub tier: u8,
 }
 
 /// Inputs from the game for one frame of block-entity rendering.
@@ -868,6 +980,8 @@ pub struct Scene<'a> {
     pub skull: &'a dyn Fn([i32; 3]) -> Option<String>,
     /// Font glyph: atlas cell (none for blank glyphs such as the space), box and advance.
     pub glyph: &'a dyn Fn(char) -> Glyph,
+    /// Font providers, effects and random glyphs for styled sign text.
+    pub font: Option<&'a Font>,
     /// Changes whenever `glyph` may answer differently (`Font::epoch`): sign
     /// text laid out under another value is laid out again.
     pub glyphs: u64,
@@ -1029,6 +1143,7 @@ struct SignTextEntry {
     /// Game time it was last drawn.
     used: i64,
     vertices: Vec<Vertex>,
+    animated: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StaticKey {
@@ -1344,6 +1459,26 @@ impl BlockEntityRenderer {
         registry: &BlockRegistry,
         visibility: FaceVisibility,
     ) -> Result<Self> {
+        Self::load_with_visibility_inner(root, registry, visibility, None)
+    }
+
+    /// Load with item defaults already decoded by the resource bootstrap.
+    /// Passing them avoids a second `items.json` decode and native-hook pass.
+    pub fn load_with_visibility_and_defaults(
+        root: &Path,
+        registry: &BlockRegistry,
+        visibility: FaceVisibility,
+        defaults: &horizon_world::item_defaults::Defaults,
+    ) -> Result<Self> {
+        Self::load_with_visibility_inner(root, registry, visibility, Some(defaults))
+    }
+
+    fn load_with_visibility_inner(
+        root: &Path,
+        registry: &BlockRegistry,
+        visibility: FaceVisibility,
+        defaults: Option<&horizon_world::item_defaults::Defaults>,
+    ) -> Result<Self> {
         let all: Value = serde_json::from_slice(&std::fs::read(root.join("entity-models.json"))?)?;
         let models = MODELS
             .iter()
@@ -1354,12 +1489,17 @@ impl BlockEntityRenderer {
         // The packs' custom entity models (`.jem` files), before anything draws.
         renderer.set_shapes(renderer.shapes_for(root));
         // Sherd items: provides_pottery_pattern -> decorated_pot_pattern asset id.
-        let items = match horizon_world::item_defaults::read(root) {
-            Ok(items) => items,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
-            Err(e) => return Err(e.into()),
+        let owned_defaults = if defaults.is_none() {
+            Some(match horizon_world::item_defaults::read(root) {
+                Ok(items) => items,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+                Err(e) => return Err(e.into()),
+            })
+        } else {
+            None
         };
-        for (item, components) in &items {
+        let items = defaults.or(owned_defaults.as_ref()).unwrap();
+        for (item, components) in items {
             let Some(pattern) = components["minecraft:provides_pottery_pattern"].as_str() else {
                 continue;
             };
@@ -2335,9 +2475,11 @@ impl BlockEntityRenderer {
         let entry = match signs.entry(pos) {
             std::collections::hash_map::Entry::Occupied(mut occupied) => {
                 let entry = occupied.get_mut();
+                let changed = entry.data != *data;
                 if (entry.state, entry.packed, entry.near, entry.glyphs)
                     != (state, packed, near, glyphs)
-                    || entry.data != *data
+                    || changed
+                    || entry.animated
                 {
                     entry.vertices.clear();
                     self.render_one(
@@ -2352,7 +2494,10 @@ impl BlockEntityRenderer {
                         &mut entry.vertices,
                     );
                     entry.state = state;
-                    entry.data.clone_from(data);
+                    if changed {
+                        entry.animated = sign_text_animated(data);
+                        entry.data.clone_from(data);
+                    }
                     entry.packed = packed;
                     entry.near = near;
                     entry.glyphs = glyphs;
@@ -2373,6 +2518,7 @@ impl BlockEntityRenderer {
                     &mut vertices,
                 );
                 vacant.insert(SignTextEntry {
+                    animated: sign_text_animated(data),
                     state,
                     data: data.clone(),
                     packed,
@@ -3407,7 +3553,9 @@ impl BeamPart {
                 (at(b, self.end), [s.u0, v1]),
             ] {
                 out.push(Vertex {
-                    normal: [0; 4],
+                    // The beacon beam render types keep the default back-face culling: seen
+                    // from inside a beam, its walls must not show.
+                    normal: CULL_BACK,
                     pos: p.to_array(),
                     uv,
                     layer: 6,
@@ -3610,6 +3758,7 @@ mod tests {
             skull: &|_| None,
             glyph: &|_| Glyph::default(),
             glyphs: 0,
+            font: None,
             dynamic_visible: None,
         };
         // Compare the cached world path with the original model renderer,
@@ -3772,6 +3921,105 @@ mod tests {
         // Straight down: ambient only.
         assert!((diffuse(-Vec3::Y, lights) - 0.4).abs() < 1e-6);
     }
+    /// A face's colour carries its tint alone and its normal carries the
+    /// shading: the entity shader applies `minecraft_mix_light` from it, as a
+    /// shader pack's lighting does, so a baked shade would be applied twice.
+    #[test]
+    fn a_face_keeps_its_tint_and_normal_for_the_shader_to_shade() {
+        let quad = |y: f32, z0: f32, z1: f32| {
+            [
+                [0.0, y, z0, 0.0, 0.0],
+                [0.0, y, z1, 0.0, 1.0],
+                [16.0, y, z1, 1.0, 1.0],
+                [16.0, y, z0, 1.0, 0.0],
+            ]
+        };
+        // Opposite windings: the first faces up, the second down.
+        let part = ModelPart {
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![quad(0.0, 0.0, 16.0), quad(16.0, 16.0, 0.0)],
+            children: vec![],
+        };
+        let mut out = Vec::new();
+        draw_part(
+            &part,
+            "root",
+            Mat4::IDENTITY,
+            &|_, _| {},
+            Paint {
+                sprite: Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 16,
+                    h: 16,
+                },
+                tint: 0x123456,
+                light: 0,
+                lights: diffuse_lights(false),
+                glow: None,
+            },
+            &mut out,
+        );
+        assert_eq!(out.len(), 8);
+        // The same tint on both faces: no directional shade baked in (`pack_color`
+        // stores the tint in the vertex colour's BGR byte order).
+        let tint = pack_color(0x12_3456, 255, 1.0);
+        assert!(out.iter().all(|v| v.color == tint));
+        let (up, down) = (&out[0], &out[4]);
+        assert_eq!(up.normal, [0, 127, 0, 127]);
+        assert_eq!(down.normal, [0, -127, 0, 127]);
+        // The shader still gets the difference the old baked colours held.
+        let lights = diffuse_lights(false);
+        let up_normal = Vec3::new(0.0, f32::from(up.normal[1]) / 127.0, 0.0);
+        let down_normal = Vec3::new(0.0, f32::from(down.normal[1]) / 127.0, 0.0);
+        assert!(diffuse(up_normal, lights) > diffuse(down_normal, lights));
+    }
+    /// Lights the entity shader does not know (an item preview's
+    /// `Lighting.Entry`) stay baked into the colour, and `normal.w` 0 tells
+    /// the shader to keep it: `game/item_draw` passes those for block-entity
+    /// items in inventories and hands.
+    #[test]
+    fn lights_other_than_the_levels_stay_baked() {
+        let part = ModelPart {
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![[
+                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 16.0, 0.0, 1.0],
+                [16.0, 0.0, 16.0, 1.0, 1.0],
+                [16.0, 0.0, 0.0, 1.0, 0.0],
+            ]],
+            children: vec![],
+        };
+        let lights = (Vec3::X, Vec3::Z);
+        let mut out = Vec::new();
+        draw_part(
+            &part,
+            "root",
+            Mat4::IDENTITY,
+            &|_, _| {},
+            Paint {
+                sprite: Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 16,
+                    h: 16,
+                },
+                tint: 0x12_3456,
+                light: 0,
+                lights,
+                glow: None,
+            },
+            &mut out,
+        );
+        let baked = pack_color(0x12_3456, 255, diffuse(Vec3::Y, lights));
+        assert!(out.iter().all(|v| v.color == baked));
+        assert!(out.iter().all(|v| v.normal == [0; 4]));
+        assert_ne!(baked, pack_color(0x12_3456, 255, 1.0));
+    }
     #[test]
     fn part_poses_compose_like_model_part() {
         let part = ModelPart {
@@ -3905,6 +4153,7 @@ mod tests {
             skull: &|_| None,
             glyph: &glyph,
             glyphs: 0,
+            font: None,
             dynamic_visible: None,
         };
         let mut call = TextCall {
@@ -3912,9 +4161,11 @@ mod tests {
             x: 0.0,
             y: 0.0,
             text: "Hi".into(),
+            style: Style::default(),
             color: 0xFFFF_FF00,
             outline: 0xFF33_3300,
             light: 240 | 240 << 8,
+            tier: 0,
         };
         let mut out = Vec::new();
         draw_text(&scene, &call, &mut out);
@@ -3978,6 +4229,7 @@ mod tests {
             skull: &|_| None,
             glyph: &glyph,
             glyphs: 0,
+            font: None,
             dynamic_visible: None,
         };
         let call = TextCall {
@@ -3985,9 +4237,11 @@ mod tests {
             x: 10.0,
             y: 2.0,
             text: "ab".into(),
+            style: Style::default(),
             color: 0xFF00_0000,
             outline: 0,
             light: 240 | 240 << 8,
+            tier: 0,
         };
         let mut out = Vec::new();
         draw_text(&scene, &call, &mut out);
@@ -4005,6 +4259,83 @@ mod tests {
             })
             .collect();
         assert_eq!(boxes, [[10.0, 14.0, 2.0, 10.0], [15.0, 19.0, 2.0, 10.0]]);
+    }
+
+    #[test]
+    fn styled_sign_quads_follow_vanilla_glyph_and_effect_bounds() {
+        let white = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 0.1,
+            v1: 0.1,
+            w: 1,
+            h: 1,
+        };
+        let glyph = |c| Glyph {
+            rect: (c != ' ').then_some(white),
+            left: 0.0,
+            right: 4.0,
+            top: 0.0,
+            bottom: 8.0,
+            advance: 5.0,
+            offset: 0.5,
+        };
+        let mut call = TextCall {
+            matrix: Mat4::IDENTITY,
+            x: 0.0,
+            y: 0.0,
+            text: "A ".into(),
+            color: 0xff123456,
+            outline: 0,
+            light: 240,
+            tier: crate::mesher::LOW,
+            style: Style {
+                bold: Some(true),
+                italic: Some(true),
+                underlined: Some(true),
+                strikethrough: Some(true),
+                ..Default::default()
+            },
+        };
+        let mut out = Vec::new();
+        text_vertices(&glyph, Some(white), &call, &mut out);
+        // BakedSheetGlyph: bold expands by 0.1, italic shears by 1 - y/4,
+        // the second bold glyph is 0.5 along and 0.001 in front (Unihex).
+        assert_eq!(out.len(), 24);
+        for (got, expected) in out[0].pos.iter().zip([-1.1, 8.1, 0.0]) {
+            assert!((got - expected).abs() < 1e-6);
+        }
+        assert!((out[4].pos[0] - out[0].pos[0] - 0.5).abs() < 1e-6);
+        assert_eq!(out[4].pos[2], 0.001);
+        assert_eq!(out[8].pos, [-1.0, 4.5, 0.01]);
+        assert_eq!(out[12].pos, [-1.0, 9.0, 0.01]);
+        assert_eq!(out[21].pos, [11.0, 9.0, 0.01]); // underline crosses the space
+        assert!(out.iter().all(|v| v.color == 0xff563412 && v.light == 240));
+        call.outline = 0xff010203;
+        out.clear();
+        text_vertices(&glyph, Some(white), &call, &mut out);
+        // Eight outlines contain glyphs only; effects appear once, in front.
+        assert_eq!(out.len(), 8 * 8 + 24);
+        assert!((out[0].pos[0] - -1.6).abs() < 1e-6);
+        assert!(out[64..].iter().all(|v| v.pos[2] >= TEXT_OVER_OUTLINE));
+        // The glow tier reaches bold copies, outlines and decoration quads.
+        assert!(out.iter().all(|v| v.layer >> 16 == 1));
+        call.tier = 0;
+        out.clear();
+        text_vertices(&glyph, Some(white), &call, &mut out);
+        assert!(out.iter().all(|v| v.layer >> 16 == 0));
+    }
+
+    #[test]
+    fn styled_sign_clipping_counts_bold_width_and_preserves_resets() {
+        let line = Text::legacy("§lAB§r東Z");
+        let advance = |_: char, s: &Style| 5.0 + if s.is_bold() { 0.5 } else { 0.0 };
+        let shown = first_line(&line, 16.0, &advance);
+        assert_eq!(shown.plain(), "AB東");
+        assert_eq!(
+            shown.chars().map(|(_, s)| s.is_bold()).collect::<Vec<_>>(),
+            [true, true, false]
+        );
     }
 
     /// The front text calls of a sign whose every glyph advances 6.
@@ -4035,6 +4366,7 @@ mod tests {
             skull: &|_| None,
             glyph: &glyph,
             glyphs: 0,
+            font: None,
             dynamic_visible: None,
         };
         sign_text_calls(&scene, data, &data.front, Mat4::IDENTITY, 0, near)
@@ -4174,7 +4506,9 @@ mod tests {
             ..changed.clone()
         };
         let wide = std::cell::Cell::new(6.0);
+        let glyph_reads = std::cell::Cell::new(0);
         let glyph = |c: char| {
+            glyph_reads.set(glyph_reads.get() + 1);
             let u = f32::from(c as u8 % 16) / 16.0;
             let rect = Rect {
                 u0: u,
@@ -4217,6 +4551,7 @@ mod tests {
             skull: &|_| None,
             glyph: &glyph,
             glyphs: 0,
+            font: None,
             dynamic_visible: None,
         };
         let check = |scene: &Scene, pos: [i32; 3], state: u32| {
@@ -4260,6 +4595,23 @@ mod tests {
         wide.set(5.0);
         scene.glyphs = 1;
         check(&scene, pos, 1);
+        // With the same game time and data, plain text reuses its vertices,
+        // but obfuscated text must ask the font for fresh glyphs each frame.
+        let mut vertices = Vec::new();
+        let reads = glyph_reads.get();
+        renderer.render(&scene, [(pos, 1)].iter(), &mut vertices);
+        assert_eq!(glyph_reads.get(), reads);
+        let animated = SignData {
+            front: text("§kSecret", false),
+            ..Default::default()
+        };
+        let animated_sign = |_| Some(&animated);
+        scene.sign = &animated_sign;
+        renderer.render(&scene, [(pos, 0)].iter(), &mut vertices);
+        let reads = glyph_reads.get();
+        renderer.render(&scene, [(pos, 0)].iter(), &mut vertices);
+        assert!(glyph_reads.get() > reads);
+        scene.sign = &first_sign;
         // Signs out of view for a while are dropped.
         scene.game_time = 2 * SIGN_TEXT_KEEP;
         check(&scene, pos, 0);
@@ -4267,16 +4619,45 @@ mod tests {
     }
     #[test]
     fn first_line_wraps_on_bytes_without_splitting_a_char() {
-        let advance = |c: char| if c == ' ' { 4.0 } else { 6.0 };
-        assert_eq!(first_line("ab cd ef", 13.0, &advance), "ab");
-        assert_eq!(first_line("abcdef", 13.0, &advance), "ab");
-        assert_eq!(first_line("\u{6771}", 3.0, &advance), "\u{6771}");
-        assert_eq!(first_line("ab\ncd", 100.0, &advance), "ab");
+        let advance = |c: char, _: &Style| if c == ' ' { 4.0 } else { 6.0 };
+        assert_eq!(
+            first_line(&Text::literal("ab cd ef"), 13.0, &advance).plain(),
+            "ab"
+        );
+        assert_eq!(
+            first_line(&Text::literal("abcdef"), 13.0, &advance).plain(),
+            "ab"
+        );
+        assert_eq!(
+            first_line(&Text::literal("\u{6771}"), 3.0, &advance).plain(),
+            "\u{6771}"
+        );
+        assert_eq!(
+            first_line(&Text::literal("ab\ncd"), 100.0, &advance).plain(),
+            "ab"
+        );
     }
     /// `rendertype_end_portal` culls back faces, and `AbstractEndPortalRenderer`
     /// submits the unit cube's two Y faces. Both are wound outward, so of each
     /// face only the side looking at the camera draws: the portal shows one
     /// surface from above and one from below, never both at once.
+    /// `RenderPipelines.BEACON_BEAM_OPAQUE` / `_TRANSLUCENT` keep the default
+    /// back-face culling, so a camera inside a beam sees no wall of it.
+    #[test]
+    fn beacon_beam_faces_cull_their_backs() {
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        let mut out = Vec::new();
+        beacon_beam(Vec3::ZERO, &[(0xFFFFFF, 4)], 0.0, 1.0, rect, &mut out);
+        assert_eq!(out.len(), 32, "solid and glow, four quads each");
+        assert!(out.iter().all(|v| v.normal == CULL_BACK));
+    }
     #[test]
     fn the_end_portal_cube_is_one_sided() {
         let mut out = Vec::new();
@@ -4358,6 +4739,7 @@ mod tests {
             skull: &|_| None,
             glyph: &|_| Glyph::default(),
             glyphs: 0,
+            font: None,
             dynamic_visible: None,
         };
         let mut verts = Vec::new();
@@ -4444,6 +4826,7 @@ mod tests {
             skull: &|_| None,
             glyph: &|_| Glyph::default(),
             glyphs: 0,
+            font: None,
             dynamic_visible: None,
         };
         // A closed single chest of `block` drawn by `renderer`: positions and UVs.

@@ -66,6 +66,11 @@ fn reload_loot_case(
         ("LootTableSeed", Tag::Long(seed)),
         ("CustomName", string("{\"text\":\"Keep me\"}")),
     ]);
+    // A loaded chest adopts its external name before the loot transition.
+    let custom_name = source
+        .get("CustomName")
+        .and_then(crate::block_entity_nbt::component)
+        .expect("fixture's admitted external name");
     let mut extras = ChunkExtras {
         block_entity_sources: vec![(pos, source)],
         rolled_loot: vec![RolledLoot {
@@ -89,6 +94,7 @@ fn reload_loot_case(
     chunk
         .block_entities
         .push((pos, crate::containers::BlockEntity::Chest(slots)));
+    chunk.block_names.push((pos, custom_name));
     chunk.saved = Some(Arc::new(extras));
     let encoded = encode(&chunk, registry, biomes);
     let bytes = nbt::write_named(&encoded, Limits::default()).unwrap();
@@ -193,4 +199,46 @@ fn opened_loot_parity_fixture() {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn eager_save_edits_reach_disk_during_ticks_and_again_after_cooldown() {
+    use crate::world::ModifiedChunks;
+    use std::time::{Duration, Instant};
+    let (registry, biomes) = fixture();
+    let registry = Box::leak(Box::new(registry));
+    let biomes = Arc::new(biomes);
+    let dir = std::env::temp_dir().join(format!("horizon-eager-edits-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+    let mut chunk = Chunk::empty(0, 0);
+    let mut dirty = ModifiedChunks::default();
+    let now = Instant::now();
+    for tick in [0, 1, 199, 200] {
+        if tick <= 1 {
+            chunk.set(1, 64, 2, if tick == 0 { 1 } else { 0 });
+            dirty.insert((0, 0));
+        }
+        dirty.save_eagerly(
+            now + Duration::from_millis(tick * 50),
+            || save.active_chunk_writes() < 128,
+            |_| true,
+            |_| {
+                save.save_later(&[Arc::new(chunk.clone())], registry, &biomes)
+                    .unwrap();
+                true
+            },
+        );
+        save.flush().unwrap(); // only a barrier: no quit/autosave submission
+        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        assert_eq!(
+            reopened
+                .load(0, 0, registry, &biomes)
+                .unwrap()
+                .get(1, 64, 2),
+            if tick < 200 { 1 } else { 0 }
+        );
+    }
+    drop(save);
+    fs::remove_dir_all(dir).unwrap();
 }

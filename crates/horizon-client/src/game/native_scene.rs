@@ -62,7 +62,6 @@ fn shaded(color: u32, shade: f32) -> u32 {
     (color & 0xFF00_0000) | ch(0) | ch(8) | ch(16)
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// Draws `blocks`, a scene of block states at positions of its own (not
     /// the world's), into the box `rect` (x0, y0, x1, y1, GUI pixels) of a

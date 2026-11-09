@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "trample",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_trample",
+      "neoforge": "BlockEvent.FarmlandTrampleEvent",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "an entity about to trample farmland, cancellable (`native_trample`).",
+  "doc_summary": "farmland trampling: `native_trample(dimension, entity, kind, pos, fall_distance, cancel)` is heard when a player or mob that fell onto farmland is about to turn it to dirt, after vanilla's chance and checks (NeoForge's `FarmlandTrampleEvent`, Bukkit's physical `PlayerInteractEvent` and `EntityInteractEvent`). Cancel and the farmland and its crop stay. No `self`. Bundles that use it need `\"hooks\": @API:trample@`."
+}

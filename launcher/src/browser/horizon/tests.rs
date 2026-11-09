@@ -41,6 +41,23 @@ fn put(index: &Index, local: bool, home: &Path) -> Result<Vec<installed::Entry>,
 }
 
 #[test]
+fn a_search_keeps_only_what_its_filter_takes() {
+    let mut index = sample();
+    index.projects[0].kind = index::Kind::NativeMod;
+    index.projects[0].versions[0].file.name = "coords_hud-0.1.0.hnmod".into();
+    let id = index.projects[0].id.clone();
+    let query = Query::new("", Kind::Mod);
+    let found = |keep: bool| -> Vec<String> {
+        search_where(&index, &query, |p| keep || p.id != id)
+            .into_iter()
+            .map(|p| p.id)
+            .collect()
+    };
+    assert!(found(true).contains(&id));
+    assert!(!found(false).contains(&id));
+}
+
+#[test]
 fn native_registry_entries_are_mods_that_say_they_run_native_code() {
     assert_eq!(kind_of(&index::Kind::NativeMod), Some(Kind::Mod));
     let mut index = sample();
@@ -613,4 +630,20 @@ fn a_project_is_starred_on_the_repository_its_source_is_in() {
     ] {
         assert_eq!(repo(source), None, "{source:?}");
     }
+}
+
+#[test]
+fn a_picked_version_is_kept_until_it_is_cleared() {
+    let home = scratch("chosen-versions");
+    assert!(chosen(&home).is_empty());
+    set_chosen(&home, "skins_3d", Some("1.0.1")).unwrap();
+    set_chosen(&home, "flair", Some("1.0.0")).unwrap();
+    assert_eq!(
+        chosen(&home).get("skins_3d").map(String::as_str),
+        Some("1.0.1")
+    );
+    set_chosen(&home, "skins_3d", None).unwrap();
+    assert_eq!(chosen(&home).keys().collect::<Vec<_>>(), ["flair"]);
+    fs::write(home.join(CHOSEN), b"not json").unwrap();
+    assert!(chosen(&home).is_empty(), "an unreadable file picks nothing");
 }

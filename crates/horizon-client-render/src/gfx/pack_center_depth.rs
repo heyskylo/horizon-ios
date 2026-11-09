@@ -217,6 +217,41 @@ impl CenterDepth {
         })
     }
 
+    /// Once the GPU has finished the frame (`screenshot-sequence`), the depth it copied, as
+    /// the next frame reads it: an error unless exactly that one sample was read back, never
+    /// an older one.
+    pub fn take_completed(&mut self, device: &wgpu::Device) -> Result<f32, String> {
+        device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|e| e.to_string())?;
+        let state = |s: &Slot| s.state.load(Ordering::Acquire);
+        let mut mapped = self.slots.iter().filter(|s| state(s) == MAPPED);
+        let (Some(slot), None) = (mapped.next(), mapped.next()) else {
+            return Err("the frame's centre depth wasn't read back alone".into());
+        };
+        if self
+            .slots
+            .iter()
+            .any(|s| !matches!(state(s), FREE | MAPPED))
+        {
+            return Err("the frame's centre depth wasn't read back alone".into());
+        }
+        let depth = slot
+            .buffer
+            .slice(..4)
+            .get_mapped_range()
+            .map(|bytes| bytemuck::pod_read_unaligned::<f32>(&bytes[..4]))
+            .map_err(|e| e.to_string());
+        slot.buffer.unmap();
+        slot.state.store(FREE, Ordering::Release);
+        let depth = depth?;
+        if !depth.is_finite() {
+            return Err("the centre depth isn't finite".into());
+        }
+        self.latest = Some(depth.clamp(0.0, 1.0));
+        Ok(depth.clamp(0.0, 1.0))
+    }
+
     /// The newest depth read back so far, `None` before the first arrives.
     pub fn collect(&mut self, device: &wgpu::Device) -> Option<f32> {
         let _ = device.poll(wgpu::PollType::Poll);
@@ -263,6 +298,76 @@ mod tests {
             }),
             ..Default::default()
         });
+    }
+
+    /// Inline and on the submit thread: each finished frame's depth, then none left to
+    /// take; several outstanding samples are refused.
+    #[test]
+    #[ignore = "requires a host GPU"]
+    fn a_finished_frame_s_depth_is_taken_alone_never_an_older_one() {
+        let (device, raw) = test_device().expect("host GPU required");
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 3,
+                height: 3,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = depth.create_view(&Default::default());
+        for threaded in [false, true] {
+            let queue = super::super::submit::Queue::new(raw.clone(), threaded);
+            if threaded {
+                assert!(queue.threaded(), "deferred submit unavailable");
+            }
+            let mut center = CenterDepth::new(&device);
+            assert!(center.take_completed(&device).is_err());
+            for value in [0.125, 0.75, 0.25] {
+                let mut encoder = device.create_command_encoder(&Default::default());
+                clear(&mut encoder, &view, value);
+                center.copy(&device, &mut encoder, &depth);
+                let after = center.submitted().expect("one copied sample");
+                if threaded {
+                    let job = super::super::submit::Job {
+                        encoder,
+                        surface: None,
+                        after: Some(Box::new(after)),
+                    };
+                    assert!(queue.submit_later(job).is_ok());
+                    queue.wait();
+                } else {
+                    queue.submit([encoder.finish()]);
+                    after();
+                }
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(std::time::Duration::from_secs(30)),
+                    })
+                    .unwrap();
+                assert_eq!(center.take_completed(&device).unwrap(), value);
+                assert_eq!(center.collect(&device), Some(value));
+                assert!(
+                    center.take_completed(&device).is_err(),
+                    "no stale latest fallback"
+                );
+            }
+            // Several outstanding copies are ambiguous, even after they all map.
+            let mut encoder = device.create_command_encoder(&Default::default());
+            for _ in 0..SLOTS {
+                center.copy(&device, &mut encoder, &depth);
+            }
+            queue.submit([encoder.finish()]);
+            center.submitted().unwrap()();
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            assert!(center.take_completed(&device).is_err());
+        }
     }
 
     /// Frames that go to the submit thread start their readback there: the centre depth

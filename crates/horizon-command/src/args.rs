@@ -145,30 +145,49 @@ pub enum ArgType {
 
 /// FilenameUtils.wildcardMatch (case-sensitive) of `*` and `?` patterns.
 pub fn wildcard_match(text: &str, pattern: &str) -> bool {
-    let t: Vec<char> = text.chars().collect();
-    let p: Vec<char> = pattern.chars().collect();
+    // Keep the backtracking cursors as UTF-8 byte offsets.  The old port
+    // materialised both strings as `Vec<char>` for indexing, which made every
+    // resource id allocate during a selector scan.  `chars().next()` keeps
+    // the same Unicode scalar semantics for `?` while avoiding those copies.
     let (mut ti, mut pi) = (0, 0);
-    let (mut star, mut mark) = (None, 0);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            ti += 1;
-            pi += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
+    let mut star: Option<(usize, usize)> = None;
+    while ti < text.len() {
+        let tc = text[ti..]
+            .chars()
+            .next()
+            .expect("cursor always stays on a char boundary");
+        if pi < pattern.len() {
+            let pc = pattern[pi..]
+                .chars()
+                .next()
+                .expect("cursor always stays on a char boundary");
+            if pc == '?' || pc == tc {
+                ti += tc.len_utf8();
+                pi += pc.len_utf8();
+                continue;
+            }
+            if pc == '*' {
+                star = Some((pi, ti));
+                pi += 1;
+                continue;
+            }
         }
+        if let Some((s, mark)) = &mut star {
+            pi = *s + 1;
+            let c = text[*mark..]
+                .chars()
+                .next()
+                .expect("backtracking cursor stays before text end");
+            *mark += c.len_utf8();
+            ti = *mark;
+            continue;
+        }
+        return false;
     }
-    while pi < p.len() && p[pi] == '*' {
+    while pi < pattern.len() && pattern.as_bytes()[pi] == b'*' {
         pi += 1;
     }
-    pi == p.len()
+    pi == pattern.len()
 }
 /// ResourceSelectorArgument: the registry ids a pattern selects.
 pub fn select_resources<'a>(ids: &'a [String], pattern: &str) -> Vec<&'a String> {
@@ -256,14 +275,17 @@ impl Coordinates {
         match self {
             Coordinates::World(c) => [c[0].get(pos[0]), c[1].get(pos[1]), c[2].get(pos[2])],
             Coordinates::Local([left, up, forwards]) => {
-                let d = std::f32::consts::PI / 180.0;
+                use horizon_core::geometry::trig;
+                // `LocalCoordinates.apply`: widen the f32 angle for Mth's table,
+                // keep basis products f32, then sum the f64 offset before the origin.
+                let d = trig::DEG_TO_RAD;
                 let (yaw, pitch) = (rot[0], rot[1]);
-                let cos_y = ((yaw + 90.0) * d).cos();
-                let sin_y = ((yaw + 90.0) * d).sin();
-                let cos_p = (-pitch * d).cos();
-                let sin_p = (-pitch * d).sin();
-                let cos_p2 = ((-pitch + 90.0) * d).cos();
-                let sin_p2 = ((-pitch + 90.0) * d).sin();
+                let cos_y = trig::cos(f64::from((yaw + 90.0) * d));
+                let sin_y = trig::sin(f64::from((yaw + 90.0) * d));
+                let cos_p = trig::cos(f64::from(-pitch * d));
+                let sin_p = trig::sin(f64::from(-pitch * d));
+                let cos_p2 = trig::cos(f64::from((-pitch + 90.0) * d));
+                let sin_p2 = trig::sin(f64::from((-pitch + 90.0) * d));
                 let f = [
                     f64::from(cos_y * cos_p),
                     f64::from(sin_p),
@@ -281,9 +303,9 @@ impl Coordinates {
                     -(f[0] * u[1] - f[1] * u[0]),
                 ];
                 [
-                    pos[0] + f[0] * forwards + u[0] * up + l[0] * left,
-                    pos[1] + f[1] * forwards + u[1] * up + l[1] * left,
-                    pos[2] + f[2] * forwards + u[2] * up + l[2] * left,
+                    pos[0] + (f[0] * forwards + u[0] * up + l[0] * left),
+                    pos[1] + (f[1] * forwards + u[1] * up + l[1] * left),
+                    pos[2] + (f[2] * forwards + u[2] * up + l[2] * left),
                 ]
             }
         }

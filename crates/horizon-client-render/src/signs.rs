@@ -5,6 +5,13 @@ pub use crate::chunk::block_entity::{SavedLine, SignData, SignText};
 use crate::{scoreboard, text::Text};
 use horizon_world::nbt::Tag;
 
+/// `getBooleanOr(key, false)` and `Codec.BOOL`: any numeric tag's nonzero byte.
+fn nbt_flag(tag: &Tag, key: &str) -> bool {
+    tag.get(key)
+        .and_then(horizon_client_core::nbt_path::int_value)
+        .is_some_and(|value| value as i8 != 0)
+}
+
 /// `DyeColor` names and `getTextColor` values by id.
 pub const DYE_TEXT: [(&str, u32); 16] = [
     ("white", 0xFFFFFF),
@@ -201,12 +208,12 @@ impl SignData {
                     out.color = i as u8;
                 }
             }
-            out.glowing = matches!(t.get("has_glowing_text"), Some(Tag::Byte(b)) if *b != 0);
+            out.glowing = nbt_flag(t, "has_glowing_text");
             out
         };
         self.front = side(tag.get("front_text"));
         self.back = side(tag.get("back_text"));
-        self.waxed = matches!(tag.get("is_waxed"), Some(Tag::Byte(b)) if *b != 0);
+        self.waxed = nbt_flag(tag, "is_waxed");
         self.allow_op_features =
             matches!(tag.get("allow_op_features"), Some(Tag::Byte(b)) if *b != 0);
     }
@@ -258,19 +265,10 @@ fn root_style(component: &Tag) -> Vec<(&'static str, Tag)> {
         .filter_map(|key| Some((*key, root?.get(key)?.clone())))
         .collect()
 }
-/// Plain text of a stored text component (string, `{text: ...}` or JSON string).
+/// `ComponentSerialization.CODEC`: modern NBT strings are literal text, not JSON.
 fn component_text(tag: &Tag) -> String {
     match tag {
-        Tag::String(s) => {
-            let s = s.to_string_lossy();
-            match serde_json::from_str::<serde_json::Value>(&s) {
-                Ok(serde_json::Value::String(text)) => text,
-                Ok(v) if v.get("text").is_some() => {
-                    v["text"].as_str().unwrap_or_default().to_owned()
-                }
-                _ => s,
-            }
-        }
+        Tag::String(s) => s.to_string_lossy(),
         // Component.getString: translations and key binds resolved.
         Tag::Compound(_) | Tag::List(_) => {
             scoreboard::comp_text(&scoreboard::tag_to_json(tag)).plain()
@@ -310,6 +308,19 @@ pub fn editor_sprite(folder: &str, wood: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn waxed_and_glowing_text_take_any_number() {
+        let tag = Tag::compound([
+            ("is_waxed", Tag::Int(1)),
+            (
+                "front_text",
+                Tag::compound([("has_glowing_text", Tag::Short(1))]),
+            ),
+        ]);
+        let mut decoded = SignData::default();
+        decoded.decode(&tag);
+        assert!(decoded.waxed && decoded.front.glowing);
+    }
+    #[test]
     fn round_trips_nbt() {
         let mut data = SignData {
             hanging: false,
@@ -322,6 +333,35 @@ mod tests {
         let mut decoded = SignData::default();
         decoded.decode(&tag);
         assert_eq!(decoded, data);
+    }
+    #[test]
+    fn modern_string_messages_keep_literal_quotes_and_json_text() {
+        let lines = [
+            "plain text",
+            "\"quoted text\"",
+            r#"{"text":"literal object","bold":true}"#,
+            "",
+        ];
+        let mut saved = styled_sign();
+        let messages = Tag::List(lines.map(|line| Tag::String(line.into())).to_vec());
+        if let Tag::Compound(front) = saved.get_mut("front_text").unwrap() {
+            front.insert("messages".into(), messages.clone());
+        }
+        let mut data = SignData::default();
+        data.decode(&saved);
+        assert_eq!(data.front.lines, lines.map(str::to_owned));
+        let encoded = Tag::compound(data.encode());
+        assert_eq!(
+            encoded.get("front_text").unwrap().get("messages"),
+            Some(&messages)
+        );
+        let mut copied = SignData::default();
+        copied.decode(&encoded);
+        assert_eq!(copied.front.lines, data.front.lines);
+        assert_eq!(
+            front_messages(&Tag::compound(copied.encode())),
+            front_messages(&encoded)
+        );
     }
     /// A sign as a server sends it: a green "Online" and a plain line, the
     /// way `ComponentSerialization.CODEC` writes them to NBT.

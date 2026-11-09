@@ -54,6 +54,23 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         Ok(self.bytes(N)?.try_into().expect("length checked"))
     }
+    /// Read one byte for the variable-width primitive codecs.
+    ///
+    /// `u8` goes through the fixed-width array path, which is useful for the
+    /// public primitive API but needlessly builds a one-byte slice for every
+    /// group in a VarInt. Keeping this tiny cursor operation separate lets
+    /// the hot codecs do one bounds check and one cursor increment per byte.
+    #[inline]
+    fn next_byte(&mut self) -> Result<u8> {
+        let Some(&byte) = self.data.get(self.pos) else {
+            return Err(Error::new(format!(
+                "needed 1 bytes, {} left",
+                self.remaining()
+            )));
+        };
+        self.pos += 1;
+        Ok(byte)
+    }
     pub fn u8(&mut self) -> Result<u8> {
         Ok(self.array::<1>()?[0])
     }
@@ -86,9 +103,16 @@ impl<'a> Reader<'a> {
     }
     /// VarInt.read: at most five 7-bit groups, least significant first.
     pub fn varint(&mut self) -> Result<i32> {
-        let mut value = 0u32;
-        for i in 0..5 {
-            let b = self.u8()?;
+        // Packet ids and counts are overwhelmingly one byte. Handle that
+        // shape directly, then use the same cursor operation for the less
+        // common continuation groups.
+        let first = self.next_byte()?;
+        if first & 0x80 == 0 {
+            return Ok(i32::from(first));
+        }
+        let mut value = u32::from(first & 0x7F);
+        for i in 1..5 {
+            let b = self.next_byte()?;
             value |= u32::from(b & 0x7F) << (7 * i);
             if b & 0x80 == 0 {
                 return Ok(value as i32);
@@ -98,9 +122,13 @@ impl<'a> Reader<'a> {
     }
     /// VarLong.read: at most ten 7-bit groups.
     pub fn varlong(&mut self) -> Result<i64> {
-        let mut value = 0u64;
-        for i in 0..10 {
-            let b = self.u8()?;
+        let first = self.next_byte()?;
+        if first & 0x80 == 0 {
+            return Ok(i64::from(first));
+        }
+        let mut value = u64::from(first & 0x7F);
+        for i in 1..10 {
+            let b = self.next_byte()?;
             value |= u64::from(b & 0x7F) << (7 * i);
             if b & 0x80 == 0 {
                 return Ok(value as i64);
@@ -343,8 +371,37 @@ impl<const N: usize> Codec<String> for StrN<N> {
         w.string(v)
     }
 }
-/// Identifier.STREAM_CODEC: a resource location string.
-pub type Ident = StrN<32767>;
+/// Identifier.STREAM_CODEC: a validated resource location, with the default namespace.
+pub struct Ident;
+impl Codec<String> for Ident {
+    fn read(r: &mut Reader) -> Result<String> {
+        let value = r.string(32767)?;
+        // A namespaced identifier (what vanilla writes) goes back as read.
+        let qualified = value.find(':').is_some_and(|i| i > 0);
+        let (namespace, path) = value.split_once(':').unwrap_or(("", &value));
+        let namespace = if namespace.is_empty() {
+            "minecraft"
+        } else {
+            namespace
+        };
+        if !namespace
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+            || !path
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"/_.-".contains(&c))
+        {
+            return Err(Error::new("invalid resource identifier"));
+        }
+        if qualified {
+            return Ok(value);
+        }
+        Ok(format!("{namespace}:{path}"))
+    }
+    fn write(v: &String, w: &mut Writer) {
+        w.string(v)
+    }
+}
 /// VarInt-prefixed bytes.
 pub struct Bytes;
 impl Codec<Vec<u8>> for Bytes {

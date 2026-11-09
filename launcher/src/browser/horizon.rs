@@ -68,6 +68,15 @@ pub fn is_native_mod(id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The GitHub stars of the registry's project `id`, by the index already read (never the
+/// network): None when it has none, when its source isn't a GitHub repository, or when no index
+/// was read.
+pub fn github_stars(id: &str) -> Option<u64> {
+    let index = known_index()?;
+    let p = index.project(id)?;
+    (p.stars > 0 && github_repo(&p.source).is_some()).then_some(p.stars)
+}
+
 /// The index: the one fetched in the last ten minutes, else fetched again (and kept in the game
 /// folder), else the copy kept last time.
 pub fn index() -> Result<Arc<Index>, String> {
@@ -326,7 +335,7 @@ pub fn trust_and_capabilities(
             "Native code: it is compiled into the game and runs with full access to your computer. Its source was reviewed before it was listed".into(),
         );
         if let Some(v) = p.versions.iter().find(|v| v.game == GAME) {
-            let pin = v.api.split('/').nth(1).unwrap_or_default();
+            let pin = crate::native_fit::pin_of(v);
             lines.push(
                 instance
                     .and_then(|i| crate::native_fit::line(i, &p.id, v.hooks, pin, &v.broken_on))
@@ -337,6 +346,12 @@ pub fn trust_and_capabilities(
                         )
                     }),
             );
+            if let Some(older) = instance.and_then(|i| older_fit(p, v, i)) {
+                lines.push(crate::i18n::trf(
+                    "An older version, {version}, builds on the Horizon you play: installing picks it",
+                    &[("version", &older)],
+                ));
+            }
         }
     }
     if let Some(v) = p.versions.first().filter(|_| p.kind == index::Kind::Mod) {
@@ -460,6 +475,15 @@ pub const SORTS: [super::details::Sort; 3] = [
 /// most downloaded first, or the newest (first published) or most recently updated (latest
 /// version) when the query asks, ties by downloads.
 fn search(index: &Index, query: &Query) -> Vec<Project> {
+    search_where(index, query, |_| true)
+}
+
+/// [`search`], keeping only the projects `keep` takes.
+fn search_where(
+    index: &Index,
+    query: &Query,
+    keep: impl Fn(&index::Project) -> bool,
+) -> Vec<Project> {
     use super::details::Sort;
     let mut found: Vec<&index::Project> = index
         .projects
@@ -476,6 +500,7 @@ fn search(index: &Index, query: &Query) -> Vec<Project> {
         .filter(|p| query.everything || p.versions.iter().any(|v| v.game == GAME))
         // A WebAssembly mod stays in the index for the modpacks that need it, not in the browser.
         .filter(|p| !p.versions.iter().filter(|v| v.game == GAME).all(needs_port))
+        .filter(|p| keep(p))
         .collect();
     let day = |p: &index::Project, newest: bool| {
         let days = p.versions.iter().map(|v| v.published.as_str());
@@ -530,7 +555,14 @@ impl Source for Registry {
     }
 
     fn search(&self, query: &Query) -> Result<Vec<Project>, String> {
-        let found = search(&*index()?, query);
+        let index = index()?;
+        let found = match query.filters.works_on {
+            true => {
+                let works = works_on(&index, &crate::instances::selected());
+                search_where(&index, query, |p| works(p).is_none_or(|(works, _)| works))
+            }
+            false => search(&index, query),
+        };
         refresh_ratings();
         Ok(found)
     }
@@ -728,11 +760,16 @@ fn install_from(
     let p = index
         .project(&project.id)
         .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;
-    let v = newest(index, p, level)?;
+    let v = match fitting(index, p, level, home) {
+        Some(v) => v,
+        None => newest(index, p, level)?,
+    };
     if needs_port(v) {
         return Err(format!("{} {NEEDS_PORT}.", p.name));
     }
-    install_version(index, local, p, v, home, progress).map(|e| vec![e])
+    let entry = install_version(index, local, p, v, home, progress)?;
+    set_chosen(home, &p.id, None)?;
+    Ok(vec![entry])
 }
 
 /// Downloads the newest version of the registry's data pack `project` into `folder`, checked
@@ -764,6 +801,400 @@ fn fetch_datapack_from(
         let _ = fs::remove_file(&path);
     })?;
     Ok((path, v.version.clone()))
+}
+
+/// The version of native mod `p` that fits the Horizon played in game folder `home`
+/// ([`crate::native_fit::best`]); None for other kinds, or when the Horizon played isn't known.
+fn fitting<'a>(
+    index: &Index,
+    p: &'a index::Project,
+    level: Option<u32>,
+    home: &Path,
+) -> Option<&'a index::Version> {
+    if p.kind != index::Kind::NativeMod {
+        return None;
+    }
+    let instance = crate::instances::list()
+        .into_iter()
+        .find(|i| i.home == home)?;
+    let plays = crate::native_fit::plays(&instance)?;
+    let pins = crate::native_fit::pins(home);
+    crate::native_fit::best(p, &plays, &pins, |v| usable(index, p, v, level))
+}
+
+/// A version of `p` an install may pick: made for this game, not taken down, and not needing a
+/// newer mod API than `level`.
+fn usable(index: &Index, p: &index::Project, v: &index::Version, level: Option<u32>) -> bool {
+    v.game == GAME && index.revoked(&p.id, &v.file.sha256).is_none() && !needs_newer(v, level)
+}
+
+/// How a registry native mod works on `instance`: whether a version of it does, with the line its
+/// best version (else its newest) reads there ([`crate::native_fit::describe`]). None for other
+/// kinds, and when the Horizon played isn't known.
+pub fn works_on<'a>(
+    index: &'a Index,
+    instance: &crate::instances::Instance,
+) -> impl Fn(&index::Project) -> Option<(bool, String)> + 'a {
+    let plays = crate::native_fit::plays(instance);
+    let pins = crate::native_fit::pins(&instance.home);
+    let level = crate::backend::game_mod_api_level();
+    move |p| {
+        let plays = plays
+            .as_ref()
+            .filter(|_| p.kind == index::Kind::NativeMod)?;
+        let best = crate::native_fit::best(p, plays, &pins, |v| usable(index, p, v, level));
+        let v = best.or_else(|| p.versions.iter().find(|v| v.game == GAME))?;
+        let pin = crate::native_fit::pin_of(v);
+        let fit = crate::native_fit::fit(&p.id, v.hooks, pin, plays, &pins, &v.broken_on)?;
+        Some((best.is_some(), crate::native_fit::describe(&fit, plays)))
+    }
+}
+
+/// Where a native mod turned on in an instance stands, for its row on the instance's Mods tab.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Standing {
+    /// In the instance's native build, on the Horizon the instance plays.
+    Built(String),
+    /// In the build, which moved to the commit mods made for another one needed.
+    Moved(String),
+    /// Left out of the build, and why.
+    LeftOut(String),
+    /// No build yet: whether it should build there, and how ([`works_on`]).
+    Expected(bool, String),
+}
+
+/// [`Standing`] of the native mods `ids` (manifest ids) in `instance`, by id: from its native
+/// build's record when it plays one, else from the registry's versions.
+pub fn standings(
+    instance: &crate::instances::Instance,
+    ids: &[String],
+) -> HashMap<String, Standing> {
+    let plays = instance.resolve_version(None).ok();
+    if let Some(about) = plays.as_deref().and_then(crate::native_mods::about) {
+        let on = crate::native_status::horizon_label(&about.base);
+        let moved =
+            !about.pinned_by.is_empty() && about.base_horizon.as_ref() != Some(&about.horizon);
+        return ids
+            .iter()
+            .map(|id| {
+                let standing = match about.left_out.iter().find(|l| &l.id == id) {
+                    Some(left) => Standing::LeftOut(left.label()),
+                    None if moved => Standing::Moved(crate::i18n::trf(
+                        "In the last build, on Horizon {commit} for {mods}, not on {horizon}",
+                        &[
+                            ("commit", &about.horizon[..about.horizon.len().min(7)]),
+                            ("mods", &about.pinned_by.join(", ")),
+                            ("horizon", &on),
+                        ],
+                    )),
+                    None => Standing::Built(crate::i18n::trf(
+                        "In the last build, on {horizon}",
+                        &[("horizon", &on)],
+                    )),
+                };
+                (id.clone(), standing)
+            })
+            .collect();
+    }
+    let Ok(index) = index() else {
+        return HashMap::new();
+    };
+    let works = works_on(&index, instance);
+    ids.iter()
+        .filter_map(|id| {
+            let (fits, line) = works(index.project(id)?)?;
+            Some((id.clone(), Standing::Expected(fits, line)))
+        })
+        .collect()
+}
+
+/// [`works_on`] for the projects `ids` in `instance`, by id.
+pub fn works_lines(
+    ids: &[String],
+    instance: &crate::instances::Instance,
+) -> HashMap<String, (bool, String)> {
+    let Ok(index) = index() else {
+        return HashMap::new();
+    };
+    let works = works_on(&index, instance);
+    ids.iter()
+        .filter_map(|id| Some((id.clone(), works(index.project(id)?)?)))
+        .collect()
+}
+
+/// The native mod versions the player picked on a project's Versions page, by mod id: the launcher
+/// keeps them as they are (no automatic update, no swap before a build) until the player installs
+/// the mod again or picks its recommended version.
+const CHOSEN: &str = "mod-browser/chosen-versions.json";
+
+/// The versions the player picked in game folder `home`, by mod id.
+pub fn chosen(home: &Path) -> std::collections::BTreeMap<String, String> {
+    fs::read(home.join(CHOSEN))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn set_chosen(home: &Path, id: &str, version: Option<&str>) -> Result<(), String> {
+    let mut all = chosen(home);
+    let changed = match version {
+        Some(v) => all.insert(id.to_owned(), v.to_owned()).as_deref() != Some(v),
+        None => all.remove(id).is_some(),
+    };
+    if !changed {
+        return Ok(());
+    }
+    let path = home.join(CHOSEN);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_vec_pretty(&all).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// One version of a registry native mod on its project page: how it fits the Horizon played
+/// ([`crate::native_fit::describe`]) and whether it is the one the launcher would pick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fitted {
+    pub fit: Option<String>,
+    /// It builds on the Horizon played, or moves the build to its own commit without a clash.
+    pub works: bool,
+    pub recommended: bool,
+    /// What the version's author wrote changed (Markdown, as the index keeps it).
+    pub changelog: String,
+}
+
+/// [`Fitted`] for each version of native mod `id`, by version, in `instance`; empty for other
+/// kinds or when the Horizon played isn't known.
+pub fn fitted(id: &str, instance: &crate::instances::Instance) -> HashMap<String, Fitted> {
+    let Ok(index) = index() else {
+        return HashMap::new();
+    };
+    let Some(p) = index
+        .project(id)
+        .filter(|p| p.kind == index::Kind::NativeMod)
+    else {
+        return HashMap::new();
+    };
+    let Some(plays) = crate::native_fit::plays(instance) else {
+        return HashMap::new();
+    };
+    let pins = crate::native_fit::pins(&instance.home);
+    let level = crate::backend::game_mod_api_level();
+    let best = fitting(&index, p, level, &instance.home).map(|v| v.version.clone());
+    p.versions
+        .iter()
+        .map(|v| {
+            let fit = crate::native_fit::fit(
+                &p.id,
+                v.hooks,
+                crate::native_fit::pin_of(v),
+                &plays,
+                &pins,
+                &v.broken_on,
+            );
+            let works = matches!(
+                fit,
+                Some(crate::native_fit::Fit::Fits | crate::native_fit::Fit::MovesTo { .. })
+            );
+            let fitted = Fitted {
+                fit: fit.map(|f| crate::native_fit::describe(&f, &plays)),
+                works,
+                recommended: best.as_deref() == Some(v.version.as_str()),
+                changelog: v.changelog.clone(),
+            };
+            (v.version.clone(), fitted)
+        })
+        .collect()
+}
+
+/// Installs version `version` of registry native mod `id` into game folder `home`, as the player
+/// picked it on its Versions page: kept as it is from then on, unless it is the recommended one.
+pub fn install_chosen(
+    id: &str,
+    version: &str,
+    home: &Path,
+    progress: &dyn Fn(&str, f32),
+) -> Result<installed::Entry, String> {
+    let index = index()?;
+    let p = index
+        .project(id)
+        .ok_or_else(|| format!("{id} isn't in Horizon's registry."))?;
+    let v = p
+        .versions
+        .iter()
+        .find(|v| v.version == version)
+        .ok_or_else(|| format!("{} has no version {version}.", p.name))?;
+    let level = crate::backend::game_mod_api_level();
+    let recommended = fitting(&index, p, level, home).is_some_and(|best| best.version == version);
+    let entry = install_version(&index, local(), p, v, home, progress)?;
+    set_chosen(home, id, (!recommended).then_some(version))?;
+    Ok(entry)
+}
+
+/// For native mod `id` installed at `version` in game folder `home`: the newer version that fits
+/// the Horizon played, as an update offers it (`Some(None)` when there is none). None when the
+/// fit can't be told, so the caller's own pick decides.
+pub fn fitting_update(id: &str, version: &str, home: &Path) -> Option<Option<Version>> {
+    if chosen(home).contains_key(id) {
+        return Some(None);
+    }
+    let index = index().ok()?;
+    let p = index.project(id)?;
+    let level = crate::backend::game_mod_api_level();
+    let v = fitting(&index, p, level, home)?;
+    let at = |number: &str| p.versions.iter().position(|w| w.version == number);
+    let newer = at(&v.version) < at(version) || at(version).is_none();
+    Some(newer.then(|| version_of(&index, p, v, level)))
+}
+
+/// The version of native mod `p` that builds on the Horizon `instance` plays when `newest`
+/// doesn't and an older one does: what an install picks instead of the newest.
+fn older_fit(
+    p: &index::Project,
+    newest: &index::Version,
+    instance: &crate::instances::Instance,
+) -> Option<String> {
+    let plays = crate::native_fit::plays(instance)?;
+    let pins = crate::native_fit::pins(&instance.home);
+    let fits = |v: &index::Version| {
+        crate::native_fit::fit(
+            &p.id,
+            v.hooks,
+            crate::native_fit::pin_of(v),
+            &plays,
+            &pins,
+            &v.broken_on,
+        )
+    };
+    if fits(newest) == Some(crate::native_fit::Fit::Fits) {
+        return None;
+    }
+    let best = crate::native_fit::best(p, &plays, &pins, |v| v.game == GAME)?;
+    (best.version != newest.version && fits(best) == Some(crate::native_fit::Fit::Fits))
+        .then(|| best.version.clone())
+}
+
+/// After a build left out the registry native mods `left` (they didn't apply or compile on the
+/// Horizon `instance` plays, though their versions said they would): each one the player didn't
+/// pick a version of moves to the next older version that says it builds there, kept on or off as
+/// it was. A line per mod moved; the caller builds again once.
+pub fn try_older(instance: &crate::instances::Instance, left: &[String]) -> Vec<String> {
+    if left.is_empty() {
+        return Vec::new();
+    }
+    let Ok(index) = index() else {
+        return Vec::new();
+    };
+    let Some(plays) = crate::native_fit::plays(instance) else {
+        return Vec::new();
+    };
+    let home = &instance.home;
+    let pins = crate::native_fit::pins(home);
+    let level = crate::backend::game_mod_api_level();
+    let picked = chosen(home);
+    let mut lines = Vec::new();
+    for entry in installed::Installed::load(home).entries {
+        if entry.source != SourceId::Horizon
+            || picked.contains_key(&entry.project)
+            || !left.contains(&entry.project)
+        {
+            continue;
+        }
+        let Some(p) = index
+            .project(&entry.project)
+            .filter(|p| p.kind == index::Kind::NativeMod)
+        else {
+            continue;
+        };
+        let Some(at) = p.versions.iter().position(|v| v.version == entry.version) else {
+            continue;
+        };
+        let older = p.versions[at + 1..].iter().find(|v| {
+            v.game == GAME
+                && index.revoked(&p.id, &v.file.sha256).is_none()
+                && !needs_newer(v, level)
+                && matches!(
+                    crate::native_fit::fit(
+                        &p.id,
+                        v.hooks,
+                        crate::native_fit::pin_of(v),
+                        &plays,
+                        &pins,
+                        &v.broken_on
+                    ),
+                    Some(crate::native_fit::Fit::Fits | crate::native_fit::Fit::MovesTo { .. })
+                )
+        });
+        let Some(older) = older else {
+            continue;
+        };
+        if install_version_guarded(&index, local(), p, older, home, &|_| Ok(()), &|_, _| {}).is_ok()
+        {
+            lines.push(crate::i18n::trf(
+                "{mod}: version {version} didn't build, trying {older}",
+                &[
+                    ("mod", &p.name),
+                    ("version", &entry.version),
+                    ("older", &older.version),
+                ],
+            ));
+        }
+    }
+    lines
+}
+
+/// Before a build: each registry native mod turned on in `instance` whose installed version
+/// doesn't build on the Horizon it plays is replaced by the one of its versions that does, kept
+/// on or off as it was. Says what changed, a line per mod; a mod with no such version stays as it
+/// is (the build leaves it out).
+pub fn fit_versions(instance: &crate::instances::Instance) -> Vec<String> {
+    let Ok(index) = index() else {
+        return Vec::new();
+    };
+    let Some(plays) = crate::native_fit::plays(instance) else {
+        return Vec::new();
+    };
+    let home = &instance.home;
+    let pins = crate::native_fit::pins(home);
+    let level = crate::backend::game_mod_api_level();
+    let mut lines = Vec::new();
+    let picked = chosen(home);
+    for entry in installed::Installed::load(home).entries {
+        if picked.contains_key(&entry.project) {
+            continue;
+        }
+        let Some(p) = index
+            .project(&entry.project)
+            .filter(|p| entry.source == SourceId::Horizon && p.kind == index::Kind::NativeMod)
+        else {
+            continue;
+        };
+        let current = p.versions.iter().find(|v| v.version == entry.version);
+        let fits_now = current.is_some_and(|v| {
+            crate::native_fit::fit(
+                &p.id,
+                v.hooks,
+                crate::native_fit::pin_of(v),
+                &plays,
+                &pins,
+                &v.broken_on,
+            ) == Some(crate::native_fit::Fit::Fits)
+        });
+        if fits_now || !java::is_enabled(home, &p.id) {
+            continue;
+        }
+        let Some(v) = fitting(&index, p, level, home).filter(|v| v.version != entry.version) else {
+            continue;
+        };
+        if install_version_guarded(&index, local(), p, v, home, &|_| Ok(()), &|_, _| {}).is_ok() {
+            lines.push(crate::i18n::trf(
+                "{mod}: using version {version}, made for the Horizon you play",
+                &[("mod", &p.name), ("version", &v.version)],
+            ));
+        }
+    }
+    lines
 }
 
 /// A project's newest version for this game that wasn't taken down and that a game serving mod
@@ -818,7 +1249,14 @@ fn install_version(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<installed::Entry, String> {
-    install_version_guarded(index, local, p, v, home, &|_| Ok(()), progress)
+    let entry = install_version_guarded(index, local, p, v, home, &|_| Ok(()), progress)?;
+    // The player asked for this install: the mod starts on. An automatic update installs
+    // through the guarded function alone, so it leaves the player's on/off choice as it was
+    // (#10071).
+    if entry.kind == Kind::Mod {
+        java::set_enabled(home, &p.id, true)?;
+    }
+    Ok(entry)
 }
 
 /// [`install_version`], with `guard` asked about the downloaded file once it passed the index's
@@ -906,9 +1344,6 @@ fn install_version_guarded(
         .and_then(|o| o.path(home))
     {
         let _ = fs::remove_file(old);
-    }
-    if project.kind == Kind::Mod {
-        java::set_enabled(home, &p.id, true)?;
     }
     let entry = installed::Entry {
         source: SourceId::Horizon,

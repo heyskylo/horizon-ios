@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "recipe_sources",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_recipe_sources",
+      "neoforge": "none (JEI's IRecipeTransferHandler with extra source slots, as Tinkers' Construct's crafting station takes from adjacent inventories)",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "sources"
+      }
+    }
+  ],
+  "rust_summary": "the containers recipe placement into a mod menu type's crafting grid may also take ingredients from (`native_recipe_sources`).",
+  "doc_summary": "`native_recipe_sources(player, menu, pos, sources)` is asked on the server when the recipe book or a recipe viewer (`native_place_recipe`, `native_transfer_recipe`) fills the crafting grid of a mod menu type (`crafting`, [mods.md](mods.md#menu-types)) open at `pos`: push the positions of block containers (chests, barrels, shulker boxes, hoppers, dispensers, droppers, mod containers) onto `sources`, and the placement takes ingredients from them after the player's inventory, as a crafting station takes them from the chests beside it. No answer keeps vanilla's placement from the inventory alone. Bundles need \"hooks\": @API:recipe_sources@."
+}

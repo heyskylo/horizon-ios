@@ -14,12 +14,11 @@ use crate::{Error, Result};
 struct Big(Vec<u32>);
 
 impl Big {
+    /// No branch on the bytes: a private exponent goes through here on every decryption.
     fn from_be_bytes(bytes: &[u8], limbs: usize) -> Self {
         let mut v = vec![0u32; limbs];
         for (i, b) in bytes.iter().rev().enumerate() {
-            if *b != 0 {
-                v[i / 4] |= u32::from(*b) << (8 * (i % 4));
-            }
+            v[i / 4] |= u32::from(*b) << (8 * (i % 4));
         }
         Self(v)
     }
@@ -86,6 +85,26 @@ impl Big {
     }
     fn is_one(&self) -> bool {
         self.0.first() == Some(&1) && self.0[1..].iter().all(|&l| l == 0)
+    }
+    /// self − other over self's limbs (modulo 2^(32·limbs)), and the final borrow: 1 when
+    /// self < other. No branch on the values.
+    fn sub_with_borrow(&self, other: &Self) -> (Self, u32) {
+        let mut out = vec![0u32; self.0.len()];
+        let mut borrow = 0u64;
+        for (o, (a, b)) in out.iter_mut().zip(self.0.iter().zip(&other.0)) {
+            let d = u64::from(*a)
+                .wrapping_sub(u64::from(*b))
+                .wrapping_sub(borrow);
+            *o = d as u32;
+            borrow = d >> 63;
+        }
+        (Self(out), borrow as u32)
+    }
+    /// self = other where `mask` is all ones, unchanged where it is 0; no branch on `mask`.
+    fn select(&mut self, other: &Self, mask: u32) {
+        for (a, b) in self.0.iter_mut().zip(&other.0) {
+            *a ^= mask & (*a ^ *b);
+        }
     }
     fn sub_assign(&mut self, other: &Self) {
         let mut borrow = 0i64;
@@ -158,14 +177,30 @@ impl Mont {
             t[k - 1] = s as u32;
             t[k] = t[k + 1] + (s >> 32) as u32;
         }
-        let overflow = t[k] != 0;
+        // t < 2n: subtract n when t ≥ n, that is when it overflowed (t[k] = 1) or t − n doesn't
+        // borrow. Chosen by a mask rather than a branch, so a private key's operation takes the same
+        // time whatever its operands (the classic extra-reduction timing channel).
         let mut r = Big(t[..k].to_vec());
-        if overflow || r.ge(&self.n) {
-            r.sub_assign(&self.n);
-        }
+        let (reduced, borrow) = r.sub_with_borrow(&self.n);
+        r.select(&reduced, 0u32.wrapping_sub(t[k] | (borrow ^ 1)));
         r
     }
-    /// base^exp mod n, base < n.
+    /// base^exp mod n for a secret `exp`: every bit of its limbs costs a square and a multiply,
+    /// and the product is kept or not by a mask, so the time doesn't depend on the exponent.
+    fn pow_secret(&self, base: &Big, exp: &Big) -> Big {
+        let k = self.n.0.len();
+        let mut one = Big(vec![0; k]);
+        one.0[0] = 1;
+        let b = self.mul(base, &self.r2);
+        let mut x = self.mul(&one, &self.r2);
+        for i in (0..exp.0.len() * 32).rev() {
+            x = self.mul(&x, &x);
+            let y = self.mul(&x, &b);
+            x.select(&y, 0u32.wrapping_sub(u32::from(exp.bit(i))));
+        }
+        self.mul(&x, &one)
+    }
+    /// base^exp mod n, base < n. For public exponents: its time depends on `exp`.
     fn pow(&self, base: &Big, exp: &Big) -> Big {
         let k = self.n.0.len();
         let mut one = Big(vec![0; k]);
@@ -221,6 +256,22 @@ fn strip(int: &[u8]) -> Vec<u8> {
     int[start..].to_vec()
 }
 
+/// `RSAKeyFactory.MAX_MODLEN`: the longest modulus Java's provider accepts.
+const MAX_MODULUS_BITS: usize = 16384;
+/// `RSAKeyFactory.MAX_MODLEN_RESTRICT_EXPONENT`: past this many modulus bits, the exponent is
+/// limited to [`MAX_RESTRICTED_EXPONENT_BITS`].
+const RESTRICT_EXPONENT_ABOVE: usize = 3072;
+/// `RSAKeyFactory.MAX_RESTRICTED_EXPLEN`.
+const MAX_RESTRICTED_EXPONENT_BITS: usize = 64;
+
+/// The bit length of a big-endian unsigned integer with no leading zero bytes, as
+/// `BigInteger.bitLength`.
+fn bit_len(int: &[u8]) -> usize {
+    int.first().map_or(0, |&top| {
+        (int.len() - 1) * 8 + (8 - top.leading_zeros() as usize)
+    })
+}
+
 impl RsaPublicKey {
     /// X509EncodedKeySpec: SubjectPublicKeyInfo { AlgorithmIdentifier, BIT STRING RSAPublicKey }.
     pub fn from_der(spki: &[u8]) -> Result<Self> {
@@ -251,7 +302,16 @@ impl RsaPublicKey {
             modulus: strip(n),
             exponent: strip(e),
         };
-        if key.modulus.len() < 64 || key.modulus.last().is_none_or(|b| b & 1 == 0) {
+        // RSAKeyFactory.checkKeyLengths, as vanilla's KeyFactory applies it: a modulus of at most
+        // 16384 bits and, past 3072 bits, an exponent of at most 64. The cost of an encryption
+        // grows with the modulus squared times the exponent's bits, and the server sends the key
+        // before anything is encrypted: unbounded, one key in a Hello held a login for hours.
+        let (n_bits, e_bits) = (bit_len(&key.modulus), bit_len(&key.exponent));
+        if key.modulus.len() < 64
+            || n_bits > MAX_MODULUS_BITS
+            || n_bits > RESTRICT_EXPONENT_ABOVE && e_bits > MAX_RESTRICTED_EXPONENT_BITS
+            || key.modulus.last().is_none_or(|b| b & 1 == 0)
+        {
             return Err(bad());
         }
         Ok(key)
@@ -266,6 +326,19 @@ impl RsaPublicKey {
         let mont = Mont::new(Big::from_be_bytes(&self.modulus, limbs));
         let m = Big::from_be_bytes(block, limbs);
         mont.pow(
+            &m,
+            &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
+        )
+        .to_be_bytes(self.size())
+    }
+    /// [`RsaPublicKey::apply`] with a private exponent: [`Mont::pow_secret`], whose time doesn't
+    /// depend on the exponent. Vanilla's JCE blinds this operation; this at least takes the same
+    /// steps for every input.
+    fn apply_secret(&self, block: &[u8], exponent: &[u8]) -> Vec<u8> {
+        let limbs = self.size().div_ceil(4);
+        let mont = Mont::new(Big::from_be_bytes(&self.modulus, limbs));
+        let m = Big::from_be_bytes(block, limbs);
+        mont.pow_secret(
             &m,
             &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
         )
@@ -538,7 +611,7 @@ impl RsaPrivateKey {
         if ciphertext.len() != k || ciphertext >= self.public.modulus.as_slice() {
             return Err(bad());
         }
-        let block = self.public.apply(ciphertext, &self.exponent);
+        let block = self.public.apply_secret(ciphertext, &self.exponent);
         if block[0] != 0 || block[1] != 2 {
             return Err(bad());
         }
@@ -612,7 +685,7 @@ impl RsaPrivateKey {
         let k = self.public.size();
         let block = emsa_pkcs1(hash, message, k)
             .ok_or_else(|| Error::new("RSA key too short for the digest"))?;
-        let signature = self.public.apply(&block, &self.exponent);
+        let signature = self.public.apply_secret(&block, &self.exponent);
         if !self.public.verify(hash, message, &signature) {
             return Err(Error::new("RSA signature failed its own check"));
         }
@@ -658,6 +731,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_constant_time_power_matches_the_other() {
+        // pow_secret takes every bit of the exponent's limbs, leading zeros included: the same
+        // results as pow, for moduli near a limb boundary (the reduction's overflow case) too.
+        let as_u128 = |b: &Big| {
+            b.0.iter()
+                .rev()
+                .fold(0u128, |a, &l| a << 32 | u128::from(l))
+        };
+        let big = |v: u128, limbs: usize| Big((0..limbs).map(|i| (v >> (32 * i)) as u32).collect());
+        let powmod = |mut b: u128, mut e: u128, n: u128| {
+            let mut r = 1 % n;
+            b %= n;
+            while e > 0 {
+                if e & 1 == 1 {
+                    r = r * b % n;
+                }
+                b = b * b % n;
+                e >>= 1;
+            }
+            r
+        };
+        for n in [497u128, (1 << 61) - 1, (1 << 64) - 59, (1 << 63) + 29] {
+            let limbs = if n >> 32 == 0 { 1 } else { 2 };
+            let mont = Mont::new(big(n, limbs));
+            for (b, e) in [
+                (4, 13),
+                (2, 0),
+                (n - 1, 2),
+                (n / 3, (1 << 40) + 7),
+                (12345, n - 2),
+            ] {
+                let b = b % n;
+                let (base, exp) = (big(b, limbs), big(e, 2.max(limbs)));
+                let expected = powmod(b, e, n);
+                assert_eq!(
+                    as_u128(&mont.pow(&base, &exp)),
+                    expected,
+                    "pow {b}^{e} mod {n}"
+                );
+                assert_eq!(
+                    as_u128(&mont.pow_secret(&base, &exp)),
+                    expected,
+                    "secret {b}^{e} mod {n}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn parses_x509_public_keys() {
         let key = RsaPublicKey::from_der(&hex(TEST_SPKI)).unwrap();
         assert_eq!(key.modulus, hex(TEST_N));
@@ -665,6 +787,59 @@ pub(crate) mod tests {
         assert_eq!(key.size(), 128);
         assert!(RsaPublicKey::from_der(&hex(TEST_SPKI)[..100]).is_err());
         assert!(RsaPublicKey::from_der(b"not a key").is_err());
+    }
+
+    /// A SubjectPublicKeyInfo for modulus `n` and exponent `e`, both big-endian.
+    fn spki(n: &[u8], e: &[u8]) -> Vec<u8> {
+        fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
+            let len = body.len();
+            let mut out = vec![tag];
+            if len < 0x80 {
+                out.push(len as u8);
+            } else {
+                let bytes: Vec<u8> = len
+                    .to_be_bytes()
+                    .into_iter()
+                    .skip_while(|&b| b == 0)
+                    .collect();
+                out.push(0x80 | bytes.len() as u8);
+                out.extend(bytes);
+            }
+            out.extend_from_slice(body);
+            out
+        }
+        // INTEGERs are signed: a leading zero keeps a high top bit positive.
+        let int = |v: &[u8]| tlv(0x02, &[&[0u8][..], v].concat());
+        let algorithm = tlv(0x30, &[tlv(0x06, RSA_ENCRYPTION), tlv(0x05, &[])].concat());
+        let key = tlv(0x30, &[int(n), int(e)].concat());
+        let bits = tlv(0x03, &[&[0u8][..], &key].concat());
+        tlv(0x30, &[algorithm, bits].concat())
+    }
+
+    #[test]
+    fn keys_past_javas_limits_are_refused() {
+        // An odd modulus of `bits` bits: the top bit set, the rest 0xff.
+        let modulus = |bits: usize| {
+            let mut n = vec![0xff; bits.div_ceil(8)];
+            n[0] = 0xff >> ((8 - bits % 8) % 8);
+            n
+        };
+        let exponent = |bits: usize| modulus(bits);
+        let parses = |n: &[u8], e: &[u8]| RsaPublicKey::from_der(&spki(n, e)).is_ok();
+        // The builder makes keys from_der reads: the usual 65537, and the test key's modulus.
+        assert!(parses(&hex(TEST_N), &[1, 0, 1]));
+        assert!(parses(&modulus(2048), &[1, 0, 1]));
+        // A modulus of 16384 bits passes, one bit more is refused.
+        assert!(parses(&modulus(16384), &[1, 0, 1]));
+        assert!(!parses(&modulus(16385), &[1, 0, 1]));
+        // A 2049-byte modulus (the review's case) is refused whatever its exponent.
+        assert!(!parses(&modulus(2049 * 8), &[3]));
+        // Up to 3072 bits, the exponent may be as long as the modulus.
+        assert!(parses(&modulus(3072), &exponent(3072)));
+        // Past 3072 bits it may have 64 bits at most: 2048-byte modulus, 9-byte exponent refused.
+        assert!(parses(&modulus(3073), &exponent(64)));
+        assert!(!parses(&modulus(3073), &exponent(65)));
+        assert!(!parses(&modulus(16384), &exponent(9 * 8)));
     }
 
     /// Encrypted with the public key, decrypted with the private exponent:

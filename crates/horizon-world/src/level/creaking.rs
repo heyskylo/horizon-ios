@@ -2,7 +2,7 @@
 //! pale oak logs on both ends of its axis and the `creaking_active`
 //! environment attribute. The block entity (protector, particles, resin)
 //! lives with the entities in the client.
-use super::{Behaviours, Dimension, LevelAccess, Sim, Ticks, update::rel};
+use super::{Behaviours, LevelAccess, Sim, Ticks, update::rel};
 use crate::registry::BlockStateId;
 use horizon_core::{geometry::Direction, position::BlockPos};
 
@@ -19,7 +19,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `EnvironmentAttributes.CREAKING_ACTIVE`: the overworld day timeline
     /// turns it on from 12600 to 23400.
     pub(crate) fn creaking_active(&self) -> bool {
-        self.level.dimension() == Dimension::Overworld
+        self.level.dimension_type().has_timeline("minecraft:day")
             && (12600..23401).contains(&self.level.day_time().rem_euclid(24000))
     }
     /// `CreakingHeartBlock.hasRequiredLogs`: pale oak logs along the axis.

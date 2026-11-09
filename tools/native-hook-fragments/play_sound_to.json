@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "play_sound_to",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_play_sound_to"
+    }
+  ],
+  "rust_summary": "a sound for one player alone (`native_play_sound_to`), as Bukkit's `Player.playSound`.",
+  "doc_summary": "`native_play_sound_to(uuid, sound, category, at, volume, pitch)` (`host.play_sound_to`) plays a sound to one player alone, at `at` or where they stand, in a `SoundSource` category by name, as Bukkit's `Player.playSound`; it leaves at the tick's end, so it works from any server hook. Bundles need \"hooks\": @API:play_sound_to@."
+}

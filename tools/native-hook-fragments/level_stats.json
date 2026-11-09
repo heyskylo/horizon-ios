@@ -1,0 +1,22 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "level_stats",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_level_stats"
+    },
+    {
+      "name": "level_entities",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_level_entities"
+    },
+    {
+      "name": "level_block_entities",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_level_block_entities"
+    }
+  ],
+  "rust_summary": "what each open server level holds, for a diagnostics mod: its chunk, forced chunk, block entity and ticking block entity counts and its entities and block entities by type (`native_level_stats`, `NativeLevelStats`), every entity with its id, type and position (`native_level_entities`) and every block entity with its position and type (`native_level_block_entities`).",
+  "doc_summary": "`native_level_stats(dimension)` (`NativeLevelStats`: chunks, forced chunks, block entities, ticking block entities, entities and block entities by type), `native_level_entities(dimension)` (id, type, position) and `native_level_block_entities(dimension)` (position, type) for any open level of a server. Bundles need \"hooks\": @API:level_stats@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_diagnostics.rs"
+  ]
+}

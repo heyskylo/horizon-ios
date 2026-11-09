@@ -23,8 +23,14 @@
 //!   browser installs it: carried over into `<out>/carry/`, its classes
 //!   read, and the verdict (Works, Partly, Doesn't run) in
 //!   `<out>/check.json`.
+//! - `events <jar or folder> [--hooks <native-hooks.json>]`: the NeoForge
+//!   events a mod listens to and the capabilities it uses, each with the
+//!   hooks for it (the catalog's `neoforge` names, built in or `--hooks`);
+//!   over a folder of jars, ranked by how many mods use each.
 //! - `port <pack> <work> [--from <folder>] [--resources <prepared>]`: every
 //!   step for the portable mods, as the launcher's "Import modpack" runs it.
+//!   A jar that is only a data pack goes to the profile's packs for new worlds
+//!   (`<work>/home/new-world-datapacks/`), not through the carry.
 //! - `upgrade-datapack <pack> <out> | --world <world>`: a 26.2 data pack
 //!   (zip or folder) with its world generation rewritten in 26.3's formats
 //!   (`docs/datapack-upgrade.md`), into the folder `<out>`, or into
@@ -32,13 +38,13 @@
 //!
 //! The work folder belongs to the user: jars and carried-over files stay
 //! there and are never uploaded or committed.
-use horizon_port_pack::{fetch, inventory::Record, pipeline, upgrade};
+use horizon_port_pack::{events, fetch, inventory::Record, pipeline, upgrade};
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
-const USAGE: &str = "usage: horizon-port-pack import <pack> <work> | inventory <work> [--offline] | fetch <work> [--from <folder>] [<mod id>...] | carry <work> [--resources <prepared>] [<mod id>...] | report <work> | check <jar> <out> | port <pack> <work> [--from <folder>] [--resources <prepared>] | upgrade-datapack <pack> (<out> | --world <world>)";
+const USAGE: &str = "usage: horizon-port-pack import <pack> <work> | inventory <work> [--offline] | fetch <work> [--from <folder>] [<mod id>...] | carry <work> [--resources <prepared>] [<mod id>...] | report <work> | check <jar> <out> | port <pack> <work> [--from <folder>] [--resources <prepared>] | upgrade-datapack <pack> (<out> | --world <world>) | events <jar or folder> [--hooks <native-hooks.json>]";
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -46,6 +52,7 @@ fn main() -> ExitCode {
         let from = option(&mut args, "--from")?;
         let resources = option(&mut args, "--resources")?;
         let world = option(&mut args, "--world")?;
+        let hooks = option(&mut args, "--hooks")?;
         let offline = take_flag(&mut args, "--offline");
         let path = |i: usize| args.get(i).map(Path::new).ok_or(USAGE.to_owned());
         let rest = || args.get(2..).unwrap_or_default().to_vec();
@@ -108,6 +115,15 @@ fn main() -> ExitCode {
                     println!("{line}");
                 }
                 println!("{}", out.display());
+                Ok(())
+            }
+            Some("events") => {
+                let catalog = match &hooks {
+                    Some(file) => std::fs::read_to_string(file)
+                        .map_err(|e| format!("{}: {e}", file.display()))?,
+                    None => events::CATALOG.to_owned(),
+                };
+                print!("{}", events::report(path(1)?, &catalog)?);
                 Ok(())
             }
             _ => Err(USAGE.to_owned()),

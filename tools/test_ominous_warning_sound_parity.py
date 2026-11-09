@@ -176,10 +176,11 @@ def run(label, command, client_command, build, world, script):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--binary',type=Path,required=True);p.add_argument('--work-dir',type=Path,required=True);p.add_argument('--reference-only',action='store_true');p.add_argument('--reference',type=Path);a=p.parse_args()
-    build=a.work_dir.resolve();build.mkdir(parents=True,exist_ok=True)
+    # The parity runner passes no arguments: net.sides builds the game, and the folder has a default.
+    p=argparse.ArgumentParser();p.add_argument('--binary',type=Path);p.add_argument('--work-dir',type=Path);p.add_argument('--reference-only',action='store_true');p.add_argument('--reference',type=Path);a=p.parse_args()
+    build=(a.work_dir or net.lab.LOCAL/'ominous-warning-sound-parity').resolve();build.mkdir(parents=True,exist_ok=True)
     script=program();(build/'program.json').write_text(json.dumps(script,indent=2)+'\n')
-    name=str(build.relative_to(net.lab.LOCAL));_,_,java,native,client=net.sides(name,a.binary.resolve())
+    name=str(build.relative_to(net.lab.LOCAL));_,_,java,native,client=net.sides(name,a.binary.resolve() if a.binary else None)
     world=generate(java,build)
     reference=run('java',java,client,build,world,script)
     (build/'reference.json').write_text(json.dumps(reference,indent=2)+'\n')

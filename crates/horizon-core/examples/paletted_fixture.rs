@@ -61,8 +61,10 @@ fn read(strategy: Strategy, bytes: &[u8]) -> PalettedContainer {
         Vec::new()
     };
     let words = bytes[at..]
-        .chunks_exact(8)
-        .map(|c| u64::from_be_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| u64::from_be_bytes(*c))
         .collect();
     PalettedContainer::from_wire(strategy, bits, palette, words).unwrap()
 }

@@ -272,7 +272,17 @@ fn arrival_from_tag(a: &Tag) -> Option<Arrival> {
 impl Game<'_> {
     /// The world border's extent.
     pub(super) fn border_bounds(&self) -> BorderBounds {
-        let [min_x, min_z, max_x, max_z] = self.border.bounds();
+        self.border_bounds_of(self.dim)
+    }
+    /// The extent of `dim`'s own border (`ServerLevel.getWorldBorder`), the level in place or a
+    /// parked one.
+    fn border_bounds_of(&self, dim: Dim) -> BorderBounds {
+        let border = if dim == self.dim {
+            &self.border
+        } else {
+            self.levels.parked_border(dim).unwrap_or(&self.border)
+        };
+        let [min_x, min_z, max_x, max_z] = border.bounds();
         BorderBounds {
             min_x,
             min_z,
@@ -328,7 +338,10 @@ impl Game<'_> {
         };
         Plan {
             dim: target,
-            approximate: self.border_bounds().clamp(at.x * scale, at.y, at.z * scale),
+            // getPortalDestination clamps to the border of the level it leads to.
+            approximate: self
+                .border_bounds_of(target)
+                .clamp(at.x * scale, at.y, at.z * scale),
             entry_x_axis,
             offset,
             width,
@@ -431,9 +444,9 @@ impl Game<'_> {
         }
         out
     }
-    /// The exit portal of `plan` in the loaded dimension: the closest one
-    /// within reach, else one built by `PortalForcer.createPortal`.
-    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
+    /// `PortalForcer.findClosestPortalPosition` and the rectangle around it,
+    /// for `plan` in the loaded dimension; builds nothing.
+    pub(super) fn find_exit_portal(&mut self, plan: &Plan) -> Option<(BlockPos, FoundRectangle)> {
         let to_nether = plan.dim == Dim::Nether;
         let radius = if to_nether { 16 } else { 128 };
         let border = self.border_bounds();
@@ -446,21 +459,29 @@ impl Game<'_> {
             &border,
             min_section,
             max_section,
+        )?;
+        let state = self.world.block(found.x, found.y, found.z);
+        let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
+        let rectangle = largest_rectangle_around(
+            found,
+            if x_axis { Axis::X } else { Axis::Z },
+            21,
+            Axis::Y,
+            21,
+            |p| self.world.block(p.x, p.y, p.z) == state,
         );
-        if let Some(found) = found {
+        Some((found, rectangle))
+    }
+    /// The exit portal of `plan` in the loaded dimension: the closest one
+    /// within reach, else one built by `PortalForcer.createPortal`.
+    pub(super) fn nether_exit_portal(&mut self, plan: &Plan) -> Option<FoundRectangle> {
+        let to_nether = plan.dim == Dim::Nether;
+        let border = self.border_bounds();
+        if let Some((found, rectangle)) = self.find_exit_portal(plan) {
             // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
             // of the portal found.
             self.place_portal_ticket((found.x >> 4, found.z >> 4));
-            let state = self.world.block(found.x, found.y, found.z);
-            let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
-            return Some(largest_rectangle_around(
-                found,
-                if x_axis { Axis::X } else { Axis::Z },
-                21,
-                Axis::Y,
-                21,
-                |p| self.world.block(p.x, p.y, p.z) == state,
-            ));
+            return Some(rectangle);
         }
         let logical = if to_nether { 128 } else { 384 };
         let (approximate, x_axis) = (plan.approximate, plan.entry_x_axis);
@@ -633,9 +654,21 @@ impl Game<'_> {
             before.clear();
         }
         let mut ids: Vec<(u32, bool)> = Vec::new();
+        // ServerLevel.tick ticks only the entities in entity-ticking chunks,
+        // and handlePortal runs in their tick: past the simulation distance an
+        // entity's portal time and cooldown wait, kept as they are.
+        let entity_ticking = self.entity_ticking_area();
+        let mut waiting: Vec<u32> = Vec::new();
         let tracked = &self.portals.entities;
         for_each_entity!(entity_lists_of!(self), entity => {
             if entity.portal_size().is_some() && entity.is_vehicle() == vehicles {
+                let at = entity.position();
+                if !entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                    if tracked.contains_key(&entity.id()) {
+                        waiting.push(entity.id());
+                    }
+                    continue;
+                }
                 if entity.portal_from().is_none() {
                     before.insert(entity.id(), entity.position());
                 }
@@ -645,7 +678,11 @@ impl Game<'_> {
             }
         });
         self.portals.before = before;
-        let present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
+        let present: std::collections::HashSet<u32> = ids
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(waiting.iter().copied())
+            .collect();
         // Each pass keeps the other group's states.
         let (boats, carts) = (&self.boats, &self.carts);
         self.portals.entities.retain(|id, _| {
@@ -819,16 +856,22 @@ impl Game<'_> {
         }
         let mut inside: Vec<(u32, BlockPos)> = Vec::new();
         let mut portal_sections = std::mem::take(&mut self.portals.sections);
+        // Only the entities that tick (in entity-ticking chunks) move, so only
+        // they can have swept into a portal.
+        let entity_ticking = self.entity_ticking_area();
         // The first portal block each entity's box swept through since the
         // start of its tick (a stuck arrow that did not move enters none).
         for_each_entity!(entity_lists_of!(self), entity => {
             let Some((width, height)) = entity.portal_size() else {
                 continue;
             };
+            let (id, to) = (entity.id(), entity.position());
+            if !entity_ticking(to.x.floor() as i32, to.z.floor() as i32) {
+                continue;
+            }
             if !entity.portal_sweeps() || !entity.can_use_portal(self) {
                 continue;
             }
-            let (id, to) = (entity.id(), entity.position());
             let swept_later = match only {
                 Some(ids) => !ids.contains(&id),
                 None => ridden.contains(&id),
@@ -952,10 +995,11 @@ impl Game<'_> {
                 return;
             }
             let uuid = self.uuid_for(id);
-            let tag = horizon_client::entity_nbt::item_entity_to_nbt(
+            let tag = horizon_client::entity_nbt::item_entity_to_nbt_with_items(
                 &self.dropped[i],
                 uuid,
                 self.persist_raw(id),
+                self.items(),
             );
             self.remove_dropped(i);
             self.detach_entity(id);
@@ -1034,15 +1078,7 @@ impl Game<'_> {
             self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
             let b = &self.boats[i];
-            let mut tag = horizon_client::entity_nbt::boat_to_nbt(
-                &b.entity_type(),
-                b.position,
-                b.velocity,
-                [b.yaw, b.pitch],
-                uuid,
-                self.persist_raw(id),
-                b.chest.then_some(&b.items[..]),
-            );
+            let mut tag = b.to_nbt(uuid, self.persist_raw(id));
             // The mobs riding it cross with it and mount it again.
             self.put_mob_passengers(&mut tag, id);
             for rider in self.remove_mob_riders(id) {

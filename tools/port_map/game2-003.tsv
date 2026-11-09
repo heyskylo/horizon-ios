@@ -150,3 +150,5 @@ HoglinAi.setAttackTargetIfCloserThanCurrent	inline	crates/horizon-client/src/mob
 HoglinAi.getSoundForActivity	inline	crates/horizon-client/src/mobs/ai.rs::play_ambient	gap: player: the retreat grunt near repellents or while retreating is missing; the angry grunt while a target is set is ported
 Evoker.EvokerAttackSpellGoal.createSpellEntity	port	crates/horizon-client/src/mobs/illager.rs::fang_floor	gap: minor: the sturdy-face test is a full-collision test on the block below; the fang event comes from cast_fangs
 SulfurCube.doPush	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::mob_contacts	mob contact stage only; ordinary AI push impulse remains in ai::push_entities
+Slime.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: an AbstractCubeMob that is ageable but never a baby
+MagmaCube.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: same as the slime

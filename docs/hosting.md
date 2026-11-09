@@ -40,7 +40,7 @@ plan are in [server.md](server.md).
 
 ## 1. Install
 
-Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
+Linux (x86-64) and macOS (Apple Silicon or Intel):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
@@ -54,7 +54,8 @@ irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server
 
 The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
 the current Horizon Nightly from GitHub (the only build Horizon ships;
-`--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
+`--version` picks another), checks it against the release's signature when OpenSSL 3 is installed (on Windows, Git
+for Windows includes it), else against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
   `current` pointing at the one in use;
@@ -210,13 +211,14 @@ while each operator still reads their own command's answer.
 ### Older clients: `accept_older_clients`
 
 Off by default, a Horizon setting with no vanilla equivalent: a vanilla server, and Horizon's, turn away a client of
-any other release. With `accept_older_clients = true` a 26.2 client may join too: Horizon renumbers its packets both
-ways, with no proxy in between, and the server list shows the server as joinable for 26.2.
+any other release. With `accept_older_clients = true` a 26.2 client may join too. Horizon renumbers its packets and
+the blocks, items, entities, particles and sounds in them both ways, with no proxy in between; what 26.3 added and
+26.2 lacks is shown as the nearest thing 26.2 has (a poplar log as a birch log, a wool slab as a stone slab), and
+what has no such thing (a cushion) isn't shown. The server list shows the server as joinable for 26.2.
 
-This is work in progress (#10404): the ids inside packets and the packets whose layout changed between 26.2 and
-26.3 aren't translated yet, so for now a 26.2 player gets through the login and is then told that 26.2 can't be
-translated yet, before the server sends anything it would misread. 26.3 clients are served exactly as before,
-whatever the setting.
+This is work in progress (#10404): the packets whose layout changed between 26.2 and 26.3 aren't translated yet,
+so for now a 26.2 player gets through the login and is then told that 26.2 can't be translated yet, before the
+server sends anything it would misread. 26.3 clients are served exactly as before, whatever the setting.
 
 ### Seeing further: `max_view_distance`
 
@@ -231,8 +233,8 @@ the player's screen. To fill the ring, generate the world ahead of the players w
 
 The far ring goes after everything else: its chunks wait behind the ones inside `view_distance`, are paced
 by how fast each player's game takes them, and aren't read while the world's saves are behind. When the
-average tick goes over 40 ms, the ring pulls in by two chunks a second, never inside `view_distance`; after
-30 s of ticks under 25 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
+average tick goes over 50 ms, the ring pulls in by two chunks a second, never inside `view_distance`; after
+30 s of ticks under 45 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
 minutes (96 MB at most), so a player walking back isn't sent the save again.
 
 Already have a vanilla server? Run `horizon-server init` in its folder, or `horizon-server import
@@ -419,7 +421,9 @@ only. To reach it from your other devices:
 - forward the port over SSH: `ssh -L 8130:127.0.0.1:8130 your-server`, then open the link on your computer.
 
 Any other address, such as `0.0.0.0` or a public IP, is refused unless you set `allow_public = true`, and
-even then the panel warns at every start. It has no passwords to leak: whoever can read the server folder can
+even then the panel warns at every start. With `bind = "0.0.0.0:8130"` it answers on every address of this
+computer, so a LAN whose router hands out a new IP keeps working: open `http://<its LAN IP>:8130`, and the
+login link names that IP. It has no passwords to leak: whoever can read the server folder can
 make a login link, and no one else can. Never put it on the open internet.
 
 ### A bot or a tool of your own
@@ -623,7 +627,7 @@ The service runs `horizon-server run` through the installed `current` release, s
 next restart. `service print` shows what it would install, `service uninstall` removes it and leaves the server
 folder alone.
 
-## Hosting panels (Pterodactyl)
+## Hosting panels (Pterodactyl, AMP)
 
 The egg installs the server build of the current Nightly (nothing of Mojang's) and runs `horizon-server`
 through `packaging/server/panel-start.sh`: the first start writes `server.toml` from the panel's settings, and the
@@ -636,6 +640,13 @@ the world first.
 Import `packaging/server/pterodactyl-egg.json` under Nests. Its Docker image is
 `ghcr.io/ptero-eggs/yolks:debian`. The `HORIZON_VERSION` variable picks the release to install (`nightly`, or a tag);
 it is read at install and reinstall.
+
+**AMP** (CubeCoders): `packaging/server/amp/` is a template for AMP's generic module, the same setup with AMP's
+words. Its update runs the egg's install script (the release named by "Horizon release", checked against its
+SHA-256) and the start runs the same `horizon-start.sh`, with the port from AMP's "Server Port". AMP reads templates
+from the root of a configuration repository: put the five files at the root of a repository of yours (a fork of
+CubeCoders/AMPTemplates, for example), add it under Configuration → Instance Deployment → Configuration Repositories,
+then Fetch latest, and "Horizon" is in the list of applications for a new instance. Linux only, x86-64.
 
 ## 9. Docker (build it yourself)
 

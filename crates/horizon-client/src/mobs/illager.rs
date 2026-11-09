@@ -14,6 +14,9 @@ use horizon_core::geometry::trig::{DEG_TO_RAD, Mth};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::f32::consts::PI;
 
+/// The target selector of `Pillager.registerGoals`,
+/// `Vindicator.registerGoals` and `Evoker.registerGoals`; the evoker's player
+/// and villager goals keep an unseen target 300 ticks (`setUnseenMemoryTicks`).
 fn targets(m: &mut Mob, villagers_seen: bool) {
     let mut hurt = HurtByTarget::new().alert();
     hurt.ignore = vec![
@@ -26,13 +29,20 @@ fn targets(m: &mut Mob, villagers_seen: bool) {
         Species::Ravager,
     ];
     m.ai.targets.add(1, hurt);
-    m.ai.targets.add(2, NearestTarget::player(true));
+    let memory = if m.species() == Species::Evoker {
+        300
+    } else {
+        60
+    };
+    m.ai.targets
+        .add(2, NearestTarget::player(true).unseen_memory(memory));
     m.ai.targets.add(
         3,
         NearestTarget::species(
             &[Species::Villager, Species::WanderingTrader],
             villagers_seen,
-        ),
+        )
+        .unseen_memory(memory),
     );
     m.ai.targets
         .add(3, NearestTarget::species(&[Species::IronGolem], true));
@@ -69,18 +79,26 @@ pub fn register_vindicator(m: &mut Mob) {
     g.add(9, LookAtPlayer::new(3.0).probability(1.0));
     g.add(10, LookAtPlayer::mobs(8.0));
     targets(m, true);
-    // VindicatorJohnnyAttackGoal: a vindicator named Johnny attacks any
-    // living entity, other raiders included.
+    // VindicatorJohnnyAttackGoal: a vindicator that was named Johnny attacks
+    // any living entity, other raiders included. The flag is a latch
+    // (`Vindicator.setCustomName` sets it and never clears it), not the name in
+    // front of the mob now, so a rename keeps the goal.
     m.ai.targets.add(
         4,
         NearestTarget::new(Prey::Filter(|_| true), true)
             .interval(0)
-            .when(|m, _| m.custom_name.as_deref() == Some("Johnny")),
+            .when(|m, _| m.extra.johnny),
     );
 }
 /// `Vindicator.customServerAiStep`: its navigation opens doors while a raid
 /// is at its position.
 pub fn vindicator_server_ai_step(m: &mut Mob) {
+    // `Vindicator.setCustomName`'s latch, taken from the live name: a name that
+    // became `Johnny` sets it, and nothing clears it (`addAdditionalSaveData`
+    // saves it for the next load).
+    if m.custom_name.as_deref() == Some("Johnny") {
+        m.extra.johnny = true;
+    }
     if super::doors::can_navigate_ground(m) {
         m.ai.nav.can_open_doors = super::raider::state(m).is_some_and(|s| s.raided);
     }
@@ -642,7 +660,7 @@ fn shoot_crossbow(m: &mut Mob, who: Who, cx: &mut Cx) {
     p.set_bonus(super::gear::arrow_bonus(m));
     // rangedAttackUncertainty: 14 - 4 * difficulty.
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [dx, dy, dz],
         1.6,
         (14 - i32::from(cx.w.difficulty.id) * 4) as f32,
@@ -916,6 +934,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn spellcasters_remember_an_unseen_player() {
+        use crate::mobs::world::{test_player, with_test_world};
+        let ran = with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            for name in [
+                "minecraft:evoker",
+                "minecraft:illusioner",
+                "minecraft:pillager",
+            ] {
+                let kind = Arc::new(types.types[name].clone());
+                let mut mob = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                let mut goals = std::mem::take(&mut mob.ai.targets);
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w: &w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                for _ in 0..100 {
+                    mob.ai.seen_cache.clear();
+                    goals.tick(&mut mob, &mut cx);
+                    if mob.ai.target.is_some() {
+                        break;
+                    }
+                }
+                assert_eq!(mob.ai.target, Some(Who::Player), "{name} acquired player");
+                let limit = if name == "minecraft:pillager" {
+                    30
+                } else {
+                    150
+                };
+                for _ in 0..limit {
+                    mob.ai.seen_cache = vec![(Who::Player, false)];
+                    goals.tick(&mut mob, &mut cx);
+                    assert_eq!(mob.ai.target, Some(Who::Player), "{name} lost player early");
+                }
+                mob.ai.seen_cache = vec![(Who::Player, false)];
+                goals.tick(&mut mob, &mut cx);
+                assert_eq!(mob.ai.target, None, "{name} should forget player");
+            }
+        });
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+
     fn pillager() -> Mob {
         let mut kind = kind();
         let k = Arc::make_mut(&mut kind);
@@ -993,5 +1060,72 @@ mod tests {
             assert_eq!(fang_floor(w, 0.5, 0.5, 64.0, 65.875), Some(65.0));
         });
         let _ = ran;
+    }
+
+    /// `Vindicator.setCustomName` latches `isJohnny` the first time the name is
+    /// `Johnny`, and nothing clears it: the Johnny goal keeps attacking every
+    /// living entity after the mob is renamed, and `addAdditionalSaveData`
+    /// saves the flag (only when set) so a reload keeps it. Horizon read the live name each
+    /// tick and saved no flag, so a renamed vindicator stopped, and a reloaded
+    /// one that was named Johnny but is now Bob never started.
+    #[test]
+    fn a_vindicator_that_was_named_johnny_stays_johnny() {
+        use horizon_world::nbt::Tag;
+        let mut m = Mob::new(
+            1,
+            {
+                let mut kind = kind();
+                let k = Arc::make_mut(&mut kind);
+                k.id = "minecraft:vindicator".into();
+                k.species = Species::Vindicator;
+                kind
+            },
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        assert_eq!(i8::from(m.extra.johnny), 0, "a vindicator with no name");
+        m.custom_name = Some("Bob".into());
+        vindicator_server_ai_step(&mut m);
+        assert_eq!(i8::from(m.extra.johnny), 0, "another name is no Johnny");
+        m.custom_name = Some("Johnny".into());
+        vindicator_server_ai_step(&mut m);
+        assert_eq!(i8::from(m.extra.johnny), 1, "the name sets the latch");
+        // Renamed, it stays Johnny: `setCustomName` only ever sets the flag.
+        m.custom_name = Some("Bob".into());
+        vindicator_server_ai_step(&mut m);
+        assert_eq!(
+            i8::from(m.extra.johnny),
+            1,
+            "a rename does not clear the latch"
+        );
+        // `Vindicator.addAdditionalSaveData` writes the flag, false or true.
+        let types = [("minecraft:vindicator".into(), m.kind.clone())].into();
+        let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
+        assert_eq!(saved.get("Johnny"), Some(&Tag::Byte(1)));
+        let back = crate::entity_nbt::mob_from_nbt(&saved, &types, 2, None).unwrap();
+        assert_eq!(i8::from(back.extra.johnny), 1, "the reloaded flag");
+        // `readAdditionalSaveData`: `Johnny` absent is false, whatever the name
+        // in the compound is.
+        let mut silent = Tag::compound([
+            ("id", Tag::String("minecraft:vindicator".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.5_f64.to_bits()),
+                    Tag::Double(64.0_f64.to_bits()),
+                    Tag::Double(0.5_f64.to_bits()),
+                ]),
+            ),
+            ("CustomName", Tag::String("Johnny".into())),
+        ]);
+        let loaded = crate::entity_nbt::mob_from_nbt(&silent, &types, 3, None).unwrap();
+        assert_eq!(i8::from(loaded.extra.johnny), 0, "a save without the flag");
+        // `addAdditionalSaveData` writes nothing for a vindicator that is not
+        // Johnny, even over a compound that still carries `Johnny: 0b`.
+        if let Tag::Compound(c) = &mut silent {
+            c.insert("Johnny".into(), Tag::Byte(0));
+        }
+        let saved = crate::entity_nbt::mob_to_nbt(&loaded, [0; 4], Some(&silent), None, |_| None);
+        assert_eq!(saved.get("Johnny"), None);
     }
 }

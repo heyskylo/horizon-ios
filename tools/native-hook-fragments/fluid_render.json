@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name":"draw_fluid_box", "target":"horizon_client::game::native_fluid_render::Game<'_>::native_draw_fluid_box", "mod_api":{}}
+  ],
+  "rust_summary": "still-fluid boxes under a native draw pose, using sorted depth-writing translucency and the animated mipmapped block sprites (`native_draw_fluid_box`).",
+  "doc_summary": "`native_draw_fluid_box(draw,stack,bounds,options)` draws a `NativeFluidStack` in `[xMin,yMin,zMin,xMax,yMax,zMax]` under a block entity/mob draw pose. Supports `minecraft:water` and `minecraft:lava` with an empty component patch; unsupported IDs/patches, nonfinite/reversed bounds and boxes exceeding 65,536 tiled quads return false without partial geometry. Empty accepted amounts return true without validating bounds and emit nothing. `NativeFluidRenderOptions` requires `argb:Option<u32>` (stack tint override, default plain water 0xff3f76e4/lava white), `render_bottom:bool`, and `uv_shrink_ratio:f32` (0..1, source TextureAtlasSprite ratio 4 / the largest stitched atlas dimension; explicit because Horizon uses sprite arrays). Faces tile at integer boundaries with local UV fractions, no geometry inset. The still sprite follows resource packs/animations/mipmap settings; nearest texels use linear mip selection. Luminosity raises block light (lava 15), preserving sky light; vertex colors have no model diffuse shading. A separate material sorts far to near, alpha blends, culls backs and writes ordinary color/depth, with no alpha discard. It draws with block entities before terrain transparency, separately from improved-transparency queues and the world canvas. Bundles need \"hooks\": @API:fluid_render@.",
+  "comments": ["crates/horizon-client/src/game/native_fluid_render.rs"]
+}

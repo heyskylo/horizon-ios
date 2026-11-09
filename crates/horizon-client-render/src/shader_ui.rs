@@ -9,6 +9,7 @@ use crate::widgets::Action as Declared;
 use crate::{
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
+    hud_kit::tabs,
     lang,
     settings::Settings,
     settings_shell::{self as shell, Columns},
@@ -64,7 +65,7 @@ fn picked(s: &Settings) -> Option<(usize, Kind)> {
     let i = s
         .shader_packs
         .iter()
-        .position(|p| !s.horizon.shader_pack.is_empty() && p.file == s.horizon.shader_pack)?;
+        .position(|p| !s.horizon.shader_pack.is_empty() && p.key == s.horizon.shader_pack)?;
     Some((i, s.shader_packs[i].kind))
 }
 
@@ -82,6 +83,36 @@ fn option_name(o: &crate::shader_options::ShaderOptions, i: u16) -> Option<&str>
 
 fn plain(t: Text) -> String {
     t.strip_legacy().plain()
+}
+
+/// A place to pick in the strip of a pack's screens (`ShaderUi::side`): the shown screen's name,
+/// or an arrow to the one before or after, for the pointer, the keyboard, a controller's focus and
+/// its bumpers (a `Tab` target, lit for the open screen), and the widget tree and narrator under
+/// `name` (the screen's, or vanilla's Previous Page and Next Page for an arrow). The strip draws
+/// the text; focused, `ring` is drawn round.
+fn strip_place(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    (rect, ring): ([f32; 4], [f32; 4]),
+    name: &str,
+    (has, open, focused): (bool, bool, bool),
+    cursor: (f32, f32),
+) {
+    let [x, y, w, h] = rect;
+    crate::widgets::record(name, rect, has);
+    let hover = has && ui::hovered(cursor, x, y, w, h);
+    crate::widgets::narratable(|| {
+        crate::widgets::Narratable::button(name.to_owned(), rect, has)
+            .hovered(hover)
+            .focused(focused)
+    });
+    crate::widgets::widget_cursor(hover, has);
+    if has {
+        crate::widgets::target_as(rect, crate::widgets::Kind::Tab(open));
+    }
+    if focused {
+        style::ring(batch, atlas, ring, style::WHITE);
+    }
 }
 
 /// The picked pack's screens, its main one first, then in the order their links are met.
@@ -233,6 +264,29 @@ pub enum Target {
 
 type Line = shell::Line<Tab, Item>;
 
+/// From one tab of the page list to the next, in GUI px (`Columns::page`).
+const ROW_STEP: f32 = 18.0;
+
+/// What a place in the page list is: a tab, or a strip's arrow to the screen before or after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    Tab,
+    Prev,
+    Next,
+}
+
+/// The page list as laid out (`ShaderUi::side`).
+struct Side {
+    /// Where each tab is picked: in a strip, its name and the arrows either side of it are the
+    /// shown screen and its neighbours (while searching, the neighbours with matches).
+    places: Vec<(Tab, [f32; 4], Part)>,
+    /// The pack's screens collapsed, when they don't all fit down the column, and the screen it
+    /// shows.
+    strip: Option<(tabs::Strip, Tab)>,
+    /// The tab the page list lights (`ShaderUi::lit`).
+    lit: Option<Tab>,
+}
+
 pub struct ShaderUi {
     scroll: ui::Scroll,
     dragging: Option<Item>,
@@ -292,11 +346,8 @@ impl ShaderUi {
                 .map_or_else(String::new, |s| s.title.clone()),
         }
     }
-    /// The tabs of the page list: the pack list, then the screens near the main one that fit
-    /// under the pack's name (`tab_rect`).
-    fn side_tabs(screens: &[Screen], cols: &Columns) -> Vec<Tab> {
-        let room = cols.button(1)[1] - 4.0 - cols.page(0)[1];
-        let fit = ((room / 18.0).floor() as usize).saturating_sub(1).max(1);
+    /// The tabs of the page list: the pack list, then the screens near the main one.
+    fn side_tabs(screens: &[Screen]) -> Vec<Tab> {
         std::iter::once(Tab::Packs)
             .chain(
                 screens
@@ -305,11 +356,60 @@ impl ShaderUi {
                     .filter(|(_, s)| s.depth <= 1)
                     .map(|(i, _)| Tab::Screen(i as u16)),
             )
-            .take(fit)
             .collect()
     }
+    /// How many tabs fit down the column, from the pack list to above the foot's buttons, past
+    /// the line naming the picked pack.
+    fn side_room(cols: &Columns) -> usize {
+        let room = cols.button(1)[1] - 4.0 - cols.page(0)[1];
+        ((room / ROW_STEP).floor() as usize)
+            .saturating_sub(1)
+            .max(1)
+    }
+    /// The page list as drawn. Its tabs one under another while they fit; past that, the pack's
+    /// screens collapse into one strip, `‹ Name ›` with a pip per screen, rather than leaving
+    /// some out.
+    fn side(&self, atlas: &HudAtlas, screens: &[Screen], cols: &Columns, lines: &[Line]) -> Side {
+        let all = Self::side_tabs(screens);
+        let lit = self.lit(self.current(lines), &all);
+        if all.len() <= Self::side_room(cols) {
+            let places = (all.iter().enumerate())
+                .map(|(i, &tab)| (tab, Self::tab_rect(cols, i), Part::Tab))
+                .collect();
+            return Side {
+                places,
+                strip: None,
+                lit,
+            };
+        }
+        let pages = &all[1..];
+        let shown = pages.iter().position(|&t| Some(t) == lit).unwrap_or(0);
+        let names: Vec<String> = pages.iter().map(|&t| Self::tab_name(t, screens)).collect();
+        let row = Self::tab_rect(cols, 1);
+        let mut strip = tabs::collapsed(atlas, &names, shown, row);
+        // While searching, the arrows skip the screens with no matches.
+        let prev = pages[..shown].iter().rev().find(|&&t| self.has(t, lines));
+        let next = pages[shown + 1..].iter().find(|&&t| self.has(t, lines));
+        (strip.has_prev, strip.has_next) = (prev.is_some(), next.is_some());
+        let [x, y, w, h] = row;
+        let [nx, _, nw, _] = strip.label_area;
+        // Either side of the name, as far as the row's ends, the screen before and the one after.
+        let mut places = vec![(Tab::Packs, Self::tab_rect(cols, 0), Part::Tab)];
+        if let Some(&prev) = prev {
+            places.push((prev, [x, y, nx - x, h], Part::Prev));
+        }
+        places.push((pages[shown], [nx, y, nw, h], Part::Tab));
+        if let Some(&next) = next {
+            places.push((next, [nx + nw, y, x + w - nx - nw, h], Part::Next));
+        }
+        Side {
+            places,
+            strip: Some((strip, pages[shown])),
+            lit,
+        }
+    }
     /// Where the page list's `i`th tab sits: the pack list first, then, past the line naming
-    /// the picked pack, its own screens.
+    /// the picked pack, its own screens (or the strip they collapse into, at `1`).
     fn tab_rect(cols: &Columns, i: usize) -> [f32; 4] {
         cols.page(if i == 0 { 0 } else { i + 1 })
     }
@@ -360,7 +460,7 @@ impl ShaderUi {
             Item::Pack(i) => Some(
                 s.shader_packs
                     .get(usize::from(i))
-                    .is_some_and(|p| p.file == s.horizon.shader_pack),
+                    .is_some_and(|p| p.key == s.horizon.shader_pack),
             ),
             Item::Option(i) => match picked(s)? {
                 (p, Kind::Horizon) => {
@@ -406,7 +506,7 @@ impl ShaderUi {
                     Kind::Horizon => "A Horizon shader pack.",
                     Kind::Classic => "An OptiFine or Iris shader pack.",
                 });
-                let what = lang::get(if pack.file == s.horizon.shader_pack {
+                let what = lang::get(if pack.key == s.horizon.shader_pack {
                     "In use: press to turn shaders off."
                 } else {
                     "Press to use it."
@@ -572,24 +672,54 @@ impl ShaderUi {
         let (cols, screens, lines, content) = self.layout(s, w, h);
         shell::backdrop(batch, atlas, in_world);
         let current = self.current(&lines);
-        let side = Self::side_tabs(&screens, &cols);
+        let side = self.side(atlas, &screens, &cols, &lines);
         shell::mark(batch, atlas, &cols, &lang::get("Shaders"));
-        let lit = self.lit(current, &side);
-        for (i, &tab) in side.iter().enumerate() {
-            let name = Self::tab_name(tab, &screens);
-            let name = style::fit(atlas, &name, style::CONTROL_W - 16.0);
+        if let Some((strip, _)) = &side.strip {
+            // The strip's screen is open: its row lit as the list's open tab is.
+            if side.lit.is_some_and(|t| t != Tab::Packs) {
+                let row @ [x, y, _, h] = Self::tab_rect(&cols, 1);
+                style::fill(batch, atlas, row, style::OPEN);
+                style::fill(batch, atlas, [x, y, 2.0, h], style::ACCENT);
+            }
+            tabs::draw(batch, atlas, strip);
+        }
+        for &(tab, rect, part) in &side.places {
+            let name = match part {
+                Part::Tab => Self::tab_name(tab, &screens),
+                Part::Prev => lang::get("spectatorMenu.previous_page"),
+                Part::Next => lang::get("spectatorMenu.next_page"),
+            };
             let flags = (
                 self.has(tab, &lines),
-                lit == Some(tab),
+                side.lit == Some(tab),
                 self.focus == Some(Target::Tab(tab)),
             );
-            shell::page_tab(batch, atlas, Self::tab_rect(&cols, i), &name, flags, cursor);
+            if let Some((_, shown)) = side.strip
+                && tab != Tab::Packs
+            {
+                // The shown screen's ring goes round the whole row, as a listed tab's does.
+                let ring = if tab == shown {
+                    Self::tab_rect(&cols, 1)
+                } else {
+                    rect
+                };
+                strip_place(batch, atlas, (rect, ring), &name, flags, cursor);
+            } else {
+                let name = style::fit(atlas, &name, style::CONTROL_W - 16.0);
+                shell::page_tab(batch, atlas, rect, &name, flags, cursor);
+            }
         }
         // The picked pack's own screens go under its name, apart from Horizon's pack list.
-        if side.len() > 1 {
+        if side.places.len() > 1 {
             let [x, y, w, _] = cols.page(1);
-            let pack = &s.horizon.shader_pack;
-            let pack = pack.strip_suffix(".zip").unwrap_or(pack);
+            let pack = match picked(s) {
+                Some((i, Kind::Horizon)) => s.shader_packs[i].title.as_str(),
+                _ => s
+                    .horizon
+                    .shader_pack
+                    .strip_suffix(".zip")
+                    .unwrap_or(&s.horizon.shader_pack),
+            };
             let caption = lang::tr("%s settings", &[&pack]);
             let rect = [x + 2.0, y + 6.0, w - 4.0, 8.0];
             crate::widgets::record(&caption, rect, false);
@@ -638,6 +768,7 @@ impl ShaderUi {
                     hover,
                     focused,
                     held: self.dragging == Some(item),
+                    key: None,
                 };
                 shell::row(batch, atlas, &cols, y, &view);
             },
@@ -701,6 +832,7 @@ impl ShaderUi {
     pub fn click(
         &mut self,
         s: &mut Settings,
+        atlas: &HudAtlas,
         (x, y): (f32, f32),
         (w, h): (f32, f32),
         drag: bool,
@@ -750,8 +882,8 @@ impl ShaderUi {
             self.focus = None;
             return vec![Action::ButtonClick, Action::Apply];
         }
-        for (i, tab) in Self::side_tabs(&screens, &cols).into_iter().enumerate() {
-            if at(Self::tab_rect(&cols, i)) && self.has(tab, &lines) {
+        for (tab, rect, _) in self.side(atlas, &screens, &cols, &lines).places {
+            if at(rect) && self.has(tab, &lines) {
                 self.focus = Some(Target::Tab(tab));
                 self.pick(tab, &lines, &cols, content);
                 return vec![Action::ButtonClick];
@@ -854,10 +986,10 @@ impl ShaderUi {
                 let Some(p) = s.shader_packs.get(usize::from(i)) else {
                     return Vec::new();
                 };
-                s.horizon.shader_pack = if s.horizon.shader_pack == p.file {
+                s.horizon.shader_pack = if s.horizon.shader_pack == p.key {
                     String::new()
                 } else {
-                    p.file.clone()
+                    p.key.clone()
                 };
                 vec![Action::ButtonClick, Action::Picked]
             }
@@ -947,15 +1079,16 @@ impl ShaderUi {
     fn focusables(
         &self,
         s: &Settings,
+        atlas: &HudAtlas,
         cols: &Columns,
         screens: &[Screen],
         lines: &[Line],
         near: bool,
     ) -> Vec<(Target, [f32; 4])> {
         let mut out = vec![(Target::Search, cols.search())];
-        for (i, tab) in Self::side_tabs(screens, cols).into_iter().enumerate() {
+        for (tab, rect, _) in self.side(atlas, screens, cols, lines).places {
             if self.has(tab, lines) {
-                out.push((Target::Tab(tab), Self::tab_rect(cols, i)));
+                out.push((Target::Tab(tab), rect));
             }
         }
         let rows: Vec<(Item, f32, bool)> = lines
@@ -977,6 +1110,7 @@ impl ShaderUi {
     pub fn key_modifiers(
         &mut self,
         s: &mut Settings,
+        atlas: &HudAtlas,
         key: winit::keyboard::KeyCode,
         text: Option<&str>,
         shift: bool,
@@ -1003,7 +1137,7 @@ impl ShaderUi {
             return (Vec::new(), true);
         }
         let (cols, screens, lines, content) = self.layout(s, w, h);
-        let focusables = self.focusables(s, &cols, &screens, &lines, key != K::Tab);
+        let focusables = self.focusables(s, atlas, &cols, &screens, &lines, key != K::Tab);
         let current = self
             .focus
             .and_then(|f| focusables.iter().position(|&(t, _)| t == f));
@@ -1104,9 +1238,14 @@ mod tests {
 
     const SIZE: (f32, f32) = (854.0, 480.0);
 
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+
     fn entry(file: &str, kind: Kind) -> Entry {
         Entry {
             file: file.into(),
+            key: file.into(),
             title: file.into(),
             kind,
             options: Vec::new(),
@@ -1164,7 +1303,7 @@ mod tests {
         );
         assert_eq!(screens[1].items, [Item::Option(2), Item::Link(2)]);
         // The page list holds the main screen and the ones it links to.
-        let side = ShaderUi::side_tabs(&screens, &Columns::of(SIZE.0, SIZE.1));
+        let side = ShaderUi::side_tabs(&screens);
         assert_eq!(side, [Tab::Packs, Tab::Screen(0), Tab::Screen(1)]);
         // Another pack's options are not this one's.
         let mut other = s.clone();
@@ -1172,16 +1311,198 @@ mod tests {
         assert!(super::screens(&other).is_empty());
     }
 
+    /// The picked pack with `n` screens, each linked from its main one: more than the page list
+    /// of a short window holds.
+    fn many_screens(n: usize) -> Settings {
+        let mut s = settings();
+        let names: Vec<String> = (0..n).map(|i| format!("S{i}")).collect();
+        let options: BTreeMap<String, PackOption> = names
+            .iter()
+            .map(|name| {
+                let o = PackOption {
+                    name: format!("O_{name}"),
+                    default: "false".into(),
+                    values: vec!["false".into(), "true".into()],
+                    switch: true,
+                    tested: true,
+                };
+                (o.name.clone(), o)
+            })
+            .collect();
+        let mut text = format!(
+            "screen = {}\n",
+            names
+                .iter()
+                .map(|n| format!("[{n}]"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for name in &names {
+            text += &format!("screen.{name} = O_{name}\n");
+        }
+        let screens = Screens::parse(&Properties::parse(&text, &Macros::standard()), &options);
+        s.shader_options = Some(ShaderOptions::new(
+            "A.zip".into(),
+            options,
+            screens,
+            Lang::default(),
+            BTreeMap::new(),
+        ));
+        s
+    }
+
+    /// A short window: 854x480 at GUI scale 2, or 720p at its automatic scale.
+    const SHORT: (f32, f32) = (427.0, 240.0);
+
+    fn side_of(ui: &ShaderUi, s: &Settings, size: (f32, f32)) -> (Vec<(Tab, [f32; 4])>, bool) {
+        let screens = screens(s);
+        let (lines, _) = ui.lines(s, &screens);
+        let side = ui.side(&atlas(), &screens, &Columns::of(size.0, size.1), &lines);
+        let places = side.places.iter().map(|p| (p.0, p.1)).collect();
+        (places, side.strip.is_some())
+    }
+
+    #[test]
+    fn a_page_list_too_short_for_the_screens_collapses_them_and_leaves_none_out() {
+        let s = many_screens(12);
+        let ui = ShaderUi::default();
+        // Tall enough, the list as it always was: every screen a tab, one under another.
+        let (tall, strip) = side_of(&ui, &s, SIZE);
+        assert!(!strip);
+        assert_eq!(tall.len(), 1 + 13);
+        assert!(tall.windows(2).all(|p| p[1].1[1] > p[0].1[1]));
+        // Short: the pack list, then General between nothing and its next screen.
+        let (short, strip) = side_of(&ui, &s, SHORT);
+        assert!(strip);
+        let tabs: Vec<Tab> = short.iter().map(|p| p.0).collect();
+        assert_eq!(tabs, [Tab::Packs, Tab::Screen(0), Tab::Screen(1)]);
+        // Every place is inside the column, the strip's on one row.
+        let cols = Columns::of(SHORT.0, SHORT.1);
+        for (_, [x, _, w, _]) in &short {
+            assert!(*x >= cols.side_x && x + w <= cols.side_x + style::CONTROL_W);
+        }
+        assert_eq!(short[1].1[1], short[2].1[1]);
+    }
+
+    #[test]
+    fn the_strips_arrows_walk_every_screen_and_its_ends_go_no_further() {
+        let mut s = many_screens(12);
+        let mut ui = ShaderUi::default();
+        ui.open(Tab::Screen(0));
+        let atlas = atlas();
+        let middle = |[x, y, w, h]: [f32; 4]| (x + w / 2.0, y + h / 2.0);
+        let mut seen = vec![ui.tab];
+        for _ in 0..20 {
+            let (places, _) = side_of(&ui, &s, SHORT);
+            let name_x = places.iter().find(|p| p.0 == ui.tab).unwrap().1[0];
+            let Some(&(next, rect)) = places.iter().find(|p| p.1[0] > name_x) else {
+                break;
+            };
+            ui.click(&mut s, &atlas, middle(rect), SHORT, false, false, false);
+            assert_eq!(ui.tab, next);
+            seen.push(ui.tab);
+        }
+        let all: Vec<Tab> = (0..13).map(Tab::Screen).collect();
+        assert_eq!(seen, all);
+        // At the last screen there is nothing after it to click: its arrow's side picks nothing.
+        let cols = Columns::of(SHORT.0, SHORT.1);
+        let [x, y, w, h] = ShaderUi::tab_rect(&cols, 1);
+        ui.click(
+            &mut s,
+            &atlas,
+            (x + w - 2.0, y + h / 2.0),
+            SHORT,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(ui.tab, Tab::Screen(12));
+        // The one before it, from the keyboard: Enter on the arrow opens it, and the focus
+        // follows it to the middle.
+        let (places, _) = side_of(&ui, &s, SHORT);
+        let before = places.iter().find(|p| p.0 == Tab::Screen(11)).unwrap().1;
+        ui.focus = Some(Target::Tab(Tab::Screen(11)));
+        ui.key_modifiers(&mut s, &atlas, K::Enter, None, false, SHORT);
+        assert_eq!(ui.tab, Tab::Screen(11));
+        let (places, _) = side_of(&ui, &s, SHORT);
+        let now = places.iter().find(|p| p.0 == Tab::Screen(11)).unwrap().1;
+        assert!(now[0] > before[0], "{now:?} {before:?}");
+    }
+
+    #[test]
+    fn while_searching_the_strips_arrows_skip_screens_without_matches() {
+        let mut s = many_screens(12);
+        let mut ui = ShaderUi::default();
+        // O_S1, O_S10 and O_S11: screens 2, 11 and 12, none before the first.
+        ui.type_text("o_s1");
+        let side = |ui: &ShaderUi, s: &Settings| {
+            let screens = screens(s);
+            let (lines, _) = ui.lines(s, &screens);
+            let side = ui.side(&atlas(), &screens, &Columns::of(SHORT.0, SHORT.1), &lines);
+            let (strip, _) = side.strip.unwrap();
+            let tabs: Vec<Tab> = side.places.iter().map(|p| p.0).collect();
+            (tabs, strip.has_prev, strip.has_next, side.places)
+        };
+        let (tabs, prev, next, places) = side(&ui, &s);
+        assert_eq!(tabs, [Tab::Packs, Tab::Screen(2), Tab::Screen(11)]);
+        assert_eq!((prev, next), (false, true));
+        // Its arrow opens the next match, which has the first one before it and the last after.
+        let [x, y, w, h] = places[2].1;
+        ui.click(
+            &mut s,
+            &atlas(),
+            (x + w / 2.0, y + h / 2.0),
+            SHORT,
+            false,
+            false,
+            false,
+        );
+        let (tabs, prev, next, _) = side(&ui, &s);
+        assert_eq!(
+            tabs,
+            [Tab::Packs, Tab::Screen(2), Tab::Screen(11), Tab::Screen(12)]
+        );
+        assert_eq!((prev, next), (true, true));
+    }
+
+    #[test]
+    fn a_controllers_bumpers_find_the_strips_screens_as_tabs() {
+        let s = many_screens(12);
+        let mut ui = ShaderUi::default();
+        ui.open(Tab::Screen(4));
+        let mut batch = HudBatch::new([854, 480]);
+        ui.draw(&s, &mut batch, &atlas(), (0.0, 0.0), false);
+        crate::widgets::end_frame(u64::MAX);
+        let tabs: Vec<(f32, bool)> = crate::widgets::last_targets()
+            .into_iter()
+            .filter_map(|t| match t.kind {
+                crate::widgets::Kind::Tab(open) => Some((t.rect[0], open)),
+                _ => None,
+            })
+            .collect();
+        // The pack list, the screen before, the open one (lit) and the one after.
+        assert_eq!(tabs.len(), 4, "{tabs:?}");
+        assert_eq!(tabs.iter().filter(|t| t.1).count(), 1);
+        let (before, open, after) = (tabs[1].0, tabs[2], tabs[3].0);
+        assert!(open.1 && before < open.0 && open.0 < after);
+    }
+
     #[test]
     fn picking_a_pack_and_picking_it_again_turns_shaders_off() {
-        let mut s = settings();
-        let mut ui = ShaderUi::default();
-        let actions = ui.activate(&mut s, Item::Pack(1), false, None);
-        assert_eq!(actions, [Action::ButtonClick, Action::Picked]);
-        assert_eq!(s.horizon.shader_pack, "B.zip");
-        ui.activate(&mut s, Item::Pack(1), false, None);
-        assert_eq!(s.horizon.shader_pack, "");
-        assert_eq!(ShaderUi::switch(Item::Pack(0), &s), Some(false));
+        for (kind, key) in [(Kind::Classic, "B.zip"), (Kind::Horizon, "horizon:warm")] {
+            let mut s = settings();
+            s.shader_packs[1].kind = kind;
+            s.shader_packs[1].key = key.into();
+            let mut ui = ShaderUi::default();
+            let actions = ui.activate(&mut s, Item::Pack(1), false, None);
+            assert_eq!(actions, [Action::ButtonClick, Action::Picked]);
+            assert_eq!(s.horizon.shader_pack, key);
+            assert_eq!(picked(&s), Some((1, kind)));
+            assert_eq!(ShaderUi::switch(Item::Pack(1), &s), Some(true));
+            ui.activate(&mut s, Item::Pack(1), false, None);
+            assert_eq!(s.horizon.shader_pack, "");
+            assert_eq!(ShaderUi::switch(Item::Pack(0), &s), Some(false));
+        }
     }
 
     #[test]
@@ -1198,13 +1519,13 @@ mod tests {
         assert_eq!(ui.tab, Tab::Screen(2));
         // The page list lights the screen the link was followed from.
         let screens = screens(&s);
-        let side = ShaderUi::side_tabs(&screens, &Columns::of(SIZE.0, SIZE.1));
+        let side = ShaderUi::side_tabs(&screens);
         assert_eq!(ui.lit(Some(ui.tab), &side), Some(Tab::Screen(1)));
-        let (_, handled) = ui.key_modifiers(&mut s, K::Escape, None, false, SIZE);
+        let (_, handled) = ui.key_modifiers(&mut s, &atlas(), K::Escape, None, false, SIZE);
         assert!(handled);
         assert_eq!(ui.tab, Tab::Screen(1));
-        ui.key_modifiers(&mut s, K::Escape, None, false, SIZE);
-        let (_, handled) = ui.key_modifiers(&mut s, K::Escape, None, false, SIZE);
+        ui.key_modifiers(&mut s, &atlas(), K::Escape, None, false, SIZE);
+        let (_, handled) = ui.key_modifiers(&mut s, &atlas(), K::Escape, None, false, SIZE);
         assert!(!handled, "the main screen's Escape closes the screen");
         // Reset puts the option back.
         ui.activate(&mut s, Item::Reset, false, None);
@@ -1230,7 +1551,7 @@ mod tests {
         let mut ui = ShaderUi::default();
         let mut seen = Vec::new();
         for _ in 0..12 {
-            ui.key_modifiers(&mut s, K::Tab, None, false, SIZE);
+            ui.key_modifiers(&mut s, &atlas(), K::Tab, None, false, SIZE);
             if let Some(Target::Item(item)) = ui.focus
                 && !seen.contains(&item)
             {
@@ -1251,6 +1572,7 @@ mod tests {
     #[test]
     fn a_horizon_packs_slider_drag_is_saved_once_when_let_go() {
         let mut pack = entry("H", Kind::Horizon);
+        pack.key = "horizon:slider_test".into();
         pack.options = vec![horizon_shader_api::PackOption {
             id: "strength".into(),
             name: "Strength".into(),
@@ -1267,7 +1589,7 @@ mod tests {
             shader_packs: vec![pack],
             ..Settings::default()
         };
-        s.horizon.shader_pack = "H".into();
+        s.horizon.shader_pack = "horizon:slider_test".into();
         let mut ui = ShaderUi::default();
         ui.open(Tab::Screen(0));
         let cols = Columns::of(SIZE.0, SIZE.1);

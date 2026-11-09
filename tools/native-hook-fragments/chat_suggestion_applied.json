@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "chat_suggestion_applied",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_chat_suggestion_applied",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "notify native mods when a chat suggestion is applied.",
+  "doc_summary": "`native_chat_suggestion_applied(original, start, end, suggestion, input)` reports a chat completion after Tab or a click. The range is in UTF-16 units of the list's original input, including when cycling; input is the resulting length-limited field value. Client-only, read-only. Bundles need \"hooks\": @API:chat_suggestion_applied@."
+}

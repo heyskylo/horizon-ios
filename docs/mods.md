@@ -63,6 +63,22 @@ cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks
   and `.hshader` files.
 - `registry build|review|check|list|release|page` is the registry repository's CI ([api/mod-index.md](api/mod-index.md)).
 
+### A real-game Recipes check
+
+`python tools/lan_e2e.py --check recipes-hmod --bin-dir PATH` runs two real clients against the
+host's integrated server. `PATH` must contain `horizon-client` compiled with the official native
+Recipes mod and a matching `horizon-ctl`. This opt-in check fails if Recipes is absent; ordinary
+LAN runs do not require it.
+
+The runner installs the same original `tools/fixtures/recipes_hmod` package in both scratch game
+folders. It finds the output of an original recipe (flint to two echo shards) in Survival and Creative.
+With the recipe book empty, it verifies that missing ingredients show a warning and preserve the
+occupied grid. It then fills the grid through Recipes' `+`, takes the result, and checks authoritative
+inventory counts before and after Save and Quit/rejoin. Logs, screenshots and `recipes-hmod.json` go under `--out`.
+As an assertion canary, changing only the fixture's result count from two to one must fail the custom
+result check; restore it before running the passing case. This is a content scenario, not general
+Java-mod compatibility or custom-item registration coverage.
+
 ### The manifest
 
 ```toml
@@ -111,6 +127,22 @@ ticks still grows: `"random_ticks": true` for every state (or `false`, to stop a
 `{ "property": "grown", "values": ["false"] }` for the states whose own state property (declared in
 `state_properties`) is one of the values. The block's native `native_random_tick` hook then fires as it does
 for a vanilla block that ticks, and its sections count it.
+
+`state_light` selects emission by the template's or declared state properties. It has the same
+`property` or ordered `properties`, `values` and optional `default` selection as a shape table;
+every value is an integer from 0 to 15:
+
+```json
+{ "template": "minecraft:glass", "state_properties": { "lit": { "type": "boolean" } },
+  "state_light": { "properties": ["lit"], "values": { "false": 0, "true": 15 } } }
+```
+
+Unknown properties, unreachable tuples, repeated property names and uncovered states without a
+`default` reject the declaration. A selected value takes precedence over `properties.light`,
+including zero. Without `state_light`, scalar light and template emission stay unchanged. The
+compiler resolves the table once into the normal per-state emission facts, shared by the client,
+server and saved resource cache. Light propagation uses those facts when a block changes state;
+it performs no declaration lookup or mod callback.
 
 `render_shape` says how a block is drawn whatever its template does, as vanilla's `getRenderShape`:
 `"MODEL"` puts its block model in the chunk mesh, `"ENTITYBLOCK_ANIMATED"` leaves the model out for a block whose
@@ -222,6 +254,14 @@ gets its own damage and durability, or a tool its mining speed:
       "operation": "add_value", "slot": "mainhand" }],
     "!minecraft:repairable": {} } }
 ```
+
+An item may set `"place_block": "ruby:frame"` to place an ordinary block while retaining its
+own item ID. The target must exist and be a vanilla block or a block in the item's namespace;
+it may have `"item": false`. Multiple items can place the same block. Components still come
+from the item template; specialized behavior such as a sign or bucket item's placement is not
+copied. The compiled binding is used by server placement and client prediction. Placement
+contexts receive the original item ID, and survival placement consumes that item's stack.
+Without `place_block`, template behavior is unchanged.
 
 Native mods can register component types before content loads. A content item
 can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.
@@ -368,6 +408,44 @@ A native mod can hand the screen bytes of its own when the block opens it
 ([native-mods.md](native-mods.md#menu-extra-data)). Not yet: declared per-slot rules beyond `results`, hooks for
 shift-click routing and `stillValid`, and client prediction of its clicks.
 
+`crafting` gives the menu a crafting grid that crafts as vanilla's crafting table does (`CraftingMenu`): `size`x`size`
+slots (2 or 3, 3 by default) from `grid` on, row by row, and the slot that shows their result:
+
+```json
+{ "slots": 12, "crafting": { "grid": 1, "size": 3, "result": 0 } }
+```
+
+The result follows the grid with the world's crafting recipes, data packs' and mods' included (and
+`limitedCrafting`). Taking it uses up one of each ingredient and leaves its remainders (a milk bucket's bucket) in the
+grid, a shift-click on it crafts as many as fit in the inventory, a shift-click from the inventory fills the grid
+first, and the mods' `native_prepare_item_craft` and `native_item_crafted` hear it as on a crafting table (with the
+block's position). The block entity keeps the grid, so what is in it stays when the menu closes, as in a crafting
+station, but never the result: hoppers, comparators and a broken block see only the grid. Slots outside the grid and
+result are the menu's other slots. The grid's slots follow `native_menu_slot_rules`; the result takes nothing. It runs
+on the server, so single player, LAN and dedicated servers craft alike; the result a player is shown is made again
+each tick its grid changed, whoever changed it. The grid and result may not be listed in `results`.
+
+Recipe placement works there as in a crafting table: a recipe viewer's `native_place_recipe` (the recipe book's click,
+`ServerboundPlaceRecipePacket`) and `native_transfer_recipe` fill the grid from the player's inventory, giving what was
+in it back, so JEI ports and the Recipes mod fill it unchanged. A native mod can let the placement take ingredients
+from containers beside the block too ([native-mods.md](native-mods.md#recipe-sources)). Not yet: the ghost recipe the server sends for missing
+items is not drawn on a mod's screen.
+
+`links` gives the menu slots that show other containers' slots instead of the block entity's, as Tinkers' Construct's
+crafting station shows the chest beside it: `count` slots from `from` on, which a native mod links to block containers
+each tick the menu is open ([native-mods.md](native-mods.md#menu-links)):
+
+```json
+{ "slots": 64, "crafting": { "grid": 1, "size": 3, "result": 0 }, "links": { "from": 10, "count": 54 } }
+```
+
+They are real slots of the menu: a click, a shift-click, a drag, a double click or another mod's inventory tool moves
+the linked containers' own items, on the server, and a changed container is saved and its comparators update. A
+shift-click from the inventory fills the other container slots first, in order, so a crafting grid before its links.
+The block entity never holds them, so a broken block drops none of them; leave them out of the container's `faces`.
+Linked slots past the containers' slots hold nothing and take nothing. They may not overlap the crafting grid, its
+result or `results`.
+
 #### Namespaces and limits
 
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
@@ -431,7 +509,7 @@ A pool addition holds `"elements"` as a pool does, a processor list addition `"p
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
 do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
 
-A mod's own configured and placed features (`data/<ns>/worldgen/configured_feature/`, `placed_feature/`) and mob spawn
+A mod's own configured and placed features (`data/<ns>/worldgen/feature/`, 26.3's folder, or the older `configured_feature/`; `placed_feature/`) and mob spawn
 changes reach biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in
 `data/<ns>/neoforge/biome_modifier/` (older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types).
 `add_features` appends its `features` to one generation `step` of every biome in `biomes`; `remove_features` takes them
@@ -553,3 +631,41 @@ Horizon's own mods are native. They live in
 The game keeps the parts that must be fast, such as drawing the minimap's map, and a native mod picks the options
 ([extras.md](extras.md)). Far View is not a mod any more: its distance and detail are Graphics > LOD Distance and Far
 Detail ([graphics.md](graphics.md)).
+
+### Entity-context shape declarations
+
+`outline_context_shapes` and `collision_context_shapes` independently override
+`shapes` and `collision_shapes` for a captured entity class. Their keys are
+`item`, `player`, `living` (a non-player living entity) and `other`; each value
+is a `BlockShapes` table with the same properties, tuples, defaults and box
+validation as `shapes`. There is no inheritance between classes or channels.
+An omitted class keeps that channel's ordinary shape. Empty and position-only
+queries always keep the ordinary shape. A selector is not inferred from a
+runtime entity ID.
+
+```json
+{
+  "template": "minecraft:stone",
+  "shapes": { "default": [[0, 0, 0, 1, 0.125, 1]] },
+  "outline_context_shapes": {
+    "player": { "default": [[0, 0.125, 0, 1, 1, 1]] }
+  },
+  "collision_context_shapes": {
+    "item": { "default": [[0, 0, 0, 1, 0.3125, 1]] }
+  },
+  "interaction_shapes": { "default": [[0, 0, 0, 1, 1, 1]] }
+}
+```
+
+`interaction_shapes` uses the same state-table format. It supplies
+`BlockGetter.clipWithInteractionOverride`: an earlier interaction-shape entry
+changes the face of an existing outline hit while keeping its point. It cannot
+create a hit through an empty outline or extend the ray's reach.
+
+Tables compile once per resource snapshot. Collision scan emptiness and
+out-of-cell metadata account for every collision variant. The real dropped-item
+move and overlap check carry `item`, player movement/placement carry `player`,
+and player selection uses its own outline channel. Callers that have not
+captured an entity class retain ordinary shapes; this is not a claim that all
+mob or living-entity call sites have been converted. These declarations select
+state/class-only geometry, not arbitrary world-dependent block behavior.

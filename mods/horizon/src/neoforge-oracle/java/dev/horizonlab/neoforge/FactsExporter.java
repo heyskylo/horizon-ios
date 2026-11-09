@@ -43,7 +43,9 @@ import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.SoundType;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.storage.loot.LootParams;
@@ -82,7 +84,7 @@ public final class FactsExporter {
             new Export(server, namespaces, json).run();
         } catch (Throwable e) {
             e.printStackTrace();
-            System.exit(3);
+            Runtime.getRuntime().halt(3);
         }
         System.out.println("horizon-oracle: wrote " + out);
         server.halt(false);
@@ -226,15 +228,31 @@ public final class FactsExporter {
         }
 
         void drops(BlockState state) throws IOException {
+            BlockEntity be = null;
+            if (state.getBlock() instanceof EntityBlock eb) {
+                try {
+                    be = eb.newBlockEntity(FLOOR.above(), state);
+                } catch (RuntimeException e) {
+                    // Needs a placed block or extra setup: sample without it.
+                }
+            }
             json.name("drops");
             json.beginObject();
             for (int i = 0; i < tools.size(); i++) {
                 LootParams.Builder params =
                         new LootParams.Builder(level)
                                 .withParameter(LootContextParams.ORIGIN, Vec3.atCenterOf(FLOOR.above()))
-                                .withParameter(LootContextParams.TOOL, tools.get(i).copy());
+                                .withParameter(LootContextParams.TOOL, tools.get(i).copy())
+                                .withOptionalParameter(LootContextParams.BLOCK_ENTITY, be);
+                List<ItemStack> dropped;
+                try {
+                    dropped = state.getDrops(params);
+                } catch (RuntimeException e) {
+                    // Loot needs more than a fresh entity (a player, a capability...): leave unsampled.
+                    continue;
+                }
                 Map<String, Integer> counts = new TreeMap<>();
-                for (ItemStack s : state.getDrops(params)) {
+                for (ItemStack s : dropped) {
                     counts.merge(BuiltInRegistries.ITEM.getKey(s.getItem()).toString(), s.getCount(), Integer::sum);
                 }
                 json.name(toolNames.get(i));
@@ -367,10 +385,14 @@ public final class FactsExporter {
             json.name("components");
             json.beginObject();
             for (TypedDataComponent<?> c : stack.getComponents()) {
-                var encoded = c.encodeValue(ops).result();
-                if (encoded.isPresent()) {
-                    json.name(BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(c.type()).toString());
-                    json.jsonValue(encoded.get().toString());
+                try {
+                    var encoded = c.encodeValue(ops).result();
+                    if (encoded.isPresent()) {
+                        json.name(BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(c.type()).toString());
+                        json.jsonValue(encoded.get().toString());
+                    }
+                } catch (RuntimeException e) {
+                    // A mod component codec that throws on its own default: leave it out.
                 }
             }
             json.endObject();

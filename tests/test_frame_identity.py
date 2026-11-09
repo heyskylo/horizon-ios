@@ -1,9 +1,12 @@
 """The frame identity harness's PNG comparison: pixels decide, not how the encoder filtered its rows."""
+import math
+import re
 import struct
 import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 
 from tools import test_frame_identity_parity as identity
 
@@ -147,6 +150,26 @@ class SessionCheckTests(unittest.TestCase):
         self.assertEqual(identity.session_checks(
             self.dir, ['vanilla', 'golden_hour', 'golden_hour_hdr', 'hdr_toggle']), [])
 
+    def test_float_oit_must_change_the_float_picture(self):
+        for scene in identity.SESSIONS['float_hdr'][2]:
+            for name in ('float_hdr', 'float_oit'):
+                for suffix in ('.png', '-hdr.png'):
+                    self.shot(f'{name}.{scene}{suffix}')
+        self.assertEqual(identity.session_checks(self.dir, ['float_hdr', 'float_oit']),
+                         ["float_oit: the same as without Improved Transparency: it didn't run"])
+        other = [bytes(255 - v for v in r) for r in self.rows]
+        self.shot('float_oit.glass-hdr.png', other)
+        self.assertEqual(identity.session_checks(self.dir, ['float_hdr', 'float_oit']), [])
+
+    def test_float_visibility_buffer_needs_its_gpu_log(self):
+        for scene in identity.SESSIONS['float_visbuffer'][2]:
+            for suffix in ('.png', '-hdr.png'):
+                self.shot(f'float_visbuffer.{scene}{suffix}')
+        self.assertEqual(identity.session_checks(self.dir, ['float_visbuffer']),
+                         ["float_visbuffer: the visibility buffer didn't run"])
+        (self.dir / 'float_visbuffer.log').write_text('drawing through a visibility buffer')
+        self.assertEqual(identity.session_checks(self.dir, ['float_visbuffer']), [])
+
 
 class BaseTests(unittest.TestCase):
     def test_only_files_no_binary_is_built_from_let_the_base_reuse_the_change(self):
@@ -159,6 +182,19 @@ class BaseTests(unittest.TestCase):
             self.assertEqual(identity.needs_own_build('base'), changed[5:])
         finally:
             identity.git = original
+
+
+class PrepareTests(unittest.TestCase):
+    def test_the_player_stands_on_a_block_while_the_scenes_are_built(self):
+        # Left in the air, the player fell into the sea, and the boat recipes' toast showed over the first shots.
+        commands = []
+        game = SimpleNamespace(command=commands.append, ctl=lambda *words, **options: None, settle=lambda: None)
+        identity.prepare(game)
+        tp = next(i for i, c in enumerate(commands) if ' run tp @s ' in c)
+        where, x, y, z = re.search(r'in minecraft:(\S+) run tp @s (\S+) (\S+) (\S+)', commands[tp]).groups()
+        below = (f'execute in minecraft:{where} run setblock {math.floor(float(x))} {round(float(y)) - 1} '
+                 f'{math.floor(float(z))} minecraft:stone')
+        self.assertIn(below, commands[:tp])
 
 
 if __name__ == '__main__':

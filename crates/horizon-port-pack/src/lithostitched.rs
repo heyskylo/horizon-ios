@@ -45,6 +45,9 @@ pub(crate) fn upgrade(
     v: &mut Value,
     lost: &mut BTreeMap<String, usize>,
 ) -> Option<bool> {
+    if v["type"] == "lithostitched:weighted_selector" {
+        return Some(weighted_selector(v));
+    }
     if kind != "structure" || v["type"] != JIGSAW {
         return None;
     }
@@ -122,7 +125,7 @@ fn ids(v: &Value) -> Option<Vec<String>> {
 }
 
 /// NeoForge's load conditions (`neoforge:conditions`): all must pass.
-fn conditions_pass(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
+pub(crate) fn conditions_pass(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
     fn pass(c: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
         let all = |key: &str| {
             c[key]
@@ -145,6 +148,25 @@ fn conditions_pass(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
     (v["neoforge:conditions"].as_array().into_iter().flatten()).all(|c| pass(c, loaded))
 }
 
+/// A `weighted_selector` feature in 26.3's form (`config` unwrapped) as
+/// 26.3's `weighted_random_selector`, which reads only `{data, weight}`
+/// entries: an entry without a weight weighs 1. Whether it was one.
+pub(crate) fn weighted_selector(v: &mut Value) -> bool {
+    let Some(features) = (v["type"] == "lithostitched:weighted_selector")
+        .then(|| v["features"].as_array_mut())
+        .flatten()
+    else {
+        return false;
+    };
+    for f in features.iter_mut() {
+        if f.get("weight").is_none() || f.get("data").is_none() {
+            *f = json!({"data": f.take(), "weight": 1});
+        }
+    }
+    v["type"] = "minecraft:weighted_random_selector".into();
+    true
+}
+
 /// A worldgen modifier as a file the game merges: `("template_pool", file)`
 /// for `add_template_pool_elements`, `("processor_list", file)` for
 /// `add_processor_list_processors` (spec-lithostitched §2.1, §2.2); the
@@ -158,6 +180,12 @@ pub(crate) fn modifier(
     if !conditions_pass(v, loaded) {
         count(&mut report.modifiers_left, "conditions");
         return None;
+    }
+    if let Some(action) = kind
+        .strip_prefix("lithostitched:")
+        .filter(|a| matches!(*a, "add_features" | "remove_features"))
+    {
+        return biome_modifier(v, action, report);
     }
     // 1.8.1 reads `processor_lists`, not the wiki's `processor_list`.
     let (to, targets, list) = match kind {
@@ -184,6 +212,37 @@ pub(crate) fn modifier(
         file["horizon:priority"] = priority.into();
     }
     Some((to, file))
+}
+
+/// An `add_features` or `remove_features` modifier as NeoForge's biome
+/// modifier of the same name (`("biome_modifier", file)`), which the game
+/// applies when the content root builds. Its `holder_set` biomes are
+/// unwrapped. A mod's own `<ns>:config` predicate runs Java the port cannot,
+/// so it is taken at the mod's default, on; any other predicate leaves the
+/// modifier out.
+fn biome_modifier(v: &Value, action: &str, report: &mut Upgrade) -> Option<(&'static str, Value)> {
+    let predicate = v["predicate"]["type"].as_str();
+    if predicate.is_some_and(|p| !p.ends_with(":config")) {
+        count(&mut report.modifiers_left, "predicate");
+        return None;
+    }
+    let biomes = match &v["biomes"] {
+        b if b["type"] == "lithostitched:holder_set" => b["set"].clone(),
+        b @ (Value::String(_) | Value::Array(_)) => b.clone(),
+        _ => Value::Null,
+    };
+    let add = action == "add_features";
+    if biomes.is_null() || v["features"].is_null() || (add && v["step"].is_null()) {
+        count(&mut report.modifiers_left, "target");
+        return None;
+    }
+    let mut file = json!({"type": format!("neoforge:{action}"), "biomes": biomes,
+        "features": v["features"]});
+    // A removal without a step takes the features out of every step.
+    if !v["step"].is_null() {
+        file[if add { "step" } else { "steps" }] = v["step"].clone();
+    }
+    Some(("biome_modifier", file))
 }
 
 /// Whether the game reads a Lithostitched processor as it is: one of its
@@ -315,6 +374,25 @@ mod tests {
     use super::*;
     use crate::worldgen::upgrade as upgrade_file;
 
+    /// Regions Unexplored's tree and flower groups: a weighted pick of placed
+    /// features, an entry without `weight` weighing 1, is 26.3's own
+    /// `weighted_random_selector`, which reads only `{data, weight}` entries.
+    #[test]
+    fn weighted_selectors_become_vanillas() {
+        let mut lost = BTreeMap::new();
+        let oak = json!({"feature": "ru:tree/oak", "placement": []});
+        let big = json!({"feature": "ru:tree/big_oak", "placement": []});
+        let mut f = json!({"type": "lithostitched:weighted_selector",
+            "features": [{"data": oak, "weight": 2}, big]});
+        assert_eq!(upgrade("configured_feature", &mut f, &mut lost), Some(true));
+        assert_eq!(
+            f,
+            json!({"type": "minecraft:weighted_random_selector",
+                "features": [{"data": oak, "weight": 2}, {"data": big, "weight": 1}]})
+        );
+        assert!(lost.is_empty());
+    }
+
     #[test]
     fn jigsaws_become_vanillas() {
         let mut lost = BTreeMap::new();
@@ -407,6 +485,42 @@ mod tests {
                 ("lithostitched:set_pool_aliases".into(), 1),
                 ("target".into(), 2),
             ])
+        );
+    }
+
+    /// Regions Unexplored's vanilla changes: feature modifiers become
+    /// NeoForge's biome modifiers, which the game applies; a mod's own config
+    /// predicate is taken at its default (on), any other predicate is left.
+    #[test]
+    fn feature_modifiers_become_biome_modifiers() {
+        let mut report = Upgrade::default();
+        let loaded = |_: &str| true;
+        let biomes = json!({"type": "lithostitched:holder_set", "set": ["minecraft:badlands"]});
+        let add = json!({"type": "lithostitched:add_features", "biomes": biomes,
+            "features": "ru:saguaros", "step": "vegetal_decoration",
+            "predicate": {"type": "ru:config", "key": "vanilla_changes/saguaros"}});
+        let (kind, file) = modifier(&add, &loaded, &mut report).unwrap();
+        assert_eq!(kind, "biome_modifier");
+        assert_eq!(
+            file,
+            json!({"type": "neoforge:add_features", "biomes": ["minecraft:badlands"],
+                "features": "ru:saguaros", "step": "vegetal_decoration"})
+        );
+        let remove = json!({"type": "lithostitched:remove_features", "priority": 1000,
+            "biomes": {"type": "lithostitched:holder_set", "set": "minecraft:mangrove_swamp"},
+            "features": "minecraft:patch_waterlily", "step": "vegetal_decoration"});
+        let (_, file) = modifier(&remove, &loaded, &mut report).unwrap();
+        assert_eq!(
+            file,
+            json!({"type": "neoforge:remove_features", "biomes": "minecraft:mangrove_swamp",
+                "features": "minecraft:patch_waterlily", "steps": "vegetal_decoration"})
+        );
+        let mut gated = add.clone();
+        gated["predicate"] = json!({"type": "lithostitched:not", "predicate": {}});
+        assert!(modifier(&gated, &loaded, &mut report).is_none());
+        assert_eq!(
+            report.modifiers_left,
+            BTreeMap::from([("predicate".into(), 1)])
         );
     }
 

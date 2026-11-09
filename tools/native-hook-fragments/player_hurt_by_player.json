@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_hurt_by_player",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_hurt_by_player",
+      "neoforge": "LivingIncomingDamageEvent (a player victim, a player source; Bukkit's EntityDamageByEntityEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "canceled"
+      }
+    }
+  ],
+  "rust_summary": "one player hurting another by melee, sweep or a projectile, with both players named, cancellable (`native_player_hurt_by_player`).",
+  "doc_summary": "player-versus-player damage: `native_player_hurt_by_player(attacker, attacker_entity, victim, victim_entity, source, damage_type, amount, canceled)` names both players by UUID and network entity id, `source` (`melee`, `sweep` or the projectile's entity type, such as `minecraft:arrow`) and the damage type. It is heard where `native_living_incoming_damage` is, at the victim's `hurtServer` past its guards (the `pvp` rule and teams allow it, the victim is not invulnerable or dead), and before it. Change `amount`, or set `canceled` and nothing of the hurt happens (the v1 hook then hears nothing). A snowball's or egg's zero damage is heard with amount 0 and changes nothing. No `self`, like v1. Bundles that use it need `\"hooks\": @API:player_hurt_by_player@`."
+}

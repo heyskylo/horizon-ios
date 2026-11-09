@@ -2,7 +2,11 @@
 //! writes, and the per-thread context the item and particle readers consult while a packet from such a
 //! server is decoded (an id there decides how the bytes after it read, so it must be renumbered as it is
 //! read, not afterwards).
-use std::cell::Cell;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 /// How one registry's ids differ between an older version and the pinned one.
 #[derive(Clone, Copy, Debug)]
@@ -80,6 +84,38 @@ pub struct Ids {
     pub dropped_components: &'static [(u16, &'static str)],
     /// EntityDataSerializers' registration order (not a registry).
     pub entity_data_serializer: Remap,
+    /// What a client of the older version is shown in place of pinned entries it lacks.
+    pub substitutes: Substitutes,
+}
+
+/// For a server sending to an older client: pinned entries the older version lacks, each with the pinned
+/// entry that stands in for it there, as runs `(from, to, length)` in the pinned numbering (a stand-in is
+/// one the older version has). An entry in no run has none: what carries it is dropped or emptied.
+#[derive(Clone, Copy, Debug)]
+pub struct Substitutes {
+    pub block_state: &'static [(u16, u16, u16)],
+    pub block: &'static [(u16, u16, u16)],
+    pub item: &'static [(u16, u16, u16)],
+    pub entity_type: &'static [(u16, u16, u16)],
+    pub particle_type: &'static [(u16, u16, u16)],
+    pub sound_event: &'static [(u16, u16, u16)],
+}
+impl Substitutes {
+    pub const NONE: Self = Self {
+        block_state: &[],
+        block: &[],
+        item: &[],
+        entity_type: &[],
+        particle_type: &[],
+        sound_event: &[],
+    };
+}
+
+/// The older version's id of the pinned `id`, or of the entry standing in for it there (`substitutes`).
+pub fn down_or_substitute(remap: Remap, substitutes: &[(u16, u16, u16)], id: i32) -> Option<i32> {
+    remap
+        .down(id)
+        .or_else(|| remap.down(lookup(substitutes, id)?))
 }
 
 /// Layout differences inside structures the pinned readers decode while ids are renumbered up.
@@ -97,6 +133,36 @@ pub struct Quirks {
     /// `use_remainder` holds an ItemStack and `container` a list of optional ones (a count first, 0 for
     /// none) instead of item stack templates (1.21.11).
     pub stacks_in_components: bool,
+    /// Before 1.21.9, player shoulder parrots were compound tags (serializer 16), not optional variants.
+    pub shoulder_parrots_as_nbt: bool,
+    /// Before 1.21.6, attribute modifiers had no display and equippables no shearing fields.
+    pub components_before_1_21_6: bool,
+    /// The 1.21.4 component patch has per-component tooltip flags and older nested codecs.
+    pub components_before_1_21_5: bool,
+    /// These releases use count-first ItemStack.STREAM_CODEC where the pinned version uses templates.
+    pub count_first_templates: bool,
+    /// Optional name/UUID and properties, without the pinned profile tag or skin patch.
+    pub optional_profile_fields: bool,
+    /// Before 1.21.4, custom model data was one VarInt instead of four lists.
+    pub integer_custom_model_data: bool,
+    /// Before 1.21.4, trail options left the lifetime to the client particle provider.
+    pub trail_without_duration: bool,
+    /// Before 1.21.2, food combined consumption effects and several packet/component layouts differed.
+    pub components_before_1_21_2: bool,
+    /// Before 1.21, food had no remainder and attribute modifiers used UUIDs and names.
+    pub components_before_1_21: bool,
+    /// 1.21 through 1.21.4 encoded wolf variants as registry-or-inline holders.
+    pub wolf_variant_holder: bool,
+    /// Before 1.20.5 an item stack carried a single legacy NBT tag instead of a component patch.
+    pub legacy_item_nbt: bool,
+    /// Saved-item data version at the legacy wire boundary (zero when components are native).
+    pub legacy_item_data_version: i32,
+    /// Before 1.20.3, component fields inside entity data use UTF JSON rather than NBT.
+    pub components_as_json: bool,
+    /// Before 1.20.3, vibration position sources start with a resource identifier.
+    pub vibration_source_identifier: bool,
+    /// Through 1.21.8 these particle types carried no options at all.
+    pub simple_spell_particles: bool,
 }
 impl Quirks {
     pub const NONE: Self = Self {
@@ -104,6 +170,21 @@ impl Quirks {
         pot_decorations_are_items: false,
         either_holders_and_tag_resistance: false,
         stacks_in_components: false,
+        shoulder_parrots_as_nbt: false,
+        components_before_1_21_6: false,
+        components_before_1_21_5: false,
+        count_first_templates: false,
+        optional_profile_fields: false,
+        integer_custom_model_data: false,
+        trail_without_duration: false,
+        components_before_1_21_2: false,
+        components_before_1_21: false,
+        wolf_variant_holder: false,
+        legacy_item_nbt: false,
+        legacy_item_data_version: 0,
+        components_as_json: false,
+        vibration_source_identifier: false,
+        simple_spell_particles: false,
     };
 }
 
@@ -122,6 +203,15 @@ pub fn pinned() -> Guard {
 pub fn quirks() -> Quirks {
     match ACTIVE.get() {
         Some((ids, Way::Up)) => ids.quirks,
+        _ => Quirks::NONE,
+    }
+}
+
+/// The older version's quirks while packets are encoded for it on this thread (an older client, or what is
+/// sent to an older server); none otherwise. The writers then lay those structures out as it reads them.
+pub fn quirks_written() -> Quirks {
+    match ACTIVE.get() {
+        Some((ids, Way::Down)) => ids.quirks,
         _ => Quirks::NONE,
     }
 }
@@ -146,12 +236,75 @@ pub enum Way {
 
 thread_local! {
     static ACTIVE: Cell<Option<(&'static Ids, Way)>> = const { Cell::new(None) };
+    static TRIM_PATTERNS: RefCell<HashMap<i32,i32>> = RefCell::new(HashMap::new());
+    static LEGACY_REGISTRIES: RefCell<Option<Arc<LegacyRegistries>>> = const { RefCell::new(None) };
+    static LEGACY_ITEMS: RefCell<Option<Arc<Mutex<crate::item::v1_20_3::Cache>>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn legacy_items(cache: Arc<Mutex<crate::item::v1_20_3::Cache>>) -> LegacyItemGuard {
+    LegacyItemGuard(LEGACY_ITEMS.replace(Some(cache)))
+}
+pub(crate) fn legacy_item_cache() -> Option<Arc<Mutex<crate::item::v1_20_3::Cache>>> {
+    LEGACY_ITEMS.with_borrow(Clone::clone)
+}
+pub(crate) struct LegacyItemGuard(Option<Arc<Mutex<crate::item::v1_20_3::Cache>>>);
+impl Drop for LegacyItemGuard {
+    fn drop(&mut self) {
+        LEGACY_ITEMS.replace(self.0.take());
+    }
+}
+
+/// Name lookups for legacy NBT. Fixed registries use pinned ids; synchronized registries keep the
+/// connection's ids. Reverse names retain old spellings, with current names accepted as aliases.
+pub(crate) type LegacyRegistries = HashMap<String, crate::registry::Ids>;
+
+pub(crate) fn legacy_registries(registries: Arc<LegacyRegistries>) -> LegacyRegistryGuard {
+    LegacyRegistryGuard(LEGACY_REGISTRIES.replace(Some(registries)))
+}
+
+pub(crate) struct LegacyRegistryGuard(Option<Arc<LegacyRegistries>>);
+impl Drop for LegacyRegistryGuard {
+    fn drop(&mut self) {
+        LEGACY_REGISTRIES.replace(self.0.take());
+    }
+}
+
+pub(crate) fn legacy_registry_id(registry: &str, name: &str) -> Option<i32> {
+    LEGACY_REGISTRIES.with_borrow(|registries| registries.as_ref()?.get(registry)?.id(name))
+}
+
+pub(crate) fn legacy_registry_name(registry: &str, id: i32) -> Option<String> {
+    LEGACY_REGISTRIES.with_borrow(|registries| {
+        registries
+            .as_ref()?
+            .get(registry)?
+            .name(id)
+            .map(str::to_owned)
+    })
+}
+
+/// Connection-local trim ids while decoding the old smithing preview's template displays.
+pub(crate) fn trim_patterns(patterns: HashMap<i32, i32>) -> TrimGuard {
+    TrimGuard(TRIM_PATTERNS.replace(patterns))
+}
+pub(crate) struct TrimGuard(HashMap<i32, i32>);
+impl Drop for TrimGuard {
+    fn drop(&mut self) {
+        TRIM_PATTERNS.replace(std::mem::take(&mut self.0));
+    }
+}
+pub(crate) fn trim_pattern(item: i32) -> Option<i32> {
+    TRIM_PATTERNS.with_borrow(|patterns| patterns.get(&item).copied())
 }
 
 /// Renumber ids `way` on this thread until the guard drops. Readers and writers that pick a layout by an id
 /// (item stacks, data components, particles) consult it through [`item`], [`component`] and [`particle`].
 pub fn renumbering(ids: &'static Ids, way: Way) -> Guard {
     Guard(ACTIVE.replace(Some((ids, way))))
+}
+/// Decode a stored pinned value before encoding its nested values for an older server.
+pub(crate) fn unrenumbered() -> Guard {
+    Guard(ACTIVE.replace(None))
 }
 
 /// Restores the previous context when dropped.
@@ -171,13 +324,23 @@ fn apply(id: i32, pick: impl Fn(&Ids) -> Remap) -> i32 {
     }
 }
 
-/// An item id as read or about to be written on this thread.
+/// An item id as read or about to be written on this thread. Written for an older client, an item it
+/// lacks becomes its stand-in.
 pub fn item(id: i32) -> i32 {
-    apply(id, |ids| ids.item)
+    match ACTIVE.get() {
+        Some((ids, Way::Down)) => {
+            down_or_substitute(ids.item, ids.substitutes.item, id).unwrap_or(-1)
+        }
+        _ => apply(id, |ids| ids.item),
+    }
 }
 /// A data component type id as read or about to be written on this thread.
 pub fn component(id: i32) -> i32 {
     apply(id, |ids| ids.data_component_type)
+}
+/// An argument parser id; its properties must be read using the pinned parser's layout.
+pub fn command_argument_type(id: i32) -> i32 {
+    apply(id, |ids| ids.command_argument_type)
 }
 /// The name of the data component an older server sent as `id` (its own number) that the pinned version
 /// no longer has, while such a server's packet is read on this thread. The readers read its value past and
@@ -208,6 +371,11 @@ pub fn entity_type(id: i32) -> i32 {
 pub fn sound_event(id: i32) -> i32 {
     apply(id, |ids| ids.sound_event)
 }
+/// An attribute id (the registry id, not the holder's id plus one) as read or about to be written on this
+/// thread.
+pub fn attribute(id: i32) -> i32 {
+    apply(id, |ids| ids.attribute)
+}
 /// An entity data serializer id as read on this thread.
 pub fn entity_data_serializer(id: i32) -> i32 {
     apply(id, |ids| ids.entity_data_serializer)
@@ -224,6 +392,21 @@ pub fn active() -> Option<(&'static Ids, Way)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_attribute_of_1_21_1_and_1_20_6_has_its_pinned_counterpart() {
+        // 1.21.2 dropped the generic./player./zombie. prefixes; matched by name alone, none mapped and every
+        // update_attributes value was left out for these clients. 31 attributes in 1.21.1's report, 22 in 1.20.6's.
+        for (ids, count) in [
+            (&super::super::v1_21_1_ids::IDS, 31),
+            (&super::super::v1_20_6_ids::IDS, 22),
+        ] {
+            for old in 0..count {
+                let pinned = ids.attribute.up(old).unwrap();
+                assert_eq!(ids.attribute.down(pinned), Some(old));
+            }
+        }
+    }
 
     #[test]
     fn runs_map_inside_and_nothing_outside() {
@@ -442,6 +625,133 @@ mod tests {
         {
             let _down = renumbering(ids, Way::Down);
             Slot::write(&Some(Stack::new(1012, 3)), &mut w);
+        }
+        assert_eq!(w.data, sent);
+    }
+
+    #[test]
+    fn modifiers_and_equippables_before_1_21_6_are_read_in_the_pinned_layout() {
+        use crate::buf::{Codec, Reader, Writer};
+        use crate::item::{Component, Slot, Stack, component as k};
+        let ids = crate::adapter::ServerVersion::V1_21_5.ids().unwrap();
+        let raw = |kind: i32| ids.data_component_type.down(kind).unwrap();
+        // A stone as 1.21.5 sends it, with two attribute modifiers (holders: armor is 0 in 1.21.5, 1 in
+        // 26.3, so the holder is its id plus one, 1 and 3; attack damage is 2 and 3 in 26.3, so 3 and 4)
+        // and an equippable for the chest: no display, no shearing fields.
+        let mut sent = Writer::new();
+        sent.varint(1);
+        sent.varint(1);
+        sent.varint(2);
+        sent.varint(0);
+        sent.varint(raw(k::ATTRIBUTE_MODIFIERS));
+        sent.varint(2);
+        for (holder, id, amount, operation, slot) in [
+            (1, "minecraft:test", 2.5, 0, 6),
+            (3, "minecraft:other", -1.0, 1, 1),
+        ] {
+            sent.varint(holder);
+            sent.string(id);
+            sent.f64(amount);
+            sent.varint(operation);
+            sent.varint(slot);
+        }
+        sent.varint(raw(k::EQUIPPABLE));
+        sent.varint(3);
+        sent.varint(71);
+        for b in [false, false, false, true, true, true, false] {
+            sent.bool(b);
+        }
+        let sent = sent.data;
+        let stack: Stack = {
+            let _up = renumbering(ids, Way::Up);
+            Slot::read(&mut Reader::new(&sent)).unwrap().unwrap()
+        };
+        assert_eq!(stack.item, 1);
+        // The pinned layout: each entry with a default display, then the shears' sound by default.
+        let mut modifiers = Writer::new();
+        modifiers.varint(2);
+        for (holder, id, amount, operation, slot) in [
+            (2, "minecraft:test", 2.5, 0, 6),
+            (4, "minecraft:other", -1.0, 1, 1),
+        ] {
+            modifiers.varint(holder);
+            modifiers.string(id);
+            modifiers.f64(amount);
+            modifiers.varint(operation);
+            modifiers.varint(slot);
+            modifiers.varint(0);
+        }
+        let mut equippable = Writer::new();
+        equippable.varint(3);
+        equippable.varint(71);
+        for b in [false, false, false, true, true, true, false, false] {
+            equippable.bool(b);
+        }
+        equippable.varint(1448);
+        assert_eq!(
+            stack.added,
+            [
+                (k::ATTRIBUTE_MODIFIERS, Component::Raw(modifiers.data)),
+                (k::EQUIPPABLE, Component::Raw(equippable.data)),
+            ]
+        );
+        // Written for the 1.21.5 client again: the same bytes as it sent.
+        let mut w = Writer::new();
+        {
+            let _down = renumbering(ids, Way::Down);
+            Slot::write(&Some(stack), &mut w);
+        }
+        assert_eq!(w.data, sent);
+    }
+
+    #[test]
+    fn modifiers_and_equippables_from_1_21_6_are_kept_as_they_are() {
+        use crate::buf::{Codec, Reader, Writer};
+        use crate::item::{Slot, component as k};
+        use crate::text::literal;
+        // The pinned layout (1.21.6 and later): a display after each entry's slot, and the shearing fields.
+        // No quirk applies to this version, so the bytes pass through unchanged, and the ids are the
+        // version's own.
+        let ids = crate::adapter::ServerVersion::V1_21_6.ids().unwrap();
+        let raw = |kind: i32| ids.data_component_type.down(kind).unwrap();
+        let mut sent = Writer::new();
+        sent.varint(1);
+        sent.varint(1);
+        sent.varint(2);
+        sent.varint(0);
+        sent.varint(raw(k::ATTRIBUTE_MODIFIERS));
+        sent.varint(1);
+        sent.varint(2);
+        sent.string("minecraft:test");
+        sent.f64(2.5);
+        sent.varint(0);
+        sent.varint(6);
+        sent.varint(2);
+        sent.nbt(&literal("Hi"));
+        sent.varint(raw(k::EQUIPPABLE));
+        sent.varint(3);
+        sent.varint(71);
+        for b in [false, false, false, true, true, true, false, false] {
+            sent.bool(b);
+        }
+        sent.varint(1448);
+        let sent = sent.data;
+        let stack = {
+            let _up = renumbering(ids, Way::Up);
+            Slot::read(&mut Reader::new(&sent)).unwrap().unwrap()
+        };
+        assert_eq!(
+            stack
+                .added
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>(),
+            [k::ATTRIBUTE_MODIFIERS, k::EQUIPPABLE]
+        );
+        let mut w = Writer::new();
+        {
+            let _down = renumbering(ids, Way::Down);
+            Slot::write(&Some(stack), &mut w);
         }
         assert_eq!(w.data, sent);
     }

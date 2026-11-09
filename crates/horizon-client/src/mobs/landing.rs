@@ -91,6 +91,12 @@ impl BlockLandingWorld for MobLanding<'_, '_> {
     fn mob_griefing(&mut self) -> Result<bool, String> {
         Ok(self.w.mob_griefing)
     }
+    fn trample_allowed(&mut self, position: BlockPos, distance: f64) -> Result<bool, String> {
+        let (id, kind) = (self.mob.id as i32, &self.mob.kind.id);
+        Ok(crate::block_contact::trample_allowed(
+            id, kind, position, distance,
+        ))
+    }
     fn entity_dimensions(&self) -> (f32, f32) {
         (self.mob.width(), self.mob.height())
     }

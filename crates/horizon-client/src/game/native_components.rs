@@ -20,7 +20,6 @@ impl std::fmt::Display for NativeComponentError {
 impl std::error::Error for NativeComponentError {}
 
 // Native mods use these helpers.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Read a native component, including the item's default when not patched.
     pub(super) fn native_component<'a>(

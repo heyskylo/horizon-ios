@@ -12,6 +12,74 @@ use super::{
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::{Compound, Tag};
 
+/// The four parts saved by the display transformation codec.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct DisplayTransformation {
+    translation: [f32; 3],
+    left_rotation: [f32; 4],
+    scale: [f32; 3],
+    right_rotation: [f32; 4],
+}
+
+impl From<&NativeDisplay> for DisplayTransformation {
+    fn from(display: &NativeDisplay) -> Self {
+        Self {
+            translation: display.translation,
+            left_rotation: display.left_rotation,
+            scale: display.scale,
+            right_rotation: display.right_rotation,
+        }
+    }
+}
+
+impl DisplayTransformation {
+    /// `Transformation.EXTENDED_CODEC`: the four parts, or a decomposed matrix.
+    pub(super) fn from_tag(tag: Option<&Tag>) -> Self {
+        let Some((translation, left_rotation, scale, right_rotation)) =
+            tag.and_then(horizon_client::text_display::transformation)
+        else {
+            return (&NativeDisplay::default()).into();
+        };
+        Self {
+            translation,
+            left_rotation,
+            scale,
+            right_rotation,
+        }
+    }
+
+    pub(super) fn to_tag(self) -> Tag {
+        transformation_tag(
+            self.translation,
+            self.left_rotation,
+            self.scale,
+            self.right_rotation,
+        )
+    }
+}
+
+/// The compound form written by `Transformation.EXTENDED_CODEC`.
+fn transformation_tag(
+    translation: [f32; 3],
+    left_rotation: [f32; 4],
+    scale: [f32; 3],
+    right_rotation: [f32; 4],
+) -> Tag {
+    let floats = |v: &[f32]| {
+        Tag::List(
+            v.iter()
+                .map(|&x| Tag::Float(if x == 0.0 { 0 } else { x.to_bits() }))
+                .collect(),
+        )
+    };
+    let mut t = Compound::new();
+    t.insert("translation".into(), floats(&translation));
+    t.insert("left_rotation".into(), floats(&left_rotation));
+    t.insert("scale".into(), floats(&scale));
+    t.insert("right_rotation".into(), floats(&right_rotation));
+    Tag::Compound(t)
+}
+
 /// A display's transformation and interpolation (`Display`'s
 /// `transformation`, `interpolation_duration` and `teleport_duration`):
 /// a translation, a left rotation (a quaternion `[x, y, z, w]`), a scale and a
@@ -61,13 +129,15 @@ impl NativeDisplay {
     /// interpolation only when the start comes, so each write flips it
     /// between 0 and -1.
     fn write(&self, tag: &mut Compound) {
-        let floats = |v: &[f32]| Tag::List(v.iter().map(|x| Tag::Float(x.to_bits())).collect());
-        let mut t = Compound::new();
-        t.insert("translation".into(), floats(&self.translation));
-        t.insert("left_rotation".into(), floats(&self.left_rotation));
-        t.insert("scale".into(), floats(&self.scale));
-        t.insert("right_rotation".into(), floats(&self.right_rotation));
-        tag.insert("transformation".into(), Tag::Compound(t));
+        tag.insert(
+            "transformation".into(),
+            transformation_tag(
+                self.translation,
+                self.left_rotation,
+                self.scale,
+                self.right_rotation,
+            ),
+        );
         tag.insert(
             "interpolation_duration".into(),
             Tag::Int(self.interpolation),
@@ -100,7 +170,7 @@ fn root_id(target: Option<Target>, first: u32, live: impl Fn(u32) -> bool) -> Op
 }
 
 /// The entity id a summoned stack's root is known by.
-fn target_id(t: Target) -> Option<u32> {
+pub(super) fn target_id(t: Target) -> Option<u32> {
     match t {
         Target::Mob(id)
         | Target::Item(id)
@@ -116,6 +186,7 @@ fn target_id(t: Target) -> Option<u32> {
         | Target::Crystal(id)
         | Target::Dragon(id)
         | Target::Tnt(id)
+        | Target::Cushion(id)
         | Target::Falling(id)
         | Target::Rocket(id)
         | Target::Trident(id)
@@ -125,7 +196,7 @@ fn target_id(t: Target) -> Option<u32> {
     }
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// Whether this game simulates the level `dimension`.
     fn native_simulates_level(&self, dimension: &str) -> bool {
@@ -134,10 +205,12 @@ impl Game<'_> {
     /// Spawns an entity of `kind` (`minecraft:item_display`) at `pos` in the
     /// level in place, `dimension`, from `nbt` (its compound, as `/summon
     /// <kind> <pos> <nbt>` takes it; passengers included): its id. None on a
-    /// client's copy of the world, for another dimension, a position outside
+    /// client's copy of the world, for a position outside
     /// `/summon`'s bounds, a chunk that isn't loaded, a kind Horizon can't
     /// load, or one a mod kept out (`native_entity_join_level`). API
-    /// 59.
+    /// 59. Since API @API:npc_any_level@, `dimension` may be any level the
+    /// server has loaded, which is put in place for the summon (`execute in
+    /// <dimension> run summon`); a level not loaded is refused.
     pub(super) fn native_summon(
         &mut self,
         dimension: &str,
@@ -145,6 +218,13 @@ impl Game<'_> {
         pos: [f64; 3],
         nbt: Compound,
     ) -> Option<u32> {
+        if (self.serving.is_some() || self.options.dedicated.is_some())
+            && dimension != self.dim.id()
+        {
+            return self
+                .npc_in_level(dimension, |g| g.native_summon(dimension, kind, pos, nbt))
+                .flatten();
+        }
         if !self.native_simulates_level(dimension) || !position_ok(pos) {
             return None;
         }
@@ -245,19 +325,106 @@ impl Game<'_> {
             return false;
         };
         display.write(c);
+        if let Some(item) = self
+            .others
+            .iter_mut()
+            .find(|o| o.id == id && o.kind == "minecraft:item_display")
+        {
+            item.item_transformation = Some(display.into());
+        }
         true
     }
     /// Removes entity `id`, one Horizon keeps without simulating, as `/kill`
     /// does (it drops nothing and isn't saved). False for no such entity or
     /// another dimension. Mobs go with `native_remove_mob`. API
-    /// 59.
+    /// 59. Since API @API:remove_projectiles@ it also takes projectiles
+    /// (arrows, tridents, snowballs, eggs, pearls, fireballs, wind charges,
+    /// llama spit, shulker bullets, firework rockets) as `/kill` does, and a
+    /// server player's fishing bobber (`Entity.discard`; the player in place's,
+    /// or, outside a guest's turn, any of this level's players').
     pub(super) fn native_remove_entity(&mut self, dimension: &str, id: u32) -> bool {
-        if !self.native_simulates_level(dimension) || !self.others.iter().any(|o| o.id == id) {
+        if !self.native_simulates_level(dimension) {
             return false;
         }
-        self.others.retain(|o| o.id != id);
-        self.persist.raw.remove(&id);
-        true
+        if self.others.iter().any(|o| o.id == id) {
+            self.others.retain(|o| o.id != id);
+            self.persist.raw.remove(&id);
+            return true;
+        }
+        // An id of 0 is a projectile no server tracks yet: never one a mod was told of.
+        if id != 0
+            && let Some(
+                projectile @ (Target::Projectile(_) | Target::Trident(_) | Target::Rocket(_)),
+            ) = self.level_entity(id as i32)
+        {
+            self.kill_target(projectile);
+            return true;
+        }
+        self.remove_server_hook(id)
+    }
+    /// Hurts the living entity `target` (a mob, or a player of the level `dimension`) by
+    /// `amount` of `damage_type` (`minecraft:mob_attack`), from `attacker` (a mob's or a
+    /// player's entity id: the causing and direct entity, as vanilla's
+    /// `damageSources().mobAttack(attacker)`; none for no entity), as `LivingEntity.hurtServer`
+    /// and `/damage <target> <amount> <damage_type> by <attacker>` do: armour, effects,
+    /// invulnerability time, knockback from the attacker, death and its message, and the damage
+    /// hooks (`native_living_incoming_damage` and its versions) hear it. Whether it was hurt:
+    /// false for an invulnerable, dead or creative target, another dimension, an entity that
+    /// isn't living, an attacker that isn't there, or an amount that isn't a finite number.
+    /// API @API:hurt_entity@.
+    pub(super) fn native_hurt_entity(
+        &mut self,
+        dimension: &str,
+        target: u32,
+        amount: f32,
+        damage_type: &str,
+        attacker: Option<u32>,
+    ) -> bool {
+        if !self.native_simulates_level(dimension) || !amount.is_finite() {
+            return false;
+        }
+        let Some(victim) = self.hurt_entity_target(dimension, target) else {
+            return false;
+        };
+        let by = match attacker {
+            Some(id) => match self.hurt_entity_target(dimension, id) {
+                Some(t) => Some(t),
+                None => return false,
+            },
+            None => None,
+        };
+        let from = by.and_then(|t| self.target_position(t));
+        self.damage_target(victim, amount, damage_type, None, by, from)
+    }
+    /// The player or mob `id` names in the level `dimension`: a player by their entity id
+    /// (the one in place, whose turn it is, as `Target::Player`), a mob that is there.
+    fn hurt_entity_target(&self, dimension: &str, id: u32) -> Option<Target> {
+        let entity = i32::try_from(id).ok()?;
+        let guest = self
+            .lan
+            .iter()
+            .flat_map(|h| h.hub.guests.iter())
+            .find(|g| g.placed && g.entity_id == entity && g.dimension == dimension);
+        if let Some(g) = guest {
+            let acting = self.lan_acting == Some(g.conn) && self.player.is_some();
+            return Some(if acting {
+                Target::Player
+            } else {
+                Target::Guest(g.conn)
+            });
+        }
+        // The player in place while the hub is out (a guest's turn), or a LAN host.
+        if (self.lan_acting.is_some() || self.options.dedicated.is_none())
+            && self.player.as_ref().is_some_and(|p| p.entity_id == entity)
+        {
+            return Some(Target::Player);
+        }
+        match self.level_entity(entity)? {
+            Target::Mob(mob) if self.mobs.iter().any(|m| m.id == mob && m.alive()) => {
+                Some(Target::Mob(mob))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -268,6 +435,7 @@ enum Apart {
     Cushion(usize),
     Painting(usize),
     Frame(usize),
+    Other(usize),
     Dragon,
 }
 
@@ -379,6 +547,9 @@ impl Game<'_> {
         for (i, f) in self.item_frames.iter().enumerate() {
             offer(Slot::Apart(Apart::Frame(i)), f.id);
         }
+        for (i, o) in self.others.iter().enumerate() {
+            offer(Slot::Apart(Apart::Other(i)), o.id);
+        }
         if let Some(d) = &self.dragon {
             offer(Slot::Apart(Apart::Dragon), d.id);
         }
@@ -416,6 +587,10 @@ impl Game<'_> {
                 };
                 (kind.into(), block(f.pos))
             }
+            Slot::Apart(Apart::Other(i)) => {
+                let o = &self.others[i];
+                (o.kind.clone().into(), o.position)
+            }
             Slot::Apart(Apart::Dragon) => (
                 "minecraft:ender_dragon".into(),
                 self.dragon.as_ref().map_or(Vec3::ZERO, |d| d.position),
@@ -430,6 +605,7 @@ impl Game<'_> {
             Slot::Apart(Apart::Cushion(i)) => drop(self.cushions.remove(i)),
             Slot::Apart(Apart::Painting(i)) => drop(self.paintings.remove(i)),
             Slot::Apart(Apart::Frame(i)) => drop(self.item_frames.remove(i)),
+            Slot::Apart(Apart::Other(i)) => drop(self.others.remove(i)),
             Slot::Apart(Apart::Dragon) => self.dragon = None,
         }
     }
@@ -490,6 +666,7 @@ impl Game<'_> {
         self.cushions.iter().for_each(|c| seen(c.id));
         self.paintings.iter().for_each(|p| seen(p.id));
         self.item_frames.iter().for_each(|f| seen(f.id));
+        self.others.iter().for_each(|o| seen(o.id));
         if let Some(d) = &self.dragon {
             seen(d.id);
         }

@@ -745,9 +745,9 @@ impl Game<'_> {
         let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&edit.pos) else {
             return;
         };
+        self.render_transparent_background("sign_editor", batch);
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
-        batch.fill(atlas, 0.0, 0.0, w, h, rgba(16, 16, 16, 160));
         let (key, fallback) = if sign.hanging {
             ("hanging_sign.edit", "Edit Hanging Sign Message")
         } else {

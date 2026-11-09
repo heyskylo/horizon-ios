@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "item_after_vertical_collision",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_after_vertical_collision",
+      "side": "both",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "discard"
+      }
+    }
+  ],
+  "rust_summary": "dropped-item block contact after a clipped vertical move.",
+  "doc_summary": "`native_item_after_vertical_collision` lends a dropped item's active stack after vertical collision response, before block effects, merging and pickup. The block is the one selected by the legacy on-position query. `client` identifies prediction. Set `discard` (trait `Flow::Cancel`) or reduce the stack to zero to consume the item without loot or pickup. A movement skipped by the normal item tick sends no notification. Bundles need \"hooks\": @API:item_after_vertical_collision@."
+}

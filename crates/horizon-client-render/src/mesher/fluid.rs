@@ -19,6 +19,11 @@ use std::{convert::Infallible, sync::OnceLock};
 /// `FluidRenderer.MAX_FLUID_HEIGHT`.
 const MAX_HEIGHT: f32 = 0.888_888_9;
 const EPSILON: f32 = 0.001;
+/// `super::step_index` of the unit steps of the padded index: one block east
+/// (+x), one south (+z), one up (+y).
+const X_STEP: isize = 1;
+const P_STEP: isize = super::P as isize;
+const UP: isize = super::step_index([0, 1, 0]);
 
 /// For the occlusion face toward `direction`: the height from the bottom over
 /// which its slice flush with the `direction` side covers the whole width
@@ -224,26 +229,25 @@ pub(super) fn tesselate(
         }
     };
     let info = &tables.info;
-    let at = |p: [i32; 3]| &info[pad.blocks[pi(p[0], p[1], p[2])] as usize];
-    let me = at([x, y, z]);
+    // The cell's own padded index: every other cell sampled here is a constant
+    // step from it (`super::step_index`), so no `pi` per sample.
+    let cell = pi(x, y, z) as isize;
+    let at = |step: isize| &info[pad.blocks[(cell + step) as usize] as usize];
+    let me = at(0);
     let kind = me.fluid.kind();
     let same = |s: &Info| s.fluid.kind().same_family(kind);
-    let neighbor = |d: Direction| {
-        let [dx, dy, dz] = d.normal();
-        at([x + dx, y + dy, z + dz])
-    };
+    let neighbor = |d: Direction| at(super::OFFSETS[d as usize]);
     let (down, up) = (neighbor(Direction::Down), neighbor(Direction::Up));
     let should_render = |d: Direction| !same(neighbor(d)) && !occluded_by_self(me, d);
     let render_up = !same(up);
     let render_down =
         should_render(Direction::Down) && !occluded_by(Direction::Down, MAX_HEIGHT, down);
     let sides = [
-        Direction::North,
-        Direction::South,
-        Direction::West,
-        Direction::East,
-    ]
-    .map(should_render);
+        should_render(Direction::North),
+        should_render(Direction::South),
+        should_render(Direction::West),
+        should_render(Direction::East),
+    ];
     if !render_up && !render_down && !sides.iter().any(|&s| s) {
         return;
     }
@@ -266,10 +270,10 @@ pub(super) fn tesselate(
             crate::mesher::emitting(pack_rgb(rgb), emission)
         }
     };
-    let height = |p: [i32; 3]| -> f32 {
-        let s = at(p);
+    let height = |step: isize| -> f32 {
+        let s = at(step);
         if same(s) {
-            if same(at([p[0], p[1] + 1, p[2]])) {
+            if same(at(step + UP)) {
                 1.0
             } else {
                 s.fluid.own_height()
@@ -280,15 +284,15 @@ pub(super) fn tesselate(
             -1.0
         }
     };
-    let own = height([x, y, z]);
+    let own = height(0);
     let (mut ne, mut nw, mut se, mut sw) = (1.0f32, 1.0f32, 1.0f32, 1.0f32);
     if own < 1.0 {
-        let n = height([x, y, z - 1]);
-        let s = height([x, y, z + 1]);
-        let e = height([x + 1, y, z]);
-        let w = height([x - 1, y, z]);
+        let n = height(-P_STEP);
+        let s = height(P_STEP);
+        let e = height(X_STEP);
+        let w = height(-X_STEP);
         // calculateAverageHeight(self, height2, height1, corner)
-        let average = |h2: f32, h1: f32, corner: [i32; 3]| -> f32 {
+        let average = |h2: f32, h1: f32, corner: isize| -> f32 {
             if h1 >= 1.0 || h2 >= 1.0 {
                 return 1.0;
             }
@@ -314,16 +318,17 @@ pub(super) fn tesselate(
             add(h2);
             sum[0] / sum[1]
         };
-        ne = average(n, e, [x + 1, y, z - 1]);
-        nw = average(n, w, [x - 1, y, z - 1]);
-        se = average(s, e, [x + 1, y, z + 1]);
-        sw = average(s, w, [x - 1, y, z + 1]);
+        ne = average(n, e, X_STEP - P_STEP);
+        nw = average(n, w, -X_STEP - P_STEP);
+        se = average(s, e, X_STEP + P_STEP);
+        sw = average(s, w, -X_STEP + P_STEP);
     }
-    let light = |p: [i32; 3]| {
-        let above = [p[0], p[1] + 1, p[2]];
+    let light = |step: isize| {
+        let i = (cell + step) as usize;
+        let above = (cell + step + UP) as usize;
         pack_coords(lighting::max_coords(
-            lighting::coords(pad, at(p), p),
-            lighting::coords(pad, at(above), above),
+            lighting::coords_at(pad, lighting::state_at(pad, info, i), i),
+            lighting::coords_at(pad, lighting::state_at(pad, info, above), above),
         ))
     };
     let (still, flow, overlay) = if water {
@@ -335,12 +340,11 @@ pub(super) fn tesselate(
     } else {
         (tables.lava_still, tables.lava_flow, None)
     };
-    let target = if water {
-        &mut out.translucent
+    let (target, sprite_layers) = if water {
+        (&mut out.translucent, &mut out.sprite_layers)
     } else {
-        &mut out.solid
+        (&mut out.solid, &mut out.sprite_layers)
     };
-    let mut sprite_layers = Vec::new();
     let mut quad = |v: [([f32; 3], [f32; 2]); 4],
                     layer: u16,
                     color: u32,
@@ -356,9 +360,9 @@ pub(super) fn tesselate(
             fluid_face(color, face)
         };
         let vertex = |(pos, uv)| TerrainVertex::new(pos, uv, layer, color, light);
-        target.extend(v.map(vertex));
+        target.extend([vertex(v[0]), vertex(v[1]), vertex(v[2]), vertex(v[3])]);
         if back {
-            target.extend([v[0], v[3], v[2], v[1]].map(vertex));
+            target.extend([vertex(v[0]), vertex(v[3]), vertex(v[2]), vertex(v[1])]);
         }
     };
     let (fx, fy, fz) = (x as f32, y as f32, z as f32);
@@ -394,7 +398,7 @@ pub(super) fn tesselate(
         // FluidState.shouldRenderBackwardUpFace over the 3x3 cells above.
         let backward = (-1..=1).any(|ox| {
             (-1..=1).any(|oz| {
-                let s = at([x + ox, y + 1, z + oz]);
+                let s = at(UP + ox as isize * X_STEP + oz as isize * P_STEP);
                 !same(s) && !s.solid
             })
         });
@@ -413,7 +417,7 @@ pub(super) fn tesselate(
             corners,
             layer,
             color(cardinal(D::Up)),
-            light([x, y, z]),
+            light(0),
             backward,
             Direction::Up as usize,
         );
@@ -429,12 +433,12 @@ pub(super) fn tesselate(
             ],
             still,
             color(cardinal(D::Down)),
-            light([x, y - 1, z]),
+            light(-UP),
             false,
             Direction::Down as usize,
         );
     }
-    let side_light = light([x, y, z]);
+    let side_light = light(0);
     let up_shade = cardinal(D::Up);
     for (i, d) in [
         Direction::North,
@@ -492,7 +496,6 @@ pub(super) fn tesselate(
             d as usize,
         );
     }
-    out.sprite_layers.extend(sprite_layers);
 }
 
 #[cfg(test)]

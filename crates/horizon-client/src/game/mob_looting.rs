@@ -123,9 +123,11 @@ impl Game<'_> {
         set_drop_chance(m, slot.index(), 2.0);
         m.persistent = true;
         let at = [m.position.x, m.position.y, m.position.z];
+        let id = m.id;
         if drop_old && let Some(old) = old {
-            self.spawn_item(old, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(old, at, 10);
         }
+        self.mob_equip_event(id, at, true);
         Some(taken)
     }
 

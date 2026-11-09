@@ -13,7 +13,10 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::Cell,
-    sync::atomic::{AtomicIsize, AtomicPtr, AtomicUsize, Ordering::Relaxed},
+    sync::atomic::{
+        AtomicIsize, AtomicPtr, AtomicUsize,
+        Ordering::{Acquire, Relaxed, Release},
+    },
 };
 
 const TAGS: usize = 512;
@@ -41,9 +44,10 @@ thread_local! {
 fn slot(name: &'static str) -> u32 {
     let n = NEXT.load(Relaxed).min(TAGS);
     for i in 1..n {
-        let ptr = NAME_PTR[i].load(Relaxed);
+        let ptr = NAME_PTR[i].load(Acquire);
         if !ptr.is_null() && NAME_LEN[i].load(Relaxed) == name.len() {
-            // SAFETY: the slot holds a leaked or static string of that length.
+            // SAFETY: `NAME_PTR[i]` is published with `Release` after `NAME_LEN[i]`
+            // and the leaked or static string bytes are initialized.
             let s = unsafe { std::slice::from_raw_parts(ptr, name.len()) };
             if s == name.as_bytes() {
                 return i as u32;
@@ -55,12 +59,12 @@ fn slot(name: &'static str) -> u32 {
         return UNTAGGED;
     }
     NAME_LEN[i].store(name.len(), Relaxed);
-    NAME_PTR[i].store(name.as_ptr().cast_mut(), Relaxed);
+    NAME_PTR[i].store(name.as_ptr().cast_mut(), Release);
     i as u32
 }
 
 /// The OS name of the calling thread, read without allocating.
-#[cfg(any(target_vendor = "apple", target_os = "linux"))]
+#[cfg(all(not(miri), any(target_vendor = "apple", target_os = "linux")))]
 fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
     // SAFETY: writes at most `buf.len()` bytes, NUL included, into `buf`.
     let ok = unsafe {
@@ -80,7 +84,7 @@ fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
 /// handle, which lands back in this allocator. That is already handled: the
 /// `BUSY` guard in [`thread_tag`] answers the nested call `UNTAGGED` rather
 /// than recursing, as the module's note on naming allocations says.
-#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+#[cfg(any(miri, not(any(target_vendor = "apple", target_os = "linux"))))]
 fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
     let current = std::thread::current();
     let Some(name) = current.name() else {
@@ -129,11 +133,12 @@ fn thread_tag() -> u32 {
 
 fn slot_name(i: u32) -> Option<&'static str> {
     let i = i as usize;
-    let ptr = NAME_PTR.get(i)?.load(Relaxed);
+    let ptr = NAME_PTR.get(i)?.load(Acquire);
     if ptr.is_null() {
         return None;
     }
-    // SAFETY: registered slots hold leaked or static UTF-8 of that length.
+    // SAFETY: `NAME_PTR[i]` is published with `Release` after `NAME_LEN[i]`
+    // and the leaked or static UTF-8 string bytes are initialized.
     Some(unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, NAME_LEN[i].load(Relaxed)))
     })
@@ -178,6 +183,11 @@ pub fn census() -> Vec<(&'static str, isize)> {
     by_name
 }
 
+#[cfg(not(miri))]
+use mimalloc::MiMalloc as BackingAlloc;
+#[cfg(miri)]
+use std::alloc::System as BackingAlloc;
+
 /// mimalloc with a tag in front of each block (see the module).
 pub struct CensusAllocator;
 
@@ -186,16 +196,19 @@ fn header(layout: Layout) -> usize {
     layout.align().max(16)
 }
 
-// SAFETY: forwards every call to mimalloc with the header added; the tag sits
-// in the header's last four bytes, inside the block mimalloc returned.
+// SAFETY: forwards every call to the backing allocator with the header added;
+// the tag sits in the header's last four bytes, inside the returned block.
 unsafe impl GlobalAlloc for CensusAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let h = header(layout);
-        let Ok(outer) = Layout::from_size_align(layout.size() + h, layout.align().max(16)) else {
+        let Some(outer_size) = layout.size().checked_add(h) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(outer) = Layout::from_size_align(outer_size, layout.align().max(16)) else {
             return std::ptr::null_mut();
         };
         // SAFETY: `outer` has a nonzero size.
-        let base = unsafe { mimalloc::MiMalloc.alloc(outer) };
+        let base = unsafe { BackingAlloc.alloc(outer) };
         if base.is_null() {
             return base;
         }
@@ -216,17 +229,23 @@ unsafe impl GlobalAlloc for CensusAllocator {
             LIVE[tag as usize].fetch_sub(layout.size() as isize, Relaxed);
             let outer =
                 Layout::from_size_align_unchecked(layout.size() + h, layout.align().max(16));
-            mimalloc::MiMalloc.dealloc(block.sub(h), outer);
+            BackingAlloc.dealloc(block.sub(h), outer);
         }
     }
     unsafe fn realloc(&self, block: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let h = header(layout);
+        let Some(new_outer) = new_size.checked_add(h) else {
+            return std::ptr::null_mut();
+        };
+        if Layout::from_size_align(new_outer, layout.align().max(16)).is_err() {
+            return std::ptr::null_mut();
+        }
         // SAFETY: `block` came from `alloc` with this layout; the header moves with it.
         unsafe {
             let outer =
                 Layout::from_size_align_unchecked(layout.size() + h, layout.align().max(16));
             let tag = block.sub(4).cast::<u32>().read_unaligned();
-            let base = mimalloc::MiMalloc.realloc(block.sub(h), outer, new_size + h);
+            let base = BackingAlloc.realloc(block.sub(h), outer, new_outer);
             if base.is_null() {
                 return base;
             }
@@ -287,5 +306,45 @@ mod tests {
         // SAFETY: `block` came from this allocator with `layout`.
         unsafe { CensusAllocator.dealloc(block as *mut u8, layout) };
         assert_eq!(live(&name), 0);
+    }
+
+    #[test]
+    fn concurrent_thread_name_registration_and_overflow_are_sound() {
+        let small = Layout::from_size_align(64, 16).unwrap();
+        // SAFETY: valid layout; overflowed realloc size must fail cleanly without UB.
+        unsafe {
+            let block = CensusAllocator.alloc(small);
+            assert!(!block.is_null());
+            assert!(CensusAllocator.realloc(block, small, usize::MAX).is_null());
+            let huge = Layout::from_size_align(isize::MAX as usize - 15, 1).unwrap();
+            assert!(CensusAllocator.alloc(huge).is_null());
+            CensusAllocator.dealloc(block, small);
+        }
+
+        std::thread::scope(|s| {
+            for idx in 0..4 {
+                s.spawn(move || {
+                    let name = format!("miri-t-{idx}");
+                    std::thread::Builder::new()
+                        .name(name)
+                        .spawn(move || {
+                            // SAFETY: valid layout.
+                            let p = unsafe { CensusAllocator.alloc(small) };
+                            let _ = census();
+                            // SAFETY: `p` came from `alloc` with `small`.
+                            unsafe { CensusAllocator.dealloc(p, small) };
+                        })
+                        .unwrap()
+                        .join()
+                        .unwrap();
+                });
+            }
+            for _ in 0..8 {
+                let snap = census();
+                for (name, _) in snap {
+                    assert!(!name.is_empty());
+                }
+            }
+        });
     }
 }

@@ -631,10 +631,10 @@ impl TreeFeature {
         if clipped < tree_height && self.min_clipped_height.is_none_or(|min| clipped < min) {
             return Ok(false);
         }
-        if let Some(root) = &self.root_placer {
-            if !root.place_roots(run, self, origin, trunk_origin)? {
-                return Ok(false);
-            }
+        if let Some(root) = &self.root_placer
+            && !root.place_roots(run, self, origin, trunk_origin)?
+        {
+            return Ok(false);
         }
         let attachments = self
             .trunk_placer

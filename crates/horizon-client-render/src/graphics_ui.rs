@@ -1,22 +1,24 @@
 //! Horizon's graphics settings screen: every video setting, vanilla's and
 //! Horizon's, on one list of pages (General, Quality, Performance, Shaders,
-//! Advanced, HDR) with a page list beside it, a search field over it and a description
-//! of the hovered setting with its cost. Which settings it shows, in what
-//! pages, with what description and cost, and its input live here; how it
-//! looks comes from `graphics_style`.
+//! Advanced, HDR), on the settings shell (`settings_shell`), which draws it, with
+//! a page list, a search field and a description of the hovered setting with its
+//! cost. Which settings it shows, in what pages, with what description and cost,
+//! and what they do live here.
 use crate::{
     graphics::{
-        EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
+        EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
+        LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
-    graphics_style::{self as style, Cost},
-    hud::{HudAtlas, HudBatch},
+    graphics_style::Cost,
     lang,
+    options_ui::{Event, Page as OptionsPage},
     settings::{Opt, Settings},
-    settings_shell::{self as shell, Columns},
+    settings_shell::{self as shell, Binding, Group, Output, Row, Screen, Sheet, Value},
     text::Text,
-    ui,
 };
+
+/// The language key of the screen's name.
+const TITLE: &str = "Graphics";
 
 /// The screen's pages, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +78,7 @@ pub enum H {
     EntityCullingPrecheck,
     ParticleCulling,
     LeafCulling,
+    OpaqueIce,
     CacheShulkerBoxes,
     CacheSigns,
     CacheDecoratedPots,
@@ -97,6 +100,7 @@ pub enum H {
     ResolutionScale,
     Antialiasing,
     Upscaling,
+    UpscalingSharpness,
     ScreenshotQuality,
     FrameGeneration,
     Hdr,
@@ -373,6 +377,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Renders the world smaller and rebuilds it with TAA. Faster, softer.",
                         ),
                         h(
+                            H::UpscalingSharpness,
+                            Low,
+                            "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.",
+                        ),
+                        h(
                             H::ScreenshotQuality,
                             None,
                             "F2 screenshots at this many times the game's resolution. Higher takes longer.",
@@ -446,6 +455,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::LeafCulling,
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
+                        ),
+                        h(
+                            H::OpaqueIce,
+                            Saves,
+                            "Draws ice in the solid pass, without its see-through texture.",
                         ),
                     ],
                 ),
@@ -639,12 +653,20 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
 /// BlueMap download radii, in chunks.
 const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
-/// What the LOD Distance slider stops at, in chunks: off, then each doubling
+/// What the LOD Distance slider stops at, in chunks: off, fine steps up to 256
+/// for a short ring of far terrain past a small render distance (a phone or an
+/// integrated GPU at 8 chunks wants LOD to 12 or 16, not 64), then each doubling
 /// up to the whole world.
-const LOD_STEPS: [u32; 18] = [
+const LOD_STEPS: [u32; 24] = [
     0,
+    16,
+    24,
+    32,
+    48,
     64,
+    96,
     128,
+    192,
     256,
     512,
     1024,
@@ -698,6 +720,9 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         }
         (Item::Horizon(H::HdrPeak | H::HdrPaperWhite), Setup::Automatic | Setup::Changed) => {
             "Set up for your display. Leave on Auto unless it looks wrong."
+        }
+        (Item::Horizon(H::GpuCulling), _) if s.horizon.gpu_culling == GpuCullingMode::Auto => {
+            "Auto: tries it where your CPU limits the frame, keeps it if frames get faster."
         }
         (Item::Horizon(H::EntityCulling), _) => match s.horizon.entity_culling {
             EntityCullingMode::Off => "No entity occlusion culling.",
@@ -777,6 +802,7 @@ impl H {
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
+            H::UpscalingSharpness => Some(g.upscaling_sharpness as f32 / 100.0),
             // Auto, then 10..480 by 10.
             H::HdrPaperWhite => Some(g.hdr_paper_white as f32 / 480.0),
             // Auto, then 200..2000 by 50.
@@ -796,6 +822,7 @@ impl H {
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
+            H::UpscalingSharpness => Some(20),
             H::HdrPaperWhite => Some(41),
             H::HdrPeak => Some(37),
             H::HdrBlackLevel => Some(100),
@@ -822,7 +849,11 @@ impl H {
             // the saved value waits.
             H::GpuCulling => labelled(
                 "GPU Culling",
-                on_off(g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()),
+                if crate::graphics::gpu_culling_offer().reason().is_none() {
+                    g.gpu_culling.label()
+                } else {
+                    GpuCullingMode::Off.label()
+                },
             ),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
             H::EntityCullingPrecheck => labelled(
@@ -835,6 +866,7 @@ impl H {
             ),
             H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
+            H::OpaqueIce => labelled("Opaque Ice", on_off(g.opaque_ice)),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
             H::CacheDecoratedPots => labelled("Decorated Pots", on_off(g.cache_decorated_pots)),
@@ -885,11 +917,14 @@ impl H {
                 },
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
+            H::UpscalingSharpness => {
+                labelled("Upscaling Sharpness", format!("{}%", g.upscaling_sharpness))
+            }
             H::ScreenshotQuality => {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
-            H::Hdr => labelled("HDR", on_off(g.hdr)),
+            H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s) {
                 Setup::Unknown => "Calibrate...",
                 Setup::Automatic => "Calibrate Anyway...",
@@ -957,6 +992,7 @@ impl H {
             }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
+            H::UpscalingSharpness => g.upscaling_sharpness = (v * 20.0).round() as u32 * 5,
             H::HdrPaperWhite => g.hdr_paper_white = (v * 48.0).round() as u32 * 10,
             H::HdrPeak => {
                 g.hdr_peak = match (v * 37.0).round() as u32 {
@@ -991,7 +1027,7 @@ impl H {
                 g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
-            H::GpuCulling => g.gpu_culling = !g.gpu_culling,
+            H::GpuCulling => g.gpu_culling = step(&GpuCullingMode::ALL, g.gpu_culling, back),
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
             }
@@ -1001,6 +1037,7 @@ impl H {
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
             }
+            H::OpaqueIce => g.opaque_ice = !g.opaque_ice,
             H::CacheShulkerBoxes => g.cache_shulker_boxes = !g.cache_shulker_boxes,
             H::CacheSigns => g.cache_signs = !g.cache_signs,
             H::CacheDecoratedPots => g.cache_decorated_pots = !g.cache_decorated_pots,
@@ -1042,7 +1079,12 @@ impl H {
             H::FrameGeneration => {
                 g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
-            H::Hdr => g.hdr = !g.hdr,
+            H::Hdr => {
+                g.hdr = step(&HdrMode::ALL, g.hdr, back);
+                if g.hdr == HdrMode::On && !crate::graphics::hdr_offered() {
+                    g.hdr = step(&HdrMode::ALL, g.hdr, back);
+                }
+            }
             H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
@@ -1075,11 +1117,9 @@ impl Item {
     fn available(self) -> bool {
         !matches!(self, Item::Vanilla(o) if !o.available())
     }
-    /// Why a control can't be used now, when it can't: HDR's page works only where
-    /// the display offers HDR output, whatever `horizon-graphics.txt` says (a copied game
-    /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
-    /// the saved values wait for an HDR display), and its sliders do something only
-    /// while it is on; Translucent Batching switches only where the device can batch
+    /// Why a control can't be used now: HDR's On requires an offered output, while Auto
+    /// can also be chosen on a reporting SDR display. Brightness controls need HDR output
+    /// active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
     /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
     /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
@@ -1089,8 +1129,7 @@ impl Item {
         }
         match self {
             Item::Horizon(
-                H::Hdr
-                | H::HdrCalibrate
+                H::HdrCalibrate
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
@@ -1113,7 +1152,7 @@ impl Item {
                 | H::HdrUiBrightness
                 | H::HdrLighting
                 | H::HdrSmoothGradients,
-            ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
+            ) if !s.horizon.hdr_wanted() => Some("Turn HDR on to use it."),
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
             {
@@ -1147,9 +1186,7 @@ impl Item {
         Some(match self {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
-            Item::Horizon(H::GpuCulling) => {
-                g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()
-            }
+            Item::Horizon(H::OpaqueIce) => g.opaque_ice,
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
@@ -1162,7 +1199,6 @@ impl Item {
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
-            Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
@@ -1291,214 +1327,196 @@ impl Item {
     }
 }
 
-/// What the options screen must do after an interaction here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
-    ButtonClick,
-    Changed,
-    SliderDrag,
-    /// Wait for a key or mouse button to bind to this name.
-    BindKey(&'static str),
-    /// Start HDR calibration.
-    Calibrate,
-    /// Open the shader pack list.
-    ShaderPacks,
-    Done,
-}
-
-/// What the keyboard or a controller can focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
-    Item(Item),
-    Page(Page),
-    Search,
-    Undo,
-    Done,
-}
-
-type Line = shell::Line<Page, Setting>;
-
 /// Whether a setting is on the screen now: Upscaling only while TAA is, which does it.
 fn shown(item: Item, s: &Settings) -> bool {
     item != Item::Horizon(H::Upscaling) || s.horizon.taa
 }
 /// A control's label as its name and its value ("Render Distance" and "12 chunks").
-fn parts(item: Item, s: &Settings, binding: bool) -> (String, Option<String>) {
-    // The shortcut's label is one translated "Shortcut: %s"; the row shows its key apart,
-    // as KeyBindsScreen does, "> key <" while it waits.
+fn parts(item: Item, s: &Settings) -> (String, Option<String>) {
+    // The shortcut's label is one translated "Shortcut: %s"; the row shows its key apart, as
+    // KeyBindsScreen does ("> key <" while it waits, `settings_shell::Value::Binding`).
     if item == Item::Horizon(H::HdrKey) {
         let key = crate::keybinds::display_name(&s.horizon.hdr_key).plain();
-        let key = if binding { format!("> {key} <") } else { key };
         return (lang::get("Shortcut"), Some(key));
     }
     shell::name_and_value(&item.label(s).plain())
 }
 
-pub struct GraphicsUi {
-    /// The list's scroll amount and its held scrollbar (`AbstractScrollArea`).
-    scroll: ui::Scroll,
-    dragging: Option<Item>,
-    pub focus: Option<Target>,
-    pub can_change_value: bool,
-    /// The key binding the options screen is waiting on (`Action::BindKey`).
-    pub binding: Option<&'static str>,
-    pub search: ui::EditBox,
-    /// The page the plate shows, alone, while nothing is searched.
-    page: Page,
-    /// While searching, the page last picked in the page list: current until the list scrolls.
-    picked: Option<Page>,
-    /// The settings as the screen found them, for Undo, and whether they changed since.
-    before: Option<Box<Settings>>,
-    pub changed: bool,
-}
-impl Default for GraphicsUi {
-    fn default() -> Self {
-        let mut search = ui::EditBox::new(0.0, 0.0, 0.0, 8.0);
-        search.bordered = false;
-        search.focused = false;
-        search.message = lang::get("Search options");
-        Self {
-            scroll: ui::Scroll::default(),
-            dragging: None,
-            focus: None,
-            can_change_value: false,
-            binding: None,
-            search,
-            page: Page::General,
-            picked: None,
-            before: None,
-            changed: false,
-        }
+/// A setting's row: its control, what it does (and what its chosen value does), what it costs,
+/// and why it can't be used now.
+fn row(setting: Setting, s: &Settings) -> Row<Item> {
+    let item = setting.item;
+    let (name, value) = parts(item, s);
+    let value = match (item, item.switch(s), item.slider(s)) {
+        (Item::Horizon(H::HdrKey), ..) => Value::Binding(Binding::key(
+            crate::graphics::HDR_KEY,
+            value.unwrap_or_default(),
+        )),
+        (_, Some(on), _) => Value::Switch(on),
+        (_, None, Some(position)) => Value::Slider {
+            position,
+            steps: item.slider_steps(),
+            text: value.unwrap_or_default(),
+        },
+        _ => value.map_or(Value::Press, Value::Choice),
+    };
+    let about = lang::get(setting.text);
+    let chosen = lang::get(description(item, s, setting.text));
+    Row {
+        chosen: (chosen != about).then_some(chosen),
+        ..Row::new(item, name, value)
+            .about(about)
+            .cost(setting.cost)
+            .blocked(item.blocked(s).map(lang::get))
     }
 }
 
-impl GraphicsUi {
-    /// How far the list is scrolled (the options screen's tests).
-    #[cfg(test)]
-    pub(crate) fn scroll_amount(&self) -> f32 {
-        self.scroll.amount
+/// The vanilla rows `options.txt` keeps as it read them, not in `Settings`' own fields.
+const FILE_KEYS: [&str; 3] = [
+    "exclusiveFullscreen",
+    "textureFiltering",
+    "maxAnisotropyBit",
+];
+
+/// What the screen's rows read from the settings: what Undo puts back (`GraphicsScreen::undo`),
+/// and what changes beside the screen (fullscreen, the language, the display's modes). A test
+/// changes every row and checks this reads the change.
+fn read(s: &Settings) -> impl std::fmt::Debug + '_ {
+    let distances = (
+        s.render_distance,
+        s.simulation_distance,
+        s.cloud_range,
+        s.weather_radius,
+        s.entity_distance,
+        s.biome_blend,
+    );
+    let frames = (
+        s.gamma,
+        s.gui_scale,
+        s.vsync,
+        s.max_fps,
+        &s.inactivity_fps_limit,
+        s.menu_blur,
+        s.chunk_fade,
+        s.prioritize_chunk_updates,
+    );
+    let picture = (
+        s.attack_indicator,
+        s.autosave_indicator,
+        &s.clouds,
+        s.particles,
+        s.smooth_lighting,
+        s.entity_shadows,
+        s.vignette,
+        s.mipmap_levels,
+        s.cutout_leaves,
+        s.improved_transparency,
+        &s.graphics_preset,
+    );
+    let window = (
+        s.fullscreen,
+        &s.video_modes,
+        &s.file.fullscreen_resolution,
+        FILE_KEYS.map(|key| s.file.get(key)),
+        &s.language,
+        s.force_unicode,
+    );
+    (&s.horizon, &s.extras, distances, frames, picture, window)
+}
+
+/// Horizon's graphics screen on the settings shell (`settings_shell`): its pages and rows from
+/// [`rows`], what pressing them does, and Undo.
+#[derive(Default)]
+pub struct GraphicsScreen {
+    /// The window's size in pixels, which a vanilla row's step can need (the fullscreen
+    /// resolution): the options screen sets it before each input.
+    pub(crate) framebuffer: [i32; 2],
+}
+
+impl Screen for GraphicsScreen {
+    type Page = Page;
+    type Row = Item;
+    fn title(&self) -> &'static str {
+        TITLE
     }
-    /// The page the plate shows while nothing is searched.
-    pub fn page(&self) -> Page {
-        self.page
+    /// The rows read the settings, and what the device and display offer.
+    fn stamp(&self, s: &Settings) -> u64 {
+        use crate::graphics as g;
+        let offers = (
+            g::hdr_offered(),
+            g::system_hdr(),
+            g::smooth_gradients_offered(),
+            g::translucent_batching_offered(),
+            g::gpu_culling_offer(),
+            g::reported(),
+            g::reduced_far_detail_suggested(),
+        );
+        shell::stamp_of(&(read(s), offers))
     }
-    /// The screen opens, at `page`.
-    pub fn open(&mut self, page: Page) {
-        *self = Self {
-            page,
-            ..Self::default()
-        };
-    }
-    fn query(&self) -> String {
-        self.search.value.trim().to_lowercase()
-    }
-    /// The list's lines and its content height: the open page's settings in
-    /// their groups or, while searching, the settings of every page whose name
-    /// or description has the search in it, under their pages' names. Not
-    /// their values (nor the descriptions that follow them), and the row being
-    /// changed stays whatever it reads now: a change mustn't take its row away
-    /// under the pointer.
-    fn lines(&self, s: &Settings) -> (Vec<Line>, f32) {
-        let query = self.query();
-        let mut lines = shell::Lines::new();
-        for (page, groups) in rows() {
-            if query.is_empty() && page != self.page {
-                continue;
-            }
-            let groups: Vec<(&'static str, Vec<Setting>)> = groups
+    fn sheets(&self, s: &Settings) -> Vec<Sheet<Page, Item>> {
+        let sheet = |(page, groups): (Page, Vec<(&'static str, Vec<Setting>)>)| Sheet {
+            id: page,
+            name: lang::get(page.name()),
+            about: lang::get(page.about()),
+            groups: groups
                 .into_iter()
-                .map(|(name, rows)| {
-                    let rows = rows
+                .map(|(name, settings)| Group {
+                    name,
+                    rows: settings
                         .into_iter()
                         .filter(|r| shown(r.item, s))
-                        .filter(|r| {
-                            query.is_empty()
-                                || self.focus == Some(Target::Item(r.item))
-                                || self.dragging == Some(r.item)
-                                || parts(r.item, s, false).0.to_lowercase().contains(&query)
-                                || lang::get(r.text).to_lowercase().contains(&query)
-                        })
-                        .collect::<Vec<_>>();
-                    (name, rows)
+                        .map(|r| row(r, s))
+                        .collect(),
                 })
-                .filter(|(_, rows)| !rows.is_empty())
-                .collect();
-            if groups.is_empty() {
-                continue;
+                .collect(),
+        };
+        rows().into_iter().map(sheet).collect()
+    }
+    fn press(&mut self, s: &mut Settings, item: Item, back: bool) -> Vec<Output> {
+        match item {
+            Item::Horizon(H::HdrCalibrate) if setup(s) == Setup::Changed => {
+                s.horizon.hdr_peak = 0;
+                s.horizon.hdr_paper_white = 0;
+                vec![Output::Event(Event::Changed)]
             }
-            if !query.is_empty() {
-                lines.page(page);
+            Item::Horizon(H::HdrCalibrate) => vec![Output::Push(OptionsPage::HdrCalibration)],
+            // The list of either kind, as the Shaders page opens it from anywhere.
+            Item::Horizon(H::ShaderPacks) => {
+                s.shader_options = None;
+                vec![
+                    Output::Event(Event::ListShaderPacks),
+                    Output::Event(Event::OpenShaderOptions),
+                    Output::Push(OptionsPage::ShaderPacks),
+                ]
             }
-            for (name, rows) in groups {
-                lines.group(page, name, rows);
+            _ => {
+                item.cycle(s, back, self.framebuffer);
+                vec![Output::Event(Event::Changed)]
             }
         }
-        lines.finish()
     }
-    /// The columns and the list, with the scroll kept within it.
-    fn layout(&mut self, s: &Settings, w: f32, h: f32) -> (Columns, Vec<Line>, f32) {
-        let cols = Columns::of(w, h);
-        let (lines, content) = self.lines(s);
-        self.scroll.clamp(cols.top, cols.bottom, content);
-        (cols, lines, content)
+    fn slide(&mut self, s: &mut Settings, item: Item, position: f32) {
+        item.set_slider(s, position);
     }
-    /// Pick `page`: the plate shows it alone or, while searching, scrolls to its matches.
-    fn pick(&mut self, page: Page, lines: &[Line], cols: &Columns, content: f32) {
-        self.page = page;
-        self.scroll.amount = 0.0;
-        if self.query().is_empty() {
-            return;
-        }
-        if let Some(line) = lines.iter().find(|l| l.page == page) {
-            self.scroll.amount = line.y;
-            self.scroll.clamp(cols.top, cols.bottom, content);
-            self.picked = Some(page);
-        }
-    }
-    /// Whether the page list's `page` has anything to show.
-    fn has(&self, page: Page, lines: &[Line]) -> bool {
-        self.query().is_empty() || lines.iter().any(|l| l.page == page)
-    }
-    /// The page the plate shows: the open one or, while searching, the one
-    /// picked, else the topmost line's.
-    fn current(&self, lines: &[Line]) -> Option<Page> {
-        if self.query().is_empty() {
-            return Some(self.page);
-        }
-        self.picked.or_else(|| {
-            lines
-                .iter()
-                .find(|l| l.y + l.h() > self.scroll.amount)
-                .map(|l| l.page)
+    /// With the "Scroll wheel changes settings" extra, the wheel steps a value between `<` `>`
+    /// (up goes back); a slider and a tick box leave it to scroll the list.
+    fn wheel_step(&mut self, s: &mut Settings, item: Item, back: bool) -> Option<Vec<Output>> {
+        item.steps(s).then(|| {
+            item.cycle(s, back, self.framebuffer);
+            vec![
+                Output::Event(Event::ButtonClick),
+                Output::Event(Event::Changed),
+            ]
         })
     }
-    fn row_y(&self, cols: &Columns, line: &Line) -> f32 {
-        cols.top + line.y - self.scroll.amount
+    fn undoes(&self) -> bool {
+        true
     }
-    /// Remember the settings before the first change, for Undo.
-    fn keep(&mut self, s: &Settings) {
-        if self.before.is_none() {
-            self.before = Some(Box::new(s.clone()));
-        }
-    }
-    fn mark(&mut self, actions: &[Action]) {
-        if actions.iter().any(|a| {
-            matches!(
-                a,
-                Action::Changed | Action::SliderDrag | Action::BindKey(_) | Action::Calibrate
-            )
-        }) {
-            self.changed = true;
-        }
-    }
-    /// Undo: what this screen edits back to what it was when the screen
-    /// opened: Horizon's graphics settings and the vanilla options on its rows.
-    /// Not the other options (the narrator, or one `horizon-ctl options-set`
-    /// changed meanwhile), nor fullscreen, which F11 and the window manager change.
-    fn undo(&mut self, s: &mut Settings) {
-        let Some(b) = self.before.as_deref() else {
-            return;
-        };
+    /// What this screen edits back to what it was when the screen opened: Horizon's graphics
+    /// settings and the vanilla options on its rows. Not the other options (the narrator, or
+    /// one `horizon-ctl options-set` changed meanwhile), nor fullscreen, which F11 and the
+    /// window manager change.
+    fn undo(&mut self, s: &mut Settings, b: &Settings) {
         s.horizon = b.horizon.clone();
         s.render_distance = b.render_distance;
         s.simulation_distance = b.simulation_distance;
@@ -1529,563 +1547,43 @@ impl GraphicsUi {
         s.prioritize_chunk_updates = b.prioritize_chunk_updates;
         // Presets set it beside the options above.
         s.graphics_preset = b.graphics_preset.clone();
-        // The vanilla rows options.txt keeps as it read them.
-        for key in [
-            "exclusiveFullscreen",
-            "textureFiltering",
-            "maxAnisotropyBit",
-        ] {
+        for key in FILE_KEYS {
             if let Some(value) = b.file.get(key) {
                 s.file.set(key, value.clone());
             }
         }
         s.file.fullscreen_resolution = b.file.fullscreen_resolution.clone();
-        self.changed = false;
     }
-
-    pub fn draw(
-        &mut self,
-        s: &Settings,
-        batch: &mut HudBatch,
-        atlas: &HudAtlas,
-        cursor: (f32, f32),
-        in_world: bool,
-    ) {
-        self.keep(s);
-        let (w, h) = (batch.width, batch.height);
-        let (cols, lines, content) = self.layout(s, w, h);
-        shell::backdrop(batch, atlas, in_world);
-        let current = self.current(&lines);
-        self.draw_side(batch, atlas, &cols, &lines, current, cursor);
-        let focused = self.focus == Some(Target::Search);
-        shell::search_field(&mut self.search, batch, atlas, &cols, cursor, focused);
-
-        let query = self.search.value.trim();
-        let heading = if query.is_empty() {
-            lang::get(current.unwrap_or(self.page).name())
-        } else {
-            lang::get("Results for \"%s\"").replace("%s", query)
-        };
-        shell::plate(batch, atlas, &cols, &heading);
-
-        let over_list = cursor.1 >= cols.top && cursor.1 < cols.bottom;
-        let mut described = None;
-        shell::list(
-            batch,
-            atlas,
-            &cols,
-            &lines,
-            self.scroll.amount,
-            |page| lang::get(page.name()),
-            |batch, setting: Setting, y| {
-                let item = setting.item;
-                let rect = cols.row(y);
-                let hover = over_list && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3]);
-                let focused = self.focus == Some(Target::Item(item));
-                // The pointer's row wins over the keyboard's.
-                if hover || self.dragging == Some(item) || (focused && described.is_none()) {
-                    described = Some(setting);
-                }
-                self.draw_row(batch, atlas, s, &cols, item, y, hover, focused);
-            },
-        );
-        shell::scroller(batch, atlas, &cols, content, self.scroll.amount);
-        self.draw_dock(batch, atlas, s, &cols, described, current);
-
-        let mut foot = vec![(cols.button(0), "Done", Target::Done)];
-        // Undo only once there is something to undo.
-        if self.changed {
-            foot.push((cols.button(1), "Undo", Target::Undo));
-        }
-        for (rect, label, target) in foot {
-            let label = Text::literal(lang::get(label));
-            let focused = self.focus == Some(target);
-            let primary = target == Target::Done;
-            let declared = if primary {
-                crate::widgets::Action::Done
-            } else {
-                crate::widgets::Action::Apply
-            };
-            crate::widgets::declare_action(declared, rect, true);
-            shell::foot_button(batch, atlas, rect, &label, cursor, (focused, primary));
-        }
-    }
-    /// The mark over the search field, and the page list: the open page on a
-    /// plate with the accent's bar beside it, the others bare text.
-    fn draw_side(
-        &self,
-        batch: &mut HudBatch,
-        atlas: &HudAtlas,
-        cols: &Columns,
-        lines: &[Line],
-        current: Option<Page>,
-        cursor: (f32, f32),
-    ) {
-        shell::mark(batch, atlas, cols, &lang::get("Graphics"));
-        for (i, page) in Page::ALL.into_iter().enumerate() {
-            let has = self.has(page, lines);
-            let open = current == Some(page);
-            let focused = self.focus == Some(Target::Page(page));
-            let name = lang::get(page.name());
-            let flags = (has, open, focused);
-            shell::page_tab(batch, atlas, cols.page(i), &name, flags, cursor);
-        }
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn draw_row(
-        &self,
-        batch: &mut HudBatch,
-        atlas: &HudAtlas,
-        s: &Settings,
-        cols: &Columns,
-        item: Item,
-        y: f32,
-        hover: bool,
-        focused: bool,
-    ) {
-        let label = item.label(s).plain();
-        let (name, value) = parts(item, s, self.binding.is_some());
-        let view = shell::RowView {
-            label: &label,
-            name: &name,
-            value: value.as_deref(),
-            switch: item.switch(s),
-            slider: item.slider(s),
-            live: item.blocked(s).is_none(),
-            hover,
-            focused,
-            held: self.dragging == Some(item),
-        };
-        shell::row(batch, atlas, cols, y, &view);
-    }
-    /// The strip under the plate: the hovered or focused setting's name and
-    /// cost, then what it does (or why it can't be used now); with none, what
-    /// the open page holds.
-    fn draw_dock(
-        &self,
-        batch: &mut HudBatch,
-        atlas: &HudAtlas,
-        s: &Settings,
-        cols: &Columns,
-        setting: Option<Setting>,
-        current: Option<Page>,
-    ) {
-        let [x, y, w, _] = cols.dock;
-        style::panel(batch, atlas, cols.dock);
-        let left = x + 12.0;
-        let (text, color) = match setting {
-            Some(setting) => {
-                let (name, _) = parts(setting.item, s, false);
-                let cost = lang::get(setting.cost.label());
-                let line = style::fit(atlas, &format!("{name} · {cost}"), w - 32.0);
-                let line = Text::literal(line).with_color(setting.cost.rgb());
-                let square = [left, y + 10.0, 4.0, 4.0];
-                style::fill(batch, atlas, square, style::cost_color(setting.cost));
-                batch.text_styled(atlas, &line, left + 8.0, y + 8.0, style::WHITE, true);
-                match setting.item.blocked(s) {
-                    Some(why) => (lang::get(why), style::MUTED),
-                    None => (
-                        lang::get(description(setting.item, s, setting.text)),
-                        style::GREY,
-                    ),
-                }
-            }
-            None => {
-                let Some(page) = current else { return };
-                let name = Text::literal(lang::get(page.name()));
-                batch.text_styled(atlas, &name, left, y + 8.0, style::WHITE, true);
-                (lang::get(page.about()), style::GREY)
-            }
-        };
-        shell::dock_note(batch, atlas, cols, text, color);
-    }
-
-    /// A press (or a drag with `drag`) at `(x, y)`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn click(
-        &mut self,
-        s: &mut Settings,
-        (x, y): (f32, f32),
-        (w, h): (f32, f32),
-        framebuffer: [i32; 2],
-        drag: bool,
-        right: bool,
-        shift: bool,
-    ) -> Vec<Action> {
-        self.keep(s);
-        let (cols, lines, content) = self.layout(s, w, h);
-        let at = |[rx, ry, rw, rh]: [f32; 4]| ui::hovered((x, y), rx, ry, rw, rh);
-        if drag {
-            // AbstractScrollArea.mouseDragged: the held scrollbar follows the pointer.
-            if self.scroll.held() && !cols.scrolls() {
-                self.scroll.release();
-            }
-            if self.scroll.held() {
-                self.picked = None;
-                self.scroll.drag(y, cols.top, cols.bottom, content);
-                return Vec::new();
-            }
-            if let Some(item) = self.dragging {
-                item.set_slider(s, cols.slider_at(x));
-                self.changed = true;
-                return vec![Action::SliderDrag];
-            }
-            return Vec::new();
-        }
-        if right {
-            return Vec::new();
-        }
-        if cols.scrolls()
-            && self
-                .scroll
-                .press((x, y), cols.bar_x(), cols.top, cols.bottom, content)
-        {
-            return Vec::new();
-        }
-        if at(cols.search()) {
-            if !self.search.value.is_empty() && at(cols.clear()) {
-                self.search.set_value("");
-                self.searched();
-                return vec![Action::ButtonClick];
-            }
-            self.focus = Some(Target::Search);
-            self.search.reset_blink();
-            self.search.move_cursor_to_end(false);
-            return Vec::new();
-        }
-        if self.focus == Some(Target::Search) {
-            self.focus = None;
-        }
-        if at(cols.button(0)) {
-            self.focus = Some(Target::Done);
-            return vec![Action::ButtonClick, Action::Done];
-        }
-        if self.changed && at(cols.button(1)) {
-            // Undo goes away with the change it undid.
-            self.focus = None;
-            self.undo(s);
-            return vec![Action::ButtonClick, Action::Changed];
-        }
-        for (i, page) in Page::ALL.into_iter().enumerate() {
-            if at(cols.page(i)) && self.has(page, &lines) {
-                self.focus = Some(Target::Page(page));
-                self.pick(page, &lines, &cols, content);
-                return vec![Action::ButtonClick];
-            }
-        }
-        if y < cols.top || y >= cols.bottom {
-            return Vec::new();
-        }
-        let Some(item) = lines.iter().find_map(|line| {
-            let ry = self.row_y(&cols, line);
-            let setting = line.setting?;
-            at([cols.list_x, ry, cols.list_w, style::ROW]).then_some(setting.item)
-        }) else {
-            return Vec::new();
-        };
-        // A disabled control does nothing: no sound, no preset change.
-        if item.blocked(s).is_some() {
-            return Vec::new();
-        }
-        self.focus = Some(Target::Item(item));
-        let actions = self.activate(s, item, shift, framebuffer, Some((x, &cols)));
-        self.mark(&actions);
-        actions
-    }
-    /// Press `item`: `at` is where on its row and its slider's track (`None`
-    /// from the keyboard).
-    fn activate(
-        &mut self,
-        s: &mut Settings,
-        item: Item,
-        back: bool,
-        framebuffer: [i32; 2],
-        at: Option<(f32, &Columns)>,
-    ) -> Vec<Action> {
-        match item {
-            Item::Horizon(H::HdrCalibrate) if setup(s) == Setup::Changed => {
-                s.horizon.hdr_peak = 0;
-                s.horizon.hdr_paper_white = 0;
-                vec![Action::ButtonClick, Action::Changed]
-            }
-            Item::Horizon(H::HdrCalibrate) => vec![Action::ButtonClick, Action::Calibrate],
-            Item::Horizon(H::ShaderPacks) => vec![Action::ButtonClick, Action::ShaderPacks],
-            Item::Horizon(H::HdrKey) => {
-                vec![
-                    Action::ButtonClick,
-                    Action::BindKey(crate::graphics::HDR_KEY),
-                ]
-            }
-            _ if item.slider(s).is_some() => {
-                self.can_change_value = true;
-                // A press on the track sets the value there; on the name, only focuses.
-                match at {
-                    Some((x, cols)) if x >= cols.track().0 => {
-                        self.dragging = Some(item);
-                        item.set_slider(s, cols.slider_at(x));
-                        vec![Action::SliderDrag]
-                    }
-                    _ => Vec::new(),
-                }
-            }
-            _ => {
-                self.can_change_value = false;
-                item.cycle(s, back, framebuffer);
-                vec![Action::ButtonClick, Action::Changed]
-            }
-        }
-    }
-    /// Lets go of a slider (true: it plays its click) or the scrollbar.
-    pub fn release(&mut self) -> bool {
-        self.scroll.release();
-        self.dragging.take().is_some()
-    }
-    /// The mouse wheel at the cursor. It scrolls the list, as vanilla's does
-    /// (`AbstractScrollArea.mouseScrolled`), except that a hovered value stepped by
-    /// `<` `>` takes the step (up goes back) while the "Scroll wheel changes settings"
-    /// extra is on. A slider, a tick box and a
-    /// focused row don't take it, wherever the focus came from: the keyboard and a
-    /// controller step them with Left and Right.
-    pub fn wheel(
-        &mut self,
-        s: &mut Settings,
-        (w, h): (f32, f32),
-        (x, y): (f32, f32),
-        framebuffer: [i32; 2],
-        amount: f32,
-    ) -> Vec<Action> {
-        if amount != 0.0 && s.extras.wheel_cycles_settings {
-            let (cols, lines, _) = self.layout(s, w, h);
-            let hovered = (y >= cols.top && y < cols.bottom)
-                .then(|| {
-                    lines.iter().find_map(|line| {
-                        let setting = line.setting?;
-                        let ry = self.row_y(&cols, line);
-                        ui::hovered((x, y), cols.list_x, ry, cols.list_w, style::ROW)
-                            .then_some(setting.item)
-                    })
-                })
-                .flatten();
-            if let Some(item) = hovered
-                && item.steps(s)
-                && item.blocked(s).is_none()
-            {
-                item.cycle(s, amount > 0.0, framebuffer);
-                self.changed = true;
-                return vec![Action::ButtonClick, Action::Changed];
-            }
-        }
-        self.scroll(s, (w, h), amount);
-        Vec::new()
-    }
-    /// The mouse wheel scrolls the list.
-    pub fn scroll(&mut self, s: &Settings, (w, h): (f32, f32), amount: f32) {
-        let (cols, _, content) = self.layout(s, w, h);
-        self.picked = None;
-        self.scroll
-            .wheel(amount, 18.0, cols.top, cols.bottom, content);
-    }
-    /// What Tab steps through, in order, with where each is on screen (`shell::reach`).
-    fn focusables(
-        &self,
-        s: &Settings,
-        cols: &Columns,
-        lines: &[Line],
-        near: bool,
-    ) -> Vec<(Target, [f32; 4])> {
-        let mut out = vec![(Target::Search, cols.search())];
-        for (i, page) in Page::ALL.into_iter().enumerate() {
-            if self.has(page, lines) {
-                out.push((Target::Page(page), cols.page(i)));
-            }
-        }
-        // Every setting row, and whether it can take the focus.
-        let rows: Vec<(Item, f32, bool)> = lines
-            .iter()
-            .filter_map(|line| {
-                let setting = line.setting?;
-                let live = setting.item.blocked(s).is_none();
-                Some((setting.item, self.row_y(cols, line), live))
-            })
-            .collect();
-        let reach = shell::reach(&rows, cols, near);
-        for &(item, y, live) in &rows[reach] {
-            if !live {
-                continue;
-            }
-            out.push((
-                Target::Item(item),
-                [cols.list_x, y, cols.list_w, style::ROW],
-            ));
-        }
-        if self.changed {
-            out.push((Target::Undo, cols.button(1)));
-        }
-        out.push((Target::Done, cols.button(0)));
-        out
-    }
-    /// Focus `target`, scrolling its row into the list's view.
-    fn focus_on(
-        &mut self,
-        s: &Settings,
-        target: Target,
-        rect: [f32; 4],
-        cols: &Columns,
-        content: f32,
-    ) {
-        self.focus = Some(target);
-        self.can_change_value =
-            matches!(target, Target::Item(i) if i.slider(s).is_some() && i.blocked(s).is_none());
-        if let Target::Item(_) = target {
-            shell::scroll_into_view(&mut self.scroll, rect, cols, content);
-            self.picked = None;
-        }
-    }
-
-    /// Keys: typing in the search field, Tab and the arrows between controls,
-    /// Left and Right on a slider, Enter or Space to press. False: the screen
-    /// handles it (Escape closes it, as `Screen.keyPressed` does first).
-    #[allow(clippy::too_many_arguments)]
-    pub fn key_modifiers(
-        &mut self,
-        s: &mut Settings,
-        key: winit::keyboard::KeyCode,
-        text: Option<&str>,
-        shift: bool,
-        (w, h): (f32, f32),
-        framebuffer: [i32; 2],
-    ) -> (Vec<Action>, bool) {
-        use winit::keyboard::KeyCode as K;
-        self.keep(s);
-        if key == K::Escape {
-            self.can_change_value = false;
-            return (Vec::new(), false);
-        }
-        if self.focus == Some(Target::Search)
-            && !matches!(key, K::Tab | K::ArrowDown | K::Enter | K::NumpadEnter)
-        {
-            let before = self.search.value.clone();
-            if !self.search.key(key, false, shift)
-                && let Some(t) = text
-            {
-                let typed: String = t.chars().filter(|c| !c.is_control()).collect();
-                self.type_text(&typed);
-            }
-            if self.search.value != before {
-                self.searched();
-            }
-            return (Vec::new(), true);
-        }
-        let (cols, lines, content) = self.layout(s, w, h);
-        let near = key != K::Tab;
-        let focusables = self.focusables(s, &cols, &lines, near);
-        let current = self
-            .focus
-            .and_then(|f| focusables.iter().position(|&(t, _)| t == f));
-        if key == K::Tab {
-            let next = shell::tab_step(focusables.len(), current, shift);
-            let (target, rect) = focusables[next];
-            self.focus_on(s, target, rect, &cols, content);
-            return (Vec::new(), true);
-        }
-        if matches!(key, K::ArrowLeft | K::ArrowRight)
-            && self.can_change_value
-            && let Some(Target::Item(item)) = self.focus
-            && item.slider(s).is_some()
-            && item.blocked(s).is_none()
-        {
-            item.step_slider(s, key == K::ArrowRight, cols.track().1 + 8.0);
-            self.changed = true;
-            return (vec![Action::SliderDrag], true);
-        }
-        if matches!(
-            key,
-            K::ArrowUp | K::ArrowDown | K::ArrowLeft | K::ArrowRight
-        ) {
-            let is_row = |t: Target| matches!(t, Target::Item(_));
-            let next = shell::arrow_step(&focusables, current, key, &cols, is_row);
-            let Some(next) = next else {
-                return (Vec::new(), false);
-            };
-            let (target, rect) = focusables[next];
-            self.focus_on(s, target, rect, &cols, content);
-            self.can_change_value = false;
-            return (Vec::new(), true);
-        }
-        if matches!(key, K::Space | K::Enter | K::NumpadEnter)
-            && let Some(target) = self.focus
-        {
-            let actions = match target {
-                Target::Search => Vec::new(),
-                Target::Page(page) => {
-                    self.pick(page, &lines, &cols, content);
-                    vec![Action::ButtonClick]
-                }
-                // A row greyed out while focused does nothing, as a click on it doesn't.
-                Target::Item(item) if item.blocked(s).is_some() => Vec::new(),
-                Target::Item(item) if item.slider(s).is_some() => {
-                    self.can_change_value = !self.can_change_value;
-                    Vec::new()
-                }
-                Target::Item(item) => self.activate(s, item, shift, framebuffer, None),
-                Target::Undo => {
-                    self.undo(s);
-                    // Undo goes away with the change it undid.
-                    self.focus = Some(Target::Done);
-                    return (vec![Action::ButtonClick, Action::Changed], true);
-                }
-                Target::Done => vec![Action::ButtonClick, Action::Done],
-            };
-            self.mark(&actions);
-            return (actions, true);
-        }
-        (Vec::new(), false)
-    }
-    /// Whether the search field takes the keys.
-    pub fn typing(&self) -> bool {
-        self.focus == Some(Target::Search)
-    }
-    /// Text typed into the search field (the keyboard, a controller's on-screen keyboard).
-    pub fn type_text(&mut self, text: &str) {
-        if !text.is_empty() {
-            self.search.insert_text(text);
-            self.searched();
-        }
-    }
-    /// Ctrl+A/C/V/X in the search field.
-    pub fn shortcut(
-        &mut self,
-        shortcut: crate::clipboard::EditShortcut,
-        clipboard: &mut dyn crate::clipboard::Clipboard,
-    ) -> bool {
-        if !self.typing() {
-            return false;
-        }
-        let before = self.search.value.clone();
-        self.search.shortcut(shortcut, clipboard);
-        if self.search.value != before {
-            self.searched();
-        }
-        // Whatever it did: the key is the field's, not something to type.
-        true
-    }
-    /// The search changed: the list starts over at its top.
-    fn searched(&mut self) {
-        self.scroll.amount = 0.0;
-        self.picked = None;
+    /// Calibration can change what Undo puts back, as a row does.
+    fn changes(&self, outputs: &[Output]) -> bool {
+        let calibrates = outputs.contains(&Output::Push(OptionsPage::HdrCalibration));
+        calibrates || shell::changes_settings(outputs)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        graphics_style as style,
+        settings_shell::{Capture, Columns, Hosted, Shell, Target},
+    };
     use winit::keyboard::KeyCode as K;
 
     const SIZE: (f32, f32) = (640.0, 360.0);
     const FB: [i32; 2] = [1920, 1080];
+    const CLICK: Output = Output::Event(Event::ButtonClick);
+    const CHANGED: Output = Output::Event(Event::Changed);
+    const DRAGGED: Output = Output::Event(Event::SliderDrag);
     /// Held by the tests that set `offer_hdr`, which is global.
     static HDR_OFFER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    type Ui = Shell<GraphicsScreen>;
+    fn ui() -> Ui {
+        let mut ui = Ui::default();
+        ui.screen.framebuffer = FB;
+        ui
+    }
     fn items() -> Vec<(Page, Item)> {
         rows()
             .into_iter()
@@ -2098,32 +1596,23 @@ mod tests {
             .collect()
     }
     /// Where `item`'s row is on screen now (its page open and the list scrolled to it first).
-    fn row(ui: &mut GraphicsUi, s: &Settings, item: Item) -> [f32; 4] {
-        if ui.query().is_empty() {
-            ui.page = items().into_iter().find(|(_, i)| *i == item).unwrap().0;
-        }
-        let (cols, lines, content) = ui.layout(s, SIZE.0, SIZE.1);
-        let line = lines
-            .iter()
-            .find(|l| l.setting.is_some_and(|r| r.item == item))
-            .copied()
-            .unwrap();
-        let rect = [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW];
-        ui.focus_on(s, Target::Item(item), rect, &cols, content);
-        ui.focus = None;
-        ui.can_change_value = false;
-        [cols.list_x, ui.row_y(&cols, &line), cols.list_w, style::ROW]
+    fn row(ui: &mut Ui, s: &Settings, item: Item) -> [f32; 4] {
+        ui.show(items().into_iter().find(|(_, i)| *i == item).unwrap().0);
+        let (_, y) = ui.point_at(s, SIZE, item);
+        let cols = Columns::of(SIZE.0, SIZE.1);
+        [cols.list_x, y - style::ROW / 2.0, cols.list_w, style::ROW]
     }
-    fn press(ui: &mut GraphicsUi, s: &mut Settings, (x, y): (f32, f32)) -> Vec<Action> {
-        ui.click(s, (x, y), SIZE, FB, false, false, false)
+    fn press(ui: &mut Ui, s: &mut Settings, at: (f32, f32)) -> Vec<Output> {
+        ui.click(s, at, SIZE, false, false, false)
     }
-    fn press_shift(
-        ui: &mut GraphicsUi,
-        s: &mut Settings,
-        (x, y): (f32, f32),
-        shift: bool,
-    ) -> Vec<Action> {
-        ui.click(s, (x, y), SIZE, FB, false, false, shift)
+    fn press_shift(ui: &mut Ui, s: &mut Settings, at: (f32, f32), shift: bool) -> Vec<Output> {
+        ui.click(s, at, SIZE, false, false, shift)
+    }
+    fn key(ui: &mut Ui, s: &mut Settings, key: K) -> Vec<Output> {
+        ui.key(s, key, None, false, SIZE)
+    }
+    fn focus_on(ui: &mut Ui, item: Item) {
+        ui.set_focus(Some(Target::Row(item)));
     }
 
     #[test]
@@ -2155,17 +1644,14 @@ mod tests {
     #[test]
     fn a_picked_page_shows_alone_in_its_groups_from_the_top() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        let settings = |ui: &mut GraphicsUi, s: &Settings| {
-            let (_, lines, _) = ui.layout(s, SIZE.0, SIZE.1);
+        let mut ui = ui();
+        let settings = |ui: &mut Ui, s: &Settings| {
+            let (lines, _) = ui.lines_at(s, SIZE);
             assert!(
                 lines[0].group.is_some(),
                 "the list starts at a group's name"
             );
-            lines
-                .iter()
-                .filter_map(|l| l.setting.map(|r| (l.page, r.item)))
-                .collect::<Vec<_>>()
+            ui.listed(s, SIZE)
         };
         // Upscaling shows only with TAA, off by default.
         let on = |page| -> Vec<(Page, Item)> {
@@ -2176,18 +1662,15 @@ mod tests {
         };
         assert_eq!(settings(&mut ui, &s), on(Page::General));
         ui.scroll(&s, SIZE, -3.0);
-        assert!(ui.scroll.amount > 0.0);
+        assert!(ui.scroll_amount() > 0.0);
         let [x, y, w, h] = Columns::of(SIZE.0, SIZE.1).page(1);
-        assert_eq!(
-            press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0)),
-            [Action::ButtonClick]
-        );
+        assert_eq!(press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0)), [CLICK]);
         assert_eq!(settings(&mut ui, &s), on(Page::Quality));
-        assert_eq!(ui.scroll.amount, 0.0);
+        assert_eq!(ui.scroll_amount(), 0.0);
+        assert_eq!(ui.current_page(&s, SIZE), Some(Page::Quality));
         // Groups sit apart: each name follows the gap under the panel before it.
-        let (_, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        assert_eq!(ui.current(&lines), Some(Page::Quality));
-        let names: Vec<&Line> = lines.iter().filter(|l| l.group.is_some()).collect();
+        let (lines, _) = ui.lines_at(&s, SIZE);
+        let names: Vec<_> = lines.iter().filter(|l| l.group.is_some()).collect();
         assert!(names.len() > 1);
         for pair in names.windows(2) {
             let (_, panel) = pair[0].group.unwrap();
@@ -2197,8 +1680,8 @@ mod tests {
             );
         }
         // Opened at a page (Advanced..., the HDR key), it shows that page.
-        let mut ui = GraphicsUi::default();
-        ui.open(Page::Hdr);
+        let mut ui = Ui::default();
+        ui.show(Page::Hdr);
         assert_eq!(settings(&mut ui, &s), on(Page::Hdr));
     }
 
@@ -2207,7 +1690,7 @@ mod tests {
         // 1280x720 at GUI scale 3.
         let size = (427.0, 240.0);
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         let cols = Columns::of(size.0, size.1);
         assert!((cols.bottom - cols.top) / style::ROW >= 5.0);
         let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
@@ -2218,129 +1701,103 @@ mod tests {
             &mut s,
             (x + w / 2.0, y + h / 2.0),
             size,
-            FB,
             false,
             false,
             false,
         );
-        let (_, lines, _) = ui.layout(&s, size.0, size.1);
-        assert_eq!(ui.current(&lines), Some(Page::Hdr));
-    }
-
-    #[test]
-    fn growing_the_window_keeps_the_scroll_within_the_list() {
-        let s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        ui.scroll(&s, SIZE, -1000.0);
-        assert!(ui.scroll.amount > 0.0);
-        let (cols, lines, _) = ui.layout(&s, 640.0, 4000.0);
-        assert_eq!(ui.scroll.amount, 0.0);
-        assert_eq!(ui.row_y(&cols, &lines[0]), cols.top);
+        assert_eq!(ui.current_page(&s, size), Some(Page::Hdr));
     }
 
     #[test]
     fn the_search_filters_as_you_type_and_drops_pages_left_empty() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        let (cols, all, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        assert!(all.iter().all(|l| l.page == Page::General));
+        let mut ui = ui();
+        let cols = Columns::of(SIZE.0, SIZE.1);
+        let all = ui.listed(&s, SIZE);
+        assert!(all.iter().all(|(page, _)| *page == Page::General));
         let [x, y, ..] = cols.search();
         press(&mut ui, &mut s, (x + 4.0, y + 4.0));
         assert!(ui.typing());
         for c in ["c", "l", "o", "u", "d"] {
-            ui.key_modifiers(&mut s, K::KeyA, Some(c), false, SIZE, FB);
+            ui.key(&mut s, K::KeyA, Some(c), false, SIZE);
         }
-        let (_, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        let found: Vec<Item> = lines
-            .iter()
-            .filter_map(|l| l.setting.map(|r| r.item))
-            .collect();
+        let found = ui.listed(&s, SIZE);
         assert_eq!(
             found,
-            [Item::Vanilla(Opt::Clouds), Item::Vanilla(Opt::CloudRange)]
+            [
+                (Page::Quality, Item::Vanilla(Opt::Clouds)),
+                (Page::Quality, Item::Vanilla(Opt::CloudRange))
+            ]
         );
-        assert!(lines.iter().all(|l| l.page == Page::Quality));
         // Words of a description find it too.
-        ui.search.set_value("tearing");
-        let (_, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        assert!(lines.iter().any(|l| {
-            l.setting
-                .is_some_and(|r| r.item == Item::Vanilla(Opt::Vsync))
-        }));
-        ui.search.set_value("hdr");
+        ui.set_search("tearing");
+        let found = ui.listed(&s, SIZE);
+        assert!(found.iter().any(|(_, i)| *i == Item::Vanilla(Opt::Vsync)));
+        ui.set_search("hdr");
         let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
-        assert_eq!(ui.current(&ui.lines(&s).0), Some(Page::Hdr));
+        assert_eq!(ui.current_page(&s, SIZE), Some(Page::Hdr));
         let [x, y, ..] = cols.clear();
-        assert_eq!(
-            press(&mut ui, &mut s, (x + 2.0, y + 2.0)),
-            [Action::ButtonClick]
-        );
+        assert_eq!(press(&mut ui, &mut s, (x + 2.0, y + 2.0)), [CLICK]);
         // The clear button leaves the page picked meanwhile open, alone, from the top.
-        let (lines, _) = ui.lines(&s);
-        assert!(lines.len() < all.len() && lines.iter().all(|l| l.page == Page::Hdr));
-        assert_eq!(ui.scroll.amount, 0.0);
-        assert_eq!(ui.current(&lines), Some(Page::Hdr));
+        let listed = ui.listed(&s, SIZE);
+        assert!(listed.len() < items().len() && listed.iter().all(|(p, _)| *p == Page::Hdr));
+        assert_eq!(ui.scroll_amount(), 0.0);
+        assert_eq!(ui.current_page(&s, SIZE), Some(Page::Hdr));
     }
 
     #[test]
     fn undo_appears_after_changes_and_puts_back_what_the_screen_opened_with() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
-        let undo = cols.button(1);
+        let mut ui = ui();
+        let undo = Columns::of(SIZE.0, SIZE.1).button(1);
         let at = |[x, y, ..]: [f32; 4]| (x + 2.0, y + 2.0);
         // Nothing changed: Undo does nothing.
         assert!(press(&mut ui, &mut s, at(undo)).is_empty());
         let fog = row(&mut ui, &s, Item::Horizon(H::Fog));
-        assert_eq!(
-            press(&mut ui, &mut s, at(fog)),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press(&mut ui, &mut s, at(fog)), [CLICK, CHANGED]);
         let sky = row(&mut ui, &s, Item::Horizon(H::Sky));
         press(&mut ui, &mut s, at(sky));
-        assert!(!s.horizon.fog && !s.horizon.sky && ui.changed);
+        assert!(!s.horizon.fog && !s.horizon.sky && ui.changed());
         // F11 and another option meanwhile: Undo leaves them as they are.
         s.fullscreen = true;
         s.chat_opacity = 0.25;
-        assert_eq!(
-            press(&mut ui, &mut s, at(undo)),
-            [Action::ButtonClick, Action::Changed]
-        );
-        assert!(s.horizon.fog && s.horizon.sky && !ui.changed);
+        assert_eq!(press(&mut ui, &mut s, at(undo)), [CLICK, CHANGED]);
+        assert!(s.horizon.fog && s.horizon.sky && !ui.changed());
         assert!(s.fullscreen);
         assert_eq!(s.chat_opacity, 0.25);
+        // Calibration counts as a change too.
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
+        s.horizon.hdr = HdrMode::On;
+        let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
+        press(&mut ui, &mut s, at(calibrate));
+        assert!(ui.changed());
         // From the keyboard: Undo puts it back and goes away.
-        let fog = row(&mut ui, &s, Item::Horizon(H::Fog));
-        press(&mut ui, &mut s, at(fog));
-        ui.focus = Some(Target::Undo);
-        let (actions, _) = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
-        assert_eq!(actions, [Action::ButtonClick, Action::Changed]);
-        assert!(s.horizon.fog && !ui.changed);
-        assert_eq!(ui.focus, Some(Target::Done));
+        ui.set_focus(Some(Target::Undo));
+        assert_eq!(key(&mut ui, &mut s, K::Enter), [CLICK, CHANGED]);
+        assert!(!s.horizon.hdr_wanted() && !ui.changed());
+        assert_eq!(ui.focused(), Some(Target::Done));
     }
 
     #[test]
     fn a_slider_takes_a_press_on_its_track_and_its_click_plays_on_release() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         s.horizon.chunk_updates = 16;
         let r = row(&mut ui, &s, Item::Horizon(H::ChunkUpdates));
         let (tx, tw) = Columns::of(SIZE.0, SIZE.1).track();
         // On its name: focused, unchanged.
         assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
         assert_eq!(s.horizon.chunk_updates, 16);
-        assert!(ui.can_change_value);
+        assert!(ui.changes_value());
         assert!(!ui.release());
         // At the track's end: the most, then dragged to its start.
-        assert_eq!(
-            press(&mut ui, &mut s, (tx + tw, r[1] + 4.0)),
-            [Action::SliderDrag]
-        );
+        assert_eq!(press(&mut ui, &mut s, (tx + tw, r[1] + 4.0)), [DRAGGED]);
         assert_eq!(H::ChunkUpdates.slider(&s), Some(1.0));
         assert_eq!(
-            ui.click(&mut s, (-100.0, -100.0), SIZE, FB, true, false, false),
-            [Action::SliderDrag]
+            ui.click(&mut s, (-100.0, -100.0), SIZE, true, false, false),
+            [DRAGGED]
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
         assert!(ui.release());
@@ -2352,7 +1809,7 @@ mod tests {
         let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
         crate::graphics::offer_hdr(true);
         let mut s = Settings::default();
-        s.horizon.hdr = true;
+        s.horizon.hdr = HdrMode::On;
         let item = Item::Horizon(H::HdrSmoothGradients);
         // Where the device can't, the saved On reads Off.
         crate::graphics::offer_smooth_gradients(false);
@@ -2368,63 +1825,84 @@ mod tests {
         assert_eq!(item.blocked(&s), None);
         assert_eq!(item.label(&s).plain(), "Smooth Gradients: On");
         assert_eq!(item.switch(&s), Some(true));
-        s.horizon.hdr = false;
+        s.horizon.hdr = HdrMode::Off;
         assert_eq!(item.blocked(&s), Some("Turn HDR on to use it."));
     }
 
     #[test]
-    fn hdr_waits_for_a_display_that_offers_it_and_its_sliders_for_the_switch() {
+    fn hdr_auto_can_be_selected_before_querying_and_brightness_waits_for_output() {
         let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         let at = |[x, y, ..]: [f32; 4]| (x + 8.0, y + 4.0);
         crate::graphics::offer_hdr(false);
-        // A 720p window opened at HDR shows only its greyed rows: Down still reaches the shortcut.
+        // Off has not asked the system yet: Auto must still be reachable to start the watch.
         let short = (427.0, 240.0);
-        let mut at_hdr = GraphicsUi::default();
-        at_hdr.open(Page::Hdr);
-        at_hdr.key_modifiers(&mut s, K::ArrowDown, None, false, short, FB);
-        assert_eq!(at_hdr.focus, Some(Target::Item(Item::Horizon(H::HdrKey))));
+        let mut at_hdr = Ui::default();
+        at_hdr.show(Page::Hdr);
+        at_hdr.key(&mut s, K::ArrowDown, None, false, short);
+        assert_eq!(at_hdr.focused_row(), Some(Item::Horizon(H::Hdr)));
         let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
-        assert!(press(&mut ui, &mut s, at(hdr)).is_empty());
-        // Not even with HDR saved on, from another computer: nor its sliders and calibration.
-        s.horizon.hdr = true;
-        for h in [H::Hdr, H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite] {
+        assert_eq!(press(&mut ui, &mut s, at(hdr)), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.hdr, HdrMode::Auto);
+        assert_eq!(press(&mut ui, &mut s, at(hdr)), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.hdr, HdrMode::Off);
+        // Brightness still needs an output, even with On saved from another computer.
+        s.horizon.hdr = HdrMode::On;
+        for h in [H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite] {
             assert!(Item::Horizon(h).blocked(&s).is_some(), "{h:?}");
         }
-        s.horizon.hdr = false;
+        s.horizon.hdr = HdrMode::Off;
         crate::graphics::offer_hdr(true);
         let (tx, _) = Columns::of(SIZE.0, SIZE.1).track();
         let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
         assert!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)).is_empty());
-        // The switch turns it on, and the sliders below it work.
+        // The choice turns it on, and the sliders below it work.
         let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
-        assert_eq!(
-            press(&mut ui, &mut s, at(hdr)),
-            [Action::ButtonClick, Action::Changed]
-        );
-        assert!(s.horizon.hdr);
+        assert_eq!(press(&mut ui, &mut s, at(hdr)), [CLICK, CHANGED]);
+        assert!(s.horizon.hdr_wanted());
         let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
-        assert_eq!(
-            press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)),
-            [Action::SliderDrag]
-        );
+        assert_eq!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)), [DRAGGED]);
         ui.release();
         // Calibrate starts the calibration; the shortcut row waits for a key.
         let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
         assert_eq!(
             press(&mut ui, &mut s, at(calibrate)),
-            [Action::ButtonClick, Action::Calibrate]
+            [CLICK, Output::Push(OptionsPage::HdrCalibration)]
         );
         let key = row(&mut ui, &s, Item::Horizon(H::HdrKey));
         assert_eq!(
             press(&mut ui, &mut s, at(key)),
-            [
-                Action::ButtonClick,
-                Action::BindKey(crate::graphics::HDR_KEY)
-            ]
+            [CLICK, Output::Bind(Capture::Key(crate::graphics::HDR_KEY))]
         );
-        assert!(ui.changed);
+        assert!(ui.changed());
+    }
+
+    #[test]
+    fn hdr_auto_is_a_choice_on_a_reporting_sdr_display() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(false);
+        crate::graphics::report_system_hdr(Some(false));
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::Hdr);
+        assert_eq!(item.switch(&s), None);
+        assert_eq!(item.blocked(&s), None);
+        item.cycle(&mut s, false, FB);
+        assert_eq!(s.horizon.hdr, HdrMode::Auto); // On requires an offered output.
+        assert!(!s.horizon.hdr_wanted());
+        assert!(Item::Horizon(H::HdrPeak).blocked(&s).is_some());
+        item.cycle(&mut s, true, FB);
+        assert_eq!(s.horizon.hdr, HdrMode::Off);
+        crate::graphics::offer_hdr(true);
+        for expected in [HdrMode::On, HdrMode::Auto, HdrMode::Off] {
+            item.cycle(&mut s, false, FB);
+            assert_eq!(s.horizon.hdr, expected);
+        }
+        s.horizon.hdr = HdrMode::Auto;
+        crate::graphics::report_system_hdr(Some(true));
+        assert!(s.horizon.hdr_wanted());
+        assert_eq!(Item::Horizon(H::HdrPeak).blocked(&s), None);
+        crate::graphics::report_system_hdr(None);
     }
 
     #[test]
@@ -2432,40 +1910,40 @@ mod tests {
         // #3552: AbstractScrollArea.updateScrolling holds the scrollbar on a press over its
         // column, mouseDragged moves the list with the pointer, onRelease lets go.
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
+        let mut ui = ui();
+        let cols = Columns::of(SIZE.0, SIZE.1);
+        let (_, content) = ui.lines_at(&s, SIZE);
         let x = cols.bar_x() + 2.0;
-        let drag = |ui: &mut GraphicsUi, s: &mut Settings, y, drag| {
-            ui.click(s, (x, y), SIZE, FB, drag, false, false)
-        };
+        let drag =
+            |ui: &mut Ui, s: &mut Settings, y, drag| ui.click(s, (x, y), SIZE, drag, false, false);
         assert!(drag(&mut ui, &mut s, cols.top + 5.0, false).is_empty());
         drag(&mut ui, &mut s, cols.top + 15.0, true);
-        assert!(ui.scroll.amount > 0.0);
+        assert!(ui.scroll_amount() > 0.0);
         drag(&mut ui, &mut s, cols.bottom + 50.0, true);
-        assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
+        assert_eq!(ui.scroll_amount(), content - (cols.bottom - cols.top));
         drag(&mut ui, &mut s, cols.top - 50.0, true);
-        assert_eq!(ui.scroll.amount, 0.0);
+        assert_eq!(ui.scroll_amount(), 0.0);
         assert!(!ui.release());
         drag(&mut ui, &mut s, cols.bottom + 50.0, true);
-        assert_eq!(ui.scroll.amount, 0.0);
+        assert_eq!(ui.scroll_amount(), 0.0);
     }
 
     #[test]
     fn a_held_scroller_lets_go_when_the_window_gets_too_short_for_it() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
+        let mut ui = ui();
+        let cols = Columns::of(SIZE.0, SIZE.1);
         let x = cols.bar_x() + 2.0;
-        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false, false);
-        assert!(ui.scroll.held());
+        ui.click(&mut s, (x, cols.top + 5.0), SIZE, false, false, false);
+        assert!(ui.scroller_held());
         // A 130-high GUI leaves the list under the 40 px the scroller's thumb needs.
         let short = (SIZE.0, 130.0);
         assert!(!Columns::of(short.0, short.1).scrolls());
         assert!(
-            ui.click(&mut s, (x, 80.0), short, FB, true, false, false)
+            ui.click(&mut s, (x, 80.0), short, true, false, false)
                 .is_empty()
         );
-        assert!(!ui.scroll.held());
+        assert!(!ui.scroller_held());
     }
 
     /// The rows only vanilla's Video Settings had work here as they do there: its preset
@@ -2510,145 +1988,187 @@ mod tests {
     #[test]
     fn the_wheel_scrolls_and_stops_at_both_ends_without_changing_values() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         s.gamma = 0.25;
         let gamma = row(&mut ui, &s, Item::Vanilla(Opt::Gamma));
         // A slider being changed doesn't take the wheel either: a controller scrolls with it.
         press(&mut ui, &mut s, (gamma[0] + 4.0, gamma[1] + 4.0));
-        assert!(ui.can_change_value);
-        let before = ui.scroll.amount;
+        assert!(ui.changes_value());
+        let before = ui.scroll_amount();
         ui.scroll(&s, SIZE, -1.0);
-        assert_eq!(ui.scroll.amount, before + 18.0);
+        assert_eq!(ui.scroll_amount(), before + 18.0);
         assert_eq!(s.gamma, 0.25);
-        let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
+        let cols = Columns::of(SIZE.0, SIZE.1);
+        let (_, content) = ui.lines_at(&s, SIZE);
         ui.scroll(&s, SIZE, -1000.0);
-        assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
+        assert_eq!(ui.scroll_amount(), content - (cols.bottom - cols.top));
         ui.scroll(&s, SIZE, 1000.0);
-        assert_eq!(ui.scroll.amount, 0.0);
+        assert_eq!(ui.scroll_amount(), 0.0);
     }
 
     #[test]
     fn a_hovered_value_takes_the_wheel_only_with_the_extra_on() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         let item = Item::Vanilla(Opt::AttackIndicator);
         let r = row(&mut ui, &s, item);
         let before = format!("{s:?}");
-        let actions = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), FB, -1.0);
+        let outputs = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), -1.0);
         assert_eq!(format!("{s:?}"), before, "the hovered value stays put");
-        assert!(actions.is_empty());
+        assert!(outputs.is_empty());
 
         s.extras.wheel_cycles_settings = true;
         let r = row(&mut ui, &s, item);
         let before = format!("{s:?}");
-        let actions = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), FB, -1.0);
+        let outputs = ui.wheel(&mut s, SIZE, (r[0] + 4.0, r[1] + 4.0), -1.0);
         assert_ne!(format!("{s:?}"), before, "the hovered value steps");
-        assert!(!actions.is_empty());
+        assert_eq!(outputs, [CLICK, CHANGED]);
+        // A tick box leaves it to scroll the list.
+        let vsync = row(&mut ui, &s, Item::Vanilla(Opt::Vsync));
+        let before = s.vsync;
+        assert!(
+            ui.wheel(&mut s, SIZE, (vsync[0] + 4.0, vsync[1] + 4.0), -1.0)
+                .is_empty()
+        );
+        assert_eq!(s.vsync, before);
     }
 
     #[test]
     fn the_arrows_move_between_rows_in_view_and_over_to_the_page_list() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
-        let in_view = |ui: &mut GraphicsUi, s: &Settings, item| {
-            let (cols, lines, _) = ui.layout(s, SIZE.0, SIZE.1);
-            let line = lines
-                .iter()
-                .find(|l| l.setting.is_some_and(|r| r.item == item))
-                .unwrap();
-            let y = ui.row_y(&cols, line);
-            y >= cols.top && y + style::ROW <= cols.bottom
-        };
+        let mut ui = ui();
         // General's last row, against the bottom of the view, then Up: the row over it.
         let last = Item::Vanilla(Opt::Autosave);
         row(&mut ui, &s, last);
-        ui.focus = Some(Target::Item(last));
-        ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
+        focus_on(&mut ui, last);
+        key(&mut ui, &mut s, K::ArrowUp);
         let indicator = Item::Vanilla(Opt::AttackIndicator);
-        assert_eq!(ui.focus, Some(Target::Item(indicator)));
-        assert!(in_view(&mut ui, &s, indicator));
+        assert_eq!(ui.focused_row(), Some(indicator));
+        assert!(ui.in_view(&s, SIZE, indicator));
         // Left leaves the plate.
-        ui.key_modifiers(&mut s, K::ArrowLeft, None, false, SIZE, FB);
-        assert!(!matches!(ui.focus, Some(Target::Item(_))), "{:?}", ui.focus);
+        key(&mut ui, &mut s, K::ArrowLeft);
+        assert_eq!(ui.focused_row(), None, "{:?}", ui.focused());
         // Up from Done: the page list's last page.
-        ui.focus = Some(Target::Done);
-        ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
-        assert_eq!(ui.focus, Some(Target::Page(Page::Hdr)));
+        ui.set_focus(Some(Target::Done));
+        key(&mut ui, &mut s, K::ArrowUp);
+        assert_eq!(ui.focused(), Some(Target::Page(Page::Hdr)));
         // Its row wheeled far out of view: Down takes the first row in view, as it is.
-        ui.focus = Some(Target::Item(Item::Horizon(H::Preset)));
+        focus_on(&mut ui, Item::Horizon(H::Preset));
         ui.scroll(&s, SIZE, -1000.0);
-        let before = ui.scroll.amount;
+        let before = ui.scroll_amount();
         assert!(before > 0.0);
-        ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
-        let Some(Target::Item(item)) = ui.focus else {
-            panic!("{:?}", ui.focus)
-        };
-        assert!(in_view(&mut ui, &s, item), "{item:?}");
-        assert_eq!(ui.scroll.amount, before);
+        key(&mut ui, &mut s, K::ArrowDown);
+        let item = ui.focused_row().unwrap();
+        assert!(ui.in_view(&s, SIZE, item), "{item:?}");
+        assert_eq!(ui.scroll_amount(), before);
     }
 
     #[test]
     fn the_keyboard_tabs_through_settings_and_steps_sliders() {
         let mut s = Settings::default();
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         s.horizon.chunk_updates = 10;
-        let tab_to = |ui: &mut GraphicsUi, s: &mut Settings, target| {
+        let tab_to = |ui: &mut Ui, s: &mut Settings, target| {
             (0..40).any(|_| {
-                ui.key_modifiers(s, K::Tab, None, false, SIZE, FB);
-                ui.focus == Some(target)
+                key(ui, s, K::Tab);
+                ui.focused() == Some(target)
             })
         };
         // Tab reaches the page list; Enter opens Performance and Tab goes on into it.
         assert!(tab_to(&mut ui, &mut s, Target::Page(Page::Performance)));
-        let (actions, _) = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
-        assert_eq!(actions, [Action::ButtonClick]);
-        let chunk_updates = Target::Item(Item::Horizon(H::ChunkUpdates));
-        assert!(tab_to(&mut ui, &mut s, chunk_updates) && ui.can_change_value);
+        assert_eq!(key(&mut ui, &mut s, K::Enter), [CLICK]);
+        let chunk_updates = Item::Horizon(H::ChunkUpdates);
+        assert!(tab_to(&mut ui, &mut s, Target::Row(chunk_updates)) && ui.changes_value());
         // Tab scrolled its row into view.
-        let r = {
-            let (cols, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-            let line = lines
-                .iter()
-                .find(|l| {
-                    l.setting
-                        .is_some_and(|r| r.item == Item::Horizon(H::ChunkUpdates))
-                })
-                .copied()
-                .unwrap();
-            ui.row_y(&cols, &line)
-        };
-        let cols = Columns::of(SIZE.0, SIZE.1);
-        assert!(r >= cols.top && r + style::ROW <= cols.bottom);
-        let (actions, handled) = ui.key_modifiers(&mut s, K::ArrowRight, None, false, SIZE, FB);
-        assert!(handled && actions == [Action::SliderDrag]);
+        assert!(ui.in_view(&s, SIZE, chunk_updates));
+        assert_eq!(key(&mut ui, &mut s, K::ArrowRight), [DRAGGED]);
         assert_eq!(s.horizon.chunk_updates, 11);
-        ui.key_modifiers(&mut s, K::ArrowLeft, None, false, SIZE, FB);
+        key(&mut ui, &mut s, K::ArrowLeft);
         assert_eq!(s.horizon.chunk_updates, 10);
         // Space lets go of the value: the arrows move the focus again.
-        ui.key_modifiers(&mut s, K::Space, None, false, SIZE, FB);
-        assert!(!ui.can_change_value);
-        ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
-        assert_eq!(ui.focus, Some(Target::Item(Item::Horizon(H::UploadBudget))));
-        // Enter presses a switch; Escape is left to the screen, which closes.
-        ui.focus = Some(Target::Item(Item::Horizon(H::Fog)));
-        let (actions, _) = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
-        assert_eq!(actions, [Action::ButtonClick, Action::Changed]);
+        key(&mut ui, &mut s, K::Space);
+        assert!(!ui.changes_value());
+        key(&mut ui, &mut s, K::ArrowDown);
+        assert_eq!(ui.focused_row(), Some(Item::Horizon(H::UploadBudget)));
+        // Enter presses a switch; Escape leaves.
+        row(&mut ui, &s, Item::Horizon(H::Fog));
+        focus_on(&mut ui, Item::Horizon(H::Fog));
+        assert_eq!(key(&mut ui, &mut s, K::Enter), [CLICK, CHANGED]);
         assert!(!s.horizon.fog);
+        assert_eq!(key(&mut ui, &mut s, K::Escape), [Output::Done]);
+    }
+
+    /// The strip says what a row does, what its chosen value does where that differs, and why a
+    /// greyed row can't be used; the search finds a row by what it does.
+    #[test]
+    fn rows_describe_their_value_their_cost_and_why_they_are_greyed() {
+        let mut s = Settings::default();
+        let rows_of = |s: &Settings| -> Vec<Row<Item>> {
+            let sheets = GraphicsScreen::default().sheets(s);
+            let groups = sheets.into_iter().flat_map(|sheet| sheet.groups);
+            groups.flat_map(|group| group.rows).collect()
+        };
+        let find = |s: &Settings, item| rows_of(s).into_iter().find(|r| r.id == item).unwrap();
+        let culling = find(&s, Item::Horizon(H::EntityCulling));
         assert_eq!(
-            ui.key_modifiers(&mut s, K::Escape, None, false, SIZE, FB),
-            (Vec::new(), false)
+            culling.chosen.as_deref(),
+            Some("No entity occlusion culling.")
         );
+        assert!(culling.cost.is_some() && culling.live);
+        s.horizon.entity_culling = EntityCullingMode::Off;
+        let precheck = find(&s, Item::Horizon(H::EntityCullingPrecheck));
+        assert!(!precheck.live);
+        assert_eq!(
+            precheck.why.as_deref(),
+            Some("Only applies to asynchronous entity culling.")
+        );
+        let key = find(&s, Item::Horizon(H::HdrKey));
+        assert_eq!(key.name, "Shortcut");
+        let waits = Capture::Key(crate::graphics::HDR_KEY);
+        assert!(matches!(key.value, Value::Binding(ref b) if b.capture == waits));
+        let calibrate = find(&s, Item::Horizon(H::HdrCalibrate));
+        assert_eq!(calibrate.value, Value::Press);
+    }
+
+    /// Every change a press or a slide makes, the stamp reads (`read`: the rows are built again),
+    /// and Undo puts back, but for fullscreen, which F11 changes too.
+    #[test]
+    fn every_change_a_row_makes_is_stamped_and_undone() {
+        let mut screen = GraphicsScreen { framebuffer: FB };
+        let default = Settings::default();
+        for (_, item) in items() {
+            let mut s = default.clone();
+            if item.blocked(&s).is_some() {
+                continue;
+            }
+            match item.slider(&s) {
+                Some(position) => item.set_slider(&mut s, if position < 0.5 { 1.0 } else { 0.0 }),
+                None => {
+                    screen.press(&mut s, item, false);
+                }
+            }
+            if format!("{s:?}") == format!("{default:?}") {
+                continue;
+            }
+            // `read` and not the stamp, which also reads what other tests offer meanwhile.
+            let reads = |s: &Settings| format!("{:?}", read(s));
+            assert_ne!(reads(&s), reads(&default), "{item:?}");
+            if item != Item::Vanilla(Opt::Fullscreen) {
+                screen.undo(&mut s, &default);
+                assert_eq!(reads(&s), reads(&default), "{item:?}");
+            }
+        }
     }
 
     #[test]
     fn rows_split_vanilla_labels_into_name_and_value() {
         let s = Settings::default();
-        let (name, value) = parts(Item::Horizon(H::LodDistance), &s, false);
+        let (name, value) = parts(Item::Horizon(H::LodDistance), &s);
         assert_eq!(
             (name.as_str(), value.as_deref()),
             ("LOD Distance", Some("Off"))
         );
-        let (name, value) = parts(Item::Horizon(H::HdrCalibrate), &s, false);
+        let (name, value) = parts(Item::Horizon(H::HdrCalibrate), &s);
         assert!(!name.is_empty() && value.is_none());
     }
 
@@ -2692,12 +2212,21 @@ mod tests {
             item.label(&s).plain(),
             format!("LOD Distance: {} chunks", crate::lod::MAX_CHUNKS)
         );
-        item.set_slider(&mut s, 5.0 / 17.0);
+        item.set_slider(&mut s, 11.0 / 23.0);
         assert_eq!(s.horizon.lod_distance, 1024);
         assert_eq!(item.label(&s).plain(), "LOD Distance: 1024 chunks");
+        // The fine stops: a ring of far terrain just past a small render
+        // distance, which the doubling steps skipped (#9694).
+        item.set_slider(&mut s, 1.0 / 23.0);
+        assert_eq!(s.horizon.lod_distance, 16);
+        assert_eq!(item.label(&s).plain(), "LOD Distance: 16 chunks");
+        item.set_slider(&mut s, 2.0 / 23.0);
+        assert_eq!(s.horizon.lod_distance, 24);
         // A distance between stops (from the file) sits on the next one.
         s.horizon.lod_distance = 3000;
-        assert_eq!(item.slider(&s), Some(7.0 / 17.0));
+        assert_eq!(item.slider(&s), Some(13.0 / 23.0));
+        s.horizon.lod_distance = 12;
+        assert_eq!(item.slider(&s), Some(1.0 / 23.0));
         assert_eq!(
             Item::Vanilla(Opt::RenderDistance).label(&s).plain(),
             format!("Full Detail Distance: {near} chunks")
@@ -2813,7 +2342,7 @@ mod tests {
             }
         }
         s.horizon.entity_culling = EntityCullingMode::Off;
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         let r = row(&mut ui, &s, item);
         for mode in [
             EntityCullingMode::Synchronous,
@@ -2822,7 +2351,7 @@ mod tests {
             s.horizon.preset = Preset::Balanced;
             assert_eq!(
                 press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
-                [Action::ButtonClick, Action::Changed]
+                [CLICK, CHANGED]
             );
             assert_eq!(s.horizon.entity_culling, mode);
             assert_eq!(s.horizon.preset, Preset::Custom);
@@ -2848,7 +2377,7 @@ mod tests {
             );
         }
         s.horizon.particle_culling = ParticleCullingMode::Off;
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         let r = row(&mut ui, &s, item);
         for (mode, label) in [
             (ParticleCullingMode::Synchronous, "Synchronous"),
@@ -2858,7 +2387,7 @@ mod tests {
             s.horizon.preset = Preset::Balanced;
             assert_eq!(
                 press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
-                [Action::ButtonClick, Action::Changed]
+                [CLICK, CHANGED]
             );
             assert_eq!(s.horizon.particle_culling, mode);
             assert_eq!(s.horizon.preset, Preset::Custom);
@@ -2870,50 +2399,45 @@ mod tests {
     fn graphics_cycle_button_cycles_forward_and_shift_click_cycles_backward_with_wrapping() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::EntityCulling);
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         let r = row(&mut ui, &s, item);
         let at = (r[0] + 4.0, r[1] + 4.0);
 
         // 1. Feature without shift (normal click): cycles forward (+1)
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
-        assert_eq!(
-            press_shift(&mut ui, &mut s, at, false),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press_shift(&mut ui, &mut s, at, false), [CLICK, CHANGED]);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
 
-        assert_eq!(
-            press_shift(&mut ui, &mut s, at, false),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press_shift(&mut ui, &mut s, at, false), [CLICK, CHANGED]);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
 
         // 3. Wrap-around forward (at max value, normal click wraps to min / 0)
-        assert_eq!(
-            press_shift(&mut ui, &mut s, at, false),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press_shift(&mut ui, &mut s, at, false), [CLICK, CHANGED]);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
 
         // 4. Wrap-around backward (at min / 0, shift-click wraps to max)
-        assert_eq!(
-            press_shift(&mut ui, &mut s, at, true),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press_shift(&mut ui, &mut s, at, true), [CLICK, CHANGED]);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
 
         // 2. Feature with shift: cycles backward (-1)
-        assert_eq!(
-            press_shift(&mut ui, &mut s, at, true),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press_shift(&mut ui, &mut s, at, true), [CLICK, CHANGED]);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Synchronous);
 
-        assert_eq!(
-            press_shift(&mut ui, &mut s, at, true),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press_shift(&mut ui, &mut s, at, true), [CLICK, CHANGED]);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+    }
+
+    #[test]
+    fn left_and_right_step_a_focused_choice_back_and_on() {
+        let mut s = Settings::default();
+        let mut ui = ui();
+        row(&mut ui, &s, Item::Horizon(H::EntityCulling));
+        focus_on(&mut ui, Item::Horizon(H::EntityCulling));
+        assert_eq!(key(&mut ui, &mut s, K::ArrowLeft), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+        assert_eq!(key(&mut ui, &mut s, K::ArrowRight), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
+        assert_eq!(ui.focused_row(), Some(Item::Horizon(H::EntityCulling)));
     }
 
     #[test]
@@ -2929,20 +2453,18 @@ mod tests {
                 Some("Only applies to asynchronous entity culling.")
             );
 
-            let mut ui = GraphicsUi::default();
+            let mut ui = ui();
             let row_rect = row(&mut ui, &s, item);
             assert!(press(&mut ui, &mut s, (row_rect[0] + 4.0, row_rect[1] + 4.0)).is_empty());
             item.set_slider(&mut s, 1.0);
             assert_eq!(s.horizon.entity_culling_precheck, initial);
 
-            let (cols, lines, content) = ui.layout(&s, SIZE.0, SIZE.1);
-            assert!(
-                !ui.focusables(&s, &cols, &lines, false)
-                    .iter()
-                    .any(|(target, _)| *target == Target::Item(item))
-            );
-            ui.focus_on(&s, Target::Item(item), row_rect, &cols, content);
-            assert!(!ui.can_change_value);
+            assert!(!ui.tab_reaches(&s, SIZE, item));
+            focus_on(&mut ui, item);
+            key(&mut ui, &mut s, K::Enter);
+            assert!(!ui.changes_value());
+            key(&mut ui, &mut s, K::ArrowRight);
+            assert_eq!(s.horizon.entity_culling_precheck, initial);
         }
 
         for (code, expected) in [
@@ -2977,17 +2499,16 @@ mod tests {
 
         s.horizon.entity_culling = EntityCullingMode::Asynchronous;
         assert_eq!(item.blocked(&s), None);
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         let row_rect = row(&mut ui, &s, item);
-        let (cols, _, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        let (track_x, track_w) = cols.track();
+        let (track_x, track_w) = Columns::of(SIZE.0, SIZE.1).track();
         assert_eq!(
             press(
                 &mut ui,
                 &mut s,
                 (track_x + track_w - 4.0, row_rect[1] + 4.0)
             ),
-            [Action::SliderDrag]
+            [DRAGGED]
         );
         assert_eq!(s.horizon.entity_culling_precheck, 512);
     }
@@ -3009,7 +2530,7 @@ mod tests {
         assert_eq!(page, Some(Page::Advanced));
         let mut s = Settings::default();
         s.horizon.preset = Preset::Balanced;
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         // Where the device can't, the saved On reads Off, and neither a click nor Enter
         // after it does anything: no sound, no change, no save.
         crate::graphics::offer_translucent_batching(false);
@@ -3019,18 +2540,14 @@ mod tests {
         let r = row(&mut ui, &s, item);
         let point = (r[0] + 4.0, r[1] + 4.0);
         assert!(press(&mut ui, &mut s, point).is_empty());
-        ui.focus = Some(Target::Item(item));
-        let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
-        assert!(enter.0.is_empty());
+        focus_on(&mut ui, item);
+        assert!(key(&mut ui, &mut s, K::Enter).is_empty());
         assert!(s.horizon.translucent_batching);
         // Where it can, a click switches it and keeps the preset.
         crate::graphics::offer_translucent_batching(true);
         assert_eq!(item.label(&s).plain(), "Translucent Batching: On");
         assert_eq!(item.switch(&s), Some(true));
-        assert_eq!(
-            press(&mut ui, &mut s, point),
-            [Action::ButtonClick, Action::Changed]
-        );
+        assert_eq!(press(&mut ui, &mut s, point), [CLICK, CHANGED]);
         assert!(!s.horizon.translucent_batching);
         assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
         assert_eq!(s.horizon.preset, Preset::Balanced);
@@ -3044,10 +2561,10 @@ mod tests {
         }
     }
 
-    /// GPU Culling: a switch right after Cave Culling, off by default, no part of a preset,
-    /// and greyed out with its reason, reading Off, wherever it isn't offered.
+    /// GPU Culling: Off, On or Auto right after Cave Culling, off by default, no part of a
+    /// preset, and greyed out with its reason, reading Off, wherever it isn't offered.
     #[test]
-    fn gpu_culling_is_a_culling_switch_where_it_is_offered() {
+    fn gpu_culling_steps_off_on_auto_where_it_is_offered() {
         use crate::graphics::GpuCullingOffer;
         let item = Item::Horizon(H::GpuCulling);
         let at = |item| items().into_iter().position(|(_, i)| i == item);
@@ -3060,9 +2577,10 @@ mod tests {
         assert_eq!(items()[i].0, Page::Performance);
         assert_eq!(at(Item::Horizon(H::CaveCulling)), Some(i - 1));
         let mut s = Settings::default();
-        assert_eq!(item.switch(&s), Some(false));
+        assert_eq!(item.switch(&s), None);
+        assert_eq!(s.horizon.gpu_culling, GpuCullingMode::Off);
         s.horizon.preset = Preset::Balanced;
-        s.horizon.gpu_culling = true;
+        s.horizon.gpu_culling = GpuCullingMode::On;
         // Where it isn't offered, the saved On reads Off, and neither a click nor Enter after
         // it does anything.
         for offer in [
@@ -3076,37 +2594,64 @@ mod tests {
             assert!(offer.reason().is_some());
             assert_eq!(item.blocked(&s), offer.reason());
             assert_eq!(item.label(&s).plain(), "GPU Culling: Off");
-            // The box, the narrator and the widget tree read the switch.
-            assert_eq!(item.switch(&s), Some(false), "{offer:?}");
-            let mut ui = GraphicsUi::default();
+            let mut ui = ui();
             let r = row(&mut ui, &s, item);
             assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
-            ui.focus = Some(Target::Item(item));
-            let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
-            assert!(enter.0.is_empty());
-            assert!(s.horizon.gpu_culling, "{offer:?}");
+            focus_on(&mut ui, item);
+            assert!(key(&mut ui, &mut s, K::Enter).is_empty());
+            assert_eq!(s.horizon.gpu_culling, GpuCullingMode::On, "{offer:?}");
         }
-        // Where it is, a click switches it and keeps the preset.
+        // Where it is, it steps through its three values and keeps the preset.
         crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
         assert_eq!(item.blocked(&s), None);
-        assert_eq!(item.label(&s).plain(), "GPU Culling: On");
-        assert_eq!(item.switch(&s), Some(true));
-        let mut ui = GraphicsUi::default();
-        let r = row(&mut ui, &s, item);
-        assert_eq!(
-            press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
-            [Action::ButtonClick, Action::Changed]
-        );
-        assert!(!s.horizon.gpu_culling);
+        for label in ["Auto", "Off", "On"] {
+            item.cycle(&mut s, false, FB);
+            assert_eq!(item.label(&s).plain(), format!("GPU Culling: {label}"));
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).gpu_culling,
+                s.horizon.gpu_culling
+            );
+        }
+        item.cycle(&mut s, true, FB);
+        assert_eq!(s.horizon.gpu_culling, GpuCullingMode::Off);
         assert_eq!(s.horizon.preset, Preset::Balanced);
+        // Auto says what it does.
+        s.horizon.gpu_culling = GpuCullingMode::Auto;
+        assert!(description(item, &s, "").starts_with("Auto: "));
         // No preset sets it.
-        for on in [false, true] {
-            s.horizon.gpu_culling = on;
+        for mode in GpuCullingMode::ALL {
+            s.horizon.gpu_culling = mode;
             for preset in Preset::ALL {
                 crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.gpu_culling, on, "{preset:?}");
+                assert_eq!(s.horizon.gpu_culling, mode, "{preset:?}");
             }
         }
+    }
+
+    #[test]
+    fn opaque_ice_toggles_and_round_trips() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::OpaqueIce);
+        assert_eq!(item.switch(&s), Some(false));
+        assert_eq!(item.label(&s).plain(), "Opaque Ice: Off");
+        item.cycle(&mut s, false, FB);
+        assert_eq!(item.label(&s).plain(), "Opaque Ice: On");
+        assert!(
+            crate::graphics::Graphics::parse(&s.horizon.serialize()).opaque_ice,
+            "the choice is saved"
+        );
+        item.cycle(&mut s, false, FB);
+        assert_eq!(item.switch(&s), Some(false));
+        assert!(!crate::graphics::Graphics::parse(&s.horizon.serialize()).opaque_ice);
+
+        // It sits with the other culling switches on the Performance page.
+        let group = rows()
+            .into_iter()
+            .flat_map(|(page, groups)| groups.into_iter().map(move |(_, b)| (page, b)))
+            .find(|(_, b)| b.iter().any(|r| r.item == item))
+            .unwrap();
+        assert_eq!(group.0, Page::Performance);
+        assert!(group.1.iter().any(|r| r.item == item));
     }
 
     #[test]
@@ -3182,13 +2727,13 @@ mod tests {
         }
 
         // A click cycles it and leaves the preset, as the other quality settings do.
-        let mut ui = GraphicsUi::default();
+        let mut ui = ui();
         s.horizon.preset = Preset::Balanced;
         s.horizon.leaf_culling = LeafCullingMode::Off;
         let r = row(&mut ui, &s, item);
         assert_eq!(
             press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
-            [Action::ButtonClick, Action::Changed]
+            [CLICK, CHANGED]
         );
         assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hidden);
         assert_eq!(s.horizon.preset, Preset::Custom);
@@ -3204,6 +2749,7 @@ mod tests {
             H::UploadBudget,
             H::Workers,
             H::ResolutionScale,
+            H::UpscalingSharpness,
             H::HdrPaperWhite,
             H::HdrPeak,
             H::HdrBlackLevel,
@@ -3216,8 +2762,8 @@ mod tests {
                 let pos = i as f32 / steps as f32;
                 let mut s1 = Settings::default();
                 let mut s2 = Settings::default();
-                s1.horizon.hdr = true;
-                s2.horizon.hdr = true;
+                s1.horizon.hdr = HdrMode::On;
+                s2.horizon.hdr = HdrMode::On;
                 h.set_slider(&mut s1, pos);
 
                 item.step_slider(&mut s1, true, 200.0);
@@ -3233,8 +2779,8 @@ mod tests {
                 let pos = i as f32 / steps as f32;
                 let mut s1 = Settings::default();
                 let mut s2 = Settings::default();
-                s1.horizon.hdr = true;
-                s2.horizon.hdr = true;
+                s1.horizon.hdr = HdrMode::On;
+                s2.horizon.hdr = HdrMode::On;
                 h.set_slider(&mut s1, pos);
 
                 item.step_slider(&mut s1, false, 200.0);
@@ -3255,7 +2801,7 @@ mod tests {
     #[test]
     fn every_graphics_text_is_in_the_language_table() {
         let (_, missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
-            for hdr in [false, true] {
+            for hdr in HdrMode::ALL {
                 let mut s = Settings::default();
                 s.horizon.hdr = hdr;
                 s.horizon.taa = true;

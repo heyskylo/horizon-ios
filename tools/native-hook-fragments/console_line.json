@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "console_line",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_console_line",
+      "neoforge": "none (Bukkit's ServerCommandEvent and RemoteServerCommandEvent; NeoForge's CommandEvent hears parsed commands only)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "every line the dedicated server's console or RCON is about to run, cancellable, with replies (`native_console_line`).",
+  "doc_summary": "every console and RCON line before it runs, cancellable, with replies: `native_console_line(source, line, cancel, replies)`, `source` being `console` or `rcon`. Bundles need \"hooks\": @API:console_line@."
+}

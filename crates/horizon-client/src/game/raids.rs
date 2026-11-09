@@ -14,6 +14,7 @@ use horizon_client::{
     },
     patrol::{GameplayAttributes, Member, PatrolLevel, PatrolSpawner},
     raid::{self, Action, BarName, RaidLevel, RaidPlayer, RaiderInfo, RaiderType, Raids, Spawn},
+    random_source,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_world::nbt::Tag;
@@ -25,7 +26,7 @@ pub(super) struct Raiding {
     patrol: PatrolSpawner,
     siege: Siege,
     /// The raids of the dimension the player is in, and that dimension.
-    raids: Raids,
+    pub(super) raids: Raids,
     loaded: Option<Dim>,
     /// `ServerPlayer.raidOmenPosition` (`raid_omen_position`), read from the
     /// player data on first use.
@@ -103,8 +104,10 @@ impl RaidLevel for Lvl<'_, '_> {
     fn surface_height(&self, x: i32, z: i32) -> i32 {
         self.game.surface_height(x, z)
     }
+    /// `ServerLevel.isPositionEntityTicking`: a loaded chunk whose entities
+    /// tick (`canPositionTick`) in entity ticking range, not merely loaded.
     fn is_position_entity_ticking(&self, p: [i32; 3]) -> bool {
-        self.has_chunk_at(p)
+        self.has_chunk_at(p) && self.game.tickets.levels().entity_ticking_at(p[0], p[2])
     }
     fn ravager_can_spawn(&self, [x, y, z]: [i32; 3]) -> bool {
         let g = self.game;
@@ -131,6 +134,9 @@ struct PatrolCx<'a, 'g, 'h> {
     can_spawn: &'h dyn Fn(&Game, [i32; 3]) -> bool,
 }
 impl SpawnLevel for PatrolCx<'_, '_, '_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.level.within_world_border(x, z)
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> horizon_world::registry::BlockStateId {
         self.level.state(x, y, z)
     }
@@ -167,8 +173,8 @@ impl SpawnLevel for PatrolCx<'_, '_, '_> {
     fn peaceful(&self) -> bool {
         self.level.peaceful()
     }
-    fn dimension(&self) -> spawn_rules::Dimension {
-        self.level.dimension()
+    fn dimension_type(&self) -> &horizon_world::dimension_type::DimensionFacts {
+        self.level.dimension_type()
     }
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32 {
         self.level.surface_slime_chance(x, y, z)
@@ -185,7 +191,7 @@ impl PatrolLevel for PatrolCx<'_, '_, '_> {
         self.level.game.ui.rules.bool("spawn_patrols")
     }
     fn bright_outside(&self) -> bool {
-        self.level.game.dim == Dim::Overworld && self.level.game.sky_darken() < 4
+        !self.level.game.dimension_type().has_fixed_time && self.level.game.sky_darken() < 4
     }
     /// `PatrolSpawner.tick` picks from `level.players()`: the local player
     /// and every guest in the level.
@@ -278,7 +284,9 @@ impl Game<'_> {
         self.raiding.loaded = Some(self.dim);
         self.raiding.bar_hurts.clear();
         self.raiding.homes.clear();
-        let seed = self.world.random.next_long();
+        // Each loaded raid's own random: the Raid constructor's
+        // `RandomSource.create()`, not the level's.
+        let seed = random_source::unique_seed();
         self.raiding.raids = match horizon_client::save::read_dat(&self.raids_path(self.dim))
             .and_then(|tag| tag.get("data").cloned())
         {
@@ -369,7 +377,7 @@ impl Game<'_> {
                     .clone()
             })
             .unwrap_or_default();
-        attributes.value(key, self.dim.id(), &biome, self.world.day_time)
+        attributes.value(key, &self.dimension_type().id, &biome, self.world.day_time)
     }
 
     /// `BadOmenMobEffect` and `RaidOmenMobEffect.applyEffectTick` for the
@@ -409,11 +417,15 @@ impl Game<'_> {
             _ => OmenTick::Continue,
         }
     }
-    /// The Raid Omen sound when the effect is first added.
+    /// The Raid Omen sound when the effect is first added
+    /// (`MobEffect.onEffectAdded`: at the player's feet).
     pub(super) fn raid_omen_added(&mut self) {
-        let eye = self.eye_position().unwrap_or_default();
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let at = [p.position.x, p.position.y, p.position.z];
         self.audio
-            .play("minecraft:event.mob_effect.raid_omen", Some(eye), 1.0, 1.0);
+            .play("minecraft:event.mob_effect.raid_omen", Some(at), 1.0, 1.0);
     }
     /// `Raids.createOrExtendRaid`: not for spectators, with the `raids` rule
     /// and where raids may start; the raid centres on the occupied village
@@ -427,7 +439,8 @@ impl Game<'_> {
         }
         self.load_raids();
         let center = raid::raid_center(at, &self.village_pois());
-        let seed = self.world.random.next_long();
+        // The new raid's own random: `RandomSource.create()`, not the level's.
+        let seed = random_source::unique_seed();
         let difficulty = self.difficulty_id();
         let (id, triggered) = self
             .raiding
@@ -443,9 +456,6 @@ impl Game<'_> {
     /// `ServerLevel.getRaidAt`.
     pub(super) fn raiding_nearby(&self, at: [i32; 3]) -> Option<i32> {
         self.raiding.raids.nearby(at).map(|(id, _)| id)
-    }
-    pub(super) fn raid_started(&self, id: i32) -> bool {
-        self.raiding.raids.get(id).is_some_and(|r| r.started)
     }
     /// `/raid start`: a raid in the local village at the given omen level.
     pub(super) fn raid_command_create(&mut self, at: [i32; 3], omen_level: i32) -> bool {
@@ -486,13 +496,14 @@ impl Game<'_> {
         };
         let members: Vec<&Mob> = self.raid_members(id).collect();
         let health: f32 = members.iter().fold(0.0, |a, m| a + m.health);
+        // Java's string concatenation of the floats: `20.0`, not `20`.
         format!(
             "Num groups spawned: {} Raid omen level: {} Num mobs: {} Raid health: {} / {}",
             r.groups_spawned,
             r.omen_level,
             members.len(),
-            health,
-            r.total_health
+            horizon_client::snbt::java_float(health),
+            horizon_client::snbt::java_float(r.total_health)
         )
     }
     /// A raid's members (`groupRaiderMap`): the living raiders it counts.
@@ -1462,10 +1473,12 @@ impl Game<'_> {
         let new = self.potions.effects.get("bad_omen").is_none();
         self.potions.effects.add(effect);
         let eye = self.eye_position().unwrap_or_default();
-        // MobEffect.onEffectAdded: Bad Omen's sound when it is new.
-        if new {
+        // MobEffect.onEffectAdded: Bad Omen's sound when it is new, at the
+        // player's feet.
+        if new && let Some(p) = self.player.as_ref() {
+            let at = [p.position.x, p.position.y, p.position.z];
             self.audio
-                .play("minecraft:event.mob_effect.bad_omen", Some(eye), 1.0, 1.0);
+                .play("minecraft:event.mob_effect.bad_omen", Some(at), 1.0, 1.0);
         }
         self.audio
             .play("minecraft:item.ominous_bottle.dispose", Some(eye), 1.0, 1.0);
@@ -1617,3 +1630,40 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "raids/tests/bed_loss.rs"]
 mod bed_loss_tests;
+
+#[cfg(test)]
+mod entity_ticking_tests {
+    use super::{Lvl, RaidLevel};
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::{chunk::Chunk, ticket_levels::Sources};
+    use std::{collections::HashSet, sync::Arc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_wave_spawns_only_where_entities_tick() {
+        let mut game = server_game();
+        game.world
+            .chunks
+            .insert((6, 0), Arc::new(Chunk::empty(6, 0)));
+        // A player in chunk (0, 0) with a simulation distance of 5: chunk
+        // (6, 0) is loaded but its entities do not tick.
+        game.tickets.update(Some(Sources {
+            players: vec![(0, 0)],
+            view_distance: 10,
+            simulation_distance: 5,
+            ..Sources::default()
+        }));
+        let centers = HashSet::new();
+        let level = Lvl {
+            game: &game,
+            difficulty: 2,
+            centers: &centers,
+        };
+        assert!(level.is_position_entity_ticking([8, 64, 8]));
+        assert!(!level.is_position_entity_ticking([6 * 16 + 8, 64, 8]));
+        assert!(
+            !level.is_position_entity_ticking([-40, 64, 8]),
+            "not loaded"
+        );
+    }
+}

@@ -66,6 +66,7 @@ const PLAY: Context = Context {
     in_pack: false,
     level: 100,
     natives: true,
+    fit: None,
 };
 
 /// The browser's entry for `ruby` at `version`.
@@ -324,6 +325,53 @@ fn the_report_says_what_changed_and_nothing_otherwise() {
     );
 }
 
+/// Turning a mod off in the Mods page is the player's choice, and an automatic update replaces
+/// the file without undoing it (#10071). A new install and the player's own install turn it on.
+#[test]
+fn an_automatic_update_keeps_a_disabled_mod_off() {
+    use crate::browser::horizon::install_version;
+    use crate::browser::java;
+    let dir = scratch("auto-disabled");
+    let home = dir.join("home");
+    let v1 = ruby(&dir, "1.0.0", &["lamp"], &[]);
+    let v2 = ruby(&dir, "1.1.0", &["lamp", "ore"], &[]);
+    let v3 = ruby(&dir, "1.2.0", &["lamp", "ore", "brick"], &[]);
+    let first = index_of(&[("1.0.0", GAME, &v1)]);
+    let p = first.project("ruby").unwrap();
+    install_version(&first, true, p, &p.versions[0], &home, &|_, _| {}).unwrap();
+    assert!(java::is_enabled(&home, "ruby"), "a new install is on");
+
+    // The player turns it off; the automatic update replaces its file and leaves it off.
+    java::set_enabled(&home, "ruby", false).unwrap();
+    let index = index_of(&[("1.1.0", GAME, &v2), ("1.0.0", GAME, &v1)]);
+    let report = run_with(&index, true, &home, &PLAY, &|_, _| {});
+    assert_eq!(report.updated, ["Ruby 1.1.0"], "{report:?}");
+    assert!(!java::is_enabled(&home, "ruby"), "the update kept it off");
+    assert_eq!(
+        installed_ruby(&home),
+        ("1.1.0".into(), fs::read(&v2).unwrap())
+    );
+
+    // Turned back on, the next automatic update leaves it on.
+    java::set_enabled(&home, "ruby", true).unwrap();
+    let index = index_of(&[("1.2.0", GAME, &v3), ("1.1.0", GAME, &v2)]);
+    let report = run_with(&index, true, &home, &PLAY, &|_, _| {});
+    assert_eq!(report.updated, ["Ruby 1.2.0"], "{report:?}");
+    assert!(java::is_enabled(&home, "ruby"));
+
+    // The player's own install of the installed, disabled mod turns it on again.
+    java::set_enabled(&home, "ruby", false).unwrap();
+    let v4 = ruby(&dir, "1.3.0", &["lamp"], &[]);
+    let index = index_of(&[("1.3.0", GAME, &v4), ("1.2.0", GAME, &v3)]);
+    let p = index.project("ruby").unwrap();
+    install_version(&index, true, p, &p.versions[0], &home, &|_, _| {}).unwrap();
+    assert!(java::is_enabled(&home, "ruby"), "an explicit install is on");
+    assert_eq!(
+        installed_ruby(&home),
+        ("1.3.0".into(), fs::read(&v4).unwrap())
+    );
+}
+
 #[test]
 fn auto_update_and_manual_mutation_do_not_race_or_lose_entries() {
     use std::sync::mpsc::channel;
@@ -490,4 +538,50 @@ fn auto_update_does_not_revive_concurrently_removed_mod() {
     assert_eq!(ruby_entry.version, "1.1.0");
 
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_native_mod_updates_only_to_a_version_that_builds_on_the_horizon_played() {
+    const YOURS: &str = "1111111111111111111111111111111111111111";
+    const OTHER: &str = "2222222222222222222222222222222222222222";
+    let version = |number: &str, pin: &str| {
+        serde_json::json!({
+            "version": number, "api": format!("native-1/{pin}/{OTHER}"), "game": GAME,
+            "file": {"name": "skins.hnmod", "url": "https://example.invalid/skins.hnmod", "size": 1, "sha256": number},
+        })
+    };
+    let index: Index = serde_json::from_value(serde_json::json!({
+        "schema": 1,
+        "projects": [{
+            "id": "skins", "kind": "native-mod", "name": "Skins", "summary": "", "license": "MIT",
+            "source": "https://example.invalid",
+            "versions": [version("1.2.0", OTHER), version("1.1.0", YOURS), version("1.0.0", YOURS)],
+        }],
+    }))
+    .unwrap();
+    let entry = |number: &str| installed::Entry {
+        project: "skins".into(),
+        file: "horizon-native-mods/skins.hnmod".into(),
+        ..entry(number)
+    };
+    let plays = crate::native_fit::Plays {
+        revision: YOURS.into(),
+        hooks: None,
+    };
+    let fits = Context {
+        fit: Some((plays, Vec::new())),
+        ..PLAY
+    };
+    let to = |e: &installed::Entry, ctx: &Context| version_of(decide(&index, e, ctx));
+    assert_eq!(to(&entry("1.0.0"), &fits), Some("1.1.0".into()));
+    assert_eq!(
+        to(&entry("1.1.0"), &fits),
+        None,
+        "1.2.0 is for another Horizon"
+    );
+    assert_eq!(
+        to(&entry("1.0.0"), &PLAY),
+        Some("1.2.0".into()),
+        "fit unknown: the newest"
+    );
 }

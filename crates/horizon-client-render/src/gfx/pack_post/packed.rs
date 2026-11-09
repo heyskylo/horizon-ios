@@ -180,6 +180,124 @@ pub(super) fn quantise_outputs(module: &mut naga::Module, outputs: &[(u32, [u8; 
     f.body = out;
 }
 
+/// A program's `vec4` float output into an integer buffer (`RGBA32UI`...) writes the float's
+/// bits there, and the program draws its other buffers. Horizon refused such a program, since
+/// wgpu has no float output into an integer target. Iris 1.11.7 drew it, with a probe pack of
+/// ours (#10490): its other buffers kept every bit written, NaN payloads included, and the
+/// integer buffer read the floats' bits back (1.5 as 0x3FC00000). GL leaves the integer
+/// buffer's value undefined, so those bits are what this driver (NVIDIA 615.78.08) wrote.
+pub(super) fn bitcast_outputs(module: &mut naga::Module, outputs: &[(u32, naga::ScalarKind)]) {
+    let Some(ep) =
+        (module.entry_points.iter_mut()).find(|e| e.stage == naga::ShaderStage::Fragment)
+    else {
+        return;
+    };
+    let Some(result) = &ep.function.result else {
+        return;
+    };
+    let naga::TypeInner::Struct { members, span } = module.types[result.ty].inner.clone() else {
+        return;
+    };
+    let mut new_members = members.clone();
+    // (member, integer kind) of each output that changes.
+    let mut changed = Vec::new();
+    for (i, m) in members.iter().enumerate() {
+        let Some(naga::Binding::Location { location, .. }) = m.binding else {
+            continue;
+        };
+        let Some(&(_, kind)) = outputs.iter().find(|o| o.0 == location) else {
+            continue;
+        };
+        if !matches!(
+            module.types[m.ty].inner,
+            naga::TypeInner::Vector {
+                size: VectorSize::Quad,
+                scalar: naga::Scalar::F32
+            }
+        ) {
+            continue;
+        }
+        let ty = module.types.insert(
+            naga::Type {
+                name: None,
+                inner: naga::TypeInner::Vector {
+                    size: VectorSize::Quad,
+                    scalar: naga::Scalar { kind, width: 4 },
+                },
+            },
+            naga::Span::UNDEFINED,
+        );
+        new_members[i].ty = ty;
+        if let Some(naga::Binding::Location {
+            interpolation,
+            sampling,
+            ..
+        }) = &mut new_members[i].binding
+        {
+            *interpolation = Some(naga::Interpolation::Flat);
+            *sampling = None;
+        }
+        changed.push((i, kind));
+    }
+    if changed.is_empty() {
+        return;
+    }
+    let old_name = module.types[result.ty].name.clone();
+    let struct_ty = module.types.insert(
+        naga::Type {
+            name: old_name.map(|n| n + "_bits"),
+            inner: naga::TypeInner::Struct {
+                members: new_members,
+                span,
+            },
+        },
+        naga::Span::UNDEFINED,
+    );
+    let f = &mut ep.function;
+    if let Some(r) = &mut f.result {
+        r.ty = struct_ty;
+    }
+    let body = std::mem::take(&mut f.body);
+    let mut out = naga::Block::with_capacity(body.len() + 1);
+    for (statement, sp) in body.span_into_iter() {
+        let Statement::Return { value: Some(value) } = statement else {
+            out.push(statement, sp);
+            continue;
+        };
+        let Expression::Compose { components, .. } = &f.expressions[value] else {
+            out.push(statement, sp);
+            continue;
+        };
+        let mut components = components.clone();
+        let mut first = None;
+        for &(member, kind) in &changed {
+            let e = f.expressions.append(
+                Expression::As {
+                    expr: components[member],
+                    kind,
+                    convert: None,
+                },
+                sp,
+            );
+            first.get_or_insert(e);
+            components[member] = e;
+        }
+        let value = f.expressions.append(
+            Expression::Compose {
+                ty: struct_ty,
+                components,
+            },
+            sp,
+        );
+        out.push(
+            Statement::Emit(naga::Range::new_from_bounds(first.unwrap_or(value), value)),
+            sp,
+        );
+        out.push(Statement::Return { value: Some(value) }, sp);
+    }
+    f.body = out;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

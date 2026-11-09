@@ -97,33 +97,10 @@ impl Compression {
                 }
                 Ok(())
             }
-            Self::Zlib => {
-                let mut decoder = Decompress::new(true);
-                let mut block = [0; 8192];
-                loop {
-                    let before_in = decoder.total_in();
-                    let before_out = decoder.total_out();
-                    let status = decoder
-                        .decompress(
-                            &bytes[before_in as usize..],
-                            &mut block,
-                            FlushDecompress::None,
-                        )
-                        .map_err(|e| invalid(e.to_string()))?;
-                    let produced = (decoder.total_out() - before_out) as usize;
-                    if produced > max_output.saturating_sub(output.len()) {
-                        return Err(invalid("decompression limit exceeded"));
-                    }
-                    output.extend_from_slice(&block[..produced]);
-                    if status == Status::StreamEnd {
-                        return Ok(());
-                    }
-                    if decoder.total_in() == before_in && produced == 0 {
-                        return Err(invalid("truncated zlib stream"));
-                    }
-                }
+            Self::Zlib => zlib_into(bytes, max_output, output),
+            Self::Lz4 => {
+                LZ4_BUFFER.with_borrow_mut(|buffer| decode_lz4(bytes, max_output, output, buffer))
             }
-            Self::Lz4 => decode_lz4(bytes, max_output, output),
         }
     }
 
@@ -145,17 +122,104 @@ impl Compression {
     }
 }
 
+thread_local! {
+    /// This thread's zlib inflater, reset for each chunk instead of a new
+    /// one (and its window) allocated every time.
+    static INFLATER: std::cell::RefCell<Option<Decompress>> = const { std::cell::RefCell::new(None) };
+    /// This thread's LZ4 compressed-block scratch, retained between chunk reads.
+    static LZ4_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The zlib stream in `bytes` decoded onto `output`, at most `max_output`
+/// bytes in all. A whole stream that fits is inflated straight into
+/// `output`, which grows as it fills (from about eight times the stream, a
+/// chunk's usual ratio, never past one byte over the limit); any other
+/// stream (damaged, cut short, too long) is decoded again by
+/// [`zlib_blocks`], so what an error leaves in `output` stays as it was.
+fn zlib_into(bytes: &[u8], max_output: usize, output: &mut Vec<u8>) -> io::Result<()> {
+    INFLATER.with_borrow_mut(|inflater| {
+        let decoder = inflater.get_or_insert_with(|| Decompress::new(true));
+        decoder.reset(true);
+        let start = output.len();
+        let room = max_output.saturating_sub(start);
+        let mut first = Some(bytes.len().saturating_mul(8));
+        loop {
+            if output.capacity() == output.len() {
+                let want = first.take().unwrap_or(output.len() - start).max(8192);
+                output.reserve_exact(want.min((start + room).saturating_add(1) - output.len()));
+            }
+            let before_in = decoder.total_in();
+            let before_out = output.len();
+            let status =
+                decoder.decompress_vec(&bytes[before_in as usize..], output, FlushDecompress::None);
+            let fits = output.len() - start <= room;
+            match status {
+                Ok(Status::StreamEnd) if fits => return Ok(()),
+                Ok(_)
+                    if fits && (decoder.total_in() != before_in || output.len() != before_out) => {}
+                _ => break,
+            }
+        }
+        output.truncate(start);
+        decoder.reset(true);
+        zlib_blocks(decoder, bytes, max_output, output)
+    })
+}
+
+/// The zlib stream in `bytes` inflated 8 KiB at a time, each block copied
+/// onto `output` while the limit allows: on an error `output` keeps the
+/// blocks before it, as a stream reader would have handed them out.
+fn zlib_blocks(
+    decoder: &mut Decompress,
+    bytes: &[u8],
+    max_output: usize,
+    output: &mut Vec<u8>,
+) -> io::Result<()> {
+    let mut block = [0; 8192];
+    loop {
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        let status = decoder
+            .decompress(
+                &bytes[before_in as usize..],
+                &mut block,
+                FlushDecompress::None,
+            )
+            .map_err(|e| invalid(e.to_string()))?;
+        let produced = (decoder.total_out() - before_out) as usize;
+        if produced > max_output.saturating_sub(output.len()) {
+            return Err(invalid("decompression limit exceeded"));
+        }
+        output.extend_from_slice(&block[..produced]);
+        if status == Status::StreamEnd {
+            return Ok(());
+        }
+        if decoder.total_in() == before_in && produced == 0 {
+            return Err(invalid("truncated zlib stream"));
+        }
+    }
+}
+
 const MAGIC: &[u8; 8] = b"LZ4Block";
 fn checksum(bytes: &[u8]) -> u32 {
     // The Checksum adapter used by the pinned Java library masks to 28 bits.
     xxhash_rust::xxh32::xxh32(bytes, 0x9747_b28c) & 0x0fff_ffff
 }
 
-fn decode_lz4(mut bytes: &[u8], max_output: usize, output: &mut Vec<u8>) -> io::Result<()> {
+fn decode_lz4(
+    mut bytes: &[u8],
+    max_output: usize,
+    output: &mut Vec<u8>,
+    buffer: &mut Vec<u8>,
+) -> io::Result<()> {
     // `LZ4BlockInputStream.compressedBuffer`: each header is read into it,
     // and a block's bytes over its start; it grows by half when too small.
     // The decompressor may read up to its end, past the block.
-    let mut buffer = vec![0; 21];
+    // Each stream starts from 21 zero bytes, as a new buffer would: the
+    // decompressor may read past a short block into them, so the last
+    // stream's bytes must not be left there. The allocation is kept.
+    buffer.clear();
+    buffer.resize(21, 0);
     loop {
         let header = bytes
             .get(..21)
@@ -196,12 +260,12 @@ fn decode_lz4(mut bytes: &[u8], max_output: usize, output: &mut Vec<u8>) -> io::
             Ok(())
         } else {
             if buffer.len() < compressed {
-                buffer = vec![0; compressed.max(buffer.len() * 3 / 2)];
+                buffer.resize(compressed.max(buffer.len() * 3 / 2), 0);
             }
             buffer[..compressed].copy_from_slice(block);
             output.resize(start + raw, 0);
             // `refill`: the block must be read to its last byte, no further.
-            if decompress_lz4_java(&buffer, &mut output[start..]) == Some(compressed) {
+            if decompress_lz4_java(buffer, &mut output[start..]) == Some(compressed) {
                 Ok(())
             } else {
                 Err(invalid("LZ4 stream is corrupted"))
@@ -381,6 +445,97 @@ mod tests {
             }
         }
     }
+    /// The zlib decoder before it inflated in place: a new inflater for
+    /// each stream, and 8 KiB blocks copied out.
+    fn blockwise(bytes: &[u8], max_output: usize, output: &mut Vec<u8>) -> io::Result<()> {
+        zlib_blocks(&mut Decompress::new(true), bytes, max_output, output)
+    }
+
+    /// Inflating in place keeps what the block decoder kept and fails as it
+    /// failed: whole streams, every limit around them, streams cut short and
+    /// damaged ones, decoded after bytes already in the output.
+    #[test]
+    fn zlib_in_place_matches_the_block_decoder() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut cases = 0;
+        for n in [0usize, 1, 8191, 8192, 8193, 20_000, 100_000] {
+            let raw: Vec<u8> = (0..n)
+                .map(|i| {
+                    if i % 700 < 400 {
+                        7
+                    } else {
+                        random() as u8 & 31
+                    }
+                })
+                .collect();
+            let encoded = Compression::Zlib.encode(&raw).unwrap();
+            let mut streams = vec![encoded.clone()];
+            for cut in [1, 2, encoded.len() / 2, encoded.len() - 1] {
+                streams.push(encoded[..encoded.len().saturating_sub(cut)].to_vec());
+            }
+            for at in [
+                2,
+                3,
+                encoded.len() / 3,
+                encoded.len() / 2,
+                encoded.len() - 5,
+            ] {
+                let mut damaged = encoded.clone();
+                if let Some(b) = damaged.get_mut(at) {
+                    *b ^= 0x5a;
+                }
+                streams.push(damaged);
+            }
+            for stream in &streams {
+                for limit in [
+                    0,
+                    1,
+                    8191,
+                    8192,
+                    8193,
+                    n / 2,
+                    n.saturating_sub(1),
+                    n,
+                    n + 1,
+                    n + 9000,
+                ] {
+                    for before in [0usize, 5] {
+                        let mut old = vec![9; before];
+                        let mut new = old.clone();
+                        let a = blockwise(stream, limit + before, &mut old);
+                        let b = Compression::Zlib.decode_into(stream, limit + before, &mut new);
+                        assert_eq!(
+                            a.map_err(|e| e.to_string()),
+                            b.map_err(|e| e.to_string()),
+                            "{n} bytes, stream of {}, limit {limit}",
+                            stream.len()
+                        );
+                        assert_eq!(
+                            old,
+                            new,
+                            "{n} bytes, stream of {}, limit {limit}",
+                            stream.len()
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert!(cases > 1000);
+        // No limit at all.
+        let encoded = Compression::Zlib.encode(b"Horizon").unwrap();
+        assert_eq!(
+            Compression::Zlib.decode(&encoded, usize::MAX).unwrap(),
+            b"Horizon"
+        );
+    }
+
     /// `RegionFileVersion.configure` and `getSelected`: the names
     /// server.properties' `region-file-compression` takes, the default before
     /// any is set, and an unknown name leaving the selection alone.

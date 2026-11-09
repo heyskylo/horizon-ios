@@ -170,6 +170,8 @@ struct Server {
     world: World,
     next_entity: u32,
     placed: Vec<(u32, [i32; 3], u32, i32)>,
+    /// Every packet the hub handed to the game, in order.
+    packets: Vec<S>,
 }
 impl Server {
     fn tick(&mut self, entities: &[EntityState]) {
@@ -178,6 +180,7 @@ impl Server {
             entities,
             next_entity: &mut self.next_entity,
             spawn: [8.5, f64::from(MIN_Y + 5), 8.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -193,6 +196,7 @@ impl Server {
             match event {
                 HostEvent::Joined(conn) => self.hub.place_new_player(conn, &mut ctx),
                 HostEvent::Packet(conn, packet) => {
+                    self.packets.push((*packet).clone());
                     if let S::UseItemOn(p) = *packet {
                         let at = [p.pos[0], p.pos[1] + 1, p.pos[2]];
                         ctx.world
@@ -260,6 +264,7 @@ fn server_sync(sync: Arc<SyncData>, net: NetConfig) -> Server {
         world: flat_world(),
         next_entity: 100,
         placed: Vec::new(),
+        packets: Vec::new(),
     }
 }
 
@@ -1041,6 +1046,8 @@ fn guests_see_each_other_and_the_world_entities() {
         vertical_collision: false,
         horizontal_collision: false,
         needs_sync: false,
+        sync_position: false,
+        stepped: false,
         idle: false,
         bare: false,
         leash: None,
@@ -1684,6 +1691,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         entities: &[],
         next_entity: &mut s.next_entity,
         spawn: at,
+        spawn_angle: [0.0; 2],
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
@@ -1694,7 +1702,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         border: &border,
         streaming: None,
     };
-    s.hub.respawn(0, at, &ctx);
+    s.hub.respawn(0, at, [0.0; 2], &ctx);
     assert!(
         !s.hub.guests[0].client_loaded(),
         "a respawn unloads the client"
@@ -1759,15 +1767,29 @@ fn a_boat_floating_too_long_kicks_its_driver() {
 }
 
 /// A client that numbers its packets as `version` does, from the protocol adapter's own tables: for 26.2 its
-/// handshake states 776 and every id it sends and reads is 26.2's. The payloads stay the pinned ones: the
-/// packets whose layout changed are a later step of `older-clients`.
+/// handshake states 776 and every id it sends and reads is 26.2's. [`Self::send`]'s payloads are the pinned
+/// ones; [`Self::send_raw`] sends a packet as the version lays it out. The clientbound world packets arrive
+/// in 26.2's layout.
 struct Numbered {
     c: Connection,
     version: ServerVersion,
     state: horizon_protocol::State,
+    /// Reads and writes packets in the version's own layout (Horizon's adapter for older servers), not
+    /// only its ids.
+    session: Option<horizon_protocol::adapter::session::Session>,
 }
 impl Numbered {
     fn send(&mut self, body: Vec<u8>) -> Result<(), String> {
+        if let Some(session) = &self.session {
+            let e = |e: horizon_protocol::Error| e.to_string();
+            if let Some(body) = session.serverbound(&body).map_err(e)? {
+                self.c.send(&body).map_err(e)?;
+            }
+            for body in session.take_outgoing() {
+                self.c.send(&body).map_err(e)?;
+            }
+            return Ok(());
+        }
         let body = self
             .version
             .serverbound_body(self.state, &body)
@@ -1775,8 +1797,27 @@ impl Numbered {
             .ok_or("the client's version has no such packet")?;
         self.c.send(&body).map_err(|e| e.to_string())
     }
+    /// A packet by the version's own `id`, its payload in the version's layout.
+    fn send_raw(&mut self, id: i32, payload: &[u8]) -> Result<(), String> {
+        let mut w = horizon_protocol::buf::Writer::new();
+        w.varint(id);
+        w.bytes(payload);
+        self.c.send(&w.data).map_err(|e| e.to_string())
+    }
     /// The next packet with its pinned id (the version's own id read off the wire).
     fn recv(&mut self) -> Result<(i32, Vec<u8>), String> {
+        if let Some(session) = &self.session {
+            let e = |e: horizon_protocol::Error| e.to_string();
+            loop {
+                if let Some(p) = session.next_incoming() {
+                    return Ok(p);
+                }
+                let (id, payload) = self.c.recv().map_err(e)?;
+                if let Some(p) = session.clientbound(id, payload).map_err(e)? {
+                    return Ok(p);
+                }
+            }
+        }
         let (id, payload) = self.c.recv().map_err(|e| e.to_string())?;
         let pinned = self
             .version
@@ -1792,6 +1833,16 @@ fn join_as(
     version: ServerVersion,
     port: u16,
     name: &str,
+) -> Result<Result<(Numbered, Vec<i32>), String>, String> {
+    join_with(version, port, name, false)
+}
+
+/// [`join_as`], the packets read and written in `version`'s layout when `layouts`.
+fn join_with(
+    version: ServerVersion,
+    port: u16,
+    name: &str,
+    layouts: bool,
 ) -> Result<Result<(Numbered, Vec<i32>), String>, String> {
     use horizon_protocol::State;
     let e = |e: horizon_protocol::Error| e.to_string();
@@ -1812,6 +1863,7 @@ fn join_as(
         c,
         version,
         state: State::Login,
+        session: layouts.then(|| horizon_protocol::adapter::session::Session::new(version)),
     };
     bot.send(hello(handshake::LOGIN))?;
     bot.send(
@@ -1903,14 +1955,15 @@ fn status_protocol(port: u16, protocol: i32) -> Result<i64, String> {
 /// `accept_older_clients` off (the default), a 26.2 client is turned away as vanilla turns it away and the
 /// server list shows 26.3's protocol; on, the client is told its own protocol, logs in in 26.2's packet ids
 /// and is told, before any registry data, that 26.2 isn't translated yet, while a 26.3 client is served as
-/// before. Let past that (the tests-only `older_clients_play`), it plays in 26.2's packet ids and sees the
-/// block it places.
+/// before. Let past that (the tests-only `older_clients_play`), it is sent the tags in 26.2's item ids, plays in
+/// 26.2's packet ids and sees the block it places.
 #[test]
 fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
     let Some(resources) = resources() else {
         return;
     };
     const OLD: ServerVersion = ServerVersion::V26_2;
+    const DIAMOND_26_2: i32 = 926;
     const DIAMOND_26_3: i32 = 1012;
     let mut off = server(&resources);
     let port = off.hub.lan.port;
@@ -1964,8 +2017,8 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
     };
     let mut play = server_with(&resources, net);
     let port = play.hub.lan.port;
-    let placed = run(&mut play, move || {
-        let (mut bot, _) = join_as(OLD, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
+    let (payment, placed) = run(&mut play, move || {
+        let (mut bot, payment) = join_as(OLD, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
         let (mut login, mut chunks, mut placed) = (false, 0, None);
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
@@ -1973,6 +2026,28 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
             // The command tree has argument nodes the client side does not decode.
             if id == horizon_protocol::ids::play::clientbound::COMMANDS {
                 continue;
+            }
+            // World packets come in 26.2's own layout, which the pinned readers don't read (the adapter's
+            // unit tests read them back with translate's 26.2 readers).
+            {
+                use horizon_protocol::ids::play::clientbound as cb;
+                match id {
+                    cb::LEVEL_CHUNK_WITH_LIGHT => {
+                        chunks += 1;
+                        continue;
+                    }
+                    cb::LIGHT_UPDATE
+                    | cb::LEVEL_PARTICLES
+                    | cb::EXPLODE
+                    | cb::MOVE_ENTITY_POS
+                    | cb::MOVE_ENTITY_POS_ROT
+                    | cb::MOVE_ENTITY_ROT
+                    | cb::ENTITY_POSITION_SYNC
+                    | cb::ANIMATE
+                    // Its tag displays are 26.2's bare tag ids.
+                    | cb::RECIPE_BOOK_ADD => continue,
+                    _ => {}
+                }
             }
             match C::decode(id, &payload).map_err(|e| format!("packet {id}: {e}"))? {
                 C::Login(_) => login = true,
@@ -1987,7 +2062,6 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
                     })
                     .encode(),
                 )?,
-                C::LevelChunkWithLight(_) => chunks += 1,
                 C::ChunkBatchFinished(_) => {
                     bot.send(
                         S::ChunkBatchReceived(play::ChunkBatchReceived {
@@ -2029,8 +2103,199 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
             }
         }
         assert!(login, "no login packet");
-        Ok(placed.flatten())
+        Ok((payment, placed.flatten()))
     });
+    assert!(payment.contains(&DIAMOND_26_2), "{payment:?}");
+    assert!(!payment.contains(&DIAMOND_26_3), "{payment:?}");
     assert_eq!(placed, Some(([9, MIN_Y + 5, 9], STONE as i32)));
     assert_eq!(play.placed.len(), 1);
+}
+
+/// The serverbound packets whose layout 26.3 changed reach the game from a 26.2 client as 26.3's: its
+/// teleport confirmations (the id alone) are taken, so its walk counts; its digging actions past 0 are one
+/// up (start 0 stays 0, stop 2 is 3); its main-hand swing is a punch and its off-hand swing nothing.
+#[test]
+fn a_26_2_clients_walk_dig_swing_and_teleport_confirmations_read_as_26_3s() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    // 26.2's serverbound ids (play) of the packets whose layout changed.
+    const ACCEPT_TELEPORTATION_26_2: i32 = 0;
+    const PLAYER_ACTION_26_2: i32 = 41;
+    const SWING_26_2: i32 = 63;
+    let net = NetConfig {
+        accept_older_clients: true,
+        older_clients_play: true,
+        ..NetConfig::loopback(0, "Test - World".into(), 8)
+    };
+    let mut s = server_with(&resources, net);
+    let port = s.hub.lan.port;
+    let below = [9, MIN_Y + 4, 9];
+    let walked = [9.5, f64::from(MIN_Y + 5), 9.5];
+    let (_bot, confirmed) = run(&mut s, move || {
+        let (mut bot, _) =
+            join_as(ServerVersion::V26_2, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
+        let (mut confirmed, mut chunks, mut sent) = (0, 0, false);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            let (id, payload) = bot.recv()?;
+            // The command tree has argument nodes the client side does not decode.
+            if id == horizon_protocol::ids::play::clientbound::COMMANDS {
+                continue;
+            }
+            // The packets written in 26.2's layout, which the pinned readers don't read.
+            {
+                use horizon_protocol::ids::play::clientbound as cb;
+                if id == cb::LEVEL_CHUNK_WITH_LIGHT {
+                    chunks += 1;
+                }
+                if matches!(
+                    id,
+                    cb::LEVEL_CHUNK_WITH_LIGHT
+                        | cb::LIGHT_UPDATE
+                        | cb::LEVEL_PARTICLES
+                        | cb::EXPLODE
+                        | cb::MOVE_ENTITY_POS
+                        | cb::MOVE_ENTITY_POS_ROT
+                        | cb::MOVE_ENTITY_ROT
+                        | cb::ENTITY_POSITION_SYNC
+                        | cb::ANIMATE
+                        | cb::RECIPE_BOOK_ADD
+                ) {
+                    continue;
+                }
+            }
+            match C::decode(id, &payload).map_err(|e| format!("packet {id}: {e}"))? {
+                C::PlayerPosition(p) => {
+                    let mut w = horizon_protocol::buf::Writer::new();
+                    w.varint(p.teleport);
+                    bot.send_raw(ACCEPT_TELEPORTATION_26_2, &w.data)?;
+                    confirmed += 1;
+                }
+                C::ChunkBatchFinished(_) => {
+                    bot.send(
+                        S::ChunkBatchReceived(play::ChunkBatchReceived {
+                            chunks_per_tick: 20.0,
+                        })
+                        .encode(),
+                    )?;
+                }
+                C::BlockChangedAck(a) if a.sequence == 77 => break,
+                _ => {}
+            }
+            if chunks >= 9 && confirmed > 0 && !sent {
+                sent = true;
+                bot.send(S::PlayerLoaded(Empty).encode())?;
+                // A walk from the spawn (8.5, 8.5), on the stone: one move, as vanilla kicks a second in a tick.
+                bot.send(
+                    S::MovePlayerPos(play::MovePlayerPos {
+                        x: walked[0],
+                        y: walked[1],
+                        z: walked[2],
+                        flags: 1,
+                    })
+                    .encode(),
+                )?;
+                // Start and stop destroying the block below, as 26.2 numbers the actions.
+                for (action, sequence) in [(0, 5), (2, 6)] {
+                    let mut w = horizon_protocol::buf::Writer::new();
+                    w.varint(action);
+                    w.i64(horizon_protocol::buf::pack_block_pos(below));
+                    w.u8(1);
+                    w.varint(sequence);
+                    bot.send_raw(PLAYER_ACTION_26_2, &w.data)?;
+                }
+                // A main-hand swing, then an off-hand one.
+                bot.send_raw(SWING_26_2, &[0])?;
+                bot.send_raw(SWING_26_2, &[1])?;
+                // Its acknowledgement says the hub has handled everything before it.
+                bot.send(
+                    S::UseItemOn(play::UseItemOn {
+                        hand: 0,
+                        pos: [12, MIN_Y + 4, 12],
+                        face: 1,
+                        cursor: [0.5, 1.0, 0.5],
+                        inside: false,
+                        world_border: false,
+                        sequence: 77,
+                    })
+                    .encode(),
+                )?;
+            }
+        }
+        assert!(sent, "the client never got its chunks");
+        // The bot is kept, so its guest stays to be looked at.
+        Ok((bot, confirmed))
+    });
+    assert!(confirmed > 0, "no teleport to confirm");
+    let g = &s.hub.guests[0];
+    assert!(g.left_reason.is_empty(), "{}", g.left_reason);
+    assert_eq!(g.position, walked, "the walk was not taken");
+    let actions: Vec<i32> = s
+        .packets
+        .iter()
+        .filter_map(|p| match p {
+            S::PlayerAction(a) if a.pos == below => Some(a.action),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(actions, [0, 3]);
+    let punches = s
+        .packets
+        .iter()
+        .filter(|p| matches!(p, S::Punch(_)))
+        .count();
+    assert_eq!(punches, 1);
+}
+
+/// A client of each older release the adapter knows (26.1 down to 1.20.5) gets past configuration and is sent chunks without being
+/// disconnected, on a server that accepts older clients.
+#[test]
+fn older_clients_of_each_release_join_and_are_sent_chunks() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    for version in [
+        ServerVersion::V26_1,
+        ServerVersion::V1_21_11,
+        ServerVersion::V1_21_10,
+        ServerVersion::V1_21_8,
+        ServerVersion::V1_21_6,
+        ServerVersion::V1_21_5,
+        ServerVersion::V1_21_4,
+        ServerVersion::V1_21_3,
+        ServerVersion::V1_21_1,
+        ServerVersion::V1_20_6,
+    ] {
+        let net = NetConfig {
+            accept_older_clients: true,
+            older_clients_play: true,
+            ..NetConfig::loopback(0, "Test - World".into(), 8)
+        };
+        let mut s = server_with(&resources, net);
+        let port = s.hub.lan.port;
+        let chunks = run(&mut s, move || {
+            let (mut bot, _) = join_with(version, port, "Old", true)
+                .map_err(|e| format!("{}: join: {e}", version.name()))?
+                .map_err(|r| format!("refused: {r}"))?;
+            let mut chunks = 0;
+            let mut last = -1;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline && chunks < 9 {
+                let (id, _) = bot
+                    .recv()
+                    .map_err(|e| format!("{} after packet {last}: {e}", version.name()))?;
+                last = id;
+                use horizon_protocol::ids::play::clientbound as cb;
+                if id == cb::DISCONNECT {
+                    return Err("disconnected".into());
+                }
+                if id == cb::LEVEL_CHUNK_WITH_LIGHT {
+                    chunks += 1;
+                }
+            }
+            Ok(chunks)
+        });
+        assert!(chunks > 0, "{}: no chunks", version.name());
+    }
 }

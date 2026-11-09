@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "send_custom_payload_to_player", "target": "horizon_client::game::native_net::Game<'_>::native_send_custom_payload_to_player"}
+  ],
+  "rust_summary": "a plugin channel message to one player's client on any channel outside `horizon:` (`native_send_custom_payload_to_player`).",
+  "doc_summary": "`native_send_custom_payload_to_player(player, channel, data)` sends a `ClientboundCustomPayloadPacket` on any `namespace:path` channel outside `horizon:` (at most 1 MiB) to one player's client, a vanilla one included, at the tick's end, from any server hook, as Bukkit's `Player.sendPluginMessage`. Bundles need \"hooks\": @API:send_custom_payload_to_player@.",
+  "comments": ["crates/horizon-client/src/game/native_net.rs"]
+}

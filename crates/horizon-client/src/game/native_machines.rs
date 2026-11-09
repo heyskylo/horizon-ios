@@ -17,7 +17,6 @@ use winit::keyboard::KeyCode;
 const FAKE_EYE: f32 = 1.62;
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Breaks the block at `pos` as a machine does, with no player: vanilla's
     /// `Level.destroyBlock(pos, true)` with the loot rolled for `tool`

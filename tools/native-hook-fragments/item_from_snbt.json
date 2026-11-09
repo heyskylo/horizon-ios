@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "item_from_snbt", "target": "horizon_client::game::native_hooks::Game<'_>::native_item_from_snbt"}
+  ],
+  "rust_summary": "a stable way from SNBT to an item stack: `native_item_from_snbt`, `ItemStack::from_nbt` and `mod_api::parse_snbt`.",
+  "doc_summary": "`native_item_from_snbt(snbt)` reads an item stack from SNBT text as vanilla's `TagParser` and `ItemStack.CODEC` do (None for text that is not one compound, for air and for an item the world does not have); `ItemStack::from_nbt(compound)` reads one from a compound without the registry check, and `mod_api::parse_snbt` is the SNBT reader itself. Bundles need \"hooks\": @API:item_from_snbt@.",
+  "comments": [
+    "crates/horizon-items/src/item_data.rs"
+  ]
+}

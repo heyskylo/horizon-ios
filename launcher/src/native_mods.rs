@@ -1671,6 +1671,9 @@ pub enum Step {
     Install,
     /// This mod was left out of the build.
     LeftOut(LeftOut),
+    /// These mods didn't build on the Horizon the instance plays: the build moves to the commit
+    /// they were made for.
+    OnTheirHorizon(Vec<String>),
     /// The build ended: seconds it took.
     Done {
         secs: u64,
@@ -1726,6 +1729,10 @@ impl Step {
             Self::PostBuild(id) => trf("Running {name}'s post-build step", &[("name", id)]),
             Self::Install => tr("Installing the build").into(),
             Self::LeftOut(left) => left.label(),
+            Self::OnTheirHorizon(mods) => trf(
+                "{mods} didn't build on the Horizon you play: building on the one they were made for",
+                &[("mods", &mods.join(", "))],
+            ),
             Self::Done {
                 secs,
                 profile,
@@ -2724,13 +2731,14 @@ fn isolated(
     }
 }
 
-/// Builds `folder`'s mods on the Horizon revision they pin (else `base`'s, the installed version
-/// whose game files the build reuses: a native build's own revision when it is one, [`base_for`])
-/// and points `instance` at the build, the default one included. Returns the build's version; a
-/// build already made is used again. Mods pinning different revisions build on the newest one,
-/// with the newest horizon-mixins they name, only when the player agreed to try (`anyway`): else
-/// the error starts with [`MISMATCH`] and says which. With `on_base`, every mod builds on `base`'s
-/// own commit, pinned or not: the player's Rebuild on Horizon.
+/// Builds `folder`'s mods on `base`'s commit first, pinned or not (`base` is the installed version
+/// whose game files the build reuses: a native build's own revision when it is one, [`base_for`]),
+/// and points `instance` at the build, the default one included. A mod made for another commit
+/// that doesn't build there moves the build to the revision the mods pin, once (else the first
+/// build stays). Returns the build's version; a build already made is used again. Mods pinning
+/// different revisions build on the newest one, with the newest horizon-mixins they name, only
+/// when the player agreed to try (`anyway`): else the error starts with [`MISMATCH`] and says
+/// which. With `on_base`, the player's Rebuild on Horizon, nothing moves off `base`'s commit.
 pub fn build(
     base: &str,
     folder: &Path,
@@ -2744,25 +2752,45 @@ pub fn build(
         return Err(error);
     }
     logged(|| {
-        let built = isolated(
-            |skip| {
-                pipeline(
-                    base,
-                    folder,
-                    anyway,
-                    on_base,
-                    profile,
-                    Target::Client,
-                    &progress,
-                    skip,
-                    true,
-                )
-            },
-            &progress,
-        )?;
-        instances::edit(&instance.id, |meta| {
-            meta.version = Some(built.version.clone())
-        })?;
+        let run = |base: &str, on_base: bool| {
+            isolated(
+                |skip| {
+                    pipeline(
+                        base,
+                        folder,
+                        anyway,
+                        on_base,
+                        profile,
+                        Target::Client,
+                        &progress,
+                        skip,
+                        true,
+                    )
+                },
+                &progress,
+            )
+        };
+        let point = |version: &str| {
+            instances::edit(&instance.id, |meta| meta.version = Some(version.to_owned()))
+        };
+        let mut built = run(base, true)?;
+        point(&built.version)?;
+        let theirs = match on_base {
+            true => Vec::new(),
+            false => made_elsewhere(&bundles(folder)?, &built.left_out),
+        };
+        if !theirs.is_empty() {
+            progress(Step::OnTheirHorizon(theirs));
+            let origin = about(base).map_or_else(|| base.to_owned(), |a| a.base);
+            match run(&origin, false) {
+                Ok(moved) => {
+                    point(&moved.version)?;
+                    built = moved;
+                }
+                Err(e) if e.starts_with(MISMATCH) => return Err(e),
+                Err(e) => log_warning(&e),
+            }
+        }
         prune(&built.version);
         if built.plan != Plan::UpToDate {
             progress(Step::Done {
@@ -2773,6 +2801,17 @@ pub fn build(
         }
         Ok(built.version)
     })
+}
+
+/// The mods in `bundles` a build left out (`left_out`) for not building on its commit though they
+/// pin another one: on theirs, they may.
+fn made_elsewhere(bundles: &[Bundle], left_out: &[LeftOut]) -> Vec<String> {
+    bundles
+        .iter()
+        .filter(|b| b.hooks.is_none() && b.horizon.is_some())
+        .filter(|b| (left_out.iter()).any(|l| l.id == b.id && l.why == isolate::Why::OtherVersion))
+        .map(|b| b.id.clone())
+        .collect()
 }
 
 /// Builds `folder`'s mods as the headless engine a dedicated server runs (`horizon-engine`,
@@ -3748,8 +3787,9 @@ mod tests {
 
     /// A player's report (11-04): Right-Click Crops 1.0.0 pins Nightly 2026-10-31's commit, so
     /// every build of their instance compiled that commit, whatever Nightly or profile they
-    /// picked. The pin still chooses by default, and the build now says which mod chose it;
-    /// Rebuild on Horizon (`on_base`) compiles the picked version's own commit.
+    /// picked. A build now compiles the picked version's own commit first (`on_base`) and moves
+    /// to the pin only for a mod that doesn't build there ([`made_elsewhere`]); then it says
+    /// which mod chose the commit.
     #[test]
     fn a_pin_chooses_the_commit_unless_the_player_builds_on_the_picked_version() {
         let pinned = |id: &str, horizon: Option<&str>| Bundle {
@@ -3784,6 +3824,45 @@ mod tests {
         );
         let offline = || -> Result<String, String> { Err("offline".into()) };
         assert!(pinned_revision(&mods, true, offline, no_date).is_err());
+    }
+
+    /// Every build tries the picked Horizon first: only a mod pinning another commit, left out
+    /// for not building there, moves the build to its commit.
+    #[test]
+    fn only_a_pinned_mod_left_out_for_its_version_moves_the_build() {
+        let bundle = |id: &str, horizon: Option<&str>, hooks: Option<u32>| Bundle {
+            id: id.into(),
+            version: "1".into(),
+            dir: PathBuf::new(),
+            horizon: horizon.map(str::to_owned),
+            mixins: None,
+            hooks,
+            injections: Vec::new(),
+            api: None,
+            mixins_content: false,
+        };
+        let mods = [
+            bundle("freecam_plus", Some(A), None),
+            bundle("zoom", Some(A), Some(1)),
+            bundle("local", None, None),
+        ];
+        let left = |id: &str, why: isolate::Why| LeftOut {
+            id: id.into(),
+            version: "1".into(),
+            why,
+        };
+        assert!(made_elsewhere(&mods, &[]).is_empty());
+        assert_eq!(
+            made_elsewhere(&mods, &[left("freecam_plus", isolate::Why::OtherVersion)]),
+            vec!["freecam_plus".to_owned()]
+        );
+        let unpinned = [
+            left("zoom", isolate::Why::OtherVersion),
+            left("local", isolate::Why::OtherVersion),
+        ];
+        assert!(made_elsewhere(&mods, &unpinned).is_empty());
+        let clash = [left("freecam_plus", isolate::Why::Clash("zoom".into()))];
+        assert!(made_elsewhere(&mods, &clash).is_empty());
     }
 
     #[test]

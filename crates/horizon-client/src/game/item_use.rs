@@ -12,6 +12,23 @@ use horizon_client::{
 };
 use horizon_world::consumable::UseAnimation;
 
+/// Resolve USE_EFFECTS through the stack's component patch.
+pub(super) fn interact_vibrations(stack: &ItemStack, default: Option<bool>) -> bool {
+    if stack.count == 0 {
+        return false;
+    }
+    let Some(data) = stack.data() else {
+        return default.unwrap_or(false);
+    };
+    if data.other("!minecraft:use_effects").is_some() {
+        return false;
+    }
+    data.other("minecraft:use_effects").map_or_else(
+        || default.unwrap_or(false),
+        |tag| horizon_client::save::number(tag.get("interact_vibrations")).unwrap_or(1) != 0,
+    )
+}
+
 impl Game<'_> {
     /// `LivingEntity.startUsingItem` for the acting player's hand: nothing
     /// when a use runs already or the hand is empty. The use lasts
@@ -42,17 +59,22 @@ impl Game<'_> {
     }
     /// `ItemStack.getUseDuration`: a consumable's time, 72000 for what is
     /// held until let go, the fixed times of brushes, bundles, spyglasses and
-    /// goat horns, 0 for the rest, then a mod's answer.
+    /// goat horns, 0 for the rest, then a mod's answer. A `consumable` or
+    /// `blocks_attacks` the server's patch adds counts as the item's own
+    /// (`Item.getUseDuration` reads the stack's components).
     pub(super) fn use_duration(&self, stack: &ItemStack) -> i32 {
         let info = self.items().get(&stack.item);
+        let (patched_ticks, patched_blocks) = horizon_client::item_sync::patched_use(stack);
         let mut duration = match &*stack.item {
             "minecraft:bow" | "minecraft:crossbow" | "minecraft:trident" => 72_000,
             "minecraft:spyglass" => 1200,
             "minecraft:brush" => 200,
             _ if info.is_some_and(|i| i.bundle) => 200,
             _ if let Some(i) = self.res.items().instrument(stack) => i.use_ticks(),
+            _ if let Some(ticks) = patched_ticks => ticks,
             _ => match info {
                 Some(i) if let Some(c) = &i.consumable => c.ticks(),
+                _ if patched_blocks => 72_000,
                 Some(i) if i.blocks_attacks.is_some() => 72_000,
                 _ if Kinetic::of(&stack.item).is_some() => 72_000,
                 _ => 0,
@@ -454,8 +476,24 @@ mod tests {
 }
 
 #[cfg(test)]
-mod interact_vibration_tests {
+pub(super) mod interact_vibration_tests {
     use super::*;
+
+    type RecordedEvent = (&'static str, [f64; 3], Option<horizon_client::mobs::Who>);
+    thread_local! {
+        static EVENTS: std::cell::RefCell<Vec<RecordedEvent>> = const { std::cell::RefCell::new(Vec::new()) };
+        static RECORDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(in crate::game) fn record_event(
+        event: &'static str,
+        pos: [f64; 3],
+        source: Option<horizon_client::mobs::Who>,
+    ) {
+        if RECORDING.get() {
+            EVENTS.with(|events| events.borrow_mut().push((event, pos, source)));
+        }
+    }
 
     /// Runs `f` on a windowless game built from the prepared resources with
     /// `held` in the main hand and returns the game events it posted;
@@ -498,7 +536,9 @@ mod interact_vibration_tests {
         );
         *game.held_mut() = Some(ItemStack::new(held, 1));
         crate::game::dispense_fixture::start_recording();
+        RECORDING.set(true);
         f(&mut game);
+        RECORDING.set(false);
         Some(crate::game::dispense_fixture::stop_recording())
     }
 
@@ -534,5 +574,117 @@ mod interact_vibration_tests {
             return;
         };
         assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn stack_use_effects_patch_controls_vibrations() {
+        let mut rod = ItemStack::new("minecraft:fishing_rod", 1);
+        assert!(interact_vibrations(&rod, Some(true)));
+        rod.data_mut().set_loot_component(
+            "minecraft:use_effects",
+            &serde_json::json!({"interact_vibrations": false}),
+        );
+        assert!(!interact_vibrations(&rod, Some(true)));
+        rod.data_mut()
+            .set_loot_component("minecraft:use_effects", &serde_json::json!({}));
+        assert!(interact_vibrations(&rod, Some(false)));
+        rod.data_mut().set_other("minecraft:use_effects", None);
+        rod.data_mut().set_other(
+            "!minecraft:use_effects",
+            Some(horizon_world::nbt::Tag::Compound(Default::default())),
+        );
+        assert!(!interact_vibrations(&rod, Some(true)));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn fishing_cast_and_reel_post_player_vibrations() {
+        use horizon_client::mobs::Who;
+        let Some(_) = with_game("minecraft:fishing_rod", |game| {
+            let rod = ItemStack::new("minecraft:fishing_rod", 1);
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(game.use_fishing_rod(&rod));
+            assert!(game.use_fishing_rod(&rod));
+            EVENTS.with(|events| {
+                assert_eq!(
+                    *events.borrow(),
+                    vec![
+                        (
+                            "minecraft:item_interact_start",
+                            [10.5, 64.0, -3.25],
+                            Some(Who::Player)
+                        ),
+                        (
+                            "minecraft:item_interact_finish",
+                            [10.5, 64.0, -3.25],
+                            Some(Who::Player)
+                        ),
+                    ]
+                );
+            });
+            let mut silent = rod.clone();
+            silent.data_mut().set_loot_component(
+                "minecraft:use_effects",
+                &serde_json::json!({"interact_vibrations": false}),
+            );
+            *game.held_mut() = Some(silent.clone());
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(game.use_fishing_rod(&silent));
+            assert!(game.use_fishing_rod(&silent));
+            EVENTS.with(|events| assert!(events.borrow().is_empty()));
+            *game.held_mut() = Some(rod.clone());
+            assert!(game.use_fishing_rod(&rod));
+            game.hook
+                .as_mut()
+                .unwrap()
+                .move_to([10.5, 64.0, -3.25], true);
+            let max = game
+                .items()
+                .get("minecraft:fishing_rod")
+                .unwrap()
+                .max_damage;
+            game.held_mut().as_mut().unwrap().damage = max - 1;
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(game.use_fishing_rod(&rod));
+            EVENTS.with(|events| assert!(events.borrow().is_empty(), "{:?}", *events.borrow()));
+        }) else {
+            panic!("prepared resources failed to load")
+        };
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn thrown_eye_posts_projectile_shoot_at_eye_from_player() {
+        use horizon_client::mobs::Who;
+        let Some(_) = with_game("minecraft:ender_eye", |game| {
+            let root =
+                std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+            let terrain = horizon_client::vanillagen::VanillaTerrain::new(
+                &root.join("worldgen"),
+                game.pack.assets.registry,
+                &game.res.core.biomes,
+                1234,
+            )
+            .unwrap();
+            game.end.set_locator(Some(std::sync::Arc::new(terrain)));
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(
+                game.use_ender_eye(&ItemStack::new("minecraft:ender_eye", 1), false)
+                    .unwrap()
+            );
+            EVENTS.with(|events| {
+                let events = events.borrow();
+                assert!(
+                    events.contains(&(
+                        "minecraft:projectile_shoot",
+                        [10.5, 64.0 + f64::from(1.8_f32) * 0.5, -3.25],
+                        Some(Who::Player),
+                    )),
+                    "{events:?}"
+                );
+            });
+        }) else {
+            panic!("prepared resources failed to load")
+        };
     }
 }

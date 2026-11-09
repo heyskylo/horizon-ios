@@ -40,8 +40,8 @@ pub use biomes::{
 pub use block_ids::BlockIds;
 pub use condition::eval_condition;
 pub use config::{
-    BUFFERS, Buffer, Config, Format, Kind, SHADOW_COLORS, Shadow, buffer_index, draw_buffers,
-    shadow_color,
+    BUFFERS, Buffer, Config, Format, HALF_LIVES, Kind, SHADOW_COLORS, Shadow, buffer_index,
+    draw_buffers, shadow_color,
 };
 pub use core_shader::{BLOCKS, CoreProgram, Glue, SAMPLERS, translate_core};
 pub use custom::{Custom, Val};
@@ -55,7 +55,7 @@ pub use options::{
 pub use pack::{Pack, PackError};
 pub use post::{
     Blend, BufferObject, BufferSize, CELESTIAL_BLEND, CustomImage, Factor, GameInputs, Group,
-    ImageSize, Post, PostProgram, ShadowCulling, TRANSLUCENT_BLEND, dimension_folder,
+    ImageSize, Post, PostProgram, STARS_BLEND, ShadowCulling, TRANSLUCENT_BLEND, dimension_folder,
     dimension_folder_named, load_post,
 };
 pub use preprocess::{Diagnostic, Origin, Preprocessed, preprocess};
@@ -67,6 +67,6 @@ pub use textures::{
 };
 pub use translate::{
     AlphaTest, ComputeProgram, DRAW_UNIFORMS, Error, GbuffersInputs, GeometryInputs, Image,
-    Interface, Program, Sampler, Target, Uniform, translate_composite, translate_compute,
-    translate_gbuffers, translate_geometry, translate_shadow,
+    Interface, Program, Sampler, Target, Uniform, WATER_MASK, WATER_PATCHES, translate_composite,
+    translate_compute, translate_gbuffers, translate_geometry, translate_shadow,
 };

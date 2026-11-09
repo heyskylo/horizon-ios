@@ -457,6 +457,9 @@ fn submit_quads(
     // translucency up once.
     let mut last: Option<(&str, bool)> = None;
     let mut last_rect: Option<(&str, Option<Rect>)> = None;
+    // A glint in the GUI follows the quad's sprite in the glint atlas: looked up once a sprite too.
+    let gui_glint = display == DisplayContext::Gui && foil == Foil::Standard;
+    let mut last_glint: Option<(&str, Option<Rect>)> = None;
     for q in &baked.quads {
         let rect = match last_rect {
             Some((sprite, rect)) if sprite == q.material.sprite => rect,
@@ -509,8 +512,15 @@ fn submit_quads(
             pos,
             uv,
             foil_uv: q.uv,
-            gui_glint_uv: (display == DisplayContext::Gui && foil == Foil::Standard)
-                .then(|| atlas.get(sprite_name(&q.material.sprite)))
+            gui_glint_uv: gui_glint
+                .then(|| match last_glint {
+                    Some((sprite, rect)) if sprite == q.material.sprite => rect,
+                    _ => {
+                        let rect = atlas.get(sprite_name(&q.material.sprite)).copied();
+                        last_glint = Some((&q.material.sprite, rect));
+                        rect
+                    }
+                })
                 .flatten()
                 .map(|r| {
                     q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v])
@@ -1179,14 +1189,22 @@ pub fn rendered_amount(count: u32) -> u32 {
 /// `ItemEntityRenderer.submitMultipleFromCount`: the poses of each copy of
 /// a stack (`seed` is `ItemClusterRenderState.getSeedForItemStack`).
 pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64) -> Vec<Mat4> {
+    if amount == 0 {
+        return Vec::new();
+    }
+    let (lo, hi) = state.bounding_box();
+    cluster_poses_with_depth(pose, amount, seed, hi.z - lo.z)
+}
+
+/// [`cluster_poses`] with the depth of the resolved model's bounding box
+/// already computed for this draw (also used to place the stack's bob).
+pub fn cluster_poses_with_depth(pose: Mat4, amount: u32, seed: i64, depth: f32) -> Vec<Mat4> {
     use horizon_core::random::{LegacyRandom, RandomSource};
     let mut out = Vec::new();
     if amount == 0 {
         return out;
     }
     let mut random = LegacyRandom::new(seed);
-    let (lo, hi) = state.bounding_box();
-    let depth = hi.z - lo.z;
     let mut next = || random.next_float() * 2.0 - 1.0;
     if depth > 0.0625 {
         out.push(pose);
@@ -1306,6 +1324,43 @@ mod tests {
         let (lo, hi) = state.posed_bounds(&poses).expect("item model has vertices");
         assert_eq!(lo, Vec3::new(-2.0, 1.5, -0.25));
         assert_eq!(hi, Vec3::new(2.5, 3.0, 0.25));
+    }
+
+    #[test]
+    fn stack_copy_positions_keep_the_flat_and_solid_random_sequences() {
+        // Captured from the original cluster renderer with seed 7, three
+        // copies and an identity pose. Flat items draw two random values
+        // per extra copy; solid items draw three.
+        for (depth, expected) in [
+            (
+                0.03125,
+                [
+                    [0, 0, 3_175_088_128],
+                    [1_024_310_737, 1_017_789_485, 0],
+                    [1_025_054_461, 3_180_766_298, 1_027_604_480],
+                ],
+            ),
+            (
+                0.25,
+                [
+                    [0, 0, 0],
+                    [1_032_699_345, 1_026_178_093, 1_033_443_069],
+                    [3_189_154_906, 3_174_720_933, 3_141_056_154],
+                ],
+            ),
+        ] {
+            let copies = cluster_poses_with_depth(Mat4::IDENTITY, 3, 7, depth);
+            assert_eq!(copies.len(), expected.len());
+            for (pose, position) in copies.iter().zip(expected) {
+                let expected =
+                    Mat4::from_translation(Vec3::from_array(position.map(f32::from_bits)));
+                assert_eq!(
+                    pose.to_cols_array().map(f32::to_bits),
+                    expected.to_cols_array().map(f32::to_bits)
+                );
+            }
+        }
+        assert!(cluster_poses_with_depth(Mat4::IDENTITY, 0, 7, 0.25).is_empty());
     }
 
     /// One frame's glint is read once and shared: every item drawn from the

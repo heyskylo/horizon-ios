@@ -65,8 +65,9 @@ impl Game<'_> {
         for t in self.living_targets(ctx)? {
             let changed = match t {
                 Target::Player | Target::Guest(_) => {
-                    let mut instance = EffectInstance::new(effect.id, duration, amplifier);
-                    instance.visible = particles;
+                    // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
+                    let instance = EffectInstance::new(effect.id, duration, amplifier)
+                        .with_flags(false, particles);
                     self.for_player(t, |g| g.add_player_effect(instance))
                         .unwrap_or(false)
                 }
@@ -77,6 +78,14 @@ impl Game<'_> {
                         // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
                         let changed =
                             m.add_effect_with(name, duration, amplifier, false, particles);
+                        // MobEffect.onEffectAdded: an omen's sound, at the mob's feet.
+                        if new
+                            && changed
+                            && let Some(sound) = super::super::potions::sound_on_added(name)
+                        {
+                            let at = [m.position.x, m.position.y, m.position.z];
+                            self.audio.play(sound, Some(at), 1.0, 1.0);
+                        }
                         self.mod_effect_added(name, Some(id as i32), amplifier, new);
                         changed
                     }
@@ -137,10 +146,37 @@ impl Game<'_> {
                 (Target::Mob(id), e) => match self.mobs.iter_mut().find(|m| m.id == id) {
                     Some(m) => {
                         let before = m.extra.effects.len();
+                        let absorbing = |m: &horizon_client::mobs::Mob| {
+                            m.extra
+                                .effects
+                                .iter()
+                                .any(|x| x.0 == "minecraft:absorption")
+                        };
+                        let had_absorption = absorbing(m);
+                        let boosted = |m: &horizon_client::mobs::Mob| {
+                            m.extra
+                                .effects
+                                .iter()
+                                .any(|x| x.0 == "minecraft:health_boost")
+                        };
+                        let had_boost = boosted(m);
                         m.extra
                             .effects
                             .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
+                        // LivingEntity.onEffectsRemoved -> onAttributeUpdated(MAX_ABSORPTION).
+                        if had_absorption && !absorbing(m) {
+                            m.absorption = m
+                                .absorption
+                                .min(horizon_client::mobs::armor::max_absorption(m));
+                        }
+                        // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
+                        if had_boost && !boosted(m) {
+                            horizon_client::mobs::finalize::health_boost_changed(m);
+                        }
                         let left = &m.extra.effects;
+                        m.extra
+                            .effect_fallbacks
+                            .retain(|h| left.iter().any(|x| x.0 == h.id));
                         m.extra
                             .hidden_effects
                             .retain(|h| left.iter().any(|x| x.0 == *h));

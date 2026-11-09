@@ -344,7 +344,7 @@ pub fn text_display_data(tag: &Tag, all: bool) -> Vec<(u8, i32, Value)> {
 /// `Transformation.EXTENDED_CODEC`'s translation, left rotation, scale and
 /// right rotation: all four parts, or a `MATRIX4F` (sixteen floats, row-major)
 /// that `new Transformation(matrix)` decomposes (`MatrixUtil.svdDecompose`).
-fn transformation(tag: &Tag) -> Option<([f32; 3], [f32; 4], [f32; 3], [f32; 4])> {
+pub fn transformation(tag: &Tag) -> Option<([f32; 3], [f32; 4], [f32; 3], [f32; 4])> {
     use horizon_assets::math::{
         Mat4, normalize_quaternion, quaternion_from_axis_angle, svd_decompose,
     };
@@ -414,6 +414,93 @@ impl Lines {
                 0.0,
             ))
     }
+}
+
+/// Local geometry, independent of the display's interpolated world pose.
+pub struct CachedQuads {
+    key: (Arc<Text>, i32, i32, i8, u8, u32, u64, u64, bool),
+    /// Drawn differently every frame: obfuscated (`§k`) glyphs, legacy codes
+    /// included, or an inline object (a head whose skin arrives later).
+    animated: bool,
+    pub lines: Lines,
+    pub batch: crate::hud::HudBatch,
+    bounds: (glam::Vec3, glam::Vec3),
+}
+
+impl CachedQuads {
+    pub fn matches(&self, d: &TextDisplayData, background: u32, epoch: u64, revision: u64) -> bool {
+        !self.animated
+            && self.key
+                == (
+                    d.text.clone(),
+                    d.line_width,
+                    d.background,
+                    d.opacity,
+                    d.flags,
+                    background,
+                    epoch,
+                    revision,
+                    crate::lang::bidirectional(),
+                )
+    }
+
+    pub fn new(atlas: &crate::hud::HudAtlas, d: &TextDisplayData, background: u32) -> Self {
+        let lines = Lines::split(&atlas.font, &d.text, d.line_width);
+        let mut batch = crate::hud::HudBatch::new([1, 1]);
+        draw(&mut batch, atlas, d, &lines, background);
+        let mut lo = glam::Vec3::splat(f32::INFINITY);
+        let mut hi = glam::Vec3::splat(f32::NEG_INFINITY);
+        for v in &batch.vertices {
+            let p = glam::Vec3::new(v.pos[0], v.pos[1], v.depth);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        let animated = d
+            .text
+            .resolved()
+            .spans
+            .iter()
+            .any(|s| s.style.obfuscated == Some(true) || s.style.inline_object.is_some());
+        Self {
+            key: (
+                d.text.clone(),
+                d.line_width,
+                d.background,
+                d.opacity,
+                d.flags,
+                background,
+                atlas.font.epoch(),
+                atlas.revision,
+                crate::lang::bidirectional(),
+            ),
+            animated,
+            lines,
+            batch,
+            bounds: (lo, hi),
+        }
+    }
+
+    pub fn transformed_bounds(&self, matrix: glam::Mat4) -> (glam::Vec3, glam::Vec3) {
+        transformed_bounds(self.bounds, matrix)
+    }
+}
+
+fn transformed_bounds(
+    (lo, hi): (glam::Vec3, glam::Vec3),
+    matrix: glam::Mat4,
+) -> (glam::Vec3, glam::Vec3) {
+    let mut min = glam::Vec3::splat(f32::INFINITY);
+    let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
+    for x in [lo.x, hi.x] {
+        for y in [lo.y, hi.y] {
+            for z in [lo.z, hi.z] {
+                let p = matrix.transform_point3(glam::Vec3::new(x, y, z));
+                min = min.min(p);
+                max = max.max(p);
+            }
+        }
+    }
+    (min, max)
 }
 
 /// The corners of each six-vertex `HudBatch` quad that `draw` fills, in the

@@ -19,6 +19,13 @@ const SLOT: u64 = 32;
 /// What `gbuffers_hand` reads: the entity inputs, and the hand's projection from set 1.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
     let mut inputs = super::pack_entities::inputs();
+    // No last frame's hand to measure from: the hand's `at_velocity` reads zero (and its set 1
+    // has no previous vertices).
+    for (name, value) in &mut inputs.attributes {
+        if name == "at_velocity" {
+            *value = "vec3(0.0)".to_owned();
+        }
+    }
     // Iris 1.11.7 declares `currentRenderedItemId` in the hand's programs (observed).
     inputs.item_id_declared = true;
     inputs.declarations.push_str(
@@ -54,8 +61,12 @@ pub struct PackHand {
     slots: wgpu::Buffer,
     pub slot_group: wgpu::BindGroup,
     stride: u64,
-    /// This frame's runs: first quad, quads, and the dynamic offset of their slot.
+    /// This frame's runs: first quad, quads, and the dynamic offset of their slot. The opaque
+    /// quads come first in the buffer, then the translucent ones (`translucent_runs`), which a
+    /// pack's `gbuffers_hand_water` draws after deferred.
     pub runs: Vec<(u32, u32, u32)>,
+    pub translucent_runs: Vec<(u32, u32, u32)>,
+    order: Vec<Vertex>,
 }
 
 impl PackHand {
@@ -120,6 +131,8 @@ impl PackHand {
             slot_group,
             stride,
             runs: Vec::new(),
+            translucent_runs: Vec::new(),
+            order: Vec::new(),
         }
     }
 
@@ -166,17 +179,25 @@ impl PackHand {
     ) {
         self.quads = (hand.len() / 4) as u32;
         self.runs.clear();
+        self.translucent_runs.clear();
         if self.quads == 0 {
             return;
         }
+        let split = split(hand, items);
+        self.order = split.order;
         let mut contents = Vec::new();
-        for (start, quads, id) in runs(self.quads, items) {
-            let slot = (self.runs.len() as u64).min(SLOTS - 1);
-            if slot as usize == self.runs.len() {
-                contents.extend_from_slice(&draw_slot(id));
+        for (i, &(first, quads, id, translucent)) in split.runs.iter().enumerate() {
+            let slot = (i as u64).min(SLOTS - 1);
+            if slot == i as u64 {
+                contents.extend_from_slice(&draw_slot(id, translucent));
                 contents.resize(((slot + 1) * self.stride) as usize, 0);
             }
-            self.runs.push((start, quads, (slot * self.stride) as u32));
+            let run = (first, quads, (slot * self.stride) as u32);
+            if translucent {
+                self.translucent_runs.push(run);
+            } else {
+                self.runs.push(run);
+            }
         }
         queue.write_buffer(&self.slots, 0, &contents);
         if self.quads > self.capacity {
@@ -185,7 +206,7 @@ impl PackHand {
                 Self::vertex_buffer(device, &self.layout, &self.uniform, self.capacity);
             self.indices = super::pack_entities::quad_indices(device, self.capacity);
         }
-        queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(hand));
+        queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&self.order));
         let matrices = [projection, projection.inverse()].map(|m| m.to_cols_array());
         queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&matrices));
     }
@@ -198,11 +219,62 @@ impl PackHand {
 /// The hand's runs a frame keeps slots for.
 const SLOTS: u64 = 8;
 
-/// `HzDraw` of a hand run: `renderStage` the solid hand's, `blockEntityId` -1 as outside block
-/// entities, and `currentRenderedItemId`.
-fn draw_slot(id: i32) -> [u8; SLOT as usize] {
+/// The hand's quads reordered, opaque first and translucent after (each in their order), and
+/// their runs: first quad, quads, `currentRenderedItemId`, translucent.
+struct Split {
+    order: Vec<Vertex>,
+    runs: Vec<(u32, u32, i32, bool)>,
+}
+
+fn split(hand: &[Vertex], items: &[(u32, i32)]) -> Split {
+    let quads = (hand.len() / 4) as u32;
+    let mut ids = vec![0; quads as usize];
+    for (start, n, id) in runs(quads, items) {
+        ids[start as usize..(start + n) as usize].fill(id);
+    }
+    let kind = |q: usize| translucent_quad(&hand[q * 4..q * 4 + 4]);
+    let opaque: Vec<usize> = (0..quads as usize).filter(|&q| !kind(q)).collect();
+    let clear: Vec<usize> = (0..quads as usize).filter(|&q| kind(q)).collect();
+    let mut out = Split {
+        order: Vec::with_capacity(hand.len()),
+        runs: Vec::new(),
+    };
+    for &q in opaque.iter().chain(&clear) {
+        out.order.extend_from_slice(&hand[q * 4..q * 4 + 4]);
+    }
+    for (translucent, list, base) in [(false, &opaque, 0), (true, &clear, opaque.len())] {
+        let mut i = 0;
+        while i < list.len() {
+            let id = ids[list[i]];
+            let mut n = 1;
+            while i + n < list.len() && ids[list[i + n]] == id {
+                n += 1;
+            }
+            out.runs
+                .push(((base + i) as u32, n as u32, id, translucent));
+            i += n;
+        }
+    }
+    out
+}
+
+/// A held item's quad drawn from a translucent sheet (`item_render`: its overlay layer).
+fn translucent_quad(quad: &[Vertex]) -> bool {
+    matches!(
+        quad[0].layer & 0xffff,
+        super::TRANSLUCENT_ITEM_OVERLAY | super::TRANSLUCENT_GLINT_ITEM_OVERLAY
+    )
+}
+
+/// `HzDraw` of a hand run: `renderStage` the solid or translucent hand's, `blockEntityId` -1 as
+/// outside block entities, and `currentRenderedItemId`.
+fn draw_slot(id: i32, translucent: bool) -> [u8; SLOT as usize] {
     let mut bytes = [0u8; SLOT as usize];
-    let stage = horizon_shaders::render_stage("HAND_SOLID") as i32;
+    let stage = horizon_shaders::render_stage(if translucent {
+        "HAND_TRANSLUCENT"
+    } else {
+        "HAND_SOLID"
+    }) as i32;
     bytes[0..4].copy_from_slice(&stage.to_le_bytes());
     bytes[8..12].copy_from_slice(&(-1i32).to_le_bytes());
     bytes[12..16].copy_from_slice(&id.to_le_bytes());
@@ -232,6 +304,42 @@ fn runs(quads: u32, items: &[(u32, i32)]) -> Vec<(u32, u32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The arm, then an item whose middle quad is translucent, then a second item: the opaque
+    /// quads keep their order first, the translucent one comes after them, and each run keeps
+    /// its item's id.
+    #[test]
+    fn translucent_quads_go_after_the_opaque_ones() {
+        let quad = |layer: u32, tag: f32| {
+            [Vertex {
+                layer,
+                pos: [tag, 0.0, 0.0],
+                ..bytemuck::Zeroable::zeroed()
+            }; 4]
+        };
+        let glass = super::super::TRANSLUCENT_ITEM_OVERLAY;
+        let hand: Vec<Vertex> = [
+            quad(0, 0.),
+            quad(0, 1.),
+            quad(glass, 2.),
+            quad(0, 3.),
+            quad(0, 4.),
+        ]
+        .concat();
+        // The arm is quad 0; item 7 quads 1..4; item 9 quad 4.
+        let split = split(&hand, &[(4, 7), (16, 9)]);
+        let order: Vec<f32> = split.order.chunks(4).map(|q| q[0].pos[0]).collect();
+        assert_eq!(order, [0., 1., 3., 4., 2.]);
+        assert_eq!(
+            split.runs,
+            [
+                (0, 1, 0, false),
+                (1, 2, 7, false),
+                (3, 1, 9, false),
+                (4, 1, 7, true)
+            ]
+        );
+    }
 
     /// Each item's quads draw with its id; geometry before the first item is the arm's (0).
     #[test]

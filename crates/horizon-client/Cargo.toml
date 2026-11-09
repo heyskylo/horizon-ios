@@ -4,7 +4,7 @@ default-run = "horizon-client"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 description = "Horizon native development client"
 autobins = false
 autoexamples = false
@@ -37,7 +37,8 @@ horizon-chat-filter = { path = "../horizon-chat-filter" }
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
-horizon-friends = { path = "../horizon-friends" }
+# Play with Friends: invite codes and their tunnel; the `friends` feature.
+horizon-friends = { path = "../horizon-friends", optional = true }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
@@ -65,10 +66,11 @@ log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 horizon-theme = { path = "../horizon-theme" }
-# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
-# the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
-horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
+# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md). The
+# anonymous "I'm playing" ping is horizon-client-lib's (`heartbeat.rs`), the `heartbeat` feature.
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-bench = { path = "../horizon-bench" }
+crc32fast = "1"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
@@ -90,8 +92,8 @@ dunce = "1.0.5"
 # Use the registered URI handler without routing links through Explorer/cmd.
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
-# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
-# on the PATH.
+# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or on integrated GPUs with DXC
+# (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -107,12 +109,26 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
-default = ["audio", "controllers"]
+default = ["audio", "controllers", "horizon-extras"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
 audio = ["horizon-client-render/audio", "horizon-client-lib/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
 controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
+# Horizon's own extras over the vanilla game, for a fork that wants them out (docs/forking.md):
+# cosmetics and emotes, the "Horizon player" presence, the official server added to
+# the server list, the Horizon Settings and Mods pages, Discord, Play with Friends and the
+# heartbeat. Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
+# every place it gates. Without it (`--no-default-features --features audio,controllers`) the
+# client is best effort: CI builds only the default.
+horizon-extras = ["discord", "friends", "heartbeat"]
+# Online extras a server or a port can leave out; the server build has none of them. "Playing Horizon"
+# on Discord (game/discord.rs).
+discord = ["horizon-client-lib/discord"]
+# Play with Friends: sharing a world behind an invite code (game/friends.rs) and joining one.
+friends = ["horizon-client-lib/friends", "dep:horizon-friends"]
+# The anonymous "I'm playing" ping (docs/telemetry.md).
+heartbeat = ["horizon-client-lib/heartbeat"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace", "horizon-client-lib/rng-trace"]
 # Rust's allocations go to the system heap instead of mimalloc, where heap profilers that replace
@@ -145,6 +161,10 @@ path = "tests/mod_api_hooks.rs"
 [[example]]
 name = "native_gui_overlay_probe"
 path = "examples/native_gui_overlay_probe.rs"
+
+[[example]]
+name = "wind_burst_hook_probe"
+path = "examples/wind_burst_hook_probe.rs"
 
 [build-dependencies]
 horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }

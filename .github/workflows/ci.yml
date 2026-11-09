@@ -234,14 +234,15 @@ jobs:
         run: python ../tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
       - name: Check launcher DLL imports and command-line startup
         working-directory: launcher
-        shell: pwsh
+        # bash, as launcher.yml's check on the same runner: the launcher is a GUI-subsystem program, and a pwsh
+        # `$output = & launcher --version` read no output from it (run 42217014588).
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $launcher = 'target/aarch64-pc-windows-msvc/release/horizon-launcher.exe'
-          python ../tools/check_imports.py $launcher
-          $output = & $launcher --version 2>&1
-          if ($LASTEXITCODE -ne 0 -or -not $output) { throw 'horizon-launcher --version failed' }
-          Write-Output ($output -join "`n")
+          launcher=target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
+          python ../tools/check_imports.py "$launcher"
+          out=$("$launcher" --version)
+          echo "$out"
+          [[ "$out" == "horizon-launcher "* ]] || { echo "::error::horizon-launcher --version printed '$out'"; exit 1; }
       - name: Build a native-mod game with the launcher's managed toolchain
         working-directory: launcher
         shell: pwsh
