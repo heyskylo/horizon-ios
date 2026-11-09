@@ -434,6 +434,19 @@ pub fn experience(
     bar: bool,
     width: &dyn Fn(&str) -> i32,
 ) -> Vec<GuiDraw> {
+    experience_colored([None; 2], w, h, progress, level, bar, width)
+}
+/// [`experience`] with a resource pack's level number colours (Polytone `text.xpbar`: the
+/// number's, then its outline's; `None` keeps vanilla's).
+pub fn experience_colored(
+    [number, outline]: [Option<u32>; 2],
+    w: i32,
+    h: i32,
+    progress: f32,
+    level: i32,
+    bar: bool,
+    width: &dyn Fn(&str) -> i32,
+) -> Vec<GuiDraw> {
     let mut out = Vec::new();
     if bar {
         let (left, top) = (w / 2 - 91, h - 32 + 3);
@@ -460,11 +473,12 @@ pub fn experience(
                 Text::literal(&text),
                 x + dx,
                 y + dy,
-                0xFF00_0000,
+                outline.map_or(0xFF00_0000, opaque),
                 false,
             );
         }
-        self::text(&mut out, Text::literal(text), x, y, 0xFF80_FF20, false);
+        let color = number.map_or(0xFF80_FF20, opaque);
+        self::text(&mut out, Text::literal(text), x, y, color, false);
     }
     out
 }
@@ -946,4 +960,13 @@ pub fn paint(batch: &mut crate::hud::HudBatch, atlas: &crate::hud::HudAtlas, dra
 pub fn abgr(color: u32) -> u32 {
     let [a, r, g, b] = color.to_be_bytes();
     crate::hud::rgba(r, g, b, a)
+}
+
+/// A pack colour without an alpha drawn opaque, as `ARGB.opaque` makes it (one with alpha keeps it).
+fn opaque(color: u32) -> u32 {
+    if color >> 24 == 0 {
+        color | 0xFF00_0000
+    } else {
+        color
+    }
 }
