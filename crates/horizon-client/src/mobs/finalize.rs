@@ -1008,7 +1008,7 @@ pub const FEET: usize = 2;
 pub const LEGS: usize = 3;
 pub const CHEST: usize = 4;
 pub const HEAD: usize = 5;
-const SADDLE: usize = 7;
+pub const SADDLE: usize = 7;
 /// The `gear` slot of an `EquipmentSlot`.
 fn gear_slot(slot: usize) -> usize {
     match slot {
