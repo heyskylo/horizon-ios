@@ -457,7 +457,7 @@ impl Game<'_> {
 
     /// Whether a device holds the key mapping named `mapping` (`key.use`).
     pub(super) fn input_holds(&self, mapping: &str) -> bool {
-        self.pad.holds_action(&self.settings.controller, mapping)
+        self.pad.holds_action(mapping)
     }
 
     /// Turns the view by what the devices give this frame (`Entity.turn`).
