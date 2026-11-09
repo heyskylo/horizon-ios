@@ -146,6 +146,12 @@ impl WorldOptions {
         self.initial.difficulty = self.difficulty;
         self.initial.locked = self.locked;
     }
+    /// `WorldOptionsScreen.updatePortControlsState`: the port box takes an
+    /// edit only with LAN on; it stays focusable either way, so its value can
+    /// be read, selected and copied while LAN is off.
+    fn update_port_controls(&mut self) {
+        self.port.editable = self.lan;
+    }
     fn parsed_port(&self) -> Option<u16> {
         if self.port.value.is_empty() {
             return Some(self.hint);
@@ -942,7 +948,7 @@ impl Game<'_> {
         if !o.remote {
             o.port.x = x + 158.0;
             o.port.y = top + PORT_TOP;
-            o.port.focused = o.lan && o.port.focused;
+            o.update_port_controls();
             o.port.text_color = if !o.lan {
                 rgba(0x70, 0x70, 0x70, 255)
             } else if o.parsed_port().is_some() {
@@ -1166,7 +1172,6 @@ impl Game<'_> {
         }
         let inside = self.cursor.1 >= HEADER && self.cursor.1 < h - FOOTER;
         o.port.focused = !o.remote
-            && o.lan
             && inside
             && ui::hovered(
                 self.cursor,
@@ -1401,7 +1406,7 @@ impl Game<'_> {
                 let reverse = shift;
                 let next = match o.focused_button {
                     Some(cur) => {
-                        if !o.remote && o.lan {
+                        if !o.remote {
                             if !reverse && cur == Button::Lan {
                                 o.port.focused = true;
                                 o.focused_button = None;
