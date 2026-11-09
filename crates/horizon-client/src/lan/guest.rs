@@ -734,6 +734,10 @@ impl Guest {
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
     }
+    /// `Abilities.mayBuild`: survival or creative.
+    pub fn may_build(&self) -> bool {
+        matches!(self.game_mode, SURVIVAL | CREATIVE)
+    }
     /// PlayerAbilities flags (invulnerable, flying, may fly, instabuild).
     pub fn ability_flags(&self) -> i8 {
         let mut f = 0;
