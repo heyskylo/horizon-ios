@@ -69,7 +69,7 @@ block-name coverage. The local oracle exports all 35,723 state identities and
 defaults from vanilla. This imports identities, not block implementations,
 shapes or behavior. Registry exports and game-derived fixtures stay in `.local/`.
 Chunk access requires data version 5023. A world saved by an older version is upgraded when it is opened, as 26.3 does: the file fixes (`FileFixerUpper`) and level.dat, then vanilla's DataFixers over every chunk, entity chunk, POI chunk, player, saved data, advancements and statistics file (`horizon_world::datafix`; vanilla upgrades each file as it reads it, Horizon all of them on opening). `tools/test_datafix_parity.py` compares the result with vanilla's own upgrade over worlds written by older server jars. Every server data fix is ported, from the saves of 1.8 (no DataVersion) on; only the fixes of client files (options, debug profiles) are not. `BlockRegistry::resolve` rejects invalid property descriptors. The separate
-[block-state JSON codec](block-state-codecs.md) reproduces vanilla property
+block-state JSON codec reproduces vanilla property
 fallback for compact and full JSON forms.
 
 `ChunkData::saved_ticks` reads `block_ticks` or `fluid_ticks`, resolves type
@@ -79,7 +79,7 @@ relative delays while preserving other root fields. IDs here identify block or
 fluid types, not block states. Missing tick lists are empty. Numeric fields use
 vanilla's integer narrowing and floating-point conversion. Unknown types and
 malformed entries return errors; vanilla's logging/partial-result paths are not
-reproduced. [Scheduler integration and its separate suite](scheduled-ticks.md).
+reproduced. Scheduler integration and its separate suite.
 
 ## Validation
 

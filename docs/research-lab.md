@@ -45,10 +45,10 @@ python3 tools/test_density_parity.py
 The core corpus checks 1,634,520 output lines per reference JAR, including
 signed boundaries, RNG rejection/state consumption and raw storage words.
 Passing it does not establish full gameplay parity or an FPS improvement.
-The separate [noise suite](noise-generation.md) checks 26.3 Perlin/simplex,
+The separate noise suite checks 26.3 Perlin/simplex,
 derivatives, density-volume accumulation, stack composition, normal-noise
 normalization and modern/legacy initialization against both reference JARs.
-The [density suite](density-functions.md) checks compiled scalar and bulk
+The density suite checks compiled scalar and bulk
 evaluation, including nested samplers, their different arithmetic paths, and
 selected interval operations used for graph range analysis.
 
@@ -62,7 +62,7 @@ It covers all 35,723 exported state IDs and a 100,000-edit section trace.
 Scheduled ticks now support vanilla ordering, duplicate suppression, save/reload,
 chunk eligibility and callback mutations. The tick suite compares 97,776 output
 lines per reference JAR and checks saved block/fluid lists through vanilla codecs
-and region files. [Scheduler behavior and remaining integration](scheduled-ticks.md).
+and region files. Scheduler behavior and remaining integration.
 
 Voxel shapes preserve vanilla collision tolerances, greedy box ordering, ray faces,
 inside hits, and cube-versus-array cell lookup. A cached collision registry connects
@@ -71,7 +71,7 @@ Movement helpers resolve supplied colliders and step-up candidates, including
 landing adjustment and the second collider query. Movement-path block visits
 preserve vanilla ordering, step indices and packed-position deduplication.
 Uncached states require block behavior; the entity-context overload also needs
-separate implementation. [Geometry and collision scope](collision-geometry.md).
+separate implementation. Geometry and collision scope.
 
 ```sh
 cargo test --workspace

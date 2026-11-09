@@ -176,17 +176,17 @@ lookup order. The API is bounded to 8,192 definitions and dependency depth 256;
 Java hash-tree buckets and pathological self-recursive dependency searches remain
 unsupported. These checks cover tag loading, not the gameplay behavior of members.
 
-The separate [heightmap implementation and comparison](heightmaps.md) now checks
+The separate heightmap implementation and comparison now checks
 all six types, packed data, updates and priming against actual vanilla chunks.
 
-The [noise-fill stage](terrain-filling.md) now integrates final density, aquifers,
+The noise-fill stage now integrates final density, aquifers,
 registry-backed sections, world-generation heightmaps and fluid postprocessing.
 Complete terrain still requires material and surface rules, nonempty world fields,
 biome/feature/structure placement and complete generated-chunk validation. No rendering, frame-rate or complete gameplay claim follows from
 these decoder checks.
 
 
-Subsequent [biome lookup and chunk suites](biome-lookup.md) now validate fuzzy
+Subsequent biome lookup and chunk suites now validate fuzzy
 block-to-quart selection, section-atomic biome fills and multi-noise chunk
 assignment through actual `ChunkGenerator.doCreateBiomes`. The original report
 above remains a record of its narrower tested source snapshot.
@@ -249,11 +249,3 @@ Horizon entry; `LootTableSeed` without a `LootTable` and a vault's default rewar
 
 Remaining known differences: a handful of single blocks near structure pieces in full generation (abandoned camps, shipwreck, villages) that
 need per-feature tracing, and tree features only through `tools/test_tree_feature_parity.py` (8,898 fixtures, all equal).
-
-## Related docs
-
-- [Noise generation](noise-generation.md)
-- [Density functions](density-functions.md)
-- [Terrain filling](terrain-filling.md)
-- [Heightmaps](heightmaps.md)
-- [Collision geometry](collision-geometry.md)

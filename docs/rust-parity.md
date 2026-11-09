@@ -49,7 +49,7 @@ yet simulated gameplay blocks. Resident chunk meshing now preserves weighted
 variants and UV orientation when greedily merging matching cube faces, and uses
 native-checked neighbor visibility. Full block-catalog material support, lighting
 and chunk streaming remain unfinished.
-[Neighbor face visibility](face-visibility.md) now matches both reference JARs
+Neighbor face visibility now matches both reference JARs
 across 1,441,816 state pairs, including all pinned suppression-rule families.
 Animation metadata, frame sequences and tick-state selection now have native
 differential coverage, including all bundled animated texture metadata. GPU
@@ -184,22 +184,22 @@ resident sections after repeated mutation. The corresponding
 [scoped report](../benchmarks/rust-world-2026-10-05/scoped-parity.json)
 records client/server reference hashes and the tested source hashes.
 
-The [scheduled-tick suite](scheduled-ticks.md) adds 25,815 commands including
+The scheduled-tick suite adds 25,815 commands including
 2,096 tick invocations, producing 97,776 matching output lines per reference.
 It also verifies block/fluid tick save codecs and a persisted region chunk.
-The [geometry and cached-collision suites](collision-geometry.md) check numerical
+The geometry and cached-collision suites check numerical
 boundaries and runtime block-state shape data, with separate
 [geometry](../benchmarks/rust-geometry-2026-10-05/scoped-parity.json) and
 [cached-collision](../benchmarks/rust-collision-2026-10-05/scoped-parity.json)
 metadata reports. All differential runners reject changed source hashes during a run before publishing
 a success report. Historic reports describe their own recorded source versions.
 
-The [noise suite](noise-generation.md) checks base sampling, derivative and bulk
+The noise suite checks base sampling, derivative and bulk
 arithmetic, nested/flattened stacks, normal-noise normalization and both modern
 and legacy Nether initialization. Its [scoped report](../benchmarks/rust-noise-2026-10-05/scoped-parity.json)
 records the tested sources and both reference artifacts.
 
-The [density suite](density-functions.md) checks compiled scalar and bulk samplers,
+The density suite checks compiled scalar and bulk samplers,
 including gradients, nested shifted noise, arithmetic, caching, axis slicing and
 coarse-grid interpolation, surface searches and nested splines with range analysis;
 it also compares the initial graph compiler with vanilla's compiler. Its
@@ -233,51 +233,51 @@ replacement and bounded dependency resolution are compared across all 300 bundle
 block tags and synthetic missing-reference/cycle fixtures. Complete terrain
 integration remains pending.
 
-The [heightmap suite](heightmaps.md) records **1,671,668 matching output lines per
+The heightmap suite records **1,671,668 matching output lines per
 reference JAR** across all 35,723 block states and 100 chunk fixtures. Rust resolves
 tag membership; block air/fluid facts are private, independently verified imports.
 Actual vanilla heightmaps compare predicates, mutations, packed words, priming and
 selected ordered block reads. Chunk-lifecycle integration remains pending.
 
-The [noise-fill suite](terrain-filling.md) now compares **7,950,873 output lines per
+The noise-fill suite now compares **7,950,873 output lines per
 reference JAR** across 114 fixtures and 200 fills. Final density, aquifers, resident
 sections, world-generation heightmaps and fluid postprocessing are integrated for
 this stage. The surface stage has a separate comparison; biome, feature and
 structure stages remain pending.
 
-The [structure-density sampler](structure-density.md) matches **1,360,095 output
+The structure-density sampler matches **1,360,095 output
 lines per reference JAR**, including ordered rigid-piece/junction contributions
 and scalar/bulk clipping. Live placement of a start in a running level is ported
 (`/place structure`, through `StructureStart.placeInChunk`); structure discovery
 during chunk generation is compared by the structure-layout suite.
 
-The [vertical-anchor suite](vertical-anchors.md) matches **181,632 output lines per
+The vertical-anchor suite matches **181,632 output lines per
 reference JAR**, including four anchor codecs, runtime overflow, nested exclusive
 fields and generation bounds.
 
-The [material-surface primitives](material-surfaces.md) match **122,988 output
+The material-surface primitives match **122,988 output
 lines per reference JAR** for seeded terracotta bands, band lookup and surface
 noise queries. Subsequent suites cover rule evaluation and surface application.
 
-The [numeric material-condition suite](material-conditions.md) matches **5,627,426
+The numeric material-condition suite matches **5,627,426
 output lines per reference JAR** for eleven condition forms and their column/block
 cache transitions, including codecs, all eight bundled condition definitions and
 block/sequence/conditional/terracotta-band rule composition.
 The chunk surface comparison below integrates these rules.
 
-The [biome-temperature suite](biome-temperatures.md) matches **836,659 output lines
+The biome-temperature suite matches **836,659 output lines
 per reference JAR** for temperature modifiers, precipitation decisions and ordered
 cache behavior, including thread isolation and climate fields from all 67 bundled
 biome definitions. Full weather placement remains pending.
 
-The [surface-extension suite](material-surfaces.md#biome-specific-column-extensions)
+The surface-extension suite
 matches **233,100 output lines per reference JAR** for badlands pillars and
 frozen-ocean icebergs, including ordered column reads/writes and both random modes.
 
-The [bundled material-rule suite](material-rule-libraries.md) matches **678,174
+The bundled material-rule suite matches **678,174
 output lines per reference JAR**, including 665,712 rule applications across all
 42 bundled definitions and the pinned biome, noise and density registries.
-The [chunk surface stage](material-surfaces.md#chunk-surface-stage) matches
+The chunk surface stage matches
 **6,733,382 output lines per reference JAR** across 79 fixtures, 42 terrain fills
 and 106 surface builds, followed by 158 carving-mask passes, including 21,757,952 block values, heightmaps, fluid
 postprocessing and ordered biome queries. It tests all seven bundled terrain
@@ -285,50 +285,50 @@ settings through both stages with shared density contexts and vanilla fuzzy
 biome lookup against 378 generated neighbor biome chunks (400,896 stored cells).
 Preset builders and complete generated worlds remain pending.
 
-The [biome-lookup suite](biome-lookup.md) matches **256,933 output lines per
+The biome-lookup suite matches **256,933 output lines per
 reference JAR** for seed obfuscation, eight-corner fuzzy selection, direct quart
 queries and source replacement. Seed hashes also match an independent SHA-256
-implementation. [Chunk biome storage](biome-lookup.md#chunk-biome-storage) matches
+implementation. Chunk biome storage matches
 **478,340 lines per JAR** across 160 fills, including section-atomic failure
-behavior and clamped reads. [Chunk biome generation](biome-lookup.md#chunk-biome-generation)
+behavior and clamped reads. Chunk biome generation
 matches **383,072 lines per JAR** across 322 fills, including both imported
 multi-noise presets and fixed/checkerboard/End sources through all seven terrain
 routers. Preset builders and complete world generation remain pending.
 
-The [fixed/checkerboard/End source suite](biome-lookup.md#fixed-checkerboard-and-end-sources)
+The fixed/checkerboard/End source suite
 matches **1,306,096 lines per JAR**, including 1,147,984 biome queries and ordered
-End erosion sampling. [Registry-bound source codecs](biome-lookup.md#registry-bound-source-codecs)
+End erosion sampling. Registry-bound source codecs
 match **363,121 lines per JAR** across 40,481 inputs, including canonical encoding,
 possible-biome sets and resolved queries. Chunk generation and surface integration
 share the resolved-source API. Inline biome definitions and complete registry
 lifecycle behavior remain pending.
 
-The [carving-mask suite](carving.md) matches **45,742 lines per JAR** across
+The carving-mask suite matches **45,742 lines per JAR** across
 28 fixtures, including packed column ranges, coordinate wrapping and mutations
 retained after failing traversal callbacks. Mask application is included in the
-surface-stage suite. [Shared carving geometry](carving.md#shared-shape-primitives)
+surface-stage suite. Shared carving geometry
 matches **106,699 lines per JAR**, including 690 ellipsoids and 5,536 reachability
-queries. [Seeded cave/canyon paths](carving.md#seeded-cave-and-canyon-paths) match
+queries. Seeded cave/canyon paths match
 **882,005** and **1,094,517 lines per JAR**, respectively. The combined stage suite
 also covers 42 procedural carving passes, including neighboring biome selection
 and ordinal carver seeds. Full-world integration remains pending.
 
-The [feature-placement primitives](feature-placement.md) match **1,268,600 lines per
+The feature-placement primitives match **1,268,600 lines per
 JAR** across seventeen modifier kinds, including callback failures and shared random
-state. [Modifier-chain execution](feature-placement.md#modifier-chains) matches
+state. Modifier-chain execution matches
 **548,461 lines per JAR**, including feature callback failures and reused pending
-buffers. [Initial block-writing features](feature-placement.md#initial-block-writing-features)
+buffers. Initial block-writing features
 match **1,820,614 lines per JAR** for the void platform, End islands and End arrival
 platform. Remaining feature algorithms and complete world integration remain pending.
 
-The [scalar value-provider suite](value-providers.md) matches **429,920 lines per
+The scalar value-provider suite matches **429,920 lines per
 JAR** across 504 definitions and 5,040 seeded fixtures, including exact random
-stream consumption. [Anchored height providers](value-providers.md#anchored-height-providers)
+stream consumption. Anchored height providers
 match **507,660 lines per JAR**, including all four anchors and overflowing contexts.
 Weighted lists include zero weights, nested choices and maximum totals. Gaussian
 distributions and provider encoding remain pending.
 
-The [block-state JSON codec suite](block-state-codecs.md) matches **221,261 output
+The block-state JSON codec suite matches **221,261 output
 lines per reference JAR**, covering every registered state and compact/full
 encoding plus malformed-property fallback. Block gameplay remains pending.
 
@@ -363,77 +363,77 @@ version-specific differential suites and playable integration checks. The
 project will report implemented/validated scope rather than label a partial
 port as 100% parity.
 
-The [pre-light chunk-stage comparison](terrain-filling.md#block-writes-across-generation-stages)
+The pre-light chunk-stage comparison
 adds **8,090,090 matching lines per JAR** for stage-dependent block mutation and
 heightmap selection, including insertion/removal of every pinned state. This does
 not establish the complete chunk lifecycle or region integration.
 
-The [resident feature-region comparison](feature-placement.md#resident-feature-regions)
+The resident feature-region comparison
 adds **28,922,634 matching lines per JAR** for basic features, configured fill layers, replacements and scattered ore sharing
 modifier chains and resident neighboring chunks, including live heightmap updates.
 World-region side effects and complete feature generation remain pending.
 
-The [inline feature-graph comparison](feature-placement.md#inline-feature-composition)
+The inline feature-graph comparison
 adds **1,146,057 matching lines per JAR** for nested sequences, overlays and random selectors,
 including short-circuit results, shared randomness and partial mutations.
 
-The [named feature-resource comparison](feature-placement.md#named-feature-resources)
+The named feature-resource comparison
 adds **2,528,704 matching lines per JAR** for registry-aware feature/placed-feature
 holders, ordered tags and subsequent nested execution. Complete registry loading,
 reloads and remaining feature algorithms are still pending.
 
-The [configured fill-layer comparison](feature-placement.md#configured-fill-layers)
+The configured fill-layer comparison
 adds **1,305,274 matching lines per JAR** for block-state binding and ordered
 column placement, including decoding every pinned block state. Complete feature
 generation and gameplay remain pending.
 
-The [replacement-rule comparison](feature-placement.md#replacement-rules) adds
+The replacement-rule comparison adds
 **1,890,716 matching lines per JAR** for all ten native predicate kinds, bound
 state/tag identities and ordered random evaluation. Complete ore and structure
 generation remain pending.
 
-The [single-block replacement comparison](feature-placement.md#single-block-replacement)
+The single-block replacement comparison
 adds **303,678 matching lines per JAR** for ordered rule-driven block mutations,
 rejected writes, failures and subsequent random state.
 
-The [scattered-ore comparison](feature-placement.md#scattered-ore) adds
+The scattered-ore comparison adds
 **758,484 matching lines per JAR** for attempt offsets, ordered air-exposure checks,
 rule evaluation and block mutations. Ordinary ore veins and complete biome
 decoration remain pending.
 
-The [bulk-section comparison](feature-placement.md#bulk-section-access) adds
+The bulk-section comparison adds
 **959,640 matching lines per JAR** for cached raw section access, every block state,
 all-air reads and unchanged heightmaps. This supplies storage behavior needed by
 ordinary ore generation; vein geometry and concurrent ownership remain pending.
 
-The [biome feature-order comparison](feature-placement.md#biome-feature-ordering)
+The biome feature-order comparison
 adds **411,751 matching lines per JAR** for identity-based ordering, cycles and
 step index mappings, including every bundled biome's feature lists. This does
 not yet execute complete chunk decoration.
 
-The [world-generation random-adapter comparison](feature-placement.md#world-generation-random-streams)
+The world-generation random-adapter comparison
 adds **238,800 matching lines per JAR** for native bit sampling, counters, forks,
 nested wrappers and decoration/feature seeding. Gaussian sampling and complete
 chunk decoration remain pending.
 
-The [biome-placement comparison](feature-placement.md#biome-placement-filtering)
+The biome-placement comparison
 adds **121,423 matching lines per JAR** for top-feature contexts, native generation
 settings membership, query order, nested ordinary placers and partial failures.
 Complete biome sampling integration and chunk decoration remain pending.
 
-The [decoration scheduler comparison](feature-placement.md#decoration-feature-scheduling)
+The decoration scheduler comparison
 adds **337,398 matching lines per JAR** through the native chunk-decoration entry
 point, with structures disabled and traced feature sinks. It covers resident
 biome selection, global ordering, per-feature seeds and failure/progress state;
 complete feature algorithms and chunk lifecycle remain pending.
 
-The [resident decoration comparison](feature-placement.md#decoration-over-resident-chunks)
+The resident decoration comparison
 adds **36,173,951 matching lines per JAR** for native chunk decoration combining
 biome storage/zoom, generation-stage guards, scheduling, implemented feature
 graphs, block writes and live heightmaps. It compares complete final resident
 sections; structures, lighting and the full generation lifecycle remain pending.
 
-The [block-state provider comparison](feature-placement.md#block-state-providers)
+The block-state provider comparison
 adds **257,299,719 matching lines per JAR** for ten state-provider kinds, including
 all eight bundled provider definitions. It includes every state under six
 directions, property transforms, nested draw order and empty selections. Rule-based
@@ -1004,7 +1004,7 @@ automatic scheduling or complete saved-world integration.
 
 ## Retained biomes during below-zero generation
 
-The [biome-retention implementation](biome-lookup.md#below-zero-biome-retention)
+The biome-retention implementation
 now preserves the pinned three cave-biome candidates and otherwise reads the old
 column at quart Y = 0. The resolver captures upgrade activation at construction;
 candidate failures precede fallback reads. Section fills preserve native commit

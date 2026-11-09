@@ -782,7 +782,7 @@ its imported registry before binding. Each distinct transformed model is baked
 once during gallery preparation and reused across positions. The selected state
 IDs, properties, positions and models are recorded in the startup report.
 
-[Neighbor-face visibility](face-visibility.md) now has native client/server
+Neighbor-face visibility now has native client/server
 coverage across all registered states and suppression-rule families. Integrating
 that result with resident chunk model meshing is now covered by the scene check
 below.
