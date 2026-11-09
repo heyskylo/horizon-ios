@@ -274,8 +274,10 @@ impl Bone {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Pass {
-    /// In the world, seen by the camera.
+    /// In the world, seen by the camera (the window's own model too, in third person).
     World,
+    /// The inventory's picture of the window's own model.
+    Picture,
 }
 
 /// The poses of a [`Mesh`]'s parts for one [`PlayerDraw::draw`], each at rest to begin with.
