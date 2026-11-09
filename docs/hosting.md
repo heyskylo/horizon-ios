@@ -66,6 +66,8 @@ Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`
 such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
 
+On Nix and NixOS, the repository's flake builds `horizon-server` from source: [nix.md](nix.md).
+
 The Horizon launcher also installs releases. Every release folder holds `horizon-server`, so you can run it
 from there too.
 

@@ -51,7 +51,7 @@ pub mod hooks {
     pub use horizon_hooks::players::{
         BODY_PARTS, BodyPose, Frame, Kind, PlayerModel, PlayerModels,
     };
-    pub use horizon_hooks::{Hooks, Started, TooLate, register, seat};
+    pub use horizon_hooks::{Hooks, Started, TooLate, register, seat, tunnel};
 }
 
 /// The settings store (`horizon_hooks::settings`): a crate's own `key:value` lines in the game
