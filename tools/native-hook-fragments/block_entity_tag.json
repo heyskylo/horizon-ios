@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "block_entity_tag", "target": "horizon_client::game::native_world_edit::Game<'_>::native_block_entity_tag"}
+  ],
+  "rust_summary": "`native_block_entity_tag(dimension, pos)`: the data of a block entity in any loaded level, as the block entity's save without its id and position.",
+  "doc_summary": "`native_block_entity_tag(dimension, pos)` gives the data of the block entity at `pos` in the loaded level `dimension` as the server saves it (`BlockEntity.saveWithoutMetadata`: no id, no position), or None when there is none or the level isn't loaded (also on a client). Read-only. Bundles need \"hooks\": @API:block_entity_tag@.",
+  "comments": ["crates/horizon-client/src/game/native_world_edit.rs"]
+}

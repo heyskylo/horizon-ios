@@ -253,12 +253,23 @@ def clip(value, limit=200):
     return value if len(text) <= limit else text[:limit] + "..."
 
 
+def json_equal(a, b):
+    """Compare JSON values without treating booleans as numbers."""
+    if a is b:
+        return True
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(json_equal(a[key], b[key]) for key in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(json_equal(x, y) for x, y in zip(a, b))
+    return isinstance(a, bool) == isinstance(b, bool) and a == b
+
+
 def json_diff(old, new, path="", limit=PATH_LIMIT):
     """[(path, old, new)] where two JSON values differ; lists of different lengths count as one change."""
     changes = []
 
     def walk(a, b, at):
-        if len(changes) >= limit or a == b:
+        if len(changes) >= limit or json_equal(a, b):
             return
         if isinstance(a, dict) and isinstance(b, dict):
             for key in sorted(a.keys() | b.keys()):
@@ -280,7 +291,7 @@ def keyed_diff(old, new):
 
 def diff_facts(old, new):
     return {key: [old.get(key), new.get(key)] for key in sorted(old.keys() | new.keys())
-            if key != "id" and old.get(key) != new.get(key)}
+            if key != "id" and not json_equal(old.get(key), new.get(key))}
 
 
 def diff_packets(old, new):
@@ -341,13 +352,13 @@ def diff_blocks(old, new):
     for name in common:
         a, b = old[name], new[name]
         change = {}
-        if a.get("properties", {}) != b.get("properties", {}):
+        if not json_equal(a.get("properties", {}), b.get("properties", {})):
             change["properties"] = json_diff(a.get("properties", {}), b.get("properties", {}))
         if len(a["states"]) != len(b["states"]):
             change["states"] = [len(a["states"]), len(b["states"])]
-        if default(a) != default(b):
+        if not json_equal(default(a), default(b)):
             change["default"] = [default(a), default(b)]
-        if a.get("definition") != b.get("definition") and "definition" not in format_change:
+        if "definition" not in format_change and not json_equal(a.get("definition"), b.get("definition")):
             change["definition"] = json_diff(a.get("definition"), b.get("definition"))
         if change:
             changed[name] = change
@@ -365,7 +376,7 @@ def diff_items(old, new):
     for name in common:
         a, b = old[name], new[name]
         components_added, components_removed, shared = keyed_diff(a, b)
-        values = {c: json_diff(a[c], b[c], limit=10) for c in shared if a[c] != b[c]}
+        values = {c: json_diff(a[c], b[c], limit=10) for c in shared if not json_equal(a[c], b[c])}
         if components_added or components_removed or values:
             changed[name] = {"added": components_added, "removed": components_removed, "changed": values}
     components = {}
@@ -395,7 +406,8 @@ def diff_commands(old, new):
     a, b = command_nodes(old), command_nodes(new)
     added, removed, common = keyed_diff(a, b)
     return {"added": added, "removed": removed,
-            "changed": {path: json_diff(a[path], b[path], limit=10) for path in common if a[path] != b[path]}}
+            "changed": {path: json_diff(a[path], b[path], limit=10) for path in common
+                        if not json_equal(a[path], b[path])}}
 
 
 def jar_entries(jar, prefix):

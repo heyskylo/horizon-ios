@@ -16,8 +16,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  # A new push to a pull request replaces its running checks; main's runs all finish (releases follow them).
-  group: checks-${{ github.event.pull_request.number || github.sha }}
+  # A new push to a pull request replaces its running checks. On main, the running check finishes and only the
+  # newest push waits behind it: GitHub cancels a waiting run when a newer one joins the group. A burst of merges
+  # queued ~100 main runs on 2026-11-09; the release follows the newest finished main run (docs/release-flow.md).
+  group: checks-${{ github.event.pull_request.number || (github.event_name == 'push' && 'main') || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
