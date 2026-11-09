@@ -3,6 +3,7 @@
 //! banners, and the loom rules of `LoomMenu` (selectable patterns, the
 //! six-layer limit and the result stack).
 use crate::{block_entity_render::DYES, items::ItemStack, items::Items};
+use horizon_world::nbt::Tag;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
