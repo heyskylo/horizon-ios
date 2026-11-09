@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Compare production gateway state counters with actual vanilla methods.
 
-No server/world bootstrap; full entity loops and destination resolution are not covered.
+No server/world bootstrap; full gameplay ticks, portal entry and arrival/destination
+resolution are not covered.
 """
 import argparse
 import json
