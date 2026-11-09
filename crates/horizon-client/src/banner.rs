@@ -105,7 +105,12 @@ impl Banners {
         let tags = root.join("data/minecraft/tags/banner_pattern");
         let mut dirs = vec![tags.clone()];
         while let Some(dir) = dirs.pop() {
-            for path in fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
+            for path in fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+            {
                 if path.is_dir() {
                     dirs.push(path);
                 } else if path.extension().is_some_and(|e| e == "json")
@@ -115,7 +120,9 @@ impl Banners {
                         .and_then(|p| p.with_extension("").to_str().map(|s| s.replace('\\', "/")))
                 {
                     let members = read_tag(root, &name, 0);
-                    banners.pattern_tags.insert(format!("minecraft:{name}"), members);
+                    banners
+                        .pattern_tags
+                        .insert(format!("minecraft:{name}"), members);
                 }
             }
         }
@@ -355,7 +362,10 @@ mod tests {
             "minecraft:provides_banner_patterns",
             Some(Tag::String("creeper".into())),
         );
-        assert_eq!(b.selectable(Some(&pattern)), [Arc::from("minecraft:creeper")]);
+        assert_eq!(
+            b.selectable(Some(&pattern)),
+            [Arc::from("minecraft:creeper")]
+        );
         pattern.data_mut().set_other(
             "minecraft:provides_banner_patterns",
             Some(Tag::String("#pattern_item/globe".into())),
