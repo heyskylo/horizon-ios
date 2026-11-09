@@ -94,13 +94,36 @@ pub(super) fn register_layer_definitions() {
 pub(super) fn content_root(
     root: &std::path::Path,
     enabled: &std::collections::BTreeSet<String>,
+    disabled: &std::collections::BTreeSet<String>,
     dev: &[std::path::PathBuf],
+) -> std::path::PathBuf {
+    let here = std::env::current_dir().unwrap_or_default();
+    let version = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_owned()));
+    content_root_at(root, enabled, disabled, dev, &here, version.as_deref())
+}
+
+fn content_root_at(
+    root: &std::path::Path,
+    enabled: &std::collections::BTreeSet<String>,
+    disabled: &std::collections::BTreeSet<String>,
+    dev: &[std::path::PathBuf],
+    here: &std::path::Path,
+    version: Option<&std::path::Path>,
 ) -> std::path::PathBuf {
     use horizon_client::mod_content::{self, ContentMod};
     use horizon_mods::{Capability, Package};
     let _step = horizon_client::spans::startup::step("mods.content_root");
-    let here = std::env::current_dir().unwrap_or_default();
-    let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
+    let native = version
+        .map(|p| horizon_mods::find(&p.join("native-content")))
+        .unwrap_or_default();
+    let native_ids: std::collections::BTreeSet<_> = native
+        .iter()
+        .filter_map(|path| Package::read(path).ok().map(|p| p.manifest.id))
+        .collect();
+    let mut paths = native.clone();
+    paths.extend(horizon_mods::find(&here.join(mod_list::DIR)));
     paths.retain(|p| !dev.contains(p));
     paths.extend(dev.iter().cloned());
     let mut known = None;
@@ -113,8 +136,17 @@ pub(super) fn content_root(
         .filter_map(|path| Some((path, Package::read(path).ok()?)))
         .filter(|(path, package)| {
             let m = &package.manifest;
-            (enabled.contains(&m.id) || dev.contains(path))
-                && m.capabilities.contains(&Capability::Registries)
+            // A legacy content copy kept for an older build cannot replace this build's
+            // snapshot, including when the native mod is off.
+            if !native.contains(path) && native_ids.contains(&m.id) && !dev.contains(path) {
+                return false;
+            }
+            let on = if native.contains(path) {
+                !disabled.contains(&m.id)
+            } else {
+                enabled.contains(&m.id)
+            } || dev.contains(path);
+            on && m.capabilities.contains(&Capability::Registries)
         })
         .collect();
     let read = read_contents(&packages);
@@ -842,6 +874,50 @@ mod tests {
     }
     use super::*;
     use std::io::Write;
+
+    #[test]
+    #[ignore = "prepared resources: run explicitly for native content"]
+    fn built_native_sound_content_reaches_the_resource_root_and_obeys_disable() {
+        let base = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let scratch =
+            std::env::temp_dir().join(format!("horizon-native-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let version = scratch.join("version");
+        let home = scratch.join("game");
+        std::fs::create_dir_all(&home).unwrap();
+        let content = version.join("native-content/soundproof");
+        std::fs::create_dir_all(content.join("assets/soundproof/sounds")).unwrap();
+        std::fs::write(content.join("horizon-mod.toml"), "id=\"soundproof\"\nname=\"Sound proof\"\nversion=\"1\"\napi=\"0.2\"\ncapabilities=[\"registries\"]\n").unwrap();
+        std::fs::write(
+            content.join("assets/soundproof/sounds.json"),
+            r#"{"proof":{"sounds":["soundproof:proof"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            content.join("assets/soundproof/sounds/proof.ogg"),
+            b"synthetic existence marker; no audio decode",
+        )
+        .unwrap();
+        let legacy = home.join(mod_list::DIR).join("soundproof");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::copy(
+            content.join("horizon-mod.toml"),
+            legacy.join("horizon-mod.toml"),
+        )
+        .unwrap();
+        let enabled = ["soundproof".to_owned()].into();
+        let empty = Default::default();
+        let root = content_root_at(&base, &empty, &empty, &[], &home, Some(&version));
+        assert_ne!(root, base);
+        let sounds = horizon_client::sound_events::SoundRegistry::load(&root);
+        assert!(!sounds.tracks("soundproof:proof").is_empty());
+        let disabled = ["soundproof".to_owned()].into();
+        let off = content_root_at(&base, &enabled, &disabled, &[], &home, Some(&version));
+        assert_eq!(off, base, "disabled native mods contribute no assets");
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
 
     /// A content mod's living type is a mob of its template's species under
     /// its own id, with its own attributes: it saves its id with every field
