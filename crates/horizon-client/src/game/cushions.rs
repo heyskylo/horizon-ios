@@ -278,6 +278,8 @@ impl Game<'_> {
             yaw: snap_yaw(self.yaw),
             color,
             check_interval: 0,
+            on_ground: false,
+            fall_distance: 0.0,
             custom_name: None,
         });
         self.world
@@ -687,6 +689,8 @@ mod tests {
             yaw: 0.0,
             color: 1,
             check_interval: 0,
+            on_ground: false,
+            fall_distance: 0.0,
             custom_name: Some(Tag::String("Seat".into())),
         };
         let stack = c.item_stack_with_data();

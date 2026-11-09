@@ -3919,8 +3919,8 @@ pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         position: c.position,
         motion: Vec3::ZERO,
         rotation: [c.yaw, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: c.on_ground,
+        fall_distance: c.fall_distance,
     };
     let mut tag = base.tag(raw);
     put(&mut tag, "block_pos", Tag::IntArray(c.pos.to_vec()));
@@ -3950,6 +3950,7 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
     };
     let color =
         crate::entities::dye_index(&text(tag.get("color")).unwrap_or_else(|| "white".into()));
+    let (on_ground, fall_distance) = ground_from_nbt(tag);
     Some(Cushion {
         id,
         position,
@@ -3957,6 +3958,8 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
         yaw,
         color,
         check_interval: 0,
+        on_ground,
+        fall_distance,
         custom_name: tag.get("CustomName").cloned(),
     })
 }
@@ -3992,6 +3995,8 @@ mod cushion_tests {
             yaw: 270.0,
             color: 14,
             check_interval: 55,
+            on_ground: true,
+            fall_distance: 20.0,
             custom_name: None,
         };
         let raw = Tag::compound([("CustomName", string("Seat"))]);
@@ -4003,6 +4008,9 @@ mod cushion_tests {
         assert_eq!(loaded.pos, cushion.pos);
         assert_eq!(loaded.yaw, cushion.yaw);
         assert_eq!(loaded.color_name(), "red");
+        assert!(loaded.on_ground);
+        assert_eq!(loaded.fall_distance, 20.0);
+        assert_eq!(float(tag.get("fall_distance")), Some(20.0));
         assert_eq!(loaded.check_interval, 0);
         assert_eq!(loaded.bounds(), cushion.bounds());
     }

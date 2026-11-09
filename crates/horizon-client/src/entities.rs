@@ -1929,6 +1929,9 @@ pub struct Cushion {
     pub color: u8,
     /// BlockAttachedEntity.ticksSinceLastCheck.
     pub check_interval: u32,
+    /// `Entity.onGround` and `Entity.fallDistance`: saved and loaded as `OnGround` and `fall_distance`.
+    pub on_ground: bool,
+    pub fall_distance: f64,
     /// `Entity.getCustomName` (`CustomName`), copied onto the dropped cushion.
     pub custom_name: Option<horizon_world::nbt::Tag>,
 }
