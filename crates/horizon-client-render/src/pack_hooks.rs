@@ -10,8 +10,18 @@ use std::sync::{Arc, OnceLock};
 /// What the pack formats beyond vanilla's add to a pack. Each method reads one overlay of a pack
 /// (its folder at `root`); the default is "nothing in this format".
 pub trait PackFormats: Send + Sync {
+    /// The colours the overlay replaces where vanilla hardcodes them.
+    fn colors(&self, _root: &Path) -> Option<crate::pack_palette::PackColors> {
+        None
+    }
+
     /// The sky layers the overlay draws over the vanilla sky, if it has any.
     fn custom_sky(&self, _root: &Path) -> Option<Arc<dyn crate::custom_sky::SkyLayers>> {
+        None
+    }
+
+    /// The durability bar colours the overlay sets by item, if any.
+    fn item_bars(&self, _root: &Path) -> Option<Arc<dyn crate::pack_palette::ItemBars>> {
         None
     }
 }
