@@ -92,6 +92,31 @@ class CheckLayersTests(unittest.TestCase):
         # Vendored crates (third_party/) and test fixtures have no layer.
         self.assertEqual(run(package("game", "naga")), ([], []))
 
+    def test_portable_crates_depend_only_on_each_other_and_no_desktop_library(self):
+        config = dict(CONFIG, portable={"crates": ["core"], "forbidden": ["wgpu"]})
+        clean = {"name": "core", "dependencies": [
+            {"name": "serde", "kind": None, "path": None},
+            {"name": "wgpu", "kind": "dev", "path": None},
+            {"name": "game", "kind": "dev", "path": "/x/game"},
+        ]}
+        self.assertEqual(check_layers.portable(config, [clean]), [])
+        dirty = {"name": "core", "dependencies": [
+            {"name": "game", "kind": None, "path": "/x/game"},
+            {"name": "wgpu", "kind": "build", "path": None},
+            {"name": "wgpu", "kind": None, "path": None, "target": "cfg(unix)"},
+        ]}
+        problems = check_layers.portable(config, [dirty])
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("core -> game: a portable crate depends only on the other portable crates", problems[0])
+        self.assertIn("core -> wgpu: a portable crate takes no window, GPU", problems[1])
+
+    def test_a_portable_crate_is_an_engine_crate(self):
+        config = dict(CONFIG, portable={"crates": ["mod-api", "gone"], "forbidden": []})
+        self.assertEqual(check_layers.portable(config, []), [
+            f"gone: listed as portable in {check_layers.CONFIG_PATH}, but not an engine crate there",
+            f"mod-api: listed as portable in {check_layers.CONFIG_PATH}, but not an engine crate there",
+        ])
+
     def test_registry_dependencies_are_not_edges(self):
         pkg = {"name": "game", "dependencies": [{"name": "cosmetics", "kind": None, "path": None}]}
         self.assertEqual(check_layers.edges([pkg]), {"game": set()})

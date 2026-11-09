@@ -1844,6 +1844,8 @@ struct FallingBlock {
     drop_item: bool,
     /// `Entity.fallDistance` (powder snow holds a block that fell far at 0.9).
     fall_distance: f64,
+    /// `Entity.onGround`: whether its last move was stopped going down.
+    on_ground: bool,
     /// `Entity.stuckSpeedMultiplier`: a cobweb it is in scales its next move.
     stuck: Vec3,
     damage: horizon_client::falling_block::Damage,
@@ -5743,6 +5745,7 @@ impl Game<'_> {
                         portal: Default::default(),
                         drop_item: true,
                         fall_distance: 0.0,
+                        on_ground: false,
                         stuck: Vec3::ZERO,
                         damage,
                         saved: None,
@@ -6076,19 +6079,35 @@ impl Game<'_> {
     /// so a block falling onto one that just landed lands on top of it. `i` is
     /// its place in the list; the caller has checked it is ticking.
     /// `entities` are the boxes that stop its move (`Game::item_entity_collisions`).
+    ///
+    /// The block keeps its place in the list while it moves (nothing its move
+    /// reads looks at the falling blocks): taking it out and putting it back
+    /// shifted every block after it twice, for every falling block, every tick.
+    /// One that lands, drops or goes leaves the list before its block is placed
+    /// or dropped, as before; on an error the list keeps it as it was.
     fn tick_one_falling(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
         let entity_drops = self.ui.rules.bool("entity_drops");
-        let mut f = self.falling.remove(i);
-        let original = f.clone();
-        match self.fall_step(&mut f, entity_drops, entities) {
-            Ok(FallStep::Falling) => self.falling.insert(i.min(self.falling.len()), f),
-            Ok(FallStep::Gone) => {}
-            Ok(FallStep::Dropped(at)) => self.drop_falling_block(f.state, at),
-            Ok(FallStep::Landed(pos)) => self.finish_falling_block(f, pos),
-            Err(error) => {
-                self.falling.insert(i.min(self.falling.len()), original);
-                return Err(error);
+        let join = self.falling[i].join;
+        let mut f = self.falling[i].clone();
+        let step = self.fall_step(&mut f, entity_drops, entities)?;
+        let slot = if self.falling.get(i).is_some_and(|e| e.join == join) {
+            Some(i)
+        } else {
+            self.falling.iter().position(|e| e.join == join)
+        };
+        if matches!(step, FallStep::Falling) {
+            if let Some(j) = slot {
+                self.falling[j] = f;
             }
+            return Ok(());
+        }
+        if let Some(j) = slot {
+            self.falling.remove(j);
+        }
+        match step {
+            FallStep::Falling | FallStep::Gone => {}
+            FallStep::Dropped(at) => self.drop_falling_block(f.state, at),
+            FallStep::Landed(pos) => self.finish_falling_block(f, pos),
         }
         Ok(())
     }
@@ -6156,6 +6175,7 @@ impl Game<'_> {
             f.position.z + movement.z,
         );
         let on_ground = wanted.y < 0.0 && movement.y != wanted.y;
+        f.on_ground = on_ground;
         if next.y < f.position.y {
             f.fall_distance += f.position.y - next.y;
         }
@@ -9008,7 +9028,8 @@ impl Game<'_> {
         }
     }
     /// `mark_motion` ids of entities that aren't mobs or dropped items (boats, minecarts, armor
-    /// stands, item frames, paintings, primed TNT, falling blocks): their entity id under this tag.
+    /// stands, item frames, paintings, primed TNT, falling blocks, rockets, tridents, thrown
+    /// potions): their entity id under this tag.
     pub(super) const MOTION_OBJECT: u64 = 3 << 32;
     /// An item frame's held item, apart from the frame (one id may mark one run).
     pub(super) const MOTION_FRAME_ITEM: u64 = 4 << 32;
@@ -17598,6 +17619,7 @@ mod tests {
             portal: Default::default(),
             drop_item: true,
             fall_distance: 0.0,
+            on_ground: false,
             stuck: Vec3::ZERO,
             damage: horizon_client::falling_block::Damage::default(),
             saved: None,
@@ -17914,6 +17936,8 @@ mod dragon_fireball_motion_tests;
 #[cfg(test)]
 mod fake_player_tick_tests;
 #[cfg(test)]
+mod fence_leash_force_tests;
+#[cfg(test)]
 mod golem_defense_tests;
 #[cfg(test)]
 mod hoglin_repeat_attack_tests;
@@ -17943,6 +17967,8 @@ mod orb_data_tests;
 mod orb_score_store_tests;
 #[cfg(test)]
 mod recipe_book_variants_tests;
+#[cfg(test)]
+mod spawn_yaw_tests;
 #[cfg(test)]
 mod stand_break_loot_tests;
 #[cfg(test)]
