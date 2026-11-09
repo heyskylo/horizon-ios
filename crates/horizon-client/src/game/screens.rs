@@ -13,6 +13,30 @@ use horizon_world::nbt::Tag;
 use winit::keyboard::KeyCode;
 
 impl Screen {
+    /// The screens whose own `keyPressed` takes every press: the social
+    /// screen, the command block and block editors, the debug options.
+    pub(super) fn takes_presses(self) -> bool {
+        matches!(
+            self,
+            Self::Social | Self::CommandBlock | Self::DebugOptions | Self::BlockEditor
+        )
+    }
+}
+
+impl Game<'_> {
+    /// A press on a screen that `takes_presses`, to that screen.
+    pub(super) fn screen_press(&mut self, event: &winit::event::KeyEvent) {
+        match self.screen {
+            Screen::Social => self.social_key(event),
+            Screen::CommandBlock => self.command_block_key(event),
+            Screen::DebugOptions => self.debug_options_key(event),
+            Screen::BlockEditor => self.block_editor_key(event),
+            _ => {}
+        }
+    }
+}
+
+impl Screen {
     /// Screen.extractBackground for non-isInGameUi screens, and
     /// PauseScreen.extractBackground only when showPauseMenu is true.
     pub(super) fn blurs_background(self, pause_menu: bool) -> bool {
