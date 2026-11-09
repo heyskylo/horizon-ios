@@ -85,6 +85,7 @@ pub mod overlay;
 pub mod pack_browser;
 pub mod pack_options_ui;
 pub mod pack_screen;
+pub mod pack_tags;
 pub mod packs;
 pub mod pad_cursor;
 pub mod pad_glyph;
