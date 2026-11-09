@@ -1699,6 +1699,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-heartbeat"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "horizon-telemetry",
+ "log",
+]
+
+[[package]]
 name = "horizon-hooks"
 version = "0.1.0"
 
@@ -1787,7 +1796,10 @@ name = "horizon-official"
 version = "0.1.0"
 dependencies = [
  "horizon-game",
+ "horizon-heartbeat",
  "horizon-platform",
+ "log",
+ "winresource",
 ]
 
 [[package]]
