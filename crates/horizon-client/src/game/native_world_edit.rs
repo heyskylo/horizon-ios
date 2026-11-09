@@ -5,6 +5,7 @@ use super::{
     native_claimed_items::{NativeHit, RAYCAST_MAX},
 };
 use horizon_world::nbt::Tag;
+use horizon_world::registry::{BlockRegistry, BlockStateId};
 
 /// Which of a column's heights (`Heightmap.Types`) a run's `y` counts from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +86,27 @@ impl Game<'_> {
             );
         }
         Ok(changed)
+    }
+    /// For a server mod about to edit the block at `pos` of `dimension` for
+    /// player `player` (`name`): whether the mods allow it. Asks every mod
+    /// (`native_can_build`) with `action`, `place` or `break`; any denies it,
+    /// and none at all allows it. Any other `action` is refused. The edit
+    /// itself is the caller's: `native_edit_blocks` and `native_set_block`
+    /// do not ask.
+    pub(super) fn native_may_build(
+        &self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        pos: [i32; 3],
+        action: &str,
+    ) -> bool {
+        if !matches!(action, "place" | "break") {
+            return false;
+        }
+        let mut cancel = false;
+        self.native_can_build(player, name, dimension, pos, action, &mut cancel);
+        !cancel
     }
     /// Whether `dimension` is the authoritative level being ticked: where a server mod's world helpers act.
     pub(super) fn native_level_open(&self, dimension: &str) -> bool {
@@ -172,4 +194,34 @@ impl Game<'_> {
             .map(|(id, _, _)| id)
             .collect()
     }
+}
+
+/// `state` with its property `key` set to `value`; none when the block has
+/// no such property or value.
+pub(super) fn with_property(
+    registry: &BlockRegistry,
+    state: BlockStateId,
+    key: &str,
+    value: &str,
+) -> Option<BlockStateId> {
+    let mut s = registry.state(state)?.clone();
+    match s.properties.get(key) {
+        Some(v) if v == value => return Some(state),
+        Some(_) => {}
+        None => return None,
+    }
+    s.properties.insert(key.into(), value.into());
+    registry.resolve(&s).ok()
+}
+
+/// The state a mod's property write changes `state` to; none when the block
+/// has no such property or value, or already has it: `LevelChunk.setBlockState`
+/// returns null for the same state, so `Level.setBlock` returns false.
+pub(super) fn property_change(
+    registry: &BlockRegistry,
+    state: BlockStateId,
+    key: &str,
+    value: &str,
+) -> Option<BlockStateId> {
+    with_property(registry, state, key, value).filter(|&id| id != state)
 }

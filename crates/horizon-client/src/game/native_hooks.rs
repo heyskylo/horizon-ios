@@ -991,6 +991,7 @@
 //! either (`tests::hook_points_stay_hookable`).
 use super::native_data_maps::NativeDataMapType;
 use super::native_item_energy::ItemEnergyBuffer;
+use super::native_world_edit::{property_change, with_property};
 use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
@@ -1057,7 +1058,7 @@ use horizon_world::{
     fluid::{FluidKind, FluidState},
     level::{BlockId, LevelAccess, PlacementContext, Ticks},
     nbt::Compound,
-    registry::{BlockRegistry, BlockStateId},
+    registry::BlockStateId,
 };
 use std::{
     collections::HashMap,
@@ -1928,102 +1929,11 @@ impl GameLevel<'_> {
     }
 }
 
-/// The camera shake native mods ask for (`native_camera_shake`): turns in
-/// degrees, and an offset in blocks along the camera's right, up and back.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct NativeShake {
-    pub pitch: f32,
-    pub yaw: f32,
-    pub roll: f32,
-    pub offset: [f32; 3],
-}
-
-/// A mod's camera (`native_camera_pose`): each value that isn't finite keeps vanilla's from `view`.
-fn posed_camera(
-    view: (glam::DVec3, f32, f32),
-    position: [f64; 3],
-    yaw: f32,
-    pitch: f32,
-) -> (glam::DVec3, f32, f32) {
-    let position = std::array::from_fn(|i| {
-        if position[i].is_finite() {
-            position[i]
-        } else {
-            view.0[i]
-        }
-    });
-    (
-        glam::DVec3::from_array(position),
-        if yaw.is_finite() { yaw } else { view.1 },
-        if pitch.is_finite() { pitch } else { view.2 },
-    )
-}
-
-/// The largest turn a shake gives, in degrees, on each axis.
-const SHAKE_MAX_DEGREES: f32 = 10.0;
-/// The largest offset a shake gives, in blocks, along each axis.
-const SHAKE_MAX_OFFSET: f32 = 0.5;
-
-/// The pose a native mod asks for the first-person hand, each out-of-range
-/// or non-finite component replaced by its identity.
-pub(super) fn hand_pose_matrix(values: [f32; 7]) -> glam::Mat4 {
-    let valid = |value: f32, min: f32, max: f32, default: f32| {
-        if value.is_finite() && (min..=max).contains(&value) {
-            value
-        } else {
-            default
-        }
-    };
-    let [x, y, z, pitch, yaw, roll, scale] = values;
-    glam::Mat4::from_translation(glam::Vec3::new(
-        valid(x, -16.0, 16.0, 0.0),
-        valid(y, -16.0, 16.0, 0.0),
-        valid(z, -16.0, 16.0, 0.0),
-    )) * glam::Mat4::from_rotation_x(valid(pitch, -3600.0, 3600.0, 0.0).to_radians())
-        * glam::Mat4::from_rotation_y(valid(yaw, -3600.0, 3600.0, 0.0).to_radians())
-        * glam::Mat4::from_rotation_z(valid(roll, -3600.0, 3600.0, 0.0).to_radians())
-        * glam::Mat4::from_scale(glam::Vec3::splat(valid(scale, 0.01, 100.0, 1.0)))
-}
-
-/// `shake` scaled by `scale` (Distortion Effects) and bounded on each axis;
-/// a value that isn't finite counts as none.
-fn bounded_shake(shake: NativeShake, scale: f32) -> NativeShake {
-    let scale = if scale.is_finite() {
-        scale.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    let turn = |v: f32| {
-        if v.is_finite() {
-            (v * scale).clamp(-SHAKE_MAX_DEGREES, SHAKE_MAX_DEGREES)
-        } else {
-            0.0
-        }
-    };
-    let shift = |v: f32| {
-        if v.is_finite() {
-            (v * scale).clamp(-SHAKE_MAX_OFFSET, SHAKE_MAX_OFFSET)
-        } else {
-            0.0
-        }
-    };
-    NativeShake {
-        pitch: turn(shake.pitch),
-        yaw: turn(shake.yaw),
-        roll: turn(shake.roll),
-        offset: shake.offset.map(shift),
-    }
-}
-
-/// The pose a bounded shake multiplies into the projection, after the view
-/// bobbing: the offset, then roll, pitch and yaw.
-fn shake_pose(shake: NativeShake) -> glam::Mat4 {
-    let [x, y, z] = shake.offset;
-    glam::Mat4::from_translation(glam::Vec3::new(-x, -y, -z))
-        * glam::Mat4::from_rotation_z(shake.roll.to_radians())
-        * glam::Mat4::from_rotation_x(shake.pitch.to_radians())
-        * glam::Mat4::from_rotation_y(shake.yaw.to_radians())
-}
+#[path = "native_camera_pose.rs"]
+mod camera_pose;
+pub use camera_pose::NativeShake;
+pub(super) use camera_pose::hand_pose_matrix;
+use camera_pose::{bounded_shake, posed_camera, shake_pose};
 
 /// The mod screen open on this client: the block it is for, the key its
 /// slots are under, the window id of its menu, the menu's data slots as
@@ -3659,6 +3569,34 @@ impl Game<'_> {
             slot,
             stack,
             face,
+            cancel,
+        );
+    }
+    /// May player `player` (`name`) `action` (`place` or `break`) a block at
+    /// `pos` in `dimension` (`minecraft:overworld`)? The question a
+    /// region-protection mod answers for edits that do not go through a
+    /// player's own block placing and breaking (`native_destroy_block`), such
+    /// as a mod's bulk editor. Asked on the server by `native_may_build`
+    /// only; the game never asks it itself. Set `cancel` to deny the edit; any
+    /// mod doing so denies it, and without a mod that does it is allowed. The
+    /// level is read only. Bundles need "hooks": @API:can_build@.
+    pub(super) fn native_can_build(
+        &self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        pos: [i32; 3],
+        action: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_can_build(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            dimension,
+            pos,
+            action,
             cancel,
         );
     }
@@ -12841,36 +12779,6 @@ fn mod_menu(name: &str) -> Option<(&'static str, usize)> {
         .into_iter()
         .find(|(menu, _)| *menu == name)
         .or_else(|| horizon_client::containers::mod_menu_type(name).map(|m| (m.id, m.slots)))
-}
-
-/// `state` with its property `key` set to `value`; none when the block has
-/// no such property or value.
-fn with_property(
-    registry: &BlockRegistry,
-    state: BlockStateId,
-    key: &str,
-    value: &str,
-) -> Option<BlockStateId> {
-    let mut s = registry.state(state)?.clone();
-    match s.properties.get(key) {
-        Some(v) if v == value => return Some(state),
-        Some(_) => {}
-        None => return None,
-    }
-    s.properties.insert(key.into(), value.into());
-    registry.resolve(&s).ok()
-}
-
-/// The state a mod's property write changes `state` to; none when the block
-/// has no such property or value, or already has it: `LevelChunk.setBlockState`
-/// returns null for the same state, so `Level.setBlock` returns false.
-fn property_change(
-    registry: &BlockRegistry,
-    state: BlockStateId,
-    key: &str,
-    value: &str,
-) -> Option<BlockStateId> {
-    with_property(registry, state, key, value).filter(|&id| id != state)
 }
 
 /// `config/` beside `options`, made when missing.
