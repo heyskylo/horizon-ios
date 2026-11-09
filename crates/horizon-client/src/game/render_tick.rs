@@ -164,8 +164,8 @@ impl Game<'_> {
             boss_world_fog: self.boss_overlay.should_create_world_fog(),
             spectator: self.spectator(),
             fire_resistance: self.potions.effects.get("fire_resistance").is_some()
-                || self.settings.extras.pvp.tweaks.clear_lava,
-            full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
+                || self.pvp_clear_fluids().0,
+            full_water_vision: self.pvp_clear_fluids().1,
             night_vision: self.fog_night_vision(),
             environment: self.pack.polytone_colors.env,
         };
@@ -405,7 +405,7 @@ impl Game<'_> {
             on_fire: self.camera_type.first_person()
                 && !self.spectator()
                 && self.player.as_ref().is_some_and(|p| p.fire_ticks > 0),
-            fire_lower: f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0,
+            fire_lower: self.pvp_fire_lower(),
             gui_overlays: &gui_overlays,
         })
     }
