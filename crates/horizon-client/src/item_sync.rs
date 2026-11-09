@@ -189,6 +189,22 @@ pub fn equippable(stack: &ItemStack, items: &crate::items::Items) -> Option<Equi
     out
 }
 
+/// `Equippable.damageOnHurt`: a present component's field (default true),
+/// a removed component false, else the item's prototype.
+pub fn damage_on_hurt(stack: &ItemStack, default: bool) -> bool {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
+        return false;
+    }
+    if let Some(tag) = data.and_then(|d| d.other("minecraft:equippable")) {
+        return tag
+            .get("damage_on_hurt")
+            .and_then(crate::item_data::component_bool)
+            .unwrap_or(true);
+    }
+    default
+}
+
 /// The `equippable` component `item`'s prototype has.
 pub fn item_equippable(item: &str, items: &crate::items::Items) -> Option<Equippable> {
     let info = items.get(item)?;
@@ -956,6 +972,29 @@ mod tests {
 
     /// A chestplate a server made a glider: its patch adds `glider` and an
     /// `equippable` for the chest, or takes `glider` away again.
+    #[test]
+    fn equippable_damage_on_hurt_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:golden_helmet", 1);
+        assert!(damage_on_hurt(&stack, true));
+        stack.data_mut().set_other(
+            "minecraft:equippable",
+            Some(Tag::compound([
+                ("slot", Tag::String("head".into())),
+                ("damage_on_hurt", Tag::Byte(0)),
+            ])),
+        );
+        assert!(!damage_on_hurt(&stack, true));
+        assert!(!damage_on_hurt(&stack, false));
+        assert!(!damage_on_hurt(
+            &ItemStack::new("minecraft:golden_helmet", 1),
+            false
+        ));
+        stack.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(!damage_on_hurt(&stack, true));
+    }
     #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
