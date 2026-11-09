@@ -70,6 +70,8 @@ PlayDead.canStillUse	inline	crates/horizon-client/src/mobs/animal_brain.rs::B::t
 PlayDead.start	inline	crates/horizon-client/src/mobs/animal_brain.rs::B::try_start	clears targets, regeneration for 200 ticks
 Bee.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	flags and anger end time
 Bee.registerGoals	port	crates/horizon-client/src/mobs/bee.rs::register	
+Bee.addAdditionalSaveData	inline	crates/horizon-client/src/mobs/bee.rs::to_nbt	hive_pos, flower_pos, the nectar and sting state, and NeutralMob's anger_end_time and angry_at (the target's UUID)
+Bee.readAdditionalSaveData	inline	crates/horizon-client/src/mobs/bee.rs::from_nbt	the same; angry_at is the player's UUID or a mob the level may not have loaded (Who::Mob(0))
 Bee.spawnFluidParticle	port	crates/horizon-client/src/mobs/ambient.rs::client_particles	the nectar drip
 Bee.updateRollAmount	inline	crates/horizon-client/src/mobs/bee.rs::tick	
 Bee.isHiveNearFire	port	crates/horizon-client/src/mobs/bee.rs::hive_near_fire	

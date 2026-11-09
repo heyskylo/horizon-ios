@@ -21,6 +21,7 @@ pub mod hud;
 pub mod pages;
 mod registry;
 pub mod settings;
+pub mod tunnel;
 
 use registry::Registry;
 use std::cell::Cell;
@@ -41,6 +42,13 @@ pub trait Hooks: Sync {
 
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
+
+    /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
+    /// offers one is used. Asked on the network thread when joining and on the game thread when
+    /// an address is shown, never per frame.
+    fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
+        None
+    }
 }
 
 /// What [`Hooks::started`] gets.
@@ -138,6 +146,11 @@ pub mod engine {
         for hooks in all() {
             hooks.shutdown();
         }
+    }
+
+    /// [`Hooks::tunnel`]: the first registered hook's resolver.
+    pub fn tunnel() -> Option<&'static dyn tunnel::Resolver> {
+        all().iter().find_map(|hooks| hooks.tunnel())
     }
 }
 

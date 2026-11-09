@@ -227,16 +227,16 @@ impl Game<'_> {
             );
         }
         for m in self.mobs.iter() {
-            if !m.alive() {
+            // A mob with no effects swirls nothing: skipped before its size
+            // is worked out, which every mob in a crowded world would pay
+            // for (#14053).
+            if !m.alive() || (m.extra.effect_particles.is_empty() && m.extra.effects.is_empty()) {
                 continue;
             }
             let size = (f64::from(m.width()), f64::from(m.height()));
             let invisible = m.invisible || m.has_effect("minecraft:invisibility");
             if m.extra.effect_particles.is_empty() {
                 // A mob of this game: its own effects, visible and not ambient.
-                if m.extra.effects.is_empty() {
-                    continue;
-                }
                 let list: Vec<_> = m
                     .extra
                     .effects

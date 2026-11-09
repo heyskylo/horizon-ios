@@ -830,6 +830,12 @@ impl Mob {
         let length = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z;
         let wanted_length = wanted.x * wanted.x + wanted.y * wanted.y + wanted.z * wanted.z;
         if length > 1.0e-7 || wanted_length - length < 1.0e-7 {
+            // A move of a block or more through water or a reset block (a
+            // vine, a ladder) resets the fall before the move's drop counts.
+            if self.fall_distance != 0.0 && length >= 1.0 && fall_reset_hit(w, self.position, moved)
+            {
+                self.fall_distance = 0.0;
+            }
             self.position = Vec3::new(
                 self.position.x + moved.x,
                 self.position.y + moved.y,
@@ -2189,3 +2195,18 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 #[path = "living_tests.rs"]
 mod tests;
+/// `Entity.move`'s fall-reset ray for a mob, with the world's
+/// `minecraft:fall_damage_resetting` blocks.
+fn fall_reset_hit(w: &MobWorld, from: Vec3, moved: Vec3) -> bool {
+    let reset = w.block_tags.get("minecraft:fall_damage_resetting");
+    crate::entities::fall_reset_hit(
+        w.world,
+        w.fluid_tables,
+        |p| {
+            let name = &w.facts.get(w.world.block(p.x, p.y, p.z)).name;
+            reset.is_some_and(|t| t.contains(&**name))
+        },
+        from,
+        moved,
+    )
+}
