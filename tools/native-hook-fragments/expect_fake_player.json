@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "expect_fake_player", "target": "horizon_client::game::native_view_distance::Game<'_>::native_expect_fake_player"}
+  ],
+  "rust_summary": "announce a player name that will join as a fake player (`native_expect_fake_player`): fake from its first packet on.",
+  "doc_summary": "`native_expect_fake_player(name, fake)` says that a player named `name` (any case) will join as a fake player, a mod's bot with no client, or not any more. The player is then fake from its first packet on, so its join sends and builds nothing a client-less player cannot read (no login records, recipe book, command tree, player list or advancements); `native_set_player_fake` marks a player that is already online. False off a server. Bundles need \"hooks\": @API:expect_fake_player@.",
+  "comments": ["crates/horizon-client/src/game/native_view_distance.rs"]
+}

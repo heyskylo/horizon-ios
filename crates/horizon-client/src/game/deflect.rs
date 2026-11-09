@@ -62,27 +62,12 @@ pub(super) fn attackable(p: &Projectile) -> bool {
 }
 
 /// Its box for the crosshair: the entity's (a fireball 1 x 1, a wind charge or a
-/// shulker bullet 0.3125, from its feet up) grown by the pick radius, which only
-/// `AbstractHurtingProjectile` has (`getPickRadius`: 1; a shulker bullet's is 0).
+/// shulker bullet 0.3125, a wind charge's 0.15 below its feet) grown by the pick
+/// radius, which only `AbstractHurtingProjectile` has (`getPickRadius`: 1; a
+/// shulker bullet's is 0).
 fn pick_box(p: &Projectile) -> Aabb {
-    let size = match p.kind {
-        ProjectileKind::LargeFireball { .. } => 1.0,
-        _ => 0.3125,
-    };
     let radius = pick_radius(p);
-    let half = size / 2.0 + radius;
-    Aabb::new(
-        Vec3::new(
-            p.position.x - half,
-            p.position.y - radius,
-            p.position.z - half,
-        ),
-        Vec3::new(
-            p.position.x + half,
-            p.position.y + size + radius,
-            p.position.z + half,
-        ),
-    )
+    p.bounds().inflate(Vec3::new(radius, radius, radius))
 }
 
 impl Game<'_> {
