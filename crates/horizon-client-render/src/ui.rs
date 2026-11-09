@@ -1238,6 +1238,9 @@ pub struct EditBox {
     /// Grey completion shown after the text (EditBox.setSuggestion).
     pub suggestion: Option<String>,
     pub text_color: u32,
+    /// `EditBox.setCentered`: the text starts in the middle of the box's
+    /// width, not at its left edge (`BookSignScreen`'s title).
+    pub centered: bool,
     /// `EditBox.textColorUneditable`: the colour of a box `setEditable(false)`
     /// made read-only, which still shows its value and caret.
     pub text_color_uneditable: u32,
@@ -1536,6 +1539,7 @@ impl EditBox {
             focused_at: Instant::now(),
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
+            centered: false,
             text_color_uneditable: rgba(112, 112, 112, 255),
             editable: true,
             message: String::new(),
@@ -1557,6 +1561,16 @@ impl EditBox {
             self.y + ((self.height - 8.0) / 2.0).floor()
         } else {
             self.y
+        }
+    }
+    /// `EditBox.updateTextPosition`: where the text starts, `(width - text
+    /// width) / 2` in for a centred box (vanilla's `textX`), else at
+    /// `text_x` (4 in from a border).
+    pub fn text_start_x(&self, text_width: f32) -> f32 {
+        if self.centered {
+            self.x + ((self.width - text_width) / 2.0).floor()
+        } else {
+            self.text_x()
         }
     }
     pub fn reset_blink(&mut self) {
@@ -1641,8 +1655,13 @@ impl EditBox {
     /// EditBox.findClickedPositionInText: the character boundary under GUI `x`.
     pub fn position_at(&mut self, atlas: &HudAtlas, x: f32) -> usize {
         self.layout(atlas);
-        let room = (x.floor() - self.text_x()).min(self.inner_width());
         let rest: String = self.value.chars().skip(self.display).collect();
+        let shown: String = rest
+            .chars()
+            .take(atlas.font.fit(&rest, self.inner_width()))
+            .collect();
+        let start = self.text_start_x(atlas.font.width_text(&Text::literal(shown.as_str())));
+        let room = (x.floor() - start).min(self.inner_width());
         self.display + atlas.font.fit(&rest, room)
     }
     /// EditBox.onClick: the cursor to the pointer, extending the selection
@@ -1849,7 +1868,12 @@ impl EditBox {
                 ),
             }
         };
-        let (tx, ty) = (self.text_x(), self.text_y());
+        let start = if self.centered {
+            self.text_start_x(atlas.font.width_text(&Text::literal(displayed.as_str())))
+        } else {
+            self.text_x()
+        };
+        let (tx, ty) = (start, self.text_y());
         let mut draw_x = tx;
         if !displayed.is_empty() {
             let half = if on_screen {
@@ -2649,5 +2673,20 @@ mod tests {
         assert_eq!(edit.value, "namex");
         assert!(edit.key(winit::keyboard::KeyCode::Backspace, false, false));
         assert_eq!(edit.value, "name");
+    }
+
+    /// `EditBox.setCentered` (`BookSignScreen`'s title box): with the flag the
+    /// text starts `(width - text width) / 2` in, which is also where a click
+    /// maps; without it the text starts at the box's left edge.
+    #[test]
+    fn a_centred_box_starts_its_text_in_the_middle() {
+        let mut edit = EditBox::new(10.0, 0.0, 114.0, 9.0);
+        edit.bordered = false;
+        assert_eq!(edit.text_start_x(0.0), 10.0);
+        edit.centered = true;
+        assert_eq!(edit.text_start_x(0.0), 67.0);
+        assert_eq!(edit.text_start_x(18.0), 58.0);
+        // (114 - 5) / 2 = 54.5, rounded down.
+        assert_eq!(edit.text_start_x(5.0), 64.0);
     }
 }
