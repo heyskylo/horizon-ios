@@ -562,17 +562,19 @@ impl Game<'_> {
     }
     /// `ItemStack.hurtAndBreak(amount)` without an entity.
     fn hurt_and_break(&mut self, mut stack: ItemStack, amount: u32) -> Option<ItemStack> {
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(0, |i| i.max_damage);
-        if max == 0 {
+        if !horizon_client::stations::is_damageable(world_items!(self), &stack) {
             return Some(stack);
         }
-        stack.damage += self.durability_loss(&stack, amount);
-        if stack.damage >= max {
-            return shrink(ItemStack { damage: 0, ..stack });
+        let max = horizon_client::stations::max_damage(world_items!(self), &stack);
+        let loss = self.durability_loss(&stack, amount);
+        if loss == 0 {
+            return Some(stack);
+        }
+        stack.damage = (stack.damage.min(max as u32) as i32)
+            .wrapping_add(loss as i32)
+            .clamp(0, max) as u32;
+        if stack.damage >= max as u32 {
+            return shrink(stack);
         }
         Some(stack)
     }
