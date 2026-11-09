@@ -19,6 +19,27 @@ use horizon_core::{
 };
 use horizon_world::level::flags as level_flags;
 
+/// `JukeboxSong.fromStack`: the song the disc names through its own
+/// `jukebox_playable` component, else the item's default one. A removed
+/// component (`!minecraft:jukebox_playable`) names no song.
+fn song_of_record(record: &ItemStack, items: &horizon_client::items::Items) -> Option<String> {
+    let data = record.data();
+    if data
+        .and_then(|d| d.other("!minecraft:jukebox_playable"))
+        .is_some()
+    {
+        return None;
+    }
+    match data.and_then(|d| d.other("minecraft:jukebox_playable")) {
+        Some(horizon_world::nbt::Tag::String(song)) => Some(song.to_string_lossy()),
+        Some(component) => component.get("song").and_then(|song| match song {
+            horizon_world::nbt::Tag::String(song) => Some(song.to_string_lossy()),
+            _ => None,
+        }),
+        None => items.get(&record.item)?.jukebox_song.clone(),
+    }
+}
+
 impl Game<'_> {
     fn jukebox(&self, pos: [i32; 3]) -> Option<&Jukebox> {
         match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
@@ -73,8 +94,7 @@ impl Game<'_> {
             .jukebox(pos)
             .filter(|j| !j.playing)
             .and_then(|j| j.record())
-            .and_then(|record| self.res.items().get(&record.item))
-            .and_then(|info| info.jukebox_song.clone())
+            .and_then(|record| song_of_record(record, self.items()))
         else {
             return;
         };
@@ -115,10 +135,7 @@ impl Game<'_> {
         self.jukebox_changed(pos);
     }
     pub(super) fn jukebox_set_item(&mut self, pos: [i32; 3], stack: Option<ItemStack>) {
-        let song = stack
-            .as_ref()
-            .and_then(|s| self.res.items().get(&s.item))
-            .and_then(|info| info.jukebox_song.clone());
+        let song = stack.as_ref().and_then(|s| song_of_record(s, self.items()));
         let has_record = stack.is_some();
         let Some(BlockEntity::Jukebox(j)) =
             self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
@@ -331,7 +348,7 @@ impl Game<'_> {
     pub(super) fn tick_jukebox(&mut self, key: (i32, i32, i32)) {
         let playing = match self.world.block_entities.get(&key) {
             Some(BlockEntity::Jukebox(j)) if j.playing => j.record().and_then(|r| {
-                let song = self.items().get(&r.item)?.jukebox_song.clone()?;
+                let song = song_of_record(r, self.items())?;
                 Some((song, j.ticks))
             }),
             _ => None,
@@ -427,9 +444,9 @@ pub(super) fn jukebox_signals(
         Some(BlockEntity::Jukebox(j)) => {
             let comparator = j
                 .record()
-                .and_then(|r| items.get(&r.item)?.jukebox_song.as_ref())
-                .and_then(|s| items.songs.get(s))
-                .map_or(0, |s| s.comparator);
+                .and_then(|r| song_of_record(r, items))
+                .and_then(|s| items.songs.get(&s).map(|song| song.comparator))
+                .unwrap_or(0);
             Some((if j.playing { 15 } else { 0 }, comparator))
         }
         _ => None,
@@ -645,6 +662,68 @@ mod saved_song_clock_tests {
         assert!(
             failures.is_empty(),
             "actual Game saved song-clock mismatches: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod jukebox_component_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    use horizon_core::position::BlockPos;
+    use horizon_world::nbt::Tag;
+
+    fn comparator(game: &mut super::Game<'_>, stack: ItemStack) -> i32 {
+        let key = (8, 64, 8);
+        game.world.block_entities.insert(
+            key,
+            BlockEntity::Jukebox(Jukebox {
+                items: [Some(stack)],
+                ticks: 0,
+                song_clock_present: true,
+                playing: true,
+            }),
+        );
+        jukebox_signals(
+            &game.world,
+            game.items(),
+            BlockPos::new(key.0, key.1, key.2),
+        )
+        .unwrap()
+        .1
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_jukebox_reads_the_discs_own_jukebox_component() {
+        let mut game = server_game();
+        let cat = game.items().songs.get("minecraft:cat").unwrap().comparator;
+        assert_eq!(
+            comparator(&mut game, ItemStack::new("minecraft:music_disc_cat", 1)),
+            cat,
+            "the item's default song"
+        );
+
+        let mut removed = ItemStack::new("minecraft:music_disc_cat", 1);
+        removed.data_mut().set_other(
+            "!minecraft:jukebox_playable",
+            Some(Tag::Compound(Default::default())),
+        );
+        assert_eq!(
+            comparator(&mut game, removed),
+            0,
+            "a removed playable component names no song"
+        );
+
+        let mut other = ItemStack::new("minecraft:stone", 1);
+        other.data_mut().set_other(
+            "minecraft:jukebox_playable",
+            Some(Tag::String("minecraft:cat".into())),
+        );
+        assert_eq!(
+            comparator(&mut game, other),
+            cat,
+            "the stack's own component names the song"
         );
     }
 }
