@@ -3,7 +3,6 @@
 //! banners, and the loom rules of `LoomMenu` (selectable patterns, the
 //! six-layer limit and the result stack).
 use crate::{block_entity_render::DYES, items::ItemStack, items::Items};
-use horizon_world::nbt::Tag;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
@@ -268,7 +267,10 @@ mod tests {
         assert!(b.is_pattern_item(&items, &pattern));
         pattern.data_mut().set_other(
             "!minecraft:provides_banner_patterns",
-            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
         );
         assert!(!b.is_pattern_item(&items, &pattern));
     }
