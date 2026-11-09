@@ -13,6 +13,14 @@ use horizon_client::{
 };
 use horizon_world::nbt::Tag;
 
+/// The item context of a leash success (`InteractionResult.Success`): tying
+/// held mobs to this one and the holder's detach are `withoutItem`, so item
+/// criteria see an empty hand; shears and a new lead keep the used item.
+pub(super) enum LeashInteraction {
+    WithItem,
+    WithoutItem,
+}
+
 /// `Vec3.yRot(angle)`.
 /// `LocalPlayer.getRopeHoldPosition`'s `Mth.lerp(partialTick * 0.5F, getYRot(),
 /// yRotO)` and the same for the pitch, in radians.
@@ -68,6 +76,7 @@ fn resolve_pending_leash(
     is_guest: impl FnOnce([i32; 4]) -> bool,
     mob_by_uuid: impl FnOnce([i32; 4]) -> Option<u32>,
     boat_by_uuid: impl FnOnce([i32; 4]) -> Option<u32>,
+    knot_by_uuid: impl FnOnce([i32; 4]) -> Option<[i32; 3]>,
 ) -> Option<(Holder, Option<[i32; 4]>)> {
     match pending {
         Pending::Knot(p) => Some((Holder::Knot(p), None)),
@@ -85,9 +94,12 @@ fn resolve_pending_leash(
         {
             Some((Holder::Player, owner_uuid))
         }
+        // `Leashable.restoreLeashFromSave`: `ServerLevel.getEntity(uuid)`, a
+        // leash knot included.
         Pending::Uuid(u) => mob_by_uuid(u)
             .map(|id| (Holder::Mob(id), None))
-            .or_else(|| boat_by_uuid(u).map(|id| (Holder::Boat(id), None))),
+            .or_else(|| boat_by_uuid(u).map(|id| (Holder::Boat(id), None)))
+            .or_else(|| knot_by_uuid(u).map(|p| (Holder::Knot(p), None))),
     }
 }
 
@@ -422,6 +434,7 @@ impl Game<'_> {
                 },
                 |u| self.mob_by_uuid(u),
                 |u| self.boat_by_uuid(u),
+                |u| self.knot_by_uuid(u),
             );
             if let Some((Holder::Knot(_), _)) = holder {
                 self.forget_untied_knots();
@@ -458,13 +471,21 @@ impl Game<'_> {
             |id| self.mob_uuid(id),
         );
     }
-    /// `Entity.interact`'s leash part for a mob. Returns whether it was used.
+    #[cfg(test)]
     pub(super) fn interact_leash(&mut self, index: usize, item: &str) -> bool {
+        self.interact_leash_with_item_context(index, item).is_some()
+    }
+    /// `Entity.interact`: retain the holder-detach success's item context.
+    pub(super) fn interact_leash_with_item_context(
+        &mut self,
+        index: usize,
+        item: &str,
+    ) -> Option<LeashInteraction> {
         let sneaking = self.keys.held(Action::Sneak);
         let id = self.mobs[index].id;
         let at = self.mobs[index].center();
         if !self.mobs[index].alive() {
-            return false;
+            return None;
         }
         // Sneaking with mobs in hand: tie them to this one.
         if sneaking && leash::can_be_leashed(&self.mobs[index]) && !self.mobs[index].is_baby() {
@@ -478,7 +499,7 @@ impl Game<'_> {
             if self.tie_player_leads(center, Holder::Mob(id), Some(index)) {
                 self.lead_game_event("minecraft:entity_action", at);
                 self.lead_sound("tied", at);
-                return true;
+                return Some(LeashInteraction::WithoutItem);
             }
         }
         if item == "minecraft:shears" {
@@ -505,7 +526,7 @@ impl Game<'_> {
                 self.audio
                     .play("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
                 self.damage_held_tool();
-                return true;
+                return Some(LeashInteraction::WithItem);
             }
         }
         // Mob.checkAndHandleImportantInteractions: only the player the lead
@@ -520,7 +541,7 @@ impl Game<'_> {
             self.break_leash_used(id, !creative);
             self.lead_game_event("minecraft:entity_interact", at);
             self.lead_sound("untied", at);
-            return true;
+            return Some(LeashInteraction::WithoutItem);
         }
         if item == "minecraft:lead" {
             let center = self.player_center();
@@ -546,10 +567,10 @@ impl Game<'_> {
                         *self.held_mut() = None;
                     }
                 }
-                return true;
+                return Some(LeashInteraction::WithItem);
             }
         }
-        false
+        None
     }
     /// `LeadItem.useOn` on the fence the crosshair hits.
     pub(super) fn interact_knot(&mut self) -> bool {
@@ -990,6 +1011,7 @@ mod rope_hold_tests {
                 |u| u == owner_uuid || u == guest_uuid,
                 |_| None,
                 |_| None,
+                |_| None,
             )
             .expect("restored player leash");
             assert_eq!(holder, Holder::Player);
@@ -1014,6 +1036,7 @@ mod rope_hold_tests {
             level_player_uuid,
             Some(owner_uuid),
             |_| false,
+            |_| None,
             |_| None,
             |_| None,
         )
@@ -1041,6 +1064,7 @@ mod rope_hold_tests {
                     |_| false,
                     |_| None,
                     |_| None,
+                    |_| None,
                 )
                 .is_none()
             );
@@ -1054,6 +1078,41 @@ mod rope_hold_tests {
                 |_| false,
                 |u| (u == absent).then_some(17),
                 |_| None,
+                |_| None,
+            ),
+            Some((Holder::Mob(17), None))
+        );
+    }
+
+    /// #13113: a leash knot's UUID resolves to the knot's fence post, as
+    /// `ServerLevel.getEntity` finds the knot like any entity.
+    #[test]
+    fn a_leash_knots_uuid_resolves_to_its_post() {
+        let knot = [7193, 0, 0, 1];
+        let post = [4, 64, 6];
+        let player = uuid_ints(offline_uuid("Player"));
+        assert_eq!(
+            resolve_pending_leash(
+                Pending::Uuid(knot),
+                player,
+                None,
+                |_| false,
+                |_| None,
+                |_| None,
+                |u| (u == knot).then_some(post),
+            ),
+            Some((Holder::Knot(post), None))
+        );
+        // An entity that holds the UUID wins, as nothing else can share it.
+        assert_eq!(
+            resolve_pending_leash(
+                Pending::Uuid(knot),
+                player,
+                None,
+                |_| false,
+                |u| (u == knot).then_some(17),
+                |_| None,
+                |_| Some(post),
             ),
             Some((Holder::Mob(17), None))
         );
@@ -1068,6 +1127,7 @@ mod rope_hold_tests {
                 legacy,
                 None,
                 |_| false,
+                |_| None,
                 |_| None,
                 |_| None,
             )

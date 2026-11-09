@@ -284,6 +284,7 @@ impl Game<'_> {
                     self.mob_by_uuid(u)
                         .map(|id| (Holder::Mob(id), None))
                         .or_else(|| self.boat_by_uuid(u).map(|id| (Holder::Boat(id), None)))
+                        .or_else(|| self.knot_by_uuid(u).map(|p| (Holder::Knot(p), None)))
                 }
             }
         };
@@ -342,6 +343,18 @@ impl Game<'_> {
             .iter()
             .find(|(id, u)| **u == uuid && self.boats.iter().any(|b| b.id == **id))
             .map(|(id, _)| *id)
+    }
+
+    /// The fence post of the leash knot with this UUID (`ServerLevel.getEntity`):
+    /// a summoned or loaded `minecraft:leash_knot`, which sits on its block.
+    pub(super) fn knot_by_uuid(&self, uuid: [i32; 4]) -> Option<[i32; 3]> {
+        self.others
+            .iter()
+            .find(|o| o.kind == "minecraft:leash_knot" && self.persist.uuid_of(o.id) == Some(uuid))
+            .map(|o| {
+                let block = horizon_core::position::BlockPos::containing(o.position);
+                [block.x, block.y, block.z]
+            })
     }
 
     /// The boats on the acting player's lead within 32 blocks of a point
