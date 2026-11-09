@@ -907,3 +907,77 @@ fn redstone_wire_climbs_and_descends_only_where_nothing_conductive_cuts_it() {
         }
     }
 }
+
+/// `DispenserBlock.neighborChanged`: `TRIGGERED` is `hasNeighborSignal(pos) ||
+/// hasNeighborSignal(pos.above())`, so power on any of its six sides, its front
+/// included (a piston skips that one), or beside the block above it, triggers it;
+/// losing the power un-triggers it. A dropper inherits all of it.
+///
+/// As with a piston, a source that is not beside it sends no block update, so each
+/// change is followed by a poke: a block placed and removed beside it, which powers
+/// nothing.
+#[test]
+fn a_dispenser_and_a_dropper_trigger_on_any_side_and_through_the_block_above() {
+    let sources: [((i32, i32, i32), bool, &str); 11] = [
+        ((0, 1, 0), true, "above"),
+        ((0, -1, 0), true, "below"),
+        ((1, 0, 0), true, "east"),
+        ((-1, 0, 0), true, "west"),
+        ((0, 0, 1), true, "south"),
+        (
+            (0, 0, -1),
+            true,
+            "in front: a dispenser, unlike a piston, does not skip it",
+        ),
+        ((1, 1, 0), true, "beside the block above: quasi-connected"),
+        ((0, 1, 1), true, "beside the block above (south)"),
+        ((0, 2, 0), true, "two above"),
+        ((1, 0, 1), false, "diagonal on its level"),
+        (
+            (1, -1, 0),
+            false,
+            "diagonally below: quasi-connectivity is only upward",
+        ),
+    ];
+    for name in ["dispenser", "dropper"] {
+        for ((dx, dy, dz), triggered, what) in sources {
+            let mut w = world!();
+            let at = BlockPos::new(0, 5, 0);
+            w.set(at, w.id(name, &[("facing", "north")]));
+            assert_eq!(
+                w.prop(at, "triggered"),
+                "false",
+                "{name} starts untriggered"
+            );
+            // A block beside it, put there and taken away: the block update that makes
+            // the dispenser look at its surroundings again. West is no case's source
+            // but "west" itself, which is then replaced by the poke's own removal, so
+            // the poke uses the east side for that one.
+            let poke = |w: &mut World| {
+                let side = if (dx, dy, dz) == (-1, 0, 0) {
+                    BlockPos::new(1, 5, 0)
+                } else {
+                    BlockPos::new(-1, 5, 0)
+                };
+                if side == BlockPos::new(dx, 5 + dy, dz) {
+                    return;
+                }
+                let was = w.get(side);
+                w.set(side, w.id("stone", &[]));
+                w.set(side, was);
+            };
+            let source = BlockPos::new(dx, 5 + dy, dz);
+            w.set(source, w.id("redstone_block", &[]));
+            poke(&mut w);
+            let expected = if triggered { "true" } else { "false" };
+            assert_eq!(w.prop(at, "triggered"), expected, "{name}: power {what}");
+            w.set(source, w.b().air());
+            poke(&mut w);
+            assert_eq!(
+                w.prop(at, "triggered"),
+                "false",
+                "{name}: power gone ({what})"
+            );
+        }
+    }
+}
