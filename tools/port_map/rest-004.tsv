@@ -139,7 +139,7 @@ LocalPlayer.rideTick	port	crates/horizon-client/src/game/remote_vehicles.rs::Gam
 LocalPlayer.isHorizontalCollisionMinor	port	crates/horizon-client/src/motion.rs::EntityMoveWorld::minor_horizontal_collision	the sprint keeps when a move hits a wall at under 8 degrees
 LocalPlayer.isMoving	inline	crates/horizon-client/src/auto_jump.rs::can_auto_jump	
 LocalPlayer.isSprintingPossible	port	crates/horizon-client/src/sprint.rs::Conditions::possible	
-LocalPlayer.canStartSprinting	port	crates/horizon-client/src/sprint.rs::Conditions::can_start	gap: player: slow_item is never set, so eating does not block starting a sprint
+LocalPlayer.canStartSprinting	port	crates/horizon-client/src/sprint.rs::Conditions::can_start	forward, not sprinting, food or may-fly, no slow item in use and not moving slowly unless underwater; `slow_item` is set from the item use (game.rs item_use_slows_sprint), so eating or drinking blocks the start
 LocalPlayer.onGameModeChanged	missing		minor: switching to spectator keeps vertical momentum
 LocalPlayer.getRopeHoldPosition	port	crates/horizon-client/src/game/leads.rs::Game::player_rope_hold	the first-person rope point from the look angles and the main arm
 LocalPlayer.raycastHitResult	port	crates/horizon-client/src/game/hand.rs::GameHands::hit	gap: minor: block fallback is Game::pick; no separate item attack-range pass

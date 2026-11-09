@@ -197,7 +197,14 @@ pub fn nine_slice(
     color: u32,
 ) {
     if let Some(r) = atlas.sprites.get(sprite) {
-        draw_nine_slice(batch, *r, scaling(sprite, r), [x, y, w, h], color);
+        match crate::hud::sprite_modifiers::draws(atlas, sprite, *r, [x, y, w, h], color) {
+            Some(draws) => {
+                for d in draws {
+                    draw_nine_slice(batch, d.rect, scaling(&d.key, &d.rect), d.at, d.color);
+                }
+            }
+            None => draw_nine_slice(batch, *r, scaling(sprite, r), [x, y, w, h], color),
+        }
     }
 }
 /// `GuiGraphicsExtractor.blitSprite`: a sprite over `w` × `h` as its
@@ -214,7 +221,14 @@ pub fn blit_sprite(
     color: u32,
 ) {
     if let Some(r) = atlas.sprites.get(sprite) {
-        draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color);
+        match crate::hud::sprite_modifiers::draws(atlas, sprite, *r, [x, y, w, h], color) {
+            Some(draws) => {
+                for d in draws {
+                    draw_sprite(batch, d.rect, nine_slice_metadata(&d.key), d.at, d.color);
+                }
+            }
+            None => draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color),
+        }
     }
 }
 /// `GuiGraphicsExtractor.blit(location, x, y, u, v, width, height, textureWidth,

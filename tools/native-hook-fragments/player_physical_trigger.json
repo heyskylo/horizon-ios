@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_physical_trigger",
+      "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_player_physical_trigger",
+      "neoforge": "none (Bukkit's PlayerInteractEvent with Action.PHYSICAL)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a player's physical trigger of a pressure plate or tripwire, cancellable (`native_player_physical_trigger`).",
+  "doc_summary": "a cancellable physical trigger: `native_player_physical_trigger(dimension, player, pos, block, cancel)` is asked before a pressure plate (wooden, stone, weighted) or a tripwire counts a player inside it (Bukkit's `PlayerInteractEvent` with `Action.PHYSICAL`). Cancel and that player is not counted: the plate stays unpowered, the wire untripped, for them. Others still set it off. Farmland and turtle eggs landed on are `native_trample` and `native_entity_change_block_v2`. Bundles need \"hooks\": @API:player_physical_trigger@."
+}
