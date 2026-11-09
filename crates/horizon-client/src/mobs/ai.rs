@@ -2362,19 +2362,13 @@ fn never_removed_when_far(s: Species) -> bool {
             | Species::Wither
     )
 }
-/// Movement speed bonus multiplier (baby zombies are 50% faster, etc.).
+/// The movement speed multiplier of the mob's transient `minecraft:baby`
+/// modifier (`Zombie.SPEED_MODIFIER_BABY` +0.5, `Piglin.SPEED_MODIFIER_BABY`
+/// +0.2, both `ADD_MULTIPLIED_BASE`): the same modifier `/attribute` reads, so
+/// one taken away with `modifier remove` no longer speeds the baby up.
 pub fn speed_bonus(m: &Mob) -> f64 {
-    match m.species() {
-        Species::Zombie
-        | Species::Husk
-        | Species::Drowned
-        | Species::ZombieVillager
-        | Species::ZombifiedPiglin
-        | Species::Piglin
-            if m.is_baby() =>
-        {
-            1.5
-        }
+    match super::finalize::transient(m, super::finalize::Attr::MovementSpeed) {
+        Some((amount, super::finalize::Op::AddMultipliedBase)) => 1.0 + amount,
         _ => 1.0,
     }
 }
@@ -6316,5 +6310,47 @@ mod hidden_absorption_promotion_tests {
         assert_eq!(m.extra.effects[0].2, 0, "Absorption I took over");
         assert_eq!(super::super::armor::max_absorption(&m), 4.0);
         assert_eq!(m.absorption, 4.0);
+    }
+}
+
+#[cfg(test)]
+mod baby_speed_tests {
+    use super::*;
+    use crate::mobs::{finalize, sensor_scan_tests::kind};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn baby(species: Species, id: &str) -> Mob {
+        let mut k = kind();
+        let km = Arc::make_mut(&mut k);
+        km.id = id.into();
+        km.species = species;
+        let mut m = Mob::new(1, k, Vec3::ZERO, 0.0);
+        finalize::set_baby(&mut m, true);
+        m
+    }
+
+    /// #11994: movement reads the transient `minecraft:baby` modifier itself:
+    /// `Zombie.SPEED_MODIFIER_BABY` +0.5 and `Piglin.SPEED_MODIFIER_BABY` +0.2
+    /// (`ADD_MULTIPLIED_BASE`), and none once `/attribute ... modifier remove`
+    /// took it away, until the next `setBaby`.
+    #[test]
+    fn a_babys_speed_follows_its_baby_modifier() {
+        let mut zombie = baby(Species::Zombie, "minecraft:zombie");
+        assert_eq!(speed_bonus(&zombie), 1.5);
+        zombie
+            .extra
+            .attributes
+            .get_or_insert_default()
+            .baby_speed_removed = true;
+        assert_eq!(speed_bonus(&zombie), 1.0, "removed with /attribute");
+        finalize::set_baby(&mut zombie, true);
+        assert_eq!(speed_bonus(&zombie), 1.5, "setBaby adds it back");
+        // The piglin's is 0.2F widened to a double, not the zombie's 0.5.
+        let piglin = baby(Species::Piglin, "minecraft:piglin");
+        assert_eq!(speed_bonus(&piglin), 1.0 + f64::from(0.2f32));
+        let mut adult = baby(Species::Zombie, "minecraft:zombie");
+        finalize::set_baby(&mut adult, false);
+        assert_eq!(speed_bonus(&adult), 1.0);
     }
 }
