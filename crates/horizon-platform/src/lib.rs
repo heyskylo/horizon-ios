@@ -41,3 +41,10 @@ pub use horizon_prepare as prepare;
 /// A server's own files: `server.properties`, the op, white and ban lists, the user cache.
 #[cfg(feature = "server-files")]
 pub use horizon_server_files as server_files;
+
+/// Plugging into the game (`horizon-hooks`): implement [`hooks::Hooks`] and
+/// [`hooks::register`] it before the game starts (docs/layers.md, "How a Horizon crate plugs
+/// in"). The engine's dispatch side is not part of the API.
+pub mod hooks {
+    pub use horizon_hooks::{Hooks, Started, TooLate, register};
+}

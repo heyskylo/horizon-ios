@@ -24,6 +24,8 @@ horizon-world = { path = "../horizon-world", optional = true }
 horizon-protocol = { path = "../horizon-protocol", optional = true }
 horizon-prepare = { path = "../horizon-prepare", optional = true }
 horizon-server-files = { path = "../horizon-server-files", optional = true }
+# The game's extension points, re-exported as `hooks`.
+horizon-hooks = { path = "../horizon-hooks" }
 
 [lints]
 workspace = true

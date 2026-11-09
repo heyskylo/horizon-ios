@@ -10,6 +10,12 @@ Two kinds of mod run in Horizon:
 Fabric and NeoForge jars do **not** run as they are: their code calls and patches Minecraft's Java classes, and
 Horizon has none. What carries over is the data and assets inside a jar ([modpacks.md](modpacks.md)).
 
+Running Java mods unchanged needs a Java bridge (a JVM beside the game, proposed in [#10216](https://github.com/horizon-rust/horizon/pull/10216); not in Horizon today).
+The project decided on 2026-11-09 that it will only ever be a **separate, optional download, never installed or on by
+default**: when the game or the launcher finds a Java mod it may offer to turn it on, and the player decides. Before
+it is promoted out of beta, its server MSPT and memory are measured against the Java client running the same mods
+(plan: [#13914](https://github.com/horizon-rust/horizon/issues/13914)).
+
 Mods are **off by default**. A fresh install has no `horizon-mods` folder and plays exactly like vanilla 26.3.
 
 ## Playing with mods
