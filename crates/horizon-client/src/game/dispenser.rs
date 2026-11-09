@@ -131,6 +131,8 @@ fn optional_event(behaviour: &'static str) -> i32 {
 #[derive(Clone, Copy)]
 enum Target {
     Player,
+    /// A server player, by connection: the integrated owner and every guest.
+    Guest(u32),
     Mob(usize),
     Stand(usize),
 }
@@ -739,6 +741,23 @@ impl Game<'_> {
         );
         found.sort_by_key(|(id, _)| *id);
         let mut out: Vec<Target> = found.into_iter().map(|(_, t)| t).collect();
+        // `ServerLevel.getEntities`: every player placed in this level, the
+        // integrated owner included (a server has no player of its own).
+        if let Some(host) = &self.lan {
+            out.extend(
+                host.hub
+                    .guests
+                    .iter()
+                    .filter(|g| {
+                        host.hub.here(g)
+                            && g.loaded
+                            && !g.dead
+                            && !g.spectator()
+                            && overlaps(g.bounds(), block)
+                    })
+                    .map(|g| Target::Guest(g.conn)),
+            );
+        }
         if let Some(v) = self.player_view()
             && v.alive
             && !self.spectator()
@@ -851,6 +870,22 @@ impl Game<'_> {
         self.spawn_jockeys(id, false);
         Some(id)
     }
+    /// `Player.setItemSlot` of a dispensed piece for the player in place:
+    /// `onEquipItem` plays the sound and the event; the modifiers follow.
+    fn put_on_player(&mut self, slot: Slot, one: &ItemStack) {
+        let name = match slot.armor_index() {
+            Some(i) => {
+                self.armor[i] = Some(one.clone());
+                ["head", "chest", "legs", "feet"][i]
+            }
+            None => {
+                self.offhand = Some(one.clone());
+                "offhand"
+            }
+        };
+        self.player_equipped(name, Some(one));
+        self.apply_equipment();
+    }
     /// `EquipmentDispenseItemBehavior.dispenseEquipment`: the first living
     /// entity in front that `canEquipWithDispenser` gets one of the item.
     fn dispense_equipment(&mut self, pos: Pos, facing: Direction, stack: &mut ItemStack) -> bool {
@@ -887,8 +922,23 @@ impl Game<'_> {
                         _ => slot.armor_index().is_some_and(|i| self.armor[i].is_none()),
                     }
             }
+            Target::Guest(conn) => {
+                allows("minecraft:player")
+                    && self
+                        .lan
+                        .as_ref()
+                        .and_then(|h| h.hub.guest(conn))
+                        .is_some_and(|g| match slot {
+                            Slot::OffHand => g.offhand.is_none(),
+                            _ => slot.armor_index().is_some_and(|i| g.armor[i].is_none()),
+                        })
+            }
+            // ArmorStand.canUseSlot: not a locked slot, and a hand needs arms.
             Target::Stand(i) => slot.stand_index().is_some_and(|s| {
-                allows("minecraft:armor_stand") && self.armor_stands[i].equipment[s].is_none()
+                let stand = &self.armor_stands[i];
+                allows("minecraft:armor_stand")
+                    && !stand.is_disabled(s)
+                    && stand.equipment[s].is_none()
             }),
             Target::Mob(i) => {
                 let m = &self.mobs[i];
@@ -905,20 +955,28 @@ impl Game<'_> {
         stack.count -= 1;
         // setItemSlot: onEquipItem plays the equip sound and the equip event.
         let (at, sound) = match target {
+            Target::Guest(conn) => {
+                // The guest's own turn: their state in place, so the slot, the
+                // sound, the game event and the equipment sync run as for the host.
+                let done = self
+                    .for_player(super::commands::Target::Guest(conn), |g| {
+                        g.put_on_player(slot, &one)
+                    })
+                    .is_some();
+                if !done {
+                    stack.count += 1;
+                    return false;
+                }
+                self.native_block_dispense_armor(
+                    self.dim.id(),
+                    [pos.0, pos.1, pos.2],
+                    &stack.item,
+                    "player",
+                );
+                return true;
+            }
             Target::Player => {
-                // Player.setItemSlot: onEquipItem plays the sound and the event.
-                let name = match slot.armor_index() {
-                    Some(i) => {
-                        self.armor[i] = Some(one.clone());
-                        ["head", "chest", "legs", "feet"][i]
-                    }
-                    None => {
-                        self.offhand = Some(one.clone());
-                        "offhand"
-                    }
-                };
-                self.player_equipped(name, Some(&one));
-                self.apply_equipment();
+                self.put_on_player(slot, &one);
                 self.native_block_dispense_armor(
                     self.dim.id(),
                     [pos.0, pos.1, pos.2],
@@ -953,7 +1011,7 @@ impl Game<'_> {
             }
             let who = match target {
                 Target::Mob(i) => Some(horizon_client::mobs::Who::Mob(self.mobs[i].id)),
-                Target::Player | Target::Stand(_) => None,
+                Target::Player | Target::Guest(_) | Target::Stand(_) => None,
             };
             let ctx = self.who_context(who, None);
             self.post_game_event("minecraft:equip", [at.x, at.y, at.z], ctx);
@@ -965,7 +1023,7 @@ impl Game<'_> {
             match target {
                 Target::Stand(_) => "armor_stand",
                 Target::Mob(_) => "mob",
-                Target::Player => "player",
+                Target::Player | Target::Guest(_) => "player",
             },
         );
         true
@@ -2065,7 +2123,7 @@ impl Game<'_> {
                 };
                 (Holder::Player, v.bounds.center(), None)
             }
-            Target::Stand(_) => return false,
+            Target::Guest(_) | Target::Stand(_) => return false,
         };
         let area = Aabb::new(centre, centre).inflate(Vec3::new(16.0, 16.0, 16.0));
         let mut leashed: Vec<(u32, usize)> = self
@@ -2315,5 +2373,155 @@ mod tests {
             mod_dispensed(Some((Some(ItemStack { count: 0, ..stack }), 0))),
             Some((None, 0))
         );
+    }
+
+    use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_protocol::packets::configuration::ClientInformation;
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    /// A server with no player of its own, an open hub and one guest (conn 2)
+    /// standing at (8.5, 200, 8.5) on a stone floor.
+    fn server_with_guest() -> Game<'static> {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "dispenser-equip-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 208,
+                name: "Wearer".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [8.5, 200.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        game.lan.as_mut().unwrap().hub.guests.push(guest);
+        game
+    }
+
+    fn dispense_at_guest(game: &mut Game<'_>, item: &str) -> (bool, u32) {
+        let mut stack = ItemStack::new(item, 2);
+        // The dispenser sits one block over the guest's feet, facing down.
+        let done = game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack);
+        (done, stack.count)
+    }
+
+    /// `EquipmentDispenseItemBehavior`: a server's player, the integrated
+    /// owner or a guest, takes the piece (a server has no player of its own).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_dispenser_equips_a_server_player_in_front() {
+        let mut game = server_with_guest();
+        assert!(game.player.is_none(), "the server thread has no player");
+        // The guest's feet are in block (8, 200, 8): the dispenser at y 201
+        // facing down targets the block under it.
+        let mut stack = ItemStack::new("minecraft:carved_pumpkin", 3);
+        assert!(game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
+        assert_eq!(stack.count, 2);
+        let guest = game.lan.as_ref().unwrap().hub.guest(2).unwrap();
+        assert_eq!(
+            guest.armor[0].as_ref().map(|s| (&*s.item, s.count)),
+            Some(("minecraft:carved_pumpkin", 1))
+        );
+        // The head is taken now: a second pumpkin is not dispensed onto them.
+        assert!(!game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
+        assert_eq!(stack.count, 2);
+        // A boots piece still has its own empty slot.
+        let (done, left) = dispense_at_guest(&mut game, "minecraft:iron_boots");
+        assert_eq!((done, left), (true, 1), "boots go on the free feet slot");
+        let guest = game.lan.as_ref().unwrap().hub.guest(2).unwrap();
+        assert!(guest.armor[3].is_some() && guest.armor[1].is_none());
+    }
+
+    /// A spectator is not a target (`canEquipWithDispenser`: `!isSpectator()`).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_dispenser_skips_a_spectator_and_a_dead_player() {
+        let mut game = server_with_guest();
+        for spectate in [true, false] {
+            let g = &mut game.lan.as_mut().unwrap().hub.guests[0];
+            g.game_mode = if spectate { 3 } else { 0 };
+            g.dead = !spectate;
+            let mut stack = ItemStack::new("minecraft:iron_helmet", 1);
+            assert!(!game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
+            assert_eq!(stack.count, 1);
+        }
+    }
+
+    /// `ArmorStand.canUseSlot` through `isDisabled`: the first stand in front
+    /// that can wear the piece gets it. Bit `1 << filterBit` locks a slot
+    /// (head 4, chest 3, legs 2, feet 1); a hand needs arms.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_dispenser_skips_an_armor_stand_whose_slot_is_locked() {
+        use horizon_client::entities::ArmorStand;
+        let mut game = server_with_guest();
+        game.lan.as_mut().unwrap().hub.guests.clear();
+        let at = horizon_core::geometry::Vec3::new(8.5, 200.0, 8.5);
+        let mut stands = [(1, 1u32 << 4), (2, 0)].map(|(id, locked)| {
+            let mut s = ArmorStand::new(id, at, 0.0);
+            s.disabled_slots = locked as i32;
+            s
+        });
+        stands[0].show_arms = true;
+        game.armor_stands = stands.to_vec().into();
+        // The head-locked first stand is skipped for a helmet; the second wears it.
+        let mut stack = ItemStack::new("minecraft:iron_helmet", 1);
+        assert!(game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
+        assert!(game.armor_stands[0].equipment[5].is_none());
+        assert!(game.armor_stands[1].equipment[5].is_some());
+        // The same stand takes chest armour: only its head is locked.
+        let mut stack = ItemStack::new("minecraft:iron_chestplate", 1);
+        assert!(game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
+        assert!(game.armor_stands[0].equipment[4].is_some());
+        // Every stand locked for that slot: nothing takes it (the dispenser ejects it).
+        game.armor_stands[0].disabled_slots = 1 << 4;
+        game.armor_stands[1].disabled_slots = 1 << 4;
+        game.armor_stands[1].equipment[5] = None;
+        let mut stack = ItemStack::new("minecraft:iron_helmet", 1);
+        assert!(!game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
+        assert_eq!(stack.count, 1);
     }
 }
