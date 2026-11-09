@@ -468,7 +468,7 @@ impl Game<'_> {
     }
 
     /// Something happened to the player that a device may let them feel.
-    pub(super) fn feedback(&mut self, event: horizon_client::input_source::Feedback) {
+    pub(super) fn input_feedback(&mut self, event: horizon_client::input_source::Feedback) {
         self.pad_rumble(event.into());
     }
 

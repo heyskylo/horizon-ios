@@ -5473,7 +5473,7 @@ impl Game<'_> {
         if canceled {
             return Ok(false);
         }
-        self.feedback(horizon_client::input_source::Feedback::BlockBroken);
+        self.input_feedback(horizon_client::input_source::Feedback::BlockBroken);
         let broken = state;
         let facts = self.res.facts().get(state).clone();
         let state = self.crack_mined_pot(pos, state);
