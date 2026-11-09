@@ -15,7 +15,7 @@ use horizon_core::{
 use horizon_world::{
     block_landing::LandingEntityKind,
     entity_fluid::{CurrentAccumulator, CurrentTarget},
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidState, FluidTemplate},
     fluid_flow::{FluidFlowWorld, flow_at},
     movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
     registry::BlockStateId,
@@ -235,10 +235,10 @@ impl MobWorld<'_> {
                 for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
                     let p = BlockPos::new(x, y, z);
                     let state = self.fluid_tables.fluid(self.world.block(x, y, z));
-                    let current = match state.kind() {
-                        FluidKind::Empty => continue,
-                        FluidKind::Water | FluidKind::FlowingWater => &mut water,
-                        FluidKind::Lava | FluidKind::FlowingLava => &mut lava,
+                    let current = match state.kind().template() {
+                        FluidTemplate::Empty => continue,
+                        FluidTemplate::Water => &mut water,
+                        FluidTemplate::Lava => &mut lava,
                     };
                     let surface = f64::from(y) + self.fluid_height(x, y, z).1;
                     if surface < lo.y {
@@ -2998,6 +2998,55 @@ mod tests {
                         "{events:?}"
                     );
                 }
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+
+    /// `FarmlandBlock.turnToBaseBlock`: a mob whose landing tramples farmland
+    /// posts `block_change` at the block, with the mob as its source, so a sculk
+    /// sensor, a calibrated sensor and a warden hear it - right after the write.
+    #[test]
+    fn a_mob_trampling_farmland_posts_block_change_from_it() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let state = registry.default_state("minecraft:farmland").unwrap();
+                world.set(0, 0, 0, state).unwrap();
+            },
+            |w, types| {
+                let dirt = w.registry.default_state("minecraft:dirt").unwrap();
+                let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                let mut mob = Mob::new(7, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
+                mob.fall_distance = 5.0;
+                let mut events = Vec::new();
+                mob.fall_on_block(w, &mut events);
+                // The write, then the event the rule posts for it.
+                assert!(
+                    matches!(
+                        events.as_slice(),
+                        [
+                            MobEvent::SetBlock {
+                                pos: [0, 0, 0],
+                                state,
+                            },
+                            MobEvent::LandingGameEvent {
+                                event: "minecraft:block_change",
+                                at: [0, 0, 0],
+                                source: Some(7),
+                                state: affected,
+                            },
+                            ..
+                        ] if *state == dirt && *affected == dirt
+                    ),
+                    "{events:?}"
+                );
             },
         );
         // Without the vanilla data under .local/horizon-client the world

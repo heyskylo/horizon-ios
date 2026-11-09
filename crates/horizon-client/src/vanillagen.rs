@@ -872,6 +872,11 @@ impl ChunkGenerator for VanillaTerrain {
                 entities: Vec::new(),
             },
         );
+        // ChunkStatusTasks.full / SerializableChunkData.read: a full chunk stands in
+        // the region as ImposterProtoChunk(chunk, false).
+        if let Some(VanillaProto::Ready(chunk)) = proto.downcast_mut::<VanillaProto>() {
+            chunk.set_full();
+        }
         Some(proto)
     }
     fn final_writes(&self, snapshot: &Chunk, proto: &Proto) -> Vec<([i32; 3], u32)> {
