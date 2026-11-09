@@ -9464,6 +9464,44 @@ mod piglin_live_anger_memory_tests {
         }
     }
 
+    /// `Piglin.readAdditionalSaveData` reads the brain's `ANGRY_AT` memory
+    /// back: the actor's UUID and the ticks left (`ExpirableValue`'s TTL).
+    /// Horizon wrote the memory but never read it, so a piglin that a player
+    /// had angered came back calm after its chunk reloaded.
+    #[test]
+    fn a_saved_guarded_anger_loads_its_uuid_and_ticks() {
+        let raw = raw();
+        let template = mob();
+        let types = [(template.kind.id.clone(), template.kind.clone())].into();
+        let loaded = mob_from_nbt(&raw, &types, 2, None).unwrap();
+        assert_eq!(loaded.extra.anger, 99);
+        assert_eq!(
+            loaded.extra.piglin.guarded_angry_at,
+            Some(Some([90, 91, 92, 93]))
+        );
+        // `ExpirableValue` leaves the TTL out when it never expires: the
+        // counter holds the longest it can while the goal ticks it down.
+        let forever = Tag::compound([
+            ("id", string("minecraft:piglin")),
+            (
+                "Brain",
+                Tag::compound([(
+                    "memories",
+                    Tag::compound([(
+                        "minecraft:angry_at",
+                        Tag::compound([("value", Tag::IntArray(vec![1, 2, 3, 4]))]),
+                    )]),
+                )]),
+            ),
+        ]);
+        let loaded = mob_from_nbt(&forever, &types, 3, None).unwrap();
+        assert_eq!(loaded.extra.anger, i32::MAX);
+        assert_eq!(
+            loaded.extra.piglin.guarded_angry_at,
+            Some(Some([1, 2, 3, 4]))
+        );
+    }
+
     #[test]
     fn expired_owned_memory_cannot_resurrect_stale_raw_anger() {
         let mut m = mob();
