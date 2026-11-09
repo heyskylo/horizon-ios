@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Packets queued for one client beyond this many bytes disconnect it.
+/// Packets queued for one network client beyond this many bytes disconnect it.
 pub(super) const MAX_PENDING: usize = 96 << 20;
 /// How often a thread looks at its connections' clocks: keep-alives,
 /// timeouts and the closes that wait for a disconnect's last bytes.
@@ -126,6 +126,7 @@ pub(super) struct Outbox {
     pending: Arc<AtomicUsize>,
     /// Whether [`MAX_PENDING`] applies. A client in this process (a memory connection) reads
     /// what it is sent as it comes, and a join's first view can pass the limit in one burst.
+    /// The reader is this process: if it stopped reading, that would be a bug of its own.
     capped: bool,
     worker: Arc<Worker>,
     /// While counting: each play packet framed (sent) and read (received) since the game last
