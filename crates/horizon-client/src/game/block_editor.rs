@@ -131,6 +131,10 @@ pub(super) trait Editor {
     fn accepts(&self, _edit: usize, _current: &str, _cursor: usize, _c: char) -> bool {
         true
     }
+    /// The box's tooltip (`EditBox.setTooltip`), if it has one.
+    fn edit_tooltip(&self, _edit: usize) -> Option<Text> {
+        None
+    }
     /// Whether Enter is Done (a screen with its own `keyPressed`).
     fn enter_confirms(&self) -> bool {
         true
@@ -352,6 +356,18 @@ impl Game<'_> {
                         batch, atlas, *x, *y, *sw, label, *value, hover, true, dragging,
                     );
                 }
+            }
+        }
+        // `EditBox.setTooltip` on the boxes that have one, over everything.
+        for item in &items {
+            if let Item::Edit {
+                index, x, y, w: ew, ..
+            } = item
+                && ui::hovered(cursor, *x, *y, *ew, 20.0)
+                && let Some(tip) = screen.editor.edit_tooltip(*index)
+            {
+                ui::tooltip(batch, atlas, &[tip], cursor);
+                break;
             }
         }
         self.block_editor = Some(screen);

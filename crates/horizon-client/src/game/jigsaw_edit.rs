@@ -112,6 +112,22 @@ impl Editor for JigsawEditor {
         &mut self.edits
     }
 
+    /// `JigsawBlockEditScreen` gives its two priority boxes their explanation;
+    /// the other boxes have none.
+    fn edit_tooltip(&self, edit: usize) -> Option<Text> {
+        match edit {
+            SELECTION_PRIORITY => Some(Text::translate(
+                "jigsaw_block.selection_priority.tooltip",
+                &[],
+            )),
+            PLACEMENT_PRIORITY => Some(Text::translate(
+                "jigsaw_block.placement_priority.tooltip",
+                &[],
+            )),
+            _ => None,
+        }
+    }
+
     fn items(&self, _entity: &BlockEntity, w: f32, _h: f32) -> Vec<Item> {
         let mid = (w / 2.0).floor();
         let tr = |key: &str| Text::translate(key, &[]);
@@ -328,5 +344,17 @@ mod tests {
         assert_eq!(e.levels, 20);
         e.press(&mut entity, (0, 0, 0), JOINT, false, false);
         assert_eq!(e.joint, JointType::Aligned);
+    }
+
+    /// `JigsawBlockEditScreen` sets a tooltip on the two priority boxes and
+    /// no other.
+    #[test]
+    fn the_priority_boxes_explain_themselves() {
+        let e = editor();
+        assert!(e.edit_tooltip(SELECTION_PRIORITY).is_some());
+        assert!(e.edit_tooltip(PLACEMENT_PRIORITY).is_some());
+        for edit in [POOL, NAME, TARGET, FINAL_STATE] {
+            assert!(e.edit_tooltip(edit).is_none(), "box {edit}");
+        }
     }
 }
