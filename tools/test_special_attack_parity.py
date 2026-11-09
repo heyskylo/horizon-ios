@@ -85,6 +85,10 @@ def main():
     for name in ('native.txt', 'rust.txt', 'report.json', 'differences.json', 'tail-only-target-differences.json'):
         (work / name).unlink(missing_ok=True)
     fixtures = list(cases())
+    assert len(fixtures) == 156
+    assert sum(bool(case['special_attack'].get('tail_only')) for case in fixtures) == 12
+    assert all(not case['cells'] and not case['items'] and not case['entities']
+               and not case.get('ticks') for case in fixtures), 'scratch proof requires empty, unticked cases'
     input_path = work / 'cases.jsonl'
     input_path.write_text(''.join(json.dumps(case) + '\n' for case in fixtures), encoding='utf-8')
     classes = work / 'classes'

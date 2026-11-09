@@ -127,6 +127,7 @@ impl Game<'_> {
                     invisible: false,
                     check_interval: 0,
                     custom_name: None,
+                    random: horizon_core::random::LegacyRandom::new(0),
                 });
                 let (lo, hi) = self.item_frames[0].bounds();
                 Vec3::new(
