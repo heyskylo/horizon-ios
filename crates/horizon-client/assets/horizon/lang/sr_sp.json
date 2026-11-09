@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Подиже сенке на најтамнију црну вашег екрана. 0: права црна, без подизања.",
   "How bright highlights get. Auto: the peak your system reports.": "Како светли нагласци добијају. Аутоматски: врхунац који ваш систем извештава.",
   "How bright white looks in the world. Auto: your desktop's white.": "Колико светло изгледа бело у свету. Ауто: бело ваше радне површине.",
-  "How bright the HUD and menus are, against paper white.": "Колико су светли ХУД и менији, наспрам белог папира.",
   "How far mobs, crops and machines keep working. CPU time.": "Докле руље, усеви и машине настављају да раде. ЦПУ време.",
   "How far away mobs and items are drawn, as a share of normal.": "Колико су удаљене руље и предмети, као удео нормалног.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Прескаче терен скривен иза затворених делова. Искључење кошта много.",

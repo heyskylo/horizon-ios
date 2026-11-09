@@ -427,7 +427,6 @@
   "Sets the options below together. Changing one makes it Custom.": "Ustawia razem poniższe opcje. Zmiana jednej zmienia na „Własne”.",
   "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "Lawa, ogień i słońce świecą jaśniej niż biel. Wymaga ekranu HDR.",
   "How bright highlights get. Auto: the peak your system reports.": "Jak jasne mogą być światła. Auto: szczyt zgłaszany przez system.",
-  "How bright the HUD and menus are, against paper white.": "Jak jasne są HUD i menu w stosunku do bieli papieru.",
   "How far mobs, crops and machines keep working. CPU time.": "Jak daleko stworzenia, uprawy i maszyny nadal działają. Czas procesora.",
   "How far away mobs and items are drawn, as a share of normal.": "Odległość rysowania stworzeń i przedmiotów, jako ułamek normy.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Pomija teren ukryty za zamkniętymi sekcjami. Wyłączone dużo kosztuje.",

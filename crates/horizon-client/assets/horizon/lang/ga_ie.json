@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Ardaíonn scáthanna go dtí an dubh is dorcha ar do thaispeántas. 0: fíordhubh, gan ardú.",
   "How bright highlights get. Auto: the peak your system reports.": "Conas a fhaigheann buaicphointí geala. Auto: an bhuaic tuairiscí do chórais.",
   "How bright white looks in the world. Auto: your desktop's white.": "Cé chomh geal is a fheictear bán sa domhan. Uathoibríoch: bán do dheisce.",
-  "How bright the HUD and menus are, against paper white.": "Cé chomh geal is atá an HUD agus na biachláir, i gcoinne bán páipéir.",
   "How far mobs, crops and machines keep working. CPU time.": "Cé chomh fada agus a leanann mobs, barraí agus meaisíní ag obair. Am LAP.",
   "How far away mobs and items are drawn, as a share of normal.": "Cé chomh fada uaidh a tharraingítear mobs agus míreanna, mar sciar den ghnáth.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Scipeanna tír-raon i bhfolach taobh thiar codanna dúnta. Lasmuigh costais go leor.",

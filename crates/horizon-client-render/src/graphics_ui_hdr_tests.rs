@@ -129,3 +129,42 @@ fn hdr_setup_follows_what_the_system_reported() {
     assert_eq!(setup_of(&g, true), Setup::Changed);
     assert_eq!(setup_of(&g, false), Setup::Unknown);
 }
+
+/// UI Brightness reads as Paper White does, in nits apart from it: Auto shows the paper white
+/// in use, and a value set by hand its own nits, whatever Paper White is. Its slider has Paper
+/// White's steps: Auto, then 10 to 480 nits by 10.
+#[test]
+fn ui_brightness_reads_in_nits_on_paper_whites_steps() {
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::On;
+    let reporting = offering(true, Some(true));
+    let label = |s: &Settings, out| Item::Horizon(H::HdrUiBrightness).label(s, out).plain();
+    assert_eq!(label(&s, &reporting), "UI Brightness: Auto (400)");
+    assert_eq!(label(&s, &NONE), "UI Brightness: Auto (203)");
+    s.horizon.hdr_paper_white = 250;
+    assert_eq!(label(&s, &reporting), "UI Brightness: Auto (250)");
+    s.horizon.hdr_ui_nits = 160;
+    for paper_white in [0, 80, 250] {
+        s.horizon.hdr_paper_white = paper_white;
+        assert_eq!(label(&s, &reporting), "UI Brightness: 160");
+    }
+    let item = Item::Horizon(H::HdrUiBrightness);
+    assert_eq!(
+        H::HdrUiBrightness.slider_steps(),
+        H::HdrPaperWhite.slider_steps()
+    );
+    H::HdrUiBrightness.set_slider(&mut s, 0.0);
+    let mut reached = vec![s.horizon.hdr_ui_nits];
+    for _ in 0..H::HdrUiBrightness.slider_steps().unwrap() {
+        item.step_slider(&mut s, true, 200.0, &reporting);
+        reached.push(s.horizon.hdr_ui_nits);
+    }
+    let paper: Vec<u32> = std::iter::once(0).chain((10..=480).step_by(10)).collect();
+    assert_eq!(reached, paper);
+    // Each value sits where Paper White's same value does.
+    for nits in paper {
+        s.horizon.hdr_ui_nits = nits;
+        s.horizon.hdr_paper_white = nits;
+        assert_eq!(item.slider(&s), Item::Horizon(H::HdrPaperWhite).slider(&s));
+    }
+}

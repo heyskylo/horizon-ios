@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "سایه‌ها را به تاریک‌ترین سیاه نمایشگر شما می‌رساند. 0: سیاه واقعی، بدون بالا بردن.",
   "How bright highlights get. Auto: the peak your system reports.": "هایلایت ها چقدر روشن می شوند. خودکار: اوج گزارش سیستم شما.",
   "How bright white looks in the world. Auto: your desktop's white.": "سفیدی در دنیا چقدر روشن دیده می‌شود. خودکار: سفیدی میزکار شما.",
-  "How bright the HUD and menus are, against paper white.": "HUD و منوها در برابر سفید کاغذ چقدر روشن هستند.",
   "How far mobs, crops and machines keep working. CPU time.": "اوباش، محصولات زراعی و ماشین‌آلات تا کجا به کار خود ادامه می‌دهند. زمان CPU",
   "How far away mobs and items are drawn, as a share of normal.": "اوباش و اقلام چقدر دور کشیده شده اند، به عنوان یک سهم عادی.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "از زمین های پنهان شده در پشت بخش های بسته می گذرد. هزینه های خاموش بسیار زیاد است.",

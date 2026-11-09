@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "A' togail fhaileasan gu dubh as dorcha an taisbeanaidh agad. 0: fìor dhubh, gun togail.",
   "How bright highlights get. Auto: the peak your system reports.": "Mar a gheibh seallaidhean soilleir. Auto: an ìre as àirde a tha an siostam agad ag aithris.",
   "How bright white looks in the world. Auto: your desktop's white.": "Dè cho soilleir 's a tha geal a' coimhead san t-saoghal. Auto: geal an deasga agad.",
-  "How bright the HUD and menus are, against paper white.": "Dè cho soilleir sa tha an HUD agus na clàran-bìdh, an aghaidh pàipear geal.",
   "How far mobs, crops and machines keep working. CPU time.": "Dè cho fada ‘s a chumas mobs, bàrr agus innealan ag obair. Uair CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "Dè cho fada air falbh tha mobs agus nithean air an tarraing, mar chuibhreann den àbhaist.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Sgiobaidhean talmhainn falaichte air cùl earrannan dùinte. Cosgaidh dheth tòrr.",

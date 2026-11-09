@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Yn codi cysgodion i ddu tywyllaf eich arddangosfa. 0: du go iawn, dim codi.",
   "How bright highlights get. Auto: the peak your system reports.": "Sut mae uchafbwyntiau disglair yn ei gael. Auto: yr uchafbwynt y mae eich system yn ei adrodd.",
   "How bright white looks in the world. Auto: your desktop's white.": "Pa mor llachar y mae gwyn yn edrych yn y byd. Awtomatig: gwyn eich bwrdd gwaith.",
-  "How bright the HUD and menus are, against paper white.": "Pa mor llachar yw'r HUD a'r bwydlenni, yn erbyn papur gwyn.",
   "How far mobs, crops and machines keep working. CPU time.": "Pa mor bell y mae mobs, cnydau a pheiriannau yn dal i weithio. Amser CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "Pa mor bell i ffwrdd mae mobs ac eitemau yn cael eu tynnu, fel cyfran o'r arferol.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Sgipiau tir wedi'i guddio y tu ôl i adrannau caeedig. Mae i ffwrdd yn costio llawer.",

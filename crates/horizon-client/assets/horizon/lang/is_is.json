@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Lyftir skuggum upp að dökkasta svarti skjásins. 0: ekta svart, engin lyfting.",
   "How bright highlights get. Auto: the peak your system reports.": "Hversu bjartir hápunktar verða. Sjálfvirkt: hámarkið sem kerfið þitt tilkynnir.",
   "How bright white looks in the world. Auto: your desktop's white.": "Hversu bjart hvítt lítur út í heiminum. Sjálfvirk: hvítt skjáborðsins þíns.",
-  "How bright the HUD and menus are, against paper white.": "Hversu björt HUD og valmyndir eru, á móti pappírshvítum.",
   "How far mobs, crops and machines keep working. CPU time.": "Hversu langt múgur, uppskera og vélar halda áfram að vinna. CPU tími.",
   "How far away mobs and items are drawn, as a share of normal.": "Hversu langt í burtu múgur og hlutir eru dregnir, sem hlutfall af venjulegum.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Sleppir landslagi sem er falið á bak við lokaða kafla. Off kostar mikið.",

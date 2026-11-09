@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Nostaa varjot näyttösi tummimpaan mustaan. 0: aito musta, ei nostoa.",
   "How bright highlights get. Auto: the peak your system reports.": "Kuinka kirkkaat kohokohdat saavat. Auto: huippu, jonka järjestelmäsi raportoi.",
   "How bright white looks in the world. Auto: your desktop's white.": "Kuinka kirkkaalta valkoinen näyttää maailmassa. Automaattinen: työpöytäsi valkoinen.",
-  "How bright the HUD and menus are, against paper white.": "Kuinka kirkkaita HUD ja valikot ovat paperinvalkoisia vastaan.",
   "How far mobs, crops and machines keep working. CPU time.": "Kuinka pitkälle väkijoukot, viljat ja koneet toimivat. CPU-aika.",
   "How far away mobs and items are drawn, as a share of normal.": "Kuinka kauas väkijoukot ja esineet piirretään, osuus normaalista.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Ohittaa suljettujen osien taakse piilotetun maaston. Poisto maksaa paljon.",

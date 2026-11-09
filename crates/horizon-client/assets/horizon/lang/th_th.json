@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "ยกเงาไปยังสีดำที่มืดที่สุดของจอคุณ 0: ดำสนิท ไม่ยก",
   "How bright highlights get. Auto: the peak your system reports.": "ไฮไลท์จะสว่างขนาดไหน อัตโนมัติ: จุดสูงสุดที่ระบบของคุณรายงาน",
   "How bright white looks in the world. Auto: your desktop's white.": "สีขาวสว่างแค่ไหนในโลก อัตโนมัติ: สีขาวของเดสก์ท็อปคุณ",
-  "How bright the HUD and menus are, against paper white.": "HUD และเมนูมีความสว่างเพียงใด เมื่อเทียบกับกระดาษสีขาว",
   "How far mobs, crops and machines keep working. CPU time.": "ฝูงชน พืชผล และเครื่องจักรยังคงทำงานต่อไปได้ไกลแค่ไหน เวลาซีพียู",
   "How far away mobs and items are drawn, as a share of normal.": "จะมีการดึง mobs และไอเท็มออกไปไกลแค่ไหนซึ่งเป็นเรื่องปกติ",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "ข้ามภูมิประเทศที่ซ่อนอยู่หลังส่วนที่ปิด ออกค่าใช้จ่ายเยอะมาก",

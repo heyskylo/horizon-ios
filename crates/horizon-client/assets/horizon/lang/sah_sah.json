@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Күлүктэри экраныҥ ордук хараҥа хараҕар көтөҕөр. 0: дьиҥнээх хара, көтөҕүү суох.",
   "How bright highlights get. Auto: the peak your system reports.": "Хайдах курдук сырдык хайлайттар тахсаллар. Авто: эн систиэмэҥ отчуоттуур пига.",
   "How bright white looks in the world. Auto: your desktop's white.": "Үрүҥ аан дойдуга хайдах сырдык көстөрө. Авто: декстопуҥ үрүҥэ.",
-  "How bright the HUD and menus are, against paper white.": "HUD уонна менюлар төһө сырдыктарый, кумааҕы үрүҥүн утары.",
   "How far mobs, crops and machines keep working. CPU time.": "Мобтар, үүнээйилэр уонна массыыналар төһө ыраах үлэлии туралларый. Процессор бириэмэтэ.",
   "How far away mobs and items are drawn, as a share of normal.": "Мобтар уонна предметтэр төһө ыраах тардыллыбыттарый, үгэс быһыытынан.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Сабыллыбыт учаастак кэннигэр буккуллубут сири ааһар. Офф элбэх сыаналаах.",

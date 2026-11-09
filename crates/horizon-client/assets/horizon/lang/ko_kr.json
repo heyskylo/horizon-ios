@@ -315,7 +315,6 @@
   "Sets the options below together. Changing one makes it Custom.": "아래 옵션들을 함께 설정합니다. 하나라도 변경하면 사용자 지정으로 전환됩니다.",
   "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "용암, 불, 햇빛이 흰색보다 더 밝게 빛납니다. HDR 디스플레이가 필요합니다.",
   "How bright highlights get. Auto: the peak your system reports.": "하라이트의 최대 밝기입니다. 자동: 시스템이 보고하는 최고 값입니다.",
-  "How bright the HUD and menus are, against paper white.": "페이퍼 화이트 대비 HUD 및 메뉴의 밝기입니다.",
   "How far mobs, crops and machines keep working. CPU time.": "몹, 농작물, 기계가 계속 작동하는 거리입니다. CPU 시간이 소모됩니다.",
   "How far away mobs and items are drawn, as a share of normal.": "정상 대비 몹과 아이템이 그려지는 거리 비율입니다.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "닫힌 구역 뒤에 숨겨진 지형을 건너뜁니다. 끔으로 설정 시 성능 비용이 큽니다.",

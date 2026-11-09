@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Itzalak zure pantailaren beltzik ilunenera igotzen ditu. 0: benetako beltza, igoerarik gabe.",
   "How bright highlights get. Auto: the peak your system reports.": "Nola distiratsuak diren argiak. Auto: zure sistemak ematen duen gailurra.",
   "How bright white looks in the world. Auto: your desktop's white.": "Zenbat distiratzen duen zuriak munduan. Autoa: zure mahaigaineko zuria.",
-  "How bright the HUD and menus are, against paper white.": "Zein distiratsuak diren HUD eta menuak, paper zuriaren aurka.",
   "How far mobs, crops and machines keep working. CPU time.": "Noraino jarraitzen duten mafiak, laboreak eta makinak lanean. CPU denbora.",
   "How far away mobs and items are drawn, as a share of normal.": "Noraino ateratzen diren mobs eta elementuak, normalaren zati gisa.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Sekzio itxien atzean ezkutatuta dagoen lurra saltatzen du. Off asko kostatzen da.",

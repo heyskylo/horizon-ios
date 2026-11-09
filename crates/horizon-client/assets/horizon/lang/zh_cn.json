@@ -425,7 +425,6 @@
   "Sets the options below together. Changing one makes it Custom.": "一起设置下面的选项。单独改动其中一项会变成“自定义”。",
   "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "熔岩、火与阳光比白色更亮。需要 HDR 显示器。",
   "How bright highlights get. Auto: the peak your system reports.": "高光能有多亮。“自动”使用系统报告的峰值。",
-  "How bright the HUD and menus are, against paper white.": "HUD 和菜单相对纸白的亮度。",
   "How far mobs, crops and machines keep working. CPU time.": "生物、农作物和机器持续工作的距离。占用 CPU 时间。",
   "How far away mobs and items are drawn, as a share of normal.": "生物和物品的绘制距离，按正常值的比例。",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "跳过被封闭区块遮挡的地形。关闭的开销很大。",

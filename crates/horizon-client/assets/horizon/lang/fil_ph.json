@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Iniaangat ang mga anino sa pinakamadilim na itim ng iyong display. 0: totoong itim, walang angat.",
   "How bright highlights get. Auto: the peak your system reports.": "Kung gaano kaliwanag ang mga highlight. Auto: ang pinakamataas na ulat ng iyong system.",
   "How bright white looks in the world. Auto: your desktop's white.": "Gaano kaliwanag ang puti sa mundo. Auto: ang puti ng iyong desktop.",
-  "How bright the HUD and menus are, against paper white.": "Gaano kaliwanag ang HUD at mga menu, laban sa puting papel.",
   "How far mobs, crops and machines keep working. CPU time.": "Hanggang saan patuloy na gumagana ang mga mandurumog, pananim at makina. oras ng CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "Kung gaano kalayo ang mga mandurumog at mga item ay iginuhit, bilang bahagi ng normal.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Nilalaktawan ang lupain na nakatago sa likod ng mga saradong seksyon. Malaki ang gastos sa off.",

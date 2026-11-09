@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Kölgələri ekranınızın ən tünd qarasına qaldırır. 0: həqiqi qara, qaldırma yoxdur.",
   "How bright highlights get. Auto: the peak your system reports.": "Parlaq məqamlar necə əldə edilir. Avtomatik: sisteminizin ən yüksək hesabatı.",
   "How bright white looks in the world. Auto: your desktop's white.": "Dünyada ağ rəngin nə qədər parlaq göründüyü. Avtomatik: iş masanızın ağı.",
-  "How bright the HUD and menus are, against paper white.": "HUD və menyular ağ kağıza qarşı nə qədər parlaqdır.",
   "How far mobs, crops and machines keep working. CPU time.": "Kütlələr, məhsullar və maşınlar nə qədər işləməyə davam edir. CPU vaxtı.",
   "How far away mobs and items are drawn, as a share of normal.": "Nə qədər uzağa mob və əşyalar çəkilir, normal bir pay olaraq.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Qapalı hissələrin arxasında gizlənmiş ərazini ötür. Sıxılma çox baha başa gəlir.",

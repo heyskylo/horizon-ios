@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Ngrit hijet mbi të zezën më të errët të ekranit tënd. 0: e zezë e vërtetë, pa ngritje.",
   "How bright highlights get. Auto: the peak your system reports.": "Sa të ndritshme marrin pikat kryesore. Auto: kulmi që raporton sistemi juaj.",
   "How bright white looks in the world. Auto: your desktop's white.": "Sa e ndritshme duket e bardha në botë. Auto: e bardha e desktopit tënd.",
-  "How bright the HUD and menus are, against paper white.": "Sa të ndritshme janë HUD dhe menutë, kundrejt të bardhës së letrës.",
   "How far mobs, crops and machines keep working. CPU time.": "Sa larg vazhdojnë të punojnë turmat, të korrat dhe makinat. Koha e procesorit.",
   "How far away mobs and items are drawn, as a share of normal.": "Sa larg janë tërhequr turmat dhe sendet, si pjesë e normales.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Kapërcen terrenin e fshehur pas seksioneve të mbyllura. Off kushton shumë.",

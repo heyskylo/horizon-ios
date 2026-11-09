@@ -556,7 +556,6 @@
   "Sets the options below together. Changing one makes it Custom.": "Aşağıdaki seçenekleri topluca ayarlar. Bu seçeneklerden birini değiştirmeniz durumunda ayar Özel olarak değiştirilir.",
   "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "Lav, ateş ve güneş ışığı beyazdan daha parlak görünür. HDR destekli ekran gerektirir.",
   "How bright highlights get. Auto: the peak your system reports.": "Parlak alanların ne kadar parlak görüneceğini belirler. Otomatik: Sisteminizin bildirdiği en yüksek parlaklık değerini kullanır.",
-  "How bright the HUD and menus are, against paper white.": "HUD ve menülerin, referans beyaz seviyesine kıyasla ne kadar parlak olacağını belirler.",
   "How far mobs, crops and machines keep working. CPU time.": "Yaratıkların, ekinlerin ve makinelerin ne kadar uzaktan çalışmaya devam edeceğini belirler. İşlemci gücü kullanır.",
   "How far away mobs and items are drawn, as a share of normal.": "Yaratıkların ve eşyaların ne kadar uzaktan görüntüleneceğini, normal mesafeye oranla belirler.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Kapalı alanların arkasında kalan arazilerin çizilmesini önler. Kapalı olması ciddi performans kaybına neden olur.",

@@ -38,6 +38,23 @@ pub fn peak_step_of(nits: f32) -> f32 {
     };
     step.clamp(0.0, PEAK_STEPS as f32)
 }
+/// The steps of Paper White's and UI Brightness's scale: Auto (0), then 10 to 480 nits by 10.
+pub const NITS_STEPS: u32 = 48;
+/// Paper White's or UI Brightness's setting at slider position `v`, 0 to 1 ([`NITS_STEPS`]).
+pub fn nits_at(v: f32) -> u32 {
+    (v * NITS_STEPS as f32).round() as u32 * 10
+}
+/// Where a Paper White or UI Brightness setting sits on its slider, 0 to 1.
+pub fn nits_position(nits: u32) -> f32 {
+    nits as f32 / (NITS_STEPS * 10) as f32
+}
+/// A saved Paper White or UI Brightness: Auto (0), or 10 to 480 nits.
+fn nits_setting(nits: u32) -> u32 {
+    match nits {
+        0 => 0,
+        n => n.clamp(10, 480),
+    }
+}
 
 /// Simple-level presets. `Custom` leaves every option as the player set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -799,9 +816,9 @@ pub struct Graphics {
     /// HDR black level: the display's darkest black, in hundredths of a nit; 0, the default,
     /// lifts nothing. Shadows are lifted onto it, and the HDR metadata says it.
     pub hdr_black_level: u32,
-    /// HDR brightness of the HUD and menus, in percent of paper white (25..=100); the
-    /// first-person hand stays at the world's.
-    pub hdr_ui_brightness: u32,
+    /// HDR brightness of the HUD and menus, in nits; 0 is Auto: at paper white
+    /// ([`Graphics::ui_nits`]). The first-person hand stays at the world's.
+    pub hdr_ui_nits: u32,
     /// HDR Lighting: Horizon's own HDR look, light sources, the sun and sunlight above paper
     /// white. Off, HDR output shows the same picture as SDR, for shader packs or the vanilla look.
     pub hdr_lighting: bool,
@@ -877,7 +894,7 @@ impl Default for Graphics {
             hdr_paper_white: 0,
             hdr_peak: 0,
             hdr_black_level: 0,
-            hdr_ui_brightness: 100,
+            hdr_ui_nits: 0,
             hdr_lighting: true,
             battery: false,
             shadow_cache: false,
@@ -915,6 +932,8 @@ impl Graphics {
     }
     pub fn parse(text: &str) -> Self {
         let mut g = Self::default();
+        // UI Brightness: `hdrUiNits`, else an older file's share of Paper White.
+        let (mut ui_nits, mut ui_share) = (None, None);
         for line in text.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -1004,12 +1023,9 @@ impl Graphics {
                 "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = HdrMode::parse(value, g.hdr),
                 "hdrLighting" => g.hdr_lighting = flag(g.hdr_lighting),
-                "hdrPaperWhite" => {
-                    g.hdr_paper_white = match number(g.hdr_paper_white) {
-                        0 => 0,
-                        n => n.clamp(10, 480),
-                    }
-                }
+                "hdrPaperWhite" => g.hdr_paper_white = nits_setting(number(g.hdr_paper_white)),
+                "hdrUiNits" => ui_nits = value.parse().ok().map(nits_setting),
+                "hdrUiBrightness" => ui_share = value.parse::<u32>().ok(),
                 "hdrPeak" => {
                     g.hdr_peak = match number(g.hdr_peak) {
                         0 => 0,
@@ -1017,9 +1033,6 @@ impl Graphics {
                     }
                 }
                 "hdrBlackLevel" => g.hdr_black_level = number(g.hdr_black_level).min(100),
-                "hdrUiBrightness" => {
-                    g.hdr_ui_brightness = number(g.hdr_ui_brightness).clamp(25, 100)
-                }
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
@@ -1036,11 +1049,20 @@ impl Graphics {
                 _ => {}
             }
         }
+        // The share was 25 to 100% of Paper White. 100% is Auto, and so is any share of an
+        // Auto Paper White, whose nits the file doesn't hold; another share of a Paper White set
+        // by hand is its nits, to the nearest step.
+        g.hdr_ui_nits = ui_nits.unwrap_or(match (ui_share, g.hdr_paper_white) {
+            (Some(share), paper) if share < 100 && paper != 0 => {
+                ((paper * share.max(25) + 500) / 1000).max(1) * 10
+            }
+            _ => 0,
+        });
         g
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1087,7 +1109,7 @@ impl Graphics {
             self.hdr_paper_white,
             self.hdr_peak,
             self.hdr_black_level,
-            self.hdr_ui_brightness,
+            self.hdr_ui_nits,
             bool_text(self.hdr_lighting),
             bool_text(self.battery),
             bool_text(self.shadow_cache),
@@ -1108,6 +1130,13 @@ impl Graphics {
     pub fn paper_white_nits(&self, reported: Option<Reported>) -> u32 {
         match self.hdr_paper_white {
             0 => reported.map_or(203, |r| r.paper_white),
+            n => n,
+        }
+    }
+    /// The HUD and menus' brightness, in nits: the player's, or on Auto paper white's.
+    pub fn ui_nits(&self, reported: Option<Reported>) -> u32 {
+        match self.hdr_ui_nits {
+            0 => self.paper_white_nits(reported),
             n => n,
         }
     }
@@ -1190,6 +1219,55 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UI Brightness is saved in nits, 0 for Auto. An older file's share of Paper White reads
+    /// as Auto at 100% or with Paper White on Auto, else as that share of it to the nearest step.
+    #[test]
+    fn ui_brightness_round_trips_in_nits_and_reads_older_shares() {
+        for (file, nits) in [
+            ("", 0),
+            ("hdrUiNits:0\n", 0),
+            ("hdrUiNits:160\n", 160),
+            ("hdrUiNits:5\n", 10),
+            ("hdrUiNits:9000\n", 480),
+            ("hdrUiNits:x\n", 0),
+            // Older files: 100% is Auto,
+            ("hdrPaperWhite:200\nhdrUiBrightness:100\n", 0),
+            // any share of Paper White's Auto too,
+            ("hdrUiBrightness:60\n", 0),
+            ("hdrPaperWhite:0\nhdrUiBrightness:25\n", 0),
+            // and another share of a Paper White set by hand is its nits.
+            ("hdrPaperWhite:200\nhdrUiBrightness:60\n", 120),
+            ("hdrUiBrightness:50\nhdrPaperWhite:203\n", 100),
+            ("hdrPaperWhite:250\nhdrUiBrightness:75\n", 190),
+            ("hdrPaperWhite:10\nhdrUiBrightness:25\n", 10),
+            ("hdrPaperWhite:480\nhdrUiBrightness:10\n", 120),
+            // The new key wins over the old one.
+            (
+                "hdrPaperWhite:200\nhdrUiBrightness:60\nhdrUiNits:300\n",
+                300,
+            ),
+            ("hdrUiNits:0\nhdrPaperWhite:200\nhdrUiBrightness:60\n", 0),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_ui_nits, nits, "{file}");
+            let saved = g.serialize();
+            assert!(!saved.contains("hdrUiBrightness"), "{file}");
+            assert!(saved.contains(&format!("\nhdrUiNits:{nits}\n")), "{file}");
+            assert_eq!(Graphics::parse(&saved), g, "{file}");
+        }
+        let mut g = Graphics::default();
+        assert_eq!(g.ui_nits(None), 203);
+        let reported = Some(Reported {
+            paper_white: 300,
+            peak: 1000,
+        });
+        assert_eq!(g.ui_nits(reported), 300);
+        g.hdr_paper_white = 120;
+        assert_eq!(g.ui_nits(reported), 120);
+        g.hdr_ui_nits = 400;
+        assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
 
     #[test]
     fn hdr_modes_keep_boolean_files_and_round_trip_auto() {
@@ -1277,7 +1355,7 @@ mod tests {
             hdr_paper_white: 240,
             hdr_peak: 1400,
             hdr_black_level: 12,
-            hdr_ui_brightness: 60,
+            hdr_ui_nits: 160,
             hdr_lighting: false,
             battery: true,
             shadow_cache: true,

@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Paceļ ēnas līdz displeja tumšākajai melnai. 0: īsta melna, bez pacelšanas.",
   "How bright highlights get. Auto: the peak your system reports.": "Cik spilgti izceļas. Automātiski: maksimums, par kuru jūsu sistēma ziņo.",
   "How bright white looks in the world. Auto: your desktop's white.": "Cik spoža baltā izskatās pasaulē. Automātiski: darbvirsmas baltā.",
-  "How bright the HUD and menus are, against paper white.": "Cik spilgti ir HUD un izvēlnes, salīdzinot ar papīra baltumu.",
   "How far mobs, crops and machines keep working. CPU time.": "Cik tālu pūļi, labība un mašīnas turpina strādāt. CPU laiks.",
   "How far away mobs and items are drawn, as a share of normal.": "Cik tālu mobs un preces tiek vilktas, kā daļa no normālā.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Izlaiž reljefu, kas paslēpta aiz slēgtām sekcijām. Izslēgšana maksā daudz.",

@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Az árnyékokat a kijelző legmélyebb feketéjére emeli. 0: valódi fekete, emelés nélkül.",
   "How bright highlights get. Auto: the peak your system reports.": "Milyen fényesek a csúcsfények. Automatikus: a rendszer által jelentett csúcs.",
   "How bright white looks in the world. Auto: your desktop's white.": "Milyen fényesnek tűnik a fehér a világban. Automatikus: az asztal fehérje.",
-  "How bright the HUD and menus are, against paper white.": "Milyen fényesek a HUD és a menük papírfehérrel szemben.",
   "How far mobs, crops and machines keep working. CPU time.": "Meddig dolgoznak a csőcselék, a termények és a gépek. CPU idő.",
   "How far away mobs and items are drawn, as a share of normal.": "Milyen messzire húzódnak a mobok és tárgyak, a normál arányaként.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Kihagyja a zárt szakaszok mögé rejtett terepet. Az off sokba kerül.",

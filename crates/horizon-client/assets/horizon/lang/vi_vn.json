@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Nâng bóng tối lên mức đen nhất của màn hình. 0: đen tuyệt đối, không nâng.",
   "How bright highlights get. Auto: the peak your system reports.": "Làm thế nào sáng nổi bật có được. Tự động: mức cao nhất mà hệ thống của bạn báo cáo.",
   "How bright white looks in the world. Auto: your desktop's white.": "Độ sáng của màu trắng trong thế giới. Tự động: màu trắng của màn hình nền.",
-  "How bright the HUD and menus are, against paper white.": "HUD và các menu sáng như thế nào so với màu trắng của giấy.",
   "How far mobs, crops and machines keep working. CPU time.": "Đám đông, cây trồng và máy móc tiếp tục hoạt động bao xa. thời gian CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "Khoảng cách mà mob và vật phẩm được rút ra là một phần bình thường.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Bỏ qua địa hình ẩn sau các phần đã đóng. Giảm chi phí rất nhiều.",

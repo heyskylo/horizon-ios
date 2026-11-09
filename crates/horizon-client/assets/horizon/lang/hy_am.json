@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Ստվերները բարձրացնում է ձեր էկրանի ամենամուգ սևին։ 0՝ իրական սև, առանց բարձրացման։",
   "How bright highlights get. Auto: the peak your system reports.": "Որքան վառ ընդգծումներ են ստանում: Ավտոմատ. ձեր համակարգի գագաթնակետը հաղորդում է:",
   "How bright white looks in the world. Auto: your desktop's white.": "Թե որքան պայծառ է սպիտակը երևում աշխարհում։ Ավտոմատ՝ ձեր աշխատասեղանի սպիտակը։",
-  "How bright the HUD and menus are, against paper white.": "Որքան վառ են HUD-ն ու մենյուները՝ թղթի սպիտակի դեմ:",
   "How far mobs, crops and machines keep working. CPU time.": "Որքան հեռու են աշխատում ամբոխները, մշակաբույսերը և մեքենաները: Պրոցեսորի ժամանակ.",
   "How far away mobs and items are drawn, as a share of normal.": "Որքա՜ն հեռու են քաշված ամբոխներն ու իրերը՝ որպես նորմալի մասնաբաժին։",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Բաց է թողնում փակ հատվածների հետևում թաքնված տեղանքը: Off ծախսերը շատ.",

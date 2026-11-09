@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Dvíha tiene k najtmavšej čiernej tvojho displeja. 0: skutočná čierna, bez dvihnutia.",
   "How bright highlights get. Auto: the peak your system reports.": "Ako sa dosiahne jasný melír. Auto: vrchol, ktorý váš systém hlási.",
   "How bright white looks in the world. Auto: your desktop's white.": "Aká jasná je biela vo svete. Auto: biela tvojho pracovného prostredia.",
-  "How bright the HUD and menus are, against paper white.": "Aký jasný je HUD a ponuky oproti bielemu papieru.",
   "How far mobs, crops and machines keep working. CPU time.": "Ako ďaleko davy, plodiny a stroje fungujú. čas procesora.",
   "How far away mobs and items are drawn, as a share of normal.": "Ako ďaleko sú davy a predmety nakreslené ako podiel normálu.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Preskočí terén skrytý za uzavretými úsekmi. Vypnutie stojí veľa.",

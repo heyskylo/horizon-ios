@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Eleva as sombras até ao preto mais escuro do teu ecrã. 0: preto puro, sem elevação.",
   "How bright highlights get. Auto: the peak your system reports.": "A intensidade do brilho máximo. Automático: o pico reportado pelo teu sistema.",
   "How bright white looks in the world. Auto: your desktop's white.": "O brilho do branco no mundo. Automático: o branco do teu ambiente de trabalho.",
-  "How bright the HUD and menus are, against paper white.": "A luminosidade do HUD e dos menus em comparação com o branco do papel.",
   "How far mobs, crops and machines keep working. CPU time.": "A distância a que os mobs, colheitas e máquinas continuam a funcionar. Tempo de CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "A distância a que os mobs e itens são desenhados, como uma percentagem do normal.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Ignora terreno oculto atrás de secções fechadas. Desligado consome muitos recursos.",

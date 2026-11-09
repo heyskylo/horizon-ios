@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Tõstab varjud ekraani tumedaima mustani. 0: tõeline must, ilma tõstmiseta.",
   "How bright highlights get. Auto: the peak your system reports.": "Kui eredad esiletõstud saavad. Automaatne: tipp, millest süsteem teatab.",
   "How bright white looks in the world. Auto: your desktop's white.": "Kui hele valge maailmas paistab. Automaatne: sinu töölaua valge.",
-  "How bright the HUD and menus are, against paper white.": "Kui eredad on HUD ja menüüd pabervalge taustal.",
   "How far mobs, crops and machines keep working. CPU time.": "Kui kaugele mobid, põllukultuurid ja masinad töötavad. CPU aeg.",
   "How far away mobs and items are drawn, as a share of normal.": "Kui kaugele mobid ja esemed tõmmatakse, kui osa normaalsest.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Jätab vahele suletud lõikude taha peidetud maastiku. Off maksab palju.",
