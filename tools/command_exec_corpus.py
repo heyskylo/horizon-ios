@@ -6859,6 +6859,7 @@ def groups():
         from .passenger_teleport_corpus import passenger_teleports
         from .gateway_passenger_corpus import gateway_passengers
         from .gateway_item_motion_corpus import gateway_item_motion
+        from .item_honey_bounce_corpus import item_honey_bounce
         from .item_merge_corpus import stack_limit_merges
         from .conduit_table_entity_corpus import conduit_table_entities
     except ImportError:
@@ -6872,6 +6873,7 @@ def groups():
         from passenger_teleport_corpus import passenger_teleports
         from gateway_passenger_corpus import gateway_passengers
         from gateway_item_motion_corpus import gateway_item_motion
+        from item_honey_bounce_corpus import item_honey_bounce
         from item_merge_corpus import stack_limit_merges
         from conduit_table_entity_corpus import conduit_table_entities
     result = [
@@ -6976,6 +6978,7 @@ def groups():
         ('ominous spawner saved Motion', ominous_spawner_saved_motion()),
         ('gateway passengers', gateway_passengers(cmd, setup)),
         ('gateway item motion', gateway_item_motion(cmd, setup)),
+        ('item honey bounce', item_honey_bounce(cmd, setup)),
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),

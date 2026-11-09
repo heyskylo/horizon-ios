@@ -601,10 +601,9 @@ impl Game<'_> {
             heights,
             entity_boxes,
             Some(self.border.geometry()),
+            Some(&self.res.motion().blocks),
         );
-        if let Some(pos) =
-            item.vertical_contact(&self.world, self.collision, &self.res.motion().blocks, step)
-        {
+        if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
             let mut discarded = false;
