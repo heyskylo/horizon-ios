@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "level_name", "target": "horizon_client::game::native_server::Game<'_>::native_level_name"},
+    {"name": "dimension_of_world", "target": "horizon_client::game::native_server::Game<'_>::native_dimension_of_world"},
+    {"name": "world_of_dimension", "target": "horizon_client::game::native_server::Game<'_>::native_world_of_dimension"}
+  ],
+  "rust_summary": "the open world's level name and the default worlds' folder names mapped to their dimensions (`native_level_name`, `native_dimension_of_world`, `native_world_of_dimension`).",
+  "doc_summary": "`native_level_name()` is the open world's folder name, the `level-name` of server.properties on a dedicated server (None with no world open). `native_dimension_of_world(name)` and `native_world_of_dimension(id)` map `world`, `world_nether` and `world_the_end` to `minecraft:overworld`, `minecraft:the_nether` and `minecraft:the_end`, both ways; any other name maps to None. API @API:level_name@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

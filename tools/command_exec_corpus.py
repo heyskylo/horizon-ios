@@ -986,6 +986,36 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def rocket_data_merge():
+    """#13083: /data merge and /data modify on a firework rocket run Entity.load over it
+    (FireworkRocketEntity.readAdditionalSaveData: Life, LifeTime, FireworksItem, ShotAtAngle;
+    Entity.load: Motion, Rotation, OnGround, Tags; Projectile: HasBeenShot, 0b until its first tick
+    posts the shot). Frozen, then ticks: an angled rocket keeps its motion, and its Rotation eases
+    toward it (Projectile.updateRotation)."""
+    sel = '@e[tag=rocket_merge,limit=1]'
+    ops = setup('/forceload add 384 384', '/tick freeze',
+                '/summon firework_rocket 384.5 230 384.5 {LifeTime:200,Tags:["rocket_merge"]}')
+    ops += [{'op': 'settle', 'required_chunks': [[24, 24]]}]
+    ops += [cmd(f'/data get entity {sel} HasBeenShot'),
+            cmd(f'/data merge entity {sel} {{LifeTime:77,Life:5,ShotAtAngle:1b,Motion:[0.1d,0.2d,0.3d],OnGround:1b,'
+                'Rotation:[90f,10f]}'),
+            cmd(f'/data modify entity {sel} Life set value 9'),
+            cmd(f'/data merge entity {sel} {{FireworksItem:{{id:"minecraft:firework_rocket",count:3,'
+                'components:{"minecraft:fireworks":{flight_duration:2b}}}}'),
+            cmd(f'/data merge entity {sel} {{Tags:["rocket_merge","rocket_merged"]}}')]
+    for key in ('LifeTime', 'Life', 'ShotAtAngle', 'Motion', 'Rotation', 'OnGround', 'FireworksItem', 'Tags'):
+        ops.append(cmd(f'/data get entity {sel} {key}'))
+    ops += setup('/tick unfreeze')
+    ops.append({'op': 'tick', 'n': 1})
+    ops += [cmd(f'/data get entity {sel} Pos'), cmd(f'/data get entity {sel} Life'),
+            cmd(f'/data get entity {sel} HasBeenShot'), cmd(f'/data get entity {sel} Rotation')]
+    # Projectile.updateRotation eases a fifth of the way toward the motion each tick.
+    for _ in range(2):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity {sel} Rotation'))
+    return ops + setup('/kill @e[type=minecraft:firework_rocket]', '/forceload remove 384 384')
+
+
 def teleport_lands():
     """TeleportCommand.performTeleport after a successful teleportTo: unless the target is a living
     entity that is fall-flying, its vertical motion is zeroed (multiply(1, 0, 1)) and it is on the
@@ -995,28 +1025,27 @@ def teleport_lands():
     ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in (20, 21) for z in (20, 21)]}]
     ops += setup('/tick freeze', '/summon marker 340.5 230 340.5 {Tags:["tp_dest"]}')
     motion = 'Motion:[0.25d,0.5d,-0.125d],OnGround:0b,NoGravity:1b'
-    # (kind, NBT, whether its save writes the live OnGround here: boats and minecarts write it once
-    # #12824 lands; falling blocks and arrows always write 0b).
     cases = (
-        ('zombie', f'{{NoAI:1b,{motion}}}', True),
-        ('zombie', f'{{NoAI:1b,FallFlying:1b,{motion}}}', True),
-        ('armor_stand', f'{{{motion}}}', True),
-        ('item', f'{{Item:{{id:"minecraft:stone",count:1}},PickupDelay:32767,Age:-32768,{motion}}}', True),
-        ('experience_orb', f'{{Value:3,{motion}}}', True),
-        ('oak_boat', f'{{{motion}}}', False),
-        ('minecart', f'{{{motion}}}', False),
-        ('tnt', f'{{fuse:32767,{motion}}}', True),
-        ('falling_block', f'{{BlockState:{{Name:"minecraft:sand"}},Time:1,{motion}}}', False),
-        ('arrow', f'{{pickup:0b,{motion}}}', False),
+        ('zombie', f'{{NoAI:1b,{motion}}}'),
+        ('zombie', f'{{NoAI:1b,FallFlying:1b,{motion}}}'),
+        ('armor_stand', f'{{{motion}}}'),
+        ('item', f'{{Item:{{id:"minecraft:stone",count:1}},PickupDelay:32767,Age:-32768,{motion}}}'),
+        ('experience_orb', f'{{Value:3,{motion}}}'),
+        ('oak_boat', f'{{{motion}}}'),
+        ('minecart', f'{{{motion}}}'),
+        ('tnt', f'{{fuse:32767,{motion}}}'),
+        ('falling_block', f'{{BlockState:{{Name:"minecraft:sand"}},Time:1,{motion}}}'),
+        ('arrow', f'{{pickup:0b,{motion}}}'),
+        ('trident', f'{{pickup:0b,{motion}}}'),
+        ('firework_rocket', f'{{LifeTime:32767,{motion}}}'),
     )
-    for i, (kind, nbt, ground) in enumerate(cases):
+    for i, (kind, nbt) in enumerate(cases):
         tag = f'tp_land_{i}'
         ops += setup(f'/summon {kind} {322 + i * 2}.5 230 322.5 {{Tags:["{tag}"],{nbt[1:-1]}}}')
         dest = f'{322 + i * 2}.5 240 324.5' if i % 2 == 0 else '@e[tag=tp_dest,limit=1]'
         ops += [cmd(f'/tp @e[tag={tag},limit=1] {dest}'),
-                cmd(f'/data get entity @e[tag={tag},limit=1] Motion')]
-        if ground:
-            ops += [cmd(f'/data get entity @e[tag={tag},limit=1] OnGround')]
+                cmd(f'/data get entity @e[tag={tag},limit=1] Motion'),
+                cmd(f'/data get entity @e[tag={tag},limit=1] OnGround')]
     # The dragon's own flight builds on its motion: /tp stops it too.
     ops += setup(f'/summon ender_dragon 344.5 230 344.5 {{Tags:["tp_dragon"],NoAI:1b,{motion}}}')
     ops += [cmd('/tp @e[tag=tp_dragon,limit=1] 344.5 236 344.5'),
@@ -7135,6 +7164,7 @@ def groups():
         ('vehicle fall clip', vehicle_fall_clip()),
         ('projectile saved ground', projectile_saved_ground()),
         ('teleport lands', teleport_lands()),
+        ('rocket data merge', rocket_data_merge()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         # Last: it leaves the player in other food than it found.

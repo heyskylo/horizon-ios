@@ -53,7 +53,7 @@ LivingEntity.applyItemBlocking	port	crates/horizon-client/src/health.rs::Environ
 LivingEntity.playSecondaryHurtSound	port	crates/horizon-client/src/game/enchant_effects.rs::Game::thorns	enchant.thorns.hit at the attacker
 LivingEntity.resolveMobResponsibleForDamage	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with	gap: minor: last_hurt_by comes from any attacker; no #no_anger damage types or wind charge exemption
 LivingEntity.resolvePlayerResponsibleForDamage	inline	crates/horizon-client/src/game/creatures.rs::Game::resolve_player_responsible	a tamed wolf's or cat's hit is its owner's (setLastHurtByPlayer), so the kill drops experience and player-only loot
-LivingEntity.breakItem	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: player: a tool or armor breaking shows no crumb particles and always plays entity.item.break, not the item's own break sound
+LivingEntity.breakItem	port	crates/horizon-client/src/game/item_durability.rs::Game::damage_held	gap: player: a tool or armor breaking shows no crumb particles and always plays entity.item.break, not the item's own break sound
 LivingEntity.dropExperience	inline	crates/horizon-client/src/mobs/drops.rs::die	orbs only when a player killed it and mob_drops is on
 LivingEntity.getKnockback	port	crates/horizon-client/src/game/enchant_effects.rs::Game::extra_knockback	gap: minor: the Knockback enchant halved (player and gear::knockback for mobs); the attack_knockback attribute counts only for the hoglin shove
 LivingEntity.dropFromLootTable	port	crates/horizon-client/src/mobs/drops.rs::roll	the entity table from its random sequence
@@ -99,7 +99,7 @@ LivingEntity.wouldNotSuffocateAtTargetPose	port	crates/horizon-client/src/pose.r
 LivingEntity.canUsePortal	port	crates/horizon-client/src/game/nether_portal.rs::Game::mob_can_use_portal	gap: minor: a sleeping mob is not excluded
 LivingEntity.setPosToBed	port	crates/horizon-client/src/mobs/villager.rs::start_sleeping	x and z at the bed's centre, y 0.6875 above its base (sleep height plus 0.125)
 LivingEntity.entityEventForEquipmentBreak	inline	crates/horizon-client/src/mobs/item_break.rs::equipment_break_event	the slot-to-event table itself; a mob's worn armour that breaks broadcasts 49 to 52 and 65 (Game::hurt_mob_armor, #5317) and a player's hands, armour and shield reach every client through onEquippedItemBroken (#5392)
-LivingEntity.onEquippedItemBroken	inline	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: the stack is cleared and modifiers rebuilt, but no break event is broadcast
+LivingEntity.onEquippedItemBroken	inline	crates/horizon-client/src/game/item_durability.rs::Game::damage_held	gap: minor: the stack is cleared and modifiers rebuilt, but no break event is broadcast
 LivingEntity.stopLocationBasedEffects	inline	crates/horizon-client/src/game.rs::Game::apply_equipment	all applied modifiers are dropped and re-added from what is worn
 LivingEntity.getEquipmentSlotForItem	inline	crates/horizon-client/src/game/mob_gear.rs::Game::equip_from_table	resolveSlot: the item's equip_slot, else the main hand
 LivingEntity.createEquipmentSlotAccess	inline	crates/horizon-client/src/game/commands/items.rs::Game::slots_named	/item slot names such as armor.head and weapon.mainhand
