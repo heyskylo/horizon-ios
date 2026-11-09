@@ -9,8 +9,13 @@ names.
 from command_exec_corpus import cmd
 
 COMMON = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b'
-KINDS = {'pig': COMMON, 'allay': COMMON, 'armor_stand': 'NoGravity:1b'}
-IDS = ['movement_speed', 'max_health', 'follow_range', 'flying_speed', 'armor', 'scale']
+# Instances the mob's own load makes (vanilla 26.3, before any tick): an enderman's movement_speed
+# (Enderman.setTarget, from readPersistentAngerSaveData), an untamed wolf's max_health
+# (TamableAnimal.readAdditionalSaveData -> setTame(false, true) -> applyTamingSideEffects) and a baby
+# goat's or hoglin's attack_damage (setAge -> ageBoundaryReached).
+KINDS = {'pig': COMMON, 'allay': COMMON, 'armor_stand': 'NoGravity:1b', 'enderman': COMMON, 'wolf': COMMON,
+         'goat': COMMON + ',Age:-24000', 'hoglin': COMMON + ',Age:-24000', 'rabbit': COMMON}
+IDS = ['movement_speed', 'max_health', 'follow_range', 'flying_speed', 'armor', 'scale', 'attack_damage']
 
 
 def uuid(n):

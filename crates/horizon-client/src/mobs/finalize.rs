@@ -525,6 +525,59 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
             _ => 0.0,
         })
 }
+/// The attribute instances the mob's own construction and load leave in its
+/// `AttributeMap`, which `AttributeMap.pack` saves although the loaded tag held
+/// none: `AttributeMap.getInstance` makes one for any `getAttribute`, a read or
+/// a `setBaseValue`. What `set_base` recorded (finalizeSpawn, a size, a baby
+/// growing up) is saved apart; these are the rest:
+/// - `movement_speed`: Zombie and Piglin.setBaby (the load calls it even for an
+///   adult), `Enderman.setTarget` (the load ends in `readPersistentAngerSaveData`,
+///   which calls it), a Ravager whose load leaves it immobile, and the first tick of
+///   any mob (`LivingEntity.removeFrost`).
+/// - `max_health`: `Wolf.applyTamingSideEffects`, through `setTame(false, true)`
+///   when the load finds no owner (a wolf that is tamed in game makes it too).
+/// - `attack_damage`: `Rabbit.setVariant`, and a baby Goat or Hoglin, whose load's
+///   `setAge` crosses the baby boundary (`ageBoundaryReached`).
+pub fn made_at_load(m: &Mob) -> Vec<Attr> {
+    let s = m.species();
+    let mut made = Vec::new();
+    if super::doors::is_zombie(s)
+        || matches!(s, Species::Piglin | Species::Enderman)
+        || (s == Species::Ravager && super::ravager::immobile(m))
+        || m.age > 0
+    {
+        made.push(Attr::MovementSpeed);
+    }
+    if s == Species::Wolf {
+        made.push(Attr::MaxHealth);
+    }
+    if s == Species::Rabbit || (matches!(s, Species::Goat | Species::Hoglin) && m.is_baby()) {
+        made.push(Attr::AttackDamage);
+    }
+    made
+}
+/// The base of an instance `made_at_load` lists, as `AttributeMap.pack` writes it.
+pub fn made_base(m: &Mob, a: Attr) -> f64 {
+    match (m.species(), a) {
+        // `Wolf.applyTamingSideEffects` sets 40 for a tame wolf and 8 for the others;
+        // `attrs.max_health` is the value (modifiers included), never the base.
+        (Species::Wolf, Attr::MaxHealth) => {
+            base_value_with(m, a, || Some(super::tame::wolf_health_base(m.extra.tame)))
+        }
+        (s @ (Species::Goat | Species::Hoglin), Attr::AttackDamage) => {
+            base_value_with(m, a, || age_attack_damage(s, m.is_baby()))
+        }
+        _ => base_value(m, a),
+    }
+}
+/// `Goat` and `Hoglin.ageBoundaryReached`: the attack damage of a baby or an adult.
+fn age_attack_damage(s: Species, baby: bool) -> Option<f64> {
+    match s {
+        Species::Goat => Some(if baby { 1.0 } else { 2.0 }),
+        Species::Hoglin => Some(if baby { 0.5 } else { 6.0 }),
+        _ => None,
+    }
+}
 /// The transient modifiers of the mob's state (`SPEED_MODIFIER_BABY`).
 pub fn transient(m: &Mob, a: Attr) -> Option<(f64, Op)> {
     if a != Attr::MovementSpeed
@@ -914,8 +967,11 @@ pub fn set_age(m: &mut Mob, age: i32) {
 fn age_boundary_reached(m: &mut Mob) {
     let baby = m.is_baby();
     match m.species() {
-        Species::Goat => set_base(m, Attr::AttackDamage, if baby { 1.0 } else { 2.0 }),
-        Species::Hoglin => set_base(m, Attr::AttackDamage, if baby { 0.5 } else { 6.0 }),
+        Species::Goat | Species::Hoglin => {
+            if let Some(damage) = age_attack_damage(m.species(), baby) {
+                set_base(m, Attr::AttackDamage, damage);
+            }
+        }
         Species::SulfurCube if !baby => sulfur_size(m, 2),
         // HappyGhast.ageBoundaryReached: adultGhastSetup or babyGhastSetup,
         // then Animal's no-op. A hatched ghastling needs it before it is in
@@ -1640,9 +1696,11 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         {
             super::raider::state_mut(m).patrol_leader = true;
         }
+        // PatrollingMonster.finalizeSpawn: the leader wears
+        // `Raid.getOminousBannerInstance`, the patterned stack clients draw.
         if super::raider::state(m).is_some_and(|s| s.patrol_leader) {
             set_item(m, HEAD, super::raider::BANNER);
-            set_drop_chance(m, HEAD, 2.0);
+            super::raider::wear_banner(m);
         }
         if reason == Reason::Patrol {
             super::raider::state_mut(m).patrolling = true;
@@ -2733,3 +2791,7 @@ mod tests {
         assert!(!halloween_date(1, 1));
     }
 }
+
+#[cfg(test)]
+#[path = "finalize_load_tests.rs"]
+mod load_tests;
