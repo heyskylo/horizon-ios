@@ -97,7 +97,8 @@ names its sources: the sections of that specification, the documentation pages a
   that downloads NVIDIA's files itself, on the player's machine. No NVIDIA binaries, headers or SDK files in the
   repository.
 - **The JVM bridge** (running Java mods) is only ever a separate, optional download, never installed or on by
-  default. The game may offer to turn it on when it finds a Java mod; the player decides.
+  default. The game may offer to turn it on when it finds a Java mod; the player decides. It is promoted out of beta
+  only after MSPT and RAM benchmarks against the Java client with the same mods ([#13914](https://github.com/horizon-rust/horizon/issues/13914)).
 
 ## Before asking for review
 
