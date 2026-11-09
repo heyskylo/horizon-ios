@@ -7073,13 +7073,7 @@ impl Renderer {
             return Err("the graphics device was lost".into());
         }
         if let Some(hdr) = hdr {
-            horizon_hdr::set_metadata(
-                device,
-                surface,
-                hdr.paper_white,
-                hdr.declared_peak(),
-                hdr.black,
-            );
+            horizon_hdr::set_metadata(device, surface, hdr.declared_peak(), hdr.black);
         }
         Ok(())
     }
@@ -7117,13 +7111,7 @@ impl Renderer {
     }
     fn send_hdr_metadata(&self) {
         if let (Some(surface), Some(hdr)) = (&self.surface, &self.hdr) {
-            horizon_hdr::set_metadata(
-                &self.device,
-                surface,
-                hdr.paper_white,
-                hdr.declared_peak(),
-                hdr.black,
-            );
+            horizon_hdr::set_metadata(&self.device, surface, hdr.declared_peak(), hdr.black);
         }
     }
     /// The swapchain's configuration: `config` (what every pipeline draws in), or
@@ -12910,12 +12898,12 @@ impl Renderer {
         Ok([width, height])
     }
     /// The HDR10 copy (`Hdr::capture`) as a 16-bit PNG tagged BT.2020 with PQ (cICP, PNG's
-    /// third edition), with the peak and paper white as its content light levels (cLLI), and
+    /// third edition), with the content light levels its pixels hold (cLLI), and
     /// an ICC profile for the programs that don't read cICP (`hdr_icc`).
     fn write_hdr_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<()> {
-        let Some(hdr) = &self.hdr else {
+        if self.hdr.is_none() {
             return Ok(());
-        };
+        }
         let pixels = hdr10_to_rgb16(&self.read_frame(buffer)?);
         let mut info = png::Info::with_size(self.config.width, self.config.height);
         info.color_type = png::ColorType::Rgb;
@@ -12926,12 +12914,7 @@ impl Renderer {
         let mut writer = encoder.write_header()?;
         // BT.2020 primaries, PQ, RGB, full range.
         writer.write_chunk(png::chunk::cICP, &[9, 16, 0, 1])?;
-        let nits = |n: f32| ((n * 10_000.0) as u32).to_be_bytes();
-        let peak = hdr.peak.max(hdr.paper_white);
-        writer.write_chunk(
-            png::chunk::cLLI,
-            &[nits(peak), nits(hdr.paper_white.min(peak))].concat(),
-        )?;
+        writer.write_chunk(png::chunk::cLLI, &hdr_icc::content_light_levels(&pixels))?;
         writer.write_image_data(&pixels)?;
         Ok(())
     }
