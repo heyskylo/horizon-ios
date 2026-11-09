@@ -4994,6 +4994,8 @@ mod merchant_packet_tests {
                     "minecraft:air".to_owned(),
                     "minecraft:emerald".to_owned(),
                     "minecraft:glass".to_owned(),
+                    "minecraft:rabbit_foot".to_owned(),
+                    "minecraft:glowstone".to_owned(),
                 ],
             ),
         ] {
@@ -5232,5 +5234,59 @@ mod merchant_packet_tests {
         );
         assert!(game.lan_merchant_closed(&mut host, 1, Some(window)));
         assert!(packets(&rx).0.is_empty(), "closing does not resend offers");
+
+        // Crossing the real level-two boundary runs updateSpecialPrices while
+        // taking the result, so the new level's offers must reach the guest.
+        let mut session = Session::new(
+            game.mobs[0].extra.trade.as_ref().unwrap().offers.clone(),
+            true,
+        );
+        session.offers[0].uses = 0;
+        session.xp = 69;
+        session.level = 2;
+        session.profession = "minecraft:cleric".into();
+        let sequences = Session::sequences_needed(
+            &game.stations().trades,
+            &session.profession,
+            session.level,
+        );
+        assert!(!sequences.is_empty(), "prepared cleric trade sets exist");
+        for id in sequences {
+            let random = horizon_client::merchant::sequence_random(0, &id);
+            session.sequences.insert(id, random);
+        }
+        host.hub.guests[0].inventory[0] = Some(ItemStack::new("minecraft:emerald", 8));
+        host.hub.guests[0].carried = None;
+        game.lan_open_merchant(
+            &mut host,
+            1,
+            MerchantState {
+                session: Box::new(session),
+                scroll: 0,
+                dragging: false,
+                focused: None,
+                mob: Some(77),
+                name: Some("Level-up packet timing".into()),
+            },
+        );
+        let opened = packets(&rx).0;
+        assert_eq!(opened.len(), 1);
+        game.lan_select_trade(&mut host, 1, 0);
+        assert!(packets(&rx).0.is_empty());
+        let click = horizon_protocol::packets::play::ContainerClick {
+            container: opened[0].container,
+            state: 0,
+            ..second
+        };
+        assert!(game.lan_merchant_click(&mut host, 1, &click));
+        let (offers, contents) = packets(&rx);
+        assert_eq!(offers.len(), 1, "level-up price refresh sends new offers");
+        assert_eq!(offers[0].level, 3);
+        assert_eq!(offers[0].xp, 70);
+        assert_eq!(offers[0].offers[0].uses, 1);
+        assert!(offers[0].offers.len() > opened[0].offers.len());
+        let content = contents.last().expect("level-up take sends contents");
+        assert_eq!(content.items[0].as_ref().unwrap().count, 4);
+        assert_eq!(content.carried.as_ref().unwrap().count, 3);
     }
 }
