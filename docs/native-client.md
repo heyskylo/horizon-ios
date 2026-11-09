@@ -427,9 +427,12 @@ world's name or a server's address. Horizon Settings has the switch
 (**Discord Rich Presence**, on by default; `discordPresence` in
 `horizon-extras.txt`), and `HORIZON_NO_DISCORD=1` turns it off for one run.
 
-`crates/horizon-client/src/discord_presence.rs` speaks Discord's local IPC
-itself (the `discord-ipc-N` socket or named pipe, no SDK) from a thread of its
-own: the frame only hands it a status when it changes. It retries every 15 s
+The crate `horizon-discord` (Horizon layer) speaks Discord's local IPC itself
+(the `discord-ipc-N` socket or named pipe, no SDK) from a thread of its own.
+The game hands it a status only when it changes, through the platform's
+`activity` hook (`game/activity.rs` says what the player does). Only the
+official executable (`horizon-official`) registers it: horizon-client's own
+executable shows no presence. It retries every 15 s
 while Discord isn't running and stays within Discord's 5 updates per 20 s.
 Dedicated servers never start it, and automated runs (offscreen, benchmarks)
 only talk to a fake Discord: `lab.game_env` sets `HORIZON_NO_DISCORD=1`, and

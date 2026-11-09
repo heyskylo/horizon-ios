@@ -34,8 +34,6 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
-    #[cfg(feature = "discord")]
-    horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
         return Err(e);

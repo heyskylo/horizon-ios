@@ -201,6 +201,7 @@ pub use hdr::{Calibration as HdrCalibration, Output as HdrOutput};
 mod hold;
 pub use hold::WorldHold;
 pub use output::{DisplayReading, EffectiveOutput, FrameConfiguration, FrameRequest};
+pub use screenshot_save::Saved as SavedScreenshot;
 pub mod block_light;
 mod custom_sky;
 mod displace;
@@ -236,6 +237,7 @@ pub mod panorama;
 mod readback;
 mod resident;
 mod reuse;
+mod screenshot_save;
 mod stars;
 mod surface_setup;
 use surface_setup::{AdapterChoice, AdapterFailure, open_adapter, pick_adapter, set_up_surface};
@@ -1084,6 +1086,9 @@ pub struct ScreenshotRequest {
     /// F2's: drawn at the game's resolution (Resolution Scale above 100%) times
     /// `Renderer::screenshot_quality`, not the window's.
     pub scaled: bool,
+    /// Written on a thread of its own (F2's, the world icon's): its outcome comes back a
+    /// frame or a few later in `Renderer::saved_screenshots`, not `screenshot_result`.
+    pub background: bool,
 }
 /// A solid terrain pipeline without HDR output's lighting (terrain.wgsl's `HDR_LIGHTING`),
 /// for the frames HDR is off, and with it where the display offers HDR output: the
@@ -1578,6 +1583,9 @@ pub struct Renderer {
     pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
     /// The HDR copy the last screenshot wrote beside it, if it wrote one.
     pub screenshot_hdr: Option<std::path::PathBuf>,
+    /// `background` screenshots written since the caller last took them.
+    pub saved_screenshots: Vec<SavedScreenshot>,
+    screenshot_saves: screenshot_save::Saves,
     /// Screenshot Quality (Horizon setting): a `scaled` screenshot's frame is this many
     /// times the game's resolution (1, 2, 4 or 8).
     pub screenshot_quality: u32,
@@ -5075,6 +5083,7 @@ impl Renderer {
             ));
         }
         let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
+        let screenshot_saves = screenshot_save::Saves::new(&device);
         Ok(Self {
             display: None,
             reading: display,
@@ -5346,6 +5355,8 @@ impl Renderer {
             screenshot: None,
             screenshot_result: None,
             screenshot_hdr: None,
+            saved_screenshots: Vec::new(),
+            screenshot_saves,
             screenshot_quality: 1,
             screenshot_halvings: 0,
             gamma: 0.5,
@@ -7039,8 +7050,10 @@ impl Renderer {
         }
     }
     /// This renderer's output as applied, with what its destination offers and reports.
-    pub fn output(&self) -> &output::EffectiveOutput {
-        &self.output
+    pub fn output(&self) -> output::EffectiveOutput {
+        let native = self.native.as_ref().map(|n| n.frame.api);
+        self.output
+            .with_pack(self.shader_pack_kind() == Some("iris"), native)
     }
     /// What this renderer's display last reported: a renderer made again for the window
     /// starts from it (`Renderer::new`'s `display`).
@@ -7973,6 +7986,8 @@ impl Renderer {
         if self.device_lost() {
             return Err("the graphics device was lost".into());
         }
+        let saved = self.screenshot_saves.finished();
+        self.saved_screenshots.extend(saved);
         if let Some(request) = self.capture.take() {
             let result = self.write_capture(&request, frame);
             self.capture_result = Some(result.map_err(|e| e.to_string()));
@@ -8317,9 +8332,7 @@ impl Renderer {
         let taa = !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && self.native.as_ref().is_none_or(|n| n.post.is_none());
-        let hdr_lighting = self.native.is_none()
-            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
-            && std::env::var_os("HORIZON_HDR_LIGHTING").is_none_or(|v| v != "0");
+        let hdr_lighting = self.shader_pack_kind().is_none();
         if let Some(hdr) = &mut self.hdr {
             hdr.lighting = hdr_lighting && hdr.look;
         }
@@ -12042,24 +12055,18 @@ impl Renderer {
                 self.screenshot = Some(request);
             } else {
                 self.screenshot_halvings = 0;
-                self.screenshot_hdr = None;
-                if let Some(hdr_buffer) = hdr_readback {
-                    let hdr_path = hdr_screenshot_path(&request.path);
-                    match self.write_hdr_screenshot(&hdr_path, &hdr_buffer) {
-                        Ok(()) => {
-                            log::info!("Saved HDR screenshot to {}", hdr_path.display());
-                            self.screenshot_hdr = Some(hdr_path);
-                        }
-                        Err(e) => log::warn!(
-                            "Horizon renderer: HDR screenshot {}: {e}",
-                            hdr_path.display()
-                        ),
-                    }
+                let size = [self.config.width, self.config.height];
+                let hdr = hdr_readback
+                    .filter(|_| self.hdr.is_some())
+                    .map(|b| (hdr_screenshot_path(&request.path), b));
+                let shot = screenshot_save::Shot::new(&request, size, self.config.format, hdr);
+                if request.background {
+                    self.screenshot_saves.start(shot, buffer);
+                } else {
+                    let saved = screenshot_save::save_now(&self.device, shot, &buffer);
+                    self.screenshot_hdr = saved.hdr;
+                    self.screenshot_result = Some(saved.result);
                 }
-                self.screenshot_result = Some(
-                    self.write_screenshot(&request, &buffer)
-                        .map_err(|e| e.to_string()),
-                );
             }
         }
         // The frame's own waits for the submit thread (its queue writes and passes).
@@ -12662,95 +12669,21 @@ impl Renderer {
             let texture = copy.as_ref().unwrap_or(texture);
             Some((request, copy_frame(&self.device, encoder, texture, size)))
         } else {
-            self.screenshot_result = Some(Err(format!(
+            let error = format!(
                 "screenshots need a 32-bit surface format, not {:?}",
                 self.config.format
-            )));
+            );
+            if request.background {
+                self.saved_screenshots.push(screenshot_save::Saved {
+                    path: request.path,
+                    result: Err(error),
+                    hdr: None,
+                });
+            } else {
+                self.screenshot_result = Some(Err(error));
+            }
             None
         }
-    }
-    /// The pixels `copy_frame` read back into `buffer`, 4 bytes each, row after row.
-    fn read_frame(&self, buffer: &wgpu::Buffer) -> Result<Vec<[u8; 4]>> {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        buffer.map_async(wgpu::MapMode::Read, .., move |r| {
-            let _ = sender.send(r);
-        });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| e.to_string())?;
-        receiver
-            .recv()
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-        let (width, height, row) = (
-            self.config.width as usize,
-            self.config.height as usize,
-            padded_row(self.config.width) as usize,
-        );
-        let mut pixels = Vec::with_capacity(width * height);
-        {
-            let data = buffer.get_mapped_range(..).map_err(|e| e.to_string())?;
-            for y in 0..height {
-                pixels.extend_from_slice(data[y * row..y * row + width * 4].as_chunks::<4>().0);
-            }
-        }
-        buffer.unmap();
-        Ok(pixels)
-    }
-    fn write_screenshot(
-        &self,
-        request: &ScreenshotRequest,
-        buffer: &wgpu::Buffer,
-    ) -> Result<[u32; 2]> {
-        let bgra = matches!(
-            self.config.format.remove_srgb_suffix(),
-            wgpu::TextureFormat::Bgra8Unorm
-        );
-        let mut pixels = Vec::with_capacity((self.config.width * self.config.height * 4) as usize);
-        for px in self.read_frame(buffer)? {
-            let (r, b) = if bgra { (px[2], px[0]) } else { (px[0], px[2]) };
-            pixels.extend_from_slice(&[r, px[1], b, 255]);
-        }
-        // NativeImage.resizeSubRectTo on takeAutoScreenshot's grab: the icon
-        // is the frame's centre square averaged down to its size.
-        let (width, height, pixels) = match request.size {
-            Some(size) => (
-                size[0],
-                size[1],
-                square_downscale(&pixels, self.config.width, self.config.height, size),
-            ),
-            None => (self.config.width, self.config.height, pixels),
-        };
-        let mut encoder = png::Encoder::new(
-            std::io::BufWriter::new(std::fs::File::create(&request.path)?),
-            width,
-            height,
-        );
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.write_header()?.write_image_data(&pixels)?;
-        Ok([width, height])
-    }
-    /// The HDR10 copy (`Hdr::capture`) as a 16-bit PNG tagged BT.2020 with PQ (cICP, PNG's
-    /// third edition), with the content light levels its pixels hold (cLLI), and
-    /// an ICC profile for the programs that don't read cICP (`hdr_icc`).
-    fn write_hdr_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<()> {
-        if self.hdr.is_none() {
-            return Ok(());
-        }
-        let pixels = hdr10_to_rgb16(&self.read_frame(buffer)?);
-        let mut info = png::Info::with_size(self.config.width, self.config.height);
-        info.color_type = png::ColorType::Rgb;
-        info.bit_depth = png::BitDepth::Sixteen;
-        info.icc_profile = Some(hdr_icc::profile().into());
-        let encoder =
-            png::Encoder::with_info(std::io::BufWriter::new(std::fs::File::create(path)?), info)?;
-        let mut writer = encoder.write_header()?;
-        // BT.2020 primaries, PQ, RGB, full range.
-        writer.write_chunk(png::chunk::cICP, &[9, 16, 0, 1])?;
-        writer.write_chunk(png::chunk::cLLI, &hdr_icc::content_light_levels(&pixels))?;
-        writer.write_image_data(&pixels)?;
-        Ok(())
     }
 }
 /// `screenshots/2026-10-28_12.00.00.png` -> `screenshots/2026-10-28_12.00.00-hdr.png`.
