@@ -5,7 +5,7 @@ use horizon_client::{
     confirm_screen::Confirm,
     dialog::Dialog,
     hud::{HudBatch, rgba},
-    text::{self, Text},
+    text::{self, ClickEvent, Text},
     ui,
     widgets::{self, ScreenInfo},
 };
@@ -270,6 +270,37 @@ fn death_buttons(w: f32, h: f32, hardcore: bool) -> [(f32, f32, &'static str, u8
         (x, y + 72.0, respawn, 0),
         (x, y + 96.0, "deathScreen.titleScreen", 1),
     ]
+}
+/// `ActiveTextCollector`'s width of one line: every glyph's `advance`.
+fn line_width(advance: &dyn Fn(char, &text::Style) -> f32, line: &Text) -> f32 {
+    line.resolve_legacy()
+        .chars()
+        .map(|(c, style)| advance(c, style))
+        .sum()
+}
+
+/// `DeathScreen.mouseClicked`'s `ClickableStyleFinder` over the cause line,
+/// which `DeathScreen.visitText` draws centred at y 85: the style of the glyph
+/// under `cursor`.
+fn death_style_at(
+    advance: &dyn Fn(char, &text::Style) -> f32,
+    cause: &Text,
+    width: f32,
+    cursor: (f32, f32),
+) -> Option<text::Style> {
+    let left = ((width - line_width(advance, cause)) / 2.0).floor();
+    let top = 85.0;
+    if cursor.1 < top || cursor.1 >= top + 9.0 || cursor.0 < left {
+        return None;
+    }
+    let mut x = cursor.0 - left;
+    for (c, style) in cause.resolve_legacy().chars() {
+        x -= advance(c, style);
+        if x < 0.0 {
+            return Some(style.clone());
+        }
+    }
+    None
 }
 impl Game<'_> {
     /// `PauseScreen.getCustomAdditions`'s additions: the
@@ -764,6 +795,24 @@ impl Game<'_> {
                 hover,
             );
         }
+        // DeathScreen.visitText(HoveredTextEffects.TOOLTIP_AND_CURSOR): a
+        // styled cause shows its hover tooltip, and a clickable one asks for
+        // the hand.
+        if let Some(cause) = &self.ui.death_text
+            && let Some(style) = death_style_at(
+                &|c, style| atlas.font.advance(c, style),
+                cause,
+                w,
+                self.cursor,
+            )
+        {
+            if let Some(hover) = &style.hover {
+                ui::tooltip(batch, atlas, &[(**hover).clone()], self.cursor);
+            }
+            if style.click.is_some() {
+                widgets::request_cursor(widgets::Cursor::PointingHand);
+            }
+        }
     }
     /// LocalPlayer.respawn: the player comes back (the death screen's
     /// button, or at once with `immediate_respawn`).
@@ -800,6 +849,24 @@ impl Game<'_> {
                 self.death_confirm_answer(yes)?;
             }
             return Ok(());
+        }
+        // DeathScreen.mouseClicked first looks for a click event on the
+        // cause line: an open_url link goes through the chat link flow.
+        if let Some(cause) = &self.ui.death_text {
+            let atlas = &self.gui.atlas;
+            let mid = self.gui_size().0;
+            if let Some(text::Style {
+                click: Some(ClickEvent::OpenUrl(url)),
+                ..
+            }) = death_style_at(
+                &|c, style| atlas.font.advance(c, style),
+                cause,
+                mid,
+                self.cursor,
+            ) {
+                self.click_url(url);
+                return Ok(());
+            }
         }
         let size = self
             .renderer
