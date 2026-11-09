@@ -225,6 +225,24 @@ pub fn consumable_animation(stack: &ItemStack) -> Option<horizon_world::consumab
         _ => UseAnimation::Eat,
     })
 }
+/// `Consumable.sound` from the stack's `consumable` component.
+pub fn consumable_sound(stack: &ItemStack) -> Option<String> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    let sound = data
+        .and_then(|d| d.other("minecraft:consumable"))
+        .and_then(|c| c.get("sound"))?;
+    match sound {
+        Tag::String(id) => Some(id.to_string_lossy()),
+        Tag::Compound(_) => match sound.get("id") {
+            Some(Tag::String(id)) => Some(id.to_string_lossy()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -1156,6 +1174,27 @@ mod tests {
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
         assert_eq!(consumable_animation(&stack), None);
+    }
+
+    #[test]
+    fn consumable_sound_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "sound",
+                Tag::String("minecraft:entity.generic.drink".into()),
+            )])),
+        );
+        assert_eq!(
+            consumable_sound(&stack).as_deref(),
+            Some("minecraft:entity.generic.drink")
+        );
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_sound(&stack), None);
     }
 
     #[test]
