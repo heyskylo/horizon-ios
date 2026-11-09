@@ -82,9 +82,10 @@ fn inventory_after_mode(screen: Screen, creative: bool, spectator: bool) -> Scre
 }
 
 impl Game<'_> {
-    /// `InventoryScreen.containerTick` and `CreativeModeInventoryScreen.containerTick`
-    /// on a mode change: the inventory the player has open follows the mode.
-    pub(super) fn mode_changed_under_inventory(&mut self) {
+    /// `InventoryScreen.containerTick` on a mode change: the inventory the player has
+    /// open follows the mode. (`CreativeModeInventoryScreen.containerTick`, the way back
+    /// to survival, is not ported yet.)
+    fn mode_changed_under_inventory(&mut self) {
         match inventory_after_mode(self.screen, self.creative, self.spectator()) {
             Screen::Creative => {
                 if let Some(c) = self.carried.take() {
@@ -170,9 +171,10 @@ impl Game<'_> {
                 p.flying = false;
             }
         }
-        if mode == GameMode::Spectator && self.screen == Screen::Inventory {
-            self.screen = Screen::Playing;
-        }
+        // InventoryScreen.containerTick: the open inventory follows the mode. Here, not in
+        // the command, so the window hears it too: it changes mode through the server's
+        // game event (`set_mode_id`), never through `set_game_mode`.
+        self.mode_changed_under_inventory();
     }
 }
 impl Game<'_> {

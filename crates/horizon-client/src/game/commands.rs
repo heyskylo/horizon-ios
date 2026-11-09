@@ -1389,8 +1389,6 @@ impl Game<'_> {
             }
         }
         self.set_mode(mode);
-        // InventoryScreen.containerTick: the open inventory follows the mode.
-        self.mode_changed_under_inventory();
         true
     }
     fn cmd_gamemode(&mut self, ctx: &Context) -> R<i32> {
