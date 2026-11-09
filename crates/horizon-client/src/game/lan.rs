@@ -2726,12 +2726,8 @@ impl Game<'_> {
                 m.needs_sync = false;
                 m.sync_position = false;
             }
-            for p in &mut self.creatures.projectiles {
-                p.needs_sync = false;
-            }
-            for t in &mut self.tridents {
-                t.needs_sync = false;
-            }
+            self.creatures.projectiles.iter_mut().for_each(|p| p.needs_sync = false);
+            self.tridents.iter_mut().for_each(|t| t.needs_sync = false);
             for d in &mut self.dropped {
                 d.needs_sync = false;
             }
