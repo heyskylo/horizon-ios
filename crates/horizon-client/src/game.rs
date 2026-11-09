@@ -161,7 +161,7 @@ mod foxes;
 mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
-mod friends;
+pub(crate) mod friends;
 mod held_items;
 #[cfg(test)]
 mod setblock_order_tests;
