@@ -155,6 +155,26 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 cancel,
             );
         },
+        player_chat_v2: |player, name, level, message, replies, cancel| {
+            crate::mod_api::dispatch_player_chat_v2(
+                crate::mod_api::mods(),
+                player,
+                name,
+                level,
+                message,
+                replies,
+                cancel,
+            );
+        },
+        chat_decorate: |player, name, message, decorated| {
+            crate::mod_api::dispatch_chat_decorate(
+                crate::mod_api::mods(),
+                player,
+                name,
+                message,
+                decorated,
+            );
+        },
         sound_play: |sound, volume, pitch, cancel| {
             crate::mod_api::dispatch_sound_play(
                 crate::mod_api::mods(),

@@ -246,6 +246,7 @@ impl Game<'_> {
                     f.drop_item,
                     f.damage,
                     f.fall_distance,
+                    f.on_ground,
                     f.rotation,
                     uuid,
                 );
@@ -531,6 +532,7 @@ impl Game<'_> {
                 falling.no_gravity = no_gravity;
                 falling.drop_item = drop_item;
                 falling.fall_distance = fall_distance;
+                falling.on_ground = entity_nbt::flag(&tag, "OnGround");
                 falling.damage = damage;
                 // Keep id/join, start_pos, portal state and stuck multiplier.
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
@@ -675,6 +677,7 @@ impl Game<'_> {
                 p.yaw = yaw;
                 p.pitch = pitch;
                 p.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                p.on_ground = entity_nbt::flag(&tag, "OnGround");
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
             _ => return Err(stale()),

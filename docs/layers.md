@@ -138,8 +138,24 @@ platform and Horizon crates.
 ## Built-in addresses
 
 An address is built in when the code contacts it without the player typing it. Engine code may hold vanilla's own
-endpoints. Every other built-in address belongs to the Horizon layer, in one place per workspace. Today they are
-spread over the files below. The address check (next step) lists them in an allowlist that may only shrink.
+endpoints. Every other built-in address belongs to the Horizon layer, in one file: `crates/horizon-addresses/src/lib.rs`,
+which the game's Horizon crates and the launcher both read. Platform code gets its addresses passed in from there.
+
+`python3 tools/check_addresses.py` (CI's verify job, and pr_ready's "Addresses" step) reads the string literals of
+shipped Rust and finds every host: a URL's host, or a whole string that is a host name. Tests are skipped, and so are
+placeholders (`example.com`, `*.test`) and local IPs. [`tools/addresses.json`](../tools/addresses.json) says where
+each host may be:
+
+- `homes`: the address home above, where anything goes;
+- `vanilla`: vanilla's endpoints, allowed anywhere;
+- `not_addresses`: strings that look like hosts but are not contacted, each with its reason;
+- `allowed`: today's addresses outside the home, as "path host".
+
+`allowed` only shrinks. A branch may move an entry with its code to another file, but it may not add a host or grow
+the list: a new address goes in the home. An entry whose address left its file is reported as a note. `--list`
+prints every host found and its files.
+
+Today's addresses outside the home are below.
 
 Vanilla's endpoints (engine, the same as Java Edition):
 
@@ -188,7 +204,7 @@ One small PR at a time, stacked:
 
 1. This page.
 2. `tools/check_layers.py` in CI and pr_ready, with the checklist in the PR template.
-3. The address check: every built-in address above in one module per workspace, enforced by CI.
+3. `tools/check_addresses.py` in CI and pr_ready: built-in addresses only in the home, the rest only shrinks.
 4. Moves, most contributor value first. The extras (cosmetics, emotes, Discord, the official server, telemetry
    and the ping) leave the engine crates for Horizon crates. Then the renderer's platform and Horizon modules
    leave `horizon-client-render`. Then the executable splits from the gameplay library. Each move:
