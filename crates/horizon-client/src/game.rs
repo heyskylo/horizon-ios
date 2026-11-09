@@ -18252,10 +18252,11 @@ fn load_world_rest(
         if !draws {
             return Ok(Default::default());
         }
-        let mut renderer = BlockEntityRenderer::load_with_visibility_and_defaults(
+        let mut renderer = BlockEntityRenderer::load_with_visibility_models_and_defaults(
             root,
             registry,
             visibility,
+            entity_models.as_ref().map(|document| document.value()),
             item_defaults,
         )?;
         renderer.add_mod_signs(facts, registry);
