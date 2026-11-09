@@ -98,10 +98,10 @@ ItemStack.validateComponents	skip:java		codec-side validation
 ItemStack.validateContainedItemSizes	skip:java		codec-side validation
 ItemStack.getDamageValue	skip:other		field accessor; Horizon keeps damage on the stack
 ItemStack.setDamageValue	port	crates/horizon-client/src/stations.rs::set_damage_value	stored clamped to [0, max_damage]; the anvil repair paths and the grindstone result call it (a mob's slot damage goes through set_slot_damage in mobs/finalize.rs)
-ItemStack.isBroken	inline	crates/horizon-client/src/game.rs::Game::damage_held	the break test (damage at or over max) is in damage_held
+ItemStack.isBroken	inline	crates/horizon-client/src/game/item_durability.rs::Game::damage_held	the break test (damage at or over max) is in damage_held
 ItemStack.nextDamageWillBreak	inline	crates/horizon-client/src/game/trident.rs::Game::use_trident	gap: minor: only the trident's check is ported here
 ItemStack.processDurabilityChange	port	crates/horizon-client/src/game/enchant_effects.rs::Game::durability_loss	the Unbreaking-adjusted loss
-ItemStack.applyDamage	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: no item durability advancement trigger fires
+ItemStack.applyDamage	port	crates/horizon-client/src/game/item_durability.rs::Game::damage_held	gap: minor: no item durability advancement trigger fires
 ItemStack.hurtAndConvertOnBreak	port	crates/horizon-client/src/game/mounts.rs::stick_on_break	`FoodOnAStickItem.use` wears the steering stick through `hurtAndBreak` (so `processDurabilityChange` gets its say) and leaves a transmuted fishing rod - the components carry over and the rod starts whole - rather than a fresh plain one
 ItemStack.hurtEnemy	port	crates/horizon-client/src/game/mace.rs::Game::weapon_wear	the per-hit durability loss of a weapon
 ItemStack.interactLivingEntity	port	crates/horizon-client/src/game/item_actions.rs::Game::interact_entity	equip-on-interact is in the mob paths (nautili.rs, ghasts.rs)
