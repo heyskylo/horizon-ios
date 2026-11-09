@@ -15,6 +15,12 @@ pub trait PackFormats: Send + Sync {
         None
     }
 
+    /// The name ending of the overlay's emissive textures (`stone_e.png` beside `stone.png`),
+    /// if its format has them.
+    fn emissive_suffix(&self, _root: &Path) -> Option<String> {
+        None
+    }
+
     /// The sky layers the overlay draws over the vanilla sky, if it has any.
     fn custom_sky(&self, _root: &Path) -> Option<Arc<dyn crate::custom_sky::SkyLayers>> {
         None

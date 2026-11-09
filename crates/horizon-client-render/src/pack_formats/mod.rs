@@ -20,6 +20,10 @@ impl PackFormats for Formats {
         Some(colors::read(root))
     }
 
+    fn emissive_suffix(&self, root: &Path) -> Option<String> {
+        Some(horizon_optifine::emissive::suffix(root))
+    }
+
     fn custom_sky(&self, root: &Path) -> Option<Arc<dyn crate::custom_sky::SkyLayers>> {
         let sky = custom_sky::CustomSky::load(root);
         (!sky.is_empty()).then(|| Arc::new(sky) as _)
