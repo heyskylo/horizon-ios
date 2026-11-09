@@ -310,7 +310,6 @@ def egg_and_pickup_cases(states, only):
 def cases(facts, count, seed, only):
     rng = random.Random(seed)
     states = States(facts)
-    yield from egg_and_pickup_cases(states, only)
     dragon_egg = plain('ender_dragon_spawn_egg')
     if not only or only in dragon_egg:
         # Both the unobstructed position and a fractional collision height must
@@ -325,6 +324,7 @@ def cases(facts, count, seed, only):
             case.pop('thundering', None)
             yield case
     yield from vehicle_cases(states, seed, only)
+    yield from egg_and_pickup_cases(states, only)
     kinds = list(ITEMS)
     for n in range(count):
         kind = kinds[n % len(kinds)]
