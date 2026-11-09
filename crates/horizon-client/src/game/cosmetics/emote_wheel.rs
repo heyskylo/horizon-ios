@@ -3,14 +3,14 @@
 //! number; Escape or the key again closes it. The game doesn't pause and nothing is sent to the
 //! game server.
 
-use super::{Game, Screen};
+use crate::game::{Game, Screen};
 use horizon_client::{hud::HudBatch, text::Text};
 use std::time::{Duration, Instant};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 /// Emotes on the wheel.
-pub(super) const SLOTS: usize = 8;
+pub(in crate::game) const SLOTS: usize = 8;
 /// The ring, in GUI pixels from the middle; inside `INNER` nothing is hovered.
 const INNER: f32 = 30.0;
 const OUTER: f32 = 92.0;
@@ -19,14 +19,14 @@ const OUTER: f32 = 92.0;
 const HOLD: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
-pub(super) struct Wheel {
+pub(in crate::game) struct Wheel {
     opened: Option<Instant>,
     hovered: Option<usize>,
 }
 
 /// The slice under a point `(dx, dy)` from the middle (GUI pixels, y down) of a wheel of `n`:
 /// slice 0 is straight up, then clockwise. None in the dead middle or past the ring.
-pub(super) fn slice_at(dx: f32, dy: f32, n: usize) -> Option<usize> {
+pub(in crate::game) fn slice_at(dx: f32, dy: f32, n: usize) -> Option<usize> {
     let r = dx.hypot(dy);
     if n == 0 || r < INNER || r > OUTER * 1.6 {
         return None;
@@ -44,9 +44,9 @@ fn at(cx: f32, cy: f32, radius: f32, angle: f32) -> [f32; 2] {
 
 impl Game<'_> {
     /// Opens the wheel from play.
-    pub(super) fn open_emote_wheel(&mut self) {
+    pub(in crate::game) fn open_emote_wheel(&mut self) {
         self.refresh_owned_emotes();
-        self.emote_wheel = Wheel {
+        self.cosmetics.wheel = Wheel {
             opened: Some(Instant::now()),
             hovered: None,
         };
@@ -59,8 +59,8 @@ impl Game<'_> {
     }
 
     /// Closes the wheel; `play`: the slice to play first.
-    pub(super) fn close_emote_wheel(&mut self, play: Option<usize>) {
-        self.emote_wheel = Wheel::default();
+    pub(in crate::game) fn close_emote_wheel(&mut self, play: Option<usize>) {
+        self.cosmetics.wheel = Wheel::default();
         self.screen = Screen::Playing;
         self.capture(true);
         let id = play.and_then(|i| self.owned_emotes().get(i).map(|e| e.id.clone()));
@@ -70,26 +70,26 @@ impl Game<'_> {
     }
 
     /// The emote key let go: a held press plays what is hovered, a tap keeps the wheel open.
-    pub(super) fn emote_wheel_released(&mut self) {
+    pub(in crate::game) fn emote_wheel_released(&mut self) {
         let held = self
             .emote_wheel
             .opened
             .is_some_and(|at| at.elapsed() >= HOLD);
-        if held || self.emote_wheel.hovered.is_some() {
-            self.close_emote_wheel(self.emote_wheel.hovered);
+        if held || self.cosmetics.wheel.hovered.is_some() {
+            self.close_emote_wheel(self.cosmetics.wheel.hovered);
         }
     }
 
     /// A window event while the wheel is open: the emote key let go, or a left click. True when
     /// the wheel took it.
-    pub(super) fn emote_wheel_event(&mut self, event: &WindowEvent) -> bool {
+    pub(in crate::game) fn emote_wheel_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Released
                     && matches!(event.physical_key, PhysicalKey::Code(key)
                         if self.settings.keys.translate(key) == Some(Ok(KeyCode::KeyB))) =>
             {
-                self.emote_wheel_released();
+                self.cosmetics.wheel_released();
                 true
             }
             WindowEvent::MouseInput {
@@ -97,7 +97,7 @@ impl Game<'_> {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.emote_wheel_click();
+                self.cosmetics.wheel_click();
                 true
             }
             _ => false,
@@ -105,11 +105,11 @@ impl Game<'_> {
     }
 
     /// A click on the wheel: plays the hovered emote, or closes.
-    pub(super) fn emote_wheel_click(&mut self) {
-        self.close_emote_wheel(self.emote_wheel.hovered);
+    pub(in crate::game) fn emote_wheel_click(&mut self) {
+        self.close_emote_wheel(self.cosmetics.wheel.hovered);
     }
 
-    pub(super) fn draw_emote_wheel(&mut self, batch: &mut HudBatch) {
+    pub(in crate::game) fn draw_emote_wheel(&mut self, batch: &mut HudBatch) {
         horizon_client::widgets::begin_screen(|| {
             horizon_client::widgets::ScreenInfo::new("emote_wheel", "horizon.emote_wheel.title")
         });
@@ -125,8 +125,8 @@ impl Game<'_> {
         let n = names.len();
         // The cursor is in GUI pixels, as the batch.
         let (mx, my) = self.cursor;
-        self.emote_wheel.hovered = slice_at(mx - cx, my - cy, n);
-        let hovered = self.emote_wheel.hovered;
+        self.cosmetics.wheel.hovered = slice_at(mx - cx, my - cy, n);
+        let hovered = self.cosmetics.wheel.hovered;
         let atlas = &self.gui.atlas;
         // The ring: each slice a fan of quads, the hovered one brighter.
         let slices = n.max(1);

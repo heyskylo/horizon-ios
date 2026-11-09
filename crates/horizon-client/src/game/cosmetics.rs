@@ -7,9 +7,11 @@
 //! service once a run, `OwnerCheck`): anyone else sees a vanilla game and the game asks nothing
 //! about other players, until the player chooses otherwise in the settings.
 
+pub(super) mod emote_wheel;
+pub(super) mod emotes;
 mod fx;
 
-use super::{Game, emotes};
+use super::Game;
 use horizon_client::fast_hash::FxHashMap;
 use horizon_client::mesher::Vertex;
 use horizon_client::mobs::anim::Poses;
@@ -22,6 +24,9 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
+
+/// Horizon's mark before a Horizon player's name, over their name tag and in the player list.
+pub(super) const MARK: horizon_client::tab_list::NameMark = &horizon_cosmetics::mark::MARK;
 
 /// An item as the renderer takes it.
 struct Baked {
@@ -72,6 +77,10 @@ pub(super) struct Cosmetics {
     emote_out: EmoteOut,
     /// Companions, trails and auras.
     fx: RefCell<Fx>,
+    /// Emotes: those the wheel offers and the one playing (`cosmetics/emotes.rs`).
+    emotes: emotes::Emotes,
+    /// The emote wheel (`cosmetics/emote_wheel.rs`).
+    wheel: emote_wheel::Wheel,
 }
 
 /// The emote the player plays, told to the service: the last wish sent (`Some(None)`: stopped),
@@ -518,7 +527,7 @@ impl Game<'_> {
                 }
             }
             // My emote: only while I show myself as a Horizon player (playing one says so).
-            let playing = self.emotes.sending();
+            let playing = self.cosmetics.emotes.sending();
             let looping = playing.as_ref().is_some_and(|(_, looping)| *looping);
             let wish = playing.map(|(id, _)| id).filter(|_| extras.horizon_listed);
             let o = &mut c.emote_out;
@@ -649,7 +658,7 @@ impl Game<'_> {
     /// every 10 minutes (a folder's emotes need no asking; an offline account has none).
     pub(super) fn refresh_owned_emotes(&mut self) {
         const AGAIN: Duration = Duration::from_secs(600);
-        let e = &mut self.emotes;
+        let e = &mut self.cosmetics.emotes;
         if self.cosmetics.local
             || !enabled()
             || horizon_client::auth::current().is_none()
