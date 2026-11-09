@@ -4293,7 +4293,7 @@ a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws 
 fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
 and may be named in fluid tags; tanks still take undeclared ids as before. A declared fluid with a `block` flows in the
 world as that block (`native_fluid_level_change` gets its id, `ruby:honey`, where vanilla's are `water` and `lava`); a
-cauldron takes only water and lava, and no bucket pours a mod's fluid yet.
+cauldron takes only water and lava. Its `bucket` pours and picks it up as vanilla's do, so `native_bucket_empty` hears it with its id.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
