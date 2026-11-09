@@ -4458,6 +4458,18 @@ Where this differs from NeoForge, and its limits today:
 - A chunk past the world's edge (beyond 30,000,000 blocks, as `/forceload` refuses) is refused. Each ticket keeps a
   5x5 ring loaded and the forced set is scanned per column: keep to what a machine needs (dozens, not thousands).
 
+Asking for a chunk without waiting for it (Paper's `getChunkAtAsync` with a plugin ticket), API @API:chunk_load_async@:
+
+- `native_chunk_load_request(owner, dimension, [x, z])` takes a ticket as `native_force_chunk_in` does and returns at
+  once; the chunk comes in over the next ticks, loaded or generated, and stays loaded and ticking until released. True
+  when the request is new.
+- `native_chunk_load_state(owner, dimension, [x, z])` is `NativeChunkLoad::Pending` while it comes in,
+  `Loaded` once it is loaded, `Failed` when `owner` holds no request for it (refused, or released). Loads nothing.
+- `native_chunk_is_loaded(dimension, [x, z])` says whether a chunk is loaded now, in place or in a level open with
+  nobody in it. It loads and generates nothing and does not open a level.
+- `native_chunk_load_release(owner, dimension, [x, z])` lets go of the request; the chunk unloads once nothing else
+  holds it. A request is a ticket, so `native_forced_chunks(owner)` lists it and the limits above apply.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the

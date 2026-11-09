@@ -120,6 +120,21 @@ use std::time::Duration;
 pub use winit;
 pub use winit::keyboard::KeyCode;
 
+/// How far a chunk a mod asked for with `native_chunk_load_request` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeChunkLoad {
+    /// Asked for and not loaded yet (generating, loading from disk, or its
+    /// level opening); ask again after a tick.
+    Pending,
+    /// Loaded: its blocks can be read and written (the mod's ticket keeps
+    /// it loaded, as a `/forceload`ed chunk is).
+    Loaded,
+    /// Not asked for by this owner: the request was refused (off a server,
+    /// no namespace, past the world's edge, a dimension Horizon lacks) or
+    /// has been released.
+    Failed,
+}
+
 /// An owned fluid payload. Component additions and removals are preserved exactly;
 /// the amount is in millibuckets. Empty/negative stacks are not transferable.
 #[derive(Clone, Debug, PartialEq)]
