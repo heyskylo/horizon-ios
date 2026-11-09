@@ -2872,9 +2872,9 @@ struct Game<'a> {
     water_plane_memo: std::cell::Cell<Option<f32>>,
     /// The camera's block and the second `water_plane` last scanned at.
     water_plane_scan: std::cell::Cell<Option<([i32; 3], i64)>>,
-    /// The mobs' box reach while the boats and minecarts tick, with the mob count it was
-    /// worked out for (`vehicle_mob_reach`).
-    vehicle_mob_reach: std::cell::Cell<Option<(usize, horizon_client::mobs::BoxReach)>>,
+    /// What the boats' and minecarts' ticks know about the mobs: their box reach
+    /// (`vehicle_mob_reach`) and a grid of their boxes (`mobs_meeting`).
+    vehicle_mobs: boat_passengers::VehicleMobs,
     persist: persist::EntityMemory,
     entity_attachments: HashMap<[i32; 4], horizon_world::attachments::Attachments>,
     /// Connected to a server: the world comes from the network (game/remote.rs).
@@ -12152,7 +12152,7 @@ impl<'a> Game<'a> {
             sky_darken_memo: Default::default(),
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),
-            vehicle_mob_reach: Default::default(),
+            vehicle_mobs: Default::default(),
             persist: Default::default(),
             entity_attachments: Default::default(),
             remote: None,
