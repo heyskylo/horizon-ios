@@ -4,8 +4,8 @@
 //! thread so gameplay frame rates and latency are unaffected.
 
 use super::mcpr::{McprWriter, Metadata, TimestampedPacket};
-pub use crate::net::RecorderStatus;
 use crate::net::PacketRecorder;
+pub use crate::net::RecorderStatus;
 use horizon_protocol::{buf::Reader, crypto::generate_secret, packets::play};
 use std::{
     io,
@@ -469,7 +469,6 @@ mod tests {
         assert_eq!(recorded.head_yaw, original.head_yaw);
         assert_eq!(recorded.data, original.data);
     }
-
 
     #[test]
     fn test_studio_recorder_lifecycle() {
