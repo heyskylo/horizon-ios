@@ -766,7 +766,10 @@ fn stem_color(age: u8) -> u32 {
     (a * 32) << 16 | (255 - a * 8) << 8 | (a * 4)
 }
 fn redstone_color(power: u8) -> u32 {
-    // RedstoneWireBlock.COLORS
+    // RedstoneWireBlock.COLORS, or a pack's.
+    if let Some(color) = crate::pack_palette::redstone(power) {
+        return color;
+    }
     let f = f32::from(power) / 15.0;
     let r = f * 0.6 + if f > 0.0 { 0.4 } else { 0.3 };
     let g = (f * f * 0.7 - 0.5).clamp(0.0, 1.0);

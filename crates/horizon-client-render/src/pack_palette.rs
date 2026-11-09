@@ -1,6 +1,7 @@
-//! Polytone's dye and sheep colours (`dye.<name>.diffuse|text`, `sheep.<name>`), for drawing only:
-//! the pack recolours collars, tropical fish, banners, wool and sign text, while gameplay (crafting,
-//! item data, the beacon) keeps vanilla's `DyeColor`. Lock-free: the draw paths read it per entity.
+//! Polytone's dye, sheep and redstone colours (`dye.<name>.diffuse|text`, `sheep.<name>`,
+//! `redstone.<power>`), for drawing only: the pack recolours collars, tropical fish, banners, wool,
+//! sign text and redstone wire and dust, while gameplay (crafting, item data, the beacon) keeps
+//! vanilla's `DyeColor`. Lock-free: the draw paths and the mesher's workers read it per face.
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use crate::block_entity_render::DYES;
@@ -11,6 +12,7 @@ use horizon_polytone::colors::PackColors;
 static DIFFUSE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static TEXT: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static SHEEP: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+static REDSTONE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 
 /// Takes the colours of the packs just loaded (vanilla's where they set none).
 pub fn set(colors: &PackColors) {
@@ -24,6 +26,7 @@ pub fn set(colors: &PackColors) {
         store(&DIFFUSE, i, colors.dye(name, "diffuse"));
         store(&TEXT, i, colors.dye(name, "text"));
         store(&SHEEP, i, colors.sheep(name));
+        store(&REDSTONE, i, colors.redstone(i as u8));
     }
 }
 
@@ -40,6 +43,11 @@ pub fn diffuse(dye: usize) -> u32 {
 /// `DyeColor.getTextColor` (RGB) as the packs draw it.
 pub fn text(dye: usize) -> u32 {
     read(&TEXT, dye).unwrap_or(DYE_TEXT[dye & 15].1)
+}
+
+/// A pack's `RedStoneWireBlock.COLORS` entry for this power (RGB), when it sets one.
+pub fn redstone(power: u8) -> Option<u32> {
+    read(&REDSTONE, usize::from(power))
 }
 
 /// `ColorLerper.Type.SHEEP` wool colour: a pack's `sheep.<name>`, else white 0xE6E6E6 and the
@@ -69,7 +77,7 @@ mod tests {
         std::fs::create_dir_all(&polytone).unwrap();
         std::fs::write(
             polytone.join("colors.json"),
-            r#"{"dye": {"cyan": {"diffuse": "00ff00", "text": "0000ff"}}, "sheep": {"pink": "2040ff"}}"#,
+            r#"{"dye": {"cyan": {"diffuse": "00ff00", "text": "0000ff"}}, "sheep": {"pink": "2040ff"}, "redstone": {"7": "0x123456"}}"#,
         )
         .unwrap();
         set(&PackColors::read(&dir));
@@ -81,7 +89,9 @@ mod tests {
         assert_eq!(sheep_wool(cyan as u8), 0x107575);
         assert_eq!(diffuse(purple), 0x8932B8);
         assert_eq!(text(purple), 0xA020F0);
+        assert_eq!((redstone(7), redstone(15)), (Some(0x123456), None));
         set(&PackColors::default());
+        assert_eq!(redstone(7), None);
         assert_eq!(diffuse(cyan), 0x169C9C);
         assert_eq!(sheep_wool(pink as u8), 0xB6687F);
         std::fs::remove_dir_all(&dir).ok();
