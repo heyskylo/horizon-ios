@@ -715,3 +715,48 @@ fn a_hopper_is_disabled_by_power_on_any_of_its_six_sides_and_nothing_else() {
         "placed beside power"
     );
 }
+
+/// `DoorBlock.neighborChanged`: a door is powered by a signal at either of its
+/// halves, `OPEN` follows `POWERED`, and the other half takes the state through
+/// `updateShape`: the half that has the power beside it runs the check, the other
+/// only copies. Wooden, iron and bamboo doors alike.
+#[test]
+fn a_door_opens_with_power_beside_either_half_and_closes_without_it() {
+    for name in ["oak_door", "iron_door", "bamboo_door"] {
+        for (powered_half, source) in [("upper", (1, 6, 0)), ("lower", (1, 5, 0))] {
+            let mut w = world!();
+            w.floor(4, 4, "stone");
+            let door = |half: &str| {
+                w.id(
+                    name,
+                    &[("facing", "north"), ("half", half), ("hinge", "left")],
+                )
+            };
+            let (lower, upper) = (BlockPos::new(0, 5, 0), BlockPos::new(0, 6, 0));
+            let (lower_state, upper_state) = (door("lower"), door("upper"));
+            w.set(lower, lower_state);
+            w.set(upper, upper_state);
+            for pos in [lower, upper] {
+                assert_eq!(w.prop(pos, "open"), "false", "{name} starts closed");
+            }
+            let source = BlockPos::new(source.0, source.1, source.2);
+            w.set(source, w.id("redstone_block", &[]));
+            for (half, pos) in [("lower", lower), ("upper", upper)] {
+                assert_eq!(
+                    w.prop(pos, "open"),
+                    "true",
+                    "{name}: its {half} half, power beside the {powered_half} half"
+                );
+                assert_eq!(w.prop(pos, "powered"), "true", "{name} {half} half powered");
+            }
+            w.set(source, w.b().air());
+            for (half, pos) in [("lower", lower), ("upper", upper)] {
+                assert_eq!(
+                    w.prop(pos, "open"),
+                    "false",
+                    "{name}: its {half} half closes with the power"
+                );
+            }
+        }
+    }
+}
