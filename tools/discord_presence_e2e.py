@@ -207,6 +207,19 @@ def lan(bins):
                 g.close()
 
 
+def extras_row(game, label):
+    """The Extras page's row whose label starts with `label`, scrolling the list down to it: only
+    the rows on screen are widgets."""
+    first = game.ctl_run('ui')['widgets'][0]['bounds']
+    for _ in range(20):
+        found = [w for w in game.ctl_run('ui')['widgets'] if (w.get('label') or '').startswith(label)]
+        if found:
+            return found[0]
+        game.ctl_run('scroll-at', str(first[0] + 5), str(first[1] + 5), '-5')
+        time.sleep(0.3)
+    raise AssertionError(f'no {label!r} row on the Extras page')
+
+
 def setting(bins):
     """Off in horizon-extras.txt: Discord never hears from the game. Turned on in Extras: the
     activity appears; off again: it is cleared."""
@@ -217,7 +230,7 @@ def setting(bins):
         time.sleep(3)
         assert not d.handshakes and not d.activities, (d.handshakes, d.activities)
         game.ctl_run('options', 'extras')
-        switch = next(w for w in game.ctl_run('ui')['widgets'] if w.get('label', '').startswith('Discord Rich'))
+        switch = extras_row(game, 'Discord Rich')
         assert switch['label'] == 'Discord Rich Presence: Off', switch
         game.ctl_run('click', switch['id'])
         d.wait('turned on', shows('In the menus'))
