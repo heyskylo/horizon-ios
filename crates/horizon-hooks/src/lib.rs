@@ -24,6 +24,7 @@ pub mod settings;
 pub mod tunnel;
 
 use registry::Registry;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
@@ -89,9 +90,26 @@ fn all() -> &'static [&'static dyn Hooks] {
     HOOKS.all()
 }
 
+thread_local! {
+    static SEAT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The splitscreen player whose turn it is: 0 for P1 (and without splitscreen), 1 for P2...
+/// Splitscreen players are one process, each `Game` in turn on the game's thread, so a crate's
+/// statics are shared by them: a crate that keeps per-player state (settings, pages, HUD) indexes
+/// it by this. A player keeps its seat while it plays. Other threads always see 0.
+pub fn seat() -> usize {
+    SEAT.get()
+}
+
 /// The engine's side: where it calls the hooks. Only the engine calls these.
 pub mod engine {
     use super::*;
+
+    /// The player whose turn starts on this thread ([`seat`]).
+    pub fn set_seat(seat: usize) {
+        SEAT.set(seat);
+    }
 
     /// Seals every list (hooks and the registries); their first use does it anyway. Call where
     /// registration ends.
