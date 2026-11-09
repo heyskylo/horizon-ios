@@ -167,6 +167,7 @@ impl Game<'_> {
                 || self.settings.extras.pvp.tweaks.clear_lava,
             full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
+            environment: self.pack.polytone_colors.env,
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
         if !self.settings.horizon.fog {
