@@ -73,10 +73,10 @@ fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
                 out.push_str(lang.get(&key).map_or(key.as_str(), String::as_str));
             } else if let Some(selector) = get(tag, "selector").and_then(string) {
                 out.push_str(&selector);
-            } else if let Some(score) = get(tag, "score") {
-                if let Some(name) = get(score, "name").and_then(string) {
-                    out.push_str(&name);
-                }
+            } else if let Some(score) = get(tag, "score")
+                && let Some(name) = get(score, "name").and_then(string)
+            {
+                out.push_str(&name);
             }
             if let Some(Tag::List(extra)) = get(tag, "extra") {
                 for e in extra {

@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "run_mod_command", "target": "horizon_client::game::native_server::Game<'_>::native_run_mod_command"}
+  ],
+  "rust_summary": "a console command that reaches the mods' registered commands, then vanilla's (`native_run_mod_command`).",
+  "doc_summary": "`native_run_mod_command(line)` runs `line` as the console, a mod's registered command going to the mods and anything else to vanilla's (Bukkit's `dispatchCommand`); whether it ran. Bundles need \"hooks\": @API:run_mod_command@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_server.rs"
+  ]
+}

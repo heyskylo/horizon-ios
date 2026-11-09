@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "creative_slot_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_creative_slot_v2",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a creative slot set with the whole stack (`native_creative_slot_v2`), leaving `native_creative_slot` as it was.",
+  "doc_summary": "`native_creative_slot_v2(player, name, slot, stack, cancel)`: an additive version of `native_creative_slot` with the whole stack put in the slot (none for an emptied one), its components included (enchantments, unbreakable, attribute modifiers, contents). Heard just before v1, which hears nothing of a packet canceled here; v1 keeps its signature and firing point. Bundles that use it need `\"hooks\": @API:creative_slot_v2@`."
+}

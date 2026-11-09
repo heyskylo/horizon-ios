@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "teleport_player", "target": "horizon_client::game::native_travel::Game<'_>::native_teleport_player"}
+  ],
+  "rust_summary": "a server player teleported from any server hook, the acting player's own included (`native_teleport_player`), as Bukkit's `Player.teleport`.",
+  "doc_summary": "`native_teleport_player(uuid, dimension, pos, yaw, pitch)` teleports a server player as `/tp` does, from any server hook: at once for the acting player or where nobody is swapped in, else after the players' packets of the tick; into another level when the tick's level teleports run. Bundles need \"hooks\": @API:teleport_player@.",
+  "comments": ["crates/horizon-client/src/game/native_travel.rs"]
+}

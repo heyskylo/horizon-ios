@@ -50,6 +50,8 @@ pub(crate) struct TestLevel {
     pub block_light: HashMap<BlockPos, i32>,
     /// `Level.isClientSide`.
     pub client_side: bool,
+    pub tick_ready: bool,
+    pub block_events_ready: bool,
     /// Positions that refuse fluids, fire and piston moves, as a land claim would.
     pub guarded: HashSet<BlockPos>,
     /// What `adjust_signal` answers at a position: the weak and direct signal,
@@ -71,6 +73,8 @@ pub(crate) struct TestLevel {
     /// `ShulkerBoxBlockEntity.isClosed` at a position: `true` for a shut lid,
     /// `false` for an open box. Positions not listed have no block entity.
     pub shulker_closed: HashMap<BlockPos, bool>,
+    /// The containers `container_open` reports as open.
+    pub opened: HashSet<BlockPos>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -86,16 +90,28 @@ impl TestLevel {
             events: Vec::new(),
             block_light: HashMap::new(),
             client_side: false,
+            tick_ready: true,
+            block_events_ready: true,
             guarded: HashSet::new(),
             fire_odds: HashMap::new(),
             smoke_sources: HashMap::new(),
             openers: HashMap::new(),
             opener_rechecks: Vec::new(),
             shulker_closed: HashMap::new(),
+            opened: HashSet::new(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
+        self.block_events_ready
+    }
+    fn is_ticking_chunk(&self, _chunk: ChunkPos) -> bool {
+        self.tick_ready
+    }
+    fn container_open(&self, pos: BlockPos) -> bool {
+        self.opened.contains(&pos)
+    }
     fn recheck_container_openers(&mut self, pos: BlockPos) -> Option<(i32, i32)> {
         self.opener_rechecks.push(pos);
         self.openers.get(&pos).copied()
@@ -375,6 +391,65 @@ fn block_observation_follows_successful_commits_only() {
 }
 
 #[test]
+fn a_level_can_keep_a_lever_as_it_is() {
+    use std::cell::RefCell;
+
+    struct Holder {
+        inner: TestLevel,
+        hold: bool,
+        seen: RefCell<Vec<(BlockPos, i32, i32)>>,
+    }
+    impl LevelAccess for Holder {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn redstone_change(&self, pos: BlockPos, old: i32, new: &mut i32) {
+            self.seen.borrow_mut().push((pos, old, *new));
+            if self.hold {
+                *new = old;
+            }
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let mut level = Holder {
+        inner: TestLevel::new(b),
+        hold: true,
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    let pos = BlockPos::new(0, 80, 0);
+    let stone = f.registry.default_state("minecraft:stone").unwrap();
+    for z in [-1, 1] {
+        level.set_raw(BlockPos::new(0, 80, z), stone);
+    }
+    let lever = f.registry.default_state("minecraft:lever").unwrap();
+    level.set_raw(pos, lever);
+    // Held: the pull is heard, and the lever stays off.
+    b.sim(&mut level, &mut ticks).lever_pull(pos, lever);
+    assert_eq!(level.block_state(pos), lever);
+    assert_eq!(level.seen.borrow()[..], [(pos, 0, 15)]);
+    // Let go: the same pull turns it on.
+    level.hold = false;
+    b.sim(&mut level, &mut ticks).lever_pull(pos, lever);
+    let pulled = level.block_state(pos);
+    assert!(b.table.bool(pulled, b.props.powered));
+    assert_eq!(level.seen.borrow().len(), 2);
+}
+
+#[test]
 fn neighbor_observation_follows_dispatch_order() {
     use std::cell::RefCell;
 
@@ -438,6 +513,25 @@ fn neighbor_observation_follows_dispatch_order() {
         level.seen.borrow().last(),
         Some(&(BlockPos::new(3, 4, 5), b.air(), changed, true))
     );
+}
+
+/// `WeatheringCopperChestBlock.randomTick`: a copper chest someone has open
+/// skips `changeOverTime` and its draws; a closed one draws (#11378).
+#[test]
+fn a_viewed_copper_chest_does_not_weather() {
+    let Some(f) = fixture() else { return };
+    let mut w = World::new(f);
+    let pos = BlockPos::new(0, 64, 0);
+    let chest = w.id("copper_chest", &[("type", "single")]);
+    w.put(pos, chest);
+    let draw = |w: &World| w.level.random.clone().next_long();
+    w.level.opened.insert(pos);
+    let before = draw(&w);
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pos);
+    assert_eq!(draw(&w), before, "an open chest draws nothing");
+    w.level.opened.clear();
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pos);
+    assert_ne!(draw(&w), before, "a closed one rolls changeOverTime");
 }
 
 #[test]
@@ -966,6 +1060,40 @@ fn water_spreads_on_a_floor() {
     assert_eq!(w.get(BlockPos::new(8, 1, 0)), w.b().air());
     // Diagonals follow Manhattan distance.
     assert_eq!(w.prop(BlockPos::new(2, 1, 2), "level"), "4");
+}
+
+#[test]
+fn water_keeps_spreading_over_waterlogged_scaffolding() {
+    // `FlowingFluid.canPassThroughWall` reads `getCollisionShape(level, pos)`,
+    // where scaffolding is the stable shape: a full top face, so the water above
+    // it is no water hole and still spreads sideways.
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let stone = w.id("stone", &[]);
+    for x in 0..=9 {
+        w.put(BlockPos::new(x, 1, -1), stone);
+        w.put(BlockPos::new(x, 1, 1), stone);
+    }
+    let scaffolding = w.id(
+        "scaffolding",
+        &[
+            ("bottom", "false"),
+            ("distance", "0"),
+            ("waterlogged", "true"),
+        ],
+    );
+    // Stone under it keeps it supported, so its own tick leaves it in place.
+    w.put(BlockPos::new(5, -1, 0), stone);
+    w.put(BlockPos::new(5, 0, 0), scaffolding);
+    let water = w.id("water", &[]);
+    w.set(BlockPos::new(0, 1, 0), water);
+    for _ in 0..80 {
+        w.tick();
+    }
+    for d in 1..=7 {
+        let pos = BlockPos::new(d, 1, 0);
+        assert_eq!(w.prop(pos, "level"), d.to_string(), "flow at {d}");
+    }
 }
 
 #[test]
@@ -3017,6 +3145,38 @@ fn dust_on_a_downward_piston_survives_extend_and_retract() {
 }
 
 #[test]
+fn diodes_on_downward_pistons_survive_retraction() {
+    // DiodeBlock.canSurviveOn asks `isFaceSturdy(level, pos, UP, RIGID)` of
+    // the block below, both in canSurvive and in updateShape with the
+    // neighbour's new state. While the base retracts it is a moving_piston,
+    // whose block entity shape holds the extended base: a full top face
+    // (#12019).
+    for base_kind in ["piston", "sticky_piston"] {
+        for diode_kind in ["repeater", "comparator"] {
+            let mut w = world!();
+            w.floor(0, 10, "stone");
+            let base = BlockPos::new(0, 3, 0);
+            let pos = BlockPos::new(0, 4, 0);
+            let power = BlockPos::new(1, 3, 0);
+            let diode = w.id(diode_kind, &[("facing", "south")]);
+            w.set(base, w.id(base_kind, &[("facing", "down")]));
+            w.set(pos, diode);
+            w.set(power, w.id("redstone_block", &[]));
+            for _ in 0..4 {
+                w.full_tick();
+            }
+            assert_eq!(w.prop(base, "extended"), "true");
+            w.set(power, w.b().air());
+            for _ in 0..4 {
+                w.full_tick();
+                assert_eq!(w.get(pos), diode, "{diode_kind} on {base_kind}");
+            }
+            assert_eq!(w.prop(base, "extended"), "false");
+        }
+    }
+}
+
+#[test]
 fn a_candle_on_an_uneaten_cake_makes_a_candle_cake() {
     // CakeBlock.useItemOn: any candle on a cake with no bites turns it into the
     // matching unlit candle cake; a bitten cake does not.
@@ -3952,4 +4112,70 @@ fn a_rail_riding_on_slime_stays_on_it() {
     assert_eq!(w.prop(piston_pos, "extended"), "false");
     let pulled = w.name(BlockPos::new(1, 2, 0));
     assert!(pulled.starts_with("rail"), "pulled back: got {pulled}");
+}
+
+#[test]
+fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
+    for (ticketed, ready) in [(true, false), (false, true), (true, true), (false, false)] {
+        let mut w = world!();
+        w.level.tick_ready = ready;
+        w.level.block_events_ready = ticketed;
+        let pos = BlockPos::new(0, 1, 0);
+        let piston = w.id("piston", &[("facing", "up")]);
+        w.set(BlockPos::new(0, 0, 0), w.id("redstone_block", &[]));
+        w.set(pos, piston);
+        assert_eq!(w.ticks.block_events.len(), 1, "placement queues an event");
+        w.f.behaviours.run_block_events(&mut w.level, &mut w.ticks);
+        assert_eq!(
+            w.prop(pos, "extended"),
+            ticketed.to_string(),
+            "ticketed={ticketed}, ticking={ready}"
+        );
+        assert_eq!(w.ticks.block_events.is_empty(), ticketed);
+        if ticketed {
+            assert!(!w.ticks.moving_pistons.is_empty());
+            w.f.behaviours
+                .tick_block_entities(&mut w.level, &mut w.ticks);
+            assert_eq!(
+                w.ticks.moving_pistons[0].1.progress > 0.0,
+                ready,
+                "moving piston entities still require ticking readiness"
+            );
+        } else {
+            w.level.block_events_ready = true;
+            w.f.behaviours.run_block_events(&mut w.level, &mut w.ticks);
+            assert_eq!(
+                w.prop(pos, "extended"),
+                "true",
+                "deferred events run once ticketed"
+            );
+            assert!(w.ticks.block_events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn fresh_chunk_sculk_charge_does_not_wait_for_ticking_readiness() {
+    for (ticketed, ready) in [(true, false), (false, true), (true, true), (false, false)] {
+        let mut w = world!();
+        w.level.tick_ready = ready;
+        w.level.block_events_ready = ticketed;
+        let origin = BlockPos::new(0, 1, 0);
+        let mut spreader = sculk::SculkSpreader::default();
+        let mut cursor = sculk::ChargeCursor::new(origin, 5);
+        cursor.update_delay = 2;
+        spreader.add_cursor(cursor);
+        w.f.behaviours.sculk_update_cursors(
+            &mut w.level,
+            &mut w.ticks,
+            &mut spreader,
+            origin,
+            false,
+        );
+        assert_eq!(
+            spreader.cursors[0].update_delay,
+            if ticketed { 1 } else { 2 },
+            "ticketed={ticketed}, ticking={ready}"
+        );
+    }
 }

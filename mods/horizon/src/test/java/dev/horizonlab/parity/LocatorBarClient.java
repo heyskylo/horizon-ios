@@ -113,6 +113,11 @@ public final class LocatorBarClient {
     private static volatile String step = "start";
     private static volatile boolean players;
     private static volatile boolean chat;
+    private static volatile boolean flatChat;
+    private static volatile boolean advancements;
+    private static volatile boolean listSyncs;
+    private static Path partialTrace;
+    private static final Object traceLock = new Object();
     private static volatile boolean boats;
     private static volatile boolean hooks;
     private static volatile boolean state;
@@ -120,6 +125,45 @@ public final class LocatorBarClient {
     private static volatile boolean events;
     private static volatile boolean spawns;
     private static volatile boolean menus;
+    private static volatile boolean components;
+    private static com.google.gson.JsonArray spans(net.minecraft.network.chat.Component message) {
+        com.google.gson.JsonArray out = new com.google.gson.JsonArray();
+        message.visit((style, text) -> {
+            if (text.isEmpty()) {
+                return java.util.Optional.empty();
+            }
+            com.google.gson.JsonArray key = styleKey(style);
+            if (!out.isEmpty()) {
+                com.google.gson.JsonArray last = out.get(out.size() - 1).getAsJsonArray();
+                if (last.get(1).equals(key)) {
+                    last.set(0, new com.google.gson.JsonPrimitive(last.get(0).getAsString() + text));
+                    return java.util.Optional.empty();
+                }
+            }
+            com.google.gson.JsonArray span = new com.google.gson.JsonArray();
+            span.add(text);
+            span.add(key);
+            out.add(span);
+            return java.util.Optional.empty();
+        }, net.minecraft.network.chat.Style.EMPTY);
+        return out;
+    }
+
+    private static com.google.gson.JsonArray styleKey(net.minecraft.network.chat.Style style) {
+        com.google.gson.JsonArray key = new com.google.gson.JsonArray();
+        if (style.getColor() == null) {
+            key.add(com.google.gson.JsonNull.INSTANCE);
+        } else {
+            key.add(style.getColor().getValue() & 0xFFFFFF);
+        }
+        key.add(style.isBold());
+        key.add(style.isItalic());
+        key.add(style.isUnderlined());
+        key.add(style.isStrikethrough());
+        key.add(style.isObfuscated());
+        return key;
+    }
+
     private static final Map<UUID, String> NAMES = new LinkedHashMap<>();
 
     public static void main(String[] args) throws Exception {
@@ -129,6 +173,7 @@ public final class LocatorBarClient {
         String host = args[0];
         int port = Integer.parseInt(args[1]);
         Path output = Path.of(args[2]);
+        partialTrace = output.resolveSibling(output.getFileName() + ".partial");
         Map<String, Player> players = new LinkedHashMap<>();
         List<Player> sessions = new ArrayList<>();
         BufferedReader script = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
@@ -179,9 +224,16 @@ public final class LocatorBarClient {
                             net.minecraft.world.inventory.ContainerInput.PICKUP,
                             new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(), net.minecraft.network.HashedStack.EMPTY));
                     }
+                    case "place-recipe" -> {
+                        String[] a = w[2].split(" ");
+                        players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundPlaceRecipePacket(
+                            Integer.parseInt(a[0]), new net.minecraft.world.item.crafting.display.RecipeDisplayId(Integer.parseInt(a[1])),
+                            Boolean.parseBoolean(a[2])));
+                    }
                     case "close-menu" -> players.get(w[1]).send(
                         new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(Integer.parseInt(w[2])));
                     case "menus" -> menus = w[1].equals("on");
+                    case "components" -> components = w[1].equals("on");
                     case "dump" -> {
                         writeSessions(output, sessions);
                         stdout.println("dumped " + w[1]);
@@ -196,6 +248,18 @@ public final class LocatorBarClient {
                     case "quit" -> players.get(w[1]).close();
                     case "players" -> LocatorBarClient.players = w[1].equals("on");
                     case "chat" -> chat = w[1].equals("on");
+                    case "flat-chat" -> flatChat = w[1].equals("on");
+                    case "advancements" -> advancements = w[1].equals("on");
+                    case "list-syncs" -> listSyncs = w[1].equals("on");
+                    case "adv-snapshot" -> {
+                        String[] a = w[2].split(" ", 2);
+                        try {
+                            players.get(w[1]).advancementSnapshot(a[0], a[1].split(","));
+                        } finally {
+                            writeSessions(output, sessions);
+                            stdout.println("adv-snapshotted " + a[0] + " " + w[1]);
+                        }
+                    }
                     case "boats" -> boats = w[1].equals("on");
                     case "hooks" -> hooks = w[1].equals("on");
                     case "paddle" -> {
@@ -296,11 +360,101 @@ public final class LocatorBarClient {
         private final Object replyLock = new Object();
         private int replies;
         private int syncs;
+        private int listReplies;
+        private UUID profileUuid;
+        private String profileName;
+        private int advancementResets;
+        private int advancementReceipts;
+        private final net.minecraft.advancements.AdvancementTree advancementTree = new net.minecraft.advancements.AdvancementTree();
+        private final Map<net.minecraft.advancements.AdvancementHolder, net.minecraft.advancements.AdvancementProgress> advancementProgress = new LinkedHashMap<>();
         /** The game time in the latest sync's reply. */
         private long gameTime;
 
         Player(String name) {
             this.name = name;
+        }
+
+        /** Read-only replay of the pinned ClientAdvancements.update state path. */
+        void advancementUpdate(net.minecraft.network.protocol.game.ClientboundUpdateAdvancementsPacket packet, byte[] payload) {
+            synchronized (replyLock) {
+                if (packet.shouldReset()) {
+                    advancementTree.clear();
+                    advancementProgress.clear();
+                    advancementResets++;
+                }
+                advancementTree.remove(packet.removed());
+                advancementTree.addAll(packet.added().stream().map(a -> a.advancement()).toList());
+                for (var entry : packet.progress().entrySet()) {
+                    var node = advancementTree.get(entry.getKey());
+                    if (node != null) {
+                        entry.getValue().update(node.advancement().requirements());
+                        advancementProgress.put(node.holder(), entry.getValue());
+                    }
+                }
+                advancementReceipts++;
+                var raw = new com.google.gson.JsonObject();
+                raw.addProperty("wire", java.util.HexFormat.of().formatHex(payload));
+                raw.addProperty("reset", packet.shouldReset());
+                raw.addProperty("receipt", advancementReceipts);
+                raw.add("removed", new com.google.gson.Gson().toJsonTree(packet.removed().stream().map(Object::toString).toList()));
+                var added = new com.google.gson.JsonObject();
+                for (var a : packet.added()) added.add(a.advancement().id().toString(),
+                    new com.google.gson.Gson().toJsonTree(a.advancement().value().requirements().requirements()));
+                raw.add("added_requirements", added);
+                var progress = new com.google.gson.JsonObject();
+                for (var entry : packet.progress().entrySet()) progress.add(entry.getKey().toString(),
+                    net.minecraft.advancements.AdvancementProgress.CODEC.encodeStart(com.mojang.serialization.JsonOps.INSTANCE, entry.getValue()).getOrThrow());
+                raw.add("progress", progress);
+                record("adv-wire " + raw);
+            }
+        }
+
+        void listReceipt() throws Exception {
+            synchronized (replyLock) {
+                int before = listReplies;
+                send(new ServerboundChatCommandPacket("list"));
+                long deadline = System.currentTimeMillis() + 10_000;
+                while (listReplies == before && System.currentTimeMillis() < deadline) replyLock.wait(100);
+                if (listReplies == before) throw new IllegalStateException("no actual /list receipt for " + name);
+            }
+        }
+
+        void advancementSnapshot(String label, String[] identifiers) throws Exception {
+            // /list requires no operator permission. A fixed same-connection
+            // receipt follows all mutations without stepping the frozen world.
+            listReceipt();
+            synchronized (replyLock) {
+                if (profileUuid == null || !name.equals(profileName) || advancementResets == 0)
+                    throw new IllegalStateException("advancement stream lacks login/reset identity: " + name);
+                var out = new com.google.gson.JsonObject();
+                out.addProperty("label", label);
+                out.addProperty("name", profileName);
+                out.addProperty("uuid", profileUuid.toString());
+                out.addProperty("entity_id", id);
+                out.addProperty("reset_count", advancementResets);
+                out.addProperty("packet_count", advancementReceipts);
+                out.addProperty("receipt_count", listReplies);
+                var states = new com.google.gson.JsonObject();
+                for (String identifier : identifiers) {
+                    var node = advancementTree.get(net.minecraft.resources.Identifier.parse(identifier));
+                    var state = new com.google.gson.JsonObject();
+                    state.addProperty("present", node != null);
+                    if (node != null) {
+                        var progress = advancementProgress.get(node.holder());
+                        state.addProperty("progress_received", progress != null);
+                        if (progress != null) {
+                            state.addProperty("done", progress.isDone());
+                            var criteria = new java.util.ArrayList<String>();
+                            progress.getCompletedCriteria().forEach(criteria::add);
+                            java.util.Collections.sort(criteria);
+                            state.add("criteria", new com.google.gson.Gson().toJsonTree(criteria));
+                        }
+                    }
+                    states.add(identifier, state);
+                }
+                out.add("progress", states);
+                record("adv-snapshot " + out);
+            }
         }
 
         /** Runs a command and waits for its feedback, so a slow server still takes each step in its step. */
@@ -323,6 +477,10 @@ public final class LocatorBarClient {
 
         /** A round trip through the server thread, its reply left out of the transcript. */
         void sync() throws Exception {
+            if (listSyncs) {
+                listReceipt();
+                return;
+            }
             synchronized (replyLock) {
                 int before = syncs;
                 send(new ServerboundChatCommandPacket("time query gametime"));
@@ -361,7 +519,18 @@ public final class LocatorBarClient {
 
         void record(String line) {
             synchronized (lines) {
-                lines.add("step=" + step + " " + line);
+                String entry = "step=" + step + " " + line;
+                lines.add(entry);
+                if ((advancements || flatChat) && partialTrace != null) {
+                    synchronized (traceLock) {
+                        try {
+                            Files.writeString(partialTrace, name + " " + entry + "\n",
+                                StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                        } catch (java.io.IOException error) {
+                            throw new java.io.UncheckedIOException(error);
+                        }
+                    }
+                }
             }
         }
 
@@ -415,8 +584,10 @@ public final class LocatorBarClient {
                 send(net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
                 long ran = nextTick();
                 // A server catching up runs a tick with no move in it: up to the jab, its copy of the player then
-                // falls a tick of gravity more, and the motion the jab sends says nothing about the jump (#5656).
-                if (ran > 1 && tick <= stabTick) {
+                // falls a tick of gravity more, and the motion the jab sends says nothing about the jump (#5656). The
+                // jab's own move isn't counted: a server may take what follows the jab a tick later, and the motion
+                // is already decided. A catch-up just before the jab still shows in that motion, which is compared.
+                if (ran > 1 && tick < stabTick) {
                     record("error the server ran " + ran + " ticks for move " + tick + " of the jump");
                 }
                 if (landed) break;
@@ -451,7 +622,10 @@ public final class LocatorBarClient {
                 Packet<?> p = read().packet;
                 if (p instanceof ClientboundLoginCompressionPacket c) {
                     threshold = c.getCompressionThreshold();
-                } else if (p instanceof ClientboundLoginFinishedPacket) {
+                } else if (p instanceof ClientboundLoginFinishedPacket finished) {
+                    profileUuid = finished.gameProfile().id();
+                    profileName = finished.gameProfile().name();
+                    if (advancements) record("adv-login " + profileName + " " + profileUuid);
                     send(ServerboundLoginAcknowledgedPacket.INSTANCE);
                     break;
                 } else if (p instanceof ClientboundLoginDisconnectPacket d) {
@@ -526,6 +700,36 @@ public final class LocatorBarClient {
                 j.addProperty("kind", "open");
                 j.addProperty("window", c.getContainerId());
                 j.addProperty("type", net.minecraft.core.registries.BuiltInRegistries.MENU.getKey(c.getType()).toString());
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundRecipeBookAddPacket c) {
+                j.addProperty("kind", "recipes");
+                j.addProperty("replace", c.replace());
+                var entries = new com.google.gson.JsonArray();
+                for (var entry : c.entries()) {
+                    var value = new com.google.gson.JsonObject();
+                    value.addProperty("id", entry.contents().id().index());
+                    value.addProperty("flags", entry.flags());
+                    value.add("display", net.minecraft.world.item.crafting.display.RecipeDisplay.CODEC.encodeStart(
+                        ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), entry.contents().display()).getOrThrow());
+                    var contents = entry.contents();
+                    if (contents.group().isPresent()) value.addProperty("group", contents.group().getAsInt());
+                    value.addProperty("category", net.minecraft.core.registries.BuiltInRegistries.RECIPE_BOOK_CATEGORY
+                        .getKey(contents.category()).toString());
+                    contents.craftingRequirements().ifPresent(list -> value.add("requirements",
+                        net.minecraft.world.item.crafting.Ingredient.CODEC.listOf().encodeStart(
+                            ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), list).getOrThrow()));
+                    entries.add(value);
+                }
+                j.add("entries", entries);
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundRecipeBookRemovePacket c) {
+                j.addProperty("kind", "recipes-removed");
+                var ids = new com.google.gson.JsonArray();
+                for (var id : c.recipes()) ids.add(id.index());
+                j.add("ids", ids);
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundPlaceGhostRecipePacket c) {
+                j.addProperty("kind", "ghost");
+                j.addProperty("window", c.containerId());
+                j.add("display", net.minecraft.world.item.crafting.display.RecipeDisplay.CODEC.encodeStart(
+                    ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.recipeDisplay()).getOrThrow());
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket c) {
                 j.addProperty("kind", "login");
                 j.addProperty("mode", c.commonPlayerSpawnInfo().gameType().getId());
@@ -551,6 +755,10 @@ public final class LocatorBarClient {
                     if (tickSteps && p instanceof net.minecraft.network.protocol.game.ClientboundBlockEventPacket e
                         && e.getPos().equals(new net.minecraft.core.BlockPos(0, 80, 0)))
                         record("piston-event " + e.getB0() + " " + e.getB1());
+                    if (advancements && p instanceof net.minecraft.network.protocol.game.ClientboundUpdateAdvancementsPacket a) {
+                        advancementUpdate(a, r.payload);
+                    }
+
                     if (sounds && p instanceof net.minecraft.network.protocol.game.ClientboundSoundPacket sound) {
                         com.google.gson.JsonObject j = new com.google.gson.JsonObject();
                         j.addProperty("event", sound.getSound().value().location().toString());
@@ -569,6 +777,10 @@ public final class LocatorBarClient {
                     }
                     if (state) recordState(p);
                     if (menus) recordMenu(p, r.payload);
+                    if (components) {
+                        var evidence = ComponentWireCapture.inspect(p, r.payload);
+                        if (evidence != null) record("component-wire " + evidence);
+                    }
                     if (hooks && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a) {
                         entityTypes.put(a.getId(), net.minecraft.world.entity.EntityType.getKey(a.getType()).toString());
                     }
@@ -623,7 +835,17 @@ public final class LocatorBarClient {
                             syncs++;
                             replyLock.notifyAll();
                         }
+                    } else if (advancements && p instanceof ClientboundSystemChatPacket c
+                        && c.content().getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents t
+                        && t.getKey().equals("commands.list.players")) {
+                        synchronized (replyLock) {
+                            record("adv-receipt " + net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(
+                                ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.content()).getOrThrow());
+                            listReplies++;
+                            replyLock.notifyAll();
+                        }
                     } else if (p instanceof ClientboundSystemChatPacket c) {
+                        if (flatChat) record("chat-flat " + spans(c.content()));
                         if (chat) {
                             record("chat " + (c.overlay() ? "overlay " : "") + net.minecraft.network.chat.ComponentSerialization.CODEC
                                 .encodeStart(ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.content())

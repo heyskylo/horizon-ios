@@ -155,8 +155,54 @@ pub fn remove(world: &Path, pack: &DataPack) -> Result<(), String> {
     forget(world, &pack.file)
 }
 
-/// What of a data pack the game reads today (its `DataStore`): `data/<namespace>/<kind>/`.
-pub const READ: [&str; 4] = ["function", "function tag", "predicate", "item_modifier"];
+/// What of a data pack the game reads today (`DataStore::load`, `worldgen_overrides`):
+/// `data/<namespace>/<kind>/`. A tag is `<registry> tag`; worldgen is `worldgen` for the folders
+/// in `WORLDGEN_READ` and `worldgen <folder>` for the rest.
+pub const READ: [&str; 25] = [
+    "function",
+    "function tag",
+    "predicate",
+    "item_modifier",
+    "recipe",
+    "recipe_filter",
+    "loot_table",
+    "advancement",
+    "villager_trade",
+    "trade_set",
+    "damage_type",
+    "dimension",
+    "dimension_type",
+    "structure",
+    "worldgen",
+    "item tag",
+    "block tag",
+    "fluid tag",
+    "enchantment tag",
+    "instrument tag",
+    "entity_type tag",
+    "damage_type tag",
+    "dialog tag",
+    "biome tag",
+    "dialog",
+];
+
+/// The `worldgen/` folders the chunk generator reads (`overrides::KINDS`).
+const WORLDGEN_READ: [&str; 14] = [
+    "biome",
+    "block_state_provider",
+    "carver",
+    "feature",
+    "density_function",
+    "material_condition",
+    "material_rule",
+    "noise",
+    "noise_settings",
+    "placed_feature",
+    "processor_list",
+    "structure",
+    "structure_set",
+    "template_pool",
+];
 
 /// A data pack's files by kind (`function`, `worldgen`, `item tag`...), with how many each.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -223,7 +269,12 @@ pub fn coverage(file: &Path) -> Result<Coverage, String> {
     for name in names.iter().filter(|n| !n.ends_with('/')) {
         let parts: Vec<&str> = name.split('/').collect();
         let kind = match parts.as_slice() {
+            ["data", _, "tags", "worldgen", registry, _, ..] => format!("{registry} tag"),
             ["data", _, "tags", tag, _, ..] => format!("{tag} tag"),
+            ["data", _, "worldgen", folder, _, ..] if WORLDGEN_READ.contains(folder) => {
+                "worldgen".to_string()
+            }
+            ["data", _, "worldgen", folder, _, ..] => format!("worldgen {folder}"),
             ["data", _, kind, _, ..] => kind.to_string(),
             _ => continue,
         };

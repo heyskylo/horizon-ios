@@ -188,6 +188,26 @@ pub fn set_state(m: &mut Mob, state: u8) {
         a.in_state_ticks = 0;
     }
 }
+/// `ArmadilloState`'s name (`StringRepresentable`, which its `CODEC` writes):
+/// what `Armadillo.addAdditionalSaveData` stores under `state`.
+pub fn state_name(state: u8) -> &'static str {
+    match state {
+        ROLLING => "rolling",
+        SCARED => "scared",
+        UNROLLING => "unrolling",
+        _ => "idle",
+    }
+}
+/// `ArmadilloState.CODEC` read back: a name that is no state, and no name at
+/// all, are `IDLE` (`read("state", CODEC).orElse(IDLE)`).
+pub fn state_by_name(name: Option<&str>) -> u8 {
+    match name {
+        Some("rolling") => ROLLING,
+        Some("scared") => SCARED,
+        Some("unrolling") => UNROLLING,
+        _ => IDLE,
+    }
+}
 /// `Armadillo.canStayRolledUp`.
 fn can_stay_rolled_up(m: &Mob) -> bool {
     !m.ai.panicking
@@ -806,6 +826,65 @@ mod tests {
         assert!(source.no_knockback());
         assert!(!source.causes_panic());
         assert!(!environmental(DamageKind::Campfire));
+    }
+    /// `Armadillo.addAdditionalSaveData` writes `state` (the `ArmadilloState`
+    /// name, always) and `readAdditionalSaveData` switches to it, `idle` when
+    /// the save names none. Horizon models the state and wrote only
+    /// `scute_time`, so a rolled-up armadillo unloaded with its chunk came back
+    /// idle: hits it took for half the damage past the first point cost it the
+    /// whole amount, and its shell went away.
+    #[test]
+    fn a_rolled_up_armadillo_keeps_its_state_through_the_chunk_save() {
+        use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+        use horizon_world::nbt::Tag;
+        fn armadillo_tag(state: Option<&str>) -> Tag {
+            let mut fields = vec![
+                ("id", Tag::String("minecraft:armadillo".into())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(0.5_f64.to_bits()),
+                        Tag::Double(64.0_f64.to_bits()),
+                        Tag::Double(0.5_f64.to_bits()),
+                    ]),
+                ),
+            ];
+            if let Some(state) = state {
+                fields.push(("state", Tag::String(state.into())));
+            }
+            Tag::compound(fields)
+        }
+        let types = [("minecraft:armadillo".into(), armadillo().kind.clone())].into();
+        // A ball takes half of the damage past the first point, and hides in
+        // its shell once the roll is five ticks in.
+        let mut ball = mob_from_nbt(&armadillo_tag(Some("rolling")), &types, 1, None).unwrap();
+        assert_eq!(state(&ball), ROLLING, "the loaded state");
+        assert_eq!(reduce_damage(&ball, 10.0), 4.5, "a rolling armadillo");
+        ball.extra.armadillo.in_state_ticks = 6;
+        assert!(hiding_in_shell(&ball), "six ticks into the roll");
+        // The save names the state the armadillo is in now, not the one its
+        // compound came in with (`store`, not `storeNullable`).
+        let saved = mob_to_nbt(
+            &ball,
+            [0; 4],
+            Some(&armadillo_tag(Some("idle"))),
+            None,
+            |_| None,
+        );
+        assert_eq!(saved.get("state"), Some(&Tag::String("rolling".into())));
+        let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
+        assert_eq!(state(&back), ROLLING, "the reloaded state");
+        assert_eq!(reduce_damage(&back, 10.0), 4.5);
+        // `switchToState` restarts the time in the state
+        // (`onSyncedDataUpdated`), so the shell goes in again six ticks later.
+        assert_eq!(back.extra.armadillo.in_state_ticks, 0);
+        assert!(!hiding_in_shell(&back), "a reload restarts the roll");
+        // No state, or a name that is no state: `orElse(IDLE)`, full damage.
+        for absent in [None, Some("sneaking")] {
+            let idle = mob_from_nbt(&armadillo_tag(absent), &types, 3, None).unwrap();
+            assert_eq!(state(&idle), IDLE, "{absent:?}");
+            assert_eq!(reduce_damage(&idle, 10.0), 10.0, "{absent:?}");
+        }
     }
 }
 

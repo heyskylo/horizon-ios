@@ -1,0 +1,15 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "mob_navigate", "target": "horizon_client::game::native_npcs::Game<'_>::native_mob_navigate"},
+    {"name": "mob_follow", "target": "horizon_client::game::native_npcs::Game<'_>::native_mob_follow"},
+    {"name": "mob_stop", "target": "horizon_client::game::native_npcs::Game<'_>::native_mob_stop"},
+    {"name": "mob_navigating", "target": "horizon_client::game::native_npcs::Game<'_>::native_mob_navigating"},
+    {"name": "mob_look_at", "target": "horizon_client::game::native_npcs::Game<'_>::native_mob_look_at"}
+  ],
+  "rust_summary": "a mob walked with the engine's pathfinding and turned to look, as vanilla's goals drive it (`native_mob_navigate`,\n`native_mob_follow`, `native_mob_stop`, `native_mob_navigating`, `native_mob_look_at`).",
+  "doc_summary": "a mob of any loaded level driven as vanilla's goals drive it: `native_mob_navigate(dimension, mob, to, reach, speed)` (`PathNavigation.moveTo` to a point, round walls), `native_mob_follow(dimension, mob, target, speed)` (`moveTo` an entity, a player too), `native_mob_stop(dimension, mob)`, `native_mob_navigating(dimension, mob)` (`isInProgress`) and `native_mob_look_at(dimension, mob, at)` (`LookControl.setLookAt`). Bundles need \"hooks\": @API:npc_mob_navigation@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_npcs.rs"
+  ]
+}

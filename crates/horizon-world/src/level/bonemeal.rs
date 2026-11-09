@@ -118,6 +118,19 @@ impl Behaviours {
         self.live_features()?.configured(name)?;
         Some(self.sim(level, ticks).place_configured_feature(name, pos))
     }
+    /// `/place feature` with an inline feature value (`json`): decoded by the
+    /// feature codec, then placed as `place_feature` places a named one.
+    /// `None` when the value does not decode or features are unavailable.
+    pub fn place_inline_feature<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        json: &str,
+        pos: BlockPos,
+    ) -> Option<bool> {
+        let feature = self.live_features()?.configured_inline(json)?;
+        Some(self.sim(level, ticks).place_inline_feature(&feature, pos))
+    }
     /// `StructureBlockEntity.placeStructure`'s `StructureTemplate.placeInWorld`
     /// on the live level: `pos` is both the position and the pivot, the
     /// template rots at `integrity` below 1 (`BlockRotProcessor`) drawing from

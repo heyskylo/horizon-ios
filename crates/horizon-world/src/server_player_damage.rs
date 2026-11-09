@@ -125,6 +125,21 @@ impl<'a, A: HealthAttributes, E: ServerDamageEnvironment<A>> ServerPlayerDamage<
     ) -> Result<(), ServerDamageError<EnvError<E>, A::Error>> {
         living_damage::actually_hurt_after_immunity_check(self, damage, true)
     }
+    pub(crate) fn apply_after_equipment(
+        &mut self,
+        damage: f32,
+        bypass_armor: bool,
+    ) -> Result<(), ServerDamageError<EnvError<E>, A::Error>> {
+        use crate::damage_reduction::DamageReductionWorld;
+        let damage = if bypass_armor {
+            damage
+        } else {
+            let armor = self.armor_value()? as f32;
+            let toughness = self.toughness_attribute()? as f32;
+            crate::combat_rules::after_armor(self, damage, armor, toughness)?
+        };
+        living_damage::actually_hurt_after_armor(self, damage, true)
+    }
 }
 impl<A: HealthAttributes, E: ServerDamageEnvironment<A>> ArmorWorld
     for ServerPlayerDamage<'_, E, A>

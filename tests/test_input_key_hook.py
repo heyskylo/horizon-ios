@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class InputKeyHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_original_event_after_handling_and_source_gates(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game/window_handler.rs", "game.rs"))
         actual = method(source, "window_event")
         fixture = r"""
 type WindowId = i32;
@@ -29,9 +30,10 @@ struct KeyEvent { physical_key: i32, logical_key: &'static str, location: i32,
                   text: &'static str, pressed: bool, repeat: bool }
 enum WindowEvent { KeyboardInput { event: KeyEvent, is_synthetic: bool }, Other }
 fn glfw_modifiers(bits: u32) -> u32 { bits }
-struct Game { window: Option<Window>, modifiers: u32, early: bool,
+struct Game { window: Option<Window>, modifiers: u32, early: bool, scripted: bool,
               calls: Vec<&'static str>, observed: Vec<(KeyEvent, u32)> }
 impl Game {
+    fn scripted_run(&self) -> bool { self.scripted }
     fn handle_window_event(&mut self, _: &ActiveEventLoop, _: WindowId, mut event: WindowEvent,
                            _: input_trace::InputOrigin) {
         self.calls.push("handle"); self.modifiers = 0;
@@ -53,7 +55,7 @@ fn all_actions_consumption_and_window_gates() {
             for (window, id, synthetic, fires) in [(true,7,false,true), (true,8,false,false),
                 (true,7,true,false), (false,7,false,false)] {
                 let mut game = Game { window: window.then_some(Window), modifiers: 5, early,
-                    calls: vec![], observed: vec![] };
+                    scripted: false, calls: vec![], observed: vec![] };
                 game.window_event(&ActiveEventLoop, id, WindowEvent::KeyboardInput { event: original.clone(), is_synthetic: synthetic });
                 let mut expected = vec!["handle"];
                 if !early { expected.push("finish"); }
@@ -63,8 +65,16 @@ fn all_actions_consumption_and_window_gates() {
             }
         }
     }
-    let mut game = Game { window: Some(Window), modifiers: 5, early: false, calls: vec![], observed: vec![] };
+    let mut game = Game { window: Some(Window), modifiers: 5, early: false, scripted: false,
+        calls: vec![], observed: vec![] };
     game.window_event(&ActiveEventLoop, 7, WindowEvent::Other);
+    assert!(game.observed.is_empty());
+    // A person's key during a scripted run reaches no mod either.
+    let mut game = Game { window: Some(Window), modifiers: 5, early: false, scripted: true,
+        calls: vec![], observed: vec![] };
+    let key = KeyEvent { physical_key: -1, logical_key: "logical", location: 2, text: "z",
+        pressed: true, repeat: false };
+    game.window_event(&ActiveEventLoop, 7, WindowEvent::KeyboardInput { event: key, is_synthetic: false });
     assert!(game.observed.is_empty());
 }
 """.replace("METHOD", actual)

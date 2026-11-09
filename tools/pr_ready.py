@@ -488,7 +488,7 @@ def run_windows(steps, verbose):
             command = ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"]
             cwd = ROOT / "launcher"
         elif step.name == "launcher tests":
-            command = ["cargo", "test", "--locked", "--lib"]
+            command = ["cargo", "test", "--locked", "--lib", "--bins"]
             cwd = ROOT / "launcher"
         elif step.name == "Parity":
             command = shlex.split(step.command)

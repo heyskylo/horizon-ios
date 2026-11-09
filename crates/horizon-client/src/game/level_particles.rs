@@ -145,8 +145,9 @@ impl Game<'_> {
             }
         }
     }
-    /// `LevelEventHandler` 2012 (a turtle egg laid on sand):
-    /// `ParticleUtils.spawnParticleInBlock` with happy villager sparks.
+    /// `LevelEventHandler` 2011 (a bee grew a crop) and 2012 (a turtle egg
+    /// laid on sand): `ParticleUtils.spawnParticleInBlock` with happy villager
+    /// sparks.
     pub(super) fn turtle_egg_particles(&mut self, pos: BlockPos, count: i32) {
         let at = [pos.x, pos.y, pos.z];
         let height = self.block_shape_top(at);

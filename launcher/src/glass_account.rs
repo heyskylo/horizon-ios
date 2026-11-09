@@ -15,7 +15,7 @@ use horizon_theme::glass::{fill, ink, radius};
 
 impl Launcher {
     pub(super) fn glass_account(&mut self, cx: &mut Context<Self>) -> Div {
-        let wide = self.window_width >= 1280.;
+        let wide = self.window_width >= crate::glass_home::WIDE;
         let left = self.glass_who_plays(cx);
         let right = self.glass_microsoft_card(cx);
         if wide {

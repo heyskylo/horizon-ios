@@ -508,6 +508,61 @@ pub fn hdr_offered() -> bool {
     HDR_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static SYSTEM_HDR: AtomicU32 = AtomicU32::new(0);
+/// The window's current system HDR state, independent of swapchain availability.
+pub fn report_system_hdr(on: Option<bool>) {
+    SYSTEM_HDR.store(on.map_or(0, |on| if on { 2 } else { 1 }), Ordering::Relaxed);
+}
+pub fn system_hdr() -> Option<bool> {
+    match SYSTEM_HDR.load(Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HdrMode {
+    #[default]
+    Off,
+    On,
+    Auto,
+}
+impl HdrMode {
+    pub const ALL: [Self; 3] = [Self::Off, Self::On, Self::Auto];
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Off => "false",
+            Self::On => "true",
+            Self::Auto => "auto",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::On => "On",
+            Self::Auto => "Auto",
+        }
+    }
+    fn parse(value: &str, default: Self) -> Self {
+        match value {
+            "false" | "off" => Self::Off,
+            "true" | "on" => Self::On,
+            "auto" => Self::Auto,
+            _ => default,
+        }
+    }
+    /// On retains the old switch's intent even before a surface is opened; the renderer
+    /// still gates output on availability. Auto requires both availability and a live report.
+    fn wanted(self, offered: bool, system: Option<bool>) -> bool {
+        match self {
+            Self::Off => false,
+            Self::On => true,
+            Self::Auto => offered && system == Some(true),
+        }
+    }
+}
+
 static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// Whether the device can batch translucent quads (`Graphics::translucent_batching`): set when
@@ -530,6 +585,54 @@ pub fn offer_smooth_gradients(on: bool) {
 }
 pub fn smooth_gradients_offered() -> bool {
     SMOOTH_GRADIENTS_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// GPU Culling's setting: off, on where it is offered, or Auto, which has it on only where the
+/// CPU limits the frame and it makes the frame faster (`autotune::GpuCullingAuto`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GpuCullingMode {
+    #[default]
+    Off,
+    On,
+    Auto,
+}
+impl GpuCullingMode {
+    pub const ALL: [GpuCullingMode; 3] = [
+        GpuCullingMode::Off,
+        GpuCullingMode::On,
+        GpuCullingMode::Auto,
+    ];
+    /// The value in `horizon-graphics.txt`: `true` and `false` as the switch wrote them.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Off => "false",
+            Self::On => "true",
+            Self::Auto => "auto",
+        }
+    }
+    /// The word `horizon-ctl gpu-culling` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+            Self::Auto => "auto",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::On => "On",
+            Self::Auto => "Auto",
+        }
+    }
+    fn parse(s: &str, default: Self) -> Self {
+        match s {
+            "true" | "on" => Self::On,
+            "false" | "off" => Self::Off,
+            "auto" => Self::Auto,
+            _ => default,
+        }
+    }
 }
 
 /// Whether GPU Culling (`Graphics::gpu_culling`) can be switched on here, and why not: set when a
@@ -672,8 +775,9 @@ pub struct Graphics {
     /// Near solid terrain culled, and its draws listed, on the GPU (`gfx::gpu_culling`), where it
     /// is offered (`gpu_culling_offer`). Off by default (GPU Culling, Performance graphics); it
     /// applies at once, and no preset sets it. Every save writes it, so a default turned on later
-    /// needs a new key, as `batchTranslucent` did.
-    pub gpu_culling: bool,
+    /// needs a new key, as `batchTranslucent` did. Auto turns it on only where the CPU limits the
+    /// frame and it makes the frame faster (`autotune`).
+    pub gpu_culling: GpuCullingMode,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
     /// Minimum entity population for coarse AABB culling; zero disables it.
@@ -684,6 +788,8 @@ pub struct Graphics {
     /// vanilla's fancy leaves. Ignored with a resource pack that may replace
     /// the vanilla leaf models ([`Graphics::leaf_culling_effective`]).
     pub leaf_culling: LeafCullingMode,
+    /// Draw regular ice opaque in the solid pass, without its see-through texture.
+    pub opaque_ice: bool,
     /// Cache settled shulker-box models.
     pub cache_shulker_boxes: bool,
     /// Cache sign-text geometry.
@@ -725,12 +831,14 @@ pub struct Graphics {
     pub taa: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
+    /// How much the upscaled picture is sharpened, 0..=100 (percent of the most).
+    pub upscaling_sharpness: u32,
     /// F2 screenshots at this many times the game's resolution: 1, 2, 4 or 8.
     pub screenshot_quality: u32,
     /// Frame generation (Horizon setting), off by default.
     pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
-    pub hdr: bool,
+    pub hdr: HdrMode,
     /// HDR paper white (where SDR white sits), in nits; 0 is Auto: the desktop's SDR
     /// white, as the system reports it ([`Graphics::paper_white_nits`]).
     pub hdr_paper_white: u32,
@@ -784,11 +892,12 @@ impl Default for Graphics {
             far_detail: FarDetail::Full,
             blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
-            gpu_culling: false,
+            gpu_culling: GpuCullingMode::Off,
             entity_culling: EntityCullingMode::Off,
             entity_culling_precheck: 64,
             particle_culling: ParticleCullingMode::Off,
             leaf_culling: LeafCullingMode::Off,
+            opaque_ice: false,
             cache_shulker_boxes: false,
             // Sign text has used its renderer cache independently of the new model caches.
             cache_signs: true,
@@ -813,9 +922,10 @@ impl Default for Graphics {
             fxaa: false,
             taa: false,
             upscaling: Upscaling::Native,
+            upscaling_sharpness: 85,
             screenshot_quality: 1,
             frame_generation: FrameGeneration::Off,
-            hdr: false,
+            hdr: HdrMode::Off,
             hdr_paper_white: 0,
             hdr_peak: 0,
             hdr_black_level: 0,
@@ -847,8 +957,8 @@ impl Graphics {
                 Vec::new()
             }
         };
-        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr {
-            g.hdr = false;
+        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr != HdrMode::Off {
+            g.hdr = HdrMode::Off;
             g.save(dir);
             log::warn!(
                 "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
@@ -882,13 +992,14 @@ impl Graphics {
                 }
                 "blueMapAutoDetect" => g.blue_map.auto_detect = flag(g.blue_map.auto_detect),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
-                "gpuCulling" => g.gpu_culling = flag(g.gpu_culling),
+                "gpuCulling" => g.gpu_culling = GpuCullingMode::parse(value, g.gpu_culling),
                 "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
                 "entityCullingPrecheck" => {
                     g.entity_culling_precheck = number(g.entity_culling_precheck).min(512)
                 }
                 "particleCulling" => g.particle_culling = ParticleCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
+                "opaqueIce" => g.opaque_ice = flag(g.opaque_ice),
                 "blockEntityCache" => {
                     let enabled = flag(false);
                     g.cache_shulker_boxes = enabled;
@@ -935,13 +1046,16 @@ impl Graphics {
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
+                "upscalingSharpness" => {
+                    g.upscaling_sharpness = number(g.upscaling_sharpness).min(100)
+                }
                 "screenshotQuality" => {
                     g.screenshot_quality = Some(number(0))
                         .filter(|q| SCREENSHOT_QUALITIES.contains(q))
                         .unwrap_or(1)
                 }
                 "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
-                "hdr" => g.hdr = flag(g.hdr),
+                "hdr" => g.hdr = HdrMode::parse(value, g.hdr),
                 "hdrLighting" => g.hdr_lighting = flag(g.hdr_lighting),
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
@@ -980,7 +1094,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -989,6 +1103,7 @@ impl Graphics {
             self.entity_culling_precheck,
             self.particle_culling.name(),
             self.leaf_culling.name(),
+            bool_text(self.opaque_ice),
             bool_text(self.cache_shulker_boxes),
             bool_text(self.cache_signs),
             bool_text(self.cache_decorated_pots),
@@ -1019,9 +1134,10 @@ impl Graphics {
             bool_text(self.fxaa),
             bool_text(self.taa),
             self.upscaling.name(),
+            self.upscaling_sharpness,
             self.screenshot_quality,
             self.frame_generation.name(),
-            bool_text(self.hdr),
+            self.hdr.key(),
             self.hdr_paper_white,
             self.hdr_peak,
             self.hdr_black_level,
@@ -1034,7 +1150,7 @@ impl Graphics {
             self.shader_pack,
             bool_text(self.translucent_batching),
             bool_text(self.hdr_smooth_gradients),
-            bool_text(self.gpu_culling),
+            self.gpu_culling.key(),
         );
         text += &self.blue_map.serialize();
         text
@@ -1050,10 +1166,14 @@ impl Graphics {
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
     }
+    /// The single decision shared by rendering and the HDR settings page.
+    pub fn hdr_wanted(&self) -> bool {
+        self.hdr.wanted(hdr_offered(), system_hdr())
+    }
     /// Whether a renderer made now draws its frame in 16 bits (`Renderer::new`'s `wide_frame`):
     /// HDR on, with Smooth Gradients.
     pub fn wide_frame(&self) -> bool {
-        self.hdr && self.hdr_smooth_gradients
+        self.hdr_wanted() && self.hdr_smooth_gradients
     }
     /// Paper white, in nits: the player's, or on Auto the desktop's SDR white as the
     /// system reports it, else 203 (BT.2408's reference white).
@@ -1092,8 +1212,9 @@ impl Graphics {
         // (horizon_threads: niced on Linux; on macOS and Windows the server
         // and render threads are raised above four cores, where vanilla
         // raises its server thread). Leaving two idled a core of a 4-thread
-        // laptop while a world loaded: a teleport there took ~15% longer.
-        let auto = horizon_threads::worker_count().saturating_sub(1).max(1);
+        // laptop while a world loaded: a teleport there took ~15% longer. On Apple
+        // silicon only the performance cores count (horizon_threads::default_workers).
+        let auto = horizon_threads::jobs::default_threads();
         if self.battery { auto.div_ceil(2) } else { auto }
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a
@@ -1146,6 +1267,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hdr_modes_keep_boolean_files_and_round_trip_auto() {
+        assert_eq!(Graphics::parse("").hdr, HdrMode::Off);
+        for (value, expected) in [
+            ("true", HdrMode::On),
+            ("false", HdrMode::Off),
+            ("on", HdrMode::On),
+            ("off", HdrMode::Off),
+            ("auto", HdrMode::Auto),
+            ("unknown", HdrMode::Off),
+        ] {
+            let g = Graphics::parse(&format!("hdr:{value}\n"));
+            assert_eq!(g.hdr, expected, "{value}");
+            assert_eq!(Graphics::parse(&g.serialize()).hdr, expected);
+            let saved = g.serialize();
+            let value = saved.lines().find_map(|l| l.strip_prefix("hdr:")).unwrap();
+            // The old boolean parser keeps its Off default for an unknown value.
+            assert_eq!(value == "true", expected == HdrMode::On);
+        }
+        assert_eq!(Graphics::parse("hdr:true\nhdr:unknown\n").hdr, HdrMode::On);
+    }
+
+    #[test]
+    fn hdr_auto_needs_a_positive_system_report_and_an_output() {
+        for (offered, system, expected) in [
+            (false, None, false),
+            (false, Some(false), false),
+            (false, Some(true), false),
+            (true, None, false),
+            (true, Some(false), false),
+            (true, Some(true), true),
+        ] {
+            assert!(!HdrMode::Off.wanted(offered, system));
+            assert!(HdrMode::On.wanted(offered, system));
+            assert_eq!(
+                HdrMode::Auto.wanted(offered, system),
+                expected,
+                "{offered} {system:?}"
+            );
+        }
+        let readings = [Some(false), Some(true), Some(false), None, Some(true)];
+        assert_eq!(
+            readings.map(|r| HdrMode::Auto.wanted(true, r)),
+            [false, true, false, false, true]
+        );
+    }
+
+    #[test]
     fn the_api_choice_matches_the_system() {
         let choices = GraphicsApi::choices();
         if cfg!(windows) {
@@ -1173,11 +1341,12 @@ mod tests {
                 servers: Vec::new(),
             },
             cave_culling: false,
-            gpu_culling: true,
+            gpu_culling: GpuCullingMode::On,
             entity_culling: EntityCullingMode::Synchronous,
             entity_culling_precheck: 128,
             particle_culling: ParticleCullingMode::Asynchronous,
             leaf_culling: LeafCullingMode::SolidAggressive,
+            opaque_ice: true,
             cache_shulker_boxes: true,
             cache_signs: true,
             cache_decorated_pots: true,
@@ -1201,9 +1370,10 @@ mod tests {
             fxaa: true,
             taa: true,
             upscaling: Upscaling::Balanced,
+            upscaling_sharpness: 40,
             screenshot_quality: 4,
             frame_generation: FrameGeneration::Fsr31,
-            hdr: true,
+            hdr: HdrMode::On,
             hdr_paper_white: 240,
             hdr_peak: 1400,
             hdr_black_level: 12,
@@ -1262,8 +1432,32 @@ mod tests {
         assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").wide_frame());
         assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
         // GPU Culling is opt-in: only the file or its switch turns it on.
-        assert!(!Graphics::default().gpu_culling);
-        assert!(Graphics::parse("gpuCulling:true\n").gpu_culling);
+        assert_eq!(Graphics::default().gpu_culling, GpuCullingMode::Off);
+        assert_eq!(
+            Graphics::parse("gpuCulling:true\n").gpu_culling,
+            GpuCullingMode::On
+        );
+        // Auto is a third value of the same key. A file from before it reads as before, and an
+        // older Horizon reading `auto` finds a value it doesn't know and keeps Off.
+        assert_eq!(
+            Graphics::parse("gpuCulling:auto\n").gpu_culling,
+            GpuCullingMode::Auto
+        );
+        assert_eq!(
+            Graphics::parse("gpuCulling:false\n").gpu_culling,
+            GpuCullingMode::Off
+        );
+        assert_eq!(
+            Graphics::parse("gpuCulling:maybe\n").gpu_culling,
+            GpuCullingMode::Off
+        );
+        for mode in GpuCullingMode::ALL {
+            let g = Graphics {
+                gpu_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&g.serialize()).gpu_culling, mode);
+        }
         // 0 is Auto; anything else is a peak the slider reaches.
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
         assert_eq!(Graphics::parse("hdrPeak:50\n").hdr_peak, 200);
@@ -1476,7 +1670,10 @@ mod tests {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
-        assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
+        assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
+        if !cfg!(target_vendor = "apple") {
+            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
+        }
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

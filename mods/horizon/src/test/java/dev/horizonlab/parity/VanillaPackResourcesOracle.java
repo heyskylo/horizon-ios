@@ -2,6 +2,7 @@ package dev.horizonlab.parity;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 import com.mojang.serialization.JsonOps;
 import java.io.InputStream;
 import java.lang.reflect.Method;
@@ -41,7 +42,7 @@ import net.minecraft.world.level.validation.DirectoryValidator;
  * (SoundManager.prepare), font providers (FontManager) and atlas sources
  * (SpriteSourceList).
  *
- * Input: a first line "root VANILLA PACKS ID..." (bottom first), then queries:
+ * Input: a JSON array ["root", VANILLA, PACKS, ID...] (bottom first), then queries:
  * "file PATH", "lang KEY", "sound EVENT", "font ID", "atlas ID".
  */
 public final class VanillaPackResourcesOracle {
@@ -50,15 +51,18 @@ public final class VanillaPackResourcesOracle {
         net.minecraft.server.Bootstrap.bootStrap();
         SpriteSources.bootstrap();
         List<String> lines = Files.readAllLines(Path.of(args[0]));
-        String[] root = lines.get(0).split(" ");
+        JsonArray root = JsonParser.parseString(lines.get(0)).getAsJsonArray();
+        if (root.size() < 3 || !root.get(0).getAsString().equals("root")) {
+            throw new IllegalArgumentException("invalid resource-pack header");
+        }
         List<PackResources> packs = new ArrayList<>();
         packs.add(new PathPackResources(
-            new PackLocationInfo("vanilla", Component.literal("vanilla"), PackSource.BUILT_IN, Optional.empty()), Path.of(root[1])));
+            new PackLocationInfo("vanilla", Component.literal("vanilla"), PackSource.BUILT_IN, Optional.empty()), Path.of(root.get(1).getAsString())));
         var repository = new PackRepository(new FolderRepositorySource(
-            Path.of(root[2]), PackType.CLIENT_RESOURCES, PackSource.DEFAULT, new DirectoryValidator(path -> true)));
+            Path.of(root.get(2).getAsString()), PackType.CLIENT_RESOURCES, PackSource.DEFAULT, new DirectoryValidator(path -> true)));
         repository.reload();
-        for (int i = 3; i < root.length; i++) {
-            repository.getPack(root[i]).open().forEach(packs::add);
+        for (int i = 3; i < root.size(); i++) {
+            repository.getPack(root.get(i).getAsString()).open().forEach(packs::add);
         }
         var manager = new MultiPackResourceManager(PackType.CLIENT_RESOURCES, packs);
         ClientLanguage language = ClientLanguage.loadFrom(manager, List.of("en_us"), false);

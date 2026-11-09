@@ -344,7 +344,7 @@ pub fn text_display_data(tag: &Tag, all: bool) -> Vec<(u8, i32, Value)> {
 /// `Transformation.EXTENDED_CODEC`'s translation, left rotation, scale and
 /// right rotation: all four parts, or a `MATRIX4F` (sixteen floats, row-major)
 /// that `new Transformation(matrix)` decomposes (`MatrixUtil.svdDecompose`).
-fn transformation(tag: &Tag) -> Option<([f32; 3], [f32; 4], [f32; 3], [f32; 4])> {
+pub fn transformation(tag: &Tag) -> Option<([f32; 3], [f32; 4], [f32; 3], [f32; 4])> {
     use horizon_assets::math::{
         Mat4, normalize_quaternion, quaternion_from_axis_angle, svd_decompose,
     };
@@ -418,7 +418,10 @@ impl Lines {
 
 /// Local geometry, independent of the display's interpolated world pose.
 pub struct CachedQuads {
-    key: (Arc<Text>, i32, i32, i8, u8, u32, u64, u64),
+    key: (Arc<Text>, i32, i32, i8, u8, u32, u64, u64, bool),
+    /// Drawn differently every frame: obfuscated (`§k`) glyphs, legacy codes
+    /// included, or an inline object (a head whose skin arrives later).
+    animated: bool,
     pub lines: Lines,
     pub batch: crate::hud::HudBatch,
     bounds: (glam::Vec3, glam::Vec3),
@@ -426,10 +429,7 @@ pub struct CachedQuads {
 
 impl CachedQuads {
     pub fn matches(&self, d: &TextDisplayData, background: u32, epoch: u64, revision: u64) -> bool {
-        !d.text
-            .spans
-            .iter()
-            .any(|s| s.style.obfuscated == Some(true))
+        !self.animated
             && self.key
                 == (
                     d.text.clone(),
@@ -440,6 +440,7 @@ impl CachedQuads {
                     background,
                     epoch,
                     revision,
+                    crate::lang::bidirectional(),
                 )
     }
 
@@ -454,6 +455,12 @@ impl CachedQuads {
             lo = lo.min(p);
             hi = hi.max(p);
         }
+        let animated = d
+            .text
+            .resolved()
+            .spans
+            .iter()
+            .any(|s| s.style.obfuscated == Some(true) || s.style.inline_object.is_some());
         Self {
             key: (
                 d.text.clone(),
@@ -464,7 +471,9 @@ impl CachedQuads {
                 background,
                 atlas.font.epoch(),
                 atlas.revision,
+                crate::lang::bidirectional(),
             ),
+            animated,
             lines,
             batch,
             bounds: (lo, hi),

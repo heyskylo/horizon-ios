@@ -10,8 +10,20 @@ use std::time::Instant;
 /// Play, the version and the big icons are this tall (`h-14`).
 const TALL: f32 = 56.;
 /// The window width from which Home's head is laid out as the mockup's `xl` (1280 px); under it
-/// Play and the version are narrower and the invite code takes what is left of their row.
-const WIDE: f32 = 1280.;
+/// Play and the version are narrower and the invite code takes what is left of their row. The
+/// account page and the theme editor also put their two columns side by side from it.
+pub(super) const WIDE: f32 = 1280.;
+/// The window width from which the top bar's pages show at full size.
+pub(super) const TOP_BAR_WIDE: f32 = 1380.;
+/// The window width from which pages put their head and cards side by side (Overview, Mods,
+/// Versions, Settings' About); under it they stack, and Home's tabs drop their icons.
+pub(super) const SIDE_BY_SIDE: f32 = 1200.;
+/// Under this window width the top bar's tabs tighten and Settings' sections go above the page.
+pub(super) const COMPACT: f32 = 1180.;
+/// Under this window width Home's tabs tighten further.
+pub(super) const NARROW: f32 = 960.;
+/// Under this window width Home's tabs are as tight as they go.
+pub(super) const NARROWEST: f32 = 750.;
 
 /// Which of Home's menus is open.
 #[derive(Clone, Copy, PartialEq, Default)]

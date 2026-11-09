@@ -323,3 +323,57 @@ fn vanilla_farming_classification_matches_the_oracle() {
         }
     ));
 }
+
+#[test]
+fn planting_posts_block_place_with_villager_and_crop_state() {
+    let ran = super::super::world::with_built_test_world(
+        &[],
+        |world, reg| {
+            put(
+                world,
+                0,
+                0,
+                reg.default_state("minecraft:farmland").unwrap(),
+            );
+        },
+        |w, types| {
+            let mut m = farmer(types);
+            super::super::villager::ext_mut(&mut m).inventory =
+                vec![ItemStack::new("minecraft:wheat_seeds", 1)];
+            let mut lr = LegacyRandom::new(13);
+            let mut events = Vec::new();
+            harvest_tick(
+                &mut m,
+                &mut Bx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                    now: 1000,
+                    refresh: false,
+                },
+                &mut 0,
+                &mut Some([0, 1, 0]),
+                &mut Vec::new(),
+            );
+            let wheat = w.registry.default_state("minecraft:wheat").unwrap();
+            let posted: Vec<_> = events
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::GameEvent {
+                        event,
+                        at,
+                        source,
+                        state,
+                    } => Some((*event, *at, *source, *state)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                posted,
+                vec![("minecraft:block_place", [0.5, 1.5, 0.5], 1, wheat)]
+            );
+        },
+    );
+    // Without the vanilla data under .local/horizon-client the world cannot be built: the test has nothing to check.
+    let _ = ran;
+}

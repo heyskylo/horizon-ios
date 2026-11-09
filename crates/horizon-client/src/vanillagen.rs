@@ -51,10 +51,20 @@ pub struct VanillaTerrain {
     /// Block state id -> the block entity type of its block, if it has one.
     block_entity_types: Vec<Option<&'static str>>,
     seed: i64,
-    /// The starts (structure name, chunk) an exploration map pointed at.
-    referenced: std::sync::Mutex<std::collections::HashSet<(String, i32, i32)>>,
+    /// The start chunks an exploration map pointed at, by structure name: a
+    /// skip check reads the set by name, without a String per candidate.
+    referenced: std::sync::Mutex<
+        crate::fast_hash::FxHashMap<String, crate::fast_hash::FxHashSet<(i32, i32)>>,
+    >,
     reference_file: std::sync::Mutex<Option<std::path::PathBuf>>,
     saved_references: std::sync::Mutex<Option<SavedReferences>>,
+    /// Each saved chunk's reference count as the skip check last read it, by
+    /// structure name: a saved chunk's record does not change while the world
+    /// is open, so the first map that searches past it is the last to read it
+    /// (vanilla's `StructureCheck` keeps its answers for the session too).
+    saved_checked: std::sync::Mutex<
+        crate::fast_hash::FxHashMap<String, crate::fast_hash::FxHashMap<(i32, i32), i32>>,
+    >,
     /// The world preset the terrain was generated with (`minecraft:normal`
     /// unless a saved world says otherwise); far decoration uses it too.
     preset: String,
@@ -284,6 +294,14 @@ impl VanillaTerrain {
                 "Horizon: {} placed features cannot run and will be skipped",
                 unsupported.len()
             );
+            // Name them, so a pack's author can find what to fix; capped, so a broken pack can't flood the log.
+            const NAMED: usize = 20;
+            for (name, reason) in unsupported.iter().take(NAMED) {
+                log::warn!("Horizon:   {name}: {reason}");
+            }
+            if unsupported.len() > NAMED {
+                log::warn!("Horizon:   and {} more", unsupported.len() - NAMED);
+            }
             if !dir.join("blocks/block-properties.nbt").exists() {
                 log::warn!(
                     "Horizon: the worldgen bundle lacks the block behavior exports (worldgen/blocks/*.nbt); \
@@ -330,6 +348,7 @@ impl VanillaTerrain {
             block_entity_types,
             seed,
             referenced: Default::default(),
+            saved_checked: Default::default(),
             reference_file: Default::default(),
             saved_references: Default::default(),
             preset: preset.to_owned(),
@@ -541,18 +560,43 @@ impl VanillaTerrain {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let mut referenced = self.referenced.lock().unwrap_or_else(|e| e.into_inner());
+        // The skip check locks per candidate: `locate_skipping` runs it here
+        // on the calling thread, and a `dyn Fn` cannot carry a guard.
         let found =
             self.generator
                 .worker()
                 .locate_skipping(names, from, radius, &|name, chunk| {
-                    referenced.contains(&(name.to_owned(), chunk.x, chunk.z))
-                        || saved
-                            .as_ref()
-                            .is_some_and(|f| f(name, chunk.x, chunk.z) > 0)
+                    // This session's references first: they grow as maps resolve.
+                    if self
+                        .referenced
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(name)
+                        .is_some_and(|chunks| chunks.contains(&(chunk.x, chunk.z)))
+                    {
+                        return true;
+                    }
+                    let mut checked = self.saved_checked.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(count) = checked
+                        .get(name)
+                        .and_then(|chunks| chunks.get(&(chunk.x, chunk.z)))
+                    {
+                        return *count > 0;
+                    }
+                    let count = saved.as_ref().map_or(0, |f| f(name, chunk.x, chunk.z));
+                    checked
+                        .entry(name.to_owned())
+                        .or_default()
+                        .insert((chunk.x, chunk.z), count);
+                    count > 0
                 })?;
-        referenced.insert((found.0.clone(), found.1[0] >> 4, found.1[2] >> 4));
-        self.save_references(&referenced);
+        self.referenced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(found.0.clone())
+            .or_default()
+            .insert((found.1[0] >> 4, found.1[2] >> 4));
+        self.save_references();
         Some(found)
     }
     /// Where the starts maps pointed at are kept, and the ones kept there:
@@ -564,7 +608,9 @@ impl VanillaTerrain {
             .ok()
             .and_then(|b| serde_json::from_slice::<Vec<(String, i32, i32)>>(&b).ok())
         {
-            referenced.extend(list);
+            for (name, x, z) in list {
+                referenced.entry(name).or_default().insert((x, z));
+            }
         }
         *self
             .reference_file
@@ -580,13 +626,17 @@ impl VanillaTerrain {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(saved);
     }
-    fn save_references(&self, referenced: &std::collections::HashSet<(String, i32, i32)>) {
+    fn save_references(&self) {
+        let referenced = self.referenced.lock().unwrap_or_else(|e| e.into_inner());
         let guard = self
             .reference_file
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let Some(path) = guard.as_ref() else { return };
-        let mut list: Vec<_> = referenced.iter().collect();
+        let mut list: Vec<(String, i32, i32)> = Vec::new();
+        for (name, chunks) in referenced.iter() {
+            list.extend(chunks.iter().map(|&(x, z)| (name.clone(), x, z)));
+        }
         list.sort();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -680,6 +730,19 @@ impl VanillaTerrain {
         u64::try_from(self.created.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
+/// `overrides` with the content mods' biome modifiers over the packs' biomes
+/// (`mod_content::biome_modifiers_over_packs`), for the worldgen bundle
+/// `dir` of a content root; `None` when its biomes stand as they are.
+pub fn biome_modifiers_over_packs(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+) -> Option<WorldgenOverrides> {
+    let root = dir.parent()?;
+    crate::mod_content::biome_modifiers_over_packs(root, overrides).unwrap_or_else(|e| {
+        log::warn!("Horizon: biome modifiers over data packs: {e}");
+        None
+    })
+}
 /// A bundle directory, the data packs over it, and what loading them gave.
 type SharedEntry = (std::path::PathBuf, WorldgenOverrides, Arc<GeneratorData>);
 static SHARED_DATA: std::sync::Mutex<Vec<SharedEntry>> = std::sync::Mutex::new(Vec::new());
@@ -717,7 +780,8 @@ pub fn shared_data_with(
         return Ok(data.clone());
     }
     let started = std::time::Instant::now();
-    let data = GeneratorData::load_with(dir, registry, overrides)?;
+    let modified = biome_modifiers_over_packs(dir, overrides);
+    let data = GeneratorData::load_with(dir, registry, modified.as_ref().unwrap_or(overrides))?;
     log::info!("Horizon: worldgen data loaded in {:?}", started.elapsed());
     for warning in data.warnings() {
         log::warn!("Horizon: data pack worldgen: {warning}");
@@ -733,6 +797,12 @@ pub fn shared_data_with(
 }
 impl ChunkGenerator for VanillaTerrain {
     type Worker = GeneratorWorker;
+    fn set_saved_starts(
+        &self,
+        source: Arc<horizon_world::worldgen::generator::SavedStructureStarts>,
+    ) {
+        self.generator.set_saved_starts(source);
+    }
     fn worker(&self) -> GeneratorWorker {
         let mut worker = self.generator.worker();
         worker.set_structure_mobs(self.structure_mobs.clone());
@@ -756,7 +826,8 @@ impl ChunkGenerator for VanillaTerrain {
         Some(self.client_surface(worker.surface_sample(x, z)?))
     }
     /// The structure starts a saved chunk references, as vanilla reads them
-    /// with the chunk: built here, on the loading worker, into the
+    /// with the chunk: read from the owning chunk's save (or regenerated for
+    /// unsupported pieces) here, on the loading worker, into the
     /// generator's cache, rather than on the game thread the first time
     /// spawning or a mob asks which structures hold a position (a village
     /// start took 70 to 110 ms there, one tick each, after a world loaded).
@@ -1092,23 +1163,24 @@ mod default_block_entity_tests {
         out.set(4, -40, 9, 7);
         out.set(5, -40, 9, 6);
         let mut kinds = vec![None; 8];
-        kinds[6] = Some("minecraft:conduit");
+        kinds[6] = Some("minecraft:ender_chest");
         kinds[7] = Some("minecraft:sculk_sensor");
         let mut raw = vec![];
         add_default_block_entities(&kinds, &mut out, &mut raw);
+        // Both are modelled now: an ender chest's `EnderChestBlock.newBlockEntity` is
+        // an entity, so a generated one reads back like a placed chest.
         assert!(matches!(
             out.block_entities[..],
-            [((-28, -40, 57), crate::containers::BlockEntity::Sculk(_))]
+            [
+                ((-28, -40, 57), crate::containers::BlockEntity::Sculk(_)),
+                ((-27, -40, 57), crate::containers::BlockEntity::Chest(_))
+            ]
         ));
-        assert_eq!(raw.len(), 1);
-        assert_eq!(
-            raw[0].get("id"),
-            Some(&Tag::String("minecraft:conduit".into()))
-        );
+        assert!(raw.is_empty());
         add_default_block_entities(&kinds, &mut out, &mut raw);
         assert_eq!(
             (out.block_entities.len(), raw.len()),
-            (1, 1),
+            (2, 0),
             "a placed block entity is kept, not doubled"
         );
     }

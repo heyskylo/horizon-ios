@@ -156,6 +156,7 @@ max_expect_seconds = 60      # the longest the proxy may ask for
 max_expected = 64            # players waited for at once
 max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
 max_hold_seconds = 60        # the longest a player arriving from another server is held before it is dropped
+stop_wait_seconds = 10       # a stop with players on waits this long for the proxy to move them out (0 to 60; 0: no wait)
 ```
 
 The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
@@ -181,23 +182,32 @@ dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`). A hand-over id is 
 `transfer-status` is what a proxy reads before it sends players to a server. It names no player and changes nothing:
 
 ```json
-{"ok": true, "players": 12, "held": 1, "expected": 2, "frozen": 0, "online": 13, "max_players": 20, "full": false}
+{"ok": true, "players": 12, "held": 1, "expected": 2, "frozen": 0, "online": 13, "max_players": 20, "full": false, "stopping": false}
 ```
 
 `players` are the players placed in the world (a player a `moved` release took out is no longer counted), `held`
 the logins held for a hand-over, `expected` the expectations still alive, and `frozen` the players this server is
 handing over. `online` is what the player limit counts: the placed and the held players and the logins still
 joining. `full` is `online` at `max_players` or above: an ordinary login, held or not, is then refused as
-`multiplayer.disconnect.server_full`, unless the player is an operator with `bypassesPlayerLimit`. A proxy asks it
-often, so it writes nothing to the log.
+`multiplayer.disconnect.server_full`, unless the player is an operator with `bypassesPlayerLimit`. `player-expect`
+counts the expected players too: it is refused once `online` and `expected` reach `max_players`. `stopping` is true
+once the server has begun to stop, and no player is taken in any more. A proxy asks it often, so it writes nothing to
+the log.
 
 `player-expect <uuid> [seconds]` tells the target server that the player is about to log in: within
 `expect_seconds` by default, `max_expect_seconds` at most (a longer time is cut to it), and at most
 `max_expected` players are expected at once. The reply is `{"ok": true, "renewed": false, "ttl_seconds": 10}`;
 asking again for the same player renews the time and says `"renewed": true`. It is refused for a missing or
-malformed id, a time that is not a whole number of seconds above zero, a player already connected, and a full
-table. The player's next login uses the expectation up as it starts, once the bans, the whitelist and the player
-limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
+malformed id, a time that is not a whole number of seconds above zero, a player already connected, a full table,
+a full server (`{"error": "the server is full"}`) and a server that is stopping (`{"error": "the server is
+stopping"}`). Each expectation holds a place until it is used up or runs out: once the places the player limit
+counts and those of the other expected players reach `max-players`, a new one is refused as a login would be, so two
+proxies sending players at once do not fill the server past its limit. As at login, an operator with
+`bypassesPlayerLimit` is never refused as full. The places are held against other expectations only: an ordinary
+login (one nobody expected) sees the vanilla limit alone, so it can take a place an expected player was counting on.
+That player's login is then refused as `server_full`, and the proxy aborts the hand-over on the source, where the
+player goes on as it was. `full` in `transfer-status` is likewise the vanilla condition alone. The player's next
+login uses the expectation up as it starts, once the bans, the whitelist and the player limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
 login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
 required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
 still expected. An expectation no login used is reported in the log when its time runs out.
@@ -423,6 +433,32 @@ Every step that is not taken in time is undone by itself: an expectation after `
 `max_hold_seconds`, a freeze after `max_freeze_seconds`, each with a warning in the log. A `moved` that comes after
 the freeze ran out is refused, so the proxy must confirm and release within `max_freeze_seconds` of the export.
 
+**A server that stops.** From the `/stop` command (the console's, a player's or the control endpoint's) or a stop
+signal on, `player-expect`, `player-import` and `player-confirm` are refused `{"error": "the server is stopping"}`: a
+player must not arrive on a server that is about to close. The proxy drops the held player there and aborts on the
+source. A retry after the commit is still answered, and `player-export`, `player-release` and `player-drop` stay
+open: they are the way out.
+
+With players placed, the stop then waits `stop_wait_seconds` (10 by default; 0 stops at once, as vanilla does) so a
+proxy can move them out first. A proxy that moves them one at a time, as Meridian's `evacuate` does, takes about
+2 s a player over a real network (1.4 to 2.3 s measured): 10 s is room for about four, and a fuller server needs
+more (60 at most, about 25 players). The log says `Stopping in 10 s: a proxy may move the players out first`, and
+horizon-server sends `server/stopping` on the management protocol then, for a stop from the game as for its own.
+During the wait every login is refused as `multiplayer.disconnect.server_shutdown`, and the server ticks on and
+answers the proxy. The wait ends as soon as no player is placed, at `stop_wait_seconds` when no hand-over is frozen,
+and at the latest a freeze's length later, so a hand-over started in time finishes (the `N s` of the log line is
+then longer); the whole wait is cut at 90 s, which leaves the saves time before horizon-server kills a game that has
+not stopped within 120 s, so `stop_wait_seconds` and `max_freeze_seconds` may add up to 90 at most when the stop
+waits. A freeze lasts `max_freeze_seconds` worth of ticks (20 a second), so its length in time is reckoned at the
+tick length of the moment, the rate's or longer when the server is slower than its rate: at 10 ticks a second it
+lasts twice as long. `player-export ... freeze` is refused (`no hand-over starts this late`) once a freeze that
+starts then would end past the limit, unless the player is frozen already: a hand-over the limit cut would leave
+the player saved by the source after the target placed it. That holds at the tick rate of the moment the freeze
+starts: a server that slows down after it can still reach the limit with it. A hand-over still frozen at the limit
+is logged as a warning, and its player saved here. Then the stop goes on as vanilla's (`Stopping server`, the
+saves, the kicks). A second `stop` during the wait stops at once, with the saves; a second stop signal ends the
+process, as without `[transfer]`.
+
 **In the log.** Each `player-*` request writes one line with what became of it: `INFO` and what it did
 (`player-import Alex (<uuid>): ok, parts inventory,experience, placed false, announced true, recentered false,
 hand-over <id>`), or `WARN` and the reason it was refused (`player-export Alex (<uuid>): refused: that player is
@@ -448,7 +484,8 @@ game built in `Game::new`, the integrated server on its own thread. On that base
 **Binaries.** The release archives hold `horizon-client`, `horizon-ctl`, `horizon-prepare` and
 `horizon-server`. On Linux the release also has `horizon-server-linux-x86_64.tar.gz`: `horizon-server`,
 `horizon-prepare` and `horizon-engine`, the game built with `--no-default-features` (no sound, no
-controllers), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
+controllers, no Discord presence, Play with Friends or "I'm playing" ping: the `discord`, `friends` and
+`heartbeat` features), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
 client archive (`xtask package-server`) and fails if `tools/check_imports.py --server` finds either library;
 CI lints the same build. `horizon-server` runs `horizon-engine` when it is beside it or on the PATH, else
 `horizon-client`. Build it yourself with `cargo build --release -p horizon-client --no-default-features`
@@ -487,8 +524,9 @@ comes out of the headless-engine work.
 - Linux and macOS:
   `curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh`
   The script picks the release archive for the OS and architecture (on Linux x86_64 the server archive,
-  on macOS arm64 the game's), downloads it from GitHub Releases, and checks it against the SHA-256 GitHub
-  publishes for each asset. It never asks for sudo. Options: `--version vX.Y.Z`, `--dir` (default
+  on macOS arm64 the game's), downloads it from GitHub Releases, and checks it against the release's signed
+  `SHA256SUMS` when OpenSSL 3 is installed, else against the SHA-256 GitHub publishes for each asset
+  (docs/security.md). It never asks for sudo. Options: `--version vX.Y.Z`, `--dir` (default
   `~/.local/share/horizon`), `--bin` (default `~/.local/bin`), and `--archive FILE` to install an archive
   already on the machine (a build of your own; no download and no checksum).
   A Linux release from before the server archive installs the full game, which links ALSA's and udev's
@@ -499,7 +537,8 @@ comes out of the headless-engine work.
 - Windows:
   `irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex`
   The script does the same into `%LOCALAPPDATA%\Horizon` (`-Version`, `-Dir`), with junctions instead of
-  links (no admin rights), and adds `bin` to the user's PATH.
+  links (no admin rights), and adds `bin` to the user's PATH. It finds OpenSSL 3 on the PATH or in Git for
+  Windows to check the signature.
 - **Layout.** Each release goes to `<dir>/releases/<tag>` and `<dir>/current` points at the one in use, so an
   update or a rollback is one link. `<bin>/horizon-server` and `<bin>/horizon-prepare` are two-line launchers
   that run `current`. The prepared game files live in `<dir>/game-files/horizon-client` and each release's
@@ -681,7 +720,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `HttpOnly; SameSite=Strict` session cookie. Anyone who can read the server folder can manage the server,
   and no one else can. Sessions end when the supervisor stops.
 - **Protection.** The `Host` header must name the panel itself: its address, `localhost` on loopback, or a
-  tailnet name (a MagicDNS short name or `*.ts.net`). That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
+  tailnet name (a MagicDNS short name or `*.ts.net`); bound to every interface (`0.0.0.0` or `::`), any IP
+  address with the panel's port. That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
   the `X-Horizon: 1` header, which stops CSRF. After 10 failed logins in a minute, logins are refused for a
   while. The page is served with a strict Content-Security-Policy (nothing from elsewhere) and can't be
   framed.
@@ -816,9 +856,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   - notifications: the supervisor pushes them to every connected client as vanilla's `JsonRpcNotificationService`
     does (a JSON-RPC request without an `id`, its one parameter in an array), through a queue and a thread so a slow
     client never holds the game's output. Built: `server/started` (the game's `Done`) and `server/stopping`
-    (when the supervisor or the game's own `stop` begins the shutdown, once per run), `server/saving` and
-    `server/saved` (around every world save of the running game: `save-all`, the autosave, the pause when
-    empty; a save the game makes while it stops is after the last one the supervisor hears of), and
+    (when the supervisor or the game's own `stop` begins the shutdown, once per run; with `[transfer]` on and
+    players placed, at the start of the wait, `Stopping in N s`, so a proxy has that long to move them),
+    `server/saving` and `server/saved` (around every world save of the running game: `save-all`, the autosave, the
+    pause when empty; a save the game makes while it stops is after the last one the supervisor hears of), and
     `players/joined` and `players/left` (from the game's typed events, within a quarter of a second), and
     `operators/*`, `allowlist/*`, `bans/*` and `ip_bans/*` `added`/`removed`: each of the game's lists tells a
     watcher what `add`, `remove` and `clear` do, as vanilla's `StoredUserList` tells its `NotificationService`,

@@ -54,6 +54,46 @@ impl<'a, A: HealthAttributes, E: CombatEnvironment<A>> ServerPlayerCombat<'a, E,
     ) -> Result<bool, ServerDamageError<Error<E>, A::Error>> {
         server_player_hurt_server(state, self, damage)
     }
+    /// Prepare the guards, blocking and freezing before an external equipment service.
+    pub fn prepare_hurt(
+        &mut self,
+        state: &mut HurtState<E::Source>,
+        damage: f32,
+    ) -> Result<
+        Option<crate::living_hurt::PreparedHurt<E::UseItem>>,
+        ServerDamageError<Error<E>, A::Error>,
+    > {
+        crate::player_hurt::prepare_server_player_hurt_server(state, self, damage)
+    }
+    /// The inner immunity and armor-bypass gates precede ordinary equipment wear.
+    pub fn prepare_equipment_inner(
+        &mut self,
+    ) -> Result<Option<bool>, ServerDamageError<Error<E>, A::Error>> {
+        if damage_immunity::server_player_immunity(self.environment)
+            .map_err(ServerDamageError::Environment)?
+        {
+            return Ok(None);
+        }
+        self.environment
+            .bypasses(crate::damage_reduction::Bypass::Armor)
+            .map(Some)
+            .map_err(ServerDamageError::Environment)
+    }
+    pub fn apply_equipment_inner(
+        &mut self,
+        damage: f32,
+        bypass_armor: bool,
+    ) -> Result<(), ServerDamageError<Error<E>, A::Error>> {
+        ServerPlayerDamage::new(
+            self.attributes,
+            self.data,
+            self.food,
+            self.ids,
+            self.environment,
+        )
+        .expect("validated immutable player schema")
+        .apply_after_equipment(damage, bypass_armor)
+    }
 }
 impl<A: HealthAttributes, E: CombatEnvironment<A>> HurtWorld for ServerPlayerCombat<'_, E, A> {
     type Error = ServerDamageError<Error<E>, A::Error>;

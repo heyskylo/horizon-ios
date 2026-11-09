@@ -26,7 +26,7 @@ type Pos = (i32, i32, i32);
 /// `HopperBlockEntity` transient state (`TransferCooldown`, `tickedGameTime`).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HopperState {
-    cooldown: i32,
+    pub(super) cooldown: i32,
     ticked: i64,
 }
 impl Default for HopperState {
@@ -35,6 +35,38 @@ impl Default for HopperState {
             cooldown: -1,
             ticked: 0,
         }
+    }
+}
+
+impl HopperState {
+    /// `HopperBlockEntity.loadAdditional`: only the cooldown is saved; the
+    /// last tick time starts at zero for the new block entity.
+    pub(super) fn load(tag: &horizon_world::nbt::Tag) -> Self {
+        let canonical = horizon_client::block_entity_nbt::canonical(tag);
+        let cooldown = match canonical.as_ref().and_then(|t| t.get("TransferCooldown")) {
+            Some(horizon_world::nbt::Tag::Int(value)) => *value,
+            _ => -1,
+        };
+        Self {
+            cooldown,
+            ticked: 0,
+        }
+    }
+}
+
+impl Game<'_> {
+    pub(super) fn hopper_cooldown(&self, pos: Pos) -> i32 {
+        self.hoppers.get(&pos).map_or_else(
+            || {
+                self.world
+                    .chunks
+                    .get(&(pos.0 >> 4, pos.2 >> 4))
+                    .and_then(|c| c.saved.as_deref())
+                    .and_then(|s| s.block_entity_sources.iter().find(|(p, _)| *p == pos))
+                    .map_or(-1, |(_, tag)| HopperState::load(tag).cooldown)
+            },
+            |s| s.cooldown,
+        )
     }
 }
 
@@ -192,7 +224,10 @@ impl Containers<'_> {
         // them and a hopper leaves them alone.
         if matches!(
             entity,
-            BlockEntity::Beehive(_) | BlockEntity::Campfire(_) | BlockEntity::Brushable(_)
+            BlockEntity::Beehive(_)
+                | BlockEntity::Campfire(_)
+                | BlockEntity::Brushable(_)
+                | BlockEntity::EndPortal
         ) {
             return None;
         }
@@ -331,10 +366,7 @@ impl Containers<'_> {
         if view.kind == Kind::Brewing {
             // BrewingStandBlockEntity.canPlaceItem
             return match slot {
-                4 => self
-                    .items
-                    .get(&stack.item)
-                    .is_some_and(|i| i.brewing_fuel.is_some()),
+                4 => horizon_client::brewing::brewing_fuel(self.items, stack).is_some(),
                 3 => self.brewing.is_some_and(|b| b.is_reagent(stack)),
                 _ => {
                     let input = self.brewing.is_some_and(|b| b.is_bottle(stack))
@@ -646,6 +678,7 @@ impl Game<'_> {
         let was_empty = c.is_empty(view);
         let max = c.max_stack(&stack);
         let mut success = false;
+        let mut filled_empty = false;
         let Some(target) = self.slot_mut_at(view, slot) else {
             return (Some(stack), false);
         };
@@ -663,6 +696,7 @@ impl Game<'_> {
                 });
                 stack.count = 0;
                 success = true;
+                filled_empty = true;
             }
             Some(current)
                 // HopperBlockEntity.canMergeItems
@@ -675,6 +709,17 @@ impl Game<'_> {
                 success = count > 0;
             }
             Some(_) => {}
+        }
+        // tryMoveInItem's setItem on an empty slot: AbstractFurnaceBlockEntity.setItem restarts
+        // the cooking for a new input (a merge only grows the stack, and keeps it).
+        let recipes = world_recipes!(self);
+        if filled_empty
+            && let Some((pos, 0)) = view.locate(slot)
+            && let Some(BlockEntity::Furnace(furnace)) = self.world.block_entities.get_mut(&pos)
+        {
+            use horizon_client::furnace::FurnaceCooking;
+            let input = furnace.items[0].take();
+            furnace.set_input(recipes, input);
         }
         if success && was_empty && view.kind == Kind::Hopper {
             let dest = view.parts[0].0;
@@ -735,7 +780,7 @@ impl Game<'_> {
         let time = self.world.game_time;
         let waiting = {
             let state = self.hoppers.entry(pos).or_default();
-            state.cooldown -= 1;
+            state.cooldown = state.cooldown.wrapping_sub(1);
             state.ticked = time;
             state.cooldown > 0
         };
@@ -1366,27 +1411,33 @@ impl Game<'_> {
         };
         let target = offset(key, facing);
         let remaining = if dropper {
-            match self.containers().view(target, false) {
+            // `HopperBlockEntity.getContainerAt`: the block's container, else a
+            // container entity (chest boat, chest or hopper minecart) there.
+            let one = ItemStack {
+                count: 1,
+                ..stack.clone()
+            };
+            let face = Some(facing.opposite());
+            let inserted = match self.containers().view(target, false) {
+                Some(into) => Some(self.dropper_insert(&into, one, face)),
+                None => self
+                    .entity_container_at([
+                        f64::from(target.0) + 0.5,
+                        f64::from(target.1) + 0.5,
+                        f64::from(target.2) + 0.5,
+                    ])
+                    .and_then(|id| {
+                        self.with_entity_container(id, |g, into| g.dropper_insert(into, one, face))
+                    }),
+            };
+            match inserted {
                 None => self.dispense_default(key, facing, stack),
-                Some(into) => {
-                    let one = ItemStack {
-                        count: 1,
-                        ..stack.clone()
-                    };
-                    if self
-                        .add_item(None, &into, one, Some(facing.opposite()))
-                        .is_none()
-                    {
-                        self.view_changed(&into);
-                        Some(ItemStack {
-                            count: stack.count - 1,
-                            ..stack
-                        })
-                        .filter(|s| s.count > 0)
-                    } else {
-                        Some(stack)
-                    }
-                }
+                Some(true) => Some(ItemStack {
+                    count: stack.count - 1,
+                    ..stack
+                })
+                .filter(|s| s.count > 0),
+                Some(false) => Some(stack),
             }
         } else {
             self.dispense_item(key, facing, stack)?
@@ -1396,6 +1447,15 @@ impl Game<'_> {
         }
         self.container_changed(key);
         Ok(())
+    }
+    /// `DropperBlock.dispenseFrom`'s `HopperBlockEntity.addItem` of one item
+    /// into the container in front: whether it all went in.
+    fn dropper_insert(&mut self, into: &View, one: ItemStack, face: Option<Direction>) -> bool {
+        let taken = self.add_item(None, into, one, face).is_none();
+        if taken {
+            self.view_changed(into);
+        }
+        taken
     }
 }
 
@@ -1541,6 +1601,71 @@ impl Game<'_> {
         let inventory = self.translate("container.inventory", "Inventory");
         batch.text(atlas, &inventory, ox + 8.0, oy + height - 94.0, grey, false);
         true
+    }
+}
+
+#[cfg(test)]
+mod brewing_fuel_transfer_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    use horizon_client::brewing::BrewingStand;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn hopper_brewing_fuel_transfer_respects_stack_components() {
+        let mut game = server_game();
+        let hopper_pos = (8, 64, 8);
+        let stand_pos = (9, 64, 8);
+        for (pos, block) in [
+            (hopper_pos, "minecraft:hopper"),
+            (stand_pos, "minecraft:brewing_stand"),
+        ] {
+            let state = game.pack.assets.registry.default_state(block).unwrap();
+            game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        }
+        let default = ItemStack::new("minecraft:blaze_powder", 2);
+        let mut custom = ItemStack::new("minecraft:stone", 2);
+        custom.data_mut().set_loot_component(
+            "minecraft:brewing_fuel",
+            &serde_json::json!({"uses": 7, "speed_multiplier": 2.5}),
+        );
+        let mut removed = default.clone();
+        removed.data_mut().set_other(
+            "!minecraft:brewing_fuel",
+            Some(horizon_world::nbt::Tag::Compound(Default::default())),
+        );
+        for (stack, accepted) in [
+            (default, true),
+            (custom, true),
+            (removed, false),
+            (ItemStack::new("minecraft:stone", 2), false),
+        ] {
+            game.world
+                .block_entities
+                .insert(hopper_pos, BlockEntity::Chest(vec![Some(stack); 5]));
+            game.world.block_entities.insert(
+                stand_pos,
+                BlockEntity::Brewing(Box::new(BrewingStand::new())),
+            );
+            let containers = game.containers();
+            let hopper = containers.view(hopper_pos, false).unwrap();
+            let stand = containers.view(stand_pos, false).unwrap();
+            let fuel = containers.get(&hopper, 0).unwrap();
+            assert_eq!(containers.can_place(&stand, 4, fuel), accepted);
+            assert_eq!(
+                game.eject_into(hopper_pos, &hopper, &stand, Direction::West),
+                accepted
+            );
+            let containers = game.containers();
+            assert_eq!(
+                containers.get(&hopper, 0).unwrap().count,
+                if accepted { 1 } else { 2 }
+            );
+            assert_eq!(
+                containers.get(&stand, 4).map(|s| s.count),
+                accepted.then_some(1)
+            );
+        }
     }
 }
 

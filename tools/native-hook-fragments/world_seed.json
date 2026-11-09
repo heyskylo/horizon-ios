@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "world_seed", "target": "horizon_client::game::native_world_seed::Game<'_>::native_world_seed"}
+  ],
+  "rust_summary": "the world's seed on a server (`native_world_seed`).",
+  "doc_summary": "`native_world_seed()`, the world's seed as `/seed` prints it (Bukkit's `World.getSeed`), the one every level generates from; None off a server. Bundles need \"hooks\": @API:world_seed@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_world_seed.rs"
+  ]
+}

@@ -199,6 +199,26 @@ class PrReadyTests(unittest.TestCase):
         for name in ("launcher rustfmt", "launcher clippy", "launcher tests"):
             self.assertIsNone(by_name[name].skip)
 
+    @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
+    def test_windows_launcher_checks_include_binary_tests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            launcher = root / "launcher"
+            (launcher / "src").mkdir(parents=True)
+            (launcher / "Cargo.toml").write_text(
+                '[package]\nname = "launcher-check-fixture"\nversion = "0.1.0"\nedition = "2021"\n[workspace]\n')
+            (launcher / "src/lib.rs").write_text('#[test]\nfn library_passes() {}\n')
+            (launcher / "src/main.rs").write_text(
+                'fn main() {}\n#[test]\nfn binary_fails() { panic!("launcher binary test ran"); }\n')
+            with mock.patch.object(pr_ready, "ROOT", root), \
+                    mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(root / "target")}):
+                subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=launcher, check=True,
+                               capture_output=True)
+                step = pr_ready.Step("launcher tests", "cargo test --locked --lib --bins")
+                pr_ready.run_windows([step], verbose=False)
+            self.assertEqual(step.status, "fail")
+            self.assertIn("launcher binary test ran", step.output)
+
     @unittest.skipUnless(POSIX_BASH, "needs a bash that is not WSL's")
     def test_the_launcher_fallback_asks_for_a_feature_the_launcher_has(self):
         """The macOS fallback must name gpui_platform/runtime_shaders: gpui_platform is launcher/Cargo.toml's

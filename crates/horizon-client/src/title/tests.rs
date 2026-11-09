@@ -224,6 +224,7 @@ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
         Action::Connect {
             address: "localhost:25569".into(),
             lan: false,
+            realm: false,
         }
     );
     assert_eq!(f.title.last_server, "localhost:25569");
@@ -1118,6 +1119,128 @@ fn hovered_buttons_ask_for_the_hand_or_not_allowed() {
     f.world("A", "Alpha");
     f.title.enter_singleplayer();
     assert_eq!(cursor_over(&f.title, Some("Edit")), Cursor::NotAllowed);
+}
+
+/// 26.3's en_us strings for the buttons' tooltips, standing in for the
+/// prepared resources.
+struct TooltipStrings;
+impl crate::lang::ResourceSource for TooltipStrings {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        (path == "assets/minecraft/lang/en_us.json").then(|| {
+            br#"{
+                "gui.friends.open.tooltip": "Friends",
+                "options.language.tooltip": "Change Language",
+                "options.accessibility.tooltip": "Accessibility Settings"
+            }"#
+            .to_vec()
+        })
+    }
+}
+
+/// Draws `title` at 480 x 262 in English with the pointer at `mouse`: the
+/// frame's tooltip as the narrator gets it, and what was drawn.
+fn draw_hovered(
+    title: &Title,
+    atlas: &crate::hud::HudAtlas,
+    mouse: (f32, f32),
+    frame: &mut u64,
+) -> (Option<String>, Vec<crate::hud::HudVertex>) {
+    crate::widgets::end_frame(*frame);
+    let _ = crate::widgets::take_last_narration();
+    let mut batch = HudBatch::new([480, 262]);
+    let english = crate::lang::Language::load(&[&TooltipStrings], "en_us");
+    crate::lang::scoped(english, || title.draw(atlas, &mut batch, mouse, true));
+    crate::widgets::end_frame(*frame + 1);
+    *frame += 2;
+    (
+        crate::widgets::take_last_narration().tooltip,
+        batch.vertices,
+    )
+}
+
+/// The middle of the button `id` at 480 x 262.
+fn button_middle(title: &Title, id: u8) -> (f32, f32) {
+    let buttons = title.buttons(480.0, 262.0);
+    let b = buttons.iter().find(|b| b.id == id).unwrap();
+    (b.x + b.w / 2.0, b.y + 10.0)
+}
+
+/// The icon row's buttons carry vanilla's tooltips (`CommonButtons.language`,
+/// `accessibility`, `FriendsButton`), shown while the pointer is on one, beside
+/// it as `MenuTooltipPositioner` puts them (#12067).
+#[test]
+fn icon_buttons_show_their_tooltip_while_hovered() {
+    let f = Fixture::new();
+    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    crate::widgets::set_narrating(true);
+    let mut frame = 12_067_000;
+    let (none, plain) = draw_hovered(&f.title, &atlas, (0.0, 0.0), &mut frame);
+    assert_eq!(none, None);
+    // The icons sit at y 185, 20 high. Over the middle of one (y 195),
+    // MenuTooltipPositioner puts the text 12 right of the pointer and at
+    // 195 + 3 + round(lerp(13 / 20, 17, 5)) = 198 + 9 = 207.
+    for (id, text, top_left) in [
+        (5, "Friends", (228.0, 207.0)),
+        (6, "Change Language", (252.0, 207.0)),
+        (7, "Accessibility Settings", (276.0, 207.0)),
+    ] {
+        let mouse = button_middle(&f.title, id);
+        let (tooltip, drawn) = draw_hovered(&f.title, &atlas, mouse, &mut frame);
+        assert_eq!(tooltip.as_deref(), Some(text), "icon button {id}");
+        // The test atlas has no widget or tooltip sprites, so everything past
+        // the plain frame's vertices is the tooltip's text.
+        assert!(
+            drawn.len() > plain.len(),
+            "icon button {id} drew no tooltip"
+        );
+        let tail = &drawn[plain.len()..];
+        let min_x = tail.iter().map(|v| v.pos[0]).fold(f32::MAX, f32::min);
+        let min_y = tail.iter().map(|v| v.pos[1]).fold(f32::MAX, f32::min);
+        assert_eq!((min_x, min_y), top_left, "icon button {id}");
+    }
+    // A text button without a tooltip shows none.
+    let singleplayer = button_middle(&f.title, 1);
+    assert_eq!(
+        draw_hovered(&f.title, &atlas, singleplayer, &mut frame).0,
+        None
+    );
+    crate::widgets::set_narrating(false);
+}
+
+/// `AccessibilityOnboardingScreen.init` builds its Accessibility Settings...
+/// and Language... buttons with the same `CommonButtons`, tooltips and all.
+#[test]
+fn onboarding_common_buttons_show_their_tooltip_while_hovered() {
+    let mut f = Fixture::new();
+    f.title.start_onboarding();
+    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    crate::widgets::set_narrating(true);
+    let mut frame = 12_067_100;
+    // The first frame also wraps the message the buttons are laid out under.
+    let (none, plain) = draw_hovered(&f.title, &atlas, (0.0, 0.0), &mut frame);
+    assert_eq!(none, None);
+    for (id, text) in [
+        (onboarding::ACCESSIBILITY, "Accessibility Settings"),
+        (onboarding::LANGUAGE, "Change Language"),
+    ] {
+        let mouse = button_middle(&f.title, id);
+        let (tooltip, drawn) = draw_hovered(&f.title, &atlas, mouse, &mut frame);
+        assert_eq!(tooltip.as_deref(), Some(text), "onboarding button {id}");
+        assert!(
+            drawn.len() > plain.len(),
+            "onboarding button {id} drew no tooltip"
+        );
+    }
+    for id in [
+        onboarding::NARRATOR,
+        onboarding::SOUNDS,
+        onboarding::CONTINUE,
+    ] {
+        let mouse = button_middle(&f.title, id);
+        let (tooltip, _) = draw_hovered(&f.title, &atlas, mouse, &mut frame);
+        assert_eq!(tooltip, None, "onboarding button {id}");
+    }
+    crate::widgets::set_narrating(false);
 }
 
 #[test]
@@ -2597,4 +2720,93 @@ fn the_multiplayer_screens_have_their_own_ids() {
         .id(),
         "disconnected"
     );
+}
+
+#[test]
+fn native_field_visitor_excludes_preparing_and_game_rule_editors() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Multiplayer(crate::multiplayer::Screen::Direct {
+        address: "safe".into(),
+    });
+    f.title.preparing = true;
+    assert!(
+        !f.title
+            .edit_focused_text_field(|_| panic!("preparing has no editable native field"))
+    );
+    f.title.preparing = false;
+    *f.title.rules.get_mut() = Some(RulesScreen::for_creation(
+        &crate::gamerules::GameRules::default(),
+    ));
+    assert!(
+        !f.title
+            .edit_focused_text_field(|_| panic!("rule editors retain their own validation"))
+    );
+    *f.title.rules.get_mut() = None;
+    assert!(
+        f.title
+            .edit_focused_text_field(|field| assert_eq!(field.value, "safe"))
+    );
+}
+
+/// `RealmsCreateWorldFlow.createWorld`: the reset screen's Generate New World tile opens
+/// Create New World; its Create uploads instead of making a local world.
+#[test]
+fn a_realms_new_world_uploads_instead_of_creating_locally() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Create {
+        name: "New World".into(),
+        seed: String::new(),
+        creative: false,
+        focus: 0,
+        options: WorldOptions::default(),
+    };
+    f.title.realms_create = Some(crate::realms::CreateWorldRequest {
+        server: crate::realms::client::RealmServer::default(),
+        slot: 1,
+        kind: crate::realms::ResetKind::Empty,
+        creation: None,
+    });
+    let action = f.title.create_or_upload();
+    assert!(matches!(action, Action::None), "no local world is entered");
+    assert!(f.title.realms_create.is_none());
+    // Without the account's session the upload cannot start: the failure the service's
+    // refusal would show, over the reset screen.
+    let Mode::Realms(screen) = &f.title.mode else {
+        panic!("the upload is a Realms screen");
+    };
+    assert!(matches!(
+        screen.subscreen,
+        crate::realms::SubScreen::Error { .. }
+    ));
+    assert!(!f.title.saves.join("New World").exists());
+    let _ = fs::remove_dir_all(&f.root);
+}
+
+/// `CreateWorldScreen.openFresh`'s cancel for the tile: the screen the reset screen was
+/// opened from (the configuration screen), not the world list.
+#[test]
+fn cancelling_a_realms_new_world_returns_to_the_realm() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Create {
+        name: "New World".into(),
+        seed: String::new(),
+        creative: false,
+        focus: 0,
+        options: WorldOptions::default(),
+    };
+    f.title.realms_create = Some(crate::realms::CreateWorldRequest {
+        server: crate::realms::client::RealmServer::default(),
+        slot: 1,
+        kind: crate::realms::ResetKind::Empty,
+        creation: None,
+    });
+    f.title.cancel_create();
+    let Mode::Realms(screen) = &f.title.mode else {
+        panic!("the reset's Realm returns");
+    };
+    assert!(matches!(
+        screen.subscreen,
+        crate::realms::SubScreen::Configure { .. }
+    ));
+    let _ = fs::remove_dir_all(&f.root);
 }

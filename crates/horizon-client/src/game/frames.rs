@@ -116,12 +116,7 @@ impl Game<'_> {
         ));
         let supported = behind.legacy_solid || (s[1] == 0 && behind.has_class("DiodeBlock"));
         // canCoexist(true): only hanging entities facing the same way block it.
-        let overlaps = |o: ([f64; 3], [f64; 3])| (0..3).all(|i| o.0[i] < hi[i] && lo[i] < o.1[i]);
-        supported
-            && !self
-                .item_frames
-                .iter()
-                .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds()))
+        supported && super::paintings::frame_coexists(f, &self.item_frames, &self.paintings)
     }
     /// Asks the mods whether the acting guest may place a hanging entity
     /// of type `kind` at `pos` (`native_hanging_place`): true when one
@@ -154,6 +149,8 @@ impl Game<'_> {
         };
         let mut cancel = false;
         self.native_hanging_break(player, kind, pos, &mut cancel);
+        let dimension = self.dim.id();
+        self.native_hanging_break_v2(player, dimension, kind, pos, &mut cancel);
         cancel
     }
     /// `ItemFrameItem.useOn`.
@@ -187,6 +184,7 @@ impl Game<'_> {
             check_interval: 0,
             // `applyComponentsFromItemStack` sets `CUSTOM_NAME`.
             custom_name: stack.data().and_then(|d| d.custom_name.clone()),
+            random: horizon_client::random_source::entity(),
         };
         // `EntityType.createDefaultStackConfig`: the item's `custom_data`, then its
         // `entity_data` merged over the frame (`TypedEntityData.loadInto`), before
@@ -288,6 +286,13 @@ impl Game<'_> {
             let Some(held) = self.held().cloned() else {
                 return false;
             };
+            // A map tracking more than 256 counted markers stays in the hand
+            // (InteractionResult.FAIL): nothing else is tried, no swing (#11383).
+            if let Some(id) = super::maps::map_id(&held)
+                && self.map(id).is_some_and(|m| m.tracked_over_limit(256))
+            {
+                return true;
+            }
             self.item_frames[i].item = Some(ItemStack { count: 1, ..held });
             action = "put";
             self.audio
@@ -305,6 +310,10 @@ impl Game<'_> {
         let p = self.item_frames[i].pos;
         self.world.modified.insert((p[0] >> 4, p[2] >> 4));
         self.frame_output_changed(p);
+        // ItemFrame.interact: BLOCK_CHANGE by the player, after setItem or
+        // setRotation.
+        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        self.post_game_event("minecraft:block_change", at, ctx);
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             let frame = self.item_frames.iter().find(|f| f.id == entity_id);
             let item = frame
@@ -348,7 +357,7 @@ impl Game<'_> {
             .to_owned();
         let rotation = self.item_frames[i].rotation;
         let at = center(&self.item_frames[i]);
-        let f = if with_frame {
+        let mut f = if with_frame {
             self.item_frames.remove(i)
         } else {
             self.item_frames[i].clone()
@@ -361,8 +370,19 @@ impl Game<'_> {
         );
         if !with_frame {
             self.item_frames[i].item = None;
+        } else {
+            // BlockAttachedEntity.kill, before dropItem. A frame holding an
+            // item only gives the item up (ItemFrame.hurtServer).
+            self.entity_killed_event(at, true);
         }
-        self.drop_frame_items(&f, with_frame, true);
+        self.drop_frame_items(&mut f, with_frame, true);
+        if !with_frame {
+            self.item_frames[i].random = f.random.clone();
+        }
+        // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
+        // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
+        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        self.post_game_event("minecraft:block_change", at, ctx);
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
@@ -401,7 +421,7 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| b.update_neighbour_for_output_signal(level, ticks, at));
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
-    fn drop_frame_items(&mut self, f: &ItemFrame, with_frame: bool, by_player: bool) {
+    fn drop_frame_items(&mut self, f: &mut ItemFrame, with_frame: bool, by_player: bool) {
         // The framed map forgets the frame, except when the drops are off and
         // something caused the break (`removeFramedMap` runs only for a null
         // `causedBy` then).
@@ -420,7 +440,7 @@ impl Game<'_> {
             drops.push(f.item_stack_with_data());
         }
         if let Some(item) = f.item.clone()
-            && self.world.random.next_float() < f.drop_chance
+            && f.random.next_float() < f.drop_chance
         {
             drops.push(item);
         }
@@ -467,10 +487,14 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            let f = self.item_frames.remove(i);
+            let mut f = self.item_frames.remove(i);
+            self.entity_killed_event_by(center(&f), self.explosion_kill_credit());
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-            self.drop_frame_items(&f, true, false);
+            self.drop_frame_items(&mut f, true, false);
+            // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
+            let ctx = self.who_context(None, None);
+            self.post_game_event("minecraft:block_change", center(&f), ctx);
             self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
             if f.item.is_some() {
                 self.frame_output_changed(f.pos);
@@ -491,13 +515,17 @@ impl Game<'_> {
             self.item_frames[i].check_interval += 1;
             if self.item_frames[i].check_interval >= 100 {
                 self.item_frames[i].check_interval = 0;
-                let f = self.item_frames[i].clone();
+                let mut f = self.item_frames[i].clone();
                 if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
                 {
                     self.item_frames.remove(i);
+                    self.entity_killed_event(center(&f), false);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-                    self.drop_frame_items(&f, true, false);
+                    self.drop_frame_items(&mut f, true, false);
+                    // ItemFrame.dropItem(level, null): BLOCK_CHANGE after the drops.
+                    let ctx = self.who_context(None, None);
+                    self.post_game_event("minecraft:block_change", center(&f), ctx);
                     if f.item.is_some() {
                         self.frame_output_changed(f.pos);
                     }
@@ -542,6 +570,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(f.id));
             let s = f.step();
             // Pose: to the block centre, then X/Y rotation by facing.
             let (x_rot, y_rot) = if s[1] == 0 {
@@ -680,6 +709,7 @@ impl Game<'_> {
         for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
+            self.mark_motion(entity_start, Self::MOTION_FRAME_ITEM | u64::from(id));
             let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
             let state = self.resolve_item(
                 &stack,
@@ -699,13 +729,114 @@ impl Game<'_> {
                 self.cull_skinned(out, entity_start, skinned);
             }
         }
+        // Maps: keyed by their map id, which several frames can show, so they stay unmarked.
+        self.mark_motion(out.len(), 0);
+        // Nearest first: past the atlas's map slots, the far ones go without.
+        maps.sort_by(|a, b| {
+            let d = |m: &glam::Mat4| {
+                m.transform_point3(glam::Vec3::new(64.0, 64.0, 0.0))
+                    .length_squared()
+            };
+            d(&a.1).total_cmp(&d(&b.1))
+        });
         for (id, m, light, cull, kind) in maps {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
+            // Its outline first: a map out of sight takes no slot in the atlas, or with
+            // more maps around than slots, the ones in view lost theirs to it.
+            if cull {
+                for c in [[0.0, 0.0], [128.0, 0.0], [128.0, 128.0], [0.0, 128.0]] {
+                    out.push(Vertex {
+                        pos: m
+                            .transform_point3(glam::Vec3::new(c[0], c[1], 0.0))
+                            .to_array(),
+                        ..bytemuck::Zeroable::zeroed()
+                    });
+                }
+                self.cull_entity_vertices(out, entity_start);
+                if out.len() == entity_start {
+                    continue;
+                }
+                out.truncate(entity_start);
+            }
             self.map_vertices(id, true, m, light, out);
             if cull {
                 self.cull_entity_vertices(out, entity_start);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod map_limit_tests {
+    use super::super::maps::{Decoration, Key, MapData};
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+
+    fn frame(id: u32) -> ItemFrame {
+        ItemFrame {
+            id,
+            pos: [0, 64, id as i32],
+            facing: 3,
+            glow: false,
+            item: None,
+            rotation: 0,
+            drop_chance: 1.0,
+            fixed: false,
+            invisible: false,
+            check_interval: 0,
+            custom_name: None,
+            random: horizon_core::random::LegacyRandom::new(0),
+        }
+    }
+    /// A map whose `count` frame markers all count toward the limit.
+    fn map_tracking(count: i32) -> MapData {
+        let mut map = MapData::fresh(0.0, 0.0, 0, "minecraft:overworld");
+        map.decorations = (0..count)
+            .map(|i| Decoration {
+                sprite: "map/decorations/frame",
+                x: 0,
+                y: 0,
+                rot: 0,
+                name: None,
+                key: Key::Frame(1000 + i),
+            })
+            .collect();
+        map
+    }
+    fn filled_map(id: i32) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:filled_map", 1);
+        stack.data_mut().map_id = Some(id);
+        stack
+    }
+    fn at(id: u32) -> Option<InteractTarget> {
+        Some(InteractTarget {
+            id: id as i32,
+            location: [0.0; 3],
+        })
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_map_tracking_more_than_256_markers_stays_in_the_hand() {
+        let mut game = server_game();
+        game.item_frames = vec![frame(1), frame(2)];
+        game.maps.data.insert(7, map_tracking(257));
+        game.maps.data.insert(8, map_tracking(256));
+
+        // ItemFrame.interact: FAIL, the frame stays empty and the map is kept.
+        *game.held_mut() = Some(filled_map(7));
+        assert!(
+            game.interact_frame(at(1)),
+            "the refusal ends the interaction"
+        );
+        assert!(game.item_frames[0].item.is_none());
+        assert_eq!(game.held().and_then(|s| s.data()?.map_id), Some(7));
+
+        // At the limit (not over it) the map goes in.
+        *game.held_mut() = Some(filled_map(8));
+        assert!(game.interact_frame(at(2)));
+        let framed = game.item_frames[1].item.as_ref();
+        assert_eq!(framed.and_then(|s| s.data()?.map_id), Some(8));
     }
 }

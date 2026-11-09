@@ -76,7 +76,50 @@ fn target(
     (texture, view)
 }
 
+/// The depth stand-in is initialized to no shadow on the next pack render.
+pub(super) fn stand_in(device: &wgpu::Device) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("Shader pack shadow stand-in"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
 impl ShadowTargets {
+    pub fn reset_history(&mut self, device: &wgpu::Device, shadow: &horizon_shaders::Shadow) {
+        let mut colors = 0;
+        let mut doubled = 0;
+        let formats = std::array::from_fn(|n| match &self.color[n] {
+            Some([a, b]) => {
+                colors |= 1 << n;
+                if a.texture() != b.texture() {
+                    doubled |= 1 << n;
+                }
+                a.texture().format()
+            }
+            None => wgpu::TextureFormat::Rgba8Unorm,
+        });
+        *self = Self::new(
+            device,
+            shadow,
+            formats,
+            colors,
+            doubled,
+            self.depth1.is_some(),
+        );
+    }
+
     /// The buffers of `shadow` the pack uses: `colors` (bit n: shadowcolor n), `depth1` when
     /// some program reads `shadowtex1`, `doubled` (bit n: shadowcolor n needs a B texture). The
     /// resolution is kept within the device's limit.

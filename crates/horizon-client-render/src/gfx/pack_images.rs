@@ -23,6 +23,13 @@ pub(super) struct PackImage {
 }
 
 impl PackImage {
+    pub(super) fn reset_history(&mut self) {
+        self.view = None;
+        self.copy = None;
+        self.before = None;
+        self.made_for = [0; 2];
+    }
+
     pub(super) fn sample_type(&self, features: wgpu::Features) -> wgpu::TextureSampleType {
         self.format
             .sample_type(None, Some(features))
@@ -75,6 +82,9 @@ pub(super) fn format(f: Format, packed_float: bool) -> wgpu::TextureFormat {
         _ => rgba,
     };
     match (f.kind, f.bits) {
+        (Kind::Unorm, 10) => T::Rgb10a2Unorm,
+        (Kind::Uint, 10) => T::Rgb10a2Uint,
+        (Kind::Snorm, 16) => pick(T::R16Snorm, T::Rg16Snorm, T::Rgba16Snorm),
         (Kind::Int, 8) => pick(T::R8Sint, T::Rg8Sint, T::Rgba8Sint),
         (Kind::Int, 16) => pick(T::R16Sint, T::Rg16Sint, T::Rgba16Sint),
         (Kind::Int, _) => pick(T::R32Sint, T::Rg32Sint, T::Rgba32Sint),
@@ -316,6 +326,11 @@ impl StandIn {
     }
 }
 
+pub(super) fn reset_stand_ins(device: &wgpu::Device, images: &mut Vec<StandIn>) {
+    let wanted = images.iter().map(|i| (i.format, i.dimension)).collect();
+    *images = stand_ins(device, wanted);
+}
+
 /// One stand-in for each format and dimension of `wanted`.
 pub(super) fn stand_ins(
     device: &wgpu::Device,
@@ -392,6 +407,12 @@ pub(super) struct Buffers {
 }
 
 impl Buffers {
+    pub(super) fn reset_history(&mut self) {
+        self.group = None;
+        self.buffers.clear();
+        self.made_for = [0; 2];
+    }
+
     /// The layout of `objects`, bound in `stages`; each buffer is at least its entry in
     /// `minimums` long.
     pub(super) fn new(

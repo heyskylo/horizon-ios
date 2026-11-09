@@ -80,11 +80,11 @@ fn axis_triggers(
 
 fn trigger_value(mapped: bool, value: Option<f32>, pressed: bool, axis: Option<f32>) -> f32 {
     if mapped {
-        if pressed {
-            value.unwrap_or(0.0).max(1.0)
-        } else {
-            value.unwrap_or(0.0)
-        }
+        // gilrs says pressed at three quarters of the way, which isn't the player's threshold: a
+        // pressed trigger with no value yet is the only one that has to count as full.
+        value
+            .filter(|value| *value > 0.0)
+            .unwrap_or(if pressed { 1.0 } else { 0.0 })
     } else {
         axis.map_or(0.0, |value| ((value + 1.0) * 0.5).clamp(0.0, 1.0))
     }
@@ -182,5 +182,12 @@ mod tests {
         assert_eq!(trigger_value(true, None, false, Some(1.0)), 0.0);
         assert_eq!(trigger_value(true, Some(0.25), false, Some(1.0)), 0.25);
         assert_eq!(trigger_value(true, None, true, None), 1.0);
+    }
+
+    #[test]
+    fn an_analog_trigger_reads_its_value_past_where_gilrs_says_pressed() {
+        // gilrs' pressed starts at 0.75, under a threshold of 0.9.
+        assert_eq!(trigger_value(true, Some(0.8), true, None), 0.8);
+        assert_eq!(trigger_value(true, Some(1.0), true, None), 1.0);
     }
 }

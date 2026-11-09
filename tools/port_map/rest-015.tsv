@@ -112,7 +112,7 @@ ReturnCommand.ReturnValueCustomExecutor.run	port	crates/horizon-client/src/game/
 RideCommand.mount	port	crates/horizon-client/src/game/commands/world_cmds.rs::Game::cmd_ride	mount branch with already-riding, player and loop checks
 RideCommand.dismount	port	crates/horizon-client/src/game/commands/world_cmds.rs::Game::cmd_ride	dismount branch
 RotateCommand.register	port	crates/horizon-command/src/tree_world.rs::rotate_swing	rotate literal with entity, facing and rotation syntax
-SaveAllCommand.register	port	crates/horizon-client/src/game.rs::Game::save_game_metadata	gap: minor: the full save exists here (level, advancements, scoreboard, world state) but no /save-all literal reaches it
+SaveAllCommand.register	port	crates/horizon-client/src/game/autosave.rs::Game::save_game_metadata	gap: minor: the full save exists here (level, advancements, scoreboard, world state) but no /save-all literal reaches it
 SayCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	say literal; message delivery is Game::cmd_say
 ScheduleCommand.remove	port	crates/horizon-client/src/game/functions.rs::Game::cmd_schedule	schedule.clear branch: removes by id, failure when none
 ScoreboardCommand.createRenderTypeModify	port	crates/horizon-command/src/tree_scoreboard.rs::scoreboard	rendertype literal per render type

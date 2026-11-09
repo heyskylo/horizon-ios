@@ -250,7 +250,11 @@ pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) 
     if let Some(name) = stack.custom_name() {
         return name.to_owned();
     }
-    if let Some(name) = stack.item_name() {
+    // A potion's or tipped arrow's own name comes before its `item_name`.
+    let contents = crate::brewing::contents_name_key(stack);
+    if contents.is_none()
+        && let Some(name) = stack.item_name()
+    {
         return name;
     }
     if stack.data().is_some_and(|d| d.ominous_banner) {
@@ -260,8 +264,8 @@ pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) 
     if let Some(head) = player_head_name(stack) {
         return head.title(translate);
     }
-    let key = if is_potion_item(&stack.item) {
-        Some(crate::brewing::potion_name_key(&stack.item, stack.potion()))
+    let key = if contents.is_some() {
+        contents
     } else if let Some(pattern) = path.strip_suffix("_armor_trim_smithing_template") {
         Some(format!("trim_pattern.minecraft.{pattern}"))
     } else if path == "netherite_upgrade_smithing_template" {
@@ -671,6 +675,84 @@ pub fn unbreakable_line(
     .then(|| translate("item.unbreakable").unwrap_or_else(|| "item.unbreakable".into()))
 }
 
+/// `ItemStack.addDetailsToTooltip`'s adventure lines, `can_break` then
+/// `can_place_on`: each shown one adds an empty line, its gray header
+/// (`AdventureModePredicate.CAN_BREAK_HEADER` / `CAN_PLACE_HEADER`) and
+/// `AdventureModePredicate.computeTooltip`: `item.canUse.unknown` in gray when
+/// some predicate names no blocks, else every distinct block of the
+/// predicates' holder sets by its name (`Block.getName`) in dark gray.
+/// `tag_blocks` lists the blocks of a block tag.
+pub fn adventure_lines(
+    stack: &ItemStack,
+    display: &TooltipDisplay,
+    tag_blocks: &dyn Fn(&str) -> Vec<String>,
+    translate: &dyn Fn(&str) -> Option<String>,
+) -> Vec<(String, u32)> {
+    let text = |key: &str| translate(key).unwrap_or_else(|| key.to_owned());
+    let namespaced = |id: &str| {
+        if id.contains(':') {
+            id.to_owned()
+        } else {
+            format!("minecraft:{id}")
+        }
+    };
+    let (gray, dark_gray) = (rgba(170, 170, 170, 255), rgba(85, 85, 85, 255));
+    let mut lines = Vec::new();
+    for (component, header) in [
+        ("minecraft:can_break", "item.canBreak"),
+        ("minecraft:can_place_on", "item.canPlace"),
+    ] {
+        let Some(tag) = stack.data().and_then(|d| d.other(component)) else {
+            continue;
+        };
+        if !display.shows(component) {
+            continue;
+        }
+        lines.push((String::new(), u32::MAX));
+        lines.push((text(header), gray));
+        let predicates: Vec<&Tag> = match tag {
+            Tag::List(list) => list.iter().collect(),
+            single => vec![single],
+        };
+        if predicates.iter().any(|p| p.get("blocks").is_none()) {
+            lines.push((text("item.canUse.unknown"), gray));
+            continue;
+        }
+        let mut blocks: Vec<String> = Vec::new();
+        for p in predicates {
+            let ids = match p.get("blocks") {
+                Some(Tag::String(entry)) => {
+                    let entry = entry.to_string_lossy();
+                    match entry.strip_prefix('#') {
+                        Some(tag) => tag_blocks(&namespaced(tag)),
+                        None => vec![namespaced(&entry)],
+                    }
+                }
+                Some(Tag::List(entries)) => entries
+                    .iter()
+                    .filter_map(|e| match e {
+                        Tag::String(id) => Some(namespaced(&id.to_string_lossy())),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for id in ids {
+                if !blocks.contains(&id) {
+                    blocks.push(id);
+                }
+            }
+        }
+        for id in blocks {
+            lines.push((
+                text(&format!("block.{}", id.replacen(':', ".", 1))),
+                dark_gray,
+            ));
+        }
+    }
+    lines
+}
+
 /// `OminousBottleAmplifier.addToTooltip`: the effect the bottle gives,
 /// `MobEffectInstance(BAD_OMEN, 120000, amplifier)`, listed as
 /// `PotionContents.addPotionTooltip` lists it, in the colour of Bad Omen's
@@ -919,7 +1001,10 @@ pub fn detail_lines(
     }
     lines.extend(jukebox_line(stack, info, &display, translate));
     // Trim.addToTooltip.
-    if let Some((material, pattern)) = data.and_then(|d| d.trim.as_ref()) {
+    if let Some((material, pattern)) = data
+        .and_then(|d| d.trim.as_ref())
+        .and_then(crate::item_data::trim::named)
+    {
         let short = |s: &str| s.trim_start_matches("minecraft:").to_owned();
         lines.push(text("item.minecraft.smithing_template.upgrade"));
         lines.push(format!(
@@ -1122,7 +1207,10 @@ pub fn styled_name(stack: &ItemStack, fallback: impl FnOnce() -> String) -> crat
             ..Default::default()
         });
     }
-    if let Some(component) = stack.data().and_then(|d| d.other("minecraft:item_name")) {
+    // A potion or tipped arrow is named by its contents, not its `item_name`.
+    if crate::brewing::contents_name_key(stack).is_none()
+        && let Some(component) = stack.data().and_then(|d| d.other("minecraft:item_name"))
+    {
         return crate::entity_nbt::name_text(component);
     }
     crate::text::Text::legacy(&fallback())
@@ -1485,6 +1573,35 @@ mod tests {
         assert!(TooltipDisplay::for_stack(&stack).shows("minecraft:lore"));
     }
 
+    /// `PotionItem.getName`: the hotbar's and the tooltip's name of a potion
+    /// with an `item_name` is its contents', and an arrow's the same.
+    #[test]
+    fn a_potion_with_an_item_name_is_named_by_its_contents() {
+        let comp = horizon_items::item_data::command_components(
+            r#"[item_name="Bottle",potion_contents={potion:"minecraft:long_swiftness"}]"#,
+        )
+        .unwrap();
+        let (damage, extra) = horizon_items::item_data::decode_components(Some(&comp));
+        let mut stack = ItemStack {
+            item: "minecraft:potion".into(),
+            count: 1,
+            damage,
+            extra,
+        };
+        let translate = |key: &str| match key {
+            "item.minecraft.potion.effect.swiftness" => Some("Potion of Swiftness".to_owned()),
+            "item.minecraft.tipped_arrow.effect.swiftness" => Some("Arrow of Swiftness".to_owned()),
+            _ => None,
+        };
+        let name = styled_name(&stack, || name_line(&stack, &translate));
+        assert_eq!(name.plain(), "Potion of Swiftness");
+        stack.item = "minecraft:tipped_arrow".into();
+        assert_eq!(name_line(&stack, &translate), "Arrow of Swiftness");
+        // Any other item keeps its item_name.
+        stack.item = "minecraft:stick".into();
+        assert_eq!(styled_name(&stack, || "fallback".into()).plain(), "Bottle");
+    }
+
     #[test]
     fn name_line_translates_items_of_any_namespace() {
         let translate = |key: &str| match key {
@@ -1776,6 +1893,38 @@ mod tests {
         assert_eq!(modifier_line(&lang, "movement_speed", 0.0, 2, false), None);
     }
 
+    #[test]
+    fn test_russian_wooden_sword_modifiers() {
+        let lang = |k: &str| {
+            Some(
+                match k {
+                    "attribute.modifier.equals.0" => "%2$s: %1$s",
+                    "attribute.modifier.plus.0" => "%2$s: +%1$s",
+                    "attribute.modifier.take.0" => "%2$s: -%1$s",
+                    "attribute.modifier.equals.2" => "%2$s: %1$s%%",
+                    "attribute.modifier.plus.2" => "%2$s: +%1$s%%",
+                    "attribute.modifier.take.2" => "%2$s: -%1$s%%",
+                    "attribute.name.attack_damage" => "Урон при атаке",
+                    "attribute.name.attack_speed" => "Скорость атаки",
+                    "attribute.name.movement_speed" => "Скорость",
+                    _ => return None,
+                }
+                .to_owned(),
+            )
+        };
+        assert_eq!(
+            modifier_line(&lang, "attack_damage", 4.0, 0, true).as_deref(),
+            Some("Урон при атаке: 4")
+        );
+        assert_eq!(
+            modifier_line(&lang, "attack_speed", 1.6, 0, true).as_deref(),
+            Some("Скорость атаки: 1.6")
+        );
+        assert_eq!(
+            modifier_line(&lang, "movement_speed", -0.6, 2, false).as_deref(),
+            Some("Скорость: -60%")
+        );
+    }
     #[test]
     fn modifier_lines_support_positional_format() {
         let lang = |k: &str| {
