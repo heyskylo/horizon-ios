@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Local};
-use horizon_telemetry::system::machine_arch;
+use horizon_system::{command_output, machine_arch};
 
 /// What the game is doing, set as it goes: graphics adapter, settings, packs, world.
 static DETAILS: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
@@ -230,15 +230,6 @@ pub fn release_tag() -> Option<String> {
         .then(|| folder.to_owned())
 }
 
-fn command_output(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (out.status.success() && !text.is_empty()).then_some(text)
-}
-
 fn read(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
@@ -253,7 +244,7 @@ fn arch_label(build: &str, machine: &str) -> String {
 }
 
 /// `PRETTY_NAME` of /etc/os-release and the kernel, or the system's own version string.
-fn operating_system() -> String {
+pub(crate) fn operating_system() -> String {
     let arch = arch_label(std::env::consts::ARCH, machine_arch());
     let version = if cfg!(target_os = "linux") {
         let name = read("/etc/os-release").and_then(|t| {
@@ -269,7 +260,7 @@ fn operating_system() -> String {
     } else if cfg!(target_os = "macos") {
         command_output("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}"))
     } else if cfg!(windows) {
-        horizon_telemetry::system::windows_version()
+        horizon_system::windows_version()
     } else {
         None
     };
@@ -284,11 +275,11 @@ fn operating_system() -> String {
 pub fn cpu() -> String {
     let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
     let name = if cfg!(target_os = "linux") {
-        read("/proc/cpuinfo").and_then(|t| horizon_telemetry::system::linux_cpu_name(&t))
+        read("/proc/cpuinfo").and_then(|t| horizon_system::linux_cpu_name(&t))
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
     } else if cfg!(windows) {
-        horizon_telemetry::system::windows_cpu()
+        horizon_system::windows_cpu()
     } else {
         std::env::var("PROCESSOR_IDENTIFIER").ok()
     };
@@ -387,6 +378,21 @@ fn thread_name(side: &str) -> String {
 /// promise to launchers (docs/api/launch.md), so it never changes within a line of that API.
 pub const SAVED_LINE: &str = "Horizon: crash report saved to ";
 
+/// What runs on each report before it is saved ([`on_report`]).
+pub type ReportHook = fn(&Path, &Report);
+
+static REPORT_HOOKS: std::sync::RwLock<Vec<ReportHook>> = std::sync::RwLock::new(Vec::new());
+
+/// Runs `hook` with every crash report, before it is saved: the game folder and the report. An
+/// extension point for what lives above the engine (Horizon's opt-in telemetry keeps the
+/// report). A hook runs inside the crash handler: it must not panic or block.
+pub fn on_report(hook: ReportHook) {
+    REPORT_HOOKS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(hook);
+}
+
 /// Writes the report and tells where it is; the log gets the error too.
 fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
     if REPORTED.swap(true, Ordering::SeqCst) {
@@ -407,7 +413,13 @@ fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
         ),
     );
     crate::logging::flush();
-    crate::telemetry::keep_crash(home, &report);
+    for hook in REPORT_HOOKS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+    {
+        hook(home, &report);
+    }
     // A player of a shared game folder (`--player-dir`) finds the report beside its own log.
     match report.save(crate::logging::player_dir_override().unwrap_or(home)) {
         Ok(path) => {

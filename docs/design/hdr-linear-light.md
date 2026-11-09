@@ -252,6 +252,7 @@ They read the frame as it is stored and, outside the 0.1 path, have no marks to 
 above. Native upscaling
 ([#1403](https://github.com/horizon-rust/horizon/issues/1403)) should take the float frame. TAA over values above 1
 may need a tone-weighted resolve so bright pixels don't sparkle. Frame generation stays off with HDR output, as today.
+The rules such a pass keeps now are in [hdr-passes.md](../hdr-passes.md).
 
 ## Tests
 

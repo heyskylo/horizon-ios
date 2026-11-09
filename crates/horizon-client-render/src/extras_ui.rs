@@ -107,12 +107,7 @@ impl Screen for ExtrasScreen {
                 }
             }
         }
-        vec![Sheet {
-            id: (),
-            name: lang::get(TITLE),
-            about: lang::get(ABOUT),
-            groups,
-        }]
+        vec![Sheet::new((), lang::get(TITLE), lang::get(ABOUT), groups)]
     }
     fn press(&mut self, s: &mut Settings, row: ExtraRow, back: bool) -> Vec<Output> {
         match row {

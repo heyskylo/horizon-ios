@@ -1,12 +1,12 @@
-ServerData.write	port	crates/horizon-protocol/src/servers.rs::ServerEntry::to_tag	gap: minor: no acceptedCodeOfConduct entry (Horizon never stores code of conduct acceptance)
-ServerData.read	port	crates/horizon-protocol/src/servers.rs::ServerEntry::from_tag	gap: minor: acceptedCodeOfConduct is not read
+ServerData.write	port	crates/horizon-protocol/src/servers.rs::ServerEntry::to_tag	writes name, ip, icon, acceptTextures and acceptedCodeOfConduct when it is not 0
+ServerData.read	port	crates/horizon-protocol/src/servers.rs::ServerEntry::from_tag	acceptedCodeOfConduct is read as its int hash (0 when absent or not an int), with the name, ip, icon and acceptTextures
 ServerData.copyNameIconFrom	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	the Edit save writes name, ip and pack setting and keeps the icon
 ServerData.copyFrom	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	Edit opens the form pre-filled from the entry (name, ip, pack setting)
 ServerData.validateIcon	port	crates/horizon-client/src/multiplayer.rs::icon_pixels	gap: minor: only 64x64 PNGs are kept; vanilla keeps any PNG up to 1024x1024 in servers.dat
-ServerList.get	missing		minor: Direct Connect never looks up a saved entry by address, so its saved pack setting and icon are not used
-ServerList.unhide	missing		minor: no hidden-server list (vanilla keeps up to 16 direct-join entries)
+ServerList.get	inline	crates/horizon-client/src/multiplayer.rs::remember_direct_join	Direct Connect looks the address up among shown and hidden entries before adding a hidden one
+ServerList.unhide	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	Add Server brings back the hidden entry for that address with the new name and icon, keeping its other settings
 ServerList.remove	port	crates/horizon-client/src/multiplayer.rs::Screen::click	Delete confirm removes the selected row and saves
-ServerList.add	port	crates/horizon-client/src/multiplayer.rs::Screen::click	gap: minor: direct-join entries are not kept hidden (hidden=true)
+ServerList.add	port	crates/horizon-protocol/src/servers.rs::add_hidden	a hidden entry goes first and only the newest 16 are kept; remember_direct_join adds a direct-joined address no entry has through it
 ServerList.swap	port	crates/horizon-client/src/multiplayer.rs::Screen::click	arrow click on a row swaps it with its neighbour and saves
 ServerList.set	missing		minor: no write-back of one saved entry by name and address (only the code-of-conduct save uses it)
 ServerStatusPinger.pingServer	port	crates/horizon-client/src/multiplayer.rs::ping_all	gap: minor: no unknown-host message; one thread per server with a 5 s timeout
@@ -14,10 +14,10 @@ ServerStatusPinger.onPingFailed	port	crates/horizon-client/src/multiplayer.rs::p
 ServerStatusPinger.pingLegacyServer	port	crates/horizon-client/src/net.rs::ping_legacy	the pre-1.7 ping is tried when the status handshake fails (multiplayer.rs)
 ServerStatusPinger.tick	skip:other		Horizon pings on plain threads, so there are no connections to tick
 ServerStatusPinger.removeAll	skip:other		pings are not cancelled on screen close; threads end on their own timeout
-SessionSearchTrees.rebuildAfterLanguageChange	skip:java		creative search reads names at query time, so there are no trees to rebuild
-SessionSearchTrees.getTooltipLines	inline	crates/horizon-client/src/creative.rs::Creative::from_json	search lines come pre-stripped from the export and are read here
+SessionSearchTrees.rebuildAfterLanguageChange	inline	crates/horizon-client/src/creative.rs::Creative::search_results	language generation changes invalidate the cached translated tooltip lines on the next query
+SessionSearchTrees.getTooltipLines	port	crates/horizon-client/src/creative.rs::Creative::localized_lines	translated search lines include visible stored and applied enchantments; English uses pre-stripped export lines
 SessionSearchTrees.updateCreativeTags	inline	crates/horizon-client/src/creative.rs::Creative::from_json	tag index comes from the export's tag lists
-SessionSearchTrees.updateCreativeTooltips	inline	crates/horizon-client/src/creative.rs::Creative::from_json	name index comes from the export's tooltip lines
+SessionSearchTrees.updateCreativeTooltips	inline	crates/horizon-client/src/creative.rs::Creative::search_results	name search uses exported English lines or lazily rebuilt translated tooltip lines
 ChatAbilities.selectVisibleMessages	port	crates/horizon-client-render/src/chat.rs::ChatAbilities::shows	source filter: client lines always, player and server lines per the abilities
 ChatAbilities.Builder.build	inline	crates/horizon-client-render/src/chat.rs::ChatAbilities::new	restrictions come from the Chat option alone; new() maps the visibility to them
 ChatListener.tick	port	crates/horizon-client/src/game/remote.rs::tick_chat_queue	the queue runs down with the ticks and pauses with the game
@@ -92,7 +92,7 @@ AbstractCubeMobRenderer.applySizeAndSquish	port	crates/horizon-client/src/mobs/c
 AbstractCubeMobRenderer.extractRenderState	port	crates/horizon-client/src/mobs/cube.rs::scale	squish and size are read from the mob at draw time
 AbstractHoglinRenderer.extractRenderState	port	crates/horizon-client/src/mobs/piglin.rs::hoglin_anim	the headbutt count (anim_ticks) drives the head pose
 AbstractHorseRenderer.extractRenderState	port	crates/horizon-client/src/mobs/equine.rs::anim	eat, stand and mouth poses; saddle and armour come from render.rs layers
-AbstractMinecartRenderer.submit	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	gap: player: no hurt tilt when a cart is hit (hurt_time is not read here); minor: no per-cart offset jitter
+AbstractMinecartRenderer.submit	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	the seat follows the jittered, pitched cart (per-cart offset jitter) and a hurt tilt rotates it by sin(hurt) * hurt * damage / 10 * hurt_dir
 AbstractMinecartRenderer.newRender	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	the new path's seat translation after the yaw/pitch rotation, drawn when `minecart_improvements()` is on or a lerp is queued
 AbstractMinecartRenderer.oldRender	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	rail-based draw is the path Horizon has
 AbstractMinecartRenderer.newExtractState	port	crates/horizon-client/src/game/remote.rs::Game::remote_minecart_lerp	the cart's position and rotation sampled at the frame's partial tick from the steps a NewMinecartBehavior cart has queued; None when the cart has no lerp, and the renderer then keeps the entity's own interpolated position and rotation

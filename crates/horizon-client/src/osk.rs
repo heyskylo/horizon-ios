@@ -5,6 +5,7 @@
 //! It only produces [`Output`]s; the game feeds them to the focused field
 //! the way typed keys reach it.
 use crate::gamepad::{Button, MenuJob};
+use crate::hud_kit::hint::HintRow;
 use crate::pad_glyph::{Glyph, Glyphs};
 use crate::ui_theme::{self, Face, Ui, color};
 
@@ -351,9 +352,10 @@ impl Keyboard {
             (MenuJob::Start, tr("gui.done", "Done")),
             (MenuJob::Back, tr("horizon.osk.close", "Close")),
         ];
+        // This font draws no glyph art: each button by its print, "A Type".
         let line: Vec<String> = hints
-            .iter()
-            .map(|(job, what)| format!("{} {what}", Glyph::menu(*job, glyphs).label()))
+            .into_iter()
+            .map(|(job, what)| HintRow::new([Glyph::menu(job, glyphs)], what).text())
             .collect();
         ui.text_centered(
             Face::Regular,

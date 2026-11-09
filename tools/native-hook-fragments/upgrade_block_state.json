@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "upgrade_block_state", "target": "horizon_client::game::native_world_edit::Game<'_>::native_upgrade_block_state"}
+  ],
+  "rust_summary": "`native_upgrade_block_state(name, props, data_version)`: a block state written before the 1.13 flattening, upgraded to its 1.13 name and properties as the datafixers do it.",
+  "doc_summary": "`native_upgrade_block_state(name, props, data_version)` gives a block state (`name` and its `props` as `key`, `value` pairs) as the datafixers upgrade it when it was written at `data_version`: a state from before DataVersion 1519 (1.13, the flattening) comes out with its 1.13 name and properties, from the `BlockStateData` table; any other state, or one the table doesn't know, comes back as it is. The numeric ids of the oldest chunks are not read. Bundles need \"hooks\": @API:upgrade_block_state@.",
+  "comments": ["crates/horizon-world/src/datafix/mod.rs", "crates/horizon-client/src/game/native_world_edit.rs"]
+}

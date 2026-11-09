@@ -479,6 +479,8 @@ impl Screen for ControllerScreen {
                         .collect(),
                 })
                 .collect(),
+            listed: true,
+            heading: None,
         };
         rows().into_iter().map(sheet).collect()
     }
@@ -532,8 +534,9 @@ impl Screen for ControllerScreen {
         true
     }
     /// This player's controller settings, bindings included, as the screen found them.
-    fn undo(&mut self, s: &mut Settings, before: &Settings) {
+    fn undo(&mut self, s: &mut Settings, before: &Settings) -> Vec<Output> {
         s.controller = before.controller.clone();
+        Vec::new()
     }
     /// Undo is there exactly while the controller settings differ from what the screen opened
     /// with: a binding the game made while the row waited counts, a value stepped back doesn't.

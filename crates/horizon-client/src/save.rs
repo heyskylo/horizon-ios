@@ -597,27 +597,14 @@ fn read_ticks(
 }
 fn fluid_name(kind: u32) -> Option<String> {
     use horizon_world::fluid::FluidKind;
-    let fluid = *FluidKind::ALL.get(kind as usize)?;
-    Some(
-        match fluid {
-            FluidKind::Empty => return None,
-            FluidKind::FlowingWater => "minecraft:flowing_water",
-            FluidKind::Water => "minecraft:water",
-            FluidKind::FlowingLava => "minecraft:flowing_lava",
-            FluidKind::Lava => "minecraft:lava",
-        }
-        .to_owned(),
-    )
+    let fluid = FluidKind::from_index(kind as usize)?;
+    (fluid != FluidKind::Empty).then(|| fluid.name().to_owned())
 }
 fn fluid_id(name: &str) -> Option<u32> {
     use horizon_world::fluid::FluidKind;
-    Some(match name {
-        "minecraft:flowing_water" => FluidKind::FlowingWater,
-        "minecraft:water" => FluidKind::Water,
-        "minecraft:flowing_lava" => FluidKind::FlowingLava,
-        "minecraft:lava" => FluidKind::Lava,
-        _ => return None,
-    } as u32)
+    FluidKind::from_name(name)
+        .filter(|kind| *kind != FluidKind::Empty)
+        .map(|kind| kind.index() as u32)
 }
 
 pub use horizon_items::item_nbt::{
@@ -625,11 +612,14 @@ pub use horizon_items::item_nbt::{
 };
 /// The block entity type ID for the block it sits in (a chest-like container
 /// is a chest, trapped chest or barrel).
-fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
+pub fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
     match (e, block) {
         (
             crate::containers::BlockEntity::Chest(_),
-            "minecraft:trapped_chest" | "minecraft:barrel" | "minecraft:dropper",
+            "minecraft:trapped_chest"
+            | "minecraft:barrel"
+            | "minecraft:dropper"
+            | "minecraft:ender_chest",
         ) => block.to_owned(),
         (crate::containers::BlockEntity::Chest(_), b) if b.ends_with("shulker_box") => {
             "minecraft:shulker_box".to_owned()
@@ -668,6 +658,8 @@ pub fn encode_block_entity(
         ("components", Tag::Compound(components)),
     ];
     match e {
+        // EnderChestBlockEntity saves nothing of its own: the items are the player's.
+        BlockEntity::Chest(_) if block == "minecraft:ender_chest" => {}
         BlockEntity::Chest(items) => {
             let list = encode_items(items);
             // ShulkerBoxBlockEntity.saveAdditional: `saveAllItems(.., false)`
@@ -818,6 +810,7 @@ pub fn encode_block_entity(
         // Encoded above; an enchanting table's CustomName is the block name.
         BlockEntity::DaylightDetector
         | BlockEntity::Bell
+        | BlockEntity::EndPortal
         | BlockEntity::EnchantingTable
         | BlockEntity::CopperGolemStatue(_)
         | BlockEntity::Mod(_) => {}
@@ -1001,7 +994,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     }
     if id == "minecraft:beacon" {
         let beacon = crate::containers::Beacon {
-            levels: int("Levels").unwrap_or(0),
+            // BeaconBlockEntity.loadAdditional never reads `Levels`: updateBase sets them.
             primary: text(tag.get("primary_effect")),
             secondary: text(tag.get("secondary_effect")),
             last_check_y: i32::MIN / 2,
@@ -1078,10 +1071,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
             }
             b.fuel = int("Fuel").unwrap_or(0);
             b.total_fuel = int("total_fuel").unwrap_or(20);
-            b.speed = match tag.get("speed_multiplier") {
-                Some(Tag::Float(f)) => f32::from_bits(*f),
-                _ => 1.0,
-            };
+            b.speed = float(tag.get("speed_multiplier")).map_or(1.0, |v| v as f32);
         }
         BlockEntity::Brushable(b) => {
             b.loot_table = tag.get("LootTable").cloned();
@@ -1150,6 +1140,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
         | BlockEntity::Bell
+        | BlockEntity::EndPortal
         | BlockEntity::EnchantingTable
         | BlockEntity::Mod(_) => {}
         // ConduitBlockEntity.loadAdditional: EntityReference.read through
@@ -1175,7 +1166,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         BlockEntity::StructureBlock(b) => **b = crate::structure_block::StructureBlock::load(tag),
         BlockEntity::TestBlock(b) => **b = crate::test_block::TestBlock::load(tag),
         BlockEntity::TestInstanceBlock(b) => b.load(tag),
-        // The state is not known here; a saved jigsaw always has its joint.
+        // The state is not known here (Game::decode_block_entity_at applies it).
         BlockEntity::JigsawBlock(b) => {
             **b = crate::jigsaw_block::JigsawBlock::load(
                 tag,
@@ -3946,6 +3937,9 @@ pub struct Level {
     pub previous_game_mode: Option<i32>,
     pub time: i64,
     pub day_time: i64,
+    /// The End's clock (`world_clocks.dat`'s `minecraft:the_end`); `None` in a world that has
+    /// none yet, which starts it at the game time.
+    pub end_clock: Option<i64>,
     /// The world spawn or a legacy bare Overworld spawn column. Personal
     /// points use `respawn_elsewhere` so their blocks are checked on death.
     pub spawn: Option<[f64; 3]>,
@@ -4190,6 +4184,12 @@ impl Level {
             })
             .or_else(|| number(data.get("DayTime")))
             .unwrap_or(level.time);
+        level.end_clock = read_saved_data(dir, "world_clocks").and_then(|c| {
+            number(
+                c.get("minecraft:the_end")
+                    .and_then(|o| o.get("total_ticks")),
+            )
+        });
         let weather = read_saved_data(dir, "weather");
         let w = |new: &str, old: &str| {
             number(weather.as_ref().and_then(|w| w.get(new)))
@@ -4822,10 +4822,13 @@ impl Level {
             let mut overworld = compound_or_empty(clocks.get("minecraft:overworld").cloned());
             put(&mut overworld, "total_ticks", Tag::Long(self.day_time));
             put(&mut clocks, "minecraft:overworld", overworld);
-            if let Tag::Compound(map) = &mut clocks {
-                map.entry("minecraft:the_end".into())
-                    .or_insert_with(|| Tag::compound([("total_ticks", Tag::Long(self.time))]));
-            }
+            let mut end = compound_or_empty(clocks.get("minecraft:the_end").cloned());
+            put(
+                &mut end,
+                "total_ticks",
+                Tag::Long(self.end_clock.unwrap_or(self.time)),
+            );
+            put(&mut clocks, "minecraft:the_end", end);
             write_saved_data(dir, "world_clocks", clocks)?;
         }
         if legacy || !saved_data_path(dir, "world_gen_settings").exists() {
@@ -5546,6 +5549,28 @@ fn effect_details(e: &crate::effects::SavedEffect) -> Vec<(&'static str, Tag)> {
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
 
+    #[test]
+    fn an_ender_chest_saves_none_of_the_players_items() {
+        use crate::containers::BlockEntity;
+        let mut slots = vec![None; 27];
+        slots[0] = Some(crate::items::ItemStack::new("minecraft:diamond", 3));
+        let chest = encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::Chest(slots.clone()),
+            "minecraft:chest",
+        );
+        assert!(
+            chest.get("Items").is_some(),
+            "control: a chest saves its items"
+        );
+        let ender = encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::Chest(slots),
+            "minecraft:ender_chest",
+        );
+        assert_eq!(ender.get("id"), Some(&string("minecraft:ender_chest")));
+        assert!(ender.get("Items").is_none(), "{ender:?}");
+    }
     #[test]
     fn a_server_falls_back_to_level_dat_old_and_restores_it() {
         let world = std::env::temp_dir().join(format!("horizon-dat-old-{}", std::process::id()));
@@ -6715,9 +6740,8 @@ mod tests {
         };
         assert_eq!(*back, c);
         // The update tag a server's clients get: the items alone.
-        let update =
-            crate::lan::chunks::entity_tag(&crate::containers::BlockEntity::Campfire(Box::new(c)))
-                .expect("update tag");
+        let campfire = crate::containers::BlockEntity::Campfire(Box::new(c));
+        let update = crate::lan::chunks::entity_tag(&campfire, false).expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
     /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to
@@ -7580,6 +7604,31 @@ mod tests {
         let reopened = Level::read(&dir).unwrap();
         assert_eq!(reopened.day_time, 12345);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ends_clock_keeps_its_own_time() {
+        let dir = std::env::temp_dir().join(format!("horizon-end-clock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut level = Level {
+            name: "Test".into(),
+            time: 5000,
+            day_time: 9000,
+            ..Level::default()
+        };
+        // A world without one starts the End's clock at its game time.
+        level.write(&dir).unwrap();
+        assert_eq!(Level::read(&dir).unwrap().end_clock, Some(5000));
+        // Then it keeps its own count, apart from the game time and the day.
+        level.time = 8000;
+        level.end_clock = Some(321);
+        level.write(&dir).unwrap();
+        let back = Level::read(&dir).unwrap();
+        assert_eq!(
+            (back.time, back.day_time, back.end_clock),
+            (8000, 9000, Some(321))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

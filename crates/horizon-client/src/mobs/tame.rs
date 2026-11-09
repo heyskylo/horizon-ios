@@ -226,6 +226,21 @@ pub fn set_tame(m: &mut Mob, tame: bool) {
     } else {
         m.attrs.max_health = 8.0;
     }
+    // `setBaseValue`: a base kept from the load or `/attribute` is replaced too.
+    let base = wolf_health_base(tame);
+    if m.species() == Species::Wolf
+        && let Some(b) = m.extra.attributes.as_mut().and_then(|s| {
+            s.bases
+                .iter_mut()
+                .find(|(a, _)| *a == super::finalize::Attr::MaxHealth)
+        })
+    {
+        b.1 = base;
+    }
+}
+/// The max_health base `Wolf.applyTamingSideEffects` sets.
+pub fn wolf_health_base(tame: bool) -> f64 {
+    if tame { 40.0 } else { 8.0 }
 }
 /// `TamableAnimal.getOwner`: the player the saved owner UUID names, when it
 /// is the one this mob sees; anyone else nearby is not its owner.
@@ -253,9 +268,15 @@ fn is_owner(m: &Mob, w: &MobWorld) -> bool {
 pub fn owned_by(owner: Option<[i32; 4]>, uuid: [i32; 4]) -> bool {
     owner.is_some_and(|o| o == uuid || (o == [0, 0, 0, 1] && uuid == [0; 4]))
 }
-/// `TamableAnimal.unableToMoveToOwner`.
+/// `TamableAnimal.unableToMoveToOwner`: ordered to sit, riding something
+/// (`isPassenger`), on a lead or holding one's data until it is found after
+/// loading (`mayBeLeashed`), or an owner who is a spectator.
 fn unable_to_move_to_owner(m: &Mob, w: &MobWorld) -> bool {
-    m.extra.sitting || owner_view(m, w).is_some_and(|p| p.spectator)
+    m.extra.sitting
+        || m.extra.passenger
+        || m.extra.leash.is_some()
+        || m.extra.leash_pending.is_some()
+        || owner_view(m, w).is_some_and(|p| p.spectator)
 }
 /// `TamableAnimal.tryToTeleportToOwner`: ten tries around the owner.
 fn teleport_to_owner(m: &mut Mob, w: &MobWorld) {
@@ -372,9 +393,11 @@ impl Goal for SitWhenOrdered {
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.extra.sitting
     }
+    /// `SitWhenOrderedToGoal.start`: stop and sit. A wolf's begging tilt is
+    /// `BegGoal`'s to end, and a cat lying down gets up when its relax goal
+    /// stops.
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
-        m.extra.flag = false;
     }
 }
 /// `Wolf.WolfAvoidEntityGoal`: untamed wolves flee llamas.
@@ -602,7 +625,7 @@ impl Beg {
             i.as_deref()
                 .is_some_and(|i| i == "minecraft:bone" || self.food.iter().any(|f| f == i))
         };
-        p.alive && !p.spectator && (held(&p.main_hand) || held(&p.off_hand))
+        p.alive && (held(&p.main_hand) || held(&p.off_hand))
     }
 }
 impl Goal for Beg {
@@ -613,7 +636,7 @@ impl Goal for Beg {
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         cx.w.player
             .as_ref()
-            .is_some_and(|p| m.distance_sqr(p.position) <= 64.0)
+            .is_some_and(|p| p.alive && !p.spectator && m.distance_sqr(p.position) <= 64.0)
             && self.interesting(cx.w)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
@@ -1790,6 +1813,52 @@ mod tests {
         assert!(!action(&events), "a client's copy posts nothing");
     }
 
+    /// `TamableAnimal.unableToMoveToOwner` (#12939): a pet on a lead, with lead
+    /// data still to be found, or riding something neither follows nor
+    /// teleports to its owner.
+    #[test]
+    fn a_leashed_or_riding_pet_stays_put() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut m = wolf();
+            set_tame(&mut m, true);
+            assert!(!unable_to_move_to_owner(&m, w), "a free pet follows");
+            m.extra.leash = Some(super::super::leash::Holder::Knot([0, 64, 3]));
+            assert!(unable_to_move_to_owner(&m, w), "tied to a fence");
+            m.extra.leash = None;
+            m.extra.passenger = true;
+            assert!(unable_to_move_to_owner(&m, w), "in a boat");
+            m.extra.passenger = false;
+            m.extra.sitting = true;
+            assert!(unable_to_move_to_owner(&m, w), "ordered to sit");
+        });
+        if !ran {
+            eprintln!("skipped: no extracted vanilla data");
+        }
+    }
+    /// `SitWhenOrderedToGoal.start` only stops and sits: a wolf begging for the
+    /// bone its owner holds keeps its head tilt (`BegGoal` owns it).
+    #[test]
+    fn sitting_down_keeps_a_wolfs_begging_tilt() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut m = wolf();
+            set_tame(&mut m, true);
+            m.extra.flag = true;
+            m.extra.sitting = true;
+            SitWhenOrdered.start(&mut m, &mut cx);
+            assert!(m.extra.flag, "the begging tilt is BegGoal's to end");
+        });
+        if !ran {
+            eprintln!("skipped: no extracted vanilla data");
+        }
+    }
+
     const WHITE: u32 = 0xFFFF_FFFF;
 
     fn cat() -> Mob {
@@ -2039,6 +2108,53 @@ mod tests {
                 );
             });
         }
+    }
+
+    /// `BegGoal` finds its player with `TargetingConditions.forNonCombat()`,
+    /// which never picks a spectator or a dead player.
+    #[test]
+    fn a_spectator_holding_a_bone_does_not_make_a_wolf_beg() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+                p.main_hand = Some("minecraft:bone".into());
+                p.spectator = spectator;
+                world.player = Some(p);
+                let mut kind = (*kind()).clone();
+                kind.species = Species::Wolf;
+                let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(
+                    1,
+                    super::Beg {
+                        food: Arc::from(vec!["minecraft:bone".to_string()]),
+                        ticks: 0,
+                    },
+                );
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("Beg"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player's bone makes it beg; a spectator's does not"
+        );
     }
 }
 

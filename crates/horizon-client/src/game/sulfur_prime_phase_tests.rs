@@ -144,3 +144,29 @@ fn control_a_primed_cube_on_power_is_not_primed_again() {
         assert_eq!(fuse(&game), expected, "the countdown goes on, no new fuse");
     }
 }
+
+// `canExplode` and `primeTime` read the cached `explosionData`, the body
+// `collectEquipmentChanges` adopted, not the live body: a TNT body taken off
+// since the last tick still primes the cube on power, with TNT's fuse.
+
+fn replace_body(game: &mut Game<'_>, with: &str) {
+    assert!(game.run_command(&format!(
+        "item replace entity @e[type=sulfur_cube,limit=1] armor.body with {with}"
+    )));
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_tnt_body_taken_off_this_tick_still_primes_with_its_cached_fuse() {
+    let mut game = game();
+    cube_on(&mut game, "stone");
+    for _ in 0..5 {
+        step(&mut game);
+    }
+    replace_body(&mut game, "minecraft:air");
+    assert!(game.run_command("setblock 5 100 8 redstone_block"));
+    step(&mut game);
+    assert_eq!(fuse(&game), 120, "primed from the cached explosion data");
+    step(&mut game);
+    assert_eq!(fuse(&game), 119);
+}
