@@ -13,6 +13,7 @@ pub mod expr;
 mod modifiers;
 pub mod pack;
 pub mod particles;
+pub mod sprites;
 mod target;
 
 pub use attributes::{Argument, Attributes, Layer, Modifier, normalize_attribute};
