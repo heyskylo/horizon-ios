@@ -126,6 +126,7 @@ impl Split<'_> {
         // Until it has a profile, a scratch options file: never P1's.
         let options = Self::folder()?.join(".joining/options.txt");
         OPTIONS.set(Some(options.clone()));
+        horizon_hooks::engine::set_seat(seat - 1);
         let mut settings = self.host.settings.clone();
         if pad.is_some() {
             // The Controller setting is P1's own: a player who pressed a pad to join plays
@@ -135,6 +136,7 @@ impl Split<'_> {
         }
         let game = self.start_guest(seat, &options, settings);
         OPTIONS.set(None);
+        horizon_hooks::engine::set_seat(0);
         let mut game = game?;
         if let Some(pad) = pad {
             // The press that joined it doesn't act in its game.
