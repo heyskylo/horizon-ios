@@ -1664,16 +1664,9 @@ fn requested_split() -> Option<u32> {
         .and_then(|v| v.parse().ok())
         .filter(|&n| (1..=SPRITE_SPLIT).contains(&n))
 }
-fn adapter_requested_split(
-    info: &wgpu::AdapterInfo,
-    requested: Option<u32>,
-    layers: u32,
-) -> Option<u32> {
-    // Metal can fail to sample large mipmapped array textures despite advertising the layer limit:
-    // 512 per array, unless more sprites than the arrays hold at 512 (Chipped: 10,271) need bigger ones.
-    requested.or_else(|| {
-        (info.backend == wgpu::Backend::Metal).then(|| layers.div_ceil(SPRITE_ARRAYS).max(512))
-    })
+fn adapter_requested_split(info: &wgpu::AdapterInfo, asked: Option<u32>, n: u32) -> Option<u32> {
+    // Metal can fail on big mipmapped arrays (#8471): 512 layers each, more only for n > 8 x 512.
+    asked.or((info.backend == wgpu::Backend::Metal).then(|| n.div_ceil(SPRITE_ARRAYS).max(512)))
 }
 /// The split the CPU mip chains are cut by before the adapter is known.
 fn sprite_split() -> u32 {
