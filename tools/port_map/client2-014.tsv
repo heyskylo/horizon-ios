@@ -75,7 +75,7 @@ LevelLoadingScreen.extractChunksForRendering	port	crates/horizon-client-render/s
 LevelLoadingScreen.getNetherPortalSprite	port	crates/horizon-client-render/src/hud_overlays.rs::portal_overlay	draws the block/nether_portal sprite
 LoadingOverlay.extractRenderState	port	crates/horizon-client/src/game.rs::Game::render	the reload screen's progress bar; gap: player: no Mojang logo and no fade in or out
 LoadingOverlay.tick	port	crates/horizon-client/src/game/server_packs.rs::Game::tick_server_packs	finishes the reload; gap: minor: no fade-out before it finishes
-LoadingOverlay.isReadyToFadeOut	missing		minor: no one-second fade-in before the reload can finish
+LoadingOverlay.isReadyToFadeOut	port	crates/horizon-client/src/game/packs.rs::PackReload::finished	a mid-game reload's overlay stays up for 1000 ms from its first frame (OVERLAY_HOLD) before the staged pack is applied
 LoadingOverlay.extractProgressBar	port	crates/horizon-client-render/src/level_loading.rs::draw_progress	200 by 2 bar; gap: minor: no fade alpha
 LoadingOverlay.LogoTexture.loadContents	skip:other		Horizon ships no Mojang logo (title_edition.rs)
 ManageServerScreen.init	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	name and address fields, resource packs cycle, Done and Cancel (Screen::Edit arm)
