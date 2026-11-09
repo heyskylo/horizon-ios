@@ -743,13 +743,7 @@ impl Mob {
         // Entity.setOnGroundWithMovement's checkSupportingBlock, before
         // checkFallDamage reads the landing block (getOnPosLegacy).
         self.supporting = self.supporting_block(w, moved);
-        // Strider.checkFallDamage: lava breaks any fall, and the fluid state
-        // waits for the next baseTick; Bat and Bee.checkFallDamage do nothing.
-        if self.kind.flags.lava_walker && self.fluids.in_lava {
-            self.fall_distance = 0.0;
-        } else if !matches!(self.kind.species, super::Species::Bat | super::Species::Bee) {
-            self.check_fall_damage(w, moved, events);
-        }
+        self.species_check_fall_damage(w, moved, events);
         // Entity.restituteMovementAfterCollisions: the colliding components
         // bounce back by the entity's bounciness or the block's (a slime
         // block, a bed), whichever is larger. A mob never sneaks, so nothing
@@ -819,6 +813,30 @@ impl Mob {
                 pos: [pos.x, pos.y, pos.z],
             });
         }
+    }
+    /// `checkFallDamage` as the species has it: Strider's lava breaks any fall
+    /// (the fluid state waits for the next baseTick); Bat's and Bee's do nothing.
+    fn species_check_fall_damage(&mut self, w: &MobWorld, moved: Vec3, events: &mut Vec<MobEvent>) {
+        if self.kind.flags.lava_walker && self.fluids.in_lava {
+            self.fall_distance = 0.0;
+        } else if !matches!(self.kind.species, super::Species::Bat | super::Species::Bee) {
+            self.check_fall_damage(w, moved, events);
+        }
+    }
+    /// `handleMoveVehicle` for a mount its rider's client moves, after the move:
+    /// `setOnGroundWithMovement` with the client's ground (`checkSupportingBlock`),
+    /// then `doCheckFallDamage` with the client's move `delta`. The server's
+    /// `Entity.move` counted no fall: it isn't the mount's authority.
+    pub fn client_moved_fall(
+        &mut self,
+        w: &MobWorld,
+        delta: Vec3,
+        on_ground: bool,
+        events: &mut Vec<MobEvent>,
+    ) {
+        self.on_ground = on_ground;
+        self.supporting = self.supporting_block(w, delta);
+        self.species_check_fall_damage(w, delta, events);
     }
     /// LivingEntity.checkFallDamage: the fluid state refreshed out of water
     /// (touching water resets the fall), then Entity.checkFallDamage.
