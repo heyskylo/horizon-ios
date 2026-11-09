@@ -138,6 +138,17 @@ pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
     out
 }
 
+/// `Equippable.dispensable` from the stack's `equippable` component.
+pub fn dispensable(stack: &ItemStack, default: bool) -> bool {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
+        return false;
+    }
+    if let Some(equippable) = data.and_then(|d| d.other("minecraft:equippable")) {
+        return horizon_world::datafix::dynamic::as_bool(equippable.get("dispensable"), true);
+    }
+    default
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
