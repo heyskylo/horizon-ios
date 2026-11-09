@@ -16,8 +16,8 @@ def check(binary):
     binary = Path(binary).resolve()
     # An imported DLL makes the bait discriminating: an unhardened launcher fails before main.
     imports = {name.lower() for name in pe_imports(binary.read_bytes())}
-    if "version.dll" not in imports:
-        raise RuntimeError("launcher no longer imports version.dll; update the DLL loading fixture")
+    if not imports.intersection(("version.dll", "winmm.dll")):
+        raise RuntimeError("launcher imports neither bait DLL; update the DLL loading fixture")
     with tempfile.TemporaryDirectory(prefix="horizon-dll-search-") as scratch:
         root = Path(scratch)
         exe_dir, cwd = root / "bin", root / "cwd"
