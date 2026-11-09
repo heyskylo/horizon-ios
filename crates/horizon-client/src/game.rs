@@ -323,6 +323,7 @@ mod native_profiles;
 mod native_projectiles;
 mod native_quick_move;
 mod native_recipes;
+mod native_registry_name;
 mod native_reload_listeners;
 mod native_scene;
 mod native_server;
@@ -489,6 +490,7 @@ mod world_update;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
+use hand::interact_location;
 use horizon_client::random_source;
 // `Action` here is the title screen's buttons (`title::Action`).
 pub use advancements::AdvancementDisplay;
@@ -3261,12 +3263,6 @@ fn facing_offset(facing: &str) -> [i32; 3] {
         "up" => [0, 1, 0],
         _ => [0, -1, 0],
     }
-}
-/// The point a `ServerboundInteractPacket` carries: `EntityHitResult.getLocation()
-/// - entity.position()`, measured from the entity's feet, as
-/// `MultiPlayerGameMode.interact` computes it.
-fn interact_location(point: Vec3, feet: Vec3) -> [f64; 3] {
-    [point.x - feet.x, point.y - feet.y, point.z - feet.z]
 }
 /// How far along `dir` (within `reach`) a ray from `eye` enters `b`.
 fn ray_box(eye: [f64; 3], dir: [f64; 3], reach: f64, b: Aabb) -> Option<f64> {
