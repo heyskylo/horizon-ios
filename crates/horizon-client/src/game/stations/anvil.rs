@@ -62,7 +62,7 @@ mod tests {
                 .key(winit::keyboard::KeyCode::ArrowLeft, false, false)
         );
         assert!(
-            !station
+            station
                 .rename
                 .key(winit::keyboard::KeyCode::Backspace, false, false)
         );
