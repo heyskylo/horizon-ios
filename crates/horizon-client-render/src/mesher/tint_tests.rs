@@ -251,3 +251,43 @@ fn a_biome_colormap_blends_over_a_biome_edge_as_the_vanilla_water_tint_does() {
     }
     assert!(edge_differs, "the square must cross the edge somewhere");
 }
+
+#[test]
+fn biome_colors_and_a_grass_block_colormap_replace_their_whole_biome_function() {
+    let biomes = Biomes::from_jsons(&[(
+        "minecraft:plains",
+        serde_json::json!({"effects": {"water_color": 0x3F76E4}}),
+    )]);
+    // biome_colors gives water a flat green; a block modifier colours oak leaves with a map,
+    // which Polytone spreads to the whole foliage function.
+    let root = pack(&[
+        (
+            "assets/mypack/polytone/colors.json",
+            br#"{"biome_colors": {"water": "0x00ff00"}}"#.to_vec(),
+        ),
+        (
+            "assets/mypack/polytone/colormaps/leaves.png",
+            png_row(&[[0, 0, 255, 255]]),
+        ),
+        (
+            "assets/mypack/polytone/block_modifiers/oak.json",
+            br#"{"targets": ["minecraft:oak_leaves"], "colormap": "mypack:leaves"}"#.to_vec(),
+        ),
+    ]);
+    let modifiers = crate::environment::polytone_colormap_modifiers(&root);
+    let functions = biome_functions(&root, &modifiers);
+    let tints: Vec<_> = functions.iter().map(|(t, _)| *t).collect();
+    assert_eq!(tints.len(), 2);
+    assert!(tints[0] == [Tint::Foliage] && tints[1] == [Tint::Water]);
+    let colormaps: Vec<_> = functions.into_iter().map(|(_, c)| Arc::new(c)).collect();
+    let chunks: Vec<Vec<Chunk>> = (0..3)
+        .map(|rz| (0..3).map(|rx| filled(rx - 1, rz - 1, 0)).collect())
+        .collect();
+    let region: [[Option<&Chunk>; 3]; 3] =
+        std::array::from_fn(|rz| std::array::from_fn(|rx| Some(&chunks[rz][rx])));
+    let mut tints = Tints::new(&region, &biomes, BiomeZoom::new(0), 0, [0, 0, 64]);
+    tints.colormaps = &colormaps;
+    tints.water_colormap = Some(1);
+    assert_eq!(tints.water(3, 4, 5), 0x00_FF00);
+    std::fs::remove_dir_all(root).unwrap();
+}

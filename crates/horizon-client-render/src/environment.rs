@@ -373,6 +373,22 @@ fn biome_id_mapper(pack_root: &Path, json: &Json) -> HashMap<String, f64> {
 }
 
 impl Colormap {
+    /// One colour wherever it samples (a `biome_colors` flat colour, RGB).
+    pub(crate) fn flat(rgb: u32) -> Self {
+        let zero = || Axis::Expr(horizon_polytone::expr::Program::compile("0").expect("a number"));
+        let [_, r, g, b] = rgb.to_be_bytes();
+        Self {
+            x: zero(),
+            y: zero(),
+            triangular: false,
+            rounds: true,
+            biome_blend: false,
+            width: 1,
+            height: 1,
+            rgba: vec![r, g, b, 255],
+        }
+    }
+
     /// `assets/<namespace>/polytone/colormaps/<path>.png` and its optional `.json` (without
     /// one, the axes are the biome's temperature and downfall).
     pub(crate) fn load(pack_root: &Path, id: &str) -> Option<Self> {

@@ -37,6 +37,15 @@ impl Default for Environment {
     }
 }
 
+/// A `biome_colors` entry: what replaces one of vanilla's biome colour functions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BiomeColor {
+    /// A flat colour (RGB).
+    Flat(u32),
+    /// A colormap id (`polytone/colormaps/<path>`).
+    Colormap(String),
+}
+
 /// Every pack's custom colours, by dotted key.
 #[derive(Clone, Debug, Default)]
 pub struct PackColors {
@@ -210,6 +219,22 @@ impl PackColors {
         }
     }
 
+    /// `biome_colors.<function>` (`grass`, `foliage`, `dry_foliage`, `water`): a colormap id or
+    /// a flat colour. Inline colormaps aren't read.
+    pub fn biome_color(&self, function: &str) -> Option<BiomeColor> {
+        let value = self.entries.get(&format!("biome_colors.{function}"))?;
+        if let Json::String(s) = value {
+            let s = s.trim();
+            if s.contains(':') {
+                return Some(BiomeColor::Colormap(s.to_owned()));
+            }
+            if parse_color(value).is_none() {
+                return Some(BiomeColor::Colormap(format!("minecraft:{s}")));
+            }
+        }
+        parse_color(value).map(|c| BiomeColor::Flat(c & 0xFF_FFFF))
+    }
+
     /// `entity_shadows`: false hides every entity's round shadow, whatever the video option says.
     pub fn entity_shadows(&self) -> bool {
         match self.entries.get("entity_shadows") {
@@ -325,6 +350,25 @@ mod tests {
             (e.water_fog_brightening, e.water_fog_brightening_time),
             (1.0, 200.0)
         );
+    }
+
+    #[test]
+    fn biome_colours_are_colormaps_or_flat() {
+        let mut c = PackColors::default();
+        c.add_json(
+            "",
+            &json!({"biome_colors": {"grass": "my_pack:grass", "foliage": "0x0000ff", "water": "lake"}}),
+        );
+        assert_eq!(
+            c.biome_color("grass"),
+            Some(BiomeColor::Colormap("my_pack:grass".into()))
+        );
+        assert_eq!(c.biome_color("foliage"), Some(BiomeColor::Flat(0x0000ff)));
+        assert_eq!(
+            c.biome_color("water"),
+            Some(BiomeColor::Colormap("minecraft:lake".into()))
+        );
+        assert_eq!(c.biome_color("dry_foliage"), None);
     }
 
     #[test]
