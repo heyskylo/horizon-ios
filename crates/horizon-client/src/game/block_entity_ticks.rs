@@ -73,6 +73,7 @@ impl Game<'_> {
                 Some(BlockEntity::Furnace(_)) => self.tick_furnace(pos)?,
                 Some(BlockEntity::Brewing(_)) => self.tick_brewing_stand(pos)?,
                 Some(BlockEntity::DaylightDetector) => self.tick_daylight_detector(pos),
+                Some(BlockEntity::EndGateway(_)) => self.tick_end_gateway(pos),
                 Some(BlockEntity::Campfire(_)) => self.tick_campfire(pos)?,
                 Some(BlockEntity::Mod(_)) => self.tick_mod_block_entity(pos),
                 Some(BlockEntity::PotentSulfur(_)) => {
@@ -178,6 +179,7 @@ impl Game<'_> {
                     | "minecraft:bee_nest"
                     | "minecraft:brewing_stand"
                     | "minecraft:daylight_detector"
+                    | "minecraft:end_gateway"
                     // Lit, cookTick; unlit, cooldownTick.
                     | "minecraft:campfire"
                     | "minecraft:soul_campfire" => Ticking::Yes,

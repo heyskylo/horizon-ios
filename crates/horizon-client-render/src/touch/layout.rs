@@ -174,6 +174,13 @@ pub struct Settings {
     pub sensitivity_horizontal: f32,
     /// Extra scale on the pitch (up and down) turn.
     pub sensitivity_vertical: f32,
+    /// The sprint button toggles sprinting instead of holding it.
+    pub sprint_toggle: bool,
+    /// In the tap schemes, the use button shows while it would act on what
+    /// the crosshair points at.
+    pub contextual_interact: bool,
+    /// Scales every control without changing the saved sizes (0.5-2).
+    pub button_scale: f32,
 }
 
 impl Default for Settings {
@@ -212,6 +219,9 @@ impl Default for Settings {
             sensitivity: 1.0,
             sensitivity_horizontal: 1.0,
             sensitivity_vertical: 1.0,
+            sprint_toggle: false,
+            contextual_interact: false,
+            button_scale: 1.0,
         }
     }
 }
@@ -254,6 +264,7 @@ impl Settings {
         ] {
             *v = finite_or(*v, 1.0).clamp(0.1, 3.0);
         }
+        self.button_scale = finite_or(self.button_scale, 1.0).clamp(0.5, 2.0);
     }
 
     /// Whether attack and use act on the crosshair rather than on a tap.
@@ -421,6 +432,22 @@ mod tests {
         // Files saved before these options existed keep the defaults.
         let read: Settings = serde_json::from_str(r#"{"mode":"tap"}"#).unwrap();
         assert_eq!(read.sensitivity, 1.0);
+    }
+
+    #[test]
+    fn control_options_default_safely_and_stay_in_range() {
+        let read: Settings = serde_json::from_str(r#"{"mode":"tap"}"#).unwrap();
+        assert!(!read.sprint_toggle && !read.contextual_interact);
+        assert_eq!(read.button_scale, 1.0);
+        let mut s = Settings {
+            button_scale: f32::NAN,
+            ..Settings::default()
+        };
+        s.sanitize();
+        assert_eq!(s.button_scale, 1.0);
+        s.button_scale = 9.0;
+        s.sanitize();
+        assert_eq!(s.button_scale, 2.0);
     }
 
     #[test]

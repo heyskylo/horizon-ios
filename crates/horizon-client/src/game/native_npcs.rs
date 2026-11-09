@@ -8,7 +8,7 @@
 //! the one that was is put back. A level nobody opened is not opened.
 use super::{Game, commands::Target, creatures::seen};
 use horizon_client::mobs::{Mob, MobWorld, Seen, Who, ai::do_hurt_target, goals::Cx};
-use horizon_world::nbt::Compound;
+use horizon_world::nbt::{Compound, Tag};
 
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
@@ -52,6 +52,10 @@ impl Game<'_> {
                 {
                     return None;
                 }
+                // The mod API has no natural fence knots (#13036).
+                if let Target::Knot(_) = t {
+                    return None;
+                }
                 Some((id, g.target_type(t)))
             });
             if let Some(Some((id, kind))) = found {
@@ -59,6 +63,40 @@ impl Game<'_> {
             }
         }
         None
+    }
+    /// The `minecraft:marker` entities of the loaded level `dimension`: each one's id, its position
+    /// and its `data` compound (empty for a marker saved without data), as `/data get entity <marker>
+    /// data` shows it. Reads only the level's list of kept entities (displays, interactions, markers),
+    /// not every entity, so a mod can poll it for the markers it uses as anchors (a region, a spawn
+    /// point) far more cheaply than it could filter `native_level_entities`. Empty on a client and for
+    /// a level not loaded. API @API:level_markers@.
+    pub(super) fn native_level_markers(
+        &mut self,
+        dimension: &str,
+    ) -> Vec<(u32, [f64; 3], Compound)> {
+        self.npc_in_level(dimension, |g| {
+            let markers: Vec<_> = g
+                .others
+                .iter()
+                .filter(|o| matches!(o.kind.as_str(), "minecraft:marker" | "marker"))
+                .map(|o| (o.id, [o.position.x, o.position.y, o.position.z]))
+                .collect();
+            markers
+                .into_iter()
+                .map(|(id, at)| {
+                    let data = match g
+                        .entity_nbt(Target::Other(id))
+                        .as_ref()
+                        .and_then(|t| t.get("data"))
+                    {
+                        Some(Tag::Compound(c)) => c.clone(),
+                        _ => Compound::default(),
+                    };
+                    (id, at, data)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
     }
     /// Merges `nbt` into entity `id`'s data in the loaded level `dimension`,
     /// as `/execute in <dimension> run data merge entity` does: what
@@ -377,6 +415,10 @@ impl Game<'_> {
         {
             return None;
         }
+        // The mod API has no natural fence knots (#13036).
+        if let Target::Knot(_) = t {
+            return None;
+        }
         self.target_position(t)
     }
 }
@@ -409,3 +451,7 @@ impl Game<'_> {
         Some(out)
     }
 }
+
+#[cfg(test)]
+#[path = "native_lookup_tests.rs"]
+mod lookup_tests;
