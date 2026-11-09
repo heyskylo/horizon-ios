@@ -741,12 +741,9 @@ impl Game<'_> {
             // A server's table: its data slots carry the offers, and its
             // client menu only clears them without an enchantable item.
             Kind::Enchanting if self.remote.is_some() => {
-                let enchantable = s.inputs[0].as_ref().is_some_and(|i| {
-                    data.enchantments.enchantable_of(i) > 0
-                        && i.enchantments().is_empty()
-                        && i.data()
-                            .is_none_or(|d| d.other("!minecraft:enchantments").is_none())
-                });
+                let enchantable = s.inputs[0]
+                    .as_ref()
+                    .is_some_and(|i| stations::is_enchantable(&data.enchantments, i));
                 if !enchantable {
                     s.offers = Default::default();
                 }

@@ -101,12 +101,15 @@ pub fn enchantment_list(
     }
     list
 }
-/// `ItemStack.has(ENCHANTMENTS)`: all items have the component by default;
-/// a removal patch leaves none and `ItemStack.isEnchantable` is false.
-fn has_enchantments_component(stack: &ItemStack) -> bool {
-    !stack
-        .data()
-        .is_some_and(|d| d.other("!minecraft:enchantments").is_some())
+/// `ItemStack.isEnchantable`: an enchantable component, no enchantments
+/// yet, and the enchantments component present (all items have it by
+/// default; a removal patch leaves none).
+pub fn is_enchantable(e: &Enchantments, stack: &ItemStack) -> bool {
+    e.enchantable_of(stack) > 0
+        && stack.enchantments().is_empty()
+        && stack
+            .data()
+            .is_none_or(|d| d.other("!minecraft:enchantments").is_none())
 }
 /// `EnchantmentMenu.slotsChanged` for an enchantable item.
 pub fn enchant_offers(
@@ -118,14 +121,9 @@ pub fn enchant_offers(
 ) -> EnchantOffers {
     let mut offers = EnchantOffers::default();
     let Some(stack) = stack else { return offers };
-    // ItemStack.isEnchantable: enchantable component and no enchantments yet.
-    if !has_enchantments_component(stack)
-        || e.enchantable_of(stack) == 0
-        || !stack.enchantments().is_empty()
-    {
+    if !is_enchantable(e, stack) {
         return offers;
     }
-
     let mut random = LegacyRandom::new(i64::from(seed));
     for i in 0..3 {
         offers.costs[i] = e.enchantment_cost_of(&mut random, i, bookcases, stack);
