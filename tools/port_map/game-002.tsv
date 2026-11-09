@@ -57,7 +57,7 @@ ServerLevel.addDuringTeleport	inline	crates/horizon-client/src/game/nether_porta
 ServerLevel.addPlayer	inline	crates/horizon-client/src/lan/hub.rs::Hub::place_new_player	
 ServerLevel.addEntity	inline	crates/horizon-client/src/game/creatures.rs::Game::spawn_mob	mobs go in Game::mobs; other kinds have their own lists
 ServerLevel.tryAddFreshEntityWithPassengers	inline	crates/horizon-client/src/game/persist.rs::Game::load_mob	gap: minor: loads a mob with its Passengers but never refuses a UUID that is already loaded, so /summon with a fixed UUID twice makes two
-ServerLevel.unload	inline	crates/horizon-client/src/game.rs::Game::update_world	unloaded columns drop their block entities and names, and their entities are saved out
+ServerLevel.unload	inline	crates/horizon-client/src/game/world_update.rs::Game::update_world	unloaded columns drop their block entities and names, and their entities are saved out
 ServerLevel.playSeededSound	port	crates/horizon-client/src/lan/containers.rs::Hub::sound	
 ServerLevel.sendBlockUpdated	inline	crates/horizon-client-render/src/world.rs::World::set	gap: minor: mobs never re-plan a path when a block on it changes (Mob::recompute_path is never triggered by a block update), so they walk a stale path until a goal re-paths
 ServerLevel.neighborChanged	port	crates/horizon-world/src/level/hooks.rs::Sim::neighbor_changed	

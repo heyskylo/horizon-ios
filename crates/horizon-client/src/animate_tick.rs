@@ -599,7 +599,10 @@ fn do_animate_tick(
         return;
     }
     let state = ctx.state(pos);
-    block_animate_tick(tables, engine, ctx, state, pos, center);
+    // A Polytone block modifier's `disable_particles` stops the block's own animate tick.
+    if !engine.polytone_disables_particles(state) {
+        block_animate_tick(tables, engine, ctx, state, pos, center);
+    }
     // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
     let level = ParticleLevel {
         world: ctx.world,

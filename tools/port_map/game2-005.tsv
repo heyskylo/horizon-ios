@@ -109,7 +109,7 @@ Player.isSleepingLongEnough	port	crates/horizon-client/src/game/lan_actions.rs::
 Player.updateSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.getXpNeededForNextLevel	port	crates/horizon-client/src/entities.rs::Experience::needed	
 Player.hasEnoughFoodToDoExhaustiveManoeuvres	inline	crates/horizon-client/src/sprint.rs::Conditions::possible	the food-or-mayfly test is the sprint gate's `enough_food || may_fly`: `enough_food` is `FoodData::has_enough_food` (food level above 6) filled in `motion.rs`, and `player_food::enough_food_for_manoeuvres` is the same test as a probed free function
-Player.mayUseItemAt	port	crates/horizon-client/src/game.rs::Game::use_hand	the may-build test before use-on in adventure mode
+Player.mayUseItemAt	port	crates/horizon-client/src/game/use_hand.rs::Game::use_hand	the may-build test before use-on in adventure mode
 Player.isSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.decorateDisplayNameComponent	port	crates/horizon-client/src/game/commands.rs::player_display_name	click suggests /tell, hover shows the player entity, plus the insertion
 Player.getSlot	port	crates/horizon-client/src/game/commands/items.rs::Game::slots_named	gap: minor: numeric slots 499 (carried item) and 500-503 (crafting grid) are not addressed

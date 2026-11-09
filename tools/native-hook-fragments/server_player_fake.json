@@ -1,0 +1,5 @@
+{
+  "hooks": [],
+  "rust_summary": "`NativeServerPlayer.fake`: whether the player is a fake player (`native_set_player_fake`).",
+  "doc_summary": "`NativeServerPlayer.fake` is true for a fake player, a mod's bot with no client (`native_set_player_fake`), so a mod can leave out what only a client would show. Bundles need \"hooks\": @API:server_player_fake@."
+}
