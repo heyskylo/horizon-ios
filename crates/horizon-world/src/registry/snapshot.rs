@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
+    sync::RwLock,
 };
 
 /// A state: its name and property strings as `strings` indexes.
@@ -113,6 +114,7 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
         || flags.iter().any(|f| *f > 3)
         || ids.len() > states.len()
         || collided.len() > states.len()
+        || defaults.len() > states.len()
     {
         return Err(invalid("cached registry size mismatch"));
     }
@@ -124,6 +126,11 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
             .ok_or_else(|| invalid("cached registry string out of range"))
     };
     let state_of = |wire: WireState| -> io::Result<BlockState> {
+        // No block has more than a handful of properties; a crafted cache
+        // file could otherwise make restore build tens of millions of pairs.
+        if wire.properties.len() > 32 {
+            return Err(invalid("cached registry properties too large"));
+        }
         let properties = wire
             .properties
             .iter()
@@ -190,6 +197,7 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
             ids: id_map,
             collided: collided_map,
             defaults: default_map,
+            saved_states: RwLock::new(horizon_core::fast_hash::FxHashMap::default()),
         },
         flags,
     ))
@@ -261,5 +269,14 @@ mod tests {
         let mut snapshot = capture(&registry, &flags);
         snapshot.flags[0] = 4;
         assert!(restore(snapshot).is_err(), "unused flag bits");
+        let mut snapshot = capture(&registry, &flags);
+        // One default more than there are states trips the cap.
+        while snapshot.defaults.len() <= snapshot.states.len() {
+            snapshot.defaults.push(snapshot.defaults[0]);
+        }
+        assert!(restore(snapshot).is_err(), "too many defaults");
+        let mut snapshot = capture(&registry, &flags);
+        snapshot.states[0].properties = vec![(0, 0); 33];
+        assert!(restore(snapshot).is_err(), "too many properties");
     }
 }

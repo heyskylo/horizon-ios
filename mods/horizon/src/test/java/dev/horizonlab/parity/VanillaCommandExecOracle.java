@@ -800,6 +800,9 @@ public final class VanillaCommandExecOracle {
                     }
                     case "tick" -> {
                         int n = op.has("n") ? op.get("n").getAsInt() : 1;
+                        // The ordinary harness budget defers chunk I/O. An unload
+                        // fixture can give the real unload queue time to drain.
+                        boolean allowChunkIo = op.has("allow_chunk_io") && op.get("allow_chunk_io").getAsBoolean();
                         messages.clear();
                         // Answers computed off-thread (profile lookups) reach the
                         // server's task queue before the next tick.
@@ -811,7 +814,7 @@ public final class VanillaCommandExecOracle {
                         }
                         long pacedStart = System.nanoTime();
                         for (int i = 0; i < n; i++) {
-                            tick();
+                            tick(allowChunkIo);
                             if (op.has("pace_ms")) {
                                 long left = op.get("pace_ms").getAsLong() * (i + 1) * 1_000_000L - (System.nanoTime() - pacedStart);
                                 if (left > 0) try {Thread.sleep(left / 1_000_000L, (int)(left % 1_000_000L));}
@@ -1060,7 +1063,8 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
-                    case "close_menu" -> player.closeContainer();
+                    case "close_menu" -> player.connection.handleContainerClose(
+                        new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(player.containerMenu.containerId));
                     case "merchant_saved_stats" -> {
                         player.getStats().save();
                         String raw;
@@ -1148,9 +1152,22 @@ public final class VanillaCommandExecOracle {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
                         var state = player.level().getBlockState(pos);
-                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER))
-                            throw new IllegalStateException("crafter tick without a crafter");
+                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER) && !state.is(net.minecraft.world.level.block.Blocks.DISPENSER))
+                            throw new IllegalStateException("crafter tick without a crafter or dispenser");
                         state.tick(player.level(), pos, player.level().getRandom());
+                    }
+                    case "sync_randoms" -> {
+                        // docs/parity-workflow.md "Randoms that repeat": needs tools/seed_agent.py's -javaagent.
+                        try {
+                            Class.forName("dev.horizonlab.parity.SeedAgent").getMethod("setUniquifier", long.class)
+                                .invoke(null, op.get("uniquifier").getAsLong());
+                            var counter = ServerLevel.class.getDeclaredField("ENTITY_COUNTER");
+                            counter.setAccessible(true);
+                            ((java.util.concurrent.atomic.AtomicInteger) counter.get(null)).set(op.get("entity_id").getAsInt());
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                        player.level().getRandom().setSeed(op.get("level_seed").getAsLong());
                     }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");
@@ -1231,6 +1248,10 @@ public final class VanillaCommandExecOracle {
 
         /** One iteration of MinecraftServer.runServer: the delayed tick profiler start, then the tick. */
         void tick() {
+            tick(false);
+        }
+
+        void tick(boolean allowChunkIo) {
             try {
                 var delay = MinecraftServer.class.getDeclaredField("debugCommandProfilerDelayStart");
                 delay.setAccessible(true);
@@ -1247,7 +1268,7 @@ public final class VanillaCommandExecOracle {
                 throw new RuntimeException(e);
             }
             drain();
-            super.tickServer(() -> false);
+            super.tickServer(() -> allowChunkIo);
             // The player's network listener ticks it each server tick
             // (ServerGamePacketListenerImpl.tickPlayer); this one has no
             // listening connection. Its movement is the client's, so of

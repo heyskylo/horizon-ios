@@ -3,6 +3,13 @@
 //! recheck, turning into statues, and the hand-over, waxing, scraping and
 //! shearing interactions.
 use super::Game;
+
+// The test names `super::commands`, as it did when game.rs held it.
+#[cfg(test)]
+use super::commands;
+#[cfg(test)]
+#[path = "golem_gift_tests.rs"]
+mod golem_gift_tests;
 use horizon_client::{
     containers::BlockEntity,
     items::ItemStack,
@@ -21,11 +28,29 @@ use horizon_world::{
 const RECHECK_TICKS: i64 = 5;
 
 impl Game<'_> {
-    /// A copper golem opened or closed a chest half: the counter changes and
+    /// `OfferFlowerGoal.stop` (`MobEvent::Gift`): the item on the target's
+    /// empty antenna, as a guaranteed drop.
+    pub(super) fn receive_gift(&mut self, target: u32, item: &'static str) {
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target)
+            && m.saddle_item().is_none()
+        {
+            m.set_saddle(Some(ItemStack::new(item, 1)));
+            // OfferFlowerGoal.stop: Mob.setGuaranteedDrop(antenna).
+            horizon_client::mobs::finalize::set_drop_chance(
+                m,
+                horizon_client::mobs::finalize::SADDLE,
+                2.0,
+            );
+        }
+    }
+    /// A copper golem opened or closed a chest half: the counter changes, the
+    /// first opener posts CONTAINER_OPEN and the last closer CONTAINER_CLOSE
+    /// (`ContainerOpenersCounter.incrementOpeners` / `decrementOpeners`), and
     /// the clients see the block event (`openerCountChanged`).
-    pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool) {
+    pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool, mob: u32) {
         let key = (chest[0], chest[1], chest[2]);
         let entry = self.world.chest_openers.entry(key).or_insert((0, 0.0));
+        let before = entry.0;
         if open {
             entry.0 += 1;
             entry.1 = entry.1.max(3.0);
@@ -38,6 +63,12 @@ impl Game<'_> {
         let count = entry.0;
         if count <= 0 {
             self.world.chest_openers.remove(&key);
+        }
+        let who = Some(horizon_client::mobs::Who::Mob(mob));
+        if open && before == 0 {
+            self.post_block_game_event("minecraft:container_open", chest, who, None);
+        } else if !open && count == 0 {
+            self.post_block_game_event("minecraft:container_close", chest, who, None);
         }
         self.block_entity_event(chest, 1, count.max(0));
         // The guests get the same `ClientboundBlockEventPacket` (the lid).
@@ -99,9 +130,11 @@ impl Game<'_> {
             if count == before {
                 continue;
             }
+            // `recheckOpeners`: the game event has no source.
             if count == 0 {
                 self.world.chest_openers.remove(&key);
                 self.golem_chest_sound(p, false);
+                self.post_block_game_event("minecraft:container_close", p, None, None);
             } else if let Some(o) = self.world.chest_openers.get_mut(&key) {
                 o.0 = count;
             }
@@ -306,7 +339,7 @@ impl Game<'_> {
             }
             _ => None,
         };
-        let Some(id) = self.spawn_mob("minecraft:copper_golem", at, true) else {
+        let Some(id) = self.spawn_mob_raw("minecraft:copper_golem", at, true) else {
             return false;
         };
         if let Some(name) = name {

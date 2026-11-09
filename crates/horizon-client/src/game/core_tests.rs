@@ -52,6 +52,8 @@ fn a_death_drops_the_off_hand_before_the_armour() {
     assert!(offhand.is_none() && armor.iter().all(Option::is_none));
 }
 
+#[path = "knot_command_view_tests.rs"]
+mod knot_command_view_tests;
 /// `MinecraftServer.computeNextAutosaveInterval`: three hundred seconds of
 /// ticks at the rate the server runs at, never fewer than a hundred.
 #[test]
@@ -129,6 +131,9 @@ fn screen_ids_are_distinct_and_stable() {
         Screen::DialogWarning,
         Screen::Win,
         Screen::DebugOptions,
+        Screen::Mod,
+        Screen::HudEditor,
+        Screen::Studio,
     ];
     let ids: Vec<&'static str> = all.iter().map(|screen| screen.id()).collect();
     let unique: BTreeSet<&'static str> = ids.iter().copied().collect();
@@ -144,6 +149,30 @@ fn screen_ids_are_distinct_and_stable() {
     assert_eq!(Screen::Playing.id(), "playing");
     assert_eq!(Screen::Inventory.id(), "inventory");
     assert_eq!(Screen::Win.id(), "win");
+    assert_eq!(Screen::Studio.id(), "studio");
+    assert_ne!(Screen::Studio.id(), Screen::Chat.id());
+}
+
+/// `Screen::Studio` is the Studio script slot: it never draws the chat screen
+/// (`Screen::Studio => {}` in `game.rs`'s draw match, unlike
+/// `Screen::Chat => draw_chat_screen`), it never blurs the background, and
+/// while it is up gameplay does not own the keyboard (WASD cannot walk
+/// through it, and movement keys are cleared on open).
+#[test]
+fn studio_screen_stays_off_the_chat_slot() {
+    assert!(Screen::Studio != Screen::Chat);
+    assert_eq!(Screen::Studio.id(), "studio");
+    assert!(!Screen::Studio.blurs_background(false));
+    assert!(!Screen::Studio.blurs_background(true));
+    assert!(!gameplay_has_keyboard(Screen::Studio, false, false));
+    // The pure gate behind `Game::open_studio_screen`, as
+    // `native_mod_screen_open`'s `mod_screen_opens` is gated.
+    use super::studio::studio_screen_opens;
+    assert_eq!(studio_screen_opens(Screen::Playing, false), None);
+    assert_eq!(studio_screen_opens(Screen::Playing, true), Some(false));
+    assert_eq!(studio_screen_opens(Screen::Chat, false), Some(false));
+    assert_eq!(studio_screen_opens(Screen::Studio, false), Some(true));
+    assert_eq!(studio_screen_opens(Screen::Studio, true), Some(true));
 }
 
 /// The `modifiers` a native mod's input hooks hand over are GLFW's bits
@@ -175,6 +204,8 @@ fn glfw_modifier_bits_are_glfw_modifier_bits() {
     assert_eq!(glfw_modifiers(ModifiersState::all()), 15);
 }
 
+#[path = "knot_identity_tests.rs"]
+mod knot_identity_tests;
 /// The `button` a native mod's mouse hooks hand over is GLFW's index (0
 /// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number),
 /// the one `keybinds::mouse_name` names (`key.mouse.<index + 1>` from the
@@ -205,6 +236,13 @@ fn glfw_button_indices_are_glfw_indices() {
 fn the_debug_crosshair_is_gone_once_the_world_is() {
     assert!(debug_crosshair_drawn(true, true, false, false));
     assert!(!debug_crosshair_drawn(true, true, false, true));
+}
+
+/// Opening a world in front of a block left its outline over Loading terrain's panorama (#12872).
+#[test]
+fn the_block_outline_stays_off_the_panorama() {
+    assert!(block_outline_drawn(false, false, true, false));
+    assert!(!block_outline_drawn(false, false, true, true));
 }
 
 /// Snuffing a candle or a candle cake draws one smoke per
@@ -243,6 +281,8 @@ fn equipment_modifiers_follow_their_slot_group() {
     assert!(!equipment_modifier_applies("offhand", "mainhand"));
 }
 
+#[path = "leash_knot_uuid_tests.rs"]
+mod leash_knot_uuid_tests;
 /// A guest's interact packet names its entity and the server keeps it:
 /// `ServerGamePacketListenerImpl.handleInteract` resolves
 /// `packet.entityId()` once and `Player.interactOn` clicks that entity,
@@ -259,6 +299,8 @@ fn an_interact_packet_clicks_the_entity_it_names_not_the_nearest() {
     assert_eq!(Game::named_entity(&cows, 31, |c| c.0), None);
 }
 
+#[path = "building_cache_tests.rs"]
+mod building_cache_tests;
 /// The id path keeps the crosshair pick's filters, so a packet cannot name
 /// a mob the pick would refuse: one in its death animation, the one the
 /// player rides, or the camera entity. Without them a guest could shear,
@@ -276,6 +318,8 @@ fn an_interact_packet_cannot_name_a_mob_the_pick_would_refuse() {
     assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
 }
 
+#[path = "pet_order_tests.rs"]
+mod pet_order_tests;
 /// The packet's location is `EntityHitResult.getLocation() -
 /// entity.position()`, the point the view ray met the box at measured
 /// from the mob's feet (`MultiPlayerGameMode.interact`). The old fixed

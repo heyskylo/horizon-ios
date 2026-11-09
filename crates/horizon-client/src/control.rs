@@ -95,6 +95,7 @@ fn read_endpoint(path: &Path) -> io::Result<(u16, String)> {
 
 /// Connect to a running game's control endpoint (and authenticate over TCP).
 pub fn connect(path: &Path) -> io::Result<Stream> {
+    private_dir(path, false)?;
     #[cfg(unix)]
     if !uses_tcp(path) {
         return UnixStream::connect(path).map(Stream::Unix);
@@ -158,8 +159,80 @@ pub fn default_path() -> PathBuf {
     if !cfg!(unix) {
         return std::env::temp_dir().join("horizon-control.json");
     }
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(fallback_dir)
+        .unwrap_or_else(std::env::temp_dir);
     dir.join("horizon-control.sock")
+}
+
+/// Without `$XDG_RUNTIME_DIR` (containers, some WSL and minimal setups), when the temporary
+/// directory is shared by every user (`/tmp`), a folder of this user's own in it,
+/// `horizon-<uid>`: a fixed name there let another user bind the socket first, so that
+/// `--control` failed and `horizon-ctl` talked to theirs. [`private_dir`] checks it before the
+/// socket is made or reached. A temporary directory of the user's own (macOS's `$TMPDIR`) is
+/// used as it is. The launcher finds the endpoint the same way (`game_tools.rs`).
+fn fallback_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = std::env::temp_dir();
+        let shared = std::fs::metadata(&temp).is_ok_and(|m| m.permissions().mode() & 0o002 != 0);
+        let uid = own_uid().filter(|_| shared)?;
+        Some(temp.join(format!("horizon-{uid}")))
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+/// This process's user: the owner of `/proc/self` where there is one, else of the home folder.
+#[cfg(unix)]
+fn own_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .ok()
+        .or_else(|| std::fs::metadata(std::env::var_os("HOME")?).ok())
+        .map(|m| m.uid())
+}
+
+/// For an endpoint in [`fallback_dir`]: [`check_private`] on that folder. Elsewhere (the user's
+/// `$HORIZON_CONTROL`, the runtime directory) nothing to check.
+fn private_dir(path: &Path, make: bool) -> io::Result<()> {
+    match fallback_dir() {
+        Some(dir) if path.parent() == Some(dir.as_path()) => check_private(&dir, make),
+        _ => Ok(()),
+    }
+}
+
+/// `dir` made (mode 0700) when `make`, and refused unless it is a real folder, this user's, that
+/// no one else may enter.
+#[cfg(unix)]
+fn check_private(dir: &Path, make: bool) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if make {
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+            _ => {}
+        }
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir()
+        || meta.permissions().mode() & 0o077 != 0
+        || own_uid().is_some_and(|uid| uid != meta.uid())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} isn't a folder only this user can open; set $HORIZON_CONTROL or $XDG_RUNTIME_DIR",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+#[cfg(not(unix))]
+fn check_private(_: &Path, _: bool) -> io::Result<()> {
+    Ok(())
 }
 
 /// Whether `path` can be an endpoint at all, without touching it: a Unix socket's path has a
@@ -184,6 +257,7 @@ pub fn check_path(path: &Path) -> io::Result<()> {
 impl Server {
     pub fn start(path: &Path) -> io::Result<Self> {
         check_path(path)?;
+        private_dir(path, true)?;
         // An endpoint left by a crashed game refuses connections; replace it.
         if path.exists() && connect(path).is_err() {
             std::fs::remove_file(path)?;
@@ -392,6 +466,36 @@ fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_socket_folder_must_be_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("horizon-control-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // Made 0700 when missing, and then fine to reach.
+        let made = base.join("made");
+        super::check_private(&made, true).unwrap();
+        let mode = std::fs::metadata(&made).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        super::check_private(&made, false).unwrap();
+        // One another user could enter or write: refused, made or not.
+        let open = base.join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(super::check_private(&open, true).is_err());
+        assert!(super::check_private(&open, false).is_err());
+        // A link to a private folder, or a file: refused.
+        std::os::unix::fs::symlink(&made, base.join("link")).unwrap();
+        assert!(super::check_private(&base.join("link"), false).is_err());
+        std::fs::write(base.join("file"), b"").unwrap();
+        assert!(super::check_private(&base.join("file"), true).is_err());
+        // Missing and not to be made: an error, not a folder made by whoever connects.
+        assert!(super::check_private(&base.join("missing"), false).is_err());
+        assert!(!base.join("missing").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     use super::*;
 
     /// The check agrees with the system at every length around its limit.

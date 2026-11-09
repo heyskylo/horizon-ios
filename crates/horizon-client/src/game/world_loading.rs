@@ -8,6 +8,9 @@ pub(super) struct WorldRequest {
     pub seed: Option<i64>,
     pub creative: bool,
     pub create: Option<horizon_client::title::WorldOptions>,
+    /// The account the world opens under, for an integrated server
+    /// (`IntegratedServer.getSingleplayerProfile`): its name and UUID.
+    owner: Option<(String, u128)>,
 }
 
 pub(super) struct PreparedWorld {
@@ -21,6 +24,9 @@ pub(super) struct PreparedWorld {
     pub session_lock: horizon_client::save::SessionLock,
     pub rand_sequences: horizon_client::random_sequences::RandomSequences,
     pub locator: Option<Arc<VanillaTerrain>>,
+    /// The owner's offline UUID and the account's, when an older world moved its
+    /// owner at open (`playerdata::migrate_owner`): entities migrate as they load.
+    pub owner_migration: Option<(u128, u128)>,
 }
 
 impl WorldRequest {
@@ -38,7 +44,16 @@ impl WorldRequest {
             seed,
             creative,
             create: create.cloned(),
+            owner: None,
         })
+    }
+
+    /// The account this world opens under (`IntegratedServer.getSingleplayerProfile`):
+    /// a world older builds made under the offline profile moves its owner to it at
+    /// open. A dedicated server has no single-player owner and leaves it unset.
+    pub fn owned_by(mut self, player: &str, owner: u128) -> Self {
+        self.owner = Some((player.to_owned(), owner));
+        self
     }
 
     pub fn prepare(
@@ -97,6 +112,7 @@ impl WorldRequest {
             seed,
             creative,
             create,
+            owner,
         } = self;
         let name = name.as_deref();
         let create = create.as_ref();
@@ -165,6 +181,28 @@ impl WorldRequest {
             ..Level::default()
         });
         let mut level = level;
+        // `IntegratedServer.setSingleplayerProfile`: a world older Horizon builds made
+        // under the offline profile moves its owner to the account at open — the player
+        // file, its `UUID` and level.dat's `singleplayer_uuid`. Its entities follow as
+        // their chunks load (`owner_migration`, `entity_nbt::migrate_player_uuid`).
+        let owner_migration = owner.and_then(|(player, account)| {
+            let old = horizon_protocol::crypto::offline_uuid(&player);
+            (old != account).then(|| {
+                if created {
+                    // `IntegratedServer.initServer` saves with the profile before the first
+                    // tick: a world made under the account names it from its first level.dat.
+                    level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(account));
+                } else if horizon_client::lan::playerdata::migrate_owner(
+                    &save_root, &mut level, old, account,
+                ) {
+                    log::info!(
+                        "Horizon: \"{folder}\" was made under the offline profile; \
+                         its owner moved to the account's UUID"
+                    );
+                }
+                (old, account)
+            })
+        });
         // CreateWorldScreen's choices, before streaming reads the generator.
         if created && let Some(o) = create {
             level.hardcore = o.hardcore;
@@ -222,6 +260,15 @@ impl WorldRequest {
             level.dimension = d.clone();
             level.position = None;
         }
+        // The bounded registry-loader leaf slice: fail world preparation before streaming,
+        // rather than letting the flat-generator fallback swallow a selected pack's codec error.
+        let (overrides, _) = worldgen_overrides_of(
+            &save_root,
+            &options.resources,
+            res.biomes(),
+            &level.enabled_features,
+        );
+        overrides.validate_fill_layers(pack.assets.registry)?;
         let dim = Dim::from_id(&level.dimension);
         let shapes = level_shapes(&save_root, res.biomes());
         let shape = shapes.get(dim.id());
@@ -248,6 +295,7 @@ impl WorldRequest {
         .fast_lava;
         world.game_time = level.time;
         world.day_time = options.time.unwrap_or(level.day_time);
+        world.end_clock = level.end_clock.unwrap_or(level.time);
         world.weather = level.weather;
         if let Some(w) = options.weather.as_deref() {
             // /weather: clear, rain or thunder for a long duration.
@@ -277,6 +325,7 @@ impl WorldRequest {
             session_lock,
             rand_sequences,
             locator,
+            owner_migration,
         })
     }
 }
@@ -425,6 +474,7 @@ pub(super) fn preload_launch_world(
         .name("World data preload".into())
         .spawn(move || {
             // Not behind the server: the world's opening waits for it.
+            let _step = startup::step("world.preload");
             let started = std::time::Instant::now();
             let sync = spawn_sync_preload(&resources, false);
             // Errors are left for the world opening to report. The world's
@@ -540,6 +590,12 @@ pub(super) fn packed_biomes(
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
     let (overrides, _) = horizon_client::datapack::worldgen_overrides(&enabled, |_| true);
+    // The mods' spawns too: their biome modifiers go over the packs' biomes.
+    let overrides = horizon_client::vanillagen::biome_modifiers_over_packs(
+        &resources.join("worldgen"),
+        &overrides,
+    )
+    .unwrap_or(overrides);
     let packed: Vec<(String, serde_json::Value)> = overrides
         .entries("biomes")
         .filter_map(|(id, json)| Some((id.to_owned(), serde_json::from_str(json).ok()?)))
@@ -838,12 +894,19 @@ pub(super) fn make_streaming(
         }
         // Chunks an older version saved: the new chunks around them blend in.
         if dim == Dim::Overworld {
-            inner.set_old_world(Arc::new(horizon_client::old_world::SavedOldWorld::new(
+            let old = Arc::new(horizon_client::old_world::SavedOldWorld::new(
                 save.clone(),
                 pack.assets.clone(),
                 res.biomes().clone(),
                 inner.generator_data().clone(),
-            )));
+            ));
+            // Saves of this folder take the old chunks' calculated blending data when
+            // they are requested; a weak link, as the old world holds the folder.
+            let weak = Arc::downgrade(&old);
+            save.set_blending_lookup(Box::new(move |x, z| {
+                weak.upgrade().and_then(|old| old.calculated(x, z))
+            }));
+            inner.set_old_world(old);
         }
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",
@@ -872,6 +935,7 @@ pub(super) fn make_streaming(
     streaming.biome_blend = settings.biome_blend;
     streaming.smooth_lighting = settings.smooth_lighting;
     streaming.cutout_leaves = settings.cutout_leaves;
+    streaming.opaque_ice = settings.horizon.opaque_ice;
     streaming.leaf_culling = settings
         .horizon
         .leaf_culling_effective(&settings.resource_packs);
@@ -903,5 +967,213 @@ mod tests {
     fn prepared_world_can_cross_threads() {
         fn send<T: Send>() {}
         send::<PreparedWorld>();
+    }
+}
+
+#[cfg(test)]
+mod unused_feature_startup_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    fn actual_world_prepare_rejects_unused_invalid_feature() {
+        let resources = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            resources.clone(),
+            None,
+            &resources,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = resources;
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        for (case, height) in [("valid", 0), ("invalid", -1)] {
+            let root = std::env::current_dir().unwrap().join(case);
+            let pack = root.join("datapacks/h259");
+            std::fs::create_dir_all(pack.join("data/h259/worldgen/feature")).unwrap();
+            std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"H259 unused feature","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+            let json = format!(
+                r#"{{"type":"minecraft:fill_layer","height":{height},"state":"minecraft:stone"}}"#
+            );
+            std::fs::write(
+                pack.join("data/h259/worldgen/feature/unused_probe.json"),
+                &json,
+            )
+            .unwrap();
+            let mut level = Level {
+                seed: 259,
+                data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
+                ..Level::default()
+            };
+            level.write(&root).unwrap();
+            horizon_client::save::write_world_gen_settings(
+                &root,
+                259,
+                horizon_client::save::WorldGen {
+                    preset: horizon_client::save::WorldPreset::Flat,
+                    structures: false,
+                    bonus_chest: false,
+                },
+            )
+            .unwrap();
+            let (overrides, _) = worldgen_overrides_of(
+                &root,
+                &options.resources,
+                loaded.resources.biomes(),
+                &level.enabled_features,
+            );
+            assert_eq!(
+                overrides
+                    .entries("features")
+                    .find(|(id, _)| *id == "h259:unused_probe")
+                    .unwrap()
+                    .1,
+                json
+            );
+            assert!(overrides.entries("placed_features").next().is_none());
+            assert_eq!(
+                horizon_client::save::WorldGen::read(&root).unwrap().preset,
+                horizon_client::save::WorldPreset::Flat
+            );
+            let request = WorldRequest {
+                save_root: root,
+                folder: case.into(),
+                name: None,
+                seed: Some(259),
+                creative: false,
+                create: None,
+                owner: None,
+            };
+            let result = request.prepare(
+                &loaded.resources,
+                &loaded.pack,
+                &options,
+                &settings,
+                &horizon_world::datafix::progress::UpgradeProgress::new(),
+            );
+            if height == 0 {
+                assert!(result.is_ok(), "valid unused registry entry must prepare");
+                drop(result);
+            } else {
+                let error = match result {
+                    Ok(_) => panic!(
+                        "unused invalid h259:unused_probe was accepted by actual world preparation"
+                    ),
+                    Err(error) => error.to_string(),
+                };
+                assert!(error.contains("h259:unused_probe"), "{error}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod unused_feature_preservation_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    fn startup_leaf_preservation_other_id_and_unrelated_feature() {
+        let resources = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            resources.clone(),
+            None,
+            &resources,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = resources;
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let root = std::env::current_dir().unwrap().join("preservation");
+        let pack = root.join("datapacks/h259");
+        let entries = pack.join("data/controls/worldgen/feature");
+        std::fs::create_dir_all(&entries).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"H259 preservation controls","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let leaf = r#"{"type":"minecraft:fill_layer","height":1,"state":"minecraft:stone"}"#;
+        let unrelated = r#"{"type":"minecraft:no_op"}"#;
+        std::fs::write(entries.join("another_id.json"), leaf).unwrap();
+        std::fs::write(entries.join("unrelated.json"), unrelated).unwrap();
+        let mut level = Level {
+            seed: 259,
+            data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
+            ..Level::default()
+        };
+        level.write(&root).unwrap();
+        horizon_client::save::write_world_gen_settings(
+            &root,
+            259,
+            horizon_client::save::WorldGen {
+                preset: horizon_client::save::WorldPreset::Flat,
+                structures: false,
+                bonus_chest: false,
+            },
+        )
+        .unwrap();
+        let (mut overrides, _) = worldgen_overrides_of(
+            &root,
+            &options.resources,
+            loaded.resources.biomes(),
+            &level.enabled_features,
+        );
+        assert_eq!(
+            overrides.entries("features").collect::<Vec<_>>(),
+            vec![
+                ("controls:another_id", leaf),
+                ("controls:unrelated", unrelated),
+            ]
+        );
+        // Labeled native preservation controls, not additional Java runtime coverage.
+        overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap();
+        // The existing winning-entry map still owns precedence, not the validation phase.
+        overrides.set(
+            "features",
+            "controls:another_id",
+            r#"{"type":"minecraft:fill_layer","height":-1,"state":"minecraft:stone"}"#.into(),
+        );
+        let error = overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap_err();
+        assert!(error.to_string().contains("controls:another_id"));
+        overrides.set("features", "controls:another_id", leaf.into());
+        overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap();
+        let request = WorldRequest {
+            save_root: root,
+            folder: "preservation".into(),
+            name: None,
+            seed: Some(259),
+            creative: false,
+            create: None,
+            owner: None,
+        };
+        assert!(
+            request
+                .prepare(
+                    &loaded.resources,
+                    &loaded.pack,
+                    &options,
+                    &settings,
+                    &horizon_world::datafix::progress::UpgradeProgress::new(),
+                )
+                .is_ok(),
+            "preservation: other-id leaf and unrelated no_op must still prepare"
+        );
     }
 }

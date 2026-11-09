@@ -177,12 +177,22 @@ impl Game<'_> {
     /// `TestCommand.showPos`, but for the highlight the client draws
     /// (`ClientboundGameTestHighlightPosPacket`).
     pub(super) fn test_show_pos(&mut self, ctx: &Context) -> R<i32> {
-        self.source_player()?;
+        // `source.getPlayerOrException().pick(10, 1, false)`: the source
+        // player's own eyes and view. A connected player's are in place only
+        // for the pick; the test is looked up, and the issuer told, here.
+        let target = match self.command_source.map(|s| s.entity) {
+            Some(Some(super::Target::Guest(conn))) => self
+                .for_player(super::Target::Guest(conn), |g| g.test_pick_block())
+                .ok_or_else(|| err("permissions.requires.player", &[]))?,
+            _ => {
+                self.source_player()?;
+                self.test_pick_block()
+            }
+        };
         let var = match ctx.get("var") {
             Some(Arg::Str(v)) => v.clone(),
             _ => "pos".to_owned(),
         };
-        let target = self.test_pick_block();
         let target = (target[0], target[1], target[2]);
         let containing = |game: &Self, radius: i32| {
             game.find_test_instance_blocks(target, radius)

@@ -542,16 +542,30 @@ impl Game<'_> {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {
                     None => {}
-                    Some(mode @ ("on" | "off")) => {
+                    Some(mode @ ("on" | "off" | "auto")) => {
                         // Refused, with the reason, where it isn't offered.
+                        if let Some(why) = r.gpu_culling_offer().reason() {
+                            return Err(why.into());
+                        }
+                        // Auto starts from off and decides from the frames that follow.
+                        self.gpu_culling_auto.reset();
                         r.set_gpu_culling(mode == "on")?;
                         // The setting, as its switch sets it; not saved here (as
                         // `lod-distance`): settings changes and new renderers keep it.
-                        self.settings.horizon.gpu_culling = mode == "on";
+                        self.settings.horizon.gpu_culling = match mode {
+                            "on" => horizon_client::graphics::GpuCullingMode::On,
+                            "auto" => horizon_client::graphics::GpuCullingMode::Auto,
+                            _ => horizon_client::graphics::GpuCullingMode::Off,
+                        };
                     }
                     Some(other) => return Err(format!("unknown GPU culling mode {other}").into()),
                 }
-                Ok(Some(json!({ "ok": true, "gpu_culling": r.gpu_culling() })))
+                Ok(Some(json!({
+                    "ok": true,
+                    "gpu_culling": r.gpu_culling(),
+                    "mode": self.settings.horizon.gpu_culling.name(),
+                    "auto": self.gpu_culling_auto.state(),
+                })))
             }
             "sculk" => Ok(Some(self.sculk_command(&words)?)),
             "hello" => Ok(Some(hello())),
@@ -567,6 +581,27 @@ impl Game<'_> {
             }
             "simulation" => {
                 self.require_world()?;
+                // `simulation blocks X1 Y1 Z1 X2 Y2 Z2`: the server's own blocks in a box. `blocks` reads this
+                // window's copy, which the server's changes reach in the next tick's broadcast.
+                if words.get(1) == Some(&"blocks") {
+                    let mut c = [0i32; 6];
+                    for (i, v) in c.iter_mut().enumerate() {
+                        *v = arg(i + 2)?.parse()?;
+                    }
+                    let lo = [0, 1, 2].map(|i| c[i].min(c[i + 3]));
+                    let hi = [0, 1, 2].map(|i| c[i].max(c[i + 3]));
+                    let volume: i64 = (0..3).map(|i| i64::from(hi[i] - lo[i] + 1)).product();
+                    if volume > 32768 {
+                        return Err(format!("{volume} blocks; at most 32768 per request").into());
+                    }
+                    return Ok(Some(if let Some(server) = &self.integrated {
+                        server
+                            .call(move |g| g.in_owner_level(move |g| g.blocks_json(lo, hi)))
+                            .ok_or(super::integrated::NO_ANSWER)?
+                    } else {
+                        self.blocks_json(lo, hi)
+                    }));
+                }
                 let value = if let Some(server) = &self.integrated {
                     server
                         .call(|g| {
@@ -1127,6 +1162,10 @@ impl Game<'_> {
             }
             "bench" => {
                 let seconds: f64 = arg(1)?.parse()?;
+                // `Duration::from_secs_f64` panics on a negative, NaN or huge number.
+                if !(seconds.is_finite() && (0.0..=86_400.0).contains(&seconds)) {
+                    return Err("bench takes 0 to 86400 seconds".into());
+                }
                 if self.pending_bench.is_some() {
                     return Err("a benchmark is already running".into());
                 }
@@ -1342,6 +1381,7 @@ impl Game<'_> {
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
             Screen::HudEditor => "hud-editor",
+            Screen::Studio => "studio",
         }
     }
 
@@ -1436,6 +1476,8 @@ impl Game<'_> {
                 "section_draw_calls": r.section_draw_calls,
                 "culled_sections": r.culled_sections(),
                 "gpu_culling": r.gpu_culling(),
+                "gpu_culling_mode": self.settings.horizon.gpu_culling.name(),
+                "gpu_culling_auto": self.gpu_culling_auto.state(),
                 "gpu_frame": r.gpu_frame(),
                 "gpu_fading": r.gpu_fading(),
                 "gpu_culling_offer": format!("{:?}", r.gpu_culling_offer()),
@@ -1445,6 +1487,8 @@ impl Game<'_> {
                 "resident_sections": r.resident_sections(),
                 "arena_bytes": arena_bytes,
                 "section_vertex_bytes": section_vertex_bytes,
+                "packed_layout": r.packed_layout(),
+                "vertex_bytes_split": r.vertex_bytes_split(),
                 "gpu_allocated_bytes": memory.as_ref().map(|m| m.total_allocated_bytes),
                 "gpu_reserved_bytes": memory.as_ref().map(|m| m.total_reserved_bytes),
             })
@@ -1540,6 +1584,9 @@ impl Game<'_> {
         let (target, sampled) = self.lod.as_ref().map_or((0, 0), |lod| lod.progress());
         status["lod"]["target_tiles"] = target.into();
         status["lod"]["sampled_target_tiles"] = sampled.into();
+        let (kept, kept_bytes) = self.lod.as_ref().map_or((0, 0), |lod| lod.kept());
+        status["lod"]["kept_tiles"] = kept.into();
+        status["lod"]["kept_mb"] = (kept_bytes >> 20).into();
         let (wanted, refined) = self
             .lod
             .as_ref()

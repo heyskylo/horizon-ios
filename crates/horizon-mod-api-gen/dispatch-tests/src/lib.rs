@@ -1,3 +1,9 @@
+/// The game's `mod_api` types a hook names with a `crate::mod_api::` path.
+#[cfg(test)]
+mod mod_api {
+    #[derive(Clone, Copy)]
+    pub struct NativeInventoryKind;
+}
 #[cfg(test)]
 mod tests {
     include!("block_clone_item_tests.rs");
@@ -71,6 +77,9 @@ mod tests {
         pub(super) struct NativeMod;
         pub(super) struct NativePanelEvent;
         pub(super) struct NativeScreen;
+        pub(super) struct NativeStack;
+        pub(super) struct NativeRecipeLookup;
+        pub(super) struct NativeRecipeCategory;
         pub(super) struct ModBlockEntity;
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;
@@ -80,6 +89,7 @@ mod tests {
         pub(super) struct NativeFluidDrain;
         pub(super) struct NativeFluidStack;
         pub(super) struct NativeFluidTankView;
+        pub(super) struct NativeFishingMedium;
         pub(super) struct ModEnergyBuffer;
         pub(super) struct Mob;
         pub(super) struct LootStack;
@@ -449,6 +459,37 @@ mod tests {
             &mut answer,
         );
         assert_eq!(*calls.lock().unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn permission_check_tells_a_false_answer_from_not_set() {
+        struct Provider(Option<bool>);
+        impl Hooks for Provider {
+            fn permission_check(
+                &self,
+                _: &dyn Host,
+                event: &mut PermissionCheckEvent<'_>,
+            ) -> Option<bool> {
+                if event.node == "example.node" {
+                    self.0
+                } else {
+                    None
+                }
+            }
+        }
+        let denies: Vec<Box<dyn Hooks>> = vec![Box::new(Provider(Some(false)))];
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &denies, 1, "example.node", 0, &mut result);
+        assert_eq!(result, Some(false), "set to false is not unset");
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &denies, 1, "other.node", 0, &mut result);
+        assert_eq!(
+            result, None,
+            "a node the provider doesn't answer is not set"
+        );
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &[], 1, "example.node", 0, &mut result);
+        assert_eq!(result, None, "no provider: not set");
     }
 
     #[test]

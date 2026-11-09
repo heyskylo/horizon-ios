@@ -425,6 +425,11 @@ impl Component {
             }
             Self::PaintingVariant(i) => entry(names, "minecraft:painting_variant", *i)?,
             Self::Profile(p) => raw::profile(p),
+            Self::TrimDirect { .. } => {
+                let mut writer = crate::buf::Writer::new();
+                self.write(id, &mut writer);
+                raw::code(id, &writer.data, names)?
+            }
             Self::Raw(bytes) => raw::code(id, bytes, names)?,
         })
     }

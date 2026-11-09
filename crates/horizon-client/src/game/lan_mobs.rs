@@ -235,26 +235,40 @@ impl Game<'_> {
     }
 
     /// Mob events aimed at a guest, run as that guest (`guest_hit_by`).
-    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, MobEvent)>) {
+    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, u32, MobEvent)>) {
         if events.is_empty() {
             return;
         }
         let Some(mut host) = self.lan.take() else {
             return;
         };
-        for (conn, e) in events {
-            self.guest_hit_by(&mut host, conn, |g| {
-                let _ = g.handle_mob_events(vec![e]);
-            });
+        for (conn, mob, e) in events {
+            self.guest_hit_by(&mut host, conn, |g| g.guest_mob_event(mob, e));
         }
         self.lan = Some(host);
+    }
+
+    /// One mob event, with the guest swapped in. A hit knows the mob that
+    /// swung, so nothing guesses it from where the hit came from.
+    pub(super) fn guest_mob_event(&mut self, mob: u32, e: MobEvent) {
+        if matches!(
+            e,
+            MobEvent::AttackPlayer(..)
+                | MobEvent::AttackPlayerWithEffect { .. }
+                | MobEvent::StingPlayer { .. }
+        ) {
+            self.combat.melee_mob = Some(mob);
+        }
+        let _ = self.handle_mob_events(vec![e]);
+        // Used up by the hit; a blow that hurt nobody leaves it to no other.
+        self.combat.melee_mob = None;
     }
 
     /// The guests' boxes for the blocks entities trigger (pressure plates,
     /// tripwires, detector rails): `Entity.checkInsideBlocks` and
     /// `Level.getEntities` see every player in the level, but not spectators
     /// (`Entity.isIgnoringBlockTriggers`).
-    pub(super) fn lan_block_trigger_boxes(&self) -> Vec<([f64; 3], [f64; 3])> {
+    pub(super) fn lan_block_trigger_boxes(&self) -> Vec<(u128, ([f64; 3], [f64; 3]))> {
         let Some(host) = self.lan.as_ref() else {
             return Vec::new();
         };
@@ -265,7 +279,7 @@ impl Game<'_> {
             .map(|g| {
                 let b = g.bounds();
                 let (lo, hi) = (b.min_position(), b.max_position());
-                ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
+                (g.uuid, ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]))
             })
             .collect()
     }

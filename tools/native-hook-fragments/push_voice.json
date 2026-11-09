@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "push_voice",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_push_voice"
+    }
+  ],
+  "rust_summary": "a mod's own mono audio, queued per source and mixed with the game's sounds (`native_push_voice`).",
+  "doc_summary": "`native_push_voice(mod_id, source, samples, sample_rate, at)` (client, `host.push_voice`) plays a mod's own mono samples: each `source` (the mod's id for a speaker) plays its blocks in order, sources play at once, `at` places them (linear fade to silence at 48 blocks), at most two seconds wait per source and 64 sources play. Bundles need \"hooks\": @API:push_voice@."
+}

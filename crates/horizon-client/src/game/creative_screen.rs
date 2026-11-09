@@ -8,6 +8,8 @@ impl Game<'_> {
     /// as the screen's constructor and `containerTick` do.
     pub(super) fn refresh_creative_tabs(&mut self) {
         let permissions = self.can_use_game_master_blocks() && self.settings.operator_items_tab;
+        let enchantments = Arc::clone(self.enchantments());
+        self.creative_screen.set_enchantments(enchantments);
         self.creative_screen
             .set_permissions(permissions, &self.pack.names);
     }
@@ -37,12 +39,7 @@ impl Game<'_> {
     /// Vanilla tooltip: dark box with a purple gradient border, laid out and
     /// drawn like an item tooltip (4 px of padding on every side).
     pub(super) fn tooltip(&self, batch: &mut HudBatch, text: &str, x: f32, y: f32) {
-        let atlas = &self.gui.atlas;
-        let lines = vec![(horizon_client::text::Text::literal(text), u32::MAX)];
-        let (x, y, w, h) =
-            Self::tooltip_geometry(atlas, &lines, (x, y), (batch.width, batch.height), [0.0; 2]);
-        self.tooltip_box(batch, None, x, y, w, h);
-        Self::tooltip_text(batch, atlas, &lines, x, y);
+        self.draw_tooltip_lines(batch, &[(text, u32::MAX)], x, y);
     }
     /// `CreativeModeInventoryScreen.getTooltipFromContainerItem`: the lines
     /// that follow the item's name, none for a category tab's own grid slots
@@ -85,7 +82,9 @@ impl Game<'_> {
         let selected = self.creative_screen.selected;
         // Only what is drawn of the tabs: their stacks stay where they are.
         let tabs = self.creative_screen.tab_headers();
-        let tab = &tabs[selected.min(tabs.len() - 1)];
+        let Some(tab) = tabs.get(selected.min(tabs.len().saturating_sub(1))) else {
+            return;
+        };
         let tab_sprite = |t: &horizon_client::creative::Tab, on: bool| {
             format!(
                 "gui/sprites/container/creative_inventory/tab_{}_{}_{}",

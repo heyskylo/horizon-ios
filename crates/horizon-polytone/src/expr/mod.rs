@@ -8,14 +8,14 @@ mod lex;
 mod parse;
 
 use parse::{BinOp, Expr, Stmt};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A value while an expression runs. Booleans count as 1 and 0 in arithmetic.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Num(f64),
     Bool(bool),
-    Str(Rc<str>),
+    Str(Arc<str>),
     /// A context object the host hands out (a block, an entity...), by the host's own id.
     Object(u32),
     Null,

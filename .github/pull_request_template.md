@@ -2,7 +2,8 @@
 
 ## What and why
 
-<!-- What this changes, and why. Link the issue it fixes ("Fixes #123"). -->
+<!-- What this changes, and why. Link the issue it fixes ("Fixes #123"). Over about 500 lines: link the issue with its
+     approved spec too ("Spec: #123"), CONTRIBUTING.md "Large pull requests". -->
 
 ## Kind
 
@@ -16,6 +17,16 @@
 - [ ] tooling: tools, CI, tests, harnesses
 - [ ] docs
 
+## Layer
+
+<!-- engine, platform or Horizon (docs/layers.md, "Where a new feature goes"). Reviewers check:
+     - the new code sits in a crate or module of that layer;
+     - no new dependency its layer may not use (CI's layer check): no engine code calling platform or Horizon code,
+       and Horizon code using the platform's public API only, never the engine directly;
+     - Horizon features in the game are behind `horizon-extras`, and platform features that change the vanilla
+       look are off by default;
+     - no new built-in server address outside the Horizon layer. -->
+
 ## Vanilla reference
 
 <!-- The vanilla classes and methods this follows (tools/rea_vanilla.py), and the harness that checks it.
@@ -25,7 +36,8 @@
 
 <!-- "none", or for each project you read or copied from: its link at the commit, its license (only MIT,
      BSD-2-Clause, BSD-3-Clause, Apache-2.0, ISC, zlib, 0BSD, MIT-0, Unlicense or CC0-1.0), and what you took.
-     CONTRIBUTING.md "Only original code". -->
+     CONTRIBUTING.md "Only original code". Shader packs: also the sections of docs/cleanroom/shader-packs-spec.md,
+     the documentation pages and the packs you used. -->
 
 ## Self-check
 

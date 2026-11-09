@@ -63,6 +63,32 @@ variable's array specifier does not change later variables.
 It also reads a struct member outside a constant expression through a pointer to the member,
 not out of a loaded copy of the whole struct, so a member an atomic function uses can be read.
 
+## DirectX Shader Compiler
+
+The Windows x64 game folder holds `dxcompiler.dll`, Microsoft's DirectX Shader Compiler
+[v1.9.2609](https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609), unmodified: the
+`bin/x64/dxcompiler.dll` of `dxc_2026_09_29.zip` (zip SHA-256
+`ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1`, DLL SHA-256
+`0689e2fee0a1c9df8662a59680469f24e2a3ad7ce6bbbcc9284f7a83172bfc59`, 22,274,872 bytes). The release build downloads
+it and checks both checksums (`tools/ci/fetch_dxc.py`); it is not in this repository. DirectX 12 loads it only on
+integrated GPUs (`crates/horizon-client-render/src/gfx/dx12_compiler.rs`,
+[#8513](https://github.com/horizon-rust/horizon/issues/8513)); every other GPU compiles with FXC, part of Windows.
+
+Copyright (c) Microsoft Corporation. It is not covered by Horizon's MIT license. It is distributed under the
+"Microsoft Software License Terms, Microsoft DirectX Shader Compiler" (`LICENSE-MS.txt` of that release). Its
+Distributable Code terms are the Windows SDK's: end users get terms that protect the code and Microsoft at least as
+much, and the distributor indemnifies Microsoft. The project accepted them on 2026-11-08. Its open-source part is also under the University of Illinois/NCSA license (`LICENSE-LLVM.txt`). Both
+files ship beside the DLL as `DXC-LICENSE-MS.txt` and `DXC-LICENSE-LLVM.txt`, with `DXC-NOTICE.txt`
+(`packaging/windows/`), which tells players those terms apply and that deleting the DLL brings back FXC.
+
+- Only x64: the Windows SDK's list of distributable files
+  ([REDIST.TXT lists](https://learn.microsoft.com/en-us/legal/windows-sdk/redist), updated 2024-10-21) names
+  `Redist\D3D\x64\dxcompiler.dll` and `dxil.dll` and their x86 copies, for classic Windows applications (Horizon is
+  one), and no ARM64 copy. The release zip's own `LICENSE-MS.txt` refers to a list of distributable files that the zip
+  doesn't contain, so the SDK's list is the one followed. The Windows ARM64 build ships no DXC and compiles with FXC.
+- No `dxil.dll`: since DXC 1.8.2505 the compiler signs shaders with its own validator and no longer loads it, and
+  wgpu never does.
+
 ## libmimalloc-sys and mimalloc
 
 `third_party/libmimalloc-sys` is [libmimalloc-sys](https://github.com/purpleprotocol/mimalloc_rust)
@@ -103,8 +129,9 @@ ports to WGSL of the optical flow and frame interpolation shaders of the
 [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4
 (`sdk/include/FidelityFX/gpu/{opticalflow,frameinterpolation}`, at commit
 [c6efa6bf7f20](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55)),
-and `optical_flow.rs` follows the SDK's `sdk/src/components/opticalflow/ffx_opticalflow.cpp`
-(its passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
+and `optical_flow.rs` and `interpolation.rs` follow the SDK's
+`sdk/src/components/{opticalflow/ffx_opticalflow.cpp,frameinterpolation/ffx_frameinterpolation.cpp}`
+(their passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
 Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are AMD's
 trademarks; Horizon is not affiliated with AMD.
 
@@ -309,3 +336,25 @@ Permission to use, copy, modify, and distribute this
 software is freely granted, provided that this notice
 is preserved.
 ```
+
+## Starling
+
+`crates/horizon-client-render/src/touch/layout.rs` and `crates/horizon-client-render/src/touch/aim.rs`
+are adapted from the touch layout and touch helpers of
+[Starling](https://github.com/starling-client/starling), an Android port of Horizon, at commit
+[150a414b09a1](https://github.com/starling-client/starling/tree/150a414b09a18c900489d9462a7fc035dae744b7)
+(`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
+Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
+
+`crates/horizon-client-render/src/keypad.rs` is adapted from Starling's keypad profile
+(`crates/horizon-client-render/src/keypad.rs`) at the same commit.
+
+`crates/horizon-client-render/src/android_gamepad.rs` is adapted from Starling's controller decoder
+(`crates/horizon-client-render/src/android_gamepad.rs`) and the input-mode part of its
+`android_runtime.rs`, at the same commit.
+
+`crates/horizon-client-render/src/touch.rs` and `touch/tests/` are adapted from the touch input
+state of Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+
+`crates/horizon-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
+input part of Starling's `crates/horizon-client-render/src/android_runtime.rs` at the same commit.

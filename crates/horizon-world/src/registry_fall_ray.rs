@@ -25,7 +25,7 @@ struct State {
 pub struct FallRayRegistry<'s, 'r> {
     interactions: &'s InteractionShapes<'r>,
     states: Vec<State>,
-    water_mask: u8,
+    water_mask: crate::fluid::FluidMask,
 }
 impl<'s, 'r> FallRayRegistry<'s, 'r> {
     /// Tags are resolved snapshots; build a new binding after a tag reload.

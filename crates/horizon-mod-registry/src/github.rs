@@ -3,7 +3,7 @@
 //! alone, an entry, the `staging` release, a branch, a file, a pull request.
 //! Blocking (ureq): called from tokio's blocking pool.
 use base64::{Engine, engine::general_purpose::STANDARD};
-use horizon_mods::index::registry::Entry;
+use horizon_mods::index::{Revoked, registry::Entry};
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 
@@ -365,6 +365,70 @@ impl GitHub {
     pub fn label(&self, number: u64, label: &str) -> Result<()> {
         self.call("POST", &format!("/issues/{number}/labels"))
             .send_json(json!({"labels": [label]}))
+            .map_err(failure)?;
+        Ok(())
+    }
+
+    /// `revoked.toml` on main: the files taken down (none when it isn't there).
+    pub fn revoked(&self) -> Result<Vec<Revoked>> {
+        #[derive(serde::Deserialize)]
+        struct File {
+            #[serde(default)]
+            revoked: Vec<Revoked>,
+        }
+        let response = self
+            .call("GET", "/contents/revoked.toml")
+            .query("ref", "main")
+            .call();
+        let file = match response {
+            Ok(r) => read(r)?,
+            Err(ureq::Error::Status(404, _)) => return Ok(Vec::new()),
+            Err(e) => return Err(failure(e)),
+        };
+        let bytes = file["content"]
+            .as_str()
+            .map(|c| c.replace('\n', ""))
+            .and_then(|c| STANDARD.decode(c).ok())
+            .unwrap_or_default();
+        let parsed: File =
+            toml::from_str(&String::from_utf8_lossy(&bytes)).map_err(|e| Failure {
+                status: 0,
+                message: format!("revoked.toml on main: {e}"),
+                timed_out: false,
+            })?;
+        Ok(parsed.revoked)
+    }
+
+    /// Checks whether release asset `name` exists in release tag `tag`.
+    pub fn release_asset_exists(&self, tag: &str, name: &str) -> Result<bool> {
+        let response = self.call("GET", &format!("/releases/tags/{tag}")).call();
+        let release = match response {
+            Ok(r) => read(r)?,
+            Err(ureq::Error::Status(404, _)) => return Ok(false),
+            Err(e) => return Err(failure(e)),
+        };
+        Ok(release["assets"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x["name"] == name)))
+    }
+
+    /// Dispatches the `native-build.yml` workflow on `ref_name` with inputs for target, base, and mods.
+    pub fn dispatch_native_build(
+        &self,
+        ref_name: &str,
+        target: &str,
+        base: &str,
+        mods: &str,
+    ) -> Result<()> {
+        self.call("POST", "/actions/workflows/native-build.yml/dispatches")
+            .send_json(json!({
+                "ref": ref_name,
+                "inputs": {
+                    "targets": target,
+                    "base": base,
+                    "mods": mods,
+                }
+            }))
             .map_err(failure)?;
         Ok(())
     }

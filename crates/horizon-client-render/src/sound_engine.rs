@@ -20,6 +20,7 @@ use std::{
 pub const MASTER: usize = 0;
 pub const MUSIC: usize = 1;
 pub const RECORDS: usize = 2;
+pub const WEATHER: usize = 3;
 pub const NEUTRAL: usize = 6;
 pub const PLAYERS: usize = 7;
 pub const AMBIENT: usize = 8;
@@ -77,7 +78,7 @@ impl SoundEntity {
 }
 
 /// The tickable instance kinds Horizon plays (`TickableSoundInstance`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ticking {
     /// Not tickable.
     No,
@@ -112,6 +113,24 @@ pub enum Ticking {
     /// A native mod's music layer (`MusicLayers`), whose volume its owner
     /// sets each tick.
     MusicLayer,
+    /// `DirectionalSoundInstance`: ten blocks from the camera toward
+    /// `Vec3.directionFromRotation(x_angle, y_angle)`.
+    Directional { x_angle: f32, y_angle: f32 },
+}
+/// `DirectionalSoundInstance.setPosition`: the camera plus
+/// `Vec3.directionFromRotation(xAngle, yAngle).scale(10.0)`.
+fn directional_position(camera: [f64; 3], x_angle: f32, y_angle: f32) -> [f64; 3] {
+    use horizon_core::geometry::trig;
+    let to_rad = std::f32::consts::PI / 180.0;
+    let y = -y_angle * to_rad - std::f32::consts::PI;
+    let (y_cos, y_sin) = (trig::cos(f64::from(y)), trig::sin(f64::from(y)));
+    let x = -x_angle * to_rad;
+    let (x_cos, x_sin) = (-trig::cos(f64::from(x)), trig::sin(f64::from(x)));
+    [
+        camera[0] + f64::from(y_sin * x_cos) * 10.0,
+        camera[1] + f64::from(x_sin) * 10.0,
+        camera[2] + f64::from(y_cos * x_cos) * 10.0,
+    ]
 }
 /// What a minecart's sound instances read about it.
 #[derive(Clone, Copy, Debug)]
@@ -170,6 +189,8 @@ pub struct TickContext {
     pub player_fall_flying: bool,
     /// The mob the player rides, when it is not a minecart.
     pub ridden: Option<RiddenSound>,
+    /// `mainCamera().position()`.
+    pub camera_position: [f64; 3],
 }
 /// `AbstractSoundInstance` and its subclasses' fields.
 #[derive(Clone, Debug)]
@@ -588,6 +609,31 @@ impl SoundInstance {
         s.ticking = Ticking::Elytra { time: 0 };
         s
     }
+    /// `new DirectionalSoundInstance(event, source, random, camera, xAngle,
+    /// yAngle)`: volume and pitch 1, heard everywhere alike.
+    pub fn directional(
+        id: &str,
+        source: usize,
+        random: LegacyRandom,
+        camera: [f64; 3],
+        x_angle: f32,
+        y_angle: f32,
+    ) -> Self {
+        let mut s = Self::new(
+            id,
+            source,
+            1.0,
+            1.0,
+            random,
+            false,
+            0,
+            Attenuation::None,
+            directional_position(camera, x_angle, y_angle),
+            false,
+        );
+        s.ticking = Ticking::Directional { x_angle, y_angle };
+        s
+    }
     pub fn tickable(&self) -> bool {
         self.ticking != Ticking::No
     }
@@ -762,6 +808,12 @@ impl SoundInstance {
                 self.volume = 1.0;
                 self.pitch = 1.0;
             }
+            Ticking::Directional { x_angle, y_angle } => {
+                // DirectionalSoundInstance.tick: setPosition.
+                let (x_angle, y_angle) = (*x_angle, *y_angle);
+                self.position = directional_position(ctx.camera_position, x_angle, y_angle);
+                self.attenuation = Attenuation::None;
+            }
             Ticking::GuardianAttack { guardian } => {
                 let id = *guardian;
                 // The client's guardian never has a target of its own, so
@@ -926,6 +978,10 @@ pub struct SoundEngine {
     instance_by_source: Vec<(usize, InstanceId)>,
     gain_by_source: [f32; 11],
     ticking: Vec<InstanceId>,
+    live_scratch: Vec<(u64, ChannelId)>,
+    mapped_scratch: Vec<u64>,
+    removed_scratch: Vec<InstanceId>,
+    ticking_scratch: Vec<InstanceId>,
     /// `queuedSounds` (insertion order).
     queued: Vec<(InstanceId, i32)>,
     delete_time: HashMap<InstanceId, i32>,
@@ -963,6 +1019,10 @@ impl SoundEngine {
             instance_by_source: Vec::new(),
             gain_by_source: [1.0; 11],
             ticking: Vec::new(),
+            live_scratch: Vec::new(),
+            mapped_scratch: Vec::new(),
+            removed_scratch: Vec::new(),
+            ticking_scratch: Vec::new(),
             queued: Vec::new(),
             delete_time: HashMap::new(),
             queued_tickable: Vec::new(),
@@ -1427,20 +1487,26 @@ impl SoundEngine {
         self.schedule_tick(backend);
     }
     fn schedule_tick(&mut self, backend: &mut impl Backend) {
-        let live: Vec<(u64, ChannelId)> = self
-            .handles
-            .iter()
-            .filter_map(|(h, handle)| handle.channel.map(|c| (*h, c)))
-            .collect();
-        for (h, c) in live {
+        let mut live = std::mem::take(&mut self.live_scratch);
+        live.clear();
+        live.extend(
+            self.handles
+                .iter()
+                .filter_map(|(h, handle)| handle.channel.map(|c| (*h, c))),
+        );
+        for (h, c) in live.drain(..) {
             if backend.stopped(c) {
                 self.release_handle(h, backend);
             }
         }
         // Released handles nobody maps any more.
-        let mapped: Vec<u64> = self.instance_to_channel.iter().map(|(_, h)| *h).collect();
+        let mut mapped = std::mem::take(&mut self.mapped_scratch);
+        mapped.clear();
+        mapped.extend(self.instance_to_channel.iter().map(|(_, h)| *h));
         self.handles
             .retain(|h, handle| handle.channel.is_some() || mapped.contains(h));
+        self.live_scratch = live;
+        self.mapped_scratch = mapped;
     }
     fn handle_stopped(&self, handle: u64) -> bool {
         self.handles.get(&handle).is_none_or(|h| h.stopped)
@@ -1450,7 +1516,10 @@ impl SoundEngine {
         for id in std::mem::take(&mut self.queued_tickable) {
             self.play(id, backend);
         }
-        for id in self.ticking.clone() {
+        let mut ticking = std::mem::take(&mut self.ticking_scratch);
+        ticking.clear();
+        ticking.extend(self.ticking.iter().copied());
+        for id in ticking.drain(..) {
             let Some(instance) = self.instances.get(&id) else {
                 continue;
             };
@@ -1497,7 +1566,8 @@ impl SoundEngine {
                 self.notify(id, subtitle, distance);
             }
         }
-        let mut removed = Vec::new();
+        let mut removed = std::mem::take(&mut self.removed_scratch);
+        removed.clear();
         let mut index = 0;
         while index < self.instance_to_channel.len() {
             let (id, handle) = self.instance_to_channel[index];
@@ -1544,9 +1614,11 @@ impl SoundEngine {
                 index += 1;
             }
         }
-        for id in removed {
+        for id in removed.drain(..) {
             self.collect(id);
         }
+        self.ticking_scratch = ticking;
+        self.removed_scratch = removed;
     }
     fn tick_music_when_paused(&mut self) {
         let mut index = 0;

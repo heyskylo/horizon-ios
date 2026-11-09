@@ -66,7 +66,7 @@ KeyboardHandler.charTyped	port	crates/horizon-client/src/game/window_handler.rs:
 KeyboardHandler.textInput	port	crates/horizon-client/src/game/window_handler.rs::Game::window_event	typed text routed to the open screen
 KeyboardHandler.textEditing	port	crates/horizon-client/src/game/ime.rs::Game::ime_preedit	WindowEvent::Ime(Preedit) draws the composition in the focused field
 KeyboardHandler.submitPreeditEvent	inline	crates/horizon-client-render/src/preedit.rs::set_preedit	the preedit reaches the screen's field directly, and Commit types the text
-Minecraft.<init>	inline	crates/horizon-client/src/game.rs::run_loading	the last start's startedCleanly is read by unclean_start_recovery (fullscreen dropped when it is false), then this start is marked unfinished until the handoff
+Minecraft.<init>	inline	crates/horizon-client/src/game/resource_loader.rs::run_loading	the last start's startedCleanly is read by unclean_start_recovery (fullscreen dropped when it is false), then this start is marked unfinished until the handoff
 Minecraft.onGameLoadFinished	inline	crates/horizon-client/src/game/loading_screen.rs::Loading::finish	the handoff's last two steps: startedCleanly set true and the options saved; the initial screens come from the menu handoff and there is no load-time telemetry
 Minecraft.createTitle	missing		minor: the window title is always Horizon (with_title in game.rs), no version or world type
 Minecraft.createUserApiService	skip:service		
@@ -98,7 +98,7 @@ Minecraft.updateLevelInEngines	skip:other		one world state in Horizon; no engine
 Minecraft.telemetryOptInExtra	skip:service		
 Minecraft.extraTelemetryAvailable	skip:service		
 Minecraft.allowsTelemetry	skip:service		
-Minecraft.allowsMultiplayer	skip:service		
+Minecraft.allowsMultiplayer	port	crates/horizon-client-render/src/ban_notice.rs::AccountStatus::allows_multiplayer	servers allowed, no multiplayer ban and no forced name change; the title screen enables its Multiplayer and Realms buttons from it
 Minecraft.allowsRealms	skip:service		
 Minecraft.friendsEnabled	skip:service		
 Minecraft.handleGlobalKeyPress	port	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	F11 and F2 shortcuts; the friends key is service

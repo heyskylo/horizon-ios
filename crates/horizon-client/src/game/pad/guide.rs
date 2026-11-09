@@ -9,9 +9,10 @@ use horizon_client::{
     gamepad::{GuideDetail, Rect},
     gameplay_guide::{self, Active, Facts, MenuFacts, Row, Target, Under, Verb},
     hud::HudBatch,
+    hud_kit::hint::{self, HintRow, Look, Side},
+    hud_kit::plate::Plate,
     items::ItemStack,
     mobs::{Species, equine, llama},
-    pad_glyph,
 };
 use serde_json::{Value, json};
 
@@ -62,9 +63,24 @@ impl Game<'_> {
             .at_detail(self.settings.controller.guide_detail);
         let mut taken = Self::guide_taken(batch, from);
         // The right column first: the left has the rows it can better do without.
-        for (left, rows) in [(false, &guide.right), (true, &guide.left)] {
-            self.draw_guide_column(batch, left, false, rows, &mut taken);
-        }
+        self.draw_guide_columns(batch, false, &guide, &mut taken);
+    }
+
+    /// Both columns, the right first. A row that would run into the other column or past the
+    /// view has its caption cut to the room left (`gameplay_guide::left_room`, `row_room`)
+    /// rather than moving down or going.
+    fn draw_guide_columns(
+        &mut self,
+        batch: &mut HudBatch,
+        up: bool,
+        guide: &gameplay_guide::Guide,
+        taken: &mut Vec<Rect>,
+    ) {
+        let view = batch.width;
+        let right = gameplay_guide::row_room(view);
+        let widest = self.draw_guide_column(batch, false, up, &guide.right, taken, right);
+        let left = gameplay_guide::left_room(view, widest);
+        self.draw_guide_column(batch, true, up, &guide.left, taken, left);
     }
 
     /// What's drawn since vertex `from`, minus what fills the view: what rows keep off.
@@ -110,9 +126,7 @@ impl Game<'_> {
         let guide =
             gameplay_guide::resolve_menu(&facts).at_detail(self.settings.controller.guide_detail);
         let mut taken = Self::guide_taken(batch, from);
-        for (left, rows) in [(false, &guide.right), (true, &guide.left)] {
-            self.draw_guide_column(batch, left, true, rows, &mut taken);
-        }
+        self.draw_guide_columns(batch, true, &guide, &mut taken);
     }
 
     fn pad_menu_guide_facts(&mut self, batch: &HudBatch) -> MenuFacts {
@@ -122,7 +136,7 @@ impl Game<'_> {
             Under::Nothing
         } else if self.recipe_under_pointer().is_some() {
             Under::Recipe {
-                direct_craft: false,
+                direct_craft: self.direct_craft_usable(),
                 alternatives: self.recipe_has_alternatives_under_pointer(),
             }
         } else if self.recipe_book_under_pointer() {
@@ -166,6 +180,8 @@ impl Game<'_> {
         }
     }
 
+    /// A column's rows where they fit around `taken`, each cut to `room` (GUI px) where only
+    /// that fits. Returns the widest row drawn, 0 with none.
     fn draw_guide_column(
         &mut self,
         batch: &mut HudBatch,
@@ -173,65 +189,62 @@ impl Game<'_> {
         up: bool,
         rows: &[Row],
         taken: &mut Vec<Rect>,
-    ) {
-        let atlas = &self.gui.atlas;
-        let style = self.ui.options.pad_style;
-        let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
-        let captions: Vec<String> = rows
+        room: f32,
+    ) -> f32 {
+        // Each row's glyphs, from what its buttons do: a rebinding or the pad's letters reach them.
+        let hints: Vec<HintRow> = rows
             .iter()
-            .map(|r| horizon_client::lang::get(r.caption))
+            .map(|r| {
+                let with = r.with.and_then(|w| self.glyph(w));
+                let glyphs = with.into_iter().chain(self.glyph(r.of));
+                HintRow::new(glyphs, horizon_client::lang::get(r.caption))
+            })
             .collect();
-        let widths: Vec<f32> = rows
+        // Glyphs against the view's edge, captions towards the middle.
+        let look = Look {
+            side: if left { Side::Leading } else { Side::Trailing },
+            ..hint::GUIDE
+        };
+        let atlas = &self.gui.atlas;
+        let widths: Vec<f32> = hints
             .iter()
-            .zip(&captions)
-            .map(|(r, c)| Self::guide_keys_width(atlas, r, style) + width(c) + 6.0)
+            .map(|h| hint::plated_width(atlas, h, &look))
             .collect();
         let view = [batch.width, batch.height];
         let places = if up {
-            gameplay_guide::place_column_up(view, left, &widths, taken)
+            gameplay_guide::place_column_up(view, left, &widths, room, taken)
         } else {
-            gameplay_guide::place_column(view, left, &widths, taken)
+            gameplay_guide::place_column(view, left, &widths, room, taken)
         };
-        for ((row, caption), place) in rows.iter().zip(&captions).zip(places) {
-            let Some(rect @ [x, y, w, h]) = place else {
+        // The player's text background (Accessibility), as chat's: black at its opacity.
+        let alpha = (self.settings.text_background(0.4) >> 24) as u8;
+        let mut widest = 0.0_f32;
+        for ((row, line), place) in rows.iter().zip(&hints).zip(places) {
+            let Some(rect) = place else {
                 continue;
             };
-            let key = Self::guide_keys_width(atlas, row, style);
-            let (key_x, text_x) = if left {
-                (x, x + key + 3.0)
-            } else {
-                (x + w - key, x + 3.0)
-            };
-            batch.fill(atlas, x, y, w, h, self.settings.text_background(0.4));
-            // One taller than its row, into the gap above: the rows' glyphs meet but don't overlap.
-            let mut glyph_x = key_x + 1.0;
-            if let Some(with) = row.with {
-                pad_glyph::draw(batch, atlas, with, style, glyph_x, y + 1.0);
-                glyph_x += pad_glyph::width(atlas, with, style) + 1.0;
-            }
-            pad_glyph::draw(batch, atlas, row.button, style, glyph_x, y + 1.0);
-            batch.text(atlas, caption, text_x, y + 1.0, u32::MAX, true);
+            // Cut to its place: the caption gives way, never the glyphs. Its plate shrinks to it,
+            // against the view's edge.
+            let line = line.fitted(atlas, &look, rect[2] - hint::PAD);
+            let [x, y, w, h] = rect;
+            let shown = hint::plated_width(atlas, &line, &look);
+            let x = if left { x } else { x + w - shown };
+            // The glyphs' art reaches a pixel above its row, into the gap: rows meet, not overlap.
+            let plate = Plate::Backing { alpha };
+            hint::draw_plated(batch, atlas, &line, &look, plate, [x, y, shown, h]);
+            widest = widest.max(rect[2]);
             self.pad.guide_shown.push(Shown {
                 left,
                 row: *row,
                 rect,
             });
         }
-    }
-
-    /// A row's glyphs, side by side.
-    fn guide_keys_width(
-        atlas: &horizon_client::hud::HudAtlas,
-        row: &Row,
-        style: horizon_client::gamepad::GlyphStyle,
-    ) -> f32 {
-        let key = pad_glyph::width(atlas, row.button, style);
-        row.with
-            .map_or(key, |with| pad_glyph::width(atlas, with, style) + 1.0 + key)
+        widest
     }
 
     /// The rows last drawn, for `pad status`.
     pub(in crate::game) fn pad_guide_status(&self) -> Value {
+        let pad = &self.settings.controller;
         let column = |left: bool| -> Vec<Value> {
             self.pad
                 .guide_shown
@@ -239,8 +252,9 @@ impl Game<'_> {
                 .filter(|s| s.left == left)
                 .map(|s| {
                     json!({
-                        "with": s.row.with.map(|b| b.name()),
-                        "button": s.row.button.name(),
+                        "with": s.row.with.and_then(|w| w.button(pad)).map(|b| b.name()),
+                        "button": s.row.of.button(pad).map(|b| b.name()),
+                        "label": self.glyph(s.row.of).map(|g| g.label()),
                         "caption": s.row.caption,
                         "rect": s.rect,
                     })

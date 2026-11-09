@@ -17,6 +17,7 @@ impl Game<'_> {
     pub(super) fn item_particle(&self, stack: &ItemStack) -> ParticleOptions {
         let state = self.resolve_item(stack, DisplayContext::Ground, None, 0);
         ParticleOptions::item(state.layers.iter().map(|l| l.particle.clone()).collect())
+            .with_source(&stack.item)
     }
     /// `LivingEntity.spawnItemParticles(stack, count)` for the local player,
     /// drawing from the world random as its eating sounds do.

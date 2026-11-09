@@ -470,6 +470,15 @@ impl Game<'_> {
             ));
         }
         self.fixture_entities(&old_mobs, &old_stands, &old_vehicles, &mut out);
+        if case["pickup_delay"].as_bool().unwrap_or(false) {
+            for item in &self.dropped {
+                out.push(format!(
+                    "pickup {} {}",
+                    canon_stack(Some(&item.stack)),
+                    item.pickup_delay
+                ));
+            }
+        }
         for (i, t) in targets.iter().enumerate() {
             out.push(self.fixture_describe(i, t));
             self.fixture_vehicle_items(i, t, &mut out);
@@ -859,6 +868,10 @@ impl Game<'_> {
                 self.world.block_entities.insert(
                     p,
                     BlockEntity::Jukebox(horizon_client::containers::Jukebox {
+                        song_clock_present: stack
+                            .as_ref()
+                            .and_then(|s| self.res.items().get(&s.item))
+                            .is_some_and(|i| i.jukebox_song.is_some()),
                         items: [stack],
                         ticks: 0,
                         playing: false,

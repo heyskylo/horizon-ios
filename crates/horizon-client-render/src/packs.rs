@@ -34,8 +34,11 @@ pub struct Pack {
     pub description_style: Style,
     pub compatible: bool,
     pub compatibility: crate::pack_screen::Compat,
-    /// Overlay directories active for this game version, in `pack.mcmeta` order.
+    /// Overlay directories active for this game version, in `pack.mcmeta` order: also those a
+    /// Polytone `polytone_condition` turns on.
     pub overlays: Vec<String>,
+    /// The values of the pack's Polytone config entries.
+    pub polytone_configs: horizon_polytone::pack::Configs,
     /// `filter.block` entries (namespace and path patterns) hiding resources
     /// of the packs below this one.
     pub filter: Vec<Filter>,
@@ -416,12 +419,12 @@ fn overlay_applies(entry: &serde_json::Value) -> bool {
         _ => false,
     }
 }
-fn overlays_of(meta: &serde_json::Value) -> Vec<String> {
+fn overlays_of(meta: &serde_json::Value, configs: &horizon_polytone::pack::Configs) -> Vec<String> {
     meta["overlays"]["entries"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|e| overlay_applies(e))
+        .filter(|e| horizon_polytone::pack::overlay_active(e, configs, overlay_applies(e)))
         .filter_map(|e| e["directory"].as_str().map(str::to_owned))
         // OverlayMetadataSection's DIR_VALIDATOR: one folder of the pack, `[-_a-zA-Z0-9.]+`.
         .filter(|d| {
@@ -468,12 +471,143 @@ pub(crate) fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
         .next()?
         .ok()
 }
+/// A pack's Polytone config entries (`assets/<namespace>/polytone/config_entries/<name>.json`,
+/// in the pack's base, not its overlays) at their default values.
+pub fn polytone_configs(source: &Source) -> horizon_polytone::pack::Configs {
+    let mut configs = horizon_polytone::pack::Configs::default();
+    let id_of = |name: &str| -> Option<String> {
+        let rest = name.strip_prefix("assets/")?;
+        let (namespace, rest) = rest.split_once('/')?;
+        let entry = rest
+            .strip_prefix("polytone/config_entries/")?
+            .strip_suffix(".json")?;
+        Some(format!("{namespace}:{entry}"))
+    };
+    match source {
+        Source::Dir(d) => {
+            let Ok(namespaces) = fs::read_dir(d.join("assets")) else {
+                return configs;
+            };
+            for namespace in namespaces.flatten() {
+                let folder = namespace.path().join("polytone/config_entries");
+                for file in fs::read_dir(&folder).into_iter().flatten().flatten() {
+                    let name = format!(
+                        "assets/{}/polytone/config_entries/{}",
+                        namespace.file_name().to_string_lossy(),
+                        file.file_name().to_string_lossy()
+                    );
+                    if let (Some(id), Ok(bytes)) = (id_of(&name), fs::read(file.path()))
+                        && let Ok(json) = serde_json::from_slice(&bytes)
+                    {
+                        configs.add_entry(id, &json);
+                    }
+                }
+            }
+        }
+        Source::Zip(z) => {
+            let Ok(zip) = Zip::open(z) else {
+                return configs;
+            };
+            let names: Vec<String> = zip
+                .names()
+                .filter(|n| id_of(n).is_some())
+                .map(str::to_owned)
+                .collect();
+            for name in names {
+                if let (Some(id), Ok(bytes)) = (id_of(&name), zip.read(&name))
+                    && let Ok(json) = serde_json::from_slice(&bytes)
+                {
+                    configs.add_entry(id, &json);
+                }
+            }
+        }
+    }
+    for (id, value) in polytone_choices() {
+        if configs.entries().contains_key(&id) {
+            configs.set(&id, value);
+        }
+    }
+    configs
+}
+
+/// A pack's Polytone config entries and one's value, for the game's Pack Options.
+pub use horizon_polytone::pack::{ConfigValue, Configs};
+
+/// The player's Polytone config choices (#11486): what they changed from the packs' defaults,
+/// by entry id, for every pack. `polytone_configs` lays them over each pack's defaults.
+static POLYTONE_CHOICES: std::sync::RwLock<BTreeMap<String, horizon_polytone::pack::ConfigValue>> =
+    std::sync::RwLock::new(BTreeMap::new());
+
+pub fn polytone_choices() -> BTreeMap<String, horizon_polytone::pack::ConfigValue> {
+    POLYTONE_CHOICES
+        .read()
+        .map(|c| c.clone())
+        .unwrap_or_default()
+}
+
+/// Replaces the player's Polytone config choices (packs read them when they load again).
+pub fn set_polytone_choices(choices: BTreeMap<String, horizon_polytone::pack::ConfigValue>) {
+    if let Ok(mut c) = POLYTONE_CHOICES.write() {
+        *c = choices;
+    }
+}
+
+/// Where the choices are kept: `polytone-configs.json` beside `options.txt`.
+pub fn polytone_choices_file() -> std::path::PathBuf {
+    crate::logging::player_dir().join("polytone-configs.json")
+}
+
+/// Reads the choices from `path` (none when it is missing or broken).
+pub fn load_polytone_choices(path: &Path) -> BTreeMap<String, horizon_polytone::pack::ConfigValue> {
+    use horizon_polytone::pack::ConfigValue;
+    let Ok(bytes) = fs::read(path) else {
+        return BTreeMap::new();
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(&bytes) else {
+        log::warn!("{}: not a JSON object", path.display());
+        return BTreeMap::new();
+    };
+    map.into_iter()
+        .filter_map(|(id, v)| {
+            let value = match v {
+                serde_json::Value::Number(n) => ConfigValue::Number(n.as_f64()?),
+                serde_json::Value::String(s) => ConfigValue::Text(s),
+                serde_json::Value::Bool(b) => ConfigValue::Bool(b),
+                _ => return None,
+            };
+            Some((id, value))
+        })
+        .collect()
+}
+
+/// Writes the choices to `path`.
+pub fn save_polytone_choices(
+    path: &Path,
+    choices: &BTreeMap<String, horizon_polytone::pack::ConfigValue>,
+) -> std::io::Result<()> {
+    use horizon_polytone::pack::ConfigValue;
+    let map: serde_json::Map<String, serde_json::Value> = choices
+        .iter()
+        .map(|(id, v)| {
+            let json = match v {
+                ConfigValue::Number(n) => serde_json::json!(n),
+                ConfigValue::Text(s) => serde_json::json!(s),
+                ConfigValue::Bool(b) => serde_json::json!(b),
+            };
+            (id.clone(), json)
+        })
+        .collect();
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .map_err(std::io::Error::other)?;
+    fs::write(path, text)
+}
 fn pack(id: String, title: Text, source: Source) -> Option<Pack> {
     pack_for(id, title, source, RESOURCE_FORMAT)
 }
 /// A pack whose compatibility is against `format`.
 fn pack_for(id: String, title: Text, source: Source, format: (i64, i64)) -> Option<Pack> {
     let meta = read_meta(&source)?;
+    let polytone_configs = polytone_configs(&source);
     let (raw_description, description_style) = component_root(&meta["pack"]["description"]);
     Some(Pack {
         id,
@@ -483,7 +617,8 @@ fn pack_for(id: String, title: Text, source: Source, format: (i64, i64)) -> Opti
         description_style,
         compatible: compatible(&meta),
         compatibility: compatibility_for(&meta, format),
-        overlays: overlays_of(&meta),
+        overlays: overlays_of(&meta, &polytone_configs),
+        polytone_configs,
         filter: filter_of(&meta),
         source,
     })
@@ -714,6 +849,18 @@ fn build_overlay_uncached(
                     .get(*owner)
                     .and_then(Option::as_ref)
                     .and_then(|z| z.read(inner).ok()),
+            };
+            // Polytone: a pack's sound entries whose `polytone_condition` doesn't hold.
+            let bytes = match (bytes, merge_kind(name)) {
+                (Some(b), Some(Merge::Sounds)) => Some(
+                    packs
+                        .get(*owner)
+                        .and_then(|p| {
+                            horizon_polytone::pack::sounds_without_unmet(&b, &p.polytone_configs)
+                        })
+                        .unwrap_or(b),
+                ),
+                (b, _) => b,
             };
             layers.extend(bytes);
         }
@@ -1458,6 +1605,49 @@ mod tests {
         );
     }
     #[test]
+    fn a_sound_entry_whose_polytone_condition_fails_is_left_out() {
+        let base =
+            std::env::temp_dir().join(format!("horizon-packs-sound-cond-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (vanilla, dir, out) = (base.join("vanilla"), base.join("pack"), base.join("out"));
+        fs::create_dir_all(vanilla.join("assets/minecraft")).unwrap();
+        fs::write(
+            vanilla.join("assets/minecraft/sounds.json"),
+            r#"{"block.anvil.land":{"sounds":["vanilla"]}}"#,
+        )
+        .unwrap();
+        let configs = dir.join("assets/mypack/polytone/config_entries");
+        fs::create_dir_all(&configs).unwrap();
+        fs::create_dir_all(dir.join("assets/minecraft")).unwrap();
+        fs::write(configs.join("quiet.json"), r#"{"default_value": "OFF"}"#).unwrap();
+        fs::write(
+            dir.join("pack.mcmeta"),
+            r#"{"pack":{"description":"p","pack_format":97}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("assets/minecraft/sounds.json"),
+            r#"{"block.anvil.land":{"replace":true,"polytone_condition":"config('mypack:quiet') == 'ON'","sounds":["soft"]},
+                "block.anvil.use":{"sounds":["kept"]}}"#,
+        )
+        .unwrap();
+        let pack = pack("file/p".into(), Text::literal("p"), Source::Dir(dir)).unwrap();
+        build_overlay(&vanilla, &[pack], &out).unwrap();
+        let merged: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("assets/minecraft/sounds.json")).unwrap())
+                .unwrap();
+        // The condition is false: the pack's entry doesn't replace vanilla's.
+        assert_eq!(
+            merged["block.anvil.land"]["sounds"],
+            serde_json::json!(["vanilla"])
+        );
+        assert_eq!(
+            merged["block.anvil.use"]["sounds"],
+            serde_json::json!(["kept"])
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+    #[test]
     fn stacked_resources_merge_like_vanilla() {
         let json = |v: &str| v.as_bytes().to_vec();
         let parse = |b: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&b).unwrap();
@@ -1930,6 +2120,36 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
     #[test]
+    fn polytone_conditions_turn_overlays_on_from_the_packs_configs() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-packs-polytone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let configs = dir.join("assets/mypack/polytone/config_entries");
+        fs::create_dir_all(&configs).unwrap();
+        fs::write(configs.join("fog.json"), r#"{"default_value": "ON"}"#).unwrap();
+        fs::write(
+            configs.join("birds.json"),
+            r#"{"default_value": 0, "max": 300}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("pack.mcmeta"),
+            r#"{"pack":{"description":"p","pack_format":97},"overlays":{"entries":[
+                {"directory":"opt_fog","formats":[0,0],"polytone_condition":"config('mypack:fog') == 'ON'"},
+                {"directory":"opt_birds","formats":[0,0],"polytone_condition":"config('mypack:birds') > 0"},
+                {"directory":"opt_plain","formats":[0,0]}]}}"#,
+        )
+        .unwrap();
+        let pack = pack(
+            "file/p".into(),
+            Text::literal("p"),
+            Source::Dir(dir.clone()),
+        )
+        .unwrap();
+        assert_eq!(pack.overlays, ["opt_fog"]);
+        let _ = fs::remove_dir_all(dir);
+    }
+    #[test]
     fn overlays_and_filters() {
         let v = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
         let meta = v(r#"{"overlays":{"entries":[
@@ -1937,7 +2157,7 @@ mod tests {
             {"formats":{"min_inclusive":97,"max_inclusive":97},"directory":"new"},
             {"min_format":97,"max_format":[97,5],"directory":"also"},
             {"formats":50,"directory":"no"}]}}"#);
-        assert_eq!(overlays_of(&meta), ["new", "also"]);
+        assert_eq!(overlays_of(&meta, &Default::default()), ["new", "also"]);
         // Only one plain folder of the pack, as vanilla's DIR_VALIDATOR has it.
         let meta = v(r#"{"overlays":{"entries":[
             {"formats":97,"directory":".."},
@@ -1946,7 +2166,7 @@ mod tests {
             {"formats":97,"directory":"a/b"},
             {"formats":97,"directory":"C:"},
             {"formats":97,"directory":"ok_1.21-x"}]}}"#);
-        assert_eq!(overlays_of(&meta), ["ok_1.21-x"]);
+        assert_eq!(overlays_of(&meta, &Default::default()), ["ok_1.21-x"]);
         let base = std::env::temp_dir().join(format!("horizon-packs-ov-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let vanilla = base.join("vanilla");

@@ -124,7 +124,7 @@ impl Game<'_> {
 
     // ---- /damage ----------------------------------------------------------------
 
-    fn damage_kind(ty: &str) -> DamageKind {
+    pub(in crate::game) fn damage_kind(ty: &str) -> DamageKind {
         match ty.trim_start_matches("minecraft:") {
             "player_attack" => DamageKind::PlayerAttack,
             "mace_smash" => DamageKind::MaceSmash,
@@ -310,6 +310,7 @@ impl Game<'_> {
             Target::Crystal(id) => {
                 self.command_damage_crystal(id, ty, Self::damage_kind(ty), cause.or(by))
             }
+            Target::Stand(id) => self.command_damage_stand(id, ty, cause.or(by)),
             _ => false,
         }
     }
@@ -512,7 +513,7 @@ impl Game<'_> {
     // ---- /rotate and /swing -----------------------------------------------------------
 
     pub(super) fn cmd_rotate(&mut self, ctx: &Context) -> R<i32> {
-        let targets = self.entities(ctx, "target", false)?;
+        let targets = super::without_knots(self.entities(ctx, "target", false)?)?;
         let Some(t) = targets.first().copied() else {
             return Ok(0);
         };
@@ -1220,8 +1221,9 @@ impl Game<'_> {
                 }
             }
             Target::Mob(_) | Target::Stand(_)
-                if !(matches!(target, Target::Mob(_))
-                    && finalize::command_attr(short.as_str()).is_some()) =>
+                if self.sulfur_archetype_attribute(target, attribute)
+                    || !(matches!(target, Target::Mob(_))
+                        && finalize::command_attr(short.as_str()).is_some()) =>
             {
                 let op = ctx
                     .literals
@@ -1298,7 +1300,12 @@ impl Game<'_> {
                         )))
                     }
                     "attribute.modifier.add" => {
-                        if finalize::has_modifier(m, attr, &modifier_id) {
+                        // AttributeInstance.hasModifier: the modeled transient
+                        // minecraft:baby counts too.
+                        if finalize::has_modifier(m, attr, &modifier_id)
+                            || (modifier_id == "minecraft:baby"
+                                && finalize::transient(m, attr).is_some())
+                        {
                             return Err(text_error(
                                 "commands.attribute.failed.modifier_already_present",
                                 &[Text::literal(modifier_id.clone()), description, name],
@@ -1319,10 +1326,20 @@ impl Game<'_> {
                         )))
                     }
                     "attribute.modifier.remove" => {
-                        if !finalize::has_modifier(m, attr, &modifier_id) {
+                        // AttributeInstance.removeModifier: a permanent one, else
+                        // the modeled transient minecraft:baby (until setBaby).
+                        if finalize::has_modifier(m, attr, &modifier_id) {
+                            finalize::remove_modifier(m, attr, &modifier_id);
+                        } else if modifier_id == "minecraft:baby"
+                            && finalize::transient(m, attr).is_some()
+                        {
+                            m.extra
+                                .attributes
+                                .get_or_insert_with(Box::default)
+                                .baby_speed_removed = true;
+                        } else {
                             return Err(no_modifier);
                         }
-                        finalize::remove_modifier(m, attr, &modifier_id);
                         Ok(Some((
                             1,
                             Text::translate(
@@ -1373,7 +1390,10 @@ impl Game<'_> {
         attribute: &str,
     ) -> Option<&mut horizon_world::attributes::entity::EntityAttributes> {
         if let Target::Mob(id) = t
-            && matches!(attribute, "minecraft:armor" | "minecraft:armor_toughness")
+            && (matches!(
+                attribute,
+                "minecraft:armor" | "minecraft:armor_toughness" | "minecraft:max_absorption"
+            ) || self.sulfur_archetype_attribute(t, attribute))
         {
             let mob = self.mobs.iter_mut().find(|m| m.id == id)?;
             if mob.extra.armor_attributes.is_none() {
@@ -1388,6 +1408,60 @@ impl Game<'_> {
             self.cmds.attributes.insert(t, map);
         }
         self.cmds.attributes.get_mut(&t)
+    }
+    /// A sulfur cube's body archetype attributes live on its own map, beside
+    /// the archetype's transient modifiers.
+    fn sulfur_archetype_attribute(&self, t: Target, attribute: &str) -> bool {
+        let Target::Mob(id) = t else {
+            return false;
+        };
+        horizon_client::mobs::sulfur_cube::ARCHETYPE_ATTRIBUTES.contains(&attribute)
+            && self
+                .mobs
+                .iter()
+                .any(|m| m.id == id && m.species() == horizon_client::mobs::Species::SulfurCube)
+    }
+    /// A sulfur cube's command-set knockback base and permanent modifiers also
+    /// go to the `finalize` store its physics read without a body (never the
+    /// archetype's transient modifiers).
+    fn mirror_sulfur_knockback(
+        &mut self,
+        target: Target,
+        id: &str,
+        attribute: &str,
+        (value_arg, modifier_id, op): (f64, &str, &str),
+    ) {
+        let Target::Mob(mob_id) = target else {
+            return;
+        };
+        if attribute != "minecraft:knockback_resistance"
+            || !self.sulfur_archetype_attribute(target, attribute)
+        {
+            return;
+        }
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) else {
+            return;
+        };
+        let Some(attr) = finalize::command_attr("knockback_resistance") else {
+            return;
+        };
+        match id {
+            "attribute.base.set" => finalize::set_base(m, attr, value_arg),
+            "attribute.base.reset" => {
+                let default = finalize::default_value(m, attr).unwrap_or_default();
+                finalize::set_base(m, attr, default);
+            }
+            "attribute.modifier.add" => {
+                let op = match op {
+                    "add_multiplied_base" => finalize::Op::AddMultipliedBase,
+                    "add_multiplied_total" => finalize::Op::AddMultipliedTotal,
+                    _ => finalize::Op::AddValue,
+                };
+                finalize::add_modifier(m, attr, modifier_id.to_string(), value_arg, op);
+            }
+            "attribute.modifier.remove" => finalize::remove_modifier(m, attr, modifier_id),
+            _ => {}
+        }
     }
     /// AttributeCommand on a living entity through its generic attribute map.
     fn generic_attribute(
@@ -1417,6 +1491,15 @@ impl Game<'_> {
         };
         let catalog = self.motion.attributes.clone();
         let key = catalog.id(attribute).ok_or_else(no_attribute)?;
+        // A mob's max_absorption counts its Absorption effect's modifier.
+        let absorption_bonus = match target {
+            Target::Mob(mob) if attribute == "minecraft:max_absorption" => self
+                .mobs
+                .iter()
+                .find(|m| m.id == mob)
+                .map(|m| horizon_client::mobs::armor::absorption_bonus(&m.extra.effects)),
+            _ => None,
+        };
         let map = self
             .generic_attributes(target, attribute)
             .ok_or_else(no_attribute)?;
@@ -1425,7 +1508,11 @@ impl Game<'_> {
         }
         let (message, args, result) = match id {
             "attribute.get" | "attribute.base.get" => {
-                let v = if id == "attribute.get" {
+                let v = if id == "attribute.get"
+                    && let Some(bonus) = absorption_bonus
+                {
+                    horizon_client::mobs::armor::max_absorption_of(Some(&*map), 0.0, bonus)
+                } else if id == "attribute.get" {
                     map.value(key).map_err(|_| no_attribute())?
                 } else {
                     map.base_value(key).map_err(|_| no_attribute())?
@@ -1528,6 +1615,7 @@ impl Game<'_> {
                 )
             }
         };
+        self.mirror_sulfur_knockback(target, id, attribute, (value_arg, modifier_id, op));
         Ok((result, Text::translate(message, &args)))
     }
 
@@ -1829,7 +1917,7 @@ impl Game<'_> {
                 &[&max_y, &self.world.bottom_y()],
             ));
         }
-        let targets = self.entities(ctx, "targets", false)?;
+        let targets = super::without_knots(self.entities(ctx, "targets", false)?)?;
         if targets.is_empty() {
             return Err(err("argument.entity.notfound.entity", &[]));
         }
@@ -1985,6 +2073,8 @@ impl Game<'_> {
                 None,
                 false,
             );
+            // teleportTo(..., Set.of(), ...): a transition with no motion.
+            self.teleport_stops(t);
             let closest = points
                 .iter()
                 .enumerate()

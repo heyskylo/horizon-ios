@@ -223,6 +223,11 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if let Some(count) = ground_particle_count(m) {
         emit_ground_particles(m, w, count, events);
     }
+    whirl(m, events);
+}
+/// `Breeze.tick`'s sound clock: `soundTick` counts down from a random 1 to 80
+/// and `playWhirlSound` (a local sound) plays when it reaches 0.
+fn whirl(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if m.extra.vector[2] == 0.0 {
         m.extra.vector[2] = f64::from(m.random.next_int_between_inclusive(1, 80).unwrap_or(1));
     } else {
@@ -231,12 +236,15 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.extra.vector[2] == 0.0 {
         let pitch = 0.7 + 0.4 * m.random.next_float();
         let volume = 0.8 + 0.2 * m.random.next_float();
-        events.push(MobEvent::LocalSound(
-            "entity.breeze.whirl",
-            [m.position.x, m.position.y, m.position.z],
-            volume,
-            pitch,
-        ));
+        // An entity-bound sound instance plays only while its entity isn't silent.
+        if !m.silent {
+            events.push(MobEvent::LocalSound(
+                "entity.breeze.whirl",
+                [m.position.x, m.position.y, m.position.z],
+                volume,
+                pitch,
+            ));
+        }
     }
 }
 /// The crumbs `Breeze.tick`'s pose arm asks `emitGroundParticles` for:
@@ -306,6 +314,26 @@ pub fn ai_step(m: &mut Mob) {
     if current != SLIDING && m.anim.states[2].started.is_some() {
         m.anim.states[3].start(age);
         m.anim.states[2].stop();
+    }
+}
+/// The sounds a client of a server makes for a breeze itself, since a
+/// server's `playLocalSound` does nothing: `Breeze.tick`'s whirl, then
+/// `Mob.baseTick`'s ambient clock and `Breeze.playAmbientSound`.
+pub fn client_sounds(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    whirl(m, events);
+    if m.alive() {
+        let roll = m.random.next_int_bound(1000).unwrap_or(999);
+        let t = m.ambient_timer;
+        m.ambient_timer += 1;
+        if roll < t {
+            m.ambient_timer = -m.ambient_interval();
+            if let Some(s) = ambient(m)
+                && !m.silent
+            {
+                let at = [m.position.x, m.position.y, m.position.z];
+                events.push(MobEvent::LocalSound(s, at, 1.0, 1.0));
+            }
+        }
     }
 }
 /// `Breeze.playAmbientSound` (a local sound at volume and pitch 1) and its

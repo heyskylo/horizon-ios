@@ -112,6 +112,8 @@ struct Mixer {
     cameras: Vec<([f64; 3], Basis, u32)>,
     /// Per-source gain/pan/step cache for one buffer, reused across callbacks.
     voices: Vec<(ChannelId, [f32; 3], f64)>,
+    /// Mods' audio sources (`push_voice`), each with its queue.
+    mod_audio: Vec<ModAudioSource>,
     /// A mod's muffle of the sounds it does not exempt.
     muffle: Muffle,
     limiter_peak: f32,
@@ -121,10 +123,158 @@ struct Mixer {
     /// The stream reported its device gone (`Library.isCurrentDeviceDisconnected`).
     #[cfg(feature = "audio")]
     device_lost: bool,
+    /// The stream's recent backend errors, which tell a dead stream from a hiccup.
+    #[cfg(feature = "audio")]
+    stream_errors: StreamErrors,
+}
+
+/// A stream's backend errors close together (`StreamErrors::dead`).
+#[cfg(any(feature = "audio", test))]
+#[derive(Default)]
+struct StreamErrors {
+    /// When the current run of errors began, and how many it holds.
+    since: Option<std::time::Instant>,
+    count: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl StreamErrors {
+    /// Errors this close together...
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+    /// ...this many of them: the stream is dead. Under vanilla a device that fails unrecoverably
+    /// reads as disconnected (`ALC_CONNECTED`, the `ALC_EXT_disconnect` extension), and
+    /// `SoundEngine` opens the output again; cpal reports a dead ALSA stream (`alsa::poll()`
+    /// returning POLLERR, over and over) as a backend error like any other, so a run of them
+    /// stands for it. One alone is a hiccup the stream recovers from.
+    const DEAD_AFTER: u32 = 3;
+    /// One more backend error at `now`: whether the stream counts as dead.
+    fn dead(&mut self, now: std::time::Instant) -> bool {
+        match self.since {
+            Some(since) if now.duration_since(since) <= Self::WINDOW => self.count += 1,
+            _ => {
+                self.since = Some(now);
+                self.count = 1;
+            }
+        }
+        self.count >= Self::DEAD_AFTER
+    }
+}
+
+/// Opening the output again after it failed: a few more tries, a couple of seconds apart, so a
+/// device that is gone for good isn't asked forever.
+#[cfg(any(feature = "audio", test))]
+#[derive(Default, Debug, PartialEq)]
+struct Reopen {
+    /// The tries left; 0 while the output plays, or after the last try.
+    tries: u32,
+    /// Ticks since the last try.
+    ticks: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl Reopen {
+    const TRIES: u32 = 5;
+    /// Two seconds of client ticks.
+    const TICKS: u32 = 40;
+    /// The output failed to open: whether to keep trying.
+    fn failed(&mut self, retrying: bool) -> bool {
+        self.ticks = 0;
+        self.tries = if retrying {
+            self.tries.saturating_sub(1)
+        } else {
+            Self::TRIES
+        };
+        self.tries > 0
+    }
+    /// A tick while tries are left: whether to try now.
+    fn due(&mut self) -> bool {
+        if self.tries == 0 {
+            return false;
+        }
+        self.ticks += 1;
+        self.ticks >= Self::TICKS
+    }
 }
 /// A camera's forward, up and right vectors.
 type Basis = ([f64; 3], [f64; 3], [f64; 3]);
+/// How much audio one mod source may have waiting, in seconds (`push_voice`): a burst past it
+/// is refused rather than delayed, so a stalled sender cannot pile up latency.
+const MOD_AUDIO_SECONDS: f64 = 2.0;
+/// How many mod audio sources may play at once, across mods.
+const MOD_AUDIO_SOURCES: usize = 64;
+/// The distance at which positioned mod audio has faded out, in blocks (linear, as a sound's
+/// `AL_LINEAR_DISTANCE` fades).
+const MOD_AUDIO_RANGE: f32 = 48.0;
+/// One of a mod's audio sources (`push_voice`): a speaker, keyed by the mod and its own id
+/// for it. Its chunks play one after another, oldest first, so each speaker's audio stays in
+/// order while different speakers play at the same time.
+struct ModAudioSource {
+    mod_id: String,
+    source: u128,
+    chunks: std::collections::VecDeque<ModAudioChunk>,
+    /// How far into the head chunk the callback has got, in its own samples.
+    played: f64,
+}
+/// A block of mono samples a mod queued.
+struct ModAudioChunk {
+    /// Mono samples, -1 to 1.
+    samples: Vec<f32>,
+    /// The rate they were sampled at.
+    rate: u32,
+    /// Where they were spoken, for distance and direction; none plays them centred.
+    at: Option<[f64; 3]>,
+}
 impl Mixer {
+    /// Queues `samples` behind what `source` of `mod_id` already has waiting. False, and
+    /// nothing queued, when they are empty or the rate is 0, when the source would hold more
+    /// than [`MOD_AUDIO_SECONDS`], or when a new source would pass [`MOD_AUDIO_SOURCES`].
+    fn push_mod_audio(
+        &mut self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        if samples.is_empty() || rate == 0 {
+            return false;
+        }
+        let seconds = |len: usize, rate: u32| len as f64 / f64::from(rate);
+        let added = seconds(samples.len(), rate);
+        let chunk = ModAudioChunk {
+            samples: samples.to_vec(),
+            rate,
+            at,
+        };
+        match self
+            .mod_audio
+            .iter()
+            .position(|s| s.source == source && s.mod_id == mod_id)
+        {
+            Some(i) => {
+                let s = &mut self.mod_audio[i];
+                let waiting: f64 = s
+                    .chunks
+                    .iter()
+                    .map(|c| seconds(c.samples.len(), c.rate))
+                    .sum();
+                if waiting + added > MOD_AUDIO_SECONDS {
+                    return false;
+                }
+                s.chunks.push_back(chunk);
+            }
+            None => {
+                if added > MOD_AUDIO_SECONDS || self.mod_audio.len() >= MOD_AUDIO_SOURCES {
+                    return false;
+                }
+                self.mod_audio.push(ModAudioSource {
+                    mod_id: mod_id.to_owned(),
+                    source,
+                    chunks: std::collections::VecDeque::from([chunk]),
+                    played: 0.0,
+                });
+            }
+        }
+        true
+    }
     /// The id of world `name` (1 and up), given once per name.
     fn world_id(&mut self, name: &str) -> u32 {
         let i = match self.world_names.iter().position(|w| w == name) {
@@ -162,6 +312,24 @@ impl MuffleFade {
     fn level(&self) -> [f32; 2] {
         let left = self.left as f32 / self.ticks as f32;
         [self.amount * left, self.lowpass * left]
+    }
+}
+impl MixerBackend {
+    /// Queues a mod's audio for the output callback (`Host::push_voice`). False when nothing
+    /// was queued: no output device, or what [`Mixer::push_mod_audio`] refuses.
+    pub fn push_voice(
+        &self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.live
+            && self
+                .mixer
+                .lock()
+                .is_ok_and(|mut m| m.push_mod_audio(mod_id, source, samples, rate, at))
     }
 }
 /// The mixer side of the engine (`Backend`).
@@ -286,6 +454,21 @@ pub struct CapturedSound {
     pub except_entity: Option<u32>,
 }
 
+impl Audio {
+    /// Plays a mod's audio (`Host::push_voice`): mono samples, -1 to 1, at `rate`, behind what
+    /// `source` of `mod_id` already has waiting; `at` places them for distance and direction.
+    pub fn push_voice(
+        &self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.backend.push_voice(mod_id, source, samples, rate, at)
+    }
+}
+
 pub struct Audio {
     _stream: Option<Stream>,
     device_name: String,
@@ -327,6 +510,9 @@ pub struct Audio {
     /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
     #[cfg(feature = "audio")]
     device_ticks: u32,
+    /// Opening the output again after it failed to (`Reopen`).
+    #[cfg(feature = "audio")]
+    reopen: Reopen,
     /// The look at the output devices running on its own thread, until a tick
     /// takes its answer: listing them can take 100 ms (#11490).
     #[cfg(feature = "audio")]
@@ -836,6 +1022,62 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         mixer.muffle.stages = [[0.0; 2]; 2];
     }
     mixer.muffle.bus = bus;
+    // A mod's audio (`push_voice`): every source at once, each playing its own chunks in order;
+    // a chunk that ends mid-buffer hands the rest of the buffer to the next one.
+    if !mixer.mod_audio.is_empty() {
+        let (forward, up, right) = basis(mixer.listener_yaw, mixer.listener_pitch);
+        let listener = mixer.listener;
+        let frames = data.len() / channels.max(1);
+        for source in &mut mixer.mod_audio {
+            let ModAudioSource { chunks, played, .. } = source;
+            let mut f = 0;
+            while f < frames {
+                let Some(chunk) = chunks.front() else {
+                    break;
+                };
+                let len = chunk.samples.len();
+                let [left, right_gain, gain] = match chunk.at {
+                    Some(at) => {
+                        let d = [
+                            at[0] - listener[0],
+                            at[1] - listener[1],
+                            at[2] - listener[2],
+                        ];
+                        let gain = distance_gain(Some(MOD_AUDIO_RANGE), dot(d, d).sqrt());
+                        let [l, r] = stereo_gains(dot(d, right), dot(d, up), dot(d, forward));
+                        [l * gain, r * gain, gain]
+                    }
+                    None => [1.0; 3],
+                };
+                let step = f64::from(chunk.rate) / f64::from(rate);
+                while f < frames && (*played as usize) < len {
+                    let i = *played as usize;
+                    let t = (*played - i as f64) as f32;
+                    let next = chunk
+                        .samples
+                        .get(i + 1)
+                        .copied()
+                        .unwrap_or(chunk.samples[i]);
+                    let s = chunk.samples[i] * (1.0 - t) + next * t;
+                    let frame = &mut data[f * channels..(f + 1) * channels];
+                    if channels >= 2 {
+                        frame[0] += s * left;
+                        frame[1] += s * right_gain;
+                    } else {
+                        frame[0] += s * gain;
+                    }
+                    *played += step;
+                    f += 1;
+                }
+                if *played as usize >= len {
+                    // The next chunk starts where this one's last step left off.
+                    *played -= len as f64;
+                    chunks.pop_front();
+                }
+            }
+        }
+        mixer.mod_audio.retain(|s| !s.chunks.is_empty());
+    }
     // Limit the whole buffer together, preserving waveform and stereo balance
     // instead of flattening each overloaded sample; release over 200 ms
     // (OpenAL Soft's output limiter, `ALC_OUTPUT_LIMITER_SOFT`, releases
@@ -903,6 +1145,7 @@ fn open_device(
     if let Ok(mut m) = mixer.lock() {
         m.device_name = device.name().unwrap_or_default();
         m.device_lost = false;
+        m.stream_errors = StreamErrors::default();
     }
     Ok((stream, config))
 }
@@ -1052,10 +1295,19 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
         },
         move |e| {
             log::warn!("Horizon: audio stream error: {e}");
-            if matches!(e, cpal::StreamError::DeviceNotAvailable)
-                && let Ok(mut m) = on_error.lock()
-            {
-                m.device_lost = true;
+            if let Ok(mut m) = on_error.lock() {
+                let dead = match e {
+                    cpal::StreamError::DeviceNotAvailable => true,
+                    cpal::StreamError::BackendSpecific { .. } => {
+                        m.stream_errors.dead(std::time::Instant::now())
+                    }
+                };
+                if dead && !m.device_lost {
+                    if !matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                        log::warn!("Horizon: the audio stream stopped; opening the output again");
+                    }
+                    m.device_lost = true;
+                }
             }
         },
         None,
@@ -1176,6 +1428,8 @@ impl Audio {
             devices_seen: devices,
             #[cfg(feature = "audio")]
             device_ticks: 0,
+            #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
             #[cfg(feature = "audio")]
             device_probe: None,
         }
@@ -1340,6 +1594,8 @@ impl Audio {
             #[cfg(feature = "audio")]
             device_ticks: 0,
             #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
+            #[cfg(feature = "audio")]
             device_probe: None,
         }
     }
@@ -1447,6 +1703,27 @@ impl Audio {
         }
         changed
     }
+    /// Opens the output on the chosen device again; `retrying` after an earlier try failed.
+    #[cfg(feature = "audio")]
+    fn reopen_output(&mut self, retrying: bool) {
+        // The old stream lets go of the device first: a dead one may still hold it.
+        self._stream = None;
+        let device = self.device_name.clone();
+        match self.set_device(&device) {
+            Ok(()) => {
+                if retrying {
+                    log::info!("Horizon: the audio output is back");
+                }
+                self.reopen = Reopen::default();
+            }
+            Err(e) if self.reopen.failed(retrying) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); trying again soon");
+            }
+            Err(e) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); it stays off");
+            }
+        }
+    }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
         #[cfg(feature = "audio")]
@@ -1454,10 +1731,9 @@ impl Audio {
             if self.should_change_device() {
                 // SoundEngine.reload: stop every sound, open the output again.
                 self.stop_all();
-                let device = self.device_name.clone();
-                if let Err(e) = self.set_device(&device) {
-                    log::warn!("Horizon: could not reopen the audio output: {e}");
-                }
+                self.reopen_output(false);
+            } else if self.backend.owner == 0 && self.reopen.due() {
+                self.reopen_output(true);
             }
         }
         self.sync_volumes();
@@ -1601,6 +1877,14 @@ impl Audio {
             .unwrap_or_else(|| crate::settings::sound_source(&event));
         let instance =
             SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
+        let id = self.engine.add(instance, false);
+        self.engine.play_delayed(id, ticks);
+    }
+    /// `SoundManager.playDelayed` of an instance the caller made: it starts
+    /// `ticks` sound-engine ticks from now.
+    pub fn play_instance_after(&mut self, instance: SoundInstance, ticks: i32) {
+        *self.heard.entry(instance.identifier.clone()).or_default() += 1;
+        self.sync_volumes();
         let id = self.engine.add(instance, false);
         self.engine.play_delayed(id, ticks);
     }
@@ -1849,6 +2133,46 @@ impl Sounds for Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run of backend errors close together is a dead stream; one or two, or errors far apart,
+    /// are hiccups.
+    #[test]
+    fn a_run_of_stream_errors_is_a_dead_stream() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut errors = StreamErrors::default();
+        assert!(!errors.dead(at(0)));
+        assert!(!errors.dead(at(500)));
+        assert!(errors.dead(at(900)));
+        // Spread out, they never add up.
+        let mut apart = StreamErrors::default();
+        for k in 0..10 {
+            assert!(!apart.dead(at(k * 2500)), "error {k}");
+        }
+    }
+
+    /// A failed reopening is tried again every two seconds, five more times, then given up.
+    #[test]
+    fn a_failed_reopening_retries_a_few_times_then_stops() {
+        let mut reopen = Reopen::default();
+        assert!(!reopen.due(), "nothing to retry while the output plays");
+        assert!(reopen.failed(false));
+        let mut tries = 0;
+        for _ in 0..1000 {
+            if reopen.due() {
+                tries += 1;
+                if !reopen.failed(true) {
+                    break;
+                }
+            }
+        }
+        assert_eq!(tries, Reopen::TRIES);
+        assert_eq!(reopen, Reopen::default());
+        // The next lost device starts a fresh run.
+        assert!(reopen.failed(false));
+        assert_eq!(reopen.tries, Reopen::TRIES);
+    }
 
     #[test]
     fn level_capture_keeps_order_category_entity_and_actor_exclusion() {
@@ -2507,6 +2831,66 @@ mod tests {
         // Out of range changes nothing.
         assert!(!audio.muffle(1.5, 0.0, 10, &[]));
         assert_eq!(level(&audio), [0.0; 2]);
+    }
+
+    #[test]
+    fn each_mod_audio_source_plays_its_own_chunks_in_order() {
+        let mut m = Mixer::default();
+        // Two speakers of one mod, each queuing two chunks, interleaved.
+        for (source, level) in [(1, 0.1), (2, 0.4), (1, 0.2), (2, 0.3)] {
+            assert!(m.push_mod_audio("voice", source, &[level; 4], 48_000, None));
+        }
+        let mut data = vec![0.0f32; 8 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        // Each speaker's first chunk, then its second: never both of one speaker at once.
+        let left: Vec<f32> = data.chunks(2).map(|f| f[0]).collect();
+        let expected = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+        assert!(
+            left.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6),
+            "{left:?}"
+        );
+        assert!(m.mod_audio.is_empty(), "both sources played out");
+        // Order within a source: its second chunk follows its first.
+        assert!(m.push_mod_audio("voice", 1, &[0.25; 2], 48_000, None));
+        assert!(m.push_mod_audio("voice", 1, &[0.5; 2], 48_000, None));
+        let mut data = vec![0.0f32; 4 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        let left: Vec<f32> = data.chunks(2).map(|f| f[0]).collect();
+        assert_eq!(left, [0.25, 0.25, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn mod_audio_sources_are_kept_apart_by_mod_and_capped() {
+        let mut m = Mixer::default();
+        assert!(m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None));
+        assert!(m.push_mod_audio("b", 1, &[0.1; 48_000], 48_000, None));
+        assert_eq!(
+            m.mod_audio.len(),
+            2,
+            "the same id in two mods is two sources"
+        );
+        // Two seconds wait at most per source; a burst past that is refused, not delayed.
+        assert!(m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None));
+        assert!(!m.push_mod_audio("a", 1, &[0.1; 1], 48_000, None));
+        assert!(!m.push_mod_audio("a", 2, &[], 48_000, None));
+        assert!(!m.push_mod_audio("a", 2, &[0.1], 0, None));
+    }
+
+    #[test]
+    fn mod_audio_is_panned_and_faded_by_where_it_was_spoken() {
+        let mut m = Mixer::default();
+        // Facing south (yaw 0), -X is the listener's right.
+        assert!(m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([-4.0, 0.0, 0.0])));
+        let mut data = vec![0.0f32; 16 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        let left: f32 = data.chunks(2).map(|f| f[0]).sum();
+        let right: f32 = data.chunks(2).map(|f| f[1]).sum();
+        assert!(right > left, "right {right} should beat left {left}");
+        // Past the range it is silent.
+        assert!(m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([0.0, 0.0, 60.0])));
+        let mut data = vec![0.0f32; 16 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        assert!(data.iter().all(|s| *s == 0.0));
     }
 
     #[test]

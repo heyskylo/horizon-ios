@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tools import parity
+from tools import parity, parity_shard
 
 
 class ParityRunnerTests(unittest.TestCase):
@@ -364,6 +364,19 @@ class RustScopeTests(unittest.TestCase):
 
 
 class ShardTests(unittest.TestCase):
+    def test_invalid_shards_are_rejected(self):
+        for spec in ("0/8", "9/8", "1/0", "1/-8"):
+            with self.subTest(spec=spec), mock.patch.dict(os.environ, {"PARITY_SHARD": spec}):
+                with self.assertRaisesRegex(ValueError, "PARITY_SHARD"):
+                    parity_shard.shard(list(range(8)))
+                with self.assertRaisesRegex(ValueError, "PARITY_SHARD"):
+                    parity_shard.label()
+
+    def test_valid_shard_selects_every_nth_case(self):
+        with mock.patch.dict(os.environ, {"PARITY_SHARD": "2/3"}):
+            self.assertEqual(parity_shard.shard(list(range(7))), [1, 4])
+            self.assertEqual(parity_shard.label(), "2-3")
+
     def test_a_sharded_harness_runs_as_numbered_entries(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)):
             (Path(temp) / "tools").mkdir()
@@ -372,6 +385,14 @@ class ShardTests(unittest.TestCase):
             self.assertEqual(sorted(parity.harnesses()), ["x#1", "x#2", "x#3", "y"])
             self.assertEqual(parity.SHARDS["x#2"], "2/3")
             self.assertEqual(parity.base_name("x#2"), "x")
+
+
+class OracleArgumentTests(unittest.TestCase):
+    def test_an_agent_jar_is_an_input(self):
+        from tools import parity_shim
+        jar, oracle = Path("/w/seed-agent.jar"), Path("/w/out.jsonl")
+        self.assertEqual(parity_shim.named_paths([f"-javaagent:{jar}=a=b", "-Xmx3G", str(oracle)]),
+                         [os.path.abspath(jar), os.path.abspath(oracle)])
 
 
 @unittest.skipIf(os.name == "nt", "oracle PATH shimming uses Unix executable symlink semantics")

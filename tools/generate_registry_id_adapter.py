@@ -20,6 +20,9 @@ Repeat an old state for several new states to map all back; its first alias is u
 `--registry-names REGISTRY` emits an old static registry's names in wire-id order, for registries
 that newer versions synchronize. `--item-names` additionally applies canonical item renames.
 
+`--pinned-constants` instead emits the named pinned ids used by the translators, checked against
+the pinned registry report. Regenerate these together with the tables before a pinned-version bump.
+
 With `--substitutes` (a version a Horizon server lets join, docs/hosting.md) it also writes `<NAME>_SUBSTITUTES`: for
 each pinned entry the older version lacks, the pinned entry shown in its place, picked by the rules in SUBSTITUTES
 (the first whose name the older version has) and, for a block state, the substitute block's state that keeps the
@@ -68,6 +71,39 @@ REGISTRIES = [
     "minecraft:consume_effect_type",
     "minecraft:enchantment_effect_component_type",
 ]
+
+# Only ids interpreted directly by translators; the remaining entries use generated remap tables.
+PINNED_NAMES = {
+    "entity_type": """
+        acacia_boat acacia_chest_boat allay area_effect_cloud armadillo armor_stand axolotl
+        bamboo_chest_raft bamboo_raft bat bee birch_boat birch_chest_boat blaze breeze camel camel_husk cat
+        cave_spider cherry_boat cherry_chest_boat chest_minecart chicken cod command_block_minecart cow
+        creeper dark_oak_boat dark_oak_chest_boat dolphin donkey drowned elder_guardian ender_dragon
+        enderman endermite evoker experience_orb falling_block fox frog furnace_minecart ghast giant
+        glow_item_frame glow_squid goat guardian happy_ghast hoglin hopper_minecart horse husk illusioner
+        iron_golem item_frame jungle_boat jungle_chest_boat llama magma_cube mangrove_boat
+        mangrove_chest_boat mannequin minecart mooshroom mule nautilus oak_boat oak_chest_boat ocelot
+        painting panda parrot phantom pig piglin piglin_brute pillager player polar_bear pufferfish rabbit
+        ravager salmon sheep shulker silverfish skeleton skeleton_horse slime sniffer snow_golem
+        spawner_minecart spider spruce_boat spruce_chest_boat squid stray strider tadpole tnt_minecart
+        trader_llama tropical_fish turtle vex villager vindicator wandering_trader warden witch wither
+        wither_skeleton wolf zoglin zombie zombie_horse zombie_nautilus zombie_villager zombified_piglin
+    """.split(),
+    "item": """
+        blast_furnace bolt_armor_trim_smithing_template campfire coast_armor_trim_smithing_template
+        crafting_table dune_armor_trim_smithing_template eye_armor_trim_smithing_template
+        flow_armor_trim_smithing_template furnace host_armor_trim_smithing_template
+        raiser_armor_trim_smithing_template rib_armor_trim_smithing_template saddle
+        sentry_armor_trim_smithing_template shaper_armor_trim_smithing_template
+        silence_armor_trim_smithing_template smithing_table smoker snout_armor_trim_smithing_template
+        spire_armor_trim_smithing_template stonecutter tide_armor_trim_smithing_template
+        vex_armor_trim_smithing_template ward_armor_trim_smithing_template
+        wayfinder_armor_trim_smithing_template wild_armor_trim_smithing_template
+    """.split(),
+    "particle_type": """
+        entity_effect explosion explosion_emitter
+    """.split(),
+}
 
 # What stands in for a pinned entry an older client lacks: (registries, pattern, replacement), the pattern matched
 # against the whole name without its namespace and tried in order; the first replacement the older version has wins.
@@ -242,11 +278,28 @@ def const_name(registry):
     return registry.split(":", 1)[1].upper()
 
 
+def pinned_constants(report, names):
+    """Named ids for the translators; a removed or renamed entry must stop regeneration."""
+    lines = []
+    for registry, selected in names.items():
+        ids = entries(report, f"minecraft:{registry}")
+        lines.append(f"pub mod {registry} {{")
+        for name in selected:
+            key = f"minecraft:{name}"
+            if key not in ids:
+                raise ValueError(f"pinned registry entry is absent: minecraft:{registry} / {key}")
+            lines.append(f"    pub const {name.upper()}: i32 = {ids[key]};")
+        lines.append("}")
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--old", type=Path, required=True, help="the older version's prepared directory")
+    parser.add_argument("--old", type=Path, help="the older version's prepared directory")
     parser.add_argument("--new", type=Path, help="the pinned version's prepared directory (default: .local)")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--pinned-constants", action="store_true",
+                        help="emit named pinned registry ids instead of an older version's tables")
     parser.add_argument("--inherit", type=Path,
                         help="another prepared version: reuse its generated tables when registry ids match")
     parser.add_argument("--substitutes", action="store_true",
@@ -265,6 +318,18 @@ def main():
     parser.add_argument("--name-aliases", action="store_true",
                         help="also emit the explicit old/current name aliases used by legacy NBT")
     args = parser.parse_args()
+    if not args.pinned_constants and not args.old:
+        parser.error("--old is required unless --pinned-constants is used")
+    new_reports = args.new / "datagen/reports" if args.new else ROOT / ".local/datagen/out/reports"
+    info = lab.version_info(args.new / "jars/client.jar") if args.new else lab.version_info()
+    new_reg = json.loads((new_reports / "registries.json").read_text())
+    if args.pinned_constants:
+        out = args.out or ROOT / "crates/horizon-protocol/src/adapter/pinned_ids.rs"
+        lines = [f"//! Named registry ids of the pinned {info['name']}.",
+                 "//! Generated by tools/generate_registry_id_adapter.py --pinned-constants; do not edit.", ""]
+        lines.extend(pinned_constants(new_reg, PINNED_NAMES))
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return
     renames = {}
     reassign = {}
     for specs, destination in ((args.rename, renames), (args.reassign, reassign)):
@@ -274,11 +339,8 @@ def main():
             registry, old_ns = registry.rsplit(":", 1)
             destination.setdefault(registry, {})[f"{old_ns}:{old_path}"] = new
     old_reports = args.old / "datagen/reports"
-    new_reports = args.new / "datagen/reports" if args.new else ROOT / ".local/datagen/out/reports"
     old_info = lab.version_info(args.old / "jars/client.jar")
-    info = lab.version_info(args.new / "jars/client.jar") if args.new else lab.version_info()
     old_reg = json.loads((old_reports / "registries.json").read_text())
-    new_reg = json.loads((new_reports / "registries.json").read_text())
     inherited_reg = None
     inherited_states = None
     inherited_module = None
@@ -370,10 +432,13 @@ def main():
     known = renames.get("minecraft:data_component_type", {})
     dropped = sorted((i, name) for name, i in old_components.items()
                      if name not in new_components and name not in known)
-    lines.append(f"/// Data components {old_info['id']} has and the pinned version lacks, by their {old_info['id']} id.")
-    lines.append("pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[")
-    lines.extend(f'    ({i}, "{name}"),' for i, name in dropped)
-    lines.append("];")
+    # Legacy NBT stacks have no component registry; their successor handles component write-back.
+    inherit_components = inherited_module and not old_components
+    if not inherit_components:
+        lines.append(f"/// Data components {old_info['id']} has and the pinned version lacks, by their {old_info['id']} id.")
+        lines.append("pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[")
+        lines.extend(f'    ({i}, "{name}"),' for i, name in dropped)
+        lines.append("];")
     if args.substitutes:
         lines.append(f"/// Stand-ins for pinned block states {old_info['id']} lacks, in the pinned numbering.")
         lines.extend(rust_table("BLOCK_STATE_SUBSTITUTES", state_substitutes(old_blocks, new_blocks)))
@@ -388,6 +453,15 @@ def main():
                 print(f"{registry}: no stand-in for", ", ".join(lacking))
     lines.append(f"/// Every table above, as the adapter reads them.")
     lines.append("pub const IDS: super::ids::Ids = super::ids::Ids {")
+    if not inherit_components:
+        lines.append("    dropped_components: DROPPED_COMPONENTS,")
+    if args.substitutes:
+        lines.append("    substitutes: super::ids::Substitutes {")
+        lines.append("        block_state: BLOCK_STATE_SUBSTITUTES,")
+        lines.extend(f"        {r.split(':', 1)[1]}: {const_name(r)}_SUBSTITUTES," for r in SUBSTITUTED)
+        lines.append("    },")
+    elif not inherited_module:
+        lines.append("    substitutes: super::ids::Substitutes::NONE,")
     if not inherited_module:
         lines.append("    quirks: super::ids::Quirks::NONE,")
     if not inherit_states:
@@ -402,14 +476,6 @@ def main():
         else:
             name = const_name(registry)
             lines.append(f"    {field}: super::ids::Remap::Runs {{ up: {name}_UP, down: {name}_DOWN }},")
-    lines.append("    dropped_components: DROPPED_COMPONENTS,")
-    if args.substitutes:
-        lines.append("    substitutes: super::ids::Substitutes {")
-        lines.append("        block_state: BLOCK_STATE_SUBSTITUTES,")
-        lines.extend(f"        {r.split(':', 1)[1]}: {const_name(r)}_SUBSTITUTES," for r in SUBSTITUTED)
-        lines.append("    },")
-    else:
-        lines.append("    substitutes: super::ids::Substitutes::NONE,")
     if inherited_module:
         lines.append(f"    // Unchanged registries and block states were checked against {inherited_module}'s reports.")
         lines.append(f"    ..super::{inherited_module}::IDS")

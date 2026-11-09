@@ -855,7 +855,7 @@ impl Game<'_> {
     /// One item modifier (a typed object, a list or a datapack reference)
     /// applied to a stack; `None` when the stack ends up empty.
     fn apply_item_modifier(
-        &self,
+        &mut self,
         m: &serde_json::Value,
         stack: Option<ItemStack>,
         rng: &mut horizon_core::random::LegacyRandom,
@@ -885,8 +885,8 @@ impl Game<'_> {
             Value::Array(list) => list.iter().fold(stack, |s, f| {
                 self.apply_item_modifier(f, s, rng, this, origin, depth + 1)
             }),
-            Value::String(id) => match self.fns.store.item_modifiers.get(id) {
-                Some(f) => self.apply_item_modifier(f, stack, rng, this, origin, depth + 1),
+            Value::String(id) => match self.fns.store.item_modifiers.get(id).cloned() {
+                Some(f) => self.apply_item_modifier(&f, stack, rng, this, origin, depth + 1),
                 None => stack,
             },
             Value::Object(_) => {
@@ -906,6 +906,14 @@ impl Game<'_> {
                             .fold(Some(stack), |s, f| {
                                 self.apply_item_modifier(f, s, rng, this, origin, depth + 1)
                             });
+                    }
+                    "minecraft:exploration_map" => {
+                        if stack.count > 0 {
+                            let map = horizon_world::loot::ExplorationMap::from_json(m);
+                            // A failed command search keeps the input; pending loot's
+                            // caller owns its separate filtered/drop policy.
+                            self.materialize_exploration_map(&mut stack, &map, origin);
+                        }
                     }
                     "minecraft:set_count" => {
                         let n = int(&m["count"], rng);
@@ -1486,6 +1494,24 @@ impl Game<'_> {
         let Some(Arg::Str(slot_name)) = c.get("slots").cloned() else {
             return Ok((false, 0));
         };
+        // SlotSourceArgument keeps literal ranges ahead of registered holders.
+        // Only condition reads resolve named definitions here: the item write
+        // candidate adapters retain their existing supported scope.
+        let registered = if slot_name.starts_with('{')
+            || slot_name.starts_with('[')
+            || horizon_client::command::args::slot_ranges()
+                .iter()
+                .any(|(name, _)| name == &slot_name)
+        {
+            None
+        } else {
+            let id = if slot_name.contains(':') {
+                slot_name.clone()
+            } else {
+                format!("minecraft:{slot_name}")
+            };
+            self.fns.store.slot_sources.get(&id).cloned()
+        };
         let predicate = match c.get("item_predicate") {
             Some(Arg::Item(p)) => Some(p.clone()),
             _ => None,
@@ -1500,7 +1526,10 @@ impl Game<'_> {
                     &[&p[0], &p[1], &p[2]],
                 ));
             }
-            let slots = self.command_slots(&o, &slot_name);
+            let slots = match &registered {
+                Some(source) => self.inline_slots(&o, source),
+                None => self.command_slots(&o, &slot_name),
+            };
             if predicate.is_none() {
                 count += slots.len() as i32;
                 continue;
@@ -2220,5 +2249,416 @@ mod mob_equipment_stack_tests {
             assert!(game.run_command(&format!("item replace entity {uuid} armor.head with air")));
             assert!(game.slot_get(&Slot::Mob(id, "head")).is_none());
         });
+    }
+}
+
+#[cfg(test)]
+mod builtin_component_delivery_tests {
+    use crate::game::{Game, lan::LanHost};
+    use horizon_client::{
+        items::ItemStack,
+        lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig},
+    };
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::{
+        buf::{Codec, Reader, Writer},
+        item::{Slot, component},
+        packets::{configuration::ClientInformation, play},
+    };
+    use horizon_world::nbt::Tag;
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h283_actual_command_inventory_bridge_encodes_four_builtin_components() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(8, 8));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "component-wire-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 283,
+                name: "ComponentGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [8.5, 200.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.selected = 1;
+        guest.permission = 2;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let clock = game.world.game_time;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let registries: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("registries.json")).unwrap()).unwrap();
+        let id = |registry: &str, name: &str| {
+            registries[registry]["entries"][name]["protocol_id"]
+                .as_i64()
+                .unwrap() as i32
+        };
+        let command = |game: &mut Game<'_>, host: &mut LanHost, input: &str| {
+            assert!(
+                game.as_guest(host, 2, |g| g.run_command(input)).unwrap(),
+                "{input}"
+            );
+        };
+        let capture = |host: &mut LanHost| {
+            while rx.try_recv().is_ok() {}
+            host.hub.send_inventory(0);
+            let mut packets = Vec::new();
+            for out in rx.try_iter() {
+                match out {
+                    Out::Packet(body) => packets.push(body),
+                    Out::Packets(bodies) => packets.extend(bodies),
+                    Out::Disconnect(_) => panic!("unexpected disconnect"),
+                }
+            }
+            let mut contents = Vec::new();
+            for body in packets {
+                let mut r = Reader::new(&body);
+                let packet = r.varint().unwrap();
+                if packet == horizon_protocol::ids::play::clientbound::CONTAINER_SET_CONTENT {
+                    let content = play::ContainerSetContent::read(&mut r).unwrap();
+                    assert_eq!(r.remaining(), 0, "complete enclosing content payload");
+                    assert_eq!(content.container, 0);
+                    assert_eq!(content.items.len(), 46);
+                    assert!(content.carried.is_none());
+                    contents.push(content);
+                }
+            }
+            assert_eq!(contents.len(), 1, "one actual inventory content packet");
+            contents.pop().unwrap().items[9].clone().unwrap()
+        };
+        command(
+            &mut game,
+            &mut host,
+            "item replace entity @s inventory.0 with stone[minecraft:custom_name=\"H283 control\"] 3",
+        );
+        let control = capture(&mut host);
+        assert_eq!(control.item, id("minecraft:item", "minecraft:stone"));
+        assert_eq!(control.count, 3);
+        assert!(control.component(component::CUSTOM_NAME).is_some());
+        command(
+            &mut game,
+            &mut host,
+            "item replace entity @s inventory.0 with gold_ingot",
+        );
+        let plain = capture(&mut host);
+        assert!(
+            plain
+                .component(id(
+                    "minecraft:data_component_type",
+                    "minecraft:provides_trim_material"
+                ))
+                .is_none()
+        );
+        assert!(plain.removed.is_empty());
+        let mut failures = Vec::new();
+        for (name, item, value, expected) in [
+            (
+                "minecraft:provides_trim_material",
+                "minecraft:diamond",
+                "\"minecraft:gold\"",
+                Tag::String("minecraft:gold".into()),
+            ),
+            (
+                "minecraft:provides_banner_patterns",
+                "minecraft:paper",
+                "\"#minecraft:pattern_item/globe\"",
+                Tag::String("#minecraft:pattern_item/globe".into()),
+            ),
+            (
+                "minecraft:can_place_on",
+                "minecraft:stone",
+                "{blocks:\"minecraft:dirt\"}",
+                Tag::compound([("blocks", Tag::String("minecraft:dirt".into()))]),
+            ),
+            (
+                "minecraft:can_break",
+                "minecraft:diamond_pickaxe",
+                "{blocks:\"minecraft:stone\",state:{}}",
+                Tag::compound([
+                    ("blocks", Tag::String("minecraft:stone".into())),
+                    ("state", Tag::compound(std::iter::empty::<(&str, Tag)>())),
+                ]),
+            ),
+        ] {
+            command(
+                &mut game,
+                &mut host,
+                &format!("item replace entity @s inventory.0 with {item}[{name}={value}]"),
+            );
+            let source: ItemStack = host.hub.guest(2).unwrap().inventory[9].clone().unwrap();
+            assert_eq!(source.item.as_ref(), item);
+            assert_eq!(source.count, 1);
+            assert_eq!(
+                source.data().unwrap().other(name),
+                Some(&expected),
+                "actual registered command adoption"
+            );
+            assert!(source.wire_patch().is_none(), "no cached wire fallback");
+            let received = capture(&mut host);
+            assert_eq!(received.item, id("minecraft:item", item));
+            assert_eq!(received.count, 1);
+            assert!(received.removed.is_empty());
+            let kind = id("minecraft:data_component_type", name);
+            let mut w = Writer::new();
+            Slot::write(&Some(received.clone()), &mut w);
+            let mut r = Reader::new(&w.data);
+            let reread = Slot::read(&mut r).unwrap().unwrap();
+            assert_eq!(r.remaining(), 0, "complete nested slot payload");
+            assert_eq!(reread.component(kind), received.component(kind));
+            if received.component(kind).is_none() {
+                failures.push((name, received));
+            }
+            assert_eq!(host.hub.guest(2).unwrap().uuid, 283);
+            assert_eq!(host.hub.guest(2).unwrap().health, 20.0);
+            assert_eq!(host.hub.guest(2).unwrap().position, [8.5, 200.0, 8.5]);
+            assert_eq!(game.world.game_time, clock);
+        }
+        assert!(
+            failures.is_empty(),
+            "actual command -> network_stack -> full protocol packet missing builtin components: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod registered_slot_source_read_tests {
+    use super::*;
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn registered_first_three_reads_match_inline_and_keep_the_chest() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("registered-slot-read-world");
+        assert!(!root.exists());
+        let pack = root.join("datapacks/parity");
+        std::fs::create_dir_all(pack.join("data/parity/slot_source")).unwrap();
+        let meta = r#"{"pack":{"description":"parity slots","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#;
+        let definition = r#"{"type":"minecraft:limit_slots","limit":3,"slot_source":{"type":"minecraft:slot_range","slots":"container.*"}}"#;
+        std::fs::write(pack.join("pack.mcmeta"), meta).unwrap();
+        std::fs::write(
+            pack.join("data/parity/slot_source/first_three.json"),
+            definition,
+        )
+        .unwrap();
+        game.world_root = root;
+        game.ensure_datapacks();
+        assert_eq!(
+            game.fns
+                .pack_file("data/parity/slot_source/first_three.json")
+                .unwrap(),
+            definition.as_bytes()
+        );
+        assert!(
+            game.ui
+                .registries
+                .datapacks_enabled
+                .iter()
+                .any(|p| p == "file/parity")
+        );
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("setblock 0 100 0 minecraft:chest{Items:[{Slot:0b,id:\"minecraft:stone\",count:5},{Slot:1b,id:\"minecraft:dirt\",count:2},{Slot:3b,id:\"minecraft:stone\",count:7},{Slot:4b,id:\"minecraft:shulker_box\",count:1,components:{\"minecraft:container\":[{slot:0,item:{id:\"minecraft:stone\",count:9}},{slot:2,item:{id:\"minecraft:dirt\",count:1}}]}}]}"));
+        let before = game.block_entity_nbt([0, 100, 0]).unwrap();
+        for (slot, item, count) in [
+            (0, "minecraft:stone", 5),
+            (1, "minecraft:dirt", 2),
+            (3, "minecraft:stone", 7),
+            (4, "minecraft:shulker_box", 1),
+        ] {
+            let actual = game.slot_get(&Slot::Block([0, 100, 0], slot)).unwrap();
+            assert_eq!((&*actual.item, actual.count), (item, count));
+        }
+        assert!(game.run_command("scoreboard objectives add slotprobe dummy"));
+        let clock = game.world.game_time;
+        let inline =
+            r#"{type:"limit_slots",limit:3,slot_source:{type:"slot_range",slots:"container.*"}}"#;
+        let mut failures = Vec::new();
+        for source in [inline, "parity:first_three"] {
+            for (kind, suffix, count) in [
+                ("items", " minecraft:stone", 5),
+                ("items", " *", 7),
+                ("slots", "", 3),
+            ] {
+                assert!(game.run_command("scoreboard players set #r slotprobe -99"));
+                assert!(game.run_command("scoreboard players set #s slotprobe -99"));
+                let command = format!(
+                    "execute store result score #r slotprobe store success score #s slotprobe run execute if {kind} block 0 100 0 {source}{suffix}"
+                );
+                let ok = game.run_command(&command);
+                let result = game.score.board.score("#r", "slotprobe").unwrap().value;
+                let success = game.score.board.score("#s", "slotprobe").unwrap().value;
+                println!("{command}: accepted={ok}, result={result}, success={success}");
+                if (ok, result, success) != (true, count, 1) {
+                    failures.push((command, ok, result, success));
+                }
+                assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
+                assert_eq!(game.world.game_time, clock);
+            }
+        }
+        for name in ["#r", "#s"] {
+            assert!(game.run_command(&format!("scoreboard players set {name} slotprobe -99")));
+        }
+        assert!(!game.run_command("execute store result score #r slotprobe store success score #s slotprobe run execute if slots block 0 100 0 parity:missing"));
+        for name in ["#r", "#s"] {
+            assert_eq!(
+                game.score.board.score(name, "slotprobe").unwrap().value,
+                -99
+            );
+        }
+        assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            failures.is_empty(),
+            "registered real-pack reads must match inline: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod registered_slot_source_preservation_tests {
+    use super::*;
+
+    fn scene(name: &str) -> (Game<'static>, std::path::PathBuf) {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let root = std::env::current_dir().unwrap().join(name);
+        assert!(!root.exists());
+        let mut high = std::path::PathBuf::new();
+        for (pack, limit) in [("a-low", 1), ("parity", 3)] {
+            let dir = root.join("datapacks").join(pack);
+            std::fs::create_dir_all(dir.join("data/parity/slot_source")).unwrap();
+            std::fs::write(dir.join("pack.mcmeta"), r#"{"pack":{"description":"slot snapshot","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+            let path = dir.join("data/parity/slot_source/first_three.json");
+            std::fs::write(&path, serde_json::json!({"type":"minecraft:limit_slots","limit":limit,"slot_source":{"type":"minecraft:slot_range","slots":"container.*"}}).to_string()).unwrap();
+            high = path;
+        }
+        game.world_root = root;
+        game.ensure_datapacks();
+        assert!(game.run_command("setblock 0 100 0 chest{Items:[{Slot:0b,id:\"stone\",count:5},{Slot:1b,id:\"dirt\",count:2},{Slot:3b,id:\"stone\",count:7}]}"));
+        assert!(game.run_command("scoreboard objectives add slotprobe dummy"));
+        (game, high)
+    }
+
+    fn count(game: &mut Game<'_>, expected: i32) {
+        assert!(game.run_command("execute store result score #r slotprobe run execute if slots block 0 100 0 parity:first_three"));
+        assert_eq!(
+            game.score.board.score("#r", "slotprobe").unwrap().value,
+            expected
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn loaded_snapshot_changes_only_on_existing_reload_with_pack_precedence() {
+        let (mut game, file) = scene("slot-source-snapshot-world");
+        let before = game.block_entity_nbt([0, 100, 0]).unwrap();
+        let clock = game.world.game_time;
+        count(&mut game, 3); // Higher-priority pack overrides the same id.
+        std::fs::write(&file, r#"{"type":"minecraft:limit_slots","limit":2,"slot_source":{"type":"minecraft:slot_range","slots":"container.*"}}"#).unwrap();
+        count(&mut game, 3); // Disk edits do not change the loaded snapshot.
+        game.reload_datapacks(true);
+        count(&mut game, 2);
+        std::fs::write(file, "{").unwrap();
+        game.reload_datapacks(true);
+        count(&mut game, 1); // Existing policy: invalid higher JSON is skipped.
+        assert!(!game.run_command("execute if slots block 0 100 0 first_three"));
+        assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
+        assert_eq!(game.world.game_time, clock);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn admitted_item_arguments_still_fail_without_writing_or_player_fallback() {
+        let (mut game, _) = scene("slot-source-unsupported-world");
+        let before = game.block_entity_nbt([0, 100, 0]).unwrap();
+        let clock = game.world.game_time;
+        count(&mut game, 3);
+        let player_was_present = game.player.is_some();
+        println!("unsupported registered item routes: actual Player present={player_was_present}");
+        let mut commands = vec![
+            "item modify block 0 100 0 parity:first_three {type:\"minecraft:set_count\",count:1}"
+                .to_owned(),
+        ];
+        for mode in ["replace", "fill", "override"] {
+            commands.push(format!(
+                "item {mode} block 0 100 0 parity:first_three with diamond"
+            ));
+            commands.push(format!(
+                "item {mode} block 0 100 0 container.0 from block 0 100 0 parity:first_three"
+            ));
+        }
+        for command in commands {
+            let dispatcher = horizon_client::command::vanilla::game_dispatcher_with_features(
+                &game.level.enabled_features,
+            );
+            assert!(
+                dispatcher
+                    .parse(&command, &game.ui.registries)
+                    .executable()
+                    .is_ok(),
+                "registered argument must be admitted: {command}"
+            );
+            assert!(
+                !game.run_command(&command),
+                "unsupported registered write must fail: {command}"
+            );
+            assert_eq!(
+                game.block_entity_nbt([0, 100, 0]).as_ref(),
+                Some(&before),
+                "{command}"
+            );
+            assert_eq!(game.player.is_some(), player_was_present);
+            assert_eq!(game.world.game_time, clock);
+        }
     }
 }

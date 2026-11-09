@@ -2,9 +2,11 @@
 //! if it helps, how long it stays. A view holds one at a time (`NoticeSlot`), so they never stack:
 //! each player's game has its own slot, and what raises a notice (splitscreen's joins and
 //! reconnects, a solo game's controller coming and going) decides that for itself.
-use crate::gamepad::{Button, GlyphStyle};
 use crate::hud::{HudAtlas, HudBatch, rgba};
-use crate::pad_glyph;
+use crate::hud_kit::fit::{ellipsize, wrap};
+use crate::hud_kit::hint::{self, HintRow};
+use crate::hud_kit::plate::{self, Plate};
+use crate::pad_glyph::{self, Glyph};
 use crate::toasts::Slide;
 use std::time::{Duration, Instant};
 
@@ -27,13 +29,6 @@ pub enum Priority {
     Info,
     /// The player may have to do something.
     Attention,
-}
-
-/// A button shown before the body, in the player's glyphs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Glyph {
-    pub button: Button,
-    pub style: GlyphStyle,
 }
 
 pub struct Notice {
@@ -65,6 +60,7 @@ impl Notice {
             slide: Slide::default(),
         }
     }
+    /// A button shown before the body, in the glyphs of the controller it is about.
     pub fn with_glyph(mut self, glyph: Glyph) -> Self {
         self.glyph = Some(glyph);
         self
@@ -117,9 +113,10 @@ impl NoticeSlot {
         }
         !finished
     }
-    /// The notice under `top` on a view: a strip in the middle, its words wrapped to the view (a
-    /// toast is as wide as its longest line: off a narrow view's edge), sliding down from the
-    /// view's edge.
+    /// The notice under `top` (GUI px; the caller keeps it below the boss bars with the HUD's
+    /// `Room`) on a view: a strip in the middle, its words wrapped to the view and cut with an
+    /// ellipsis where a word or the title is wider than that (a narrow view, a long language),
+    /// sliding down from the view's edge.
     pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, top: f32, shown_for: Duration) {
         if !self.update(shown_for) {
             return;
@@ -130,44 +127,38 @@ impl NoticeSlot {
         let w = batch.width;
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let max = (w - 24.0).min(260.0);
-        let glyph = notice
-            .glyph
-            .map(|g| (g, pad_glyph::width(atlas, g.button, g.style) + 4.0));
+        let glyph = notice.glyph.map(|g| (g, pad_glyph::width(atlas, g) + 4.0));
         let indent = glyph.map_or(0.0, |g| g.1);
-        let lines = crate::split_profiles::wrap(&notice.body, max - indent, width);
+        let title = ellipsize(atlas, &notice.title, max);
+        let lines: Vec<String> = wrap(&notice.body, max - indent, width)
+            .iter()
+            .map(|line| ellipsize(atlas, line, max - indent).into_owned())
+            .collect();
         let inner = lines
             .iter()
             .map(|l| width(l) + indent)
-            .fold(width(&notice.title), f32::max);
+            .fold(width(&title), f32::max);
         let (pw, ph) = (inner.min(max) + 16.0, 20.0 + 10.0 * lines.len() as f32);
         let px = ((w - pw) / 2.0).floor();
         let py = (top - (1.0 - notice.slide.portion) * (top + ph)).floor();
-        panel(batch, atlas, [px, py, pw, ph]);
+        plate::draw(batch, atlas, Plate::Notice, [px, py, pw, ph]);
         let white = rgba(255, 255, 255, 255);
-        let tx = (px + (pw - width(&notice.title)) / 2.0).floor();
-        batch.text(atlas, &notice.title, tx, py + 6.0, white, true);
+        let tx = (px + (pw - width(&title)) / 2.0).floor();
+        batch.text(atlas, &title, tx, py + 6.0, white, true);
         for (k, line) in lines.iter().enumerate() {
             let lx = (px + (pw - width(line) - indent) / 2.0).floor();
             let y = py + 18.0 + 10.0 * k as f32;
-            if let (0, Some((g, _))) = (k, glyph) {
-                pad_glyph::draw(batch, atlas, g.button, g.style, lx, y);
+            match (k, glyph) {
+                // The glyph's art starts 1 px left of where it is drawn (`pad_glyph::rect`).
+                (0, Some((g, _))) => {
+                    let row = HintRow::new([g], line.as_str());
+                    hint::draw_hint(batch, atlas, &row, &hint::NOTICE, lx - 1.0, y);
+                }
+                _ => {
+                    batch.text(atlas, line, lx + indent, y, hint::NOTICE.color, false);
+                }
             }
-            batch.text(atlas, line, lx + indent, y, rgba(200, 200, 200, 255), false);
         }
-    }
-}
-
-/// The prompts' and notices' box: dark, a faint edge.
-pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, [px, py, pw, ph]: [f32; 4]) {
-    batch.fill(atlas, px, py, pw, ph, rgba(0, 0, 0, 210));
-    let edge = rgba(255, 255, 255, 90);
-    for [x, y, fw, fh] in [
-        [px, py, pw, 1.0],
-        [px, py + ph - 1.0, pw, 1.0],
-        [px, py, 1.0, ph],
-        [px + pw - 1.0, py, 1.0, ph],
-    ] {
-        batch.fill(atlas, x, y, fw, fh, edge);
     }
 }
 

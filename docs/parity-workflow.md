@@ -1,6 +1,6 @@
 # Parity workflow
 
-How parity work is run, checked and merged. The harnesses themselves are described in [Rust rewrite status](rust-parity.md).
+How parity work is run, checked and merged. What is ported and where it is checked: [Rust rewrite status](rust-parity.md).
 
 ## Running the vanilla harnesses
 
@@ -130,9 +130,57 @@ The LAN checks open and fill machines through the guest's inventory packets, obs
 powered dispenser's projectile on both clients, and open a chest to activate a sculk sensor
 and shrieker. They supplement the deterministic component comparisons.
 
+### Randoms that repeat
+
+Vanilla seeds every unseeded random (`RandomSource.create()`: each entity's own, the level's, a raid's...) from `RandomSupport.generateUniqueSeed`, a shared uniquifier XORed with `System.nanoTime()`, and numbers entities from `ServerLevel.ENTITY_COUNTER`; Horizon ports both (`random_source::unique_seed`, `Game.next_entity`). A command script can make what they decide comparable exactly: a dropped item's position, primed TNT's kick, a dispensed item's motion, which tick of four a resting item moves on.
+
+- `{"op": "sync_randoms", "uniquifier": U, "entity_id": E, "level_seed": S}`, run on the server thread of both engines, sets that thread's uniquifier to `U`, the entity-id counter to `E` (the next entity is `E + 1`) and the random of the player's level to seed `S`. Startup creates a different number of randoms in each engine, so sync right before what you compare, and give each case its own values (Horizon keeps an entity's UUID by id).
+- A script with this step runs vanilla under `tools/seed_agent.py`'s agent (`SeedAgent.java`, built with the JDK's class-file API): `generateUniqueSeed` steps a uniquifier of the calling thread's own, from vanilla's start and by vanilla's factor, without the clock. Horizon runs with `HORIZON_TEST_SEEDS=1`, which does the same in `unique_seed`; the step fails without it. Per thread, so worker threads and Horizon's client don't shift the server thread's seeds. The agent jar is an oracle input (`tools/parity_shim.py`).
+- `tools/seed_sync_corpus.py` is the example and the proof, a harness of its own (`python3 tools/parity.py seed_sync`): a script that syncs runs on fixed seeds to its end, so the groups after a sync would draw from them, and a group that passes on most seeds could fail on those every time. `--unsynced-randoms` leaves the steps out, and the same fields then differ run to run.
+
+One draw too many or too few shifts every later value, so read the first field that differs. Not covered: randoms on other threads (worldgen and chunk loading: keep scenarios in loaded chunks), the levels other than the player's, randoms created before the step (the server's, the level's sound seeds) except the level's own, `Level.randValue` (random-tick positions) and other `ThreadLocalRandom` or `Math.random` draws, and anything a tick draws from the level's random before what you read (each tick shuffles the chunks near players with it, even with `spawn_mobs` off).
+
+### Fuzzing scenarios
+
+`tools/parity_fuzz.py` runs small generated scenarios in vanilla and Horizon and reports each divergence once, shrunk, with a reproduction (#12498). A batch of scenarios runs as one command-exec script (`test_command_exec_parity.py --groups-file`). It is a tool to run by hand, not a harness: `parity.py` never selects it.
+
+```sh
+python3 tools/parity_fuzz.py --smoke --binary target/fast/horizon-client.exe   # fixed scenarios that must match (~30 s)
+python3 tools/parity_fuzz.py persist --seed 1 --count 60                          # summon or place, unload and reload, read
+python3 tools/parity_fuzz.py spawn --seed 1 --count 60                            # each spawn mechanism, read tick by tick
+python3 tools/parity_fuzz.py --replay scenarios.json                               # run these scenarios (a report's, edited)
+```
+
+- **Scenarios.** A scenario is a seed and steps: summon (with NBT), place a block (with NBT), a command, ticks, a dispenser activation, an unload and reload, and reads (`/data get`). Each gets a chunk of its own far from the player (x 4096 and up, y 300, on a stone floor), forceloaded, and syncs both engines' randoms first ("Randoms that repeat"). A reload removes the forced ticket, ticks until both engines saved and dropped the chunk (a guard checks vanilla did), and loads it back: a real save and load through each engine's chunk and entity storage. Summoned entities get fixed UUIDs, so reads find them without selectors.
+- **Families** (`tools/parity_fuzz_scenarios.py`). `persist` summons an entity or places a block entity with changed fields, maybe beside other blocks, and reads it before and after a reload. `spawn` makes an entity one way (summon, dispenser, dispenser on a redstone signal, a block broken, an explosion, a piston) and reads it before its first tick and after each of a few. Field names are vanilla's own: the first run summons every entity type and places every block entity bare and caches what vanilla saves for each in the work directory (`defaults.json`); mutations change those fields' values and keep their NBT types. A run of 60 scenarios takes a few minutes; shrinking adds one or two batches per round.
+- **Comparison.** A `/data get` read is parsed as SNBT and compared field by field, so a difference names its field. Key order is not compared, nor the order of `attributes` (vanilla's own order changes run to run). Other commands compare like the harness (feedback, styles, results). `ALLOWED` in the script lists the differences that are not bugs, each with its reason.
+- **Grouping and shrinking.** Each diverging read is grouped by family, subject type, whether the read came after a reload, and first differing field. Each group's smallest scenario is shrunk (steps and NBT keys dropped, tick counts halved) while that group's divergence stays, trying all edits of a round in one batch. `report.json` in the work directory lists the groups, largest first, each with its seeds, its shrunk scenario as commands, and its differences.
+- **Triage before filing.** A group is a lead, not a bug: read the vanilla source for the field, check it isn't a seed-sync limit (above) or harness noise, and search existing issues first.
+
 ## Reading vanilla
 
-Besides the Vineflower sources in `.local/minecraft/<version>/sources/`, `tools/rea_vanilla.py` queries the shipped bytecode through REA (callers through lambdas, overloads, a second decompiler); see [decompilation status](decompilation-status.md#querying-the-shipped-bytecode-with-rea).
+Game jars, decompiled sources and reports live in the gitignored `.local/`, rebuilt from your own copy of the game;
+nothing of Mojang's is committed or downloaded by the tools ([README](../README.md#build-from-source)):
+
+```sh
+python3 tools/lab.py prepare --server-jar ~/Downloads/server.jar   # checks the pinned jars (research-lock.json)
+python3 tools/lab.py decompile    # Vineflower: .local/minecraft/26.3/sources/{client,server}/
+python3 tools/lab.py status       # coverage reports under .local/minecraft/26.3/reports/
+```
+
+`tools/rea_vanilla.py` queries the shipped bytecode through [REA](https://github.com/morluto/rea) (a headless JADX)
+for what text search misses: every caller of a method including lambdas and bridges, every overload, or a second
+decompiler's view of a method whose Vineflower output looks wrong:
+
+```sh
+python3 tools/rea_vanilla.py class net.minecraft.world.level.block.DispenserBlock
+python3 tools/rea_vanilla.py method net.minecraft.world.level.block.DispenserBlock dispenseFrom
+python3 tools/rea_vanilla.py callers net.minecraft.server.level.ServerLevel tickChunk
+python3 tools/rea_vanilla.py --jar server-game classes DedicatedServer
+```
+
+REA and JADX are pinned in `research-lock.json` and downloaded into `.local/tools/` on first use; each query takes
+about five seconds. Decompiled bodies are a reading aid: the bytecode and the oracle harnesses are the reference.
 
 ## Player-facing integration and deterministic fixtures
 

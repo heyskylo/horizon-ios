@@ -7,15 +7,26 @@ imports lab.py, so a change there reruns them all.
 import os
 
 
+def parse(spec):
+    """Return the 1-based index and shard count."""
+    index, count = map(int, spec.split("/"))
+    if not 1 <= index <= count:
+        raise ValueError(f"Invalid PARITY_SHARD {spec!r}. Expected i/n with 1 <= i <= n.")
+    return index, count
+
+
 def shard(items):
     """Every n-th item from the i-th, or all of them outside the runner."""
     spec = os.environ.get("PARITY_SHARD")
     if not spec:
         return items
-    index, count = map(int, spec.split("/"))
+    index, count = parse(spec)
     return items[index - 1::count]
 
 
 def label():
     """A directory name for this share ("2-4", or "all"): shards run at once and must not share outputs."""
-    return os.environ.get("PARITY_SHARD", "all").replace("/", "-")
+    spec = os.environ.get("PARITY_SHARD")
+    if spec:
+        parse(spec)
+    return "all" if spec is None else spec.replace("/", "-")

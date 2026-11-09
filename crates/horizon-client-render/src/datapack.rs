@@ -278,6 +278,43 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
     }
     infos
 }
+/// The folder of a game folder whose packs every new world there starts with: a modpack's profile
+/// keeps the packs of its data-only jars here (`horizon-port-pack`). Each world gets its own copy,
+/// as Create World's packs do, so a world keeps working when the folder changes. Vanilla has no
+/// such folder, and without one nothing here happens.
+pub const NEW_WORLD_PACKS: &str = "new-world-datapacks";
+
+/// Create World's temporary pack folder holding `game_dir`'s [`NEW_WORLD_PACKS`], and their ids,
+/// to show them selected in the Data Packs screen. `None` when there are none.
+pub fn seed_create_world(game_dir: &Path) -> Option<(PathBuf, Vec<String>)> {
+    let from = game_dir.join(NEW_WORLD_PACKS);
+    let ids: Vec<String> = discover_folder(&from).into_iter().map(|p| p.id).collect();
+    if ids.is_empty() {
+        return None;
+    }
+    let seeded = temp_folder()
+        .map_err(|e| e.to_string())
+        .and_then(|dir| copy(&from, &dir).map(|()| dir));
+    match seeded {
+        Ok(dir) => Some((dir, ids)),
+        Err(e) => {
+            log::warn!("Horizon: data packs for new worlds: {e}");
+            None
+        }
+    }
+}
+
+/// A world about to be created without Create World (`--world`, the control socket) gets
+/// `game_dir`'s [`NEW_WORLD_PACKS`]. The game turns on every pack it finds in a world.
+pub fn install_new_world_packs(game_dir: &Path, world: &Path) -> Result<(), String> {
+    let from = game_dir.join(NEW_WORLD_PACKS);
+    let exists = |name: &str| world.join(name).exists();
+    if !from.is_dir() || exists("level.dat") || exists("level.dat_old") {
+        return Ok(());
+    }
+    copy(&from, &world.join("datapacks"))
+}
+
 /// A new empty folder for Create World's packs
 /// (`Files.createTempDirectory("mcworld-")`).
 pub fn temp_folder() -> std::io::Result<PathBuf> {
@@ -624,6 +661,8 @@ pub struct DataStore {
     pub predicates: BTreeMap<String, serde_json::Value>,
     /// `item_modifier` files, for `/item modify`.
     pub item_modifiers: BTreeMap<String, serde_json::Value>,
+    /// `slot_source` definitions, evaluated against a command's live accessor.
+    pub slot_sources: BTreeMap<String, serde_json::Value>,
     /// The content tables' raw files from the packs after the built-in one:
     /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `dialog/`, `damage_type/`, `data_maps/`, `enchantment/` and `tags/…/` files, by
     /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
@@ -683,6 +722,7 @@ impl DataStore {
                 "predicate",
                 "recipe",
                 "recipe_filter",
+                "slot_source",
                 "tags",
                 "trade_set",
                 "villager_trade",
@@ -719,6 +759,11 @@ impl DataStore {
                     && let Ok(v) = serde_json::from_slice(&bytes)
                 {
                     s.item_modifiers.insert(id, v);
+                } else if let Some(id) = resource_id(&f, "slot_source", ".json")
+                    && let Some(bytes) = pack.read(&f)
+                    && let Ok(v) = serde_json::from_slice(&bytes)
+                {
+                    s.slot_sources.insert(id, v);
                 } else if !builtin
                     && let Some(id) = content_id(&f)
                     && let Some(bytes) = pack.read(&f)
@@ -1098,6 +1143,35 @@ mod tests {
         let dir = root.join("packs");
         assert!(copy_pack(&pack, &dir));
         assert!(dir.join("pack/pack.mcmeta").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_game_folder_s_new_world_packs_go_into_new_worlds_only() {
+        let root = std::env::temp_dir().join(format!("hz-new-world-packs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (game, world, old) = (root.join("game"), root.join("new"), root.join("old"));
+        assert!(seed_create_world(&game).is_none());
+        assert_eq!(install_new_world_packs(&game, &world), Ok(()));
+        assert!(!world.join("datapacks").exists());
+        for pack in ["void", "islands"] {
+            let dir = game.join(NEW_WORLD_PACKS).join(pack);
+            std::fs::create_dir_all(dir.join("data/v/function")).unwrap();
+            std::fs::write(dir.join("pack.mcmeta"), r#"{"pack":{"description":""}}"#).unwrap();
+            std::fs::write(dir.join("data/v/function/a.mcfunction"), "say a").unwrap();
+        }
+        let (temp, ids) = seed_create_world(&game).unwrap();
+        assert_eq!(ids, ["file/islands", "file/void"]);
+        assert!(temp.join("void/data/v/function/a.mcfunction").is_file());
+        let _ = std::fs::remove_dir_all(&temp);
+        install_new_world_packs(&game, &world).unwrap();
+        let ids: Vec<String> = discover(&world).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["file/islands", "file/void"]);
+        // A world that exists already keeps the packs it has.
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("level.dat"), "").unwrap();
+        install_new_world_packs(&game, &old).unwrap();
+        assert!(discover(&old).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -61,6 +61,12 @@ fn read_tag(root: &Path, name: &str, depth: u32) -> Vec<Arc<str>> {
 
 impl Banners {
     pub fn load(root: &Path) -> Self {
+        Self::load_with_defaults(root, None)
+    }
+    pub(crate) fn load_with_defaults(
+        root: &Path,
+        defaults: Option<&horizon_world::item_defaults::Defaults>,
+    ) -> Self {
         let mut banners = Self::default();
         let mut files: Vec<_> = fs::read_dir(root.join("data/minecraft/banner_pattern"))
             .into_iter()
@@ -92,7 +98,15 @@ impl Banners {
             });
         }
         banners.no_item_required = read_tag(root, "no_item_required", 0);
-        if let Ok(raw) = horizon_world::item_defaults::read(root) {
+        let owned_defaults;
+        let defaults = match defaults {
+            Some(defaults) => Some(defaults),
+            None => {
+                owned_defaults = horizon_world::item_defaults::read(root).ok();
+                owned_defaults.as_ref()
+            }
+        };
+        if let Some(raw) = defaults {
             for (item, c) in raw {
                 let id: Arc<str> = Arc::from(item.as_str());
                 if let Some(dye) = c["minecraft:dye"].as_str() {
@@ -175,9 +189,13 @@ pub fn banner_color(item: &str) -> Option<&'static str> {
     let name = item.strip_prefix("minecraft:")?.strip_suffix("_banner")?;
     DYES.iter().map(|d| d.0).find(|d| *d == name)
 }
-/// `DyeColor.getTextureDiffuseColor` (RGB) by dye name.
+/// `DyeColor.getTextureDiffuseColor` (RGB) by dye name, as the resource
+/// packs draw it (`pack_palette`): banner layers, banner and shield items and the
+/// loom follow a pack's dye colours as the banner base does.
 pub fn dye_rgb(name: &str) -> u32 {
-    DYES.iter().find(|d| d.0 == name).map_or(0xFFFFFF, |d| d.1)
+    DYES.iter()
+        .position(|d| d.0 == name)
+        .map_or(0xFFFFFF, crate::pack_palette::diffuse)
 }
 /// The layers of a banner or shield stack.
 pub fn layers(stack: &ItemStack) -> &[BannerLayer] {

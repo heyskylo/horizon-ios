@@ -430,6 +430,28 @@ pub enum Entry {
         factor: f32,
     },
     Boolean(BoolOp, bool),
+    /// A modifier of a type not ported yet (`ListModifier.append`, `MobSpawnSettingsModifier`
+    /// `overlay`): kept, and applying it leaves the value as it was.
+    Unported(Json),
+    /// An entry computed when it applies, from the value so far (not vanilla: a resource pack's
+    /// expression). `None` leaves the value as it was.
+    Dynamic(Dynamic),
+}
+
+/// The function behind [`Entry::Dynamic`]; two are equal when they are the same function.
+#[derive(Clone)]
+pub struct Dynamic(pub std::sync::Arc<dyn Fn(&Value) -> Option<Entry> + Send + Sync>);
+
+impl std::fmt::Debug for Dynamic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Dynamic")
+    }
+}
+
+impl PartialEq for Dynamic {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// `BooleanModifier`.
@@ -464,11 +486,21 @@ impl Entry {
         let Some(object) = json.as_object() else {
             return Err(value_error);
         };
+        if attribute.kind == Kind::Other && object.contains_key("modifier") {
+            return Ok(Self::Unported(json.clone()));
+        }
         let op = object
             .get("modifier")
             .and_then(Json::as_str)
             .ok_or_else(|| format!("{value_error}; and no modifier"))?;
         let argument = object.get("argument").ok_or("no argument")?;
+        Self::with_modifier(attribute, op, argument)
+    }
+
+    /// `EnvironmentAttributeMap.Entry.createFullCodec`: the entry `op` makes of `argument` on
+    /// this attribute, with the modifier's argument codec (also a timeline keyframe's value,
+    /// under its track's modifier).
+    pub fn with_modifier(attribute: &Attribute, op: &str, argument: &Json) -> Result<Self, String> {
         let kind = attribute.kind;
         let color = matches!(kind, Kind::RgbColor | Kind::ArgbColor);
         let simple = |argument: &Json| -> Result<Value, String> {
@@ -529,6 +561,77 @@ impl Entry {
         })
     }
 
+    /// `AttributeTrack.bakeSampler`'s argument lerp: two keyframes of one track (same
+    /// modifier) blended at `alpha`. Overrides use the type's keyframe lerp; float arguments
+    /// `Mth.lerp`; color arguments `ARGB.srgbLerp`; `FloatWithAlpha` and
+    /// `ColorModifier.BlendToGray.lerp` each field; boolean arguments step at 1
+    /// (as `AttributeType.ofNotInterpolated` keyframes do).
+    pub fn keyframe_lerp(attribute: &Attribute, alpha: f32, from: &Self, to: &Self) -> Self {
+        let float = |a: f32, b: f32| a + alpha * (b - a);
+        let value = |a: &Value, b: &Value| match (a, b) {
+            (Value::Float(a), Value::Float(b)) => Value::Float(float(*a, *b)),
+            (Value::Rgb(a), Value::Rgb(b)) => {
+                Value::Rgb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (Value::Argb(a), Value::Argb(b)) => {
+                Value::Argb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            _ => {
+                if alpha >= 1.0 {
+                    b.clone()
+                } else {
+                    a.clone()
+                }
+            }
+        };
+        match (from, to) {
+            (Self::Override(a), Self::Override(b)) => {
+                Self::Override(attribute.lerp(Lerp::Keyframe, alpha, a, b))
+            }
+            (
+                Self::AlphaBlendFloat {
+                    value: v1,
+                    alpha: a1,
+                },
+                Self::AlphaBlendFloat {
+                    value: v2,
+                    alpha: a2,
+                },
+            ) => Self::AlphaBlendFloat {
+                value: float(*v1, *v2),
+                alpha: float(*a1, *a2),
+            },
+            (Self::Add(a), Self::Add(b)) => Self::Add(value(a, b)),
+            (Self::Subtract(a), Self::Subtract(b)) => Self::Subtract(value(a, b)),
+            (Self::Multiply(a), Self::Multiply(b)) => Self::Multiply(value(a, b)),
+            (Self::Minimum(a), Self::Minimum(b)) => Self::Minimum(float(*a, *b)),
+            (Self::Maximum(a), Self::Maximum(b)) => Self::Maximum(float(*a, *b)),
+            (Self::AlphaBlendColor(a), Self::AlphaBlendColor(b)) => {
+                Self::AlphaBlendColor(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (
+                Self::BlendToGray {
+                    brightness: b1,
+                    factor: f1,
+                },
+                Self::BlendToGray {
+                    brightness: b2,
+                    factor: f2,
+                },
+            ) => Self::BlendToGray {
+                brightness: float(*b1, *b2),
+                factor: float(*f1, *f2),
+            },
+            _ => {
+                if alpha >= 1.0 {
+                    to.clone()
+                } else {
+                    from.clone()
+                }
+            }
+        }
+    }
+
     /// `AttributeModifier.apply(subject, argument)`.
     pub fn apply(&self, subject: &Value) -> Value {
         use Value::{Argb, Float, Rgb};
@@ -537,6 +640,10 @@ impl Entry {
         };
         match (self, subject) {
             (Self::Override(v), _) => v.clone(),
+            (Self::Dynamic(f), subject) => match (f.0)(subject) {
+                Some(entry) => entry.apply(subject),
+                None => subject.clone(),
+            },
             (Self::AlphaBlendFloat { value, alpha }, Float(s)) => Float(s + alpha * (value - s)),
             (Self::Add(Float(b)), Float(a)) => Float(a + b),
             (Self::Subtract(Float(b)), Float(a)) => Float(a - b),
@@ -643,16 +750,130 @@ fn java_max(a: f32, b: f32) -> f32 {
     }
 }
 
-/// `EnvironmentAttributeMap.CODEC`: a JSON object from attribute id to entry.
-pub fn parse_map(json: &Json) -> Result<Vec<(&'static Attribute, Entry)>, String> {
-    let map = json.as_object().ok_or("attributes are not an object")?;
-    map.iter()
-        .map(|(id, entry)| {
-            let attribute = attribute(id).ok_or_else(|| format!("unknown attribute {id}"))?;
-            Ok((
-                attribute,
-                Entry::parse(attribute, entry).map_err(|e| format!("{id}: {e}"))?,
-            ))
-        })
-        .collect()
+/// `EnvironmentAttributeMap`: at most one entry per attribute.
+#[derive(Clone, Default)]
+pub struct AttributeMap(Vec<(&'static Attribute, Entry)>);
+
+impl std::fmt::Debug for AttributeMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(a, _)| a.id))
+            .finish()
+    }
+}
+
+impl AttributeMap {
+    /// `EnvironmentAttributeMap.CODEC`: a JSON object from attribute id to entry.
+    pub fn parse(json: &Json) -> Result<Self, String> {
+        let map = json.as_object().ok_or("attributes are not an object")?;
+        map.iter()
+            .map(|(id, entry)| {
+                let attribute = attribute(id).ok_or_else(|| format!("unknown attribute {id}"))?;
+                let entry = Entry::parse(attribute, entry).map_err(|e| format!("{id}: {e}"))?;
+                Ok((attribute, entry))
+            })
+            .collect::<Result<_, _>>()
+            .map(Self)
+    }
+
+    /// A map built in code (`EnvironmentAttributeMap.Builder`); a later entry for the same
+    /// attribute replaces the earlier one.
+    pub fn from_entries(entries: impl IntoIterator<Item = (&'static Attribute, Entry)>) -> Self {
+        let mut map = Self::default();
+        for (attribute, entry) in entries {
+            map.0.retain(|(a, _)| a.id != attribute.id);
+            map.0.push((attribute, entry));
+        }
+        map
+    }
+
+    /// Sets the attribute's entry, replacing the one it had.
+    pub fn set(&mut self, attribute: &'static Attribute, entry: Entry) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+        self.0.push((attribute, entry));
+    }
+
+    /// Drops the attribute's entry.
+    pub fn remove(&mut self, attribute: &Attribute) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn get(&self, attribute: &Attribute) -> Option<&Entry> {
+        self.0
+            .iter()
+            .find(|(a, _)| a.id == attribute.id)
+            .map(|(_, e)| e)
+    }
+
+    /// The attributes it has an entry for.
+    pub fn attributes(&self) -> impl Iterator<Item = &'static Attribute> + '_ {
+        self.0.iter().map(|(a, _)| *a)
+    }
+
+    /// `EnvironmentAttributeMap.applyModifier`: the entry applied to `base`, or `base`.
+    pub fn apply(&self, attribute: &Attribute, base: &Value) -> Value {
+        self.get(attribute)
+            .map_or_else(|| base.clone(), |e| e.apply(base))
+    }
+}
+
+/// What an `AttributeType` lerps for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lerp {
+    /// Between a timeline's keyframes (`keyframeLerp`).
+    Keyframe,
+    /// Into rain or thunder (`stateChangeLerp`).
+    StateChange,
+    /// Across biomes (`spatialLerp`).
+    Spatial,
+}
+
+impl Attribute {
+    /// `EnvironmentAttribute.isSpatiallyInterpolated`: mixed across nearby biomes.
+    pub fn spatially_interpolated(&self) -> bool {
+        self.id.starts_with("visual/")
+            && !matches!(
+                self.id,
+                "visual/moon_phase"
+                    | "visual/default_dripstone_particle"
+                    | "visual/ambient_particles"
+            )
+    }
+
+    /// `EnvironmentAttribute.isFullResolutionBiomes`: read from the block's biome, not the
+    /// noise biome.
+    pub fn full_resolution_biomes(&self) -> bool {
+        self.id == "gameplay/natural_mob_spawns"
+    }
+
+    /// `AttributeType`'s lerps. Floats and angles use `Mth.lerp`, colors `ARGB.srgbLerp`
+    /// (`(to - from) * alpha + from` per channel); the types `ofNotInterpolated` step to `to`
+    /// once alpha reaches 1 (keyframes), 0 (state changes) or 0.5 (biomes).
+    pub fn lerp(&self, purpose: Lerp, alpha: f32, from: &Value, to: &Value) -> Value {
+        match (from, to) {
+            (Value::Float(a), Value::Float(b)) => Value::Float(a + alpha * (b - a)),
+            (Value::Rgb(a), Value::Rgb(b)) => {
+                Value::Rgb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (Value::Argb(a), Value::Argb(b)) => {
+                Value::Argb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            _ => {
+                let threshold = match purpose {
+                    Lerp::Keyframe => 1.0,
+                    Lerp::StateChange => 0.0,
+                    Lerp::Spatial => 0.5,
+                };
+                if alpha >= threshold {
+                    to.clone()
+                } else {
+                    from.clone()
+                }
+            }
+        }
+    }
 }
