@@ -190,6 +190,7 @@ mod tests {
             no_gravity: false,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
         }
     }
 

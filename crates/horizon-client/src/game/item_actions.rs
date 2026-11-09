@@ -183,7 +183,8 @@ impl Game<'_> {
         let fluid = match &*stack.item {
             "minecraft:lava_bucket" => "minecraft:lava",
             "minecraft:powder_snow_bucket" => "minecraft:powder_snow",
-            _ => "minecraft:water",
+            item => horizon_world::fluid::FluidKind::of_bucket(item)
+                .map_or("minecraft:water", |f| f.info().name),
         };
         let mut cancel = false;
         self.native_bucket_empty(uuid, &name, pos, fluid, &mut cancel);
