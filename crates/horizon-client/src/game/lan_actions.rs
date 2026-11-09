@@ -38,6 +38,9 @@ use horizon_protocol::{
 use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
+mod horizon_channels;
+use horizon_channels::horizon_channel;
+
 #[cfg(test)]
 mod crack_feedback_tests;
 
@@ -4132,6 +4135,7 @@ impl Game<'_> {
         self.native_player_clone(cloned, &name, true);
         let clock_rate = self.network_clock_rate();
         let ctx = TickCtx {
+            sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
@@ -5474,35 +5478,6 @@ impl Game<'_> {
                 velocity: [v.x, v.y, v.z],
             }));
         }
-    }
-
-    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
-    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
-    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
-    /// server plays is broadcast to the players near the mount, the rider
-    /// included (their own client plays none).
-    fn lan_start_riding_jump(&mut self, host: &mut LanHost, conn: u32, data: i32) {
-        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
-            return;
-        };
-        let m = &mut self.mobs[index];
-        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
-            return;
-        };
-        let at = m.center();
-        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
-        let neutral = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == "neutral")
-            .unwrap_or(0) as i32;
-        host.hub.sound(
-            &format!("minecraft:{sound}"),
-            at,
-            volume,
-            1.0,
-            neutral,
-            None,
-        );
     }
 
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:
@@ -6932,18 +6907,6 @@ mod guest_close_listener_tests {
     }
 }
 
-/// Whether a guest's plugin channel message is for one of Horizon's own handlers in
-/// `lan_guest_packet` (its `CustomPayload` arms), not for the mods.
-fn horizon_channel(channel: &str) -> bool {
-    [
-        horizon_protocol::quiet::CHANNEL,
-        horizon_protocol::mod_net::CHANNEL,
-        horizon_client::lod_net::CHANNEL,
-        horizon_client::lan::recipes::TRANSFER_CHANNEL,
-    ]
-    .contains(&channel)
-}
-
 #[cfg(test)]
 mod horizon_channel_tests {
     use super::horizon_channel;
@@ -6993,6 +6956,7 @@ mod connected_self_pose_tests {
 
     fn hub_pass(game: &mut Game<'_>, hub: &mut Hub, drain: bool) {
         let mut ctx = TickCtx {
+            sea_level: game.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut game.world,
             entities: &[],
             next_entity: &mut game.next_entity,

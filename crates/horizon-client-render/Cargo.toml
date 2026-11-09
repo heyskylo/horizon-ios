@@ -7,6 +7,8 @@ rust-version.workspace = true
 description = "The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer, the HUD, menus and settings; no gameplay"
 
 [dependencies]
+# The settings stores of the crates above the engine (docs/layers.md, "Platform registries").
+horizon-hooks = { path = "../horizon-hooks" }
 horizon-cosmetics = { path = "../horizon-cosmetics" }
 # The GUI atlas's pixels, kept compressed once uploaded (hud.rs `pack_pixels`).
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
@@ -24,7 +26,6 @@ horizon-narrator = { path = "../horizon-narrator" }
 horizon-optifine = { path = "../horizon-optifine" }
 horizon-polytone = { path = "../horizon-polytone" }
 horizon-protocol = { path = "../horizon-protocol" }
-horizon-render-pipeline = { path = "../horizon-render-pipeline" }
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-shaders = { path = "../horizon-shaders" }
 horizon-system = { path = "../horizon-system" }

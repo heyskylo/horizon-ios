@@ -172,7 +172,7 @@ Limits, checked by `Item::parse` with the item's own (vertices, parts, texture):
 `Emote::pose_body` poses the six bones at a time and weight (the blend), `Emote::pose_props` the
 props; `Playing` is an emote someone plays (its start, its cancel) and gives its time and weight.
 
-### Playing an emote (`game/emotes.rs`, `game/emote_wheel.rs`)
+### Playing an emote (`game/cosmetics/emotes.rs`, `game/cosmetics/emote_wheel.rs`)
 
 - **The wheel**: *Emote Wheel* (`key.emote`, **B** by default: no vanilla key uses it; Controls
   rebinds it, kept as `emoteKey` in `horizon-extras.txt` so `options.txt` stays vanilla's, and so

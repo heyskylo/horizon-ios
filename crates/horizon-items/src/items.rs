@@ -1278,6 +1278,44 @@ impl Items {
         }
         self.get(&stack.item)?.tool_damage_per_block
     }
+    /// `ItemAttributeModifiers` from the stack's component, else the item's
+    /// prototype: (attribute, id, amount, operation, slot group).
+    pub fn attribute_modifiers(
+        &self,
+        stack: &ItemStack,
+    ) -> Vec<(String, String, f64, String, String)> {
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:attribute_modifiers").is_some())
+        {
+            return Vec::new();
+        }
+        if let Some(horizon_world::nbt::Tag::List(entries)) = stack
+            .data()
+            .and_then(|d| d.other("minecraft:attribute_modifiers"))
+        {
+            return entries
+                .iter()
+                .filter_map(|entry| {
+                    let string = |key: &str| match entry.get(key) {
+                        Some(horizon_world::nbt::Tag::String(s)) => Some(s.to_string_lossy()),
+                        _ => None,
+                    };
+                    Some((
+                        string("type")?,
+                        string("id")?,
+                        horizon_world::datafix::dynamic::as_number(entry.get("amount")?)?
+                            .double_value(),
+                        string("operation").unwrap_or_else(|| "add_value".into()),
+                        string("slot").unwrap_or_else(|| "any".into()),
+                    ))
+                })
+                .collect();
+        }
+        self.get(&stack.item)
+            .map(|i| i.modifiers.clone())
+            .unwrap_or_default()
+    }
     /// The stack's damage capacity (`crate::durability::stack_max_damage`).
     pub fn stack_max_damage(&self, stack: &ItemStack) -> u32 {
         crate::durability::stack_max_damage(self, stack)
@@ -2920,6 +2958,45 @@ mod tests {
         assert!(items.songs.contains_key("minecraft:cat"));
         assert!(!items.songs.contains_key("minecraft:tune"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn attribute_modifiers_come_from_the_stack() {
+        let items = Items::for_tests(HashMap::new());
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        let attack = horizon_world::nbt::Tag::compound([
+            (
+                "type",
+                horizon_world::nbt::Tag::String("minecraft:attack_damage".into()),
+            ),
+            (
+                "id",
+                horizon_world::nbt::Tag::String("minecraft:test".into()),
+            ),
+            ("amount", horizon_world::nbt::Tag::Double(0.1f64.to_bits())),
+            (
+                "operation",
+                horizon_world::nbt::Tag::String("add_value".into()),
+            ),
+            ("slot", horizon_world::nbt::Tag::String("mainhand".into())),
+        ]);
+        sword.data_mut().set_other(
+            "minecraft:attribute_modifiers",
+            Some(horizon_world::nbt::Tag::List(vec![attack])),
+        );
+        let modifiers = items.attribute_modifiers(&sword);
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(modifiers[0].0, "minecraft:attack_damage");
+        // A double, as `AttributeModifier.amount`: not rounded through a float.
+        assert_eq!(modifiers[0].2, 0.1);
+        sword.data_mut().set_other(
+            "!minecraft:attribute_modifiers",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert!(items.attribute_modifiers(&sword).is_empty());
     }
 
     #[test]
