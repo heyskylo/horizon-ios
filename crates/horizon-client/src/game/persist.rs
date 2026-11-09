@@ -139,6 +139,16 @@ pub(super) fn mark_fresh(tag: &mut Tag) {
 /// it doesn't join the level again. Taken off like [`FRESH_ADD`].
 const SAME_LEVEL_MOVE: &str = "horizon:same_level_move";
 
+/// `PrimedTnt.readAdditionalSaveData`: `getShortOr("fuse", 80)` accepts any
+/// numeric tag; floating values floor to int before the short narrowing.
+pub(super) fn tnt_fuse(tag: &Tag) -> i32 {
+    i32::from(match tag.get("fuse") {
+        Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+        Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+        other => horizon_client::save::number(other).unwrap_or(80) as i16,
+    })
+}
+
 /// Whether `tag` was queued as a move within its level; the mark comes off.
 fn take_moved(tag: &mut Tag) -> bool {
     match tag {
@@ -163,22 +173,27 @@ fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
 }
 /// The loaded compound underneath the fields Horizon models: what the entity was
 /// loaded with, with every key of `modelled` replacing its loaded value.
-pub(super) fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
-    let (Some(Tag::Compound(raw)), Tag::Compound(modelled)) = (raw, &modelled) else {
-        return modelled;
-    };
-    let mut out = raw.clone();
-    for (k, v) in modelled {
-        // Defaults Horizon invents for fields it does not simulate give way to the save.
-        let invented = matches!(
-            k.to_string_lossy().as_str(),
-            "Fire" | "Air" | "Invulnerable" | "PortalCooldown" | "HasBeenShot"
-        );
-        if !(invented && out.contains_key(k)) {
-            out.insert(k.clone(), v.clone());
+pub(super) fn with_raw(mut modelled: Tag, raw: Option<&Tag>) -> Tag {
+    if let (Some(Tag::Compound(raw)), Tag::Compound(fields)) = (raw, &modelled) {
+        let mut out = raw.clone();
+        for (key, value) in fields {
+            // Defaults Horizon invents for fields it does not simulate give way to the save.
+            let invented = matches!(
+                key.to_string_lossy().as_str(),
+                "Fire" | "Air" | "Invulnerable" | "PortalCooldown" | "HasBeenShot"
+            );
+            if !(invented && out.contains_key(key)) {
+                out.insert(key.clone(), value.clone());
+            }
         }
+        modelled = Tag::Compound(out);
     }
-    Tag::Compound(out)
+    // The overlay may restore raw bytes for fields whose false value the
+    // live writer omitted. Entity.saveWithoutId always writes booleans.
+    let on_ground = entity_nbt::flag(&modelled, "OnGround");
+    let no_gravity = entity_nbt::flag(&modelled, "NoGravity");
+    entity_nbt::write_saved_flags(&mut modelled, on_ground, no_gravity);
+    modelled
 }
 
 fn read_attachments(
@@ -695,13 +710,20 @@ impl Game<'_> {
     }
 
     /// A saved llama spit or shulker bullet.
-    pub(super) fn load_spit_or_bullet(&mut self, tag: Tag, player_uuid: Option<[i32; 4]>) {
+    pub(super) fn load_spit_or_bullet(
+        &mut self,
+        tag: Tag,
+        uuid: Option<[i32; 4]>,
+        player_uuid: Option<[i32; 4]>,
+    ) {
         let target = self.bullet_target(&tag);
         if let Some(mut p) = entity_nbt::spit_or_bullet_from_nbt(&tag, player_uuid, target) {
             self.claim_owner(&mut p);
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
+            // Entity.load: the saved or summoned UUID, as the other projectiles keep theirs.
+            self.remember_uuid(p.id, uuid, &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }
@@ -783,6 +805,7 @@ impl Game<'_> {
                 },
                 drop_item,
                 fall_distance,
+                on_ground: entity_nbt::flag(&tag, "OnGround"),
                 stuck: Vec3::ZERO,
                 damage: horizon_client::falling_block::Damage::from_nbt(
                     &tag,
@@ -840,11 +863,7 @@ impl Game<'_> {
             let id = self.next_entity;
             // getShortOr uses NumericTag.shortValue: floor floating values
             // to int before short narrowing; integer tags narrow directly.
-            let fuse = i32::from(match tag.get("fuse") {
-                Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
-                Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
-                other => horizon_client::save::number(other).unwrap_or(80) as i16,
-            });
+            let fuse = tnt_fuse(&tag);
             self.tnts.push(super::tnt::PrimedTnt {
                 rotation: [0.0, 0.0],
                 join: Default::default(),
@@ -854,7 +873,7 @@ impl Game<'_> {
                 previous: position,
                 velocity: entity_nbt::motion(&tag),
                 fuse,
-                on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
+                on_ground: entity_nbt::flag(&tag, "OnGround"),
                 fall_distance: horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0),
                 stuck: Vec3::ZERO,
                 in_water: false,
@@ -892,6 +911,7 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+            b.on_ground = entity_nbt::flag(&tag, "OnGround");
             b.fire_ticks = super::boats::saved_fire(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
             // Entity.load: OnGround and fall_distance, as saved.
@@ -942,8 +962,10 @@ impl Game<'_> {
     /// A saved armor stand.
     pub(super) fn load_armor_stand(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         self.next_entity += 1;
+        // Its own random makes its UUID, kept unless the tag has one.
+        let (_, fresh) = horizon_client::mobs::living_random();
         if let Some(a) = entity_nbt::armor_stand_from_nbt(&tag, self.next_entity) {
-            self.remember(a.id, uuid, tag);
+            self.remember(a.id, Some(uuid.unwrap_or(fresh)), tag);
             self.armor_stands.push(a);
         }
     }
@@ -1060,11 +1082,14 @@ impl Game<'_> {
         } else {
             None
         };
-        let mut m = entity_nbt::mob_from_nbt(
+        // The mob's own random makes its UUID, kept unless the tag has one.
+        let (own, fresh) = horizon_client::mobs::living_random();
+        let mut m = entity_nbt::mob_from_nbt_with_random(
             &tag,
             self.res.mob_types(),
             self.next_entity,
             Some(self.pack.assets.registry),
+            own,
         )?;
         if horizon_client::mobs::camel::is_camel(m.species()) {
             horizon_client::mobs::camel::finish_load(&mut m, self.world.game_time);
@@ -1103,7 +1128,7 @@ impl Game<'_> {
             }
         }
         let id = m.id;
-        self.remember(id, uuid, tag);
+        self.remember(id, Some(uuid.unwrap_or(fresh)), tag);
         self.mobs.push(m);
         if finalize {
             self.enchant_spawn_equipment(id);
@@ -1688,6 +1713,7 @@ impl Game<'_> {
         for key in [
             "Silent",
             "Glowing",
+            "HasVisualFire",
             "Invulnerable",
             "CustomName",
             "CustomNameVisible",
@@ -2256,6 +2282,7 @@ impl Game<'_> {
         if let (Some(shot), Tag::Compound(map)) = (shot, &mut tag) {
             map.insert("HasBeenShot".into(), shot);
         }
+        self.save_projectile_portal_cooldown(p, &mut tag);
         Some((chunk_of(p.position), tag))
     }
     /// The UUID a save writes for a reference to `who`, as `mob_to_nbt`'s
@@ -2287,6 +2314,7 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
+            f.on_ground,
             f.rotation,
             uuid,
         );

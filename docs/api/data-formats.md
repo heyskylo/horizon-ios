@@ -40,3 +40,5 @@ Worlds are vanilla's format, so any tool that reads a 26.3 world reads a Horizon
 
 - Benchmark report version 1; telemetry schema 1, consent version 2.
 - Content mods can declare mob effects in `data/<id>/horizon/mob_effect/<name>.json` (`category`, `color`).
+- Content mods can declare fluids in `data/<id>/horizon/fluid/<name>.json` (`template`, NeoForge's `FluidType` numbers,
+  `bucket`, `block`, `still`, `flowing`, `overlay`, `tint`).

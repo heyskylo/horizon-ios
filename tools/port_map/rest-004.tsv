@@ -96,9 +96,9 @@ InputWithModifiers.isCut	port	crates/horizon-client-input/src/clipboard.rs::edit
 PreeditEvent.fromSdlTextEditing	port	crates/horizon-client-render/src/preedit.rs::PreeditEvent::from_sdl_text_editing	WindowEvent::Ime(Preedit) feeds the composition text to the focused field
 PreeditEvent.toFormattedText	inline	crates/horizon-client-render/src/preedit.rs::PreeditEvent::to_formatted_text	the composing text is drawn as the field's preedit, not as formatted chat
 GameConfig.FolderData.getExternalAssetSource	skip:data		Horizon reads assets from the prepared resources folder
-net/minecraft/client/main/Main#getQuickPlayVariant	port	crates/horizon-client/src/game.rs::Options::read	gap: minor: only the quick play flags of the launch parser; realms branch not checked
-net/minecraft/client/main/Main#parseArgument	inline	crates/horizon-client/src/game.rs::Options::parse	the argument loop itself (Options::read is the wrapper that feeds it std::env::args)
-net/minecraft/client/main/Main#hasValidUuid	skip:other		the --uuid argument is what reaches it, and Horizon's client parses none (game.rs::Options::parse takes its own flags)
+net/minecraft/client/main/Main#getQuickPlayVariant	port	crates/horizon-client/src/game/launch_options.rs::Options::read	gap: minor: only the quick play flags of the launch parser; realms branch not checked
+net/minecraft/client/main/Main#parseArgument	inline	crates/horizon-client/src/game/launch_options.rs::Options::parse	the argument loop itself (Options::read is the wrapper that feeds it std::env::args)
+net/minecraft/client/main/Main#hasValidUuid	skip:other		the --uuid argument is what reaches it, and Horizon's client parses none (game/launch_options.rs::Options::parse takes its own flags)
 net/minecraft/client/main/Main#isUuidValid	skip:other		the check behind hasValidUuid, which no --uuid argument reaches
 AbstractClientPlayer.getPlayerInfo	inline	crates/horizon-client/src/game/remote.rs::Game::remote_pushes	the entity id -> uuid -> tab entry lookups stand in for the PlayerInfo; the name, team and game mode are read from that entry
 AbstractClientPlayer.getSkin	port	crates/horizon-client/src/game/remote.rs::Game::update_remote_skins	the downloaded skin and slim flag, else DefaultPlayerSkin by uuid, as PlayerInfo.getSkin
@@ -124,7 +124,7 @@ LocalPlayer.moveTowardsClosestSpace	port	crates/horizon-client/src/game.rs::Game
 LocalPlayer.suffocatesAt	inline	crates/horizon-client/src/game.rs::closest_space_nudge	the suffocates_at closure tests a full collision cube that is also a full render cube, over the body's Y span
 LocalPlayer.setExperienceDisplayStartTickToTickCount	inline	crates/horizon-client/src/game/locator_bar.rs::Game::track_experience_display	
 LocalPlayer.handleEntityEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	gap: minor: only the permission events 24 to 28 of the local player
-LocalPlayer.startUsingItem	port	crates/horizon-client/src/game.rs::Game::use_hand	
+LocalPlayer.startUsingItem	port	crates/horizon-client/src/game/use_hand.rs::Game::use_hand	
 LocalPlayer.isSlowDueToUsingItem	port	crates/horizon-client/src/game.rs::Game::sync_player_body	the used item's UseEffects.canSprint reaches sprint's slow_item, which stops a sprint starting and ends one
 LocalPlayer.onSyncedDataUpdated	inline	crates/horizon-client/src/game/music.rs::Game::tick_sound_engine	starting to glide starts the elytra flying sound; the living flags are local state on this side
 LocalPlayer.jumpableVehicle	inline	crates/horizon-client/src/game/mounts.rs::Game::charge_mount_jump	gap: minor: saddle and jump-capable check only; no separate vehicle lookup
