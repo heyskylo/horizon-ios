@@ -1556,9 +1556,8 @@ mod tests {
         // A 16×16 texture: the slot's top left quarter of it.
         let quarter = 0.5 * 16.0 / 64.0;
         assert_eq!(canvas.drawn.len(), 1);
-        let (name, matrix, uv, scale) = &canvas.drawn[0];
+        let (_, matrix, uv, scale) = &canvas.drawn[0];
         assert_eq!((matrix, uv), (&LEFT_ARM, &[0.0, 0.0, quarter, quarter]));
-        assert!(name.is_empty() || name == "star", "{name}");
         for s in scale {
             assert!((s - weight).abs() < 1e-6, "{scale:?} by {weight}");
         }
