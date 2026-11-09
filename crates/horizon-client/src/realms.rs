@@ -8899,8 +8899,7 @@ impl Screen {
                                             );
                                         }
                                     }
-                                    SlotPicture::Preset => crate::ui::blit_sprite(
-                                        batch,
+                                    SlotPicture::Preset => batch.picture(
                                         atlas,
                                         "gui/presets/isles",
                                         x + 1.0,
@@ -8909,8 +8908,7 @@ impl Screen {
                                         size - 2.0,
                                         tint,
                                     ),
-                                    SlotPicture::Panorama(panorama) => crate::ui::blit_sprite(
-                                        batch,
+                                    SlotPicture::Panorama(panorama) => batch.picture(
                                         atlas,
                                         &format!("gui/title/background/{panorama}"),
                                         x + 1.0,

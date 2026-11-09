@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, ReadConfig};
 use crate::custom::Custom;
 use crate::{
     ComputeProgram, eval_condition, preprocess, translate_composite, translate_compute,
@@ -992,7 +992,15 @@ pub fn load_post(
             },
         };
         // gbuffers_water falls back to gbuffers_terrain's chain (2.3).
-        let water = gbuffers(&WATER, Group::Translucent, terrain);
+        // Water discards what lies behind the boats' water patches (`GbuffersInputs::water_mask`).
+        let water = gbuffers(
+            &WATER,
+            Group::Translucent,
+            &GbuffersInputs {
+                water_mask: true,
+                ..terrain.clone()
+            },
+        );
         loader.post.notes.extend(lone);
         loader.post.terrain_undrawn = !has_solid && !has_cutout;
         loader.post.water_undrawn = !WATER.iter().any(|n| loader.has(n));
@@ -1174,8 +1182,20 @@ fn load_shadow(
     let shadow = keep("shadowTerrain")
         .then(|| load(&["shadow"], terrain, true, true))
         .flatten();
+    // Its water keeps out of the boats' water patches (`GbuffersInputs::water_patches`).
+    let water_inputs = terrain.map(|t| GbuffersInputs {
+        water_patches: true,
+        ..t.clone()
+    });
     let water = keep("shadowTranslucent")
-        .then(|| load(&["shadow_water", "shadow"], terrain, true, false))
+        .then(|| {
+            load(
+                &["shadow_water", "shadow"],
+                water_inputs.as_ref(),
+                true,
+                false,
+            )
+        })
         .flatten();
     let shadow_entities = (keep("shadowEntities") || only_player)
         .then(|| load(&["shadow_entities", "shadow"], entities, false, true))

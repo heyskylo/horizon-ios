@@ -8,6 +8,7 @@ use crate::{
     gamepad::MenuJob,
     graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
+    hud_kit::fit::wrap,
     lang,
     pad_glyph::{self, Glyph, Glyphs},
     text::Text,
@@ -29,28 +30,6 @@ pub const NAME_MAX: usize = 16;
 pub fn valid_name(name: &str) -> bool {
     (3..=NAME_MAX).contains(&name.len())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// `text` in lines no wider than `max` (by `width`), broken between words.
-pub fn wrap(text: &str, max: f32, width: impl Fn(&str) -> f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let longer = if line.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{line} {word}")
-        };
-        if width(&longer) > max && !line.is_empty() {
-            lines.push(std::mem::replace(&mut line, word.to_owned()));
-        } else {
-            line = longer;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 #[derive(Default)]
@@ -572,24 +551,6 @@ impl SplitProfiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_notice_wraps_to_the_view_between_words() {
-        // Each character 6 wide: no line over 60.
-        let width = |s: &str| 6.0 * s.len() as f32;
-        let lines = wrap("This server needs each player's own account", 60.0, width);
-        assert!(lines.iter().all(|l| width(l) <= 60.0));
-        assert_eq!(
-            lines.join(" "),
-            "This server needs each player's own account"
-        );
-        // A word longer than the line keeps a line of its own.
-        assert_eq!(
-            wrap("a verylongwordindeed b", 30.0, width),
-            ["a", "verylongwordindeed", "b"]
-        );
-        assert!(wrap("", 60.0, width).is_empty());
-    }
 
     #[test]
     fn forgetting_the_last_page_s_only_profile_shows_the_page_before() {

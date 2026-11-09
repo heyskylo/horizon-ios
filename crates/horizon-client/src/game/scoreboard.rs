@@ -235,6 +235,8 @@ impl Game<'_> {
             Target::Orb(id) => Some(uuid_text(self.uuid_for(id))),
             // Projectiles have no UUID here.
             Target::Projectile(_) => None,
+            // The UUID the tie gave the knot (game/leads.rs `tie_knot`).
+            Target::Knot(id) => self.persist.uuids.get(&id).map(|&u| uuid_text(u)),
         }
     }
     fn holder_for(&mut self, t: Target) -> Option<Holder> {
@@ -288,6 +290,8 @@ impl Game<'_> {
                 .iter()
                 .find(|f| f.id == id)
                 .and_then(|f| f.saved.as_ref().map(|s| &s.1)),
+            // A natural knot keeps no saved compound: it has no tags.
+            Target::Knot(_) => None,
         };
         match raw.and_then(|r| r.get("Tags")) {
             Some(Tag::List(l)) => l
@@ -898,7 +902,8 @@ impl Game<'_> {
         let up = |id: u128| upside_down.contains(&id);
         // Horizon's mark before the names of Horizon players (the cosmetics service's cache).
         let horizon = self.horizon_players(players.iter().map(|p| p.uuid));
-        let marked = |id: u128| horizon.contains(&id);
+        let horizon_mark: tab_list::NameMark = &horizon_cosmetics::mark::MARK;
+        let marked = |id: u128| horizon.contains(&id).then_some(horizon_mark);
         let inputs = TabInputs {
             players: &players,
             board,
@@ -912,7 +917,7 @@ impl Game<'_> {
                 f64::from(self.settings.text_background_opacity),
             ),
             upside_down: &up,
-            horizon: &marked,
+            mark: &marked,
         };
         let draws = self.tab_list.layout(&inputs, &self.gui.atlas.font);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);

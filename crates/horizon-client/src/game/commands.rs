@@ -80,6 +80,10 @@ pub(super) enum Target {
     Spawner(u32),
     /// A simulated lingering, creeper or dragon area-effect cloud.
     Cloud(u32),
+    /// The fence knot a lead tie made (`minecraft:leash_knot`), by its
+    /// entity id in the level's `knot_ids` (game/leads.rs). Explicitly
+    /// summoned knots are `Other`s.
+    Knot(u32),
 }
 /// `Entity.setXRot`: reduce the angle before clamping the pitch.
 /// Runs `$body` on the moving entity `$t` names (one of `entity_lists!`'s
@@ -134,6 +138,23 @@ pub(in crate::game) struct OtherEntity {
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
+}
+/// A natural fence knot is only read by commands here: one that would move
+/// or remove it fails as a whole instead of skipping it, so it never
+/// reports a change it did not make (#13036).
+/// The targets a command that moves or kills entities acts on: a natural leash knot is
+/// listed for selectors and `/data` but not changed yet, so it is left out, as before it was
+/// listed. A selector that found only knots finds no entity.
+pub(in crate::game) fn without_knots(targets: Vec<Target>) -> R<Vec<Target>> {
+    let found = !targets.is_empty();
+    let kept: Vec<Target> = targets
+        .into_iter()
+        .filter(|t| !matches!(t, Target::Knot(_)))
+        .collect();
+    if found && kept.is_empty() {
+        return Err(err("argument.entity.notfound.entity", &[]));
+    }
+    Ok(kept)
 }
 /// `EntityType.getDescriptionId`: `entity.<namespace>.<path>`.
 fn entity_name_key(id: &str) -> String {
@@ -206,7 +227,8 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Rocket(id)
     | Target::Trident(id)
     | Target::Spawner(id)
-    | Target::Cloud(id)) = t
+    | Target::Cloud(id)
+    | Target::Knot(id)) = t
     else {
         return None;
     };
@@ -635,6 +657,10 @@ impl Game<'_> {
                 .iter()
                 .find(|s| s.id == id)
                 .map(|s| s.position),
+            Target::Knot(id) => self.natural_knot(id).map(|fence| {
+                let p = horizon_client::mobs::leash::knot_state(fence).position;
+                [p.x, p.y, p.z]
+            }),
         }
     }
     pub(super) fn target_type(&self, t: Target) -> String {
@@ -689,6 +715,7 @@ impl Game<'_> {
             Target::Fangs(_) => "minecraft:evoker_fangs".into(),
             Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
             Target::Cloud(_) => "minecraft:area_effect_cloud".into(),
+            Target::Knot(_) => "minecraft:leash_knot".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -851,6 +878,17 @@ impl Game<'_> {
             .map(|(t, _)| t)
             .collect()
     }
+    /// `type=`: every positive must match, no negative may match.
+    fn selector_types_match(&self, s: &Selector, ty: &str) -> bool {
+        s.types.iter().all(|(want, neg)| {
+            let matches = if let Some(tag) = want.strip_prefix('#') {
+                self.entity_tag_matches(tag, ty)
+            } else {
+                want == ty
+            };
+            matches != *neg
+        })
+    }
     /// The candidates of the level in place that pass the selector
     /// (EntitySelector.getPredicate).
     fn select_in_level(
@@ -861,22 +899,27 @@ impl Game<'_> {
     ) -> Vec<(Target, f64)> {
         let level = self.experience.level;
         let creative = self.creative;
+        // EntitySelector tests the type before any predicate. With no scores=
+        // or team= (whose holders may be made as they are read), the rest of
+        // the extra filter is a pure test of each candidate, so the ones of
+        // another type leave first: `@e[type=marker,tag=…]` no longer reads
+        // the tags of every falling block and item in the level.
+        let candidates = if !s.types.is_empty() && s.scores.is_empty() && s.teams.is_empty() {
+            candidates
+                .into_iter()
+                .filter(|&t| self.selector_types_match(s, &self.target_type(t)))
+                .collect()
+        } else {
+            candidates
+        };
         let passing = self.selector_extra_filter(&candidates, s);
         candidates
             .into_iter()
             .filter_map(|t| {
                 let p = self.target_position(t)?;
                 let ty = self.target_type(t);
-                // type=: every positive must match, no negative may match.
-                for (want, neg) in &s.types {
-                    let matches = if let Some(tag) = want.strip_prefix('#') {
-                        self.entity_tag_matches(tag, &ty)
-                    } else {
-                        *want == ty
-                    };
-                    if matches == *neg {
-                        return None;
-                    }
+                if !self.selector_types_match(s, &ty) {
+                    return None;
                 }
                 if !s.include_entities
                     && !t.is_player()
@@ -1019,6 +1062,9 @@ impl Game<'_> {
                 .filter(|c| c.id != 0)
                 .map(|c| Target::Cloud(c.id)),
         );
+        // The knots lead ties made (LeashFenceKnotEntity), each the one
+        // entity its id names.
+        candidates.extend(self.natural_knot_ids().into_iter().map(Target::Knot));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -1058,6 +1104,7 @@ impl Game<'_> {
             Target::Trident(id),
             Target::Spawner(id),
             Target::Cloud(id),
+            Target::Knot(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -1088,6 +1135,7 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.iter().any(|t| t.id == id),
             Target::Spawner(id) => self.ominous_spawners.iter().any(|s| s.id == id),
             Target::Cloud(id) => self.breath_clouds.iter().any(|c| c.id == id),
+            Target::Knot(id) => self.natural_knot(id).is_some(),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1341,9 +1389,6 @@ impl Game<'_> {
             }
         }
         self.set_mode(mode);
-        if self.screen == Screen::Inventory && (self.creative || self.spectator()) {
-            self.screen = Screen::Playing;
-        }
         true
     }
     fn cmd_gamemode(&mut self, ctx: &Context) -> R<i32> {
@@ -1892,6 +1937,8 @@ impl Game<'_> {
             }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
+            // The commands leave a natural knot out (`without_knots`).
+            Target::Knot(_) => {}
         }
         // Entity.teleportSameDimension: the riders go with their vehicle at
         // once, by the offset it took and the turn it was given.
@@ -1998,7 +2045,7 @@ impl Game<'_> {
     }
     fn cmd_teleport(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let targets = if id.starts_with("teleport.targets") {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![
                 self.source_entity()
@@ -2151,14 +2198,14 @@ impl Game<'_> {
     }
     /// `ServerClockManager.getInstance`: commands address clock-keyed state.
     /// Keep the existing Overworld clock tied to the world's canonical day time.
-    fn command_clock_time(&self, clock: &str) -> i64 {
+    pub(super) fn command_clock_time(&self, clock: &str) -> i64 {
         if clock == "minecraft:overworld" {
             self.world.day_time
         } else {
             self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
         }
     }
-    fn set_command_clock_time(&mut self, clock: &str, total: i64) {
+    pub(super) fn set_command_clock_time(&mut self, clock: &str, total: i64) {
         if clock == "minecraft:overworld" {
             self.world.day_time = total;
         } else {
@@ -2169,7 +2216,7 @@ impl Game<'_> {
                 .0 = total;
         }
     }
-    fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
+    pub(super) fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
         if clock == "minecraft:overworld" {
             &mut self.ui.clock
         } else {
@@ -2204,12 +2251,7 @@ impl Game<'_> {
                 if total == t {
                     return Err(err("commands.time.set.already_at_time", &[&clock, &t]));
                 }
-                let mut cancel = false;
-                self.native_time_skip(self.dim.id(), total, t, "command", &mut cancel);
-                if !cancel {
-                    self.set_command_clock_time(&clock, t);
-                    self.command_clock_state(&clock).partial = 0.0;
-                }
+                self.jump_clock(&clock, total, t, "command");
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &t]));
                 Ok(t as i32)
             }
@@ -2367,41 +2409,7 @@ impl Game<'_> {
                 true,
             )
         };
-        let previous = (
-            self.world.weather.clear_time,
-            self.world.weather.rain_time,
-            self.world.weather.thunder_time,
-            self.world.weather.raining,
-            self.world.weather.thundering,
-        );
-        let mut cancel = false;
-        self.native_weather_change(self.dim.id(), raining, thundering, &mut cancel);
-        let old_thundering = self.world.weather.thundering;
-        let old_thunder_time = self.world.weather.thunder_time;
-        let mut cancel_thunder = false;
-        self.native_thunder_change(self.dim.id(), thundering, &mut cancel_thunder);
-        if cancel {
-            let w = &mut self.world.weather;
-            (
-                w.clear_time,
-                w.rain_time,
-                w.thunder_time,
-                w.raining,
-                w.thundering,
-            ) = previous;
-        } else {
-            // ServerLevel.setWeatherParameters.
-            let w = &mut self.world.weather;
-            w.clear_time = clear;
-            w.rain_time = time;
-            w.thunder_time = time;
-            w.raining = raining;
-            w.thundering = thundering;
-            if cancel_thunder {
-                w.thunder_time = old_thunder_time;
-                w.thundering = old_thundering;
-            }
-        }
+        self.apply_weather(clear, time, raining, thundering);
         self.feedback(Text::translate(key, &[]));
         Ok(duration.unwrap_or(-1))
     }
@@ -2528,6 +2536,8 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
             Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
+            // The commands leave a natural knot out (`without_knots`).
+            Target::Knot(_) => {}
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         self.orbs.retain(|o| o.age < u32::MAX / 2);
@@ -2538,7 +2548,7 @@ impl Game<'_> {
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![self.implied_player()]
         };
@@ -2606,7 +2616,9 @@ impl Game<'_> {
         }
         let name;
         if self.res.mob_types().contains_key(&kind) {
-            self.spawn_mob_spawned(&short, pos)
+            // SummonCommand.createEntity loads the mob from `{id:..}`: its yaw
+            // is the compound's (none, so 0), with no level-random draw.
+            self.spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
             name = Text::translate(&entity_name_key(&kind), &[]);
         } else {
@@ -2958,59 +2970,6 @@ impl Game<'_> {
         });
         self.process_level_events()
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
-    }
-    /// The block entity part of `BlockInput.place`: load the block entity
-    /// from the argument's tag; true when its saved data changed.
-    pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
-        use horizon_world::nbt::Tag;
-        if self.pot_data(pos).is_some() {
-            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-                return false;
-            };
-            return self.set_pot_data(pos, &tag).unwrap_or(false);
-        }
-        let key = (pos[0], pos[1], pos[2]);
-        let Some(e) = self.world.block_entities.get(&key) else {
-            return false;
-        };
-        let name = self.data_block_name(pos);
-        let before = horizon_client::save::encode_block_entity(key, e, &name);
-        let Ok((mut tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-            return false;
-        };
-        if let Tag::Compound(c) = &mut tag {
-            for k in ["id", "x", "y", "z"] {
-                if let Some(v) = before.get(k) {
-                    c.insert(k.into(), v.clone());
-                }
-            }
-        }
-        let Some((_, mut new)) = horizon_client::save::decode_block_entity(&tag) else {
-            return false;
-        };
-        let rolled = self.take_loot_table(key, &tag, &mut new);
-        let after = horizon_client::save::encode_block_entity(key, &new, &name);
-        // The lock is outside the model: a tag that only changes it still
-        // changes the block entity.
-        let lock_changed = self.world.block_lock(key) != tag.get("lock");
-        // So is the custom name.
-        let name_changed = self.load_block_name(key, &new, &tag);
-        let cooldown_changed = if name == "minecraft:hopper" {
-            let state = super::machines::HopperState::load(&tag);
-            let changed = self.hoppers.get(&key).map_or(-1, |s| s.cooldown) != state.cooldown;
-            self.hoppers.insert(key, state);
-            changed
-        } else {
-            false
-        };
-        if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
-            return false;
-        }
-        self.world.block_entities.insert(key, new);
-        self.world.set_block_lock(key, &tag);
-        self.update_spawner_display(key);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        true
     }
     /// `RandomizableContainer.unpackLootTable` for a player who opens a
     /// container: a roll the container still holds fires
@@ -5403,88 +5362,8 @@ mod query_feedback_tests {
 }
 
 #[cfg(test)]
-mod forced_respawn_tests {
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn overworld_spawnpoint_is_validated_at_both_player_blocks() {
-        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
-        use horizon_client::chunk::Chunk;
-        use horizon_core::geometry::Vec3;
-        use std::sync::Arc;
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.player = Some(
-            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(5.5, 64.0, 5.5))
-                .unwrap(),
-        );
-        game.build_registries();
-        game.set_allow_commands(true);
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.level.world_spawn = Some([0, 80, 0]);
-        let registry = game.pack.assets.registry;
-        let air = registry.default_state("minecraft:air").unwrap();
-        // Liquid is a block property: aquatic plants such as kelp still permit
-        // a forced point, while a bubble column does not, at feet or head.
-        for (block, allowed) in [
-            ("air", true),
-            ("water", false),
-            ("lava", false),
-            ("bubble_column", false),
-            ("kelp", true),
-            ("stone", false),
-        ] {
-            let state = registry
-                .default_state(&format!("minecraft:{block}"))
-                .unwrap();
-            for height in [0, 1] {
-                game.world.set(5, 64, 5, air).unwrap();
-                game.world.set(5, 65, 5, air).unwrap();
-                game.world.set(5, 64 + height, 5, state).unwrap();
-                assert!(game.run_command("spawnpoint @s 5 64 5"));
-                let config = game
-                    .respawn_config
-                    .expect("Overworld commands must retain a forced configuration");
-                assert!(config.forced);
-                assert_eq!(config.pos, [5, 64, 5]);
-                let actual = game.resolve_server_respawn(config);
-                assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
-                assert_eq!(game.respawn_config.is_some(), allowed);
-                assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
-                if let Some((at, yaw)) = actual {
-                    assert_eq!(at, Vec3::new(5.5, 64.1, 5.5));
-                    assert_eq!(yaw, 0.0);
-                }
-            }
-        }
-    }
-}
+#[path = "forced_respawn_tests.rs"]
+mod forced_respawn_tests;
 
 #[cfg(test)]
 mod effective_presence_tests {

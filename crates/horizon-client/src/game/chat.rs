@@ -1823,7 +1823,12 @@ impl Game<'_> {
     /// Advance the overworld clock (ServerClockManager.tick) when
     /// `advance_time` allows it.
     pub(super) fn advance_clock(&mut self) {
-        if !self.ui.rules.bool("advance_time") || self.ui.clock.paused {
+        if !self.ui.rules.bool("advance_time") {
+            return;
+        }
+        // The End's clock: one tick a tick, not paused or sped up by `/time` on the overworld's.
+        self.world.end_clock += 1;
+        if self.ui.clock.paused {
             return;
         }
         let c = &mut self.ui.clock;

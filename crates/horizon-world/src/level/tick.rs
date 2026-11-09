@@ -124,8 +124,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     // the `open` property, the barrel's own sound and the
                     // container game events are its whole report.
                     if let Some((previous, count)) = self.level.recheck_container_openers(pos) {
-                        if previous != count {
-                            let open = count > 0;
+                        // ContainerOpenersCounter.recheckOpeners calls onOpen
+                        // or onClose only when the count crosses zero;
+                        // openerCountChanged (empty for a barrel) is what
+                        // hears any other change.
+                        let was_open = previous > 0;
+                        let open = count > 0;
+                        if was_open != open {
                             let sound: Arc<str> = if open {
                                 "minecraft:block.barrel.open".into()
                             } else {
@@ -1792,7 +1797,7 @@ impl Behaviours {
         while let Ok(Some(tick)) = ticks.fluids.next_tick() {
             let mut sim = self.sim(level, ticks);
             let fluid = self.fluid(sim.state(tick.pos)).kind();
-            if TickTypeId(fluid as u32) == tick.kind {
+            if TickTypeId(fluid.index() as u32) == tick.kind {
                 sim.fluid_tick(tick.pos);
             }
         }
@@ -1841,7 +1846,7 @@ impl Behaviours {
             };
             let mut sim = self.sim(level, ticks);
             let fluid = self.fluid(sim.state(tick.pos)).kind();
-            if TickTypeId(fluid as u32) == tick.kind {
+            if TickTypeId(fluid.index() as u32) == tick.kind {
                 sim.fluid_tick(tick.pos);
             }
         } else {

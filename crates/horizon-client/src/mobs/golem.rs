@@ -947,6 +947,8 @@ mod crack_sound_tests {
     #[test]
     fn player_hit_credits_dealt_absorbed() {
         let mut m = golem();
+        // Absorption I: max_absorption 4, which a hit clamps the amount to.
+        m.add_effect("absorption", 600, 0);
         m.absorption = 4.0;
         assert!(m.damage(1.5, Damage::player([0.0, 0.0, 1.0])));
         assert_eq!(m.dealt_absorbed, 15);
@@ -957,6 +959,7 @@ mod crack_sound_tests {
         m.damage(2.0, Damage::player([0.0, 0.0, 1.0]));
         assert_eq!(m.dealt_absorbed, 40);
         let mut other = golem();
+        other.add_effect("absorption", 600, 0);
         other.absorption = 4.0;
         other.damage(1.5, Damage::of(crate::mobs::DamageKind::Generic));
         assert_eq!(other.dealt_absorbed, 0);

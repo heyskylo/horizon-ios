@@ -223,9 +223,10 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.graphics_api(),
         settings.translucent_batching,
         false,
-        false,
-        false,
-        false,
+        // HDR off, as the replays draw.
+        &horizon_client_render::graphics::Graphics::default(),
+        Default::default(),
+        Default::default(),
     ))?;
     drop(pixels);
     render.pixels.pack();

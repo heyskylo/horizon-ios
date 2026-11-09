@@ -196,11 +196,11 @@
   "Show the opening": "Afficher l'ouverture",
   "Open report": "Ouvrir le rapport",
   "The launcher hides when the game starts, and comes back when it closes.": "Le launcher se masque quand le jeu démarre et revient quand il se ferme.",
-  "Snapshots": "Snapshots",
+  "Snapshots": "Instantanés",
   "Not built": "Non compilé",
   "Downloading {source}…": "Téléchargement de {source}…",
   "My instance": "Mon instance",
-  "Snapshot": "Snapshot",
+  "Snapshot": "Instantané",
   "Gallery": "Galerie",
   "Offline name": "Nom hors ligne",
   "Home": "Accueil",
@@ -1264,5 +1264,7 @@
   "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Fait pour Horizon {pin} : le launcher le compile sur {yours}, celui auquel tu joues, et sur {pin} seulement s'il n'y compile pas",
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} n'ont pas compilé sur le Horizon auquel tu joues : compilation sur celui pour lequel ils ont été faits",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Dans la dernière compilation, sur Horizon {commit} pour {mods}, pas sur {horizon}",
-  "In the last build, on {horizon}": "Dans la dernière compilation, sur {horizon}"
+  "In the last build, on {horizon}": "Dans la dernière compilation, sur {horizon}",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

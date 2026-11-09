@@ -733,8 +733,27 @@ impl<'a> Game<'a> {
         self.level_players_iter().collect()
     }
     /// `level_players` one at a time, without collecting them.
-    fn level_players_iter(&self) -> impl Iterator<Item = LevelPlayer> + '_ {
-        let local = self.player_view().map(|p| LevelPlayer {
+    pub(super) fn level_players_iter(&self) -> impl Iterator<Item = LevelPlayer> + '_ {
+        self.local_level_player()
+            .into_iter()
+            .chain(self.level_guests().map(|g| LevelPlayer {
+                uuid: g.uuid,
+                position: Vec3::new(g.position[0], g.position[1], g.position[2]),
+                bounds: super::lan_mobs::guest_bounds(g),
+                alive: !g.dead,
+                creative: g.creative(),
+                spectator: g.spectator(),
+            }))
+    }
+    /// The LAN guests or server players in the level in place.
+    fn level_guests(&self) -> impl Iterator<Item = &horizon_client::lan::guest::Guest> + '_ {
+        self.lan
+            .iter()
+            .flat_map(|h| h.hub.guests.iter().filter(|g| h.hub.here(g)))
+    }
+    /// The local player, first of `level_players`.
+    fn local_level_player(&self) -> Option<LevelPlayer> {
+        self.player_view().map(|p| LevelPlayer {
             uuid: self
                 .level
                 .player_uuid
@@ -744,28 +763,26 @@ impl<'a> Game<'a> {
             alive: p.alive,
             creative: p.creative,
             spectator: p.spectator,
-        });
-        let guests = self.lan.iter().flat_map(|h| {
-            h.hub
-                .guests
-                .iter()
-                .filter(|g| h.hub.here(g))
-                .map(|g| LevelPlayer {
-                    uuid: g.uuid,
-                    position: Vec3::new(g.position[0], g.position[1], g.position[2]),
-                    bounds: super::lan_mobs::guest_bounds(g),
-                    alive: !g.dead,
-                    creative: g.creative(),
-                    spectator: g.spectator(),
-                })
-        });
-        local.into_iter().chain(guests)
+        })
     }
     /// `Level.hasNearbyAlivePlayer` before a level is built for the spawn
     /// code: what a spawner asks first, every tick.
+    /// Spawners ask it every tick: the guests are tested where they stand,
+    /// without building their boxes.
     pub(super) fn alive_player_near(&self, x: f64, y: f64, z: f64, range: f64) -> bool {
-        self.level_players_iter()
-            .any(|p| p.alive_near(x, y, z, range))
+        if self
+            .local_level_player()
+            .is_some_and(|p| p.alive_near(x, y, z, range))
+        {
+            return true;
+        }
+        self.level_guests().any(|g| {
+            let [px, py, pz] = g.position;
+            !g.dead
+                && !g.spectator()
+                && (range < 0.0
+                    || (px - x).powi(2) + (py - y).powi(2) + (pz - z).powi(2) < range * range)
+        })
     }
     /// `ChunkMap.collectSpawningChunks`: the natural spawn chunk tracker's
     /// chunks (within 8 chunks of a player, `getSpawnCandidateChunks`) that
@@ -793,7 +810,20 @@ impl<'a> Game<'a> {
             return;
         }
         let mut laps = horizon_client::spans::laps();
-        let players = self.level_players();
+        let mut players = self.level_players();
+        // Fake players (mods' bots) do not anchor natural spawning.
+        if let Some(h) = self.lan.as_ref() {
+            let fake: Vec<u128> = h
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.fake)
+                .map(|g| g.uuid)
+                .collect();
+            if !fake.is_empty() {
+                players.retain(|p| !fake.contains(&p.uuid));
+            }
+        }
         if players.is_empty() {
             return;
         }
@@ -969,6 +999,98 @@ impl<'a> Game<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Level.hasNearbyAlivePlayer` as spawners ask it, against the same
+    /// test on every player's full record (`level_players`).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn alive_player_near_tests_guests_where_they_stand() {
+        use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+        use horizon_protocol::packets::configuration::ClientInformation;
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
+        let mut game = crate::game::native_machines::tests::server_game();
+        let net = NetConfig {
+            announce: false,
+            ..NetConfig::lan(0, "spawner-players-test".into(), 8)
+        };
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            net,
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: Dim::Overworld.id().into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 8,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        // (x, dead, spectator): alive at 20, dead at 5, a spectator at 2.
+        for (conn, (x, dead, spectator)) in
+            [(20.5, false, false), (5.5, true, false), (2.5, false, true)]
+                .into_iter()
+                .enumerate()
+        {
+            let conn = conn as u32 + 2;
+            let (tx, _rx) = mpsc::channel();
+            let mut guest = Guest::new(
+                Joined {
+                    conn,
+                    uuid: u128::from(conn),
+                    name: format!("Near{conn}"),
+                    properties: Vec::new(),
+                    info: ClientInformation::new(2),
+                    brand: "test".into(),
+                    sender: PlayerSender::new(tx, Arc::default()),
+                    latency: Arc::new(AtomicI32::new(0)),
+                    address: "127.0.0.1:25565".parse().unwrap(),
+                    expected: false,
+                    configured: Default::default(),
+                },
+                conn as i32,
+                [x, 64.0, 0.5],
+                1,
+            );
+            guest.placed = true;
+            guest.loaded = true;
+            guest.dead = dead;
+            if spectator {
+                guest.game_mode = 3;
+            }
+            game.lan.as_mut().unwrap().hub.guests.push(guest);
+        }
+        let full = |game: &Game, x: f64, range: f64| {
+            game.level_players()
+                .iter()
+                .any(|p| p.alive_near(x, 64.0, 0.5, range))
+        };
+        for (x, range, near) in [
+            (0.5, 16.0, false),   // only the dead and the spectator in range
+            (5.5, 16.0, true),    // the live one 15 away
+            (4.4, 16.0, false),   // 16.1 away
+            (4.5, 16.0, false),   // 16 away: not below the range
+            (-500.0, -1.0, true), // any distance
+            (36.4, 16.0, true),
+        ] {
+            assert_eq!(
+                game.alive_player_near(x, 64.0, 0.5, range),
+                near,
+                "{x} {range}"
+            );
+            assert_eq!(full(&game, x, range), near, "{x} {range}");
+        }
+    }
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]

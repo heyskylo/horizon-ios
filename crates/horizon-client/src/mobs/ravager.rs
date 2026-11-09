@@ -95,18 +95,16 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !m.alive() {
         return;
     }
-    let max = if immobile(m) {
-        0.0
-    } else if m.ai.target.is_some() {
-        0.35
-    } else {
-        0.3
-    };
-    m.attrs.speed = if max == 0.0 {
+    // The speed lives in the attribute's base, which the save writes and the
+    // load restores (AttributeMap.pack and apply).
+    let speed = if immobile(m) {
         0.0
     } else {
-        m.attrs.speed + (max - m.attrs.speed) * 0.1
+        let max = if m.ai.target.is_some() { 0.35 } else { 0.3 };
+        let base = super::finalize::base_value(m, super::finalize::Attr::MovementSpeed);
+        base + (max - base) * 0.1
     };
+    super::finalize::set_base(m, super::finalize::Attr::MovementSpeed, speed);
     if m.horizontal_collision && w.mob_griefing {
         let b = m
             .bounds()

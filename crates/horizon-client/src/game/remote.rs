@@ -6256,32 +6256,11 @@ impl Game<'_> {
         };
         let at = Vec3::new(p[0], p[1], p[2]);
         // ItemEntity's constructor draws bobOffs from the item's own random.
-        let bob_offset = horizon_client::mobs::entity_random(id as u32, at).next_float()
-            * std::f32::consts::PI
-            * 2.0;
+        let mut random = horizon_client::mobs::entity_random(id as u32, at);
+        let bob_offset = random.next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
-            rotation: [0.0, 0.0],
-            join: Default::default(),
-            no_gravity: false,
-            health: 5,
-            fire_ticks: 0,
-            thrower: None,
-            target: None,
-            id: id as u32,
-            stack,
-            position: at,
-            previous: at,
-            velocity,
-            on_ground: false,
-            vertical_collision: false,
-            horizontal_collision: false,
-            age: 0,
-            pickup_delay: 0,
-            bob_offset,
-            ticks: 0,
-            needs_sync: false,
-            stuck: Vec3::ZERO,
-            was_touching_water: false,
+            random,
+            ..ItemEntity::new(id as u32, stack, at, velocity, bob_offset)
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -11415,6 +11394,10 @@ impl horizon_world::level::LevelAccess for DryLevel<'_> {
     fn is_loaded(&self, pos: horizon_core::position::BlockPos) -> bool {
         self.base.is_loaded(pos)
     }
+    /// `Level.isClientSide`: the preview keeps its live level's side.
+    fn is_client_side(&self) -> bool {
+        self.base.is_client_side()
+    }
     /// A block this guess changed has no block entity left, so it reads as a
     /// missing one; every other position asks the level it stands in for.
     fn shulker_is_closed(&self, pos: horizon_core::position::BlockPos) -> Option<bool> {
@@ -11590,7 +11573,7 @@ fn keep_client_state(old: Option<&BlockEntity>, new: &mut BlockEntity) {
         (Some(BlockEntity::Beacon(old)), BlockEntity::Beacon(new)) => {
             new.sections.clone_from(&old.sections);
             new.checking.clone_from(&old.checking);
-            new.last_check_y = old.last_check_y;
+            (new.last_check_y, new.levels) = (old.last_check_y, old.levels);
         }
         _ => {}
     }
@@ -12921,10 +12904,10 @@ mod tests {
         assert_eq!(b.sections, vec![(0xF9FFFE, 2)]);
         assert_eq!(b.checking, vec![(0xF9FFFE, 1)]);
         assert_eq!(b.last_check_y, 70);
-        // The powers and the levels are the tag's.
+        // The powers are the tag's; the levels stay the client's own (not read).
         assert_eq!(b.primary.as_deref(), Some("minecraft:haste"));
         assert_eq!(b.secondary.as_deref(), Some("minecraft:regeneration"));
-        assert_eq!(b.levels, 4);
+        assert_eq!(b.levels, 1);
     }
 
     #[test]
@@ -13548,6 +13531,8 @@ mod tests {
         struct Level {
             air: BlockStateId,
             stone: BlockStateId,
+            power: BlockStateId,
+            client_side: bool,
             obstructed: bool,
             loaded: bool,
             ceiling: i32,
@@ -13556,6 +13541,8 @@ mod tests {
             fn block_state(&self, pos: BlockPos) -> BlockStateId {
                 if pos == BlockPos::new(0, 0, 0) {
                     self.stone
+                } else if pos == BlockPos::new(-1, 1, 0) {
+                    self.power
                 } else {
                     self.air
                 }
@@ -13565,6 +13552,9 @@ mod tests {
             }
             fn is_loaded(&self, _: BlockPos) -> bool {
                 self.loaded
+            }
+            fn is_client_side(&self) -> bool {
+                self.client_side
             }
             fn max_y(&self) -> i32 {
                 self.ceiling
@@ -13593,6 +13583,8 @@ mod tests {
         let mut base = Level {
             air: registry.default_state("minecraft:air").unwrap(),
             stone: registry.default_state("minecraft:stone").unwrap(),
+            power: registry.default_state("minecraft:redstone_block").unwrap(),
+            client_side: true,
             obstructed: false,
             loaded: true,
             ceiling: 320,
@@ -13601,6 +13593,9 @@ mod tests {
             "minecraft:stone",
             "minecraft:oak_slab",
             "minecraft:oak_door",
+            "minecraft:tnt",
+            "minecraft:piston",
+            "minecraft:sticky_piston",
             // GrowingPlantHeadBlock.getStateForPlacement draws a random age.
             "minecraft:twisting_vines",
         ] {
@@ -13615,24 +13610,51 @@ mod tests {
                 item: item.into(),
                 can_use_game_master_blocks: false,
             };
-            for (obstructed, loaded, ceiling) in [
-                (false, true, 320),
-                (true, true, 320),
-                (false, false, 320),
-                (false, true, 1),
+            for (client_side, obstructed, loaded, ceiling) in [
+                (true, false, true, 320),
+                (true, true, true, 320),
+                (true, false, false, 320),
+                (true, false, true, 1),
+                (false, false, true, 320),
             ] {
+                base.client_side = client_side;
                 base.obstructed = obstructed;
                 base.loaded = loaded;
                 base.ceiling = ceiling;
                 let valid = !obstructed && loaded && ceiling > 1;
                 let mut preview = DryLevel::new(&base);
-                let outcome = behaviours.place_block(&mut preview, &mut Ticks::default(), &ctx);
+                let mut ticks = Ticks::default();
+                let outcome = behaviours.place_block(&mut preview, &mut ticks, &ctx);
                 assert_eq!(
                     matches!(outcome, PlaceOutcome::Placed { .. }),
                     valid,
                     "{item}, obstructed={obstructed}, loaded={loaded}, ceiling={ceiling}"
                 );
                 assert_eq!(preview.changed.is_empty(), !valid);
+                if valid
+                    && matches!(
+                        item,
+                        "minecraft:tnt" | "minecraft:piston" | "minecraft:sticky_piston"
+                    )
+                {
+                    assert_eq!(
+                        registry
+                            .state(preview.block_state(BlockPos::new(0, 1, 0)))
+                            .unwrap()
+                            .name,
+                        if item == "minecraft:tnt" && !client_side {
+                            "minecraft:air"
+                        } else {
+                            item
+                        },
+                        "powered {item}, client_side={client_side}"
+                    );
+                    assert_eq!(
+                        ticks.block_events.is_empty(),
+                        client_side || item == "minecraft:tnt",
+                        "only the server starts a powered piston"
+                    );
+                }
                 assert_eq!(base.block_state(BlockPos::new(0, 1, 0)), base.air);
             }
         }
