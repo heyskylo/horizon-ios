@@ -17218,20 +17218,12 @@ pub fn run_with() -> Result<()> {
     if !synchronous_startup(&options) {
         return run_loading(options, early_settings, vanilla_root, None, started);
     }
-    let mut pack_error = None;
-    let base = mods::content_root(
-        &vanilla_root,
-        &early_settings.mods.enabled,
-        &early_settings.mods.disabled,
-        &options.dev_mods,
-    );
-    options.resources =
-        packs::startup_root(&vanilla_root, &base, &early_settings.resource_packs, &[])
-            .unwrap_or_else(|e| {
-                log::warn!("Horizon: resource packs not applied: {e}");
-                pack_error = Some(e.to_string());
-                base.clone()
-            });
+    let (root, pack_error) =
+        startup_menu::startup_resource_root(&vanilla_root, &early_settings, &options.dev_mods);
+    options.resources = root;
+    if let Some(error) = &pack_error {
+        log::warn!("Horizon: resource packs not applied: {error}");
+    }
     let loaded = load_resources(
         options.resources.clone(),
         launch_world(&options),
