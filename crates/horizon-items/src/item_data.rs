@@ -368,9 +368,22 @@ impl ItemStack {
         }
         self.tidy();
     }
-    /// `ItemStack.enchant`: upgrade to the higher level.
+    /// `ItemStack.enchant`: upgrade to the higher level. Vanilla's
+    /// `EnchantmentHelper.updateEnchantments` returns EMPTY when the component
+    /// is absent, so a removal patch makes this a no-op.
     pub fn enchant(&mut self, id: &str, level: u32) {
         let book = &*self.item == "minecraft:enchanted_book";
+        let removal = if book {
+            "!minecraft:stored_enchantments"
+        } else {
+            "!minecraft:enchantments"
+        };
+        if self
+            .data()
+            .is_some_and(|data| data.other(removal).is_some())
+        {
+            return;
+        }
         let data = self.data_mut();
         let list = if book {
             &mut data.stored_enchantments
@@ -2005,6 +2018,30 @@ mod tests {
     #[test]
     fn fresh_hive_saved_patch_uses_whole_prototype() {
         check_hive_saved_patch(false);
+    }
+
+    #[test]
+    fn an_absent_enchantments_component_is_not_enchantable() {
+        let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
+        stack.data_mut().set_other(
+            "!minecraft:enchantments",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        stack.enchant("minecraft:sharpness", 1);
+        assert!(stack.enchantments().is_empty());
+        let mut book = ItemStack::new("minecraft:enchanted_book", 1);
+        book.data_mut().set_other(
+            "!minecraft:stored_enchantments",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        book.enchant("minecraft:sharpness", 1);
+        assert!(book.stored_enchantments().is_empty());
     }
 
     #[test]
