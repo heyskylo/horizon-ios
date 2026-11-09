@@ -1,13 +1,20 @@
 //! Hardware ray queries, only on request (#13780, after the #1180 spike): `HORIZON_RAY_TRACING=1`
 //! at startup asks the device for wgpu's `EXPERIMENTAL_RAY_QUERY` when the GPU has it. Nothing
-//! draws with it yet. Without the variable the device is opened exactly as before.
+//! draws with it yet. Without the variable, and in a build without `horizon-extras` (a Horizon
+//! extra, docs/layers.md), the device is opened exactly as before.
 
 /// The ray query feature.
 const RAY_QUERY: wgpu::Features = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
 
 /// Whether the player asked for ray tracing (the device needs the feature from its creation).
 fn requested() -> bool {
-    std::env::var("HORIZON_RAY_TRACING").as_deref() == Ok("1")
+    asked(std::env::var("HORIZON_RAY_TRACING").ok().as_deref())
+}
+
+/// Whether `HORIZON_RAY_TRACING` set to `var` asks for ray tracing: only in a `horizon-extras`
+/// build.
+fn asked(var: Option<&str>) -> bool {
+    cfg!(feature = "horizon-extras") && var == Some("1")
 }
 
 /// The features to request on `adapter`: ray queries, when asked for and offered.
@@ -53,6 +60,13 @@ pub(super) fn experimental(features: wgpu::Features) -> wgpu::ExperimentalFeatur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_extras_build_asks_for_ray_tracing() {
+        assert_eq!(asked(Some("1")), cfg!(feature = "horizon-extras"));
+        assert!(!asked(None));
+        assert!(!asked(Some("0")));
+    }
 
     #[test]
     fn ray_queries_only_when_asked_and_offered() {
