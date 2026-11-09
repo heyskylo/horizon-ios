@@ -25,7 +25,6 @@
     "horizon-narrator": "engine",
     "horizon-prepare": "engine",
     "horizon-protocol": "engine",
-    "horizon-render-pipeline": "engine",
     "horizon-server-files": "engine",
     "horizon-system": "engine",
     "horizon-threads": "engine",
@@ -99,8 +98,6 @@
     "horizon-client-lib -> horizon-anticheat",
     "horizon-client-lib -> horizon-bench",
     "horizon-client-lib -> horizon-chat-filter",
-    "horizon-client-lib -> horizon-cosmetics",
-    "horizon-client-lib -> horizon-friends",
     "horizon-client-lib -> horizon-hdr",
     "horizon-client-lib -> horizon-mcp",
     "horizon-client-lib -> horizon-mods",
@@ -115,13 +112,6 @@
     "horizon-client-render -> horizon-polytone",
     "horizon-client-render -> horizon-shader-api",
     "horizon-client-render -> horizon-shaders",
-    "horizon-client-render -> horizon-theme",
-    "horizon-launcher -> horizon-core",
-    "horizon-launcher -> horizon-prepare",
-    "horizon-launcher -> horizon-protocol",
-    "horizon-launcher -> horizon-world",
-    "horizon-server -> horizon-core",
-    "horizon-server -> horizon-server-files",
-    "horizon-server -> horizon-world"
+    "horizon-client-render -> horizon-theme"
   ]
 }

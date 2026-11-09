@@ -209,6 +209,7 @@ impl Game<'_> {
         self.streaming
             .extra
             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
+        self.streaming.upload_backlog = self.pending_uploads.len();
         let (uploads, unloaded) =
             horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
         self.streaming.extra.truncate(areas);
