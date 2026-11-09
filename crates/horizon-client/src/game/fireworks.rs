@@ -183,6 +183,17 @@ impl Rocket {
         }
         self.life += 1;
     }
+    /// `Projectile.updateRotation`: a fifth of the way from `old` (yaw,
+    /// pitch) toward its motion's direction, the short way round.
+    fn update_rotation(&mut self, old: [f32; 2]) {
+        let v = self.velocity;
+        let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        let atan2 = horizon_core::geometry::trig::atan2_degrees;
+        self.rotation = [
+            horizon_client::arrows::lerp_rotation(old[0], atan2(v.x, v.z)),
+            horizon_client::arrows::lerp_rotation(old[1], atan2(v.y, horizontal)),
+        ];
+    }
     /// The move of a rocket attached to no entity: sped up and rising, or an
     /// angled one's own motion.
     fn next_motion(&self) -> Vec3 {
@@ -435,6 +446,8 @@ impl Game<'_> {
             }
             let mut r = self.rockets.remove(i);
             r.previous = r.position;
+            // Entity.baseTick's setOldRot: where updateRotation eases from.
+            let old_rotation = r.rotation;
             // Projectile.tick: the first tick posts the shot, with its owner.
             if !r.has_been_shot {
                 let at = [r.position.x, r.position.y, r.position.z];
@@ -507,6 +520,7 @@ impl Game<'_> {
                 Some(RocketHit::Block) if !r.explosions.is_empty() => r.life = r.lifetime,
                 Some(RocketHit::Block) | None => {}
             }
+            r.update_rotation(old_rotation);
             let at = [r.position.x, r.position.y, r.position.z];
             if r.life == 0 && !r.silent {
                 self.audio.play(

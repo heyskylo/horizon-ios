@@ -990,7 +990,8 @@ def rocket_data_merge():
     """#13083: /data merge and /data modify on a firework rocket run Entity.load over it
     (FireworkRocketEntity.readAdditionalSaveData: Life, LifeTime, FireworksItem, ShotAtAngle;
     Entity.load: Motion, Rotation, OnGround, Tags; Projectile: HasBeenShot, 0b until its first tick
-    posts the shot). Frozen, then one tick: an angled rocket keeps its motion."""
+    posts the shot). Frozen, then ticks: an angled rocket keeps its motion, and its Rotation eases
+    toward it (Projectile.updateRotation)."""
     sel = '@e[tag=rocket_merge,limit=1]'
     ops = setup('/forceload add 384 384', '/tick freeze',
                 '/summon firework_rocket 384.5 230 384.5 {LifeTime:200,Tags:["rocket_merge"]}')
@@ -1007,7 +1008,11 @@ def rocket_data_merge():
     ops += setup('/tick unfreeze')
     ops.append({'op': 'tick', 'n': 1})
     ops += [cmd(f'/data get entity {sel} Pos'), cmd(f'/data get entity {sel} Life'),
-            cmd(f'/data get entity {sel} HasBeenShot')]
+            cmd(f'/data get entity {sel} HasBeenShot'), cmd(f'/data get entity {sel} Rotation')]
+    # Projectile.updateRotation eases a fifth of the way toward the motion each tick.
+    for _ in range(2):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity {sel} Rotation'))
     return ops + setup('/kill @e[type=minecraft:firework_rocket]', '/forceload remove 384 384')
 
 
