@@ -1016,11 +1016,20 @@ pub(crate) fn crafting_station(kind: &str) -> &'static str {
     }
 }
 impl RecipeIndex {
-    /// Reads vanilla and content namespaces' recipes under `root`, with
-    /// the world's packs' recipe files over them (`overlay`).
-    pub fn load(root: &std::path::Path, overlay: &PackOverlay) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn load_from_sources(sources: &[(String, serde_json::Value)]) -> Self {
+        Self::from_source_refs(
+            sources
+                .iter()
+                .map(|(id, value)| (crate::crafting::qualified(id), value)),
+        )
+    }
+
+    fn from_source_refs<'a>(
+        sources: impl IntoIterator<Item = (String, &'a serde_json::Value)>,
+    ) -> Self {
         let mut recipes = std::collections::BTreeMap::new();
-        let mut insert = |id: String, v: &serde_json::Value| {
+        for (id, v) in sources {
             let kind = v["type"].as_str().unwrap_or_default();
             let special = kind.starts_with("minecraft:crafting_special_")
                 || kind == "minecraft:crafting_decorated_pot"
@@ -1053,7 +1062,25 @@ impl RecipeIndex {
                     result: horizon_world::loot::recipe_result_id(&v["result"]).map(str::to_owned),
                 },
             );
-        };
+        }
+        // RecipeManager.unpackRecipeInfo numbers the displays in registration
+        // order (path, then namespace), not in the order of the ids' text.
+        let mut order: Vec<_> = recipes
+            .iter_mut()
+            .map(|(id, r)| (crate::crafting::registration_key(id), r))
+            .collect();
+        order.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let mut next = 0;
+        for (_, r) in order {
+            r.first_display = next;
+            next += r.displays as i32;
+        }
+        Self { recipes }
+    }
+
+    /// Reads vanilla and content namespaces' recipes under `root`, with
+    /// the world's packs' recipe files over them (`overlay`).
+    pub fn load(root: &std::path::Path, overlay: &PackOverlay) -> Self {
         let dir = root.join("data/minecraft/recipe");
         // NeoForge's load conditions: the book lists only what loaded; a
         // recipe gated on an absent mod isn't in the manager either.
@@ -1105,24 +1132,17 @@ impl RecipeIndex {
             }
         }
         let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
-        for (id, mut v) in sources {
-            if conditions_hold(&v) && filters.apply(&id, &mut v) {
-                insert(id, &v);
-            }
-        }
-        // RecipeManager.unpackRecipeInfo numbers the displays in registration
-        // order (path, then namespace), not in the order of the ids' text.
-        let mut order: Vec<_> = recipes
-            .iter_mut()
-            .map(|(id, r)| (crate::crafting::registration_key(id), r))
+        let sources: Vec<_> = sources
+            .into_iter()
+            .filter_map(|(id, mut value)| {
+                (conditions_hold(&value) && filters.apply(&id, &mut value)).then_some((id, value))
+            })
             .collect();
-        order.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let mut next = 0;
-        for (_, r) in order {
-            r.first_display = next;
-            next += r.displays as i32;
-        }
-        Self { recipes }
+        Self::from_source_refs(
+            sources
+                .iter()
+                .map(|(id, value)| (crate::crafting::qualified(id), value)),
+        )
     }
     pub fn contains(&self, id: &str) -> bool {
         self.recipes.contains_key(id)

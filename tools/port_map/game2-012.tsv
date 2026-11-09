@@ -27,7 +27,7 @@ Block.boxes	skip:data		Shape array builder; shapes come from extracted data.
 Block.cube	skip:data		Shape builder; shapes come from extracted data.
 Block.boxZ	skip:data		Shape builder; shapes come from extracted data.
 Block.dropFromLootTable	inline	crates/horizon-client/src/game/spill.rs::GameLevel::drop_interact_loot	gap: minor: returns nothing, where vanilla returns whether anything dropped; folded into the interact-loot drop.
-Block.popExperience	port	crates/horizon-client/src/game.rs::Game::spawn_orbs	gap: minor: popExperience checks the block_drops rule, and the ore XP in break_block_as_player does not.
+Block.popExperience	port	crates/horizon-client/src/game/item_entities.rs::Game::spawn_orbs	gap: minor: popExperience checks the block_drops rule, and the ore XP in break_block_as_player does not.
 Block.fallOn	port	crates/horizon-world/src/block_landing.rs::BlockLandingRegistry::fall_on	Default and hay rules apply fall damage with the block's reduction.
 Block.getShapeForEachState	skip:java		Shape lookup cache over the state table; Horizon precomputes shapes per state.
 Block.tryDropExperience	inline	crates/horizon-client/src/game.rs::Game::break_block_as_player	Sampled block XP and pop folded into the break path; silk touch zeroes it as in vanilla (hard-coded check).

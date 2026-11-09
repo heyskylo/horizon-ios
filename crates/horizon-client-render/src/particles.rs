@@ -30,6 +30,7 @@ pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, Firewo
 mod native;
 pub mod polytone;
 mod polytone_gpu;
+mod polytone_model;
 pub use native::{ParticleController, ParticleUpdate};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
@@ -66,6 +67,9 @@ pub struct ParticleOptions {
     /// `nextInt(40) + 10` after constructing the particle. Set by the client for an older
     /// server only, never read from the wire.
     pub legacy_trail_lifetime: bool,
+    /// The block or item a `BlockParticleOption` or `ItemParticleOption` carries
+    /// (`minecraft:stone`), for resource packs' particle modifier filters.
+    pub source: Option<std::sync::Arc<str>>,
     /// What the Polytone emitter that spawned this custom particle sets on it.
     pub polytone_seed: Option<std::sync::Arc<polytone::Seed>>,
 }
@@ -85,14 +89,7 @@ impl ParticleOptions {
             legacy_entity_effect: None,
             legacy_trail_lifetime: false,
             polytone_seed: None,
-        }
-    }
-    /// A native mod's `SimpleParticleType`: the sprite set of
-    /// `assets/<namespace>/particles/<path>.json`, drawn as a plain billboard.
-    pub fn named(name: impl Into<String>) -> Self {
-        Self {
-            mod_particle: Some(name.into()),
-            ..Self::simple(ParticleType::Smoke)
+            source: None,
         }
     }
     /// `GeyserParticleOptions(type, waterBlocks)`.
@@ -531,6 +528,8 @@ pub struct Particle {
     controller: Option<Box<dyn native::Controller>>,
     /// A resource pack's Polytone custom particle type, for its `limit` and `exclusion_radius`.
     polytone_type: Option<std::sync::Arc<str>>,
+    /// A Polytone model particle's faces, drawn instead of its sprite quad.
+    model: Option<std::sync::Arc<polytone_model::ParticleModel>>,
     /// How a Polytone custom particle's quad turns (`rotation_mode`).
     orientation: polytone_gpu::Orientation,
     /// Blended additively (a Polytone `additive_translucent` particle).
@@ -897,6 +896,7 @@ impl Particle {
             random: LegacyRandom::new(0),
             controller: None,
             polytone_type: None,
+            model: None,
             orientation: polytone_gpu::Orientation::Camera,
             additive: false,
         }
@@ -1320,6 +1320,9 @@ pub struct ParticleEngine {
     set_sprites: Vec<Vec<u32>>,
     /// Resource packs' Polytone custom particle types (#11486).
     polytone: Option<std::sync::Arc<polytone::Registry>>,
+    /// Vanilla particle types a pack replaces with a custom one of the same id
+    /// (`assets/minecraft/polytone/custom_particles/rain.json` is `minecraft:rain`).
+    polytone_overrides: HashMap<ParticleType, String>,
     /// The packs' GPU particles' records, one store per type, and the ticks they count in.
     polytone_gpu: Vec<polytone_gpu::Store>,
     polytone_ticks: u64,
@@ -1518,6 +1521,7 @@ impl ParticleEngine {
             mod_sets: HashMap::new(),
             set_sprites: Vec::new(),
             polytone: None,
+            polytone_overrides: HashMap::new(),
             polytone_gpu: Vec::new(),
             polytone_ticks: 0,
             additive: std::sync::Mutex::default(),
@@ -1751,6 +1755,15 @@ impl ParticleEngine {
         };
         if !same {
             self.polytone_gpu.clear();
+            self.polytone_overrides = registry
+                .iter()
+                .flat_map(|r| {
+                    ParticleType::ALL.iter().filter_map(|&ty| {
+                        let id = format!("minecraft:{}", ty.name());
+                        r.get(&id).is_some().then_some((ty, id))
+                    })
+                })
+                .collect();
         }
         self.polytone = registry;
     }
@@ -2044,8 +2057,18 @@ impl ParticleEngine {
             return;
         }
         let seed = self.seeds.next_long();
-        if let Some(particle) = self.make(options, p, v, seed) {
+        if let Some(mut particle) = self.make(options, p, v, seed) {
             *self.made.entry(options.ty.name()).or_default() += 1;
+            // Resource packs' Polytone particle modifiers (#11486), once as it spawns.
+            if let Some(registry) = &self.polytone
+                && registry.modifies_particles()
+            {
+                let id = match &options.mod_particle {
+                    Some(name) => name.clone(),
+                    None => format!("minecraft:{}", options.ty.name()),
+                };
+                polytone::modify(registry, &id, options.source.as_deref(), &mut particle);
+            }
             // The provider has drawn, so rejecting here keeps vanilla's RNG order.
             // shortcut: counts live plus queued particles by scanning instead of
             // vanilla's counted map; use a counter if spore spawning shows in profiles.
@@ -2190,12 +2213,17 @@ impl ParticleEngine {
         let ty = o.ty;
         // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
         // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
-        if let Some(name) = &o.mod_particle
+        // A pack's custom particle: a new type, or one replacing the vanilla type of its id.
+        let custom = match &o.mod_particle {
+            Some(name) => Some(name.as_str()),
+            None => self.polytone_overrides.get(&ty).map(String::as_str),
+        };
+        if let Some(name) = custom
             && let Some(registry) = &self.polytone
             && let Some(def) = registry.get(name)
         {
-            let (registry, def) = (registry.clone(), def.clone());
-            let particle = polytone::make(self, &registry, name, &def, o, p, v, seed)?;
+            let (registry, def, name) = (registry.clone(), def.clone(), name.to_owned());
+            let particle = polytone::make(self, &registry, &name, &def, o, p, v, seed)?;
             if def.gpu.is_some() {
                 // A GPU particle is only a record: it never becomes an engine particle.
                 let now = self.polytone_ticks;
@@ -5043,6 +5071,28 @@ impl ParticleEngine {
             } else {
                 0
             };
+            // A Polytone model particle: its model's faces, scaled by its size and turned as
+            // its quad would be.
+            if let Some(model) = &p.model {
+                for quad in &model.quads {
+                    let Some(&(r, _)) = self.atlas.get(&quad.sprite) else {
+                        continue;
+                    };
+                    let (du, dv) = (r.u1 - r.u0, r.v1 - r.v0);
+                    for (corner, uv) in quad.corners.iter().zip(quad.uv) {
+                        target.push(Vertex {
+                            normal: [0; 4],
+                            pos: (center + rotation * (*corner * size)).to_array(),
+                            uv: [r.u0 + du * uv[0], r.v0 + dv * uv[1]],
+                            layer: overlay | u32::from(hdr_tier(p.ty)) << 16,
+                            color,
+                            light,
+                            glint_uv: [0.0, 0.0],
+                        });
+                    }
+                }
+                continue;
+            }
             for rotation in rotations.into_iter().flatten() {
                 for (n, uv) in [
                     ((1.0, -1.0), [u1, v1]),
@@ -5143,6 +5193,8 @@ const CREEPER: [[f64; 2]; 12] = [
     [0.0, -0.4],
 ];
 
+#[cfg(test)]
+mod tick_bench;
 #[cfg(test)]
 mod tests {
     use super::*;

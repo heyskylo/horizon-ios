@@ -206,8 +206,9 @@ fn display(light: vec3<f32>) -> vec4<f32> {
     let shows = params.world > 0.5 && params.peak > 1.0
         && (hand || (!covered && shows_world(f.rgb, w.rgb)));
     var light = lit(f.rgb, w.a, shows, true).light;
-    // The HUD and menus at their own brightness, by how much they cover.
-    light *= mix(1.0, params.ui, ui);
+    // The HUD and menus at their own brightness, by how much they cover, no brighter than the
+    // peak (as `fs_hdr_layered`): UI Brightness can pass paper white.
+    light = min(light * mix(1.0, params.ui, ui), vec3(params.peak));
     return display(light);
 }
 
@@ -261,21 +262,27 @@ fn tone_scale(top: f32, headroom: f32, paper: f32) -> f32 {
 }
 
 // Hdr::keep_world: the HUD's backdrop, the world clipped to white with alpha 0, the frame as
-// the HUD found it before.
+// the HUD found it before. The HUD's target is 8-bit, as that frame was.
 @fragment fn fs_keep(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let w = textureLoad(frame, vec2<i32>(pos.xy), 0).rgb;
     return vec4(clamp(w, vec3(0.0), vec3(1.0)), 0.0);
 }
 
+// The backdrop `fs_keep` left in the HUD's 8-bit target for world `w`: where no HUD draws, the
+// target holds exactly this, so the HUD's own part below is exactly 0 there.
+fn backdrop(w: vec3<f32>) -> vec3<f32> {
+    return round(clamp(w, vec3(0.0), vec3(1.0)) * 255.0) / 255.0;
+}
+
 // The HUD over the world in gamma, the space the HUD blends in: its own part, what its backdrop
 // B doesn't explain (H = P - (1 - c) B, exact for the layering blends), at UI Brightness, over
-// (1 - c) of the world, light above white included. Where the world is at or below white, at
-// 100%, that is the HUD's picture as drawn.
+// (1 - c) of the world, light above white included. Where the world is at or below white, with
+// UI Brightness at paper white, that is the HUD's picture as drawn.
 fn layered(at: vec2<i32>) -> vec3<f32> {
     let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
-    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let p = textureLoad(hud, at, 0).rgb;
     let c = textureLoad(coverage, at, 0).r;
-    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    let h = max(p - (1.0 - c) * backdrop(w), vec3(0.0));
     return h * pow(params.ui, 1.0 / 2.2) + (1.0 - c) * w;
 }
 
@@ -298,7 +305,8 @@ fn screenshot_world(w: vec3<f32>) -> vec3<f32> {
 }
 
 override screenshot_world_only: bool = false;
-// Off with HDR Lighting off: Horizon lifts nothing, so the world is clipped at white as SDR draws it.
+// Off where Horizon lifts nothing (HDR Lighting off, or a shader pack's picture): the world is
+// clipped at white as SDR draws it.
 override screenshot_shoulder: bool = true;
 
 // The ordinary PNG, or the world's icon before the HUD: H as drawn, at 100%, over
@@ -310,9 +318,9 @@ override screenshot_shoulder: bool = true;
     if screenshot_world_only {
         return vec4(mapped, 1.0);
     }
-    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let p = textureLoad(hud, at, 0).rgb;
     let c = textureLoad(coverage, at, 0).r;
-    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    let h = max(p - (1.0 - c) * backdrop(w), vec3(0.0));
     return vec4(h + (1.0 - c) * mapped, 1.0);
 }
 

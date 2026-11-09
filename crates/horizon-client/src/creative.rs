@@ -1,13 +1,13 @@
 //! Creative inventory (CreativeModeInventoryScreen): vanilla's tabs and their
 //! contents as built by the game's own display generators
 //! (`creative-inventory.json`), a 9x5 scrolling grid and the search tab.
-use crate::{Result, items::ItemStack, ui::EditBox};
+use crate::{Result, enchant::Enchantments, items::ItemStack, lang, ui::EditBox};
 use serde_json::Value;
 use std::{
     collections::HashMap,
     fs,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 #[derive(Clone, Debug)]
@@ -26,6 +26,8 @@ pub struct Tab {
     /// The page of tabs it is on: vanilla's are 0, mods' after, as NeoForge
     /// pages them.
     pub page: u32,
+    /// A Polytone creative tab modifier's `name`: its text and colour, over the tab's own.
+    pub name: Option<(String, Option<u32>)>,
 }
 impl Tab {
     /// The tab without its stacks.
@@ -41,6 +43,7 @@ impl Tab {
             inventory: self.inventory,
             hotbar: self.hotbar,
             page: self.page,
+            name: self.name.clone(),
         }
     }
 }
@@ -81,6 +84,8 @@ pub struct Creative {
     /// The search tab's stacks, in its display order.
     search_items: Vec<ItemStack>,
     search_index: Vec<SearchEntry>,
+    /// The session's enchantment registry, shared with the hover tooltips.
+    enchantments: Arc<Enchantments>,
     /// Every exported tab, and the search tab's stacks with their entries and
     /// whether only permissions list them: `rebuild` keeps what is shown.
     exported: Vec<Exported>,
@@ -92,17 +97,38 @@ pub struct Creative {
     /// search changes (selectTab, refreshSearchResults), not on every frame.
     shown: Mutex<Option<Shown>>,
     /// SessionSearchTrees.creativeByNameSearch: the lower-cased tooltip lines
-    /// of every search item in one language (keyed by the `itemGroup.search`
-    /// string), built on the first search and kept until the language or the
-    /// item list changes.
-    lines_cache: Mutex<Option<(String, Arc<[Vec<String>]>)>>,
+    /// of every search item, built on the first search and kept until the
+    /// translations, item list or enchantment registry change.
+    lines_cache: Mutex<Option<(u64, Arc<[Vec<String>]>)>>,
+    /// The packs' Polytone creative tab modifiers, applied by `rebuild`.
+    pack: Vec<crate::polytone_creative_tabs::TabModifier>,
+}
+/// A text component's plain text and its colour (a name, or `#rrggbb`).
+fn component_text(json: &Value) -> (String, Option<u32>) {
+    match json {
+        Value::String(s) => (s.clone(), None),
+        Value::Object(o) => {
+            let text = o
+                .get("text")
+                .or_else(|| o.get("translate"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let color = o.get("color").and_then(Value::as_str).and_then(|c| {
+                c.strip_prefix('#')
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| crate::text::named_color(c))
+            });
+            (text, color)
+        }
+        _ => (String::new(), None),
+    }
 }
 /// The grid's stacks for one tab, search text and language.
 struct Shown {
     tab: usize,
     search: String,
-    /// A display name, so a language change refills the search results.
-    language: String,
+    language_generation: u64,
     items: Arc<[ItemStack]>,
 }
 /// Display names from the pinned en_us language file.
@@ -300,6 +326,7 @@ impl Creative {
                     inventory: kind == "INVENTORY",
                     hotbar: kind == "HOTBAR",
                     page: t["page"].as_u64().unwrap_or(0) as u32,
+                    name: None,
                 },
                 category: kind == "CATEGORY",
                 operator,
@@ -340,6 +367,7 @@ impl Creative {
                     inventory: kind == "INVENTORY",
                     hotbar: false,
                     page: 0,
+                    name: None,
                 },
                 category: false,
             });
@@ -374,11 +402,13 @@ impl Creative {
             },
             search_items: Vec::new(),
             search_index: Vec::new(),
+            enchantments: Arc::default(),
             exported,
             exported_search,
             permissions: false,
             shown: Mutex::new(None),
             lines_cache: Mutex::new(None),
+            pack: Vec::new(),
         };
         creative.rebuild();
         creative
@@ -398,10 +428,12 @@ impl Creative {
                     .filter(|(_, o)| keep(**o))
                     .map(|(s, _)| s.clone())
                     .collect();
-                (!e.category || !items.is_empty()).then(|| Tab {
+                let mut tab = Tab {
                     items,
                     ..e.tab.header()
-                })
+                };
+                self.apply_pack(&mut tab);
+                (!e.category || !tab.items.is_empty()).then_some(tab)
             })
             .collect();
         *self.lines_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -412,6 +444,44 @@ impl Creative {
             .map(|(s, e, _)| (s.clone(), e.clone()))
             .unzip();
         self.forget_items();
+    }
+    /// The packs' Polytone creative tab modifiers (wiki "Creative Tab Modifiers"): the tabs are
+    /// built again with them.
+    pub fn set_pack_modifiers(&mut self, pack: Vec<crate::polytone_creative_tabs::TabModifier>) {
+        self.pack = pack;
+        self.rebuild();
+        self.selected = self.selected.min(self.tabs.len().saturating_sub(1));
+    }
+    /// A tab after the modifiers aimed at it: its items, icon and name.
+    fn apply_pack(&self, tab: &mut Tab) {
+        let aimed = self
+            .pack
+            .iter()
+            .filter(|m| m.targets.matches(&tab.id, |_| false));
+        for m in aimed {
+            let in_tag = |item: &str, tag: &str| {
+                let (namespace, path) = split_id(tag);
+                self.exported_search.iter().any(|(s, e, _)| {
+                    *s.item == *item && e.tags.iter().any(|t| t.0 == namespace && t.1 == path)
+                })
+            };
+            let mut ids: Vec<String> = tab.items.iter().map(|s| s.item.to_string()).collect();
+            m.apply(&mut ids, &in_tag);
+            let mut old = std::mem::take(&mut tab.items);
+            tab.items = ids
+                .into_iter()
+                .map(|id| match old.iter().position(|s| *s.item == *id) {
+                    Some(i) => old.remove(i),
+                    None => ItemStack::new(&id, 1),
+                })
+                .collect();
+            if let Some(icon) = &m.icon {
+                tab.icon = icon.clone();
+            }
+            if let Some(name) = &m.name {
+                tab.name = Some(component_text(name));
+            }
+        }
     }
     /// `CreativeModeInventoryScreen.tryRefreshInvalidatedTabs`, which its
     /// constructor and `containerTick` run with `hasPermissions`
@@ -465,6 +535,26 @@ impl Creative {
         self.tabs.iter().map(Tab::header).collect()
     }
     pub fn tab(&self) -> &Tab {
+        if self.tabs.is_empty() {
+            // An empty export (`{"tabs":[]}`) or a rebuild that filtered
+            // every category tab away leaves no tabs. `tabs.len() - 1`
+            // would underflow; return a shared empty tab instead, so
+            // `set_permissions`/`select`/`items` keep working.
+            static EMPTY_TAB: OnceLock<Tab> = OnceLock::new();
+            return EMPTY_TAB.get_or_init(|| Tab {
+                id: String::new(),
+                title: String::new(),
+                icon: "minecraft:stone".to_owned(),
+                items: Vec::new(),
+                top: true,
+                column: 0,
+                search: false,
+                inventory: false,
+                hotbar: false,
+                page: 0,
+                name: None,
+            });
+        }
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
     /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
@@ -528,6 +618,17 @@ impl Creative {
     pub fn search_items(&self) -> &[ItemStack] {
         &self.search_items
     }
+    /// Use the active session's registry to resolve enchantments in search tooltips.
+    pub fn set_enchantments(&mut self, enchantments: Arc<Enchantments>) {
+        if !Arc::ptr_eq(&self.enchantments, &enchantments) {
+            self.enchantments = enchantments;
+            *self
+                .lines_cache
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            self.forget_items();
+        }
+    }
     /// Opening the screen: vanilla rebuilds CreativeModeInventoryScreen, whose
     /// init() makes a fresh search box and a zeroed scrollbar; only the tab
     /// persists (its static selectedTab). selectTab on the reopened screen
@@ -541,38 +642,36 @@ impl Creative {
             self.search.reset_blink();
         }
     }
-    /// Indices into `search_items` that CreativeModeInventoryScreen.refreshSearchResults
-    /// shows for `term`: the whole tab when empty, the tag tree after `#`, else
-    /// the name tree, both over vanilla's suffix arrays (substring matches,
-    /// results in the tab's order).
+    /// `CreativeModeInventoryScreen.refreshSearchResults`: indices into `search_items`,
+    /// matching tag text after `#` or tooltip text and ids in the name search.
     pub fn search_results(&self, term: &str, names: &Names) -> Vec<usize> {
-        let english =
-            names.display_get("itemGroup.search").as_deref() == names.get("itemGroup.search");
+        let english = lang::code() == lang::DEFAULT
+            && names.display_get("itemGroup.search").as_deref() == names.get("itemGroup.search");
         let local = if term.is_empty() || term.starts_with('#') {
             Arc::from([])
         } else if english && self.search_index.iter().all(|e| !e.lines.is_empty()) {
             // The exported English lines are the whole index.
             Arc::from([])
         } else {
-            let language = names.display_get("itemGroup.search").unwrap_or_default();
+            let generation = lang::generation();
             let mut cache = self.lines_cache.lock().unwrap_or_else(|e| e.into_inner());
-            match cache.as_ref().filter(|(l, _)| *l == language) {
+            match cache.as_ref().filter(|(built, _)| *built == generation) {
                 Some((_, lines)) => lines.clone(),
                 None => {
                     let lines = self.localized_lines(&|k| names.display_get(k));
-                    *cache = Some((language, lines.clone()));
+                    *cache = Some((generation, lines.clone()));
                     lines
                 }
             }
         };
         self.search_results_in(term, names, &local, english)
     }
-    /// Every search item's tooltip lines through `translate`, lower-cased.
+    /// `SessionSearchTrees.getTooltipLines`: the translated tooltip lines for the name search.
     fn localized_lines(&self, translate: &dyn Fn(&str) -> Option<String>) -> Arc<[Vec<String>]> {
         self.search_items
             .iter()
             .map(|s| {
-                crate::item_tooltip::lines(s, None, translate)
+                crate::item_tooltip::lines(s, None, &self.enchantments, translate)
                     .iter()
                     .map(|l| java_lower(l))
                     .collect()
@@ -642,18 +741,21 @@ impl Creative {
     /// Items shown by the selected tab (the search tab filters by `search`),
     /// worked out again only when the tab, the search or the language changed.
     pub fn items(&self, names: &Names) -> Arc<[ItemStack]> {
+        if self.tabs.is_empty() {
+            return Arc::from([]);
+        }
         let tab = self.selected.min(self.tabs.len() - 1);
         let search = if self.tab().search {
             self.search.value.as_str()
         } else {
             ""
         };
-        let language = names.display_get("itemGroup.search").unwrap_or_default();
+        let language_generation = lang::generation();
         let mut shown = self.shown.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = shown.as_ref()
             && s.tab == tab
             && s.search == search
-            && s.language == language
+            && s.language_generation == language_generation
         {
             return s.items.clone();
         }
@@ -668,7 +770,7 @@ impl Creative {
         *shown = Some(Shown {
             tab,
             search: search.to_owned(),
-            language,
+            language_generation,
             items: items.clone(),
         });
         items
@@ -1646,6 +1748,7 @@ mod tests {
             inventory: false,
             hotbar: false,
             page: 0,
+            name: None,
         };
         // Top row, second column: the button spans x 27..53, y -28..4.
         let t = tab(true, 1);
@@ -1667,5 +1770,23 @@ mod tests {
         assert!(!Creative::tab_wants_hand(&b, false, (169.0, 140.0)));
         assert!(Creative::tab_wants_hand(&b, false, (170.0, 140.0)));
         assert!(!Creative::tab_wants_hand(&b, false, (180.0, 132.0)));
+    }
+
+    /// An empty export (`{"tabs":[]}`) leaves no tabs. `tab()` and
+    /// `items()` used `tabs.len() - 1`, which underflows and panics;
+    /// both now handle the empty case.
+    #[test]
+    fn empty_creative_tabs_do_not_panic_on_tab_or_items() {
+        let c = Creative::from_json(&serde_json::json!({"tabs": []})).unwrap();
+        assert!(c.tabs.is_empty());
+        // Fallback tab: no panic, empty id, not search.
+        assert_eq!(c.tab().id, "");
+        assert!(!c.tab().search);
+        let names = Names {
+            map: HashMap::new(),
+        };
+        assert!(c.items(&names).is_empty());
+        assert!(c.tab_headers().is_empty());
+        assert_eq!(c.search_tab(), None);
     }
 }

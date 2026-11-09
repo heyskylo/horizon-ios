@@ -8,6 +8,8 @@ impl Game<'_> {
     /// as the screen's constructor and `containerTick` do.
     pub(super) fn refresh_creative_tabs(&mut self) {
         let permissions = self.can_use_game_master_blocks() && self.settings.operator_items_tab;
+        let enchantments = Arc::clone(self.enchantments());
+        self.creative_screen.set_enchantments(enchantments);
         self.creative_screen
             .set_permissions(permissions, &self.pack.names);
     }
@@ -26,6 +28,9 @@ impl Game<'_> {
     /// `itemGroup.<mod>.<name>`, else its `title` as a lang key (a mod's own
     /// `itemGroup.<mod>`), else `title` as English text.
     pub(super) fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
+        if let Some((name, _)) = &tab.name {
+            return name.clone();
+        }
         match horizon_client::creative::item_group_key(&tab.id) {
             Some(key) => self.translate(key, &tab.title),
             None => {
@@ -80,7 +85,9 @@ impl Game<'_> {
         let selected = self.creative_screen.selected;
         // Only what is drawn of the tabs: their stacks stay where they are.
         let tabs = self.creative_screen.tab_headers();
-        let tab = &tabs[selected.min(tabs.len() - 1)];
+        let Some(tab) = tabs.get(selected.min(tabs.len().saturating_sub(1))) else {
+            return;
+        };
         let tab_sprite = |t: &horizon_client::creative::Tab, on: bool| {
             format!(
                 "gui/sprites/container/creative_inventory/tab_{}_{}_{}",
@@ -140,7 +147,12 @@ impl Game<'_> {
                 &title,
                 ox + 8.0,
                 oy + 6.0,
-                rgba(64, 64, 64, 255),
+                tab.name
+                    .as_ref()
+                    .and_then(|n| n.1)
+                    .map_or(rgba(64, 64, 64, 255), |c| {
+                        rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, 255)
+                    }),
                 false,
             );
         }

@@ -613,7 +613,7 @@ fn drop_invalid_player_target(m: &mut Mob, w: &MobWorld) {
     {
         m.ai.target = None;
         if matches!(m.species(), Species::ZombifiedPiglin | Species::IronGolem) {
-            m.extra.anger = 0;
+            super::neutral_anger::stop(m);
             m.ai.last_hurt_by = None;
         }
     }
@@ -631,6 +631,10 @@ pub fn tick(
     if !check_despawn(m, w) {
         m.removed = true;
         return false;
+    }
+    // Entity.commonTick: `invulnerableTime` counts down before setOldPosAndRot.
+    if m.invulnerable_time > 0 {
+        m.invulnerable_time -= 1;
     }
     // `Entity.computeSpeed`: what it moved in the last tick.
     let known_speed = m.position.subtract(m.previous);
@@ -676,7 +680,7 @@ pub fn tick(
     if m.species() == Species::Rabbit {
         super::rabbit::base_tick(m);
     }
-    if m.death_time >= super::creaking::death_limit(m) {
+    if !m.alive() && m.death_time >= super::creaking::death_limit(m) {
         // Creaking.tickDeath: a heart's creaking crumbles away.
         if super::creaking::is_creaking(m) && super::creaking::tearing_down(m) {
             super::creaking::tear_down(m, events);
@@ -792,24 +796,17 @@ pub fn tick(
     m.anim.end_tick(m.ai.swinging);
     tick_swing(m);
     flower_contact_effects(m, w);
-    if m.species() == Species::CopperGolem {
-        // CopperGolem.tick: updateWeathering after the living tick.
-        super::copper_golem::update_weathering(m, w, level_random, events);
-    }
-    if m.species() == Species::Strider {
-        super::strider::float(m, w);
-    }
-    if m.species() == Species::Bat {
-        super::bat::tick(m);
-    }
-    if m.species() == Species::Bee {
-        super::bee::tick(m, level_random);
-    }
-    if m.species() == Species::Allay {
-        super::allay::tick(m, w, events);
-    }
-    if m.species() == Species::Panda {
-        super::panda::tick(m, w, events);
+    // The species' own tick after the living tick, with or without AI.
+    match m.species() {
+        // CopperGolem.tick: updateWeathering.
+        Species::CopperGolem => super::copper_golem::update_weathering(m, w, level_random, events),
+        Species::Strider => super::strider::float(m, w),
+        Species::Bat => super::bat::tick(m),
+        Species::Bee => super::bee::tick(m, level_random),
+        Species::Allay => super::allay::tick(m, w, events),
+        Species::Panda => super::panda::tick(m, w, events),
+        Species::Villager => super::villager::tick(m, w.game_time),
+        _ => {}
     }
     aquatic::school_tick(m, w, level_random);
     // Dolphin.tick: after super.tick, NoAI restores the species maximum.
@@ -1194,7 +1191,7 @@ fn extinguish_if_wet(m: &mut Mob, w: &MobWorld, was_on_fire: bool, events: &mut 
     // Entity.applyEffectsFromBlocks snapshots burning before contact ignition.
     // Rain also clears newly ignited fire, but only a previously burning mob
     // plays the hiss and consumes its two pitch draws. This includes NoAI mobs.
-    if m.fire_ticks > 0 && (m.fluids.in_water || in_rain(m, w)) {
+    if m.fire_ticks > 0 && (m.fluids.in_water || m.in_extinguishing_fluid() || in_rain(m, w)) {
         m.fire_ticks = 0;
         if was_on_fire {
             events.push(MobEvent::Sound(
@@ -1318,7 +1315,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
             // LivingEntity.baseTick / MobEffectUtil: bubble columns and breathing
             // effects protect submerged mobs. Nautilus alone holds air rather
             // than refilling it; Water Breathing or Conduit Power still refill.
-            let submerged = m.fluids.eye_in_water
+            let submerged = (m.fluids.eye_in_water || m.eye_in_drowning_fluid())
                 && w.block_name(
                     m.position.x.floor() as i32,
                     m.eye_y().floor() as i32,

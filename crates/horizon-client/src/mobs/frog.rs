@@ -1197,4 +1197,43 @@ mod tests {
         );
         let _ = ran;
     }
+
+    /// `Frog` keeps its pregnancy as the `IS_PREGNANT` brain memory, and
+    /// `Brain.Packed` saves every memory: `mob_to_nbt`/`mob_from_nbt` are the
+    /// pair `Game::mob_tree_nbt` and `Game::load_mob` go through. Horizon read
+    /// the memory back but wrote no `Brain` for a frog, so a frog made
+    /// pregnant in play that unloaded with its chunk came back unpregnant and
+    /// never laid its frogspawn.
+    #[test]
+    fn a_pregnant_frog_keeps_its_pregnancy_through_a_save() {
+        use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+        use horizon_world::nbt::Tag;
+        let memory = |tag: &Tag| {
+            tag.get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("minecraft:is_pregnant"))
+                .cloned()
+        };
+        let mut m = frog();
+        set_pregnant(&mut m, true);
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert_eq!(
+            memory(&saved),
+            Some(Tag::compound([(
+                "value",
+                Tag::Compound(Default::default())
+            )])),
+            "the save names the pregnancy"
+        );
+        let types = std::collections::HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
+        let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
+        assert!(is_pregnant(&back), "the reloaded frog is pregnant");
+        // A frog that laid its spawn saves no memory, even over a compound
+        // that still names one.
+        set_pregnant(&mut m, false);
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], Some(&saved), None, |_| None);
+        assert_eq!(memory(&saved), None, "a laid frog saves no pregnancy");
+        let back = mob_from_nbt(&saved, &types, 3, None).unwrap();
+        assert!(!is_pregnant(&back), "and does not come back pregnant");
+    }
 }

@@ -184,59 +184,9 @@ pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
 /// `EntityEvent.TNT_PRIME`. `MinecartTNT.primeFuse` broadcasts it;
 /// `MinecartTNT.handleEntityEvent` answers by calling `primeFuse`.
 pub(super) const TNT_PRIME_EVENT: i8 = 70;
-/// `AbstractMinecart.getDefaultDisplayOffset` (6), in sixteenths of a block, as
-/// `MinecartChest` (8) and `MinecartHopper` (1) override it.
-pub(super) fn default_display_offset(kind: CartKind) -> f64 {
-    match kind {
-        CartKind::Chest => 8.0,
-        CartKind::Hopper => 1.0,
-        CartKind::Rideable
-        | CartKind::Furnace
-        | CartKind::Tnt
-        | CartKind::CommandBlock
-        | CartKind::Spawner => 6.0,
-    }
-}
-/// `AbstractMinecart.getDisplayOffset`: the saved `DisplayOffset`, else the default.
-fn display_offset(c: &Minecart) -> f64 {
-    c.custom_offset
-        .map_or_else(|| default_display_offset(c.kind), f64::from)
-}
-
-/// World-space envelope of the cart model and its optional displayed block,
-/// based on the same root position and display offset used by the renderer.
-fn cart_render_bounds(position: Vec3, offset: f64, has_display: bool) -> Aabb {
-    let (bottom, top) = if has_display {
-        let display_shift = 0.75 * (offset - 8.0) / 16.0;
-        (
-            (position.y - 0.5).min(position.y + 0.375 - 0.4 + display_shift),
-            (position.y + 0.9).max(position.y + 0.375 + 0.4 + display_shift + 0.9),
-        )
-    } else {
-        (position.y - 0.5, position.y + 0.9)
-    };
-    Aabb::new(
-        Vec3::new(position.x - 1.0, bottom, position.z - 1.0),
-        Vec3::new(position.x + 1.0, top, position.z + 1.0),
-    )
-}
-/// A display state that is air shows nothing.
-fn shown_unless_air(
-    state: Option<BlockStateId>,
-    is_air: impl Fn(BlockStateId) -> bool,
-) -> Option<BlockStateId> {
-    state.filter(|&s| !is_air(s))
-}
-/// `readAdditionalSaveData`'s `input.read("DisplayState", CODEC)` is empty
-/// when the state does not decode: the cart forgets it (and no longer saves it).
-pub(super) fn forget_unreadable_display(
-    c: &mut Minecart,
-    resolves: impl Fn(&horizon_world::nbt::Tag) -> bool,
-) {
-    if c.custom_display.as_ref().is_some_and(|t| !resolves(t)) {
-        c.custom_display = None;
-    }
-}
+mod display;
+use display::{cart_render_bounds, display_offset, shown_unless_air};
+pub(super) use display::{default_display_offset, forget_unreadable_display};
 /// The carts' and mobs' boxes for one tick's cart pushes (`push_from_cart`,
 /// `pickup_from_cart`), so a cart reads its neighbours instead of every cart and
 /// every mob of the level. Both answer in slot order, as the scans did.
@@ -757,6 +707,7 @@ impl Game<'_> {
             border: Some((self.border.geometry(), [c.position.x, c.position.z])),
         };
         if let Ok(moved) = scene.resolve(c.bounds(), delta, 0.0, c.on_ground) {
+            c.fall_distance = self.vehicle_fall_reset(c.fall_distance, c.position, moved);
             c.position = Vec3::new(
                 c.position.x + moved.x,
                 c.position.y + moved.y,
@@ -1525,7 +1476,7 @@ impl Game<'_> {
         if !self.minecart_improvements() {
             let (xd, zd) = (c.previous.x - c.position.x, c.previous.z - c.position.z);
             if xd * xd + zd * zd > 0.001 {
-                c.yaw = zd.atan2(xd).to_degrees() as f32;
+                c.yaw = horizon_core::geometry::trig::atan2_degrees_double(zd, xd);
                 if c.flipped {
                     c.yaw += 180.0;
                 }
@@ -1710,7 +1661,9 @@ impl Game<'_> {
                 power,
                 interaction,
                 false,
-                super::explosion::ExplosionSource::default().with_silence(silent),
+                super::explosion::ExplosionSource::default()
+                    .with_silence(silent)
+                    .with_entity(c.id, "minecraft:tnt_minecart"),
             )
         });
         self.combat.explosion_in_water = false;
@@ -3048,6 +3001,7 @@ impl Minecart {
             uuid,
             raw,
         );
+        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             // ContainerEntity.addChestVehicleSaveData belongs only to the
             // container subclasses, never to a plain or specialized cart.
@@ -3146,6 +3100,7 @@ impl Minecart {
         c.yaw = yaw;
         c.previous_yaw = yaw;
         c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
+        c.on_ground = horizon_client::entity_nbt::flag(tag, "OnGround");
         c.pitch = horizon_client::entity_nbt::rotation(tag)[1];
         c.previous_pitch = c.pitch;
         // ValueInput's numeric getters take any NumericTag: getIntOr is its

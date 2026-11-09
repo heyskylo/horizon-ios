@@ -26,7 +26,6 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-
 pub(super) struct Toast {
     icon: String,
     frame: Frame,
@@ -213,6 +212,10 @@ impl adv::World for View<'_, '_> {
             })
             .unwrap_or_default();
         (name, props)
+    }
+    fn block_property_values(&self, block: &str, property: &str) -> Option<Vec<String>> {
+        let values = self.0.pack.assets.registry.property_values(block, property);
+        (!values.is_empty()).then(|| values.into_iter().map(str::to_owned).collect())
     }
     fn fluid(&self, p: [i32; 3]) -> Option<String> {
         match self
@@ -802,6 +805,7 @@ impl Game<'_> {
             let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry, |other| {
                 self.persist.uuid_of(other)
             });
+            self.put_last_hurt_by_mob(m, &mut tag);
             let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
             super::persist::add_passengers(&mut tag, riders);
             tag
@@ -1885,7 +1889,6 @@ impl Game<'_> {
             adv::conditions(&c["player"], &ctx, w) && adv::block(c, pos, w)
         });
     }
-
     /// `TargetBlockTrigger`: signal and projectile conditions are evaluated in
     /// the shooter's context, including distance from the shooter.
     pub(super) fn trigger_target_hit(&mut self, projectile: &EntityView, strength: i32) {
@@ -1907,7 +1910,6 @@ impl Game<'_> {
                 && adv::conditions(&c["projectile"], &target, w)
         });
     }
-
     /// `ItemUsedOnLocationTrigger` (placed_block, item_used_on_block).
     pub(super) fn trigger_block(&mut self, name: &str, pos: [i32; 3], stack: &ItemStack) {
         let me = self.player_entity_for(name);
@@ -2548,6 +2550,40 @@ impl Game<'_> {
 /// with its siblings and styles, as a plugin's `{"text":"","extra":[...]}` needs.
 pub(super) fn text_of(v: &Value) -> Text {
     horizon_client::scoreboard::comp_text(v)
+}
+/// An advancement's display as a server mod reads it: its title and
+/// description as text (the components as the datapack wrote them), its
+/// frame (`task`, `goal` or `challenge`), and whether it is announced in
+/// chat and hidden until earned.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AdvancementDisplay {
+    pub title: Text,
+    pub description: Text,
+    pub frame: String,
+    pub announce_to_chat: bool,
+    pub hidden: bool,
+}
+
+impl Game<'_> {
+    /// The display of the advancement `id` in the loaded tree; None for an
+    /// id the tree does not have, or one with no display. API @API:advancement_display@.
+    pub(super) fn native_advancement_display(&mut self, id: &str) -> Option<AdvancementDisplay> {
+        let tree = self.advancement_tree();
+        let advancement = &tree.list[*tree.by_id.get(id)?];
+        let display = advancement.display.as_ref()?;
+        Some(AdvancementDisplay {
+            title: text_of(&display.title),
+            description: text_of(&display.description),
+            frame: match &display.frame {
+                Frame::Task => "task",
+                Frame::Goal => "goal",
+                Frame::Challenge => "challenge",
+            }
+            .to_owned(),
+            announce_to_chat: display.announce,
+            hidden: display.hidden,
+        })
+    }
 }
 
 #[cfg(test)]

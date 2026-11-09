@@ -48,7 +48,7 @@ pub use pose::{Pose, pose_matrix};
 pub const ON_BY_DEFAULT: bool = true;
 
 /// The cosmetics service (`HORIZON_COSMETICS_API` overrides it).
-pub const API: &str = "https://cosmetics.playhorizon.dev";
+pub const API: &str = horizon_addresses::COSMETICS_API;
 
 /// Whether cosmetics run: `ON_BY_DEFAULT`, or `HORIZON_COSMETICS=1` / `0` for one run
 /// (development, the bench).
