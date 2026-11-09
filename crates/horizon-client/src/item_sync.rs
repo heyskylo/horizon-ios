@@ -971,6 +971,30 @@ mod tests {
     /// A chestplate a server made a glider: its patch adds `glider` and an
     /// `equippable` for the chest, or takes `glider` away again.
     #[test]
+    fn use_remainder_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:mushroom_stew", 1);
+        stack.data_mut().set_other(
+            "minecraft:use_remainder",
+            Some(Tag::compound([(
+                "id",
+                Tag::String("minecraft:bowl".into()),
+            )])),
+        );
+        assert_eq!(
+            use_remainder(&stack, None).as_deref(),
+            Some("minecraft:bowl")
+        );
+        stack.data_mut().set_other(
+            "!minecraft:use_remainder",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            use_remainder(&stack, Some("minecraft:glass_bottle".into())),
+            None
+        );
+    }
+
+    #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
             let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
