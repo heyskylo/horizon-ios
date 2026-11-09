@@ -80,6 +80,7 @@ impl Game<'_> {
         self.hide_social_tutorial();
         self.social.page = Page::All;
         self.social.search.set_value("");
+        self.social.tooltip = Default::default();
         self.social.scroll = 0.0;
         self.social.from_pause = from_pause;
         self.screen = Screen::Social;
