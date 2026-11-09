@@ -30,7 +30,7 @@ fn stamp(time: SystemTime) -> String {
     let secs = time
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    let (y, m, d) = horizon_server_files::java_properties::civil_from_days(secs.div_euclid(86_400));
+    let (y, m, d) = horizon_platform::server_files::java_properties::civil_from_days(secs.div_euclid(86_400));
     let s = secs.rem_euclid(86_400);
     format!(
         "{y:04}-{m:02}-{d:02}_{:02}-{:02}-{:02}",

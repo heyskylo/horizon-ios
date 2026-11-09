@@ -2907,7 +2907,7 @@ fn copy_runtime(from: &Path, to: &Path) -> std::io::Result<()> {
         if entry.file_type()?.is_dir() {
             copy_runtime(&entry.path(), &destination)?;
         } else {
-            horizon_prepare::clone_or_copy(&entry.path(), &destination)?;
+            horizon_platform::prepare::clone_or_copy(&entry.path(), &destination)?;
             fs::set_permissions(&destination, entry.metadata()?.permissions())?;
         }
     }
@@ -2967,7 +2967,7 @@ pub(crate) fn copy_base(from: &Path, to: &Path, target: Target) -> Result<(), St
             backend::copy_dir(&entry.path(), &to)
         } else {
             // A clone is a new file: horizon-ctl and horizon-server keep their permissions.
-            horizon_prepare::clone_or_copy(&entry.path(), &to)
+            horizon_platform::prepare::clone_or_copy(&entry.path(), &to)
                 .and_then(|()| fs::set_permissions(&to, entry.metadata()?.permissions()))
         };
         copied.map_err(|e| format!("Could not copy {}: {e}", entry.path().display()))?;

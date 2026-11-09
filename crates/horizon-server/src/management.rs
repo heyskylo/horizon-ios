@@ -11,7 +11,7 @@ use crate::{
     management_schema as schema, management_tls,
     websocket::{Link, Socket},
 };
-use horizon_server_files::properties::{ServerProperties, SystemEntropy, generate_secret_key};
+use horizon_platform::server_files::properties::{ServerProperties, SystemEntropy, generate_secret_key};
 use serde_json::{Value, json};
 use std::{
     net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
