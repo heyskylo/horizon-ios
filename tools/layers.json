@@ -112,7 +112,6 @@
     "horizon-client-render -> horizon-optifine",
     "horizon-client-render -> horizon-polytone",
     "horizon-client-render -> horizon-shader-api",
-    "horizon-client-render -> horizon-shaders",
-    "horizon-client-render -> horizon-theme"
+    "horizon-client-render -> horizon-shaders"
   ]
 }
