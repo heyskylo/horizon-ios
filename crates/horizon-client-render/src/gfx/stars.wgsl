@@ -5,7 +5,7 @@ struct Stars {
     // starBrightness in every channel (RenderSystem.setShaderColor).
     color: vec4<f32>,
     hdr_settings: vec4<f32>,
-    hdr_shares: vec4<f32>,
+    hdr_gains: vec4<f32>,
     hdr_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> stars: Stars;
@@ -20,7 +20,7 @@ struct Stars {
 @fragment fn fs_stars() -> @location(0) vec4<f32> {
     let b = stars.color.a;
     if HDR_WRITE_LIGHT && stars.hdr_light.w != 0.0 {
-        return vec4(hdr_written(stars.color.rgb * b, 0.175, stars.hdr_settings, stars.hdr_shares), b);
+        return vec4(hdr_written(stars.color.rgb * b, 0.175, stars.hdr_settings, stars.hdr_gains), b);
     }
     if HDR_WRITE_LIGHT { return vec4(stars.color.rgb * b, b); }
     return vec4(stars.color.rgb * b, 0.175);

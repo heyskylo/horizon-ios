@@ -34,7 +34,7 @@ struct Uniform {
     mode: u32,
     pad: [u32; 2],
     hdr_settings: [f32; 4],
-    hdr_shares: [f32; 4],
+    hdr_gains: [f32; 4],
     hdr_light: [f32; 4],
 }
 
@@ -331,7 +331,7 @@ impl CustomSky {
         self.written_gain = (globals.hdr_light[3] != 0.0).then(|| {
             let mark =
                 ((1.0 - 0.24 * globals.hdr_light[1]).clamp(0.0, 1.0) * 255.0).round() / 255.0;
-            if globals.hdr_settings[2] > 0.5 && globals.hdr_settings[0] > 1.0 {
+            if globals.hdr_settings[2] > 0.5 {
                 (1.0 + (globals.hdr_settings[1] - 1.0) * (1.0 - mark) / 0.24).powf(1.0 / 2.2)
             } else {
                 1.0
@@ -352,7 +352,7 @@ impl CustomSky {
                 mode: mode as u32,
                 pad: [0; 2],
                 hdr_settings: globals.hdr_settings,
-                hdr_shares: globals.hdr_shares,
+                hdr_gains: globals.hdr_gains,
                 hdr_light: globals.hdr_light,
             };
             let offset = STRIDE * self.frame.len() as u64;
@@ -576,7 +576,7 @@ mod tests {
                 mode: mode_index as u32,
                 pad: [0; 2],
                 hdr_settings: [5.0, 4.0, 1.0, f32::from(u8::from(debug))],
-                hdr_shares: [0.2, 0.5, 0.6, 1.0],
+                hdr_gains: [1.6, 2.4, 2.8, 4.0],
                 hdr_light: [0.8, 0.8, 1.0, f32::from(u8::from(written))],
             };
             let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

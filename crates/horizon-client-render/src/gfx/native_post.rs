@@ -2730,6 +2730,8 @@ file = \"b.wgsl\"
                 true,
             );
             (display.paper_white, display.peak) = (paper, peak);
+            // As the renderer has it under a pack that draws: Horizon lights none of it.
+            display.lighting = false;
             let screen = display.frame(&device, [4, 4]);
             let usage =
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;

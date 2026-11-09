@@ -43,7 +43,7 @@ struct Globals {
     // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
-    hdr_shares: vec4<f32>,
+    hdr_gains: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -774,7 +774,7 @@ fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32>
 fn solid_light(finished: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT {
         if globals.hdr_light.w != 0.0 {
-            return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+            return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_gains), 1.0);
         }
         return vec4(finished.rgb, 1.0);
     }
@@ -856,7 +856,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
         let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
             linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
         let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fogged));
-        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_shares), finished.a);
+        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_gains), finished.a);
     }
     return finished;
 }
@@ -1062,7 +1062,7 @@ fn sky_finished(color: vec3<f32>) -> vec4<f32> {
     let mark = 1.0 - 0.24 * globals.hdr_light.y;
     if HDR_WRITE_LIGHT {
         if globals.hdr_light.w != 0.0 {
-            return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+            return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_gains), 1.0);
         }
         return vec4(color, 1.0);
     }

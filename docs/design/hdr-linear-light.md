@@ -298,6 +298,22 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
    goes. Without the HUD's layer, HDR without a pack keeps the compatibility frame, and its marks, until step 5.
 5. On by default and the switch removed, and 0.1 no longer served (see 0.1 packs). The shim goes with it: the
    pipeline variants that write marks and the HDR pass's lift from them, in a pull request of its own.
+6. One curve from the scene to the display, its constants chosen from captures.
+   - 6a, one peak (before step 5, so players see one change of look): the world's light is the same on every
+     display, in multiples of paper white, and only the tone curve fits it to the display. Before, the writers'
+     gains followed the display's headroom and the curve then compressed that light again from a source peak it
+     derived from the same headroom. The rule: the scene's peak S sits just above the brightest light the world
+     writes, and the world is mastered for a 1000-nit display at ITU-R BT.2408's 203-nit reference white, as HDR10
+     content usually is: S = 1000/203 (4.93). The tiers multiply their brightest pixels by 1.6 (low), 2.4
+     (incandescent), 2.8 (bright) and 4.0 (very bright), and HDR lighting the strongest-lit surfaces by 3.0
+     (`gfx/hdr.rs` `TIERS`, `SUNLIT_GAIN`, `SCENE_PEAK`). The curve holds light above S at S, keeping its hue (where
+     the sky adds onto the sun), then maps S onto the display's peak T with BT.2390's EETF in PQ on the brightest
+     channel: the identity where T reaches S, so a display at 1000 nits or more shows the scene as written and one
+     above 1000 shows it as at 1000. Light Horizon doesn't lift (HDR Lighting off, the title, a 0.2 pack's own) has
+     no known peak, so there the curve's source still follows the display, as the 0.2 rule above describes. HDR off,
+     the HUD, the black lift, the SDR screenshot's shoulder and the compatibility frame (HDR's default until step 5,
+     whose look then changes once) don't change.
+   - 6b: the SDR screenshot from the same scene light.
 
 The HUD's layer and the tone curve come before light is written: once a shader writes light above white into the
 frame, nothing at the end can take it back out from under the HUD (`shows_world` only skips lifting a mark), and

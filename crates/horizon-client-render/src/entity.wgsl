@@ -36,7 +36,7 @@ struct Globals {
     // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
-    hdr_shares: vec4<f32>,
+    hdr_gains: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -291,7 +291,7 @@ fn entity_written_color(in: Out, color: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 && in.overlay != 11u && in.overlay != 12u {
         var mark = hdr_entity_mark(in);
         if in.overlay == 4u { mark = hdr_scene_alpha(globals.hdr_light.y); }
-        return vec4(hdr_written(color.rgb, mark, globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(color.rgb, mark, globals.hdr_settings, globals.hdr_gains), color.a);
     }
     return color;
 }
@@ -445,7 +445,7 @@ fn celestial_color(in: Out) -> vec4<f32> {
 @fragment fn fs_celestial(in: Out) -> @location(0) vec4<f32> {
     let color = celestial_color(in);
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_gains), color.a);
     }
     return color;
 }
@@ -466,7 +466,7 @@ fn celestial_color(in: Out) -> vec4<f32> {
     // or it would come out darker than the sky around it.
     let full = y >= globals.hdr_windows[1][clamp(tier, 1u, 4u) - 1u];
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_gains), color.a);
     }
     if HDR_WRITE_LIGHT { return vec4(added, color.a); }
     if !full { return vec4(added, 0.0); }

@@ -41,7 +41,7 @@ fn oit_terrain_color(in: TerrainOut) -> vec4<f32> {
             globals.hdr_light.y, f * globals.fog_color.a));
         // Convert the surface before weighting; its mark never belongs to the light behind it.
         let fogged = mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a);
-        return vec4(hdr_written(fogged, mark, globals.hdr_settings, globals.hdr_shares) * weighted.a, weighted.a);
+        return vec4(hdr_written(fogged, mark, globals.hdr_settings, globals.hdr_gains) * weighted.a, weighted.a);
     }
     return vec4(rgb, weighted.a);
 }
