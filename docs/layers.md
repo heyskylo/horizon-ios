@@ -366,8 +366,7 @@ These are not addresses:
 ## Plan
 
 Review first. The design and this plan are open for review in the tracking issue for ~48 hours. The small
-mechanical steps (checks, M1–M4) continue meanwhile. M5 and M6 wait for that review, or for no objection after
-48 hours. Each step is a PR under ~500 lines. Each move:
+mechanical steps (checks, M1–M4) continue meanwhile. M5 and M6 started on 2026-11-09, after the review in #13011. Each step is a PR under ~500 lines. Each move:
 
 - keeps the default build the same for players and costs nothing at run time;
 - keeps `--no-default-features` and horizon-plain building;
@@ -383,10 +382,10 @@ mechanical steps (checks, M1–M4) continue meanwhile. M5 and M6 wait for that r
 | 2b | The portable crates' rule in the layer check ([Portable crates](#portable-crates)) | | #13002 (NikitaMGrimm), merged |
 | M1 | `horizon-addresses`, the address list file; the Horizon crates read it | 7 address entries | #12993, merged |
 | M2 | `horizon-system` (engine): the hardware probes leave `horizon-telemetry`, and the crash report and GPU info read them there; `horizon-platform`, the platform's public API, re-exports them for the Horizon layer | prepares M3 | #13058, merged |
-| M3 | The renderer's telemetry module leaves `horizon-client-render` for `horizon-client-lib`, with Horizon's other in-game parts; the renderer offers the adapter (`gfx::adapter`) and a crash-report hook (`crash::on_report`) | render → telemetry, bench | #13060 |
-| M4 | Cosmetics leave `horizon-client-render`: the tab list's mark through a name-decoration callback (#13094); the settings lines leave with `extras.rs` and `extras_ui.rs` in M5, as clients of the UI page API | render → cosmetics | #13094, then M5 |
-| M5 | Horizon's in-game parts (extras, cosmetics, emotes, Discord, Friends, ping, benchmark upload, official server) leave `horizon-client` for Horizon crates linked into the official build through platform hooks | client, client-lib → cosmetics, friends, telemetry, bench | after review |
-| M6 | The engine crates stop depending on platform crates: the renderer's shader-pack, pack-format, HDR and theme code moves behind engine extension points; the mod host and agent control move to platform crates; controllers, splitscreen, replay recording and the UI page API move to platform crates on the engine's input-source, compositor and screen hooks; the launcher and `horizon-server` reach the engine through platform API | the 29 engine → platform and 7 Horizon → engine exceptions | after review; HDR's part with NikitaMGrimm, below |
+| M3 | The renderer's telemetry module leaves `horizon-client-render` for `horizon-client-lib`, with Horizon's other in-game parts; the renderer offers the adapter (`gfx::adapter`) and a crash-report hook (`crash::on_report`) | render → telemetry, bench | #13060, merged |
+| M4 | Cosmetics leave `horizon-client-render`: the tab list's mark through a name-decoration callback (#13094); the settings lines leave with `extras.rs` and `extras_ui.rs` in M5, as clients of the UI page API | render → cosmetics | #13094, merged; the rest in M5 |
+| M5 | Horizon's in-game parts (extras, cosmetics, emotes, Discord, Friends, ping, benchmark upload, official server) leave `horizon-client` for Horizon crates linked into the official build through platform hooks | client, client-lib → cosmetics, friends, telemetry, bench | started 2026-11-09 |
+| M6 | The engine crates stop depending on platform crates: the renderer's shader-pack, pack-format, HDR and theme code moves behind engine extension points; the mod host and agent control move to platform crates; controllers, splitscreen, replay recording and the UI page API move to platform crates on the engine's input-source, compositor and screen hooks; the launcher and `horizon-server` reach the engine through platform API | the engine → platform and Horizon → engine exceptions | started 2026-11-09; HDR's part with NikitaMGrimm, below |
 | P | Optional, longer: gameplay into the portable crates. `Game` holds the world and its presentation (renderer, screens, particles, sound): split its state module by module, turn gameplay's direct particle and sound calls into level events as vanilla's server sends them, then move each clean module into a portable crate | | any time, small PRs |
 | R | The Horizon layer moves to its own repository and ships in every official download (the table above) | | after the split, Ludovic's call |
 
