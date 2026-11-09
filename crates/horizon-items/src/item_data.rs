@@ -895,7 +895,12 @@ pub fn encode_components_with_items(stack: &ItemStack, items: &crate::items::Ite
 /// `encode_components` from the damage value and extra components.
 pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
     let mut entries: Vec<(&str, Tag)> = Vec::new();
-    if damage > 0 {
+    // A custom max damage can make zero DAMAGE a meaningful saved component.
+    if damage > 0
+        || data.is_some_and(|data| {
+            data.explicit_zero_damage && data.other("minecraft:max_damage").is_some()
+        })
+    {
         entries.push(("minecraft:damage", Tag::Int(damage as i32)));
     }
     if let Some(d) = data {
