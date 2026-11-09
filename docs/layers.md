@@ -448,25 +448,26 @@ pub fn update(change: impl FnOnce(&mut Look));  // the player whose turn it is (
 ### Container screens (`horizon_platform::containers`)
 
 Input and drawing on an open container screen (the inventory, chests, furnaces, crafting tables...), for the
-extras that act on one: Mouse Tweaks and sorting (M5). Spec only: the code follows it in its own PRs.
+extras that act on one: Mouse Tweaks and sorting (M5).
 
 ```rust
 /// The open screen's menu, for the length of one call. The engine implements it.
 pub trait Container {
     fn menu(&self) -> &str;                     // "inventory", "minecraft:generic_9x3", "minecraft:furnace"...
     fn slots(&self) -> Vec<Slot>;               // every slot drawn, in the screen's order
-    fn stack(&self, slot: SlotId) -> Option<Stack>;
+    fn stack(&mut self, slot: SlotId) -> Option<Stack>;
     fn carried(&self) -> Option<Stack>;         // the stack on the cursor
-    fn takes_one(&self, slot: SlotId, of: &Stack) -> bool;   // the menu's rules: mayPlace, the slot's limit
-    fn landing(&self, slot: SlotId) -> Vec<SlotId>;          // where quickMoveStack would put its items
-    fn click(&mut self, slot: SlotId, click: Click) -> bool; // one ordinary click, as vanilla sends it
+    fn takes_one(&mut self, slot: SlotId, of: &Stack) -> bool;  // the menu's rules: mayPlace, the slot's limit
+    fn landing(&mut self, slot: SlotId) -> Vec<SlotId>;         // where quickMoveStack would put its items
+    fn click(&mut self, slot: SlotId, click: Click) -> bool;    // one ordinary click, as vanilla sends it
+    fn spread(&self) -> usize;                  // the slots vanilla's quick craft drag covers now
     fn cursor(&self) -> (f32, f32);             // GUI pixels, from the panel's corner
     fn shift(&self) -> bool;
-    fn order(&self, stack: &Stack) -> (u32, String);         // the creative tabs' order and the shown name
+    fn order(&mut self, slot: SlotId) -> (u32, String);         // the creative tabs' order and the shown name
 }
-pub struct SlotId(u32);                         // opaque, stable while the screen is open
+pub struct SlotId(pub u32);                     // opaque, stable while the screen is open
 pub struct Slot { pub id: SlotId, pub role: Role, pub x: f32, pub y: f32 }  // top left, from the panel's corner
-pub enum Role { Hotbar, Inventory, Storage, Input, Result, Armour, Offhand, Other }
+pub enum Role { Hotbar, Inventory, Storage, Input, Result, Equipment, Other }   // a crafting grid is Input
 pub struct Stack { pub item: String, pub count: u32, pub max: u32, pub kind: u64 }  // kind: equal for the same item and components
 pub enum Click { Pick { right: bool }, QuickMove, Put { one: bool } }               // Put: a one-slot QUICK_CRAFT drag
 
@@ -479,14 +480,16 @@ fn container_key(&self, c: &mut dyn Container, key: &str) -> bool;              
 fn container_draw(&self, c: &dyn Container, canvas: &mut dyn hud::Canvas);    // over the panel, from its corner
 ```
 
-- `true` means the hook took the input: vanilla's press, drag or wheel doesn't run, as Mouse Tweaks' right-drag
-  replaces vanilla's quick craft drag today. Every hook hears `release`. The first hook that returns `true`
-  wins.
+- `true` means the hook took the input: vanilla's press, drag or wheel doesn't run, and a press or drag taken
+  ends vanilla's quick craft drag, as Mouse Tweaks' right-drag replaces it. Every hook hears `release`. The
+  first hook that returns `true` wins.
 - Each `click` is an ordinary slot click: the menu engine's on the player's own world, a `ContainerClick` on a
   server. So an extra built on it works wherever vanilla's clicks do, and anticheats see vanilla's packets.
-  The crate decides which menus it acts in (by `menu()`). The engine offers every container screen, except
-  creative's tabs and the menus whose slots cost something (anvils, enchanting, merchants, beacons, crafters),
-  where `slots()` is empty.
+- The engine offers every menu screen's slots; the crate decides which menus it acts in, by `menu()` (Mouse
+  Tweaks stays out of those whose slots cost or trigger something: anvils, enchanting, merchants, beacons,
+  crafters). Creative's tabs are no container screen.
+- The reads that ask the menu's rules take `&mut self`, as the engine's do; drawing gets `&dyn Container`,
+  so it reads the rest only.
 - The engine builds a `Container` only when a hook is registered and a container screen gets input or draws.
   Without one there is no cost, and vanilla's handling is unchanged.
 - `order` is the only text: Sorting ranks by it. The rest is ids and numbers, so the API names no engine type
