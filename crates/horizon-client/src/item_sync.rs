@@ -138,6 +138,15 @@ pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
     out
 }
 
+/// `Consumable.hasConsumeParticles` from the stack's `consumable` component.
+pub fn consumable_particles(stack: &ItemStack) -> Option<bool> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    data.and_then(|d| d.other("minecraft:consumable"))
+        .map(|c| horizon_world::datafix::dynamic::as_bool(c.get("has_consume_particles"), true))
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
