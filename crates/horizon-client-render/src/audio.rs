@@ -478,6 +478,7 @@ pub struct Audio {
     pub record_heard: bool,
     pub listener: [f64; 3],
     pub listener_yaw: f32,
+    pub listener_pitch: f32,
     pub master: f32,
     /// Seeds of positional plays (the client level random's `nextLong`).
     random: LegacyRandom,
@@ -722,6 +723,29 @@ impl Backend for MixerBackend {
     fn set_unmuffled(&mut self, channel: ChannelId, unmuffled: bool) {
         self.with(channel, |c| c.unmuffled = unmuffled);
     }
+    fn update_channel(&mut self, channel: ChannelId, volume: f32, pitch: f32, position: [f64; 3]) {
+        if let Ok(mut m) = self.mixer.lock()
+            && let Some(c) = m.channels.get_mut(&channel)
+        {
+            c.gain = volume;
+            c.pitch = pitch;
+            c.at = [position[0] as f32, position[1] as f32, position[2] as f32];
+        }
+    }
+    fn filter_stopped(&mut self, live: &[(u64, ChannelId)], stopped: &mut Vec<u64>) {
+        if let Ok(m) = self.mixer.lock() {
+            for &(h, c) in live {
+                if m.channels
+                    .get(&c)
+                    .is_none_or(|ch| ch.state == State::Stopped)
+                {
+                    stopped.push(h);
+                }
+            }
+        } else {
+            stopped.extend(live.iter().map(|&(h, _)| h));
+        }
+    }
     /// `getCompleteBuffer` (cached, else decoded on the decoder thread) or
     /// `getStream` (decoded on a thread of its own), then attach and
     /// `alSourcePlay`. A sound that cannot load leaves its source initial,
@@ -822,18 +846,24 @@ impl Backend for MixerBackend {
 /// pinned client's) rendered through `ALC_SOFT_loopback` within 1e-5.
 fn stereo_gains(right: f32, up: f32, forward: f32) -> [f32; 2] {
     let length = (right * right + up * up + forward * forward).sqrt();
+    stereo_gains_with_length(right, up, forward, length)
+}
+#[inline]
+fn stereo_gains_with_length(right: f32, up: f32, forward: f32, length: f32) -> [f32; 2] {
     if length <= f32::EPSILON {
-        return stereo_gains(0.0, 0.0, 1.0);
+        return stereo_gains_with_length(0.0, 0.0, 1.0, 1.0);
     }
-    let elevation = (up / length).clamp(-1.0, 1.0).asin();
+    let u = (up / length).clamp(-1.0, 1.0);
+    let cos_elev = (1.0 - u * u).max(0.0).sqrt();
     let mut azimuth = right.atan2(forward);
     if azimuth.abs() < std::f32::consts::FRAC_PI_2 {
         azimuth = (azimuth.abs() * 1.5)
             .min(std::f32::consts::FRAC_PI_2)
             .copysign(azimuth);
     }
-    let side = azimuth.sin() * elevation.cos();
-    let front = azimuth.cos() * elevation.cos() * 0.095_660_8;
+    let (sin_az, cos_az) = azimuth.sin_cos();
+    let side = sin_az * cos_elev;
+    let front = cos_az * cos_elev * 0.095_660_8;
     [0.5 - 0.5 * side + front, 0.5 + 0.5 * side + front]
 }
 /// The gain OpenAL applies for distance (`AL_LINEAR_DISTANCE` with reference
@@ -853,16 +883,10 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
     // and OpenAL's right = forward x up.
     let basis = |yaw: f32, pitch: f32| {
         let (yaw, pitch) = (f64::from(yaw.to_radians()), f64::from(pitch.to_radians()));
-        let forward = [
-            -yaw.sin() * pitch.cos(),
-            -pitch.sin(),
-            yaw.cos() * pitch.cos(),
-        ];
-        let up = [
-            -yaw.sin() * pitch.sin(),
-            pitch.cos(),
-            yaw.cos() * pitch.sin(),
-        ];
+        let (yaw_sin, yaw_cos) = yaw.sin_cos();
+        let (pitch_sin, pitch_cos) = pitch.sin_cos();
+        let forward = [-yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos];
+        let up = [-yaw_sin * pitch_sin, pitch_cos, yaw_cos * pitch_sin];
         let right = [
             forward[1] * up[2] - forward[2] * up[1],
             forward[2] * up[0] - forward[0] * up[2],
@@ -896,7 +920,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
     // Gains and pans per source for this buffer.
     let mut voices = std::mem::take(&mut mixer.voices);
     voices.clear();
-    for (id, c) in &mixer.channels {
+    for (id, c) in &mut mixer.channels {
         let Some((_, source_rate, source_channels)) = &c.samples else {
             continue;
         };
@@ -907,6 +931,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         if c.state != State::Playing {
             continue;
         }
+
         let at = [f64::from(c.at[0]), f64::from(c.at[1]), f64::from(c.at[2])];
         let away = |listener: [f64; 3]| {
             [
@@ -915,45 +940,56 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 at[2] - listener[2],
             ]
         };
-        let length = |d: [f64; 3]| d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        // The nearest camera hears it (one camera but in splitscreen).
-        let camera = mixer
-            .cameras
-            .iter()
-            .filter(|camera| c.relative || camera.2 == c.world)
-            .min_by(|a, b| length(away(a.0)).total_cmp(&length(away(b.0))))
-            .map(|camera| (camera.0, camera.1));
-        // Unheard sources still advance: returning to a world must not resume stale sounds.
+        let length_sq = |d: [f64; 3]| d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        let camera = if !shared {
+            let cam = &mixer.cameras[0];
+            if c.relative || cam.2 == c.world {
+                Some((cam.0, cam.1))
+            } else {
+                None
+            }
+        } else {
+            mixer
+                .cameras
+                .iter()
+                .filter(|camera| c.relative || camera.2 == c.world)
+                .min_by(|a, b| length_sq(away(a.0)).total_cmp(&length_sq(away(b.0))))
+                .map(|camera| (camera.0, camera.1))
+        };
         let (listener, (forward, up, right)) = camera.unwrap_or(([0.0; 3], basis(0.0, 0.0)));
         let d = if c.relative { at } else { away(listener) };
-        let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
-        let gain = if camera.is_some() {
-            c.gain.clamp(0.0, 1.0)
-                * if direct {
-                    1.0
-                } else {
-                    distance_gain(c.linear, distance)
+        let d_sqr = length_sq(d);
+
+        let (gain, [left, right]) = if camera.is_none() {
+            (0.0, [0.0, 0.0])
+        } else if direct {
+            let gain = c.gain.clamp(0.0, 1.0);
+            (gain, [gain, gain])
+        } else {
+            let mut zero = false;
+            if let Some(max) = c.linear {
+                let max_d = max as f64;
+                if max <= 0.0 || (!c.relative && d_sqr >= max_d * max_d) {
+                    zero = true;
                 }
-        } else {
-            0.0
-        };
-        let [left, right] = if direct {
-            [gain, gain]
-        } else {
-            // Relative sources are already in OpenAL's listener space (-Z ahead).
-            let [mut left, mut right] = if c.relative {
-                stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
-            } else {
-                stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
-            };
-            if shared {
-                // Several players on the speakers: half the stereo width, as left and right are
-                // nobody's in particular.
-                let middle = (left + right) / 2.0;
-                left = middle + (left - middle) / 2.0;
-                right = middle + (right - middle) / 2.0;
             }
-            [left * gain, right * gain]
+            if zero {
+                (0.0, [0.0, 0.0])
+            } else {
+                let distance = d_sqr.sqrt() as f32;
+                let gain = c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance);
+                let [mut left, mut right] = if c.relative {
+                    stereo_gains_with_length(d[0] as f32, d[1] as f32, -d[2] as f32, distance)
+                } else {
+                    stereo_gains_with_length(dot(d, right), dot(d, up), dot(d, forward), distance)
+                };
+                if shared {
+                    let middle = (left + right) * 0.5;
+                    left = middle + (left - middle) * 0.5;
+                    right = middle + (right - middle) * 0.5;
+                }
+                (gain, [left * gain, right * gain])
+            }
         };
         let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
         voices.push((*id, [left, right, gain], step));
@@ -974,6 +1010,40 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         };
         let source_channels = source_channels as usize;
         let frames = samples.len() / source_channels;
+        let inaudible = if channels >= 2 {
+            left == 0.0 && right == 0.0
+        } else {
+            gain == 0.0
+        };
+        if inaudible {
+            let buffer_frames = data.len() / channels;
+            // As the loop below: a sound of one frame or none stops, looping or not.
+            if !c.looping || frames <= 1 {
+                // `frames` may be 0: no `frames - 1` in usize. A step of 0 never
+                // reaches the end, as in the loop below.
+                let needed = frames as f64 - 1.0 - c.position;
+                if needed <= 0.0 {
+                    c.state = State::Stopped;
+                } else if step > 0.0 {
+                    let steps_to_stop = needed / step;
+                    if (buffer_frames as f64) >= steps_to_stop {
+                        c.state = State::Stopped;
+                    } else {
+                        c.position += step * (buffer_frames as f64);
+                    }
+                }
+            } else {
+                for _ in 0..buffer_frames {
+                    let i = c.position as usize;
+                    if i + 1 >= frames {
+                        c.position = 0.0;
+                    }
+                    c.position += step;
+                }
+            }
+            continue;
+        }
+
         let out: &mut [f32] = if muffling && !c.unmuffled {
             &mut bus
         } else {
@@ -992,8 +1062,8 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             }
             let t = (c.position - i as f64) as f32;
             if source_channels > 1 {
-                let l = samples[i * 2] * (1.0 - t) + samples[(i + 1) * 2] * t;
-                let r = samples[i * 2 + 1] * (1.0 - t) + samples[(i + 1) * 2 + 1] * t;
+                let l = samples[i * 2] + (samples[(i + 1) * 2] - samples[i * 2]) * t;
+                let r = samples[i * 2 + 1] + (samples[(i + 1) * 2 + 1] - samples[i * 2 + 1]) * t;
                 if channels >= 2 {
                     frame[0] += l * left;
                     frame[1] += r * right;
@@ -1001,7 +1071,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                     frame[0] += (l + r) * 0.5 * gain;
                 }
             } else {
-                let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
+                let s = samples[i] + (samples[i + 1] - samples[i]) * t;
                 if channels >= 2 {
                     frame[0] += s * left;
                     frame[1] += s * right;
@@ -1412,6 +1482,7 @@ impl Audio {
             record_heard: false,
             listener: [0.0; 3],
             listener_yaw: 0.0,
+            listener_pitch: 0.0,
             master: 1.0,
             random: crate::random_source::create(),
             source_override: None,
@@ -1535,8 +1606,12 @@ impl Audio {
     /// `SoundManager.updateSource`: the camera position and rotation
     /// (`Listener.setTransform` takes its forward and up vectors).
     pub fn set_listener(&mut self, position: [f64; 3], yaw: f32, pitch: f32) {
+        if self.listener == position && self.listener_yaw == yaw && self.listener_pitch == pitch {
+            return;
+        }
         self.listener = position;
         self.listener_yaw = yaw;
+        self.listener_pitch = pitch;
         if let Ok(mut m) = self.backend.mixer.lock() {
             if self.backend.owner == 0 {
                 m.listener = position;
@@ -1576,6 +1651,7 @@ impl Audio {
             record_heard: false,
             listener: [0.0; 3],
             listener_yaw: 0.0,
+            listener_pitch: 0.0,
             master: self.master,
             random: crate::random_source::create(),
             source_override: None,
@@ -2109,6 +2185,25 @@ impl Audio {
             })
             .collect()
     }
+    /// Mixes one buffer of audio into `data` (channels: 1 or 2, rate in Hz).
+    pub fn mix_buffer(&mut self, data: &mut [f32], channels: usize, rate: u32) {
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            mix(&mut m, data, channels, rate);
+        }
+    }
+    #[doc(hidden)]
+    pub fn insert_cached_sound(&mut self, key: &str, samples: Vec<f32>, rate: u32, channels: u16) {
+        if let Ok(mut c) = self.backend.cache.lock() {
+            c.insert(
+                key.to_owned(),
+                Some((std::sync::Arc::new(samples), rate, channels)),
+            );
+        }
+    }
+    #[doc(hidden)]
+    pub fn backend_live_for_bench(&mut self) {
+        self.backend.live = true;
+    }
 }
 impl Sounds for Audio {
     fn engine(&mut self) -> &mut SoundEngine {
@@ -2611,6 +2706,25 @@ mod tests {
         mixer.worlds.insert(0, nether);
         mix(&mut mixer, &mut data, 2, 48_000);
         assert_eq!(data, [0.0; 4], "returning must not resume the old one-shot");
+    }
+
+    /// A sound of one frame or none, heard or not, looping or not, stops at its first
+    /// buffer as the mixing loop stops it: none stays playing (and holds its channel).
+    #[test]
+    fn sounds_too_short_to_mix_stop_even_unheard() {
+        for (samples, looping) in [(vec![], false), (vec![1.0], false), (vec![1.0], true)] {
+            let mut mixer = Mixer::default();
+            let mut source = channel(samples.clone(), None, [0.0; 3], looping);
+            source.gain = 0.0;
+            mixer.channels.insert(1, source);
+            let mut data = [0.0; 4];
+            mix(&mut mixer, &mut data, 2, 48_000);
+            assert_eq!(
+                mixer.channels[&1].state,
+                State::Stopped,
+                "{samples:?} {looping}"
+            );
+        }
     }
 
     #[test]

@@ -1,32 +1,19 @@
-//! Who plays: the top bar's quick switch (a menu under the account chip) and Settings' offline
-//! names (`horizon_launcher::account::Accounts::offline`).
-use super::servers_page::Field;
+//! Who plays: the top bar's quick switch (a menu under the account chip) between the signed-in
+//! Microsoft accounts.
 use super::*;
-use horizon_launcher::account::Player;
 
 impl Launcher {
     /// The chip's two lines: the name that plays, and how.
     pub(super) fn who_plays(&self) -> (String, &'static str) {
-        match self.accounts.player() {
-            Player::Microsoft(_) => (
-                self.accounts
-                    .selected()
-                    .map_or_else(String::new, |a| a.name.clone()),
-                tr("Microsoft account"),
-            ),
-            Player::Offline(name) => (name, tr("Offline")),
-            Player::GameName => (
-                self.offline_name.clone().unwrap_or_else(|| "Player".into()),
-                tr("Offline"),
-            ),
+        match self.accounts.selected() {
+            Some(a) => (a.name.clone(), tr("Microsoft account")),
+            None => (String::new(), tr("Sign in with Microsoft")),
         }
     }
 
-    pub(super) fn play_as(&mut self, who: Player) {
+    pub(super) fn play_as(&mut self, uuid: &str) {
         let mut accounts = Accounts::load();
-        let done = accounts
-            .play_as_with(account::store(), who, self.settings.dev_offline)
-            .and_then(|()| accounts.save());
+        let done = accounts.play_as(uuid).and_then(|()| accounts.save());
         match done {
             Ok(()) => self.accounts = accounts,
             Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
@@ -34,32 +21,13 @@ impl Launcher {
         self.account_menu = false;
     }
 
-    /// Everyone the player can play as, with how each signs in.
-    pub(super) fn players(&self) -> Vec<(Player, String, &'static str)> {
-        let mut out: Vec<_> = self
-            .accounts
+    /// Everyone the player can play as (each account's UUID and name), with how each signs in.
+    pub(super) fn players(&self) -> Vec<(String, String, &'static str)> {
+        self.accounts
             .accounts
             .iter()
-            .map(|a| {
-                (
-                    Player::Microsoft(a.uuid.clone()),
-                    a.name.clone(),
-                    tr("Microsoft"),
-                )
-            })
-            .collect();
-        out.extend(
-            self.accounts
-                .offline
-                .iter()
-                .map(|n| (Player::Offline(n.clone()), n.clone(), tr("Offline"))),
-        );
-        out.push((
-            Player::GameName,
-            self.offline_name.clone().unwrap_or_else(|| "Player".into()),
-            tr("Offline, the game's name"),
-        ));
-        out
+            .map(|a| (a.uuid.clone(), a.name.clone(), tr("Microsoft")))
+            .collect()
     }
 
     /// The menu under the account chip, while open.
@@ -68,7 +36,7 @@ impl Launcher {
             return None;
         }
         let t = self.theme;
-        let now = self.accounts.player();
+        let now = self.accounts.selected().map(|a| a.uuid.clone());
         let mut menu = div()
             .id("account-menu")
             .absolute()
@@ -88,7 +56,7 @@ impl Launcher {
                 cx.notify();
             }));
         for (i, (who, name, how)) in self.players().into_iter().enumerate() {
-            let chosen = who == now;
+            let chosen = Some(&who) == now.as_ref();
             menu = menu.child(
                 div()
                     .id(SharedString::from(format!("account-pick-{i}")))
@@ -101,15 +69,10 @@ impl Launcher {
                     .rounded(px(theme::RADIUS))
                     .cursor_pointer()
                     .hover(move |s| s.bg(t.plate_soft))
-                    .child(self.profile_heads.draw(
-                        match &who {
-                            Player::Microsoft(uuid) => Some(uuid),
-                            _ => None,
-                        },
-                        24.,
-                        self.scale,
-                        &t,
-                    ))
+                    .child(
+                        self.profile_heads
+                            .draw(Some(who.as_str()), 24., self.scale, &t),
+                    )
                     .child(
                         div()
                             .flex()
@@ -121,7 +84,7 @@ impl Launcher {
                     )
                     .when(chosen, |d| d.child(div().size(px(6.)).bg(t.accent)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.play_as(who.clone());
+                        this.play_as(&who);
                         cx.notify();
                     })),
             );
@@ -146,151 +109,5 @@ impl Launcher {
                 })),
         );
         Some(gpui::deferred(menu).with_priority(1))
-    }
-
-    fn add_offline_name(&mut self) {
-        let name = self.servers.value(Field::OfflineName).trim().to_string();
-        if name.is_empty() {
-            return;
-        }
-        self.play_as(Player::Offline(name));
-        if !matches!(self.sign_in_state, Some(SignInState::Done(Err(_)))) {
-            self.servers.text(Field::OfflineName).set(String::new());
-        }
-    }
-
-    /// Forgets an offline name and its skin.
-    pub(super) fn forget_offline(&mut self, name: &str) {
-        let mut accounts = Accounts::load();
-        if accounts
-            .remove_offline(name, &horizon_launcher::skins::dir())
-            .is_ok()
-            && accounts.save().is_ok()
-        {
-            self.accounts = accounts;
-        }
-    }
-
-    /// Enter in the offline name field.
-    pub(super) fn offline_name_enter(&mut self) {
-        self.add_offline_name();
-    }
-
-    /// Settings' rows for the offline names, after the Microsoft accounts: each with Play as
-    /// and Forget, then a field to add one.
-    pub(super) fn offline_rows(&mut self, mut n: usize, cx: &mut Context<Self>) -> (Div, usize) {
-        let t = self.theme;
-        let mut rows = div().flex().flex_col();
-        let now = self.accounts.player();
-        for (i, name) in self.accounts.offline.clone().into_iter().enumerate() {
-            let plays = now == Player::Offline(name.clone());
-            let mut actions = div().flex().gap(px(4.));
-            if !plays {
-                let who = Player::Offline(name.clone());
-                actions = actions.child(
-                    button(format!("offline-play-{i}"), "Play as", Kind::Secondary, &t).on_click(
-                        cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.play_as(who.clone());
-                            cx.notify();
-                        }),
-                    ),
-                );
-            }
-            let dressed = name.clone();
-            actions = actions.child(
-                button(format!("offline-skin-{i}"), "Skin…", Kind::Ghost, &t).on_click(
-                    cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.open_skin(dressed.clone());
-                        cx.notify();
-                    }),
-                ),
-            );
-            let forget = name.clone();
-            actions = actions.child(
-                button(format!("offline-forget-{i}"), "Forget", Kind::Ghost, &t).on_click(
-                    cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.forget_offline(&forget);
-                        cx.notify();
-                    }),
-                ),
-            );
-            n += 1;
-            rows = rows.child(index_row(
-                n,
-                name,
-                Some(
-                    div()
-                        .child(tr(if plays {
-                            "Offline name · plays"
-                        } else {
-                            "Offline name"
-                        }))
-                        .into_any_element(),
-                ),
-                Some(actions.into_any_element()),
-                &t,
-            ));
-        }
-        rows = rows.children(self.skin_panel(cx));
-        // The name the game made up can't be forgotten — it's what an offline player is —
-        // only rolled for a new one.
-        if let Some(made_up) = self.offline_name.clone() {
-            let plays = now == Player::GameName;
-            n += 1;
-            rows = rows.child(index_row(
-                n,
-                made_up,
-                Some(
-                    div()
-                        .child(tr(if plays {
-                            "Offline name · the game's own · plays"
-                        } else {
-                            "Offline name · the game's own"
-                        }))
-                        .into_any_element(),
-                ),
-                Some(
-                    button("game-name-new", "New name", Kind::Ghost, &t)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            match instances::new_player_name() {
-                                Ok(name) => this.offline_name = Some(name),
-                                Err(e) => this.sign_in_state = Some(SignInState::Done(Err(e))),
-                            }
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ),
-                &t,
-            ));
-        }
-        n += 1;
-        let add = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(self.field(Field::OfflineName, tr("A name, 3 to 16 letters"), 220., cx))
-            .child(
-                button("offline-add", "Add", Kind::Secondary, &t).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.add_offline_name();
-                        cx.notify();
-                    },
-                )),
-            );
-        rows = rows.child(index_row(
-            n,
-            tr("Offline name"),
-            Some(
-                div()
-                    .child(tr(
-                        "Play offline under another name, and switch from the top bar. Online \
-                         servers don't take offline names.",
-                    ))
-                    .into_any_element(),
-            ),
-            Some(add.into_any_element()),
-            &t,
-        ));
-        (rows, n)
     }
 }

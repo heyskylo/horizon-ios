@@ -8,7 +8,8 @@ use crate::{
     gfx::EffectiveOutput,
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
-        LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
+        HdrSetup as Setup, LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode,
+        Preset, Upscaling,
     },
     graphics_style::Cost,
     lang,
@@ -675,28 +676,9 @@ const LOD_STEPS: [u32; 24] = [
     crate::lod::MAX_CHUNKS,
 ];
 
-/// Whether the system set HDR up for the display, and whether the player kept it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Setup {
-    /// The system says nothing: the player calibrates.
-    Unknown,
-    /// Peak Brightness and Paper White follow the system.
-    Automatic,
-    /// The system said, and the player changed them anyway.
-    Changed,
-}
 /// `out`: the output of the renderer the settings are shown for, with what its display reports.
 fn setup(s: &Settings, out: &EffectiveOutput) -> Setup {
-    setup_of(&s.horizon, out.reported.is_some())
-}
-fn setup_of(g: &crate::graphics::Graphics, reported: bool) -> Setup {
-    if !reported {
-        Setup::Unknown
-    } else if g.hdr_peak == 0 && g.hdr_paper_white == 0 {
-        Setup::Automatic
-    } else {
-        Setup::Changed
-    }
+    s.horizon.hdr_setup(out.reported)
 }
 /// What the HDR page says while HDR output is held back on this window's graphics driver
 /// (`EffectiveOutput::held`): picking a mode tries again (`H::cycle`).
@@ -714,13 +696,19 @@ fn description(
         (Item::Horizon(H::HdrCalibrate), Setup::Unknown) => {
             "Your display didn't say how bright it gets: calibrate to set it up."
         }
+        (Item::Horizon(H::HdrCalibrate), Setup::Guessed) => {
+            "Your display's reported peak is often too high: calibrate to set it up."
+        }
         (Item::Horizon(H::HdrCalibrate), Setup::Automatic) => {
             "Already set up for your display. Only calibrate if HDR looks wrong."
         }
         (Item::Horizon(H::HdrCalibrate), Setup::Changed) => {
             "Puts Peak Brightness and Paper White back to your display's setup."
         }
-        (Item::Horizon(H::HdrPeak | H::HdrPaperWhite), Setup::Automatic | Setup::Changed) => {
+        // A guessed peak's Auto is what calibration replaced; paper white is the player's own.
+        (Item::Horizon(h @ (H::HdrPeak | H::HdrPaperWhite)), Setup::Automatic | Setup::Changed)
+            if h == H::HdrPaperWhite || out.reported.is_some_and(|r| !r.peak_guessed) =>
+        {
             "Set up for your display. Leave on Auto unless it looks wrong."
         }
         (Item::Horizon(H::GpuCulling), _) if s.horizon.gpu_culling == GpuCullingMode::Auto => {
@@ -944,7 +932,7 @@ impl H {
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
             H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s, out) {
-                Setup::Unknown => "Calibrate...",
+                Setup::Unknown | Setup::Guessed => "Calibrate...",
                 Setup::Automatic => "Calibrate Anyway...",
                 Setup::Changed => "Use Automatic Setup",
             })),
@@ -1122,7 +1110,8 @@ impl Item {
     /// active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
     /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
-    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
+    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't. HDR
+    /// Lighting has nothing to switch where the running shader pack lights the world itself.
     fn blocked(self, s: &Settings, out: &EffectiveOutput) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -1153,6 +1142,9 @@ impl Item {
             } else {
                 "Turn HDR on to use it."
             }),
+            Item::Horizon(H::HdrLighting) if out.pack_lights => {
+                Some("The shader pack lights the world itself.")
+            }
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
             {

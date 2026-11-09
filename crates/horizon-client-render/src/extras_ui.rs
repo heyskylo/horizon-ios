@@ -112,7 +112,11 @@ fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
                     };
                     Row::new(id, lang::get(label), value)
                 }
-                added::Row::Button { label } => Row::new(id, lang::get(label), Value::Press),
+                added::Row::Button {
+                    label,
+                    active: true,
+                    ..
+                } => Row::new(id, lang::get(label), Value::Press),
                 added::Row::Key { label, key } => {
                     let key = crate::keybinds::display_name(&key).plain();
                     Row::new(id, lang::get(label), Value::Read(key))
@@ -473,9 +477,7 @@ mod tests {
             added::Place::HorizonSettings
         }
         fn rows(&self, rows: &mut Vec<added::Row>) {
-            rows.push(added::Row::Button {
-                label: "test.elsewhere.button",
-            });
+            rows.push(added::Row::button("test.elsewhere.button"));
         }
         fn act(&self, _: usize, _: Act) {}
     }

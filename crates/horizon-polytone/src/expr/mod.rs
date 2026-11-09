@@ -3,6 +3,7 @@
 //! loads, with every name resolved, and then evaluated against a [`Host`], the game side that
 //! answers context objects (`o`, `p`, `g`...) and their methods.
 mod colors;
+mod fast;
 mod legacy;
 mod lex;
 mod parse;
@@ -68,6 +69,36 @@ impl Root {
     }
 }
 
+/// A method without arguments that expressions read most, resolved when the program compiles so
+/// a host can answer it without comparing names ([`Host::field`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Age,
+    Life,
+    Custom,
+    X,
+    Y,
+    Z,
+    Temperature,
+    Downfall,
+}
+
+impl Field {
+    pub(crate) fn of(name: &str) -> Option<Self> {
+        Some(match name {
+            "age" => Self::Age,
+            "life" => Self::Life,
+            "custom" => Self::Custom,
+            "x" => Self::X,
+            "y" => Self::Y,
+            "z" => Self::Z,
+            "temperature" => Self::Temperature,
+            "downfall" => Self::Downfall,
+            _ => return None,
+        })
+    }
+}
+
 /// What the game answers while an expression runs.
 pub trait Host {
     fn root(&mut self, root: Root) -> Value;
@@ -76,6 +107,12 @@ pub trait Host {
     fn method(&mut self, target: &Value, name: &str, args: &[Value]) -> Result<Value, String>;
     /// A global function of the game's (`config`, `colormap`, `modOn`, `date*`).
     fn function(&mut self, name: &str, args: &[Value]) -> Result<Value, String>;
+    /// `root.field()` answered without its name, or `None` to answer it through [`Self::method`]:
+    /// a host that answers must give what `method` would.
+    fn field(&mut self, root: Root, field: Field) -> Option<Value> {
+        let _ = (root, field);
+        None
+    }
 }
 
 type MathFn = fn(&[f64]) -> f64;
@@ -139,13 +176,16 @@ pub(crate) const MATH: &[(&str, usize, usize, MathFn)] = &[
 pub struct Program {
     body: Vec<Stmt>,
     locals: usize,
+    /// The same program on the numeric fast path, when it is one (`fast.rs`).
+    fast: Option<fast::Fast>,
 }
 
 impl Program {
     /// Parses `src`; a syntax error or an unknown name fails here.
     pub fn compile(src: &str) -> Result<Self, String> {
         let (body, locals) = parse::parse(src)?;
-        Ok(Self { body, locals })
+        let fast = fast::Fast::of(&body, locals);
+        Ok(Self { body, locals, fast })
     }
 
     /// Whether the program reads nothing of its context but the `root.name()` methods `allowed`
@@ -185,6 +225,15 @@ impl Program {
     /// Runs the statements; the result is the last statement's value (an assignment's is the
     /// value it stored).
     pub fn eval(&self, host: &mut dyn Host) -> Result<Value, String> {
+        if let Some(fast) = &self.fast {
+            return fast.eval(host);
+        }
+        self.interpret(host)
+    }
+
+    /// Runs the statements through the interpreter (what [`Self::eval`] does for a program the
+    /// fast path doesn't cover).
+    fn interpret(&self, host: &mut dyn Host) -> Result<Value, String> {
         let mut run = Run {
             host,
             locals: vec![Value::Null; self.locals],

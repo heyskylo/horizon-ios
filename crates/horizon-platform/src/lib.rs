@@ -54,7 +54,10 @@ pub mod hooks {
         Look, Mark, Mesh, Motion, NameDecoration, PartPoses, Particle, Pass, PlayerDraw,
         PlayerModel, PlayerModels, Quad, SpriteStore, Sprites, View,
     };
-    pub use horizon_hooks::{Hooks, Started, TooLate, register, seat, tunnel};
+    pub use horizon_hooks::{
+        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, seat,
+        tunnel,
+    };
 }
 
 /// The settings store (`horizon_hooks::settings`): a crate's own `key:value` lines in the game
@@ -71,4 +74,13 @@ pub mod pages {
 /// Drawing on the HUD (docs/layers.md, "Platform registries").
 pub mod hud {
     pub use horizon_hooks::hud::{Canvas, Corner, Layer, register};
+}
+
+/// The multiplayer server list as vanilla stores it (`servers.dat`): read, write, add, remove,
+/// and the lock held while it is read and written back.
+#[cfg(feature = "protocol")]
+pub mod servers {
+    pub use horizon_protocol::servers::{
+        ServerEntry, load, lock, parse_address, prepend, remove_where, save,
+    };
 }

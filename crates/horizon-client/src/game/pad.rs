@@ -679,26 +679,6 @@ impl Game<'_> {
         gamepad::move_vector(self.pad.state.left, settings.move_deadzone)
     }
 
-    /// Whether `key` is held, a movement key by the left stick too: as the keys the stick holds
-    /// (`eight_direction_keys`), whatever moves the player. For readers of the keys that aren't
-    /// the movement itself.
-    pub(super) fn movement_key_held(&self, key: KeyCode) -> bool {
-        if self.keys.raw(&key) {
-            return true;
-        }
-        let Some(stick) = self.pad_move() else {
-            return false;
-        };
-        let [forward, backward, left, right] = gamepad::eight_direction_keys(stick);
-        match key {
-            KeyCode::KeyW => forward,
-            KeyCode::KeyS => backward,
-            KeyCode::KeyA => left,
-            KeyCode::KeyD => right,
-            _ => false,
-        }
-    }
-
     /// The right stick turns the view, once per frame (`Entity.turn`).
     pub(super) fn pad_look(&mut self, seconds: f32) {
         let settings = &self.settings.controller;

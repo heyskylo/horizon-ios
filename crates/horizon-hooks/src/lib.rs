@@ -87,6 +87,69 @@ pub trait Hooks: Sync {
     fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
         None
     }
+
+    /// A game window opened: once, before the first frame, for every run that has a window,
+    /// automated ones included ([`Client::automated`]); never for a dedicated server.
+    fn client_started(&self, _client: &Client) {}
+
+    /// What the player is doing, for a status shown outside the game (Discord's): called when it
+    /// changes, not every frame. Splitscreen: the first player's only.
+    fn activity(&self, _now: Activity) {}
+}
+
+/// What [`Hooks::client_started`] gets.
+#[non_exhaustive]
+pub struct Client {
+    /// A run nobody plays: offscreen, a benchmark, a run that quits by itself after some frames.
+    pub automated: bool,
+}
+
+impl Client {
+    pub fn new(automated: bool) -> Self {
+        Self { automated }
+    }
+}
+
+/// What the player is doing ([`Hooks::activity`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Activity {
+    /// On the title screen or another menu outside a world.
+    Menus,
+    World {
+        play: Play,
+        dimension: Dimension,
+        mode: GameMode,
+    },
+}
+
+/// How the player is in a world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Play {
+    Singleplayer,
+    /// A server or someone else's LAN world.
+    Multiplayer,
+    /// Their world is open to LAN or friends; `players` counts the host, `max` is how many may
+    /// join.
+    Hosting {
+        players: usize,
+        max: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dimension {
+    Overworld,
+    Nether,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameMode {
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
 }
 
 /// What [`Hooks::started`] gets.
@@ -94,11 +157,14 @@ pub trait Hooks: Sync {
 pub struct Started<'a> {
     /// The build: the release tag (`0.2.31`), or `dev <crate version>` for a build from source.
     pub version: &'a str,
+    /// The player's game folder: servers.dat, options.txt and saves (the working directory unless
+    /// `--game-dir` names another).
+    pub game_dir: &'a std::path::Path,
 }
 
 impl<'a> Started<'a> {
-    pub fn new(version: &'a str) -> Self {
-        Self { version }
+    pub fn new(version: &'a str, game_dir: &'a std::path::Path) -> Self {
+        Self { version, game_dir }
     }
 }
 
@@ -175,6 +241,32 @@ pub mod engine {
         if !hooks.is_empty() && PUBLISHED.swap(open, Ordering::Relaxed) != open {
             for h in hooks {
                 h.published(open);
+            }
+        }
+    }
+
+    /// [`Hooks::client_started`].
+    pub fn client_started(client: &Client) {
+        for hooks in all() {
+            hooks.client_started(client);
+        }
+    }
+
+    /// The activity at the last call (`None` before the first).
+    static ACTIVITY: std::sync::Mutex<Option<Activity>> = std::sync::Mutex::new(None);
+
+    /// [`Hooks::activity`], when `now` differs from the last call's. Cheap enough to call every
+    /// frame: with no hook registered it only loads the empty list.
+    pub fn activity(now: Activity) {
+        let hooks = all();
+        if hooks.is_empty() {
+            return;
+        }
+        let mut last = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner());
+        if last.replace(now) != Some(now) {
+            drop(last);
+            for h in hooks {
+                h.activity(now);
             }
         }
     }
@@ -262,6 +354,9 @@ mod tests {
         }
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
+        }
+        fn activity(&self, now: Activity) {
+            self.0.lock().unwrap().push(format!("{now:?}"));
         }
         fn frame(&self, frame: &players::Frame, sprites: &mut dyn players::SpriteStore) {
             self.0
@@ -438,10 +533,18 @@ mod tests {
     fn registered_hooks_hear_the_game_and_late_ones_are_refused() {
         register(&RECORDER).unwrap();
         register(&Silent).unwrap();
-        engine::started(&Started::new("0.2.31"));
+        engine::started(&Started::new("0.2.31", std::path::Path::new("game")));
         // Changes only: the same state every frame is said once.
         for open in [false, true, true, true, false, false] {
             engine::published(open);
+        }
+        let world = Activity::World {
+            play: Play::Singleplayer,
+            dimension: Dimension::Nether,
+            mode: GameMode::Creative,
+        };
+        for now in [Activity::Menus, Activity::Menus, world, world] {
+            engine::activity(now);
         }
         engine::shutdown();
         assert!(engine::any());
@@ -484,6 +587,8 @@ mod tests {
                 "started 0.2.31",
                 "published true",
                 "published false",
+                "Menus",
+                "World { play: Singleplayer, dimension: Nether, mode: Creative }",
                 "frame 4"
             ]
         );
