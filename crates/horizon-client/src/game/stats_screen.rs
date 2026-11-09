@@ -156,6 +156,52 @@ const COLUMNS: [(&str, &str); 6] = [
     ("picked_up", "gui/sprites/statistics/item_picked_up"),
     ("dropped", "gui/sprites/statistics/item_dropped"),
 ];
+/// `ItemStatisticsList`'s rows: items with a positive item column, plus
+/// `Block.asItem` (`block_item`) of blocks with a positive `mined` count,
+/// whose stat is keyed by block; air is dropped.
+fn item_rows(stats: &super::stats::Stats, block_item: impl Fn(&str) -> String) -> Vec<String> {
+    let mut items: Vec<String> = Vec::new();
+    for (ty, _) in COLUMNS {
+        for (k, v) in stats
+            .values
+            .get(&format!("minecraft:{ty}"))
+            .into_iter()
+            .flatten()
+        {
+            let item = if ty == "mined" {
+                block_item(k)
+            } else {
+                k.clone()
+            };
+            if *v > 0 && item != "minecraft:air" && !items.contains(&item) {
+                items.push(item);
+            }
+        }
+    }
+    items
+}
+/// `ItemRow`'s value in column `ty`: `mined` is the count of a `BlockItem`'s
+/// block (`item_block`, `BlockItem.getBlock`), none ("-") for other items.
+fn item_stat(
+    stats: &super::stats::Stats,
+    ty: &str,
+    item: &str,
+    item_block: impl Fn(&str) -> Option<String>,
+) -> Option<i32> {
+    if ty == "mined" {
+        item_block(item).map(|block| stats.get(ty, &block))
+    } else {
+        Some(stats.get(ty, item))
+    }
+}
+/// `ItemRowComparator.compare`: by the column's value (-1 for none), equal
+/// values by item registry id, the whole order reversed when `order` is -1.
+fn sort_rows(rows: &mut [String], order: i32, key: impl Fn(&str) -> (i32, usize)) {
+    rows.sort_by_cached_key(|i| key(i));
+    if order < 0 {
+        rows.reverse();
+    }
+}
 #[derive(Default)]
 pub(super) struct StatsUi {
     tab: usize,
@@ -275,21 +321,27 @@ impl Game<'_> {
     }
     /// Items (and block items) with any non-zero column.
     fn stat_items(&self) -> Vec<String> {
-        let mut items: Vec<String> = Vec::new();
-        for (ty, _) in COLUMNS {
-            if let Some(m) = self.stats.values.get(&format!("minecraft:{ty}")) {
-                for (k, v) in m {
-                    if *v > 0 && k != "minecraft:air" && !items.contains(k) {
-                        items.push(k.clone());
-                    }
-                }
-            }
-        }
+        let mut items = item_rows(&self.stats, |block| {
+            self.pack.assets.registry.default_state(block).map_or_else(
+                || "minecraft:air".to_owned(),
+                |s| self.res.facts().get(s).item.to_string(),
+            )
+        });
         if let Some((col, order)) = self.stats_ui.sort {
             let ty = COLUMNS[col].0;
-            items.sort_by_key(|i| self.stats.get(ty, i) * -order);
+            let ids = &self.res.items().registry_order;
+            sort_rows(&mut items, order, |i| {
+                let id = ids.iter().position(|x| **x == *i).unwrap_or(usize::MAX);
+                (self.stat_item(ty, i).unwrap_or(-1), id)
+            });
         }
         items
+    }
+    fn stat_item(&self, ty: &str, item: &str) -> Option<i32> {
+        item_stat(&self.stats, ty, item, |i| {
+            let state = self.res.items().get(i)?.block?;
+            Some(self.res.facts().get(state).name.to_string())
+        })
     }
     fn stat_mobs(&self) -> Vec<String> {
         let mut mobs: Vec<String> = Vec::new();
@@ -563,16 +615,9 @@ impl Game<'_> {
                     };
                     for (c, (ty, _)) in COLUMNS.iter().enumerate() {
                         let x = left + 75.0 + 40.0 * c as f32;
-                        let block = c == 0
-                            && self
-                                .res
-                                .items()
-                                .get(item)
-                                .is_some_and(|i| i.block.is_some());
-                        let text = if c == 0 && !block {
-                            Text::translate("stats.none", &[]).plain()
-                        } else {
-                            format(Format::Default, self.stats.get(ty, item))
+                        let text = match self.stat_item(ty, item) {
+                            Some(v) => format(Format::Default, v),
+                            None => Text::translate("stats.none", &[]).plain(),
                         };
                         let tw = HudBatch::text_width(atlas, &text);
                         batch.text(atlas, &text, x - tw, (y + 7.0).floor(), color, true);
@@ -743,6 +788,87 @@ impl Game<'_> {
 mod tests {
     use super::*;
     use winit::keyboard::KeyCode::{Digit0, Digit1, Digit2, Digit3, Numpad8, Tab};
+
+    /// `ItemStatisticsList`: a mined block's row is its item (`Block.asItem`),
+    /// air dropped, and a `BlockItem`'s Mined column reads its block's count.
+    /// The block <-> item pairs are vanilla 26.3's (`Items`: wheat seeds place
+    /// wheat, redstone places redstone wire, a torch places torch and wall
+    /// torch; water has no item).
+    #[test]
+    fn mined_blocks_count_under_the_item_that_places_them() {
+        let mut stats = super::super::stats::Stats::default();
+        stats.add("mined", "minecraft:wheat", 3);
+        stats.add("mined", "minecraft:redstone_wire", 5);
+        stats.add("mined", "minecraft:wall_torch", 7);
+        stats.add("mined", "minecraft:torch", 2);
+        stats.add("mined", "minecraft:water", 4);
+        stats.add("used", "minecraft:wheat_seeds", 1);
+        stats.add("crafted", "minecraft:stick", 6);
+        let block_item = |b: &str| {
+            match b {
+                "minecraft:wheat" => "minecraft:wheat_seeds",
+                "minecraft:redstone_wire" => "minecraft:redstone",
+                "minecraft:wall_torch" | "minecraft:torch" => "minecraft:torch",
+                _ => "minecraft:air",
+            }
+            .to_owned()
+        };
+        let item_block = |i: &str| {
+            match i {
+                "minecraft:wheat_seeds" => Some("minecraft:wheat"),
+                "minecraft:redstone" => Some("minecraft:redstone_wire"),
+                "minecraft:torch" => Some("minecraft:torch"),
+                _ => None,
+            }
+            .map(str::to_owned)
+        };
+        let mut rows = item_rows(&stats, block_item);
+        rows.sort();
+        assert_eq!(
+            rows,
+            [
+                "minecraft:redstone",
+                "minecraft:stick",
+                "minecraft:torch",
+                "minecraft:wheat_seeds"
+            ]
+        );
+        let mined = |i: &str| item_stat(&stats, "mined", i, item_block);
+        assert_eq!(mined("minecraft:wheat_seeds"), Some(3));
+        assert_eq!(mined("minecraft:redstone"), Some(5));
+        assert_eq!(
+            mined("minecraft:torch"),
+            Some(2),
+            "the torch block's own count"
+        );
+        assert_eq!(mined("minecraft:stick"), None, "not a block item: '-'");
+        assert_eq!(
+            item_stat(&stats, "used", "minecraft:wheat_seeds", item_block),
+            Some(1)
+        );
+    }
+
+    /// `ItemRowComparator` with `sortByColumn`'s first click (order -1): the
+    /// biggest value first, "-" (-1) last, equal values by item registry id,
+    /// that order reversed too; the second click (order 1) is the mirror.
+    #[test]
+    fn item_rows_sort_by_value_then_registry_id() {
+        let rows = || ["c", "a", "none", "b", "d"].map(str::to_owned);
+        // (value, registry id)
+        let key = |i: &str| match i {
+            "a" => (5, 0),
+            "b" => (2, 1),
+            "c" => (5, 2),
+            "d" => (0, 3),
+            _ => (-1, 4),
+        };
+        let mut down = rows();
+        sort_rows(&mut down, -1, key);
+        assert_eq!(down, ["c", "a", "b", "d", "none"]);
+        let mut up = rows();
+        sort_rows(&mut up, 1, key);
+        assert_eq!(up, ["none", "d", "b", "a", "c"]);
+    }
 
     /// `StatsScreen.keyPressed`: with Control held the tab bar takes the key -
     /// Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs, Ctrl+1..9 pick one (Ctrl+0
