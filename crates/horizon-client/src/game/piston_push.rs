@@ -183,7 +183,7 @@ impl Game<'_> {
                 )
                 .map(|c| (c.drag, c.surface))
             });
-            let tops: Vec<[i32; 3]> = p.bubble_surfaces.drain(..).collect();
+            let tops = std::mem::take(&mut p.bubble_surfaces);
             for [x, y, z] in tops {
                 self.bubble_column_particles(BlockPos::new(x, y, z));
             }
