@@ -1,10 +1,16 @@
 //! Play with Friends left out of the build (the `friends` feature off, as in the server build):
-//! no world is shared, the pause menu has no Friends button (`FriendsView::shown` is false, as on
+//! no world is shared, the pause menu has no Friends button (`friends_shown` is false, as on
 //! another server) and `horizon-ctl friends` says it isn't there. game/friends.rs is the real one.
 use super::{Game, Screen};
-use horizon_client::{Result, friends_screen::FriendsView, hud::HudBatch};
+use horizon_client::{Result, hud::HudBatch};
 
 pub const HELP: &[&str] = &[];
+
+/// The pause menu's Friends icon is vanilla's, drawn inactive: its name for the widget tree.
+pub const TITLE: &str = "Play with Friends";
+pub fn title() -> String {
+    horizon_client::lang::get_or("horizon.friends.title", TITLE)
+}
 
 impl Game<'_> {
     pub(super) fn friends_lan_closed(&mut self) {}
@@ -18,8 +24,8 @@ impl Game<'_> {
 
     pub(super) fn friends_screen_click(&mut self) {}
 
-    pub(super) fn friends_view(&self) -> FriendsView {
-        FriendsView::default()
+    pub(super) fn friends_shown(&self) -> bool {
+        false
     }
 
     /// `horizon-ctl friends ...`.

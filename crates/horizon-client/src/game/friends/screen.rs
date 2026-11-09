@@ -1,9 +1,9 @@
 //! Play with Friends: Horizon's own sharing of the open world behind an
-//! invite code (`game/friends.rs`). The pause menu's Friends button, the icon
+//! invite code (`game/friends.rs`), with the rest of Play with Friends' game glue. The pause menu's Friends button, the icon
 //! vanilla's PauseScreen already has, opens it. It is drawn the way a mod adds
 //! a screen to vanilla: the menu background, a centred title and text,
 //! vanilla's buttons and Done in the footer.
-use crate::{
+use horizon_client::{
     hud::{HudAtlas, HudBatch, rgba},
     multiplayer::wrap,
     text::Text,
@@ -14,7 +14,7 @@ use crate::{
 pub const TITLE: &str = "Play with Friends";
 /// A string of this screen: the language table's, or the English text.
 fn tr(key: &str, english: &str) -> String {
-    crate::lang::get_or(key, english)
+    horizon_client::lang::get_or(key, english)
 }
 /// The title in the current language.
 pub fn title() -> String {
@@ -245,8 +245,8 @@ pub fn draw(
     for b in buttons {
         let hover = b.active && ui::hovered(cursor, b.x, b.y, b.w, 20.0);
         if matches!(b.action, Action::Done) {
-            crate::widgets::declare_action(
-                crate::widgets::Action::Done,
+            horizon_client::widgets::declare_action(
+                horizon_client::widgets::Action::Done,
                 [b.x, b.y, b.w, 20.0],
                 b.active,
             );
