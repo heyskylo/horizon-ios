@@ -837,3 +837,57 @@ impl Game<'_> {
         self.adv_scroll_by(&view, f64::from(x) * 16.0, f64::from(y) * 16.0);
     }
 }
+
+#[cfg(test)]
+mod seen_advancement_tests {
+    use super::*;
+    use horizon_protocol::buf::{Codec, Reader, Writer};
+    use horizon_protocol::packets::play::SeenAdvancements;
+
+    /// `ServerboundSeenAdvancementsPacket.openedTab` and `closedScreen`: an
+    /// opened tab is action 0 with its advancement id, a closed screen action
+    /// 1 with no id at all.
+    #[test]
+    fn an_opened_tab_carries_its_id_and_a_close_carries_none() {
+        assert_eq!(
+            opened_tab("minecraft:story/root"),
+            SeenAdvancements {
+                action: 0,
+                tab: Some("minecraft:story/root".into()),
+            }
+        );
+        assert_eq!(
+            closed_screen(),
+            SeenAdvancements {
+                action: 1,
+                tab: None,
+            }
+        );
+    }
+
+    /// The wire form `handleSeenAdvancements` reads back: the id follows only
+    /// action 0, so a close is two bytes and a read of it yields no tab.
+    #[test]
+    fn a_closed_screen_writes_no_identifier() {
+        let mut w = Writer::new();
+        SeenAdvancements::write(&closed_screen(), &mut w);
+        let bytes = w.data;
+        assert_eq!(bytes, vec![1]);
+        let mut r = Reader::new(&bytes);
+        assert_eq!(
+            SeenAdvancements::read(&mut r).unwrap(),
+            SeenAdvancements {
+                action: 1,
+                tab: None,
+            }
+        );
+        let mut w = Writer::new();
+        SeenAdvancements::write(&opened_tab("minecraft:story/root"), &mut w);
+        let bytes = w.data;
+        let mut r = Reader::new(&bytes);
+        assert_eq!(
+            SeenAdvancements::read(&mut r).ok(),
+            Some(opened_tab("minecraft:story/root"))
+        );
+    }
+}
