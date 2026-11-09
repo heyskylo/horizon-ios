@@ -449,7 +449,7 @@ A press gives `Output::Bind(capture)`; the host's `shell_events` starts the wait
 on back to `Hosted::draw`.
 
 ```rust
-// A key, as Extras' sort key and Graphics' HDR shortcut have it:
+// A key, as Extras' sort key has it:
 Row::new(row, name, Value::Binding(Binding::key(extras::SORT_KEY, key_name)))
 
 // A controller button, as Controller Settings > Bindings has each action, in the player's

@@ -1008,7 +1008,10 @@ impl Game<'_> {
                 p.position.z - center[2],
             ];
             let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            self.pad_rumble(horizon_client::gamepad::Rumble::Explosion { distance, radius });
+            self.input_feedback(horizon_client::input_source::Feedback::Explosion {
+                distance,
+                radius,
+            });
         }
         // Explosion.explode: the blast is heard.
         let ctx = horizon_client::sculk::Context::default();
@@ -1196,6 +1199,51 @@ impl Game<'_> {
             );
         }
         Ok(())
+    }
+
+    /// ServerExplosion: rays from a 16^3 grid lose (resistance + 0.3) * 0.3 per step.
+    /// A mob explosion (`ServerLevel.explode` with `ExplosionInteraction.MOB`:
+    /// blocks are kept without mobGriefing, else the mob_explosion_drop_decay
+    /// rule picks decay).
+    pub(super) fn explode(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        self.explode_mob(center, radius, false, source)
+    }
+
+    /// `ServerLevel.explode` with `ExplosionInteraction.MOB` and the caller's fire flag.
+    pub(super) fn explode_mob(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        fire: bool,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            BlockInteraction::Keep
+        } else {
+            self.destroy_type("mob_explosion_drop_decay")
+        };
+        self.server_explode_from(center, radius, interaction, fire, source)
+    }
+
+    /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
+    /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
+    pub(super) fn explode_sulfur_cube(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            BlockInteraction::Keep
+        } else {
+            self.destroy_type("tnt_explosion_drop_decay")
+        };
+        self.server_explode_from(center, radius, interaction, false, source)
     }
 }
 

@@ -332,3 +332,62 @@ fn every_extra_area_loads_however_the_areas_change() {
     settle(&mut streaming, &mut world);
     assert_eq!(missing(&world, &second), []);
 }
+
+/// Finished meshes the game has not uploaded yet count against the room for
+/// new mesh jobs, as the jobs in flight do: while uploads fall behind (a low
+/// frame rate at a wide render distance) meshing waits instead of piling up
+/// gigabytes of meshes, and it resumes once the game takes them.
+#[test]
+fn meshes_waiting_for_upload_hold_back_new_mesh_jobs() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let render = Arc::new(assets.reload(&root).unwrap());
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let visibility = models::load_visibility(&root, assets.registry).unwrap();
+    let context = Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(Biomes::load(&root).unwrap()),
+        assets,
+        render,
+    });
+    let workers = 3;
+    let mut streaming = Streaming::new(Arc::new(Saved), context, workers);
+    streaming.radius = 2;
+    let mut world = World::new(BlockStateId(0), 0);
+    let settle = |streaming: &mut Streaming, world: &mut World| {
+        let mut meshed = HashSet::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut quiet = 0;
+        while quiet < 40 {
+            assert!(Instant::now() < deadline, "streaming never settled");
+            let before = (world.chunks.len(), meshed.len());
+            let (uploads, _) = streaming.update(world);
+            meshed.extend(uploads.iter().map(|(key, _)| *key));
+            streaming.free(uploads);
+            thread::sleep(Duration::from_millis(5));
+            let idle = !streaming.busy() && before == (world.chunks.len(), meshed.len());
+            quiet = if idle { quiet + 1 } else { 0 };
+        }
+        meshed
+    };
+    // The game holds as many meshes as the workers' whole room (32 each).
+    streaming.upload_backlog = workers * 32;
+    assert_eq!(
+        settle(&mut streaming, &mut world).len(),
+        0,
+        "sections meshed"
+    );
+    assert!(world.chunks.contains_key(&(0, 0)), "the columns still load");
+    // The game uploaded them: the columns in range mesh.
+    streaming.upload_backlog = 0;
+    let meshed = settle(&mut streaming, &mut world);
+    for sy in 0..HEIGHT / 16 {
+        assert!(
+            meshed.contains(&(0, sy, 0)),
+            "section 0 {sy} 0 was never meshed"
+        );
+    }
+}

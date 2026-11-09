@@ -111,7 +111,7 @@ impl Game<'_> {
             self.stop_sounds_for_new_level();
         }
         self.player = Some(player);
-        self.pad_player_replaced();
+        self.input_player_replaced();
         self.sway = Default::default();
         self.apply_equipment();
         self.eye = 1.62;
