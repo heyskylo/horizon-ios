@@ -4076,6 +4076,15 @@ Bundles need `"hooks": @API:toast_add@`.
 
 ### Toasts a mod shows
 
+`native_push_voice(mod_id, source, samples, sample_rate, at)` (client, `host.push_voice`) plays a
+mod's own audio, such as a proximity voice chat's: mono samples from -1 to 1 at `sample_rate` hertz.
+`source` is the mod's own id for a speaker (a player's UUID, say): each source's blocks play one
+after another, in the order they were pushed, while different sources play at the same time. `at`
+is where they were spoken, for direction and a linear fade to silence at 48 blocks; none plays them
+centred. A source holds at most two seconds, and a burst past that is refused rather than delayed;
+at most 64 sources play at once. False when nothing was queued: on a server, without an audio
+device, with nothing to play or past a cap. Bundles need `"hooks": @API:push_voice@`.
+
 `native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own
 in the five slots the advancement, recipe and system toasts share, drawn as vanilla's `AdvancementToast`: the item
 `icon` at 16 pixels (an unknown item draws none), `title` where the advancement toast's frame label goes ("Advancement
@@ -4905,6 +4914,13 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+The package may depend on the bundle's own `[[crate]]`s by path, a sibling folder of the package in the bundle
+(`shared = { path = "../shared" }` from `engine/`, where `shared` is a `[[crate]]` with `path = "shared"`). The
+launcher points that dependency at the crate's staged copy, `native-crates/<mod>/<crate>`, so the crate is built once
+with the game, as a `[[crate]]`'s own is. Any other path is refused, since only the package's folder is copied.
+A crate used this way follows the same rules as a `[[crate]]`: no `horizon-client`, and only crates in Horizon's
+`Cargo.lock`.
 
 Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
 on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in

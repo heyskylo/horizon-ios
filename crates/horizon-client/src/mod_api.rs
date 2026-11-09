@@ -26,6 +26,7 @@ pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
 pub use crate::game::NativeEffectV2;
 pub use crate::game::NativeFluidTank;
+pub use crate::game::NativeInventoryError;
 pub use crate::game::NativeInventoryKind;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
