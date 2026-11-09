@@ -6527,6 +6527,52 @@ def primed_tnt_fall():
     return ops
 
 
+def item_fall_distance():
+    """#13203: a dropped item is an `Entity`: `checkFallDamage` adds each step down,
+    narrowed to a float, to its double `fall_distance` outside water, the ground and water
+    reset it, and `Entity.save` / `load` keep it. A fast fall past a vine on a wall resets it
+    (`Entity.move`'s FALLDAMAGE_RESETTING cast) and a cobweb makes it stuck, which resets it."""
+    sel = '@e[type=minecraft:item,tag=item_fall,limit=1]'
+    ops = [cmd('/forceload add 32 32', False), {'op': 'wait_chunks', 'chunks': [[2, 2]]}]
+
+    def track(ticks):
+        out = []
+        for _ in range(ticks):
+            out.append({'op': 'tick', 'n': 1})
+            for path in ('Pos', 'Motion', 'fall_distance'):
+                out.append(cmd(f'/data get entity {sel} {path}'))
+        return out
+
+    item = 'Item:{id:"minecraft:stone",count:1},PickupDelay:32767,Tags:["item_fall"]'
+    # block at 32 210 32, summon y, fields, ticks recorded. The landing is read once: the
+    # resting item's next Motion still differs (a separate gap).
+    for block, y, fields, ticks in (
+            ('air', 216, 'Motion:[0.0d,-0.3d,0.0d]', 4),
+            ('stone', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 1),
+            ('water', 213, 'fall_distance:2.0d,Motion:[0.0d,-0.5d,0.0d]', 6),
+            ('cobweb', 212, 'Motion:[0.0d,-0.5d,0.0d]', 5)):
+        ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                     '/fill 30 209 30 34 209 34 stone', f'/setblock 32 210 32 {block}',
+                     f'/summon minecraft:item 32.5 {y} 32.5 {{{fields},{item}}}')
+        ops += track(ticks)
+    # Fast past a vine on the wall beside it: the cast of the move resets the fall first.
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                 '/fill 30 209 30 34 209 34 stone', '/fill 31 212 32 31 219 32 stone',
+                 '/setblock 32 215 32 vine[west=true]',
+                 f'/summon minecraft:item 32.5 218 32.5 {{fall_distance:5.0d,Motion:[0.0d,-1.5d,0.0d],{item}}}')
+    ops += track(3)
+    # Load and /data write the field; a frozen item keeps it.
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                 f'/summon minecraft:item 32.5 216 32.5 {{fall_distance:4.5f,NoGravity:1b,{item}}}')
+    ops.append(cmd(f'/data get entity {sel} fall_distance'))
+    ops.append(cmd(f'/data modify entity {sel} fall_distance set value 2.25d'))
+    ops.append(cmd(f'/data get entity {sel} fall_distance'))
+    ops.append(cmd(f'/data merge entity {sel} {{NoGravity:0b,Motion:[0.0d,-0.5d,0.0d]}}'))
+    ops += track(2)
+    return ops + setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air', '/forceload remove 32 32')
+
+
+
 def loaded_dead_mob():
     """#13199: `LivingEntity.readAdditionalSaveData` reads `Health` through `setHealth`, which
     clamps a negative value to 0 and keeps the body: a mob summoned dead is there, `/data` reads
@@ -6556,6 +6602,35 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def explosion_infested_blocks():
+    """#11330: `Block.onExplosionHit` calls `spawnAfterBreak` before the drops, so a blast lets an
+    infested block's silverfish out (`InfestedBlock.spawnInfestation`) while `block_drops` is on. The
+    difficulty is not peaceful, where the silverfish would despawn on their first tick. The blast without
+    drops goes first: the explosion's rays draw from the level's random, and a mob's spawn draws differ."""
+    x0, y0, z0 = 3968, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/difficulty normal', False)]
+    for drops in ('false', 'true'):
+        ops += [cmd(f'/gamerule block_drops {drops}', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                # Four blocks right under the TNT, which every ray breaks: how many edge blocks resist
+                # depends on each ray's random intensity.
+                cmd(f'/fill {x0 + 7} {y0} {z0 + 7} {x0 + 8} {y0} {z0 + 7} infested_stone', expect_result=2),
+                cmd(f'/fill {x0 + 7} {y0} {z0 + 8} {x0 + 8} {y0} {z0 + 8} infested_cobblestone', expect_result=2),
+                cmd(f'/summon tnt {x0 + 8} {y0 + 1} {z0 + 8} {{fuse:0}}', expect_result=1),
+                cmd(f'/execute if entity @e[type=tnt,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                {'op': 'tick', 'n': 1},
+                cmd(f'/execute if entity @e[type=tnt,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/execute if entity @e[type=silverfish,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/execute if block {x0 + 7} {y0} {z0 + 7} infested_stone'),
+                {'op': 'tick', 'n': 3},
+                cmd(f'/execute if entity @e[type=silverfish,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/kill @e[type=!player,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]', False)]
+    return ops + setup('/gamerule block_drops true',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def jigsaw_default_joint():
     """#13654: `JigsawBlockEntity.loadAdditional` reads `joint`, else `StructureTemplate.getDefaultJointType`:
     `aligned` when the block's front faces sideways, `rollable` when it faces up or down."""
@@ -7246,9 +7321,11 @@ def groups():
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('projectile fall distance', projectile_fall_distance()),
+        ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('explosion infested blocks', explosion_infested_blocks()),
         ('jigsaw default joint', jigsaw_default_joint()),
         ('command block auto load', command_block_auto_load()),
         ('item block escape', item_block_escape()),

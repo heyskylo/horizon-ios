@@ -26,8 +26,15 @@ impl Hooks for Arc<Probe> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_changed_inventory_is_heard_once_with_its_41_slots() {
+    crate::mod_api::in_own_process(
+        "game::advancements::inventory_changed_tests::a_changed_inventory_is_heard_once_with_its_41_slots",
+        a_changed_inventory_is_heard_once_with_its_41_slots_in_own_process,
+    );
+}
+
+fn a_changed_inventory_is_heard_once_with_its_41_slots_in_own_process() {
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(

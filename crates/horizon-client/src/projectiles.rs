@@ -679,7 +679,7 @@ impl Projectile {
             return -1;
         }
         let rgb = match (effect, &self.arrow) {
-            (Some((id, _)), _) => crate::brewing::effect(id).map(|e| e.color),
+            (Some((id, _)), _) => crate::brewing::effect(id).map(|e| e.shown_color()),
             (None, Some(a)) if &*a.pickup_item.item == "minecraft:tipped_arrow" => a
                 .pickup_item
                 .potion()
