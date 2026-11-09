@@ -121,8 +121,8 @@ impl CommandBlock {
             condition_met: flag("conditionMet", false),
         }
     }
-    /// `CommandBlockEntity.saveAdditional`. The last output is written as a
-    /// plain string component.
+    /// `CommandBlockEntity.saveAdditional`. The last output is the component
+    /// itself (`ComponentSerialization.CODEC`), styles and click events kept.
     pub fn save(&self) -> Vec<(&'static str, Tag)> {
         let mut out = vec![
             ("Command", Tag::String(self.command.as_str().into())),
@@ -135,7 +135,7 @@ impl CommandBlock {
         if self.track_output
             && let Some(last) = &self.last_output
         {
-            out.push(("LastOutput", Tag::String(last.plain().as_str().into())));
+            out.push(("LastOutput", scoreboard::component_tag(&last.component())));
         }
         out.push((
             "UpdateLastExecution",

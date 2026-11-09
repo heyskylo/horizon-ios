@@ -5,6 +5,7 @@ desktop's disk on 2026-11-09. The script runs where no fetch is going on; these 
 like such a checkout and look at what is left.
 """
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -18,6 +19,11 @@ ENV = {
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@localhost",
     "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
 }
+# The bash on PATH, as in test_pr_ready: Windows' CreateProcess looks in System32 before PATH, so a bare "bash" there is
+# WSL's (#5383), which can't see the host's paths.
+BASH = shutil.which("bash")
+POSIX_BASH = BASH is not None and not (
+    os.name == "nt" and os.path.dirname(os.path.normcase(BASH)).endswith(os.path.normcase(r"\system32")))
 
 
 def git(repo, *args, check=True):
@@ -25,7 +31,7 @@ def git(repo, *args, check=True):
 
 
 def slim(repo, **env):
-    return subprocess.run(["bash", str(SCRIPT), str(repo)], env={**ENV, **{k: str(v) for k, v in env.items()}},
+    return subprocess.run([BASH, str(SCRIPT), str(repo)], env={**ENV, **{k: str(v) for k, v in env.items()}},
                           check=True, capture_output=True, text=True).stdout
 
 
@@ -38,6 +44,9 @@ def checkout_with_packs(root, count):
     repo = Path(root) / "checkout"
     subprocess.run(["git", "init", "-q", str(repo)], env=ENV, check=True)
     git(repo, "config", "gc.auto", "0")
+    # The runners' packs pile up (1051 of them), but git 2.54's automatic maintenance after a commit repacks them
+    # whatever gc.auto says: the 12 packs below came back as 1.
+    git(repo, "config", "maintenance.auto", "false")
     for i in range(count):
         (repo / f"file{i}.txt").write_text("".join(f"line {j} of file {i}\n" for j in range(200)))
         git(repo, "add", ".")
@@ -46,6 +55,7 @@ def checkout_with_packs(root, count):
     return repo
 
 
+@unittest.skipUnless(POSIX_BASH, "git-slim.sh needs a bash that is not WSL's")
 class GitSlim(unittest.TestCase):
     def test_many_packs_fold_without_losing_history(self):
         with tempfile.TemporaryDirectory() as root:
