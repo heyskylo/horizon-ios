@@ -105,6 +105,9 @@ pub(super) struct GuestPlay {
     /// The equipment the mods last heard this guest wear (`native_players_equipment`), by
     /// `EquipmentSlot`: main hand, off hand, feet, legs, chest, head.
     pub(super) equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 6]>>,
+    /// The slots of the guest's inventories the mods last heard (`native_players_inventory_changes`),
+    /// by `NativeInventoryKind`: Player, Ender, Cursor, Crafting.
+    pub(super) inventory_heard: Option<Box<[Vec<Option<crate::items::ItemStack>>; 4]>>,
     /// What the guest's body was given for its effects and enchantments.
     potions: super::potions::BodyPotions,
     /// `ServerPlayer.getStats` and the inventory `inventory_changed` last saw.
@@ -3991,6 +3994,7 @@ impl Game<'_> {
         // empty: the mods hear each worn item again from empty (`native_players_equipment`).
         if let Some(play) = host.play.get_mut(&conn) {
             play.equipment_heard = None;
+            play.inventory_heard = None;
             play.level_up_sound = Default::default();
         }
         // PlayerList.respawn: a server's player comes back in its respawn
@@ -4179,6 +4183,7 @@ impl Game<'_> {
         self.tick_lan_mount_menus(host);
         self.tick_player_menus(host);
         self.native_players_equipment(host);
+        self.native_players_inventory_changes(host);
         self.announce_guest_advancements(host);
         // ServerLevel.tickNonPassenger calls Entity.commonTick for each player,
         // including spectators and players whose client has not loaded yet.
@@ -4225,8 +4230,17 @@ impl Game<'_> {
             // Native mods, at the start of ServerPlayer.tick: before the
             // player's digging, item use and cooldowns. Swapping the guest in
             // costs a player's state each tick: only when a mod can listen.
+            // A fake player (a mod's bot) has its pre hook run in the one swap of its tick
+            // below, unless it is digging or using something first (each swap costs a player's
+            // state).
+            let fake = host.hub.guests[gi].fake;
+            let mut pre_pending = false;
             if !horizon_client::mod_api::mods().is_empty() {
-                self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                if fake {
+                    pre_pending = true;
+                } else {
+                    self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                }
             }
             let play = host.play.entry(conn).or_default();
             // ServerGamePacketListenerImpl.tick's dropSpamThrottler.
@@ -4235,6 +4249,10 @@ impl Game<'_> {
             let using = play.using.is_some();
             let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
             if digging.is_some() || using || delayed {
+                if pre_pending {
+                    pre_pending = false;
+                    self.as_guest(host, conn, |g| g.native_player_tick_pre());
+                }
                 // A spear in use reaches the other players too.
                 let players = if using {
                     self.stab_players_for(host, conn)
@@ -4317,21 +4335,36 @@ impl Game<'_> {
             // armor, experience and level objectives follow the guest.
             let mut recorded =
                 std::mem::take(&mut host.play.entry(conn).or_default().score_recorded);
-            self.as_guest(host, conn, |g| {
-                g.tick_fishing();
-                g.tick_maps();
-                g.tick_lodestone_compasses();
-                g.native_inventory_ticks();
-                g.count_tick_stats(sleeping);
-                g.tick_advancements();
-                g.update_player_attributes();
-                g.record_player_scores(&mut recorded);
-                // Native mods, at the end of ServerPlayer.tick.
-                g.native_player_tick();
-            });
+            if fake {
+                // A fake player has no fishing line, maps, compasses, statistics, advancements
+                // or score objectives to keep.
+                self.as_guest(host, conn, |g| {
+                    if pre_pending {
+                        g.native_player_tick_pre();
+                    }
+                    g.native_inventory_ticks();
+                    g.update_player_attributes();
+                    g.native_player_tick();
+                });
+            } else {
+                self.as_guest(host, conn, |g| {
+                    g.tick_fishing();
+                    g.tick_maps();
+                    g.tick_lodestone_compasses();
+                    g.native_inventory_ticks();
+                    g.count_tick_stats(sleeping);
+                    g.tick_advancements();
+                    g.update_player_attributes();
+                    g.record_player_scores(&mut recorded);
+                    // Native mods, at the end of ServerPlayer.tick.
+                    g.native_player_tick();
+                });
+            }
             host.play.entry(conn).or_default().score_recorded = recorded;
-            self.lan_map_updates(host, conn);
-            host.hub.flush_progress(conn);
+            if !fake {
+                self.lan_map_updates(host, conn);
+                host.hub.flush_progress(conn);
+            }
             self.guest_dig_feedback(host, conn);
             // A player frozen for a hand-over picks nothing up: what it took would be
             // missing from its record, and lost when the release saves nothing.
@@ -4446,15 +4479,17 @@ impl Game<'_> {
             // ServerPlayer.die: with showDeathMessages, the message goes to
             // the dying player's death screen and to everyone the team lets
             // see it; without it, the death screen gets an empty one.
+            let me = self.player_text(&name, uuid);
+            let text = match cause {
+                Some(key) => horizon_client::text::Text::translate(&key, &[me]),
+                None if at[1] < f64::from(self.world.bottom_y() - 64) => {
+                    horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
+                }
+                None => self.guest_death_message(conn, me),
+            };
+            // The rendered message, whether or not death messages are shown.
+            self.native_player_died_v2(uuid, &name, &text);
             let message = if self.ui.rules.bool("show_death_messages") {
-                let me = self.player_text(&name, uuid);
-                let text = match cause {
-                    Some(key) => horizon_client::text::Text::translate(&key, &[me]),
-                    None if at[1] < f64::from(self.world.bottom_y() - 64) => {
-                        horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
-                    }
-                    None => self.guest_death_message(conn, me),
-                };
                 let message = horizon_client::lan::data::component_nbt(&text.component());
                 let board = &self.score.board;
                 host.hub.system_message_to(message.clone(), |other| {

@@ -790,3 +790,74 @@ fn a_non_strict_template_updates_its_shapes_and_neighbours() {
         );
     }
 }
+/// `LevelAccess::block_grow` is asked before a growth step and its cancel
+/// leaves the block as it was: a cactus whose level cancels every step keeps
+/// its age, and the step it asked about was the age going up by one.
+#[test]
+fn a_cancelled_growth_step_leaves_the_block() {
+    /// A level that records each growth step and cancels it when `cancel`.
+    struct GrowLevel<'a> {
+        inner: &'a mut Level,
+        cancel: bool,
+        asked: Vec<(BlockPos, BlockStateId, BlockStateId)>,
+    }
+    impl LevelAccess for GrowLevel<'_> {
+        fn day_time(&self) -> i64 {
+            self.inner.day_time()
+        }
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn emit(&mut self, event: LevelEvent) {
+            self.inner.emit(event);
+        }
+        fn block_grow(
+            &mut self,
+            pos: BlockPos,
+            from: BlockStateId,
+            to: BlockStateId,
+            cancel: &mut bool,
+        ) {
+            self.asked.push((pos, from, to));
+            *cancel = self.cancel;
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let mut w = World::new(f, 5);
+    w.floor("sand", 4);
+    let pos = BlockPos::new(0, 64, 0);
+    let young = w.id("cactus", &[("age", "0")]);
+    let older = w.id("cactus", &[("age", "1")]);
+    w.put(pos, young);
+    let mut level = GrowLevel {
+        inner: &mut w.level,
+        cancel: true,
+        asked: Vec::new(),
+    };
+    f.behaviours.random_tick(&mut level, &mut w.ticks, pos);
+    assert_eq!(level.asked, vec![(pos, young, older)]);
+    assert_eq!(
+        level.block_state(pos),
+        young,
+        "a cancelled step grows nothing"
+    );
+    level.cancel = false;
+    f.behaviours.random_tick(&mut level, &mut w.ticks, pos);
+    assert_eq!(
+        level.block_state(pos),
+        older,
+        "an allowed step grows as before"
+    );
+}

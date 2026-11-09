@@ -36,6 +36,28 @@ impl StationData {
             recipe_index: crate::recipe_book::RecipeIndex::load(root, overlay),
         }
     }
+    pub fn load_with_recipe_sources(
+        root: &Path,
+        items: &Items,
+        overlay: &PackOverlay,
+        defaults: Option<&horizon_world::item_defaults::Defaults>,
+        sources: &[(String, Value)],
+    ) -> Self {
+        let owned_defaults = if defaults.is_none() {
+            horizon_world::item_defaults::shared(root).ok()
+        } else {
+            None
+        };
+        let defaults = defaults.or(owned_defaults.as_deref());
+        Self {
+            enchantments: std::sync::Arc::clone(&items.enchantments),
+            recipes: StationRecipes::load_with_sources(root, items, defaults, sources),
+            brewing: crate::brewing::Brewing::load(root, items, overlay),
+            trades: crate::merchant::Trades::load(root, overlay),
+            banners: crate::banner::Banners::load_with_defaults(root, defaults),
+            recipe_index: crate::recipe_book::RecipeIndex::load_from_sources(sources),
+        }
+    }
 }
 
 // ---------------------------------------------------------------- enchanting
@@ -750,9 +772,134 @@ pub struct StationRecipes {
 fn ingredient(v: &Value, items: &Items) -> Ingredient {
     Ingredient::parse(v, items).unwrap_or_else(|| Ingredient::of(Vec::new()))
 }
+
+fn parse_recipe_sources<'a>(
+    items: &Items,
+    defaults: &horizon_world::item_defaults::Defaults,
+    sources: impl IntoIterator<Item = (String, &'a Value)>,
+) -> (Vec<Smithing>, Vec<Stonecutting>) {
+    let mut sources: Vec<_> = sources.into_iter().collect();
+    sources.sort_by_cached_key(|(id, _)| crate::crafting::registration_key(id));
+    let mut smithing = Vec::new();
+    let mut stonecutting = Vec::new();
+    for (id, v) in sources {
+        match v["type"].as_str().unwrap_or("") {
+            "minecraft:smithing_transform" => {
+                // Only omitted optional ingredients mean an empty slot;
+                // malformed present ingredients must not become optional.
+                let parse_optional = |key: &str| match v.get(key) {
+                    None => Some(None),
+                    Some(value) => Ingredient::parse(value, items).map(Some),
+                };
+                if let (Some(template), Some(base), Some(addition), Some(result)) = (
+                    parse_optional("template"),
+                    Ingredient::parse(&v["base"], items),
+                    parse_optional("addition"),
+                    SmithingResult::parse(&v["result"], defaults),
+                ) {
+                    smithing.push(Smithing::Transform {
+                        id,
+                        template,
+                        base,
+                        addition,
+                        result,
+                    });
+                }
+            }
+            "minecraft:smithing_trim" => {
+                // TrimPattern.CODEC: one holder, named or inline; a missing
+                // or malformed pattern fails the recipe.
+                let pattern = crate::scoreboard::json_to_tag(&v["pattern"]);
+                if let Some(pattern) = crate::item_data::trim::pattern_from_nbt(&pattern) {
+                    smithing.push(Smithing::Trim {
+                        id,
+                        template: ingredient(&v["template"], items),
+                        base: ingredient(&v["base"], items),
+                        addition: ingredient(&v["addition"], items),
+                        pattern,
+                    });
+                }
+            }
+            "minecraft:stonecutting" => {
+                // A result count outside 1..=99 fails vanilla's codec: no recipe.
+                if let Some(count) = crate::crafting::template_count(&v["result"]) {
+                    stonecutting.push(Stonecutting {
+                        id,
+                        input: ingredient(&v["ingredient"], items),
+                        result: ItemStack::new(
+                            horizon_world::loot::recipe_result_id(&v["result"])
+                                .unwrap_or("minecraft:air"),
+                            count,
+                        ),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    (smithing, stonecutting)
+}
+
+fn load_trim_materials(root: &Path) -> Vec<(String, String)> {
+    let mut trim_materials = Vec::new();
+    let mut tm: Vec<_> = fs::read_dir(root.join("data/minecraft/trim_material"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    tm.sort();
+    for p in tm {
+        if let Ok(bytes) = fs::read(&p)
+            && let Ok(v) = serde_json::from_slice::<Value>(&bytes)
+        {
+            let id = format!(
+                "minecraft:{}",
+                p.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+            );
+            trim_materials.push((
+                id,
+                v["description"]["translate"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+            ));
+        }
+    }
+    trim_materials
+}
+
 impl StationRecipes {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
         Self::load_with_defaults(root, items, overlay, None)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn load_with_sources(
+        root: &Path,
+        items: &Items,
+        defaults: Option<&horizon_world::item_defaults::Defaults>,
+        sources: &[(String, Value)],
+    ) -> Self {
+        let owned_defaults;
+        let defaults = match defaults {
+            Some(defaults) => defaults,
+            None => {
+                owned_defaults = horizon_world::item_defaults::shared(root).unwrap_or_default();
+                &owned_defaults
+            }
+        };
+        let (smithing, stonecutting) = parse_recipe_sources(
+            items,
+            defaults,
+            sources
+                .iter()
+                .map(|(id, value)| (crate::crafting::qualified(id), value)),
+        );
+        Self {
+            smithing,
+            stonecutting,
+            trim_materials: load_trim_materials(root),
+        }
     }
     pub(crate) fn load_with_defaults(
         root: &Path,
@@ -817,92 +964,15 @@ impl StationRecipes {
                 &owned_defaults
             }
         };
-        let mut smithing = Vec::new();
-        let mut stonecutting = Vec::new();
-        for (id, v) in sources {
-            match v["type"].as_str().unwrap_or("") {
-                "minecraft:smithing_transform" => {
-                    // Only omitted optional ingredients mean an empty slot;
-                    // malformed present ingredients must not become optional.
-                    let parse_optional = |key: &str| match v.get(key) {
-                        None => Some(None),
-                        Some(value) => Ingredient::parse(value, items).map(Some),
-                    };
-                    if let (Some(template), Some(base), Some(addition), Some(result)) = (
-                        parse_optional("template"),
-                        Ingredient::parse(&v["base"], items),
-                        parse_optional("addition"),
-                        SmithingResult::parse(&v["result"], defaults),
-                    ) {
-                        smithing.push(Smithing::Transform {
-                            id,
-                            template,
-                            base,
-                            addition,
-                            result,
-                        });
-                    }
-                }
-                "minecraft:smithing_trim" => {
-                    // TrimPattern.CODEC: one holder, named or inline; a missing
-                    // or malformed pattern fails the recipe.
-                    let pattern = crate::scoreboard::json_to_tag(&v["pattern"]);
-                    if let Some(pattern) = crate::item_data::trim::pattern_from_nbt(&pattern) {
-                        smithing.push(Smithing::Trim {
-                            id,
-                            template: ingredient(&v["template"], items),
-                            base: ingredient(&v["base"], items),
-                            addition: ingredient(&v["addition"], items),
-                            pattern,
-                        });
-                    }
-                }
-                "minecraft:stonecutting" => {
-                    // A result count outside 1..=99 fails vanilla's codec: no recipe.
-                    if let Some(count) = crate::crafting::template_count(&v["result"]) {
-                        stonecutting.push(Stonecutting {
-                            id,
-                            input: ingredient(&v["ingredient"], items),
-                            result: ItemStack::new(
-                                horizon_world::loot::recipe_result_id(&v["result"])
-                                    .unwrap_or("minecraft:air"),
-                                count,
-                            ),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut trim_materials = Vec::new();
-        let mut tm: Vec<_> = fs::read_dir(root.join("data/minecraft/trim_material"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        tm.sort();
-        for p in tm {
-            if let Ok(bytes) = fs::read(&p)
-                && let Ok(v) = serde_json::from_slice::<Value>(&bytes)
-            {
-                let id = format!(
-                    "minecraft:{}",
-                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("")
-                );
-                trim_materials.push((
-                    id,
-                    v["description"]["translate"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_owned(),
-                ));
-            }
-        }
+        let (smithing, stonecutting) = parse_recipe_sources(
+            items,
+            defaults,
+            sources.iter().map(|(id, value)| (id.clone(), value)),
+        );
         Self {
             smithing,
             stonecutting,
-            trim_materials,
+            trim_materials: load_trim_materials(root),
         }
     }
     /// Recipes whose input accepts `stack`, in display order.
