@@ -1308,6 +1308,9 @@ impl Entity for Boat {
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1378,6 +1381,9 @@ impl Entity for Boat {
 
 impl Entity for Minecart {
     fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
     fn rotation(&self) -> [f32; 2] {
@@ -1661,6 +1667,9 @@ impl Entity for FallingBlock {
     fn set_piston_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -1714,6 +1723,9 @@ impl Entity for Projectile {
     }
     /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
     fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
+    fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
     fn native_type(&self) -> Cow<'static, str> {
@@ -1826,6 +1838,9 @@ impl Entity for Rocket {
     fn set_piston_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:firework_rocket".into()
     }
@@ -1889,6 +1904,9 @@ impl Entity for ThrownTrident {
     }
     /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
     fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
+    fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
     fn native_type(&self) -> Cow<'static, str> {
