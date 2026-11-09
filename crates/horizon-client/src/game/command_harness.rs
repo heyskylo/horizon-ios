@@ -1104,6 +1104,13 @@ impl Game<'_> {
                         result
                     })?;
                     if observe {
+                        let mut state = state;
+                        if !op["offer_packets"].as_bool().unwrap_or(false) {
+                            state.as_object_mut().unwrap().remove("sent_offers");
+                            for offer in state["offers"].as_array_mut().unwrap() {
+                                offer.as_object_mut().unwrap().remove("demand");
+                            }
+                        }
                         out.push_str(&json!({"cmd":format!("#merchant_state {}",op["label"].as_str().unwrap_or("")),
                             "messages":[],"results":[],"state":state}).to_string());
                         out.push('\n');
