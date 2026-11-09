@@ -94,11 +94,11 @@ impl Resolver for Invites {
 #[cfg(test)]
 mod tests {
     use super::{Invites, Resolver};
-    use horizon_platform::hooks::tunnel;
     use crate::{
         code::Code,
         invite::{self, Invite},
     };
+    use horizon_platform::hooks::tunnel;
 
     fn short(nameplate: &str, secret: &str) -> Code {
         Code {
