@@ -1324,6 +1324,9 @@ pub struct ParticleEngine {
     set_sprites: Vec<Vec<u32>>,
     /// Resource packs' Polytone custom particle types (#11486).
     polytone: Option<std::sync::Arc<polytone::Registry>>,
+    /// Vanilla particle types a pack replaces with a custom one of the same id
+    /// (`assets/minecraft/polytone/custom_particles/rain.json` is `minecraft:rain`).
+    polytone_overrides: HashMap<ParticleType, String>,
     /// The packs' GPU particles' records, one store per type, and the ticks they count in.
     polytone_gpu: Vec<polytone_gpu::Store>,
     polytone_ticks: u64,
@@ -1522,6 +1525,7 @@ impl ParticleEngine {
             mod_sets: HashMap::new(),
             set_sprites: Vec::new(),
             polytone: None,
+            polytone_overrides: HashMap::new(),
             polytone_gpu: Vec::new(),
             polytone_ticks: 0,
             additive: std::sync::Mutex::default(),
@@ -1755,6 +1759,15 @@ impl ParticleEngine {
         };
         if !same {
             self.polytone_gpu.clear();
+            self.polytone_overrides = registry
+                .iter()
+                .flat_map(|r| {
+                    ParticleType::ALL.iter().filter_map(|&ty| {
+                        let id = format!("minecraft:{}", ty.name());
+                        r.get(&id).is_some().then_some((ty, id))
+                    })
+                })
+                .collect();
         }
         self.polytone = registry;
     }
@@ -2204,12 +2217,17 @@ impl ParticleEngine {
         let ty = o.ty;
         // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
         // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
-        if let Some(name) = &o.mod_particle
+        // A pack's custom particle: a new type, or one replacing the vanilla type of its id.
+        let custom = match &o.mod_particle {
+            Some(name) => Some(name.as_str()),
+            None => self.polytone_overrides.get(&ty).map(String::as_str),
+        };
+        if let Some(name) = custom
             && let Some(registry) = &self.polytone
             && let Some(def) = registry.get(name)
         {
-            let (registry, def) = (registry.clone(), def.clone());
-            let particle = polytone::make(self, &registry, name, &def, o, p, v, seed)?;
+            let (registry, def, name) = (registry.clone(), def.clone(), name.to_owned());
+            let particle = polytone::make(self, &registry, &name, &def, o, p, v, seed)?;
             if def.gpu.is_some() {
                 // A GPU particle is only a record: it never becomes an engine particle.
                 let now = self.polytone_ticks;
