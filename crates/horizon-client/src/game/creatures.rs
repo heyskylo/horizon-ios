@@ -2401,7 +2401,21 @@ impl Game<'_> {
             a.spawn_velocity = Some(p.velocity);
             a.spawn_rot = Some((p.pitch, p.yaw));
         }
-        self.creatures.projectiles.push(p);
+        // An entity that never left its level keeps its place in
+        // `EntityTickList`: one this pass took out and puts back (an arrow
+        // bouncing off) goes back among the others by when it joined.
+        use horizon_client::join_seq::Joined as _;
+        let seq = p.join_seq();
+        let at = if seq.is_joined() {
+            self.creatures
+                .projectiles
+                .iter()
+                .position(|q| q.join_seq() > seq)
+                .unwrap_or(self.creatures.projectiles.len())
+        } else {
+            self.creatures.projectiles.len()
+        };
+        self.creatures.projectiles.insert(at, p);
         self.native_projectile_launch(player, &name, id, kind);
     }
     /// `MushroomCow.shear`'s `sendParticles(EXPLOSION, x, getY(0.5), z, 1, 0, 0, 0, 0)`:
