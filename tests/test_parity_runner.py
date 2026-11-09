@@ -421,6 +421,7 @@ class OracleReuseTests(unittest.TestCase):
         python = root / "python"
         python.mkdir()
         (python / "python3").symlink_to(sys.executable)
+        self.python = sys.executable
         self.env = dict(os.environ, PATH=f"{self.shim}:{self.bin}:{python}", PARITY_SHIM_REAL_PATH=str(self.bin),
                         PARITY_SHIM_CACHE=str(root / "cache"))
         self.subprocess = subprocess
@@ -445,6 +446,45 @@ class OracleReuseTests(unittest.TestCase):
         self.output.write_text("tampered")
         self.assertEqual(self.oracle(), 3)
         self.assertEqual(self.output.read_text(), "b")
+
+    def wrapper(self, folder, put_the_shim_back=False):
+        """A `java` that runs the first other `java` on PATH, as JDK selectors and build wrappers do. It stops
+        itself after a few rounds, so a shim that loops fails this test instead of filling the machine."""
+        folder.mkdir()
+        path = f"os.environ['PATH'] = {str(self.shim)!r} + os.pathsep + os.environ['PATH']\n" if put_the_shim_back else ""
+        (folder / "java").write_text(
+            f"#!{self.python}\nimport os, sys, shutil\nfrom pathlib import Path\n"
+            "rounds = int(os.environ.get('WRAPPER_ROUNDS') or 0)\n"
+            "if rounds > 6: sys.exit(97)\n"
+            "os.environ['WRAPPER_ROUNDS'] = str(rounds + 1)\n" + path +
+            "me = Path(__file__).resolve()\n"
+            "other = next(c for d in os.environ['PATH'].split(os.pathsep) if (c := shutil.which('java', path=d))"
+            " and Path(c).resolve() != me)\n"
+            "os.execv(other, [other, *sys.argv[1:]])\n")
+        (folder / "java").chmod(0o755)
+
+    def test_a_wrapper_that_looks_java_up_on_path_reaches_the_real_one(self):
+        wrapper = self.bin.parent / "wrapper"
+        self.wrapper(wrapper)
+        self.env["PATH"] = f"{self.shim}:{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
+        self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}"
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 1)
+
+    def test_a_wrapper_that_puts_the_shim_back_stops_with_a_reason(self):
+        wrapper = self.bin.parent / "wrapper"
+        self.wrapper(wrapper, put_the_shim_back=True)
+        # The shim's `env python3` must find a python3 on the real PATH.
+        self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
+        result = self.subprocess.run(["java", str(self.input), str(self.output)], env=self.env, capture_output=True,
+                                     text=True, stdin=self.subprocess.DEVNULL, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("started inside itself", result.stderr)
+
+    def test_a_real_path_that_holds_the_shim_skips_it(self):
+        from tools import parity_shim
+        with mock.patch.dict(os.environ, PARITY_SHIM_REAL_PATH=f"{self.shim}:{self.bin}"):
+            self.assertEqual(Path(parity_shim.real("java")), self.bin / "java")
 
 
 
