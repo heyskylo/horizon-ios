@@ -3914,6 +3914,17 @@ instead; Horizon's sort buttons (the extras) use it too.
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
 
+`host.has_line_of_sight(from_entity, to_entity)` (server, `native_has_line_of_sight`, API @API:line_of_sight@) is vanilla's
+`LivingEntity.hasLineOfSight`, the test guards and tab-list mods use: whether the entity `from_entity` sees `to_entity`,
+both given by the id the events carry. The ray runs from the eyes of the first to the eyes of the second (`Entity.getEyeY`),
+against `ClipContext.Block.COLLIDER` block shapes (a bottom slab under the eye line does not block, a stone wall does),
+with no fluids (water does not block), in the collision context of the first entity; it is false for two entities in
+different levels, for more than 128 blocks between the eyes, for an unknown entity and on a client. The shapes are the
+ones mobs use for their own sight. `host.clear_between(dimension, from, to)` (`native_clear_between`) is the same
+COLLIDER ray between two points with no entity (`Level.clip` missing: `true` when it meets no collider). Both answer only
+for the level being ticked on the server: another dimension gives `false`, and a mod asks in the level it runs in.
+Bundles need `"hooks": @API:line_of_sight@`.
+
 ### Entities a client sees
 
 `crates/horizon-client/src/game/native_client_services.rs`: lists for a client mod that draws the creatures, players
