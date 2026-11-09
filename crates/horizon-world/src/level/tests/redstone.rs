@@ -334,3 +334,85 @@ fn a_copper_bulb_flips_its_light_only_when_it_becomes_powered() {
     assert_eq!(w.prop(at, "lit"), "true", "placed beside power");
     assert_eq!(w.prop(at, "powered"), "true");
 }
+/// `TargetBlock.getRedstoneStrength`: the hit's distance from the face's centre along
+/// the face's two other axes is `|frac(v) - 0.5|`, and the strength is
+/// `max(1, ceil(15 * clamp((0.5 - distance) / 0.5, 0, 1)))`. The expected values are
+/// what vanilla's formula gives in Java for each location (a hit on the block at
+/// 3, 5, 7), double rounding included: the same offset from the centre gives 12 on
+/// one face and 13 on another, because `frac` of 6.6 and of 5.6 are not the same
+/// double.
+#[test]
+fn a_target_block_gives_vanillas_strength_for_where_a_projectile_hit() {
+    let hits: [([i32; 3], [f64; 3], i32); 51] = [
+        ([0, 1, 0], [3.5, 6.0, 7.5], 15),
+        ([0, 1, 0], [3.55, 6.0, 7.5], 14),
+        ([0, 1, 0], [3.6, 6.0, 7.5], 12),
+        ([0, 1, 0], [3.65, 6.0, 7.5], 11),
+        ([0, 1, 0], [3.7, 6.0, 7.5], 9),
+        ([0, 1, 0], [3.75, 6.0, 7.5], 8),
+        ([0, 1, 0], [3.8, 6.0, 7.5], 7),
+        ([0, 1, 0], [3.85, 6.0, 7.5], 5),
+        ([0, 1, 0], [3.9, 6.0, 7.5], 4),
+        ([0, 1, 0], [3.95, 6.0, 7.5], 2),
+        ([0, 1, 0], [3.99, 6.0, 7.5], 1),
+        ([0, 1, 0], [3.0, 6.0, 7.5], 1),
+        ([0, 1, 0], [3.1, 6.0, 7.5], 4),
+        ([0, 1, 0], [3.2, 6.0, 7.5], 7),
+        ([0, 1, 0], [3.3, 6.0, 7.5], 9),
+        ([0, 1, 0], [3.4, 6.0, 7.5], 12),
+        ([0, 1, 0], [3.45, 6.0, 7.5], 14),
+        ([0, 0, -1], [3.5, 5.5, 7.0], 15),
+        ([0, 0, -1], [3.55, 5.5, 7.0], 14),
+        ([0, 0, -1], [3.6, 5.5, 7.0], 12),
+        ([0, 0, -1], [3.65, 5.5, 7.0], 11),
+        ([0, 0, -1], [3.7, 5.5, 7.0], 9),
+        ([0, 0, -1], [3.75, 5.5, 7.0], 8),
+        ([0, 0, -1], [3.8, 5.5, 7.0], 7),
+        ([0, 0, -1], [3.85, 5.5, 7.0], 5),
+        ([0, 0, -1], [3.9, 5.5, 7.0], 4),
+        ([0, 0, -1], [3.95, 5.5, 7.0], 2),
+        ([0, 0, -1], [3.99, 5.5, 7.0], 1),
+        ([0, 0, -1], [3.0, 5.5, 7.0], 1),
+        ([0, 0, -1], [3.1, 5.5, 7.0], 4),
+        ([0, 0, -1], [3.2, 5.5, 7.0], 7),
+        ([0, 0, -1], [3.3, 5.5, 7.0], 9),
+        ([0, 0, -1], [3.4, 5.5, 7.0], 12),
+        ([0, 0, -1], [3.45, 5.5, 7.0], 14),
+        ([1, 0, 0], [4.0, 5.5, 7.5], 15),
+        ([1, 0, 0], [4.0, 5.55, 7.5], 14),
+        ([1, 0, 0], [4.0, 5.6, 7.5], 13),
+        ([1, 0, 0], [4.0, 5.65, 7.5], 11),
+        ([1, 0, 0], [4.0, 5.7, 7.5], 9),
+        ([1, 0, 0], [4.0, 5.75, 7.5], 8),
+        ([1, 0, 0], [4.0, 5.8, 7.5], 7),
+        ([1, 0, 0], [4.0, 5.85, 7.5], 5),
+        ([1, 0, 0], [4.0, 5.9, 7.5], 3),
+        ([1, 0, 0], [4.0, 5.95, 7.5], 2),
+        ([1, 0, 0], [4.0, 5.99, 7.5], 1),
+        ([1, 0, 0], [4.0, 5.0, 7.5], 1),
+        ([1, 0, 0], [4.0, 5.1, 7.5], 3),
+        ([1, 0, 0], [4.0, 5.2, 7.5], 7),
+        ([1, 0, 0], [4.0, 5.3, 7.5], 9),
+        ([1, 0, 0], [4.0, 5.4, 7.5], 13),
+        ([1, 0, 0], [4.0, 5.45, 7.5], 14),
+    ];
+    for (face, location, expected) in hits {
+        let mut w = world!();
+        let pos = BlockPos::new(3, 5, 7);
+        w.set(pos, w.id("target", &[]));
+        let strength = w.f.behaviours.target_projectile_hit(
+            &mut w.level,
+            &mut w.ticks,
+            pos,
+            location,
+            face,
+            false,
+        );
+        assert_eq!(
+            strength,
+            Some(expected),
+            "face {face:?}, hit at {location:?}"
+        );
+        assert_eq!(w.prop(pos, "power"), expected.to_string(), "{location:?}");
+    }
+}
