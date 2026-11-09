@@ -98,7 +98,6 @@ impl Muffle {
 #[derive(Default)]
 struct Mixer {
     channels: HashMap<ChannelId, Channel>,
-    camera_epoch: u64,
     listener: [f64; 3],
     listener_yaw: f32,
     listener_pitch: f32,
@@ -1011,10 +1010,6 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         };
         let source_channels = source_channels as usize;
         let frames = samples.len() / source_channels;
-        if frames <= 1 {
-            continue;
-        }
-
         let inaudible = if channels >= 2 {
             left == 0.0 && right == 0.0
         } else {
@@ -1022,11 +1017,14 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         };
         if inaudible {
             let buffer_frames = data.len() / channels;
-            if !c.looping {
-                let needed = (frames - 1) as f64 - c.position;
-                if needed <= 0.0 || step <= 0.0 {
+            // As the loop below: a sound of one frame or none stops, looping or not.
+            if !c.looping || frames <= 1 {
+                // `frames` may be 0: no `frames - 1` in usize. A step of 0 never
+                // reaches the end, as in the loop below.
+                let needed = frames as f64 - 1.0 - c.position;
+                if needed <= 0.0 {
                     c.state = State::Stopped;
-                } else {
+                } else if step > 0.0 {
                     let steps_to_stop = needed / step;
                     if (buffer_frames as f64) >= steps_to_stop {
                         c.state = State::Stopped;
@@ -1599,7 +1597,6 @@ impl Audio {
     /// World identity for this player's sources and camera. Existing channels keep their world.
     pub fn set_world(&mut self, world: &str) {
         if let Ok(mut mixer) = self.backend.mixer.lock() {
-            mixer.camera_epoch = mixer.camera_epoch.wrapping_add(1);
             let id = mixer.world_id(world);
             self.backend.world = id;
             mixer.worlds.insert(self.backend.owner, id);
@@ -1616,7 +1613,6 @@ impl Audio {
         self.listener_yaw = yaw;
         self.listener_pitch = pitch;
         if let Ok(mut m) = self.backend.mixer.lock() {
-            m.camera_epoch = m.camera_epoch.wrapping_add(1);
             if self.backend.owner == 0 {
                 m.listener = position;
                 m.listener_yaw = yaw;
@@ -2710,6 +2706,21 @@ mod tests {
         mixer.worlds.insert(0, nether);
         mix(&mut mixer, &mut data, 2, 48_000);
         assert_eq!(data, [0.0; 4], "returning must not resume the old one-shot");
+    }
+
+    /// A sound of one frame or none, heard or not, looping or not, stops at its first
+    /// buffer as the mixing loop stops it: none stays playing (and holds its channel).
+    #[test]
+    fn sounds_too_short_to_mix_stop_even_unheard() {
+        for (samples, looping) in [(vec![], false), (vec![1.0], false), (vec![1.0], true)] {
+            let mut mixer = Mixer::default();
+            let mut source = channel(samples.clone(), None, [0.0; 3], looping);
+            source.gain = 0.0;
+            mixer.channels.insert(1, source);
+            let mut data = [0.0; 4];
+            mix(&mut mixer, &mut data, 2, 48_000);
+            assert_eq!(mixer.channels[&1].state, State::Stopped, "{samples:?} {looping}");
+        }
     }
 
     #[test]
