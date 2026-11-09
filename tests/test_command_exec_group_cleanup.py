@@ -47,6 +47,7 @@ class GroupCleanupTests(unittest.TestCase):
         for index, (level, floor) in enumerate(corpus.CLEANUP_FLOOR.items()):
             own = commands[5 * index:5 * index + 5]
             for command in own:
+                self.assertTrue(command.startswith(f'/execute in minecraft:{level} as @e[type='), command)
                 # Bounded to the groups' heights: the world's generated entities below never enter it.
                 self.assertIn(f' at @s if dimension minecraft:{level} positioned ~-1 {floor} ~-1 '
                               'if entity @s[dx=2,dy=4096,dz=2] run ', command)
@@ -55,8 +56,7 @@ class GroupCleanupTests(unittest.TestCase):
                              [re.search(r'type=minecraft:(\w+)', c).group(1) for c in own[:3]])
             self.assertTrue(all(c.endswith('run data merge entity @s {Size:0}') for c in own[:3]))
             # The second kill takes what the first one dropped.
-            self.assertEqual(2, sum(c.startswith('/execute as @e[type=!player] ') and c.endswith(' run kill @s')
-                                    for c in own[3:]))
+            self.assertEqual(2, sum(' as @e[type=!player] ' in c and c.endswith(' run kill @s') for c in own[3:]))
 
     def test_the_floor_is_above_generated_terrain_and_below_every_group_summon(self):
         # The groups summon at y 100 and up in the overworld and far higher in the other levels.
@@ -70,6 +70,20 @@ class GroupCleanupTests(unittest.TestCase):
                 floor = corpus.CLEANUP_FLOOR[level.group(1) if level else 'overworld']
                 with self.subTest(group=name, cmd=text[:80]):
                     self.assertGreaterEqual(float(found.group(2)), floor)
+
+    def test_a_group_that_kills_its_big_cube_mobs_last_shrinks_them_first(self):
+        # A dying body is out of group_cleanup()'s reach and splits 20 ticks later, inside the next group.
+        cube = re.compile(r'summon (?:minecraft:)?(?:slime|magma_cube|sulfur_cube) ')
+        for name, operations in [g for g in corpus.groups() if g[0] not in corpus.ISOLATED_GROUPS]:
+            if not any(cube.search(op.get('cmd', '')) for op in operations):
+                continue
+            last_tick = max([i for i, op in enumerate(operations) if op['op'] == 'tick'], default=-1)
+            tail = [op.get('cmd', '') for op in operations[last_tick + 1:]]
+            kills = [i for i, text in enumerate(tail) if text.startswith('/kill ')]
+            with self.subTest(group=name):
+                if kills:
+                    self.assertTrue(any(text.endswith('{Size:0}') for text in tail[:kills[0]]),
+                                    'kills its cube mobs after its last tick without shrinking them')
 
     def test_only_named_groups_read_entities_an_earlier_group_tagged(self):
         from tools.wolf_anger_corpus import groups as wolf_anger_groups

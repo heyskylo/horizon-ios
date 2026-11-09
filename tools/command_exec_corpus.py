@@ -215,11 +215,17 @@ def group_cleanup():
         # walks every chunk column in its x range.
         own = (f'at @s if dimension minecraft:{level} positioned ~-1 {floor} ~-1 '
                'if entity @s[dx=2,dy=4096,dz=2] run')
-        ops += setup(*[f'/execute as @e[type=minecraft:{kind}] {own} data merge entity @s {{Size:0}}'
-                       for kind in ('slime', 'magma_cube', 'sulfur_cube')],
-                     *[f'/execute as @e[type=!player] {own} kill @s'] * 2)
+        # Horizon finds an @s of another level only from that level ('in').
+        ops += setup(*[f'/execute in minecraft:{level} as @e[type=minecraft:{kind}] {own} '
+                       'data merge entity @s {Size:0}' for kind in ('slime', 'magma_cube', 'sulfur_cube')],
+                     *[f'/execute in minecraft:{level} as @e[type=!player] {own} kill @s'] * 2)
     return ops
 
+
+# A killed cube mob bigger than size 1 splits when its body goes, 20 ticks later: a group that kills its own
+# cubes last shrinks them first, or the pieces appear in the next group, where group_cleanup() can't reach the
+# dying bodies (selectors skip them).
+SHRINK_SULFUR_CUBES = '/execute as {} run data merge entity @s {{Size:0}}'
 
 def allay_pocket_inventory():
     """The one-slot pocket stores full stacks independently of the held filter."""
@@ -5027,7 +5033,8 @@ def sulfur_cube_loaded_health():
             cmd(f'/data get entity {selector[:-1]},limit=1] Size', expect_result=1),
             cmd(f'/data get entity {selector[:-1]},limit=1] Health 100', expect_result=800),
         ])
-    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                       '/forceload remove 0 0 31 31'))
     return lines
 
 
@@ -5199,7 +5206,8 @@ def sulfur_cube_fuse_ticks(immediate_power=False):
     for n in (9, 10):
         ops.append(cmd(f'/execute if entity {target(n)}', expect_result=1))
         ops.append(cmd(f'/data get entity {target(n)} fuse'))
-    return ops + setup('/kill @e[tag=sulfur_fuse]', '/forceload remove 0 0 79 15')
+    return ops + setup(SHRINK_SULFUR_CUBES.format('@e[tag=sulfur_fuse,type=sulfur_cube]'),
+                       '/kill @e[tag=sulfur_fuse]', '/forceload remove 0 0 79 15')
 
 
 
@@ -5467,7 +5475,8 @@ def sulfur_cube_mob_contact():
                        expect_result=1))
         ops.append(cmd(f'/data get entity {uuid(n + 10)} Health',
                        expect_result=9 if n == 1 else 10))
-    return ops + setup('/kill @e[tag=sulfur_contact]', '/forceload remove 0 0 15 15')
+    return ops + setup(SHRINK_SULFUR_CUBES.format('@e[tag=sulfur_contact,type=sulfur_cube]'),
+                       '/kill @e[tag=sulfur_contact]', '/forceload remove 0 0 15 15')
 
 
 
