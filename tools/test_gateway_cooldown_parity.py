@@ -22,6 +22,7 @@ TEST = 'game::end::cooldown_tests::gateway_counters_match_actual_vanilla_methods
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work-dir', type=Path)
+    parser.add_argument('--resources', type=Path, default=lab.LOCAL / 'horizon-client/26.3')
     parser.add_argument('--reference-only', action='store_true')
     args = parser.parse_args()
     build = (args.work_dir or lab.LOCAL / 'rust-gateway-cooldown-parity').resolve()
@@ -50,7 +51,8 @@ def main():
     for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
         inherited.pop(key, None)
     env = lab.game_env(inherited, HORIZON_TELEMETRY_URL="off", HORIZON_PORTAL_REFERENCE=reference.resolve(),
-                       HORIZON_PORTAL_REPORT=(build / 'native.json').resolve())
+                       HORIZON_PORTAL_REPORT=(build / 'native.json').resolve(),
+                       HORIZON_TEST_RESOURCES=args.resources.resolve(strict=True))
     run(['cargo', 'test', '-p', 'horizon-client', '--lib', '--no-run',
          '--message-format=json'], 'build-native', env)
     records = (json.loads(line) for line in (build / 'build-native.log').read_text(encoding='utf-8').splitlines()
@@ -70,7 +72,9 @@ def main():
     for field in ('contact',):
         if native[field] != observed['contact']:
             raise SystemExit(f'{field} differs from actual vanilla methods')
-    print('Production gateway counters match actual vanilla methods', flush=True)
+    if native['phases'] != [[4, 5], [4, 4], [3, 4], [3, 3]]:
+        raise SystemExit('production Game before/after-move phase counters differ')
+    print('Production gateway counters and Game phases match', flush=True)
 
 
 if __name__ == '__main__':
