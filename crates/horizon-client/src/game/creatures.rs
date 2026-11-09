@@ -2,6 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod projectile_targets;
 mod projectile_world;
 mod pufferfish_player;
 
@@ -4973,7 +4974,8 @@ impl Game<'_> {
         )
     }
     /// A projectile's hurt of `amount` on the boat or minecart `id`
-    /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
+    /// (`VehicleEntity.hurtServer`), or the item frame (`ItemFrame.hurtServer`,
+    /// which any non-explosion hit makes give up its item): even 0 shakes it (`Snowball`, `ThrownEgg`,
     /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
     fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
         let creative = p.owner == Some(Who::Player) && self.creative;
@@ -4981,6 +4983,8 @@ impl Game<'_> {
             self.hurt_boat(i, amount, creative);
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
             self.hurt_cart(i, amount, creative, false);
+        } else {
+            self.projectile_hurts_frame(id, p.owner == Some(Who::Player), creative);
         }
     }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
@@ -5168,40 +5172,6 @@ impl Game<'_> {
         }
     }
     /// `Level.isRainingAt` for arrows.
-    /// What a projectile can hit: the mobs, the player, the dragon's parts and
-    /// the End crystals (under reserved ids, game/dragon.rs).
-    /// The boats and minecarts a projectile can strike.
-    pub(super) fn vehicle_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets: Vec<(Who, Aabb)> = self
-            .boats
-            .iter()
-            .map(|b| (Who::Mob(b.id), b.bounds()))
-            .collect();
-        targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-        targets
-    }
-    pub(super) fn projectile_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets: Vec<(Who, Aabb)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive())
-            .map(|m| (Who::Mob(m.id), m.bounds()))
-            .collect();
-        if let Some(p) = self.player_view()
-            && p.alive
-        {
-            targets.push((Who::Player, p.bounds));
-        }
-        targets.extend(
-            self.special_targets()
-                .into_iter()
-                .map(|(id, b)| (Who::Mob(id), b)),
-        );
-        // Boats and minecarts are pickable for every projectile
-        // (`VehicleEntity.isPickable`), so every kind shares this one list.
-        targets.extend(self.vehicle_targets());
-        targets
-    }
     pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
         move |p: BlockPos| self.raining_at(p)
     }
@@ -5451,6 +5421,24 @@ impl Game<'_> {
             ) {
                 return Ok(());
             }
+        }
+        if p.arrow.is_some()
+            && let Hit::Entity {
+                who: Who::Mob(id), ..
+            } = hit
+            && self.item_frames.iter().any(|f| f.id == id)
+        {
+            // AbstractArrow.onHitEntity on an item frame: spent when the
+            // frame took the hit, turned back when a fixed one refused it.
+            let by_player = p.owner == Some(Who::Player);
+            let hurt = self.projectile_hurts_frame(id, by_player, by_player && self.creative);
+            let outcome = if hurt {
+                EntityHit::Hurt
+            } else {
+                EntityHit::Refused
+            };
+            self.finish_arrow_hit(p.clone(), outcome);
+            return Ok(());
         }
         if p.arrow.is_some()
             && let Hit::Entity {
@@ -9877,6 +9865,9 @@ mod chorus_projectile_drop_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "frame_projectile_tests.rs"]
+mod frame_projectile_tests;
 #[cfg(test)]
 #[path = "loaded_arrow_shot_tests.rs"]
 mod loaded_arrow_shot_tests;
