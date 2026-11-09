@@ -501,7 +501,7 @@ impl Pick {
             [one] => *one,
             many => many[random.int(many.len() as i32) as usize],
         };
-        let mut nbt = outcome.nbt.clone().or(info.nbt);
+        let mut nbt = outcome.nbt.clone().map(Box::new).or(info.nbt);
         for list in &outcome.lists {
             let values = (0..list.count)
                 .map(|_| {
@@ -514,7 +514,7 @@ impl Pick {
                     Tag::String(v.as_str().into())
                 })
                 .collect();
-            nbt.get_or_insert_with(Compound::new)
+            nbt.get_or_insert_with(Default::default)
                 .insert(list.key.as_str().into(), Tag::List(values));
         }
         BlockInfo {
@@ -1160,7 +1160,10 @@ fn process_block<W: PlacementContext>(
                 return Ok(Some(BlockInfo {
                     pos: info.pos,
                     state: rule.output,
-                    nbt: rule.modifier.apply(info.nbt.as_ref(), &mut random),
+                    nbt: rule
+                        .modifier
+                        .apply(info.nbt.as_deref(), &mut random)
+                        .map(Box::new),
                 }));
             }
             Some(info)
@@ -1226,7 +1229,10 @@ fn process_block<W: PlacementContext>(
                     .unwrap_or(state),
                 false => state,
             };
-            let nbt = set.modifier.apply(info.nbt.as_ref(), &mut random);
+            let nbt = set
+                .modifier
+                .apply(info.nbt.as_deref(), &mut random)
+                .map(Box::new);
             Some(BlockInfo { state, nbt, ..info })
         }
         Processor::Condition(c) => {
@@ -1288,7 +1294,7 @@ fn process_block<W: PlacementContext>(
             let entity = spawner.pick(|| settings.with_random(pos, |r| r.float()));
             Some(match entity {
                 Some(entity) => BlockInfo {
-                    nbt: Some(spawner.nbt(entity)),
+                    nbt: Some(Box::new(spawner.nbt(entity))),
                     ..info
                 },
                 None => BlockInfo {
@@ -1559,7 +1565,7 @@ pub fn place_in_world<W: FeatureWorld + PlacementContext>(
                 };
                 nbt.insert("LootTableSeed".into(), Tag::Long(seed));
             }
-            world.set_block_entity(info.pos, nbt)?;
+            world.set_block_entity(info.pos, *nbt)?;
         }
         if let Some(previous) = previous {
             if resources.source_fluid(state) {
@@ -2074,7 +2080,7 @@ mod tests {
         let glass = || BlockInfo {
             pos: [1, 2, 3],
             state: BlockStateId(0),
-            nbt: Some(Compound::new()),
+            nbt: Some(Box::default()),
         };
         let run = |f: f32, i: Vec<i32>| pick.apply(glass(), &mut Draws(vec![f], i));
         let sus = run(0.005, vec![]);
@@ -2085,7 +2091,7 @@ mod tests {
                 .contains_key(&JavaString::from("LootTable"))
         );
         assert_eq!(run(0.01, vec![]).state, BlockStateId(1));
-        assert_eq!(run(0.2999, vec![]).nbt, Some(Compound::new()));
+        assert_eq!(run(0.2999, vec![]).nbt, Some(Box::default()));
         assert_eq!(run(0.3, vec![]).state, BlockStateId(2));
         // The stairs' facing: Plane.HORIZONTAL[nextInt(4)] after the pick.
         assert_eq!(run(0.75, vec![2]).state, BlockStateId(12));

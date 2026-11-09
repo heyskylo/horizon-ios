@@ -17,6 +17,9 @@ end must agree:
 Unformatted code, or a lexer mistake, makes them disagree, and the module counts. The two start lines must begin in
 code too, so Rust source quoted in a string is no module.
 
+Test files, named `tests.rs` or `<name>_tests.rs`, aren't checked for the same reason: they hold the tests moved out
+of a file, `#[cfg(test)] mod tests;`.
+
     python3 tools/check_file_size.py --base origin/main
 """
 
@@ -30,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LIMIT = 3000
 DOC = "docs/layers.md#file-size"
 EXEMPT_PREFIXES = ("third_party/",)
+TEST_FILE = re.compile(r"(?:^|/)(?:tests|\w+_tests)\.rs$")
 CFG_TEST = re.compile(r"([ \t]*)#\[cfg\(test\)\]\s*")
 TEST_MOD = re.compile(r"([ \t]*)(?:pub(?:\([a-z]+\))? )?mod \w+ \{\s*")
 # Where code may stop: a newline, a comment, a raw string (with its b or c prefix), a string, a quote.
@@ -155,7 +159,7 @@ def problems(entries, limit=LIMIT):
     """entries: (path, base line count, line count now, generated). The problem lines."""
     out = []
     for path, before, now, is_generated in entries:
-        if path.startswith(EXEMPT_PREFIXES) or is_generated:
+        if path.startswith(EXEMPT_PREFIXES) or is_generated or TEST_FILE.search(path):
             continue
         if now > limit and now > before:
             was = f"{before} on the base" if before else "a new file"
@@ -189,7 +193,7 @@ def main(argv=None):
             print(f"  {problem}")
         return 1
     print(f"File size check passed: {len(entries)} changed Rust files, none over {LIMIT} lines grew "
-          f"(test modules not counted).")
+          f"(test modules and test files not counted).")
     return 0
 
 

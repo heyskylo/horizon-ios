@@ -15,7 +15,9 @@ pub type Mod = (String, String, Option<String>);
 /// Whether an installed file (`installed::Entry::file`) is a native mod.
 pub fn is_native_file(file: &str) -> bool {
     file.strip_prefix(native_mods::INSTALLED)
-        .is_some_and(|rest| rest.starts_with('/') && rest.ends_with(".hnmod"))
+        .is_some_and(|rest| {
+            rest.starts_with('/') && (rest.ends_with(".hnmod") || rest.ends_with(".hmod"))
+        })
 }
 
 /// Where an instance's native mods stand.
@@ -125,9 +127,7 @@ pub fn enabled(home: &Path) -> Vec<Mod> {
         match horizon_mods::index::native::Bundle::read(&path) {
             Ok(b) => {
                 if java::is_enabled(home, &b.manifest.id) {
-                    let digest = native_mods::digest(
-                        b.files.iter().map(|(n, d)| (n.as_str(), d.as_slice())),
-                    );
+                    let digest = native_mods::digest(b.source_files().into_iter());
                     out.push((b.manifest.id, b.manifest.version, Some(digest)));
                 }
             }
@@ -244,7 +244,7 @@ fn hnmods(home: &Path) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<_> = fs::read_dir(home.join(native_mods::INSTALLED))
         .map(|dir| dir.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
-    paths.retain(|p| p.extension().is_some_and(|e| e == "hnmod"));
+    paths.retain(|p| horizon_mods::index::native::is_file(p));
     paths.sort();
     paths
 }
