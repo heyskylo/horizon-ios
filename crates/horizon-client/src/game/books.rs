@@ -1717,10 +1717,8 @@ mod lectern_signal_tests {
         lectern_signal(&game.world, BlockPos::new(key.0, key.1, key.2)).unwrap()
     }
 
-    /// `LecternBlockEntity.getRedstoneSignal`: `floor(page / (pageCount - 1)
-    /// * 14) + (hasBook() ? 1 : 0)`. `hasBook()` asks for a book-content
-    /// component, so a stack that only sits in the lectern (a non-book item a
-    /// command left in `Book`) reads 14, not the book's 15.
+    /// `LecternBlock.getAnalogOutputSignal` reads the block entity only while
+    /// the state's `HAS_BOOK` is true.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_lectern_without_the_has_book_state_feeds_no_comparator() {
@@ -1740,16 +1738,38 @@ mod lectern_signal_tests {
                 page: 0,
             }),
         );
-        let signal = game.with_level(|_, level, _| {
-            level.block_entity_analog_signal(
-                BlockPos::new(key.0, key.1, key.2),
-                state,
-                horizon_core::geometry::Direction::North,
-            )
-        });
-        assert_eq!(signal, 0, "the block state says the lectern holds no book");
+        let signal = |game: &mut super::Game<'_>, state| {
+            game.with_level(|_, level, _| {
+                level.block_entity_analog_signal(
+                    BlockPos::new(key.0, key.1, key.2),
+                    state,
+                    horizon_core::geometry::Direction::North,
+                )
+            })
+        };
+        assert_eq!(
+            signal(&mut game, state),
+            0,
+            "the block state says the lectern holds no book"
+        );
+        let registry = game.pack.assets.registry;
+        let mut with_book = registry.state(state).unwrap().clone();
+        with_book
+            .properties
+            .insert("has_book".into(), "true".into());
+        let with_book = registry.id(&with_book).unwrap();
+        game.world.set(key.0, key.1, key.2, with_book).unwrap();
+        assert_eq!(
+            signal(&mut game, with_book),
+            15,
+            "with HAS_BOOK the book's page signal"
+        );
     }
 
+    /// `LecternBlockEntity.getRedstoneSignal`: `floor(page / (pageCount - 1)
+    /// * 14) + (hasBook() ? 1 : 0)`. `hasBook()` asks for a book-content
+    /// component, so a stack that only sits in the lectern (a non-book item a
+    /// command left in `Book`) reads 14, not the book's 15.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_lecterns_signal_adds_one_only_for_a_book() {
