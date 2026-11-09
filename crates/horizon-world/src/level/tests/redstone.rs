@@ -1394,3 +1394,103 @@ fn a_fence_connects_by_vanillas_rules() {
         }
     }
 }
+
+/// `StairBlock.getStairsShape`, recomputed by `updateShape` whenever a horizontal
+/// neighbour changes. For a stair facing east: a stair of the same half on its
+/// facing side (east), turned across it, makes an OUTER corner (LEFT if that stair
+/// faces north, the facing's counter-clockwise, else RIGHT); failing that, one
+/// behind it (west) turned across makes an INNER corner by the same rule. Either
+/// corner is refused when the block on the other side of the corner is a stair that
+/// would make the same shape (`canTakeShape`: same facing and half as the subject),
+/// and the outer test is made first.
+///
+/// The stair under test is placed first, so that each neighbour placed after it
+/// reaches it as a shape update.
+#[test]
+fn a_stair_takes_its_corner_shape_from_the_stairs_beside_it() {
+    // (offset from the subject, block, facing, half)
+    type Beside = ((i32, i32), &'static str, &'static str, &'static str);
+    let east_north: Beside = ((1, 0), "oak_stairs", "north", "bottom");
+    let cases: [(&[Beside], &str, &str); 12] = [
+        (
+            &[east_north],
+            "outer_left",
+            "east, facing north: the facing's counter-clockwise",
+        ),
+        (
+            &[((1, 0), "oak_stairs", "south", "bottom")],
+            "outer_right",
+            "east, facing south",
+        ),
+        (
+            &[((1, 0), "oak_stairs", "east", "bottom")],
+            "straight",
+            "east, same axis",
+        ),
+        (
+            &[((1, 0), "oak_stairs", "north", "top")],
+            "straight",
+            "east, the other half",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "north", "bottom")],
+            "inner_left",
+            "west, facing north",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "south", "bottom")],
+            "inner_right",
+            "west, facing south",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "west", "bottom")],
+            "straight",
+            "west, same axis",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "north", "top")],
+            "straight",
+            "west, the other half",
+        ),
+        (
+            &[((1, 0), "stone", "", "")],
+            "straight",
+            "a block that is not a stair",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "south", "bottom"), east_north],
+            "outer_left",
+            "both: the outer corner is tried first",
+        ),
+        (
+            &[((0, 1), "oak_stairs", "east", "bottom"), east_north],
+            "straight",
+            "outer refused: the block across the corner is a stair like the subject",
+        ),
+        (
+            &[
+                ((0, -1), "oak_stairs", "east", "bottom"),
+                ((-1, 0), "oak_stairs", "north", "bottom"),
+            ],
+            "straight",
+            "inner refused for the same reason",
+        ),
+    ];
+    for (around, shape, what) in cases {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.set(
+            at,
+            w.id("oak_stairs", &[("facing", "east"), ("half", "bottom")]),
+        );
+        for &((dx, dz), name, facing, half) in around {
+            let state = if name == "stone" {
+                w.id("stone", &[])
+            } else {
+                w.id(name, &[("facing", facing), ("half", half)])
+            };
+            w.set(BlockPos::new(dx, 5, dz), state);
+        }
+        assert_eq!(w.prop(at, "shape"), shape, "{what}");
+    }
+}
