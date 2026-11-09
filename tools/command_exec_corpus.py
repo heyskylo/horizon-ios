@@ -183,6 +183,44 @@ def group_setup():
     ]
 
 
+# The opt-out from group_cleanup(): groups that go on with the entities the group before them left, so no
+# cleanup runs before them. The wolf anger clock diagnostic reads the anger_written_* actors of
+# 'wolf anger live writes' (--wolf-anger-clock-diagnostic) and removes them itself.
+CONTINUES_PREVIOUS = frozenset({'wolf anger clock diagnostic'})
+
+
+# Where group_cleanup() looks, per dimension: from this height up, where the groups work (y 100 and up) and
+# no generated entity is. Below are the world's own: mineshaft chest minecarts, mobs, falling gravel and
+# items the terrain drops, which each engine loads at its own times. The Nether's terrain ends at its roof
+# (y 127); the End's pillars and their crystals stay under y 110.
+CLEANUP_FLOOR = {'overworld': 100, 'the_nether': 128, 'the_end': 128}
+
+
+def group_cleanup():
+    """Removes the entities the last group left alive, right after it, the same way in both engines.
+
+    The groups share one world: an entity a group leaves is still there for later groups' unbounded
+    selectors. The bell group's persistent zombie burned in daylight and died at a random tick in each
+    engine, so whether the entities group's PersistenceRequired check still saw it was chance.
+
+    Only the groups' own entities: above CLEANUP_FLOOR. A killed cube mob splits when its body goes 20
+    ticks later, inside the next group, unless it has the smallest size first. What a death still drops
+    with mob_drops and entity_drops off (setup) comes at once, an allay's inventory or a chest minecart's
+    contents; the second kill removes it. Blocks, forced chunks and rules are the groups' own business
+    (tests/test_command_fixture_state.py).
+    """
+    ops = []
+    for level, floor in CLEANUP_FLOOR.items():
+        # Each entity tests its own height: a volume selector as wide as the world is slow in vanilla, which
+        # walks every chunk column in its x range.
+        own = (f'at @s if dimension minecraft:{level} positioned ~-1 {floor} ~-1 '
+               'if entity @s[dx=2,dy=4096,dz=2] run')
+        ops += setup(*[f'/execute as @e[type=minecraft:{kind}] {own} data merge entity @s {{Size:0}}'
+                       for kind in ('slime', 'magma_cube', 'sulfur_cube')],
+                     *[f'/execute as @e[type=!player] {own} kill @s'] * 2)
+    return ops
+
+
 def allay_pocket_inventory():
     """The one-slot pocket stores full stacks independently of the held filter."""
     stone = '{id:"minecraft:stone",count:2}'
