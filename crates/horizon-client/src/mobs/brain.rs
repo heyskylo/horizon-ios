@@ -171,24 +171,6 @@ impl Sink {
         }
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_memory_lasts_its_expiry_and_the_tick_it_was_set() {
-        let mut t = Ttl::default();
-        assert!(!t.present());
-        t.set(2);
-        let mut ticks = 0;
-        while t.present() {
-            ticks += 1;
-            t.tick();
-        }
-        assert_eq!(ticks, 3);
-    }
-}
-
 use horizon_world::nbt::{Compound, Tag};
 
 /// `finalizeSpawn`'s memories (`m.extra.memories`) as `Brain.Packed` writes
@@ -258,5 +240,23 @@ pub fn write_frog(m: &Mob, map: &mut Compound) {
         );
     } else {
         memories.remove(&"minecraft:is_pregnant".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_memory_lasts_its_expiry_and_the_tick_it_was_set() {
+        let mut t = Ttl::default();
+        assert!(!t.present());
+        t.set(2);
+        let mut ticks = 0;
+        while t.present() {
+            ticks += 1;
+            t.tick();
+        }
+        assert_eq!(ticks, 3);
     }
 }
