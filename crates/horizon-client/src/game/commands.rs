@@ -234,25 +234,6 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     };
     i32::try_from(id).ok()
 }
-/// `InventoryScreen.containerTick`: the screen that takes the survival
-/// inventory's place when the player's mode changes under it. Vanilla swaps
-/// in the creative inventory (`Minecraft.setScreen(new
-/// CreativeModeInventoryScreen(...))`) for infinite materials and leaves
-/// every other screen alone; Horizon closes the inventory of a spectator
-/// instead, which the caller keeps.
-fn inventory_after_mode(screen: Screen, creative: bool, spectator: bool) -> Screen {
-    if screen != Screen::Inventory {
-        return screen;
-    }
-    if creative {
-        Screen::Creative
-    } else if spectator {
-        Screen::Playing
-    } else {
-        screen
-    }
-}
-
 impl Game<'_> {
     /// `native_player_level_change` for a level that was `from` before an experience change.
     pub(super) fn native_player_level_changed(&mut self, from: i32) {
@@ -1408,22 +1389,8 @@ impl Game<'_> {
             }
         }
         self.set_mode(mode);
-        // InventoryScreen.containerTick: a survival inventory left open when
-        // the player gets infinite materials is replaced by the creative one,
-        // so the player stays in a menu. A spectator's is closed, as before.
-        match inventory_after_mode(self.screen, self.creative, self.spectator()) {
-            Screen::Creative => {
-                if let Some(c) = self.carried.take() {
-                    let _ = self.give(c);
-                }
-                self.screen = Screen::Creative;
-                self.refresh_creative_tabs();
-                self.creative_screen.reopen();
-                self.refresh_saved_hotbars();
-            }
-            next if next != self.screen => self.screen = next,
-            _ => {}
-        }
+        // InventoryScreen.containerTick: the open inventory follows the mode.
+        self.mode_changed_under_inventory();
         true
     }
     fn cmd_gamemode(&mut self, ctx: &Context) -> R<i32> {
@@ -6084,33 +6051,5 @@ mod global_selector_order_tests {
             failures.is_empty(),
             "actual registered selector order/limits: {failures:#?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod inventory_mode_tests {
-    use super::{Screen, inventory_after_mode};
-
-    /// `InventoryScreen.containerTick`: the survival inventory becomes the
-    /// creative one when the player gets infinite materials, and any other
-    /// screen is left where it is.
-    #[test]
-    fn a_survival_inventory_becomes_the_creative_one() {
-        assert!(inventory_after_mode(Screen::Inventory, true, false) == Screen::Creative);
-        let stays = inventory_after_mode(Screen::Inventory, false, false);
-        assert!(stays == Screen::Inventory, "survival keeps its inventory");
-        // A spectator's inventory is closed, which is what Horizon did for
-        // both before; vanilla has no spectator branch and leaves it open.
-        let closed = inventory_after_mode(Screen::Inventory, false, true);
-        assert!(closed == Screen::Playing);
-        for screen in [
-            Screen::Playing,
-            Screen::Creative,
-            Screen::Paused,
-            Screen::Stats,
-            Screen::Advancements,
-        ] {
-            assert!(inventory_after_mode(screen, true, false) == screen);
-        }
     }
 }
