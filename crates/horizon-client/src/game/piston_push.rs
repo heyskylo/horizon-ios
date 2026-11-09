@@ -685,6 +685,29 @@ impl Game<'_> {
         });
         self.set_pushed_on_ground(target, limited, resolved);
 
+        // Entity.move updates ground before its tiny-collision return. This
+        // native slice covers unoccupied server NoAI moves, including vertical pushes.
+        if let Target::Entity(EntityHandle::Mob(i)) = target {
+            let m = &self.mobs[i];
+            let eligible = !self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && m.no_ai
+                && !m.extra.passenger
+                && m.extra.mount.is_none()
+                && m.rider.is_none()
+                && m.extra.rider.is_none()
+                && self.riding != Some(m.id)
+                && self.lan.as_ref().is_none_or(|host| {
+                    !host
+                        .hub
+                        .guests
+                        .iter()
+                        .any(|g| host.hub.here(g) && g.vehicle == Some(m.id))
+                });
+            if eligible {
+                self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
+            }
+        }
         let moved = resolved.length_squared() > 1.0e-7
             || limited.length_squared() - resolved.length_squared() < 1.0e-7;
         if moved {
@@ -760,12 +783,6 @@ impl Game<'_> {
     /// away included, on ground only when the push's downward part was blocked.
     fn set_pushed_on_ground(&mut self, target: Target, wanted: Vec3, moved: Vec3) {
         if let Target::Entity(handle) = target {
-            // The new mob hook is authoritative; preserve the client movement path.
-            if matches!(handle, EntityHandle::Mob(_))
-                && (self.options.execution_role.is_client() || self.remote.is_some())
-            {
-                return;
-            }
             let on_ground = wanted.y < 0.0 && wanted.y != moved.y;
             with_entity_mut!(self, handle, entity => entity.set_piston_on_ground(on_ground));
         }
@@ -1515,22 +1532,29 @@ mod h255_mob_piston_ground_tests {
     }
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn h255_added_client_role_ai_and_vertical_paths_keep_native_state() {
+    fn h255_added_client_role_ai_and_vertical_ground_state() {
         use crate::game::execution_role::ExecutionRole as Role;
-        for (role, no_ai, movement) in [
-            (Role::Client, true, Vec3::new(0.25, 0.0, 0.0)),
-            (Role::IntegratedServer, false, Vec3::new(0.25, 0.0, 0.0)),
-            (Role::IntegratedServer, true, Vec3::new(0.0, 0.25, 0.0)),
+        for (role, no_ai, movement, on_ground) in [
+            (Role::Client, true, Vec3::new(0.25, 0.0, 0.0), true),
+            (
+                Role::IntegratedServer,
+                false,
+                Vec3::new(0.25, 0.0, 0.0),
+                true,
+            ),
+            (
+                Role::IntegratedServer,
+                true,
+                Vec3::new(0.0, 0.25, 0.0),
+                false,
+            ),
         ] {
             with_role_game(role, |game| {
                 let i = added_mob(game, 22, "husk", no_ai, 8.5);
                 let before = game.mobs[i].position;
                 added_push(game, i, movement);
                 assert_eq!(game.mobs[i].position, before.add_vector(movement));
-                assert!(
-                    game.mobs[i].on_ground,
-                    "excluded native path remains unchanged; not Java parity"
-                );
+                assert_eq!(game.mobs[i].on_ground, on_ground);
             });
         }
     }
