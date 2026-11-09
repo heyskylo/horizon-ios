@@ -233,7 +233,11 @@ pub fn texture_path(root: &Path, texture: &str, directory: &str) -> PathBuf {
     }
     let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
     let rel = format!("assets/{namespace}/{directory}/{path}.png");
-    root.join(if horizon_optifine::paths::valid(&rel) {
+    // No `.`, `..` or empty segment, and no `\` (a separator on Windows, where `..\..` climbs).
+    let stays = rel
+        .split('/')
+        .all(|segment| !matches!(segment, "" | "." | "..") && !segment.contains('\\'));
+    root.join(if stays {
         &rel
     } else {
         NOWHERE
