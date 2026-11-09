@@ -447,7 +447,11 @@ impl Projectile {
         )
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
-        let no_deflect_ticks = if kind == ProjectileKind::WindCharge { 5 } else { 0 };
+        let no_deflect_ticks = if kind == ProjectileKind::WindCharge {
+            5
+        } else {
+            0
+        };
         let kind_is_arrow = matches!(kind, ProjectileKind::Arrow { .. } | ProjectileKind::Trident);
         // `Fireball.defineSynchedData`: DATA_ITEM_STACK starts as a fire charge.
         let item = kind
