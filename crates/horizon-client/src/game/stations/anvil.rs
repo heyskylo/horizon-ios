@@ -13,6 +13,8 @@ pub(super) fn rename_box() -> horizon_client::ui::EditBox {
     edit.bordered = false;
     edit.max_length = NAME_CHARS;
     edit.text_color = u32::MAX;
+    // AnvilScreen also sets `setTextColorUneditable(-1)`: white either way.
+    edit.text_color_uneditable = u32::MAX;
     edit.focused = true;
     edit.editable = false;
     edit
