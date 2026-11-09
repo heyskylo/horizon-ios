@@ -2619,11 +2619,11 @@ const COMPILE_RETRIES: usize = 3;
 
 /// Runs `pipeline` until it builds, each time without the mods that stopped it before (they
 /// are said with `progress` as they are left out, and those needing them once it built). The
-/// error, when it can't, starts with the mods already left out.
+/// error, when it can't, starts with the mods already left out; they come with it.
 fn isolated(
     mut pipeline: impl FnMut(&[LeftOut]) -> Result<Built, Failed>,
     progress: &impl Fn(Step),
-) -> Result<Built, String> {
+) -> Result<Built, (String, Vec<LeftOut>)> {
     let mut skip: Vec<LeftOut> = Vec::new();
     let mut compiles = 0;
     let mut last = String::new();
@@ -2654,7 +2654,7 @@ fn isolated(
                     .filter(|l| !skip.iter().any(|s| s.id == l.id))
                     .collect();
                 if new.is_empty() || compiles > COMPILE_RETRIES {
-                    return Err(said(&skip, error));
+                    return Err((said(&skip, error), skip));
                 }
                 for left in new {
                     log_warning(&left.label());
@@ -2663,8 +2663,8 @@ fn isolated(
                 }
                 last = error;
             }
-            Err(Failed::Nothing) => return Err(said(&skip, last)),
-            Err(Failed::Other(error)) => return Err(said(&skip, error)),
+            Err(Failed::Nothing) => return Err((said(&skip, last), skip)),
+            Err(Failed::Other(error)) => return Err((said(&skip, error), skip)),
         }
     }
 }
@@ -2711,24 +2711,38 @@ pub fn build(
         let point = |version: &str| {
             instances::edit(&instance.id, |meta| meta.version = Some(version.to_owned()))
         };
-        let mut built = run(base, true)?;
-        point(&built.version)?;
+        // The first build may fail outright when the mods made elsewhere are all it had (every
+        // mod left out) or the ones left could not build without them: those mods still move it.
+        let (first, left) = match run(base, true) {
+            Ok(built) => {
+                point(&built.version)?;
+                let left = built.left_out.clone();
+                (Ok(built), left)
+            }
+            Err((error, left)) => (Err(error), left),
+        };
         let theirs = match on_base {
             true => Vec::new(),
-            false => made_elsewhere(&bundles(folder)?, &built.left_out),
+            false => made_elsewhere(&bundles(folder)?, &left),
+        };
+        let mut built = match first {
+            Err(error) if theirs.is_empty() => return Err(error),
+            first => first,
         };
         if !theirs.is_empty() {
             progress(Step::OnTheirHorizon(theirs));
             let origin = about(base).map_or_else(|| base.to_owned(), |a| a.base);
-            match run(&origin, false) {
-                Ok(moved) => {
+            match (run(&origin, false), &built) {
+                (Ok(moved), _) => {
                     point(&moved.version)?;
-                    built = moved;
+                    built = Ok(moved);
                 }
-                Err(e) if e.starts_with(MISMATCH) => return Err(e),
-                Err(e) => log_warning(&e),
+                (Err((e, _)), _) if e.starts_with(MISMATCH) => return Err(e),
+                (Err((e, _)), Ok(_)) => log_warning(&e),
+                (Err((e, _)), Err(_)) => return Err(e),
             }
         }
+        let built = built?;
         prune(&built.version);
         if built.plan != Plan::UpToDate {
             progress(Step::Done {
