@@ -1,0 +1,22 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "relight_chunks",
+      "target": "horizon_client::game::native_world_edit::Game<'_>::native_relight_chunks"
+    },
+    {
+      "name": "chunk_trackers",
+      "target": "horizon_client::game::native_world_edit::Game<'_>::native_chunk_trackers"
+    },
+    {
+      "name": "resend_chunk",
+      "target": "horizon_client::game::native_world_edit::Game<'_>::native_resend_chunk"
+    }
+  ],
+  "rust_summary": "chunk light and resends for raw section writes (`native_relight_chunks`, `native_chunk_trackers`, `native_resend_chunk`).",
+  "doc_summary": "`native_relight_chunks(dimension, chunks)` lights loaded chunks (and the loaded ring beside them) again at once, `native_chunk_trackers(dimension, chunk)` lists the players who have a chunk and `native_resend_chunk(dimension, chunk, player)` sends it again with its light to them or to one. Bundles need \"hooks\": @API:chunk_relight_resend@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_world_edit.rs"
+  ]
+}

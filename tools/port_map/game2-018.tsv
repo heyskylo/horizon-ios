@@ -52,7 +52,7 @@ TrialSpawnerStateData.pack	skip:java		immutable snapshot copy of the data for sa
 TrialSpawnerStateData.isReadyToSpawnNextMob	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	the Active spawn branch checks the spawn time and the simultaneous-mob target
 TrialSpawnerStateData.countAdditionalPlayers	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	additional players are detected players minus one, floored at zero
 TrialSpawnerStateData.findPlayerWithOminousEffect	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::try_detect_players	Trial Omen wins, else the last Bad Omen player; folded into the detect step
-TrialSpawnerStateData.resetAfterBecomingOminous	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::apply_ominous	gap: minor: mobs are discarded without Mob.dropPreservedEquipment
+TrialSpawnerStateData.resetAfterBecomingOminous	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::apply_ominous	mobs drop preserved equipment before removal
 TrialSpawnerStateData.transformBadOmenIntoTrialOmen	port	crates/horizon-client/src/game/trial_spawner.rs::Game::bad_omen_to_trial_omen	Bad Omen level plus one becomes Trial Omen for 18000 ticks per level
 TrialSpawnerStateData.isReadyToOpenShutter	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	WaitingForRewardEjection opens the shutter after the delay and plays its sound
 TrialSpawnerStateData.isReadyToEjectItems	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	EjectingReward ejects on the ejection interval
