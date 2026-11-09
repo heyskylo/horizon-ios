@@ -138,6 +138,24 @@ pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
     out
 }
 
+/// `Consumable.sound` from the stack's `consumable` component.
+pub fn consumable_sound(stack: &ItemStack) -> Option<String> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    let sound = data
+        .and_then(|d| d.other("minecraft:consumable"))
+        .and_then(|c| c.get("sound"))?;
+    match sound {
+        Tag::String(id) => Some(id.to_string_lossy()),
+        Tag::Compound(_) => match sound.get("id") {
+            Some(Tag::String(id)) => Some(id.to_string_lossy()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
