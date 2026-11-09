@@ -18,6 +18,43 @@ pub(crate) struct OutputCapabilities {
     pub float_frame: bool,
     /// The device keeps the HUD on a layer of its own (`hud_coverage::supported`).
     pub hud_layer: bool,
+    /// HDR output is held back: the last start on this window's graphics driver ended before
+    /// HDR output showed a frame ([`held`]). The mode stays; the output is SDR.
+    pub held: bool,
+}
+
+/// Whether HDR output is held back on a renderer whose window's graphics driver is `driver`
+/// (`None` offscreen, which never holds it back: only a window writes the marker).
+pub(crate) fn held(settings: &Graphics, driver: Option<&str>) -> bool {
+    driver.is_some_and(|driver| settings.hdr_held(driver))
+}
+
+/// The graphics driver this window's HDR output starts on ([`driver_fingerprint`]), with the
+/// system's version as crash reports name it (`crash::operating_system`), read once a run.
+pub(crate) fn window_driver(info: &wgpu::AdapterInfo) -> String {
+    static OS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    driver_fingerprint(info, OS.get_or_init(crate::crash::operating_system))
+}
+
+/// The graphics driver a window's HDR output starts on, in one line: the backend, the
+/// adapter's vendor and device IDs and its name, the driver's name and its version, and the
+/// system's version `os`. Another GPU, a driver update or a system update reads differently:
+/// Metal names no driver, so on macOS the driver updates with the system.
+pub fn driver_fingerprint(info: &wgpu::AdapterInfo, os: &str) -> String {
+    let adapter = format!(
+        "{:?} {:04x}:{:04x} {}",
+        info.backend, info.vendor, info.device, info.name
+    );
+    [adapter.as_str(), &info.driver, &info.driver_info, os]
+        .map(|field| {
+            field
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .join("; ")
 }
 
 /// What the system last reported for a renderer's display: its luminance, and whether it
@@ -97,13 +134,15 @@ pub struct EffectiveOutput {
     pub(crate) reported: Option<Reported>,
     /// The device draws the 16-bit frame (Smooth Gradients).
     pub(crate) wide_frame_supported: bool,
+    /// HDR output is held back on this window's graphics driver (`OutputCapabilities::held`).
+    pub(crate) held: bool,
     /// The HDR output presented; `None` is SDR.
     pub(crate) encoding: Option<Output>,
     pub(crate) frame: FrameConfiguration,
     /// Paper white, peak and black level in nits, as HDR output's last pass and its
     /// metadata take them, while it is on.
     pub(crate) nits: [f32; 3],
-    /// The HUD and menus' brightness, as a share of paper white.
+    /// The HUD and menus' brightness, as a share of paper white: their nits over its.
     pub(crate) ui_brightness: f32,
 }
 impl Default for EffectiveOutput {
@@ -118,6 +157,7 @@ impl EffectiveOutput {
         system_hdr: None,
         reported: None,
         wide_frame_supported: false,
+        held: false,
         encoding: None,
         frame: FrameConfiguration {
             format: wgpu::TextureFormat::Bgra8Unorm,
@@ -136,9 +176,10 @@ impl EffectiveOutput {
         self.encoding.is_some()
     }
     /// Whether `mode` asks for HDR here: On always, Auto where the destination offers it and
-    /// the display reports HDR. The output still needs an offer and a frame that can take it.
+    /// the display reports HDR, neither while HDR output is held back. The output still needs
+    /// an offer and a frame that can take it.
     pub fn requests_hdr(&self, mode: HdrMode) -> bool {
-        requests_hdr(mode, self.offered.is_some(), self.system_hdr)
+        !self.held && requests_hdr(mode, self.offered.is_some(), self.system_hdr)
     }
     /// What a 0.2 pack's `Frame` describes: the HDR display on the layered frame, whose
     /// picture is light; SDR otherwise, where the frame holds SDR's picture, the one HDR
@@ -169,6 +210,10 @@ fn requests_hdr(mode: HdrMode, offered: bool, system: Option<bool>) -> bool {
         HdrMode::Auto => offered && system == Some(true),
     }
 }
+/// Whether `settings` ask for HDR on a destination of `caps` whose display reports `reading`.
+fn wanted(settings: &Graphics, caps: OutputCapabilities, reading: DisplayReading) -> bool {
+    !caps.held && requests_hdr(settings.hdr, caps.hdr.is_some(), reading.hdr)
+}
 
 /// The frame a renderer made now draws in, for `settings`, the pack's `request`, what the
 /// destination and device can do (`caps`) and what the display reports.
@@ -179,7 +224,7 @@ pub(crate) fn resolve_frame(
     reading: DisplayReading,
     swapchain: wgpu::TextureFormat,
 ) -> FrameConfiguration {
-    let wanted = requests_hdr(settings.hdr, caps.hdr.is_some(), reading.hdr);
+    let wanted = wanted(settings, caps, reading);
     let (format, hud_layer) = super::frame_configuration(
         wanted && settings.hdr_smooth_gradients,
         (
@@ -210,12 +255,13 @@ pub(crate) fn resolve_output(
     frame: FrameConfiguration,
     presents: bool,
 ) -> EffectiveOutput {
-    let wanted = requests_hdr(settings.hdr, caps.hdr.is_some(), reading.hdr);
+    let wanted = wanted(settings, caps, reading);
     EffectiveOutput {
         offered: caps.hdr,
         system_hdr: reading.hdr,
         reported: reading.luminance,
         wide_frame_supported: caps.wide_frame,
+        held: caps.held,
         encoding: caps
             .hdr
             .filter(|_| wanted && presents && frame.overlay_format == frame.format),
@@ -225,7 +271,8 @@ pub(crate) fn resolve_output(
             settings.peak_nits(reading.luminance) as f32,
             settings.black_level_nits(),
         ],
-        ui_brightness: settings.hdr_ui_brightness as f32 / 100.0,
+        ui_brightness: settings.ui_nits(reading.luminance) as f32
+            / settings.paper_white_nits(reading.luminance) as f32,
     }
 }
 
@@ -263,6 +310,7 @@ pub(crate) mod tests {
                 wide_frame: true,
                 float_frame: true,
                 hud_layer: true,
+                held: false,
             },
             DisplayReading {
                 luminance: Some(Reported {
@@ -417,6 +465,118 @@ pub(crate) mod tests {
         assert_eq!(settings.hdr, HdrMode::On);
     }
 
+    /// A window on the driver a start failed on stays SDR, on an SDR frame, whatever the
+    /// mode, and the mode stays as chosen; another driver tries HDR again, and an offscreen
+    /// renderer (no driver) never holds HDR back.
+    #[test]
+    fn a_failed_start_holds_hdr_back_on_its_driver_only() {
+        let failed = "Vulkan 10de:2684 GPU; driver; 1.0";
+        for mode in [HdrMode::On, HdrMode::Auto] {
+            let settings = Graphics {
+                hdr: mode,
+                hdr_failed_start: Some(failed.into()),
+                ..Graphics::default()
+            };
+            let request = FrameRequest {
+                linear_pack: false,
+                hdr_float: true,
+            };
+            let on = |driver: Option<&str>| {
+                let (mut caps, reading) = window(Some(Output::Pq), Some(true));
+                caps.held = held(&settings, driver);
+                snapshot(&settings, request, caps, reading)
+            };
+            let out = on(Some(failed));
+            assert_eq!(out.encoding, None, "{mode:?}");
+            assert_eq!(out.frame.format, Bgra8Unorm, "{mode:?}");
+            assert!(!out.frame.hud_layer && out.held && !out.requests_hdr(mode));
+            // Still offered: the page lets the player pick a mode to try again.
+            assert!(out.hdr_offered());
+            assert_eq!(settings.hdr, mode);
+            for driver in [Some("Vulkan 10de:2684 GPU; driver; 1.1"), None] {
+                let out = on(driver);
+                assert_eq!(out.encoding, Some(Output::Pq), "{mode:?} {driver:?}");
+                assert_eq!(out.frame.format, LINEAR_FRAME, "{mode:?} {driver:?}");
+                assert!(!out.held && out.requests_hdr(mode));
+            }
+        }
+        // A marker that named no driver holds on whichever window comes first.
+        let legacy = Graphics {
+            hdr: HdrMode::On,
+            hdr_failed_start: Some(String::new()),
+            ..Graphics::default()
+        };
+        assert!(held(&legacy, Some(failed)));
+        assert!(!held(&legacy, None));
+    }
+
+    /// The fingerprint tells another GPU, backend, driver version or system version apart, in
+    /// one line.
+    #[test]
+    fn the_driver_fingerprint_is_one_line_that_changes_with_the_driver() {
+        let os = "windows (x86_64) version Windows 11 (26200.7019)";
+        let info = wgpu::AdapterInfo {
+            name: "NVIDIA GeForce RTX 4090".into(),
+            vendor: 0x10de,
+            device: 0x2684,
+            device_type: wgpu::DeviceType::DiscreteGpu,
+            device_pci_bus_id: "0000:01:00.0".into(),
+            driver: "NVIDIA".into(),
+            driver_info: "581.57\n".into(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 32,
+            subgroup_max_size: 32,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        let fingerprint = driver_fingerprint(&info, os);
+        assert_eq!(
+            fingerprint,
+            "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57; \
+             windows (x86_64) version Windows 11 (26200.7019)"
+        );
+        assert_ne!(
+            driver_fingerprint(&info, "windows (x86_64) version Windows 11 (26200.7171)"),
+            fingerprint
+        );
+        // Metal names no driver: a macOS update is what changes it.
+        let metal = wgpu::AdapterInfo {
+            name: "Apple M3".into(),
+            vendor: 0,
+            device: 0,
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Metal,
+            ..info.clone()
+        };
+        let sonoma = driver_fingerprint(&metal, "macos (aarch64) version macOS 14.6");
+        assert_eq!(
+            sonoma,
+            "Metal 0000:0000 Apple M3; ; ; macos (aarch64) version macOS 14.6"
+        );
+        assert_ne!(
+            driver_fingerprint(&metal, "macos (aarch64) version macOS 15.1"),
+            sonoma
+        );
+        let other = [
+            wgpu::AdapterInfo {
+                driver_info: "582.02".into(),
+                ..info.clone()
+            },
+            wgpu::AdapterInfo {
+                backend: wgpu::Backend::Dx12,
+                ..info.clone()
+            },
+            wgpu::AdapterInfo {
+                device: 0x2704,
+                ..info.clone()
+            },
+        ];
+        for other in other {
+            assert_ne!(driver_fingerprint(&other, os), fingerprint, "{other:?}");
+        }
+    }
+
     /// Auto's paper white and peak are this display's report; the player's own values win.
     #[test]
     fn auto_levels_follow_this_renderers_report() {
@@ -444,6 +604,39 @@ pub(crate) mod tests {
             resolve_output(&settings, caps, reading, frame, true).nits,
             [250.0, 1500.0, 0.0]
         );
+    }
+
+    /// UI Brightness reaches HDR output as its nits over paper white's: 1 on Auto, whatever
+    /// paper white is; a value set by hand holds its nits, Paper White on Auto or set by hand.
+    #[test]
+    fn ui_brightness_is_its_nits_over_paper_whites() {
+        let (caps, reading) = window(Some(Output::Pq), Some(true));
+        let share = |paper_white, ui_nits, reading| {
+            let settings = Graphics {
+                hdr: HdrMode::On,
+                hdr_paper_white: paper_white,
+                hdr_ui_nits: ui_nits,
+                ..Graphics::default()
+            };
+            let frame = resolve_frame(
+                &settings,
+                FrameRequest::default(),
+                caps,
+                reading,
+                Bgra8Unorm,
+            );
+            resolve_output(&settings, caps, reading, frame, true).ui_brightness
+        };
+        // Auto: the report's 400 nits, 203 without one, or the player's 250.
+        let unreported = DisplayReading::default();
+        for (paper_white, reading) in [(0, reading), (0, unreported), (250, reading)] {
+            assert_eq!(share(paper_white, 0, reading), 1.0);
+        }
+        assert_eq!(share(0, 100, reading), 0.25);
+        assert_eq!(share(0, 480, reading), 1.2);
+        assert_eq!(share(0, 406, unreported), 2.0);
+        assert_eq!(share(250, 100, reading), 0.4);
+        assert_eq!(share(250, 480, reading), 1.92);
     }
 
     /// Two renderers' states, a window's and an offscreen one's, made and changed in turn:

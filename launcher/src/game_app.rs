@@ -93,19 +93,21 @@ pub fn ensure(version: &Path) -> io::Result<PathBuf> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => remove_if_present(&to)?,
         Err(e) => return Err(e),
     }
-    sync_native_data(version, &programs)?;
+    for name in ["native-data", "native-content"] {
+        sync_native_directory(version, &programs, name)?;
+    }
     Ok(programs.join(PROGRAMS[0]))
 }
 
-fn sync_native_data(version: &Path, programs: &Path) -> io::Result<()> {
-    let present = match fs::metadata(version.join("native-data")) {
+fn sync_native_directory(version: &Path, programs: &Path, name: &str) -> io::Result<()> {
+    let present = match fs::metadata(version.join(name)) {
         Ok(m) if m.is_dir() => true,
         Ok(_) => return Err(io::ErrorKind::NotADirectory.into()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => false,
         Err(e) => return Err(e),
     };
-    let to = programs.join("native-data");
-    let target = Path::new("../../../native-data");
+    let to = programs.join(name);
+    let target = Path::new("../../..").join(name);
     match fs::symlink_metadata(&to) {
         // Never replace or recursively delete an unexpected directory or file.
         Ok(m) if !m.file_type().is_symlink() => return Err(io::ErrorKind::AlreadyExists.into()),
@@ -115,7 +117,7 @@ fn sync_native_data(version: &Path, programs: &Path) -> io::Result<()> {
         Err(e) => return Err(e),
     }
     if present {
-        replace_link(&to, |temp| std::os::unix::fs::symlink(target, temp))
+        replace_link(&to, |temp| std::os::unix::fs::symlink(&target, temp))
     } else {
         remove_if_present(&to)
     }
@@ -244,6 +246,27 @@ mod tests {
             fs::read(version.join("old-data/example/table.bin")).unwrap(),
             b"first"
         );
+        fs::remove_dir_all(version).unwrap();
+    }
+
+    #[test]
+    fn native_content_is_linked_beside_the_app_executable_and_removed_when_absent() {
+        let version = native_version("content");
+        let content = version.join("native-content/soundproof/assets/soundproof");
+        fs::create_dir_all(&content).unwrap();
+        fs::write(content.join("sounds.json"), b"{}").unwrap();
+        let linked = ensure(&version).unwrap().with_file_name("native-content");
+        assert_eq!(
+            fs::read_link(&linked).unwrap(),
+            Path::new("../../../native-content")
+        );
+        assert_eq!(
+            fs::read(linked.join("soundproof/assets/soundproof/sounds.json")).unwrap(),
+            b"{}"
+        );
+        fs::rename(version.join("native-content"), version.join("old-content")).unwrap();
+        ensure(&version).unwrap();
+        assert!(fs::symlink_metadata(linked).is_err());
         fs::remove_dir_all(version).unwrap();
     }
 

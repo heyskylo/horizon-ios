@@ -264,7 +264,7 @@ impl Game<'_> {
         let horizon = if self.level_flat() {
             f64::from(self.level_min_y())
         } else {
-            63.0
+            f64::from(self.pack.polytone_colors.env.horizon_height)
         };
         self.dim == Dim::Overworld
             && camera.y < horizon
@@ -679,6 +679,7 @@ impl Game<'_> {
                 .player
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
+            cached_chunk: std::cell::Cell::new(None),
         };
         laps.lap("tp_level");
         // Resource packs' Polytone entity emitters on the player (#11486): fog, dust and
@@ -745,8 +746,15 @@ impl Game<'_> {
                 day_time,
                 ..Default::default()
             });
+        // `screen_time` counts while the same screen stays open.
+        let screen = (self.screen != super::Screen::Playing).then(|| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::mem::discriminant(&self.screen).hash(&mut hasher);
+            hasher.finish()
+        });
         if let Some(renderer) = &mut self.renderer {
-            renderer.set_animation_inputs(day_time, [rain, thunder], Some(&frame));
+            renderer.set_animation_inputs(day_time, [rain, thunder], Some(&frame), screen);
         }
     }
 }
