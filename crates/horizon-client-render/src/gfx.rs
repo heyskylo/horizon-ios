@@ -10062,7 +10062,11 @@ impl Renderer {
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
+        // Post effects (a resource pack's chains, `use_depth_buffer`) read the world's depth
+        // after the world pass, as `GameRenderer.render` hands them the main target's.
+        let post_reads_depth = !frame.title && !frame.post_effects.effects.is_empty();
         let keep_depth = pack_reads_world
+            || post_reads_depth
             || (taa && self.world_post.taa)
             || oit_on
             || native_render::render_needs().world_depth
