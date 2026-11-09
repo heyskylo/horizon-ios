@@ -816,25 +816,23 @@ pub(super) fn mob_meta(
             }
             defaults.push((16, serializer::INT, Value::Int(0)));
         }
-        // AbstractCubeMob.ID_SIZE; SulfurCube also syncs FROM_BUCKET and
-        // MAX_FUSE (clients tick the fuse for the swell / white flash).
+        // AbstractCubeMob.ID_SIZE; SulfurCube then syncs MAX_FUSE (-1 until primed;
+        // clients tick it for the swell / white flash) and FROM_BUCKET (#13721).
         "minecraft:slime" | "minecraft:magma_cube" | "minecraft:sulfur_cube" => {
             if e.size > 1 {
                 meta.push((18, serializer::INT, Value::Int(e.size)));
             }
             defaults.push((18, serializer::INT, Value::Int(1)));
             if kind == "minecraft:sulfur_cube" {
-                let from_bucket = e.scratch[3] != 0;
-                if from_bucket {
-                    meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
-                }
-                defaults.push((19, serializer::BOOLEAN, Value::Bool(false)));
-                // SulfurCube.MAX_FUSE: set when primed; 0 means unprimed.
                 let fuse = horizon_client::mobs::sulfur_cube::fuse(m);
                 if fuse >= 0 {
-                    meta.push((20, serializer::INT, Value::Int(fuse)));
+                    meta.push((19, serializer::INT, Value::Int(fuse)));
                 }
-                defaults.push((20, serializer::INT, Value::Int(0)));
+                defaults.push((19, serializer::INT, Value::Int(-1)));
+                if e.scratch[3] != 0 {
+                    meta.push((20, serializer::BOOLEAN, Value::Bool(true)));
+                }
+                defaults.push((20, serializer::BOOLEAN, Value::Bool(false)));
             }
         }
         // Creeper.DATA_SWELL_DIR, DATA_IS_POWERED and DATA_IS_IGNITED: the
@@ -4259,6 +4257,7 @@ mod tests {
             ]
         );
     }
+    include!("lan/sulfur_cube_meta_tests.rs");
 }
 
 #[cfg(test)]
