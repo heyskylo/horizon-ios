@@ -3110,33 +3110,6 @@ impl Game<'_> {
                 index.get(mobs, id as u32).map(mob_tracking_body)
             });
     }
-    fn remove_entity(&mut self, id: i32) {
-        self.detach_remote_tracking_entity(id);
-        self.audio.remove_sound_entity(id as u32);
-        // Entity.setRemoved detaches every passenger, even when no empty
-        // SetPassengers packet preceded the vehicle's removal. Otherwise
-        // mobs and other players keep their passenger pose after it is gone.
-        self.remote_set_passengers(id, &[]);
-        self.mobs.retain(|m| m.id != id as u32);
-        self.orbs.retain(|o| o.id != id as u32);
-        self.dropped.retain(|d| d.id != id as u32);
-        // Before the crystals go: the dragon's beam index follows them.
-        self.remove_remote_dragon(id);
-        self.remove_remote_object(id as u32);
-        self.remove_remote_projectile(id as u32);
-        self.persist.uuids.remove(&(id as u32));
-        if let Some(r) = self.remote.as_mut() {
-            r.glowing.remove(&id);
-            r.entities.remove(&id);
-            r.passenger_vehicles.remove(&(id as u32));
-            r.passenger_vehicles.retain(|_, v| *v != id as u32);
-            r.lerps.remove(&id);
-            r.cart_lerps.remove(&id);
-            r.stepped.remove(&id);
-            r.head_lerps.remove(&id);
-            r.pending_items.remove(&id);
-        }
-    }
     /// Map a menu slot to Horizon's inventory screen slot ids.
     pub(super) fn menu_slot(menu: &str, slot: i32) -> Option<usize> {
         let s = usize::try_from(slot).ok()?;
@@ -3707,7 +3680,7 @@ impl Game<'_> {
                 self.move_remote_interaction(p.id, p.position);
             }
             C::RemoveEntities(p) => {
-                for id in p.ids {
+                for &id in &p.ids {
                     if let Some(r) = self.remote.as_mut() {
                         if let Some(uuid) = r.level_players.remove(&id) {
                             r.attachments.remove(&Holder::Player(uuid));
@@ -3716,8 +3689,8 @@ impl Game<'_> {
                         r.level_player_textures.remove(&id);
                         r.attachments.remove(&Holder::Entity(id as u32));
                     }
-                    self.remove_entity(id);
                 }
+                self.remove_entities(&p.ids);
             }
             C::MoveEntityPos(play::MoveEntityPos(m))
             | C::MoveEntityPosRot(play::MoveEntityPosRot(m))
@@ -6731,7 +6704,7 @@ impl Game<'_> {
         if self.studio.replay.is_none() {
             self.tick_player_model();
         }
-        self.tick_emotes();
+        self.client_hooks_tick();
         if !dead {
             self.remote_tick_using();
         }
@@ -10714,17 +10687,11 @@ impl Game<'_> {
     /// The profile name of another player the server sent, by entity id.
     /// The UUID of another player's entity in the level.
     pub(super) fn remote_player_uuid(&self, id: u32) -> Option<u128> {
-        let r = self.remote.as_ref()?;
-        let uuid = *r.level_players.get(&(id as i32))?;
-        (uuid != r.profile).then_some(uuid)
+        self.remote.as_ref()?.player_uuid(id)
     }
     pub(super) fn remote_player_name(&self, id: u32) -> Option<&str> {
         let r = self.remote.as_ref()?;
-        let uuid = r.level_players.get(&(id as i32))?;
-        if *uuid == r.profile {
-            return None;
-        }
-        r.level_player_name(id as i32, uuid)
+        r.level_player_name(id as i32, &r.player_uuid(id)?)
     }
     /// Status for `horizon-ctl status`.
     /// The other players' entities in the level and their names (their
@@ -11505,6 +11472,11 @@ impl Remote {
     pub(super) fn profile(&self) -> u128 {
         self.profile
     }
+    /// Another player's profile UUID, by their entity id (None for the local player).
+    pub(super) fn player_uuid(&self, id: u32) -> Option<u128> {
+        let uuid = *self.level_players.get(&(id as i32))?;
+        (uuid != self.profile).then_some(uuid)
+    }
     /// The entity id of a player in the level, by profile UUID.
     pub(super) fn player_entity(&self, uuid: u128) -> Option<u32> {
         self.level_players
@@ -11642,6 +11614,9 @@ fn in_storage_range(view_distance: i32, center: (i32, i32), x: i32, z: i32) -> b
     x.abs_diff(center.0) <= range && z.abs_diff(center.1) <= range
 }
 
+// A packet's removals (`RemoveEntities`), apart: this file may not grow.
+#[path = "remote_removal.rs"]
+mod removal;
 #[cfg(test)]
 mod tests {
     #[test]
