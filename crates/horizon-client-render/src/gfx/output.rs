@@ -448,6 +448,7 @@ pub(crate) mod tests {
             };
             let request = FrameRequest {
                 linear_pack: false,
+                linear_blend: false,
                 hdr_float: true,
             };
             let on = |driver: Option<&str>| {
