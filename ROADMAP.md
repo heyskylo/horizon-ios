@@ -194,7 +194,7 @@ Speeding up the code that reads and writes the blocks of the world, which almost
 
 <details><summary>Technical</summary>
 
-`PalettedContainer` and `PackedStorage` find an entry's word by multiply and shift instead of an integer division ([#1790](https://github.com/horizon-rust/horizon/issues/1790), [#1794](https://github.com/horizon-rust/horizon/issues/1794)); meshing looks up baked models by index, not by name ([#1747](https://github.com/horizon-rust/horizon/issues/1747)). Each change keeps the paletted storage harnesses identical and shows its microbenchmark ([docs/performance/paletted-container-access-results.md](docs/performance/paletted-container-access-results.md)).
+`PalettedContainer` and `PackedStorage` find an entry's word by multiply and shift instead of an integer division ([#1790](https://github.com/horizon-rust/horizon/issues/1790), [#1794](https://github.com/horizon-rust/horizon/issues/1794)); meshing looks up baked models by index, not by name ([#1747](https://github.com/horizon-rust/horizon/issues/1747)). Each change keeps the paletted storage harnesses identical and shows its microbenchmark in its pull request.
 
 </details>
 

@@ -1146,8 +1146,8 @@ impl Game<'_> {
             border: Some(self.border.geometry()),
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
-                self.level_players()
-                    .first()
+                self.level_players_iter()
+                    .next()
                     .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]),
             ),
         }

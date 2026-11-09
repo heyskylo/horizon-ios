@@ -652,9 +652,10 @@ mod tests {
         assert_eq!(zh.get("%s chunks"), Some("%s 个区块"));
         // Not every bundle is complete: the en_us layer is in every map, so a
         // missing key falls back to English (`horizon.mods.not_built` is not
-        // in ru_ru either).
+        // in la_la).
         assert_eq!(zh.get("LOD Distance"), Some("LOD 距离"));
-        assert_eq!(ru.get("horizon.mods.not_built"), Some(" (Not built)"));
+        let la = Language::load(&[&empty], "la_la");
+        assert_eq!(la.get("horizon.mods.not_built"), Some(" (Not built)"));
         let pl = Language::load(&[&empty], "pl_pl");
         assert_eq!(pl.get("horizon.options.controller"), Some("Kontroler"));
         assert_eq!(pl.get("horizon.options.vibration"), Some("Wibracje"));
