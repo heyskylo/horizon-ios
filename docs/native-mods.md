@@ -3269,6 +3269,11 @@ that tick the other mobs of that level read as gone.
   handles](#entity-and-level-handles)) for any loaded level, as `execute in <dimension> run data merge entity` does,
   with the same refusals (a player, a kind Horizon can't reload yet, data that changes nothing). API
   @API:npc_entity_by_uuid@.
+- **`native_level_markers(dimension)`** lists the `minecraft:marker` entities of a loaded level as `(id, position,
+  data)`: the `data` compound is what `/data get entity <marker> data` shows (empty for a marker saved without data).
+  It reads only the level's list of kept entities (displays, interactions, markers), not every entity, so it is the
+  cheap way to find markers used as anchors, beside filtering `native_level_entities`. Empty on a client and for a
+  level not loaded. Bundles need `"hooks": @API:level_markers@`.
 - **`native_set_entity_rotation(dimension, id, yaw, pitch, head_yaw)`** turns an entity without moving it, as
   `/rotate` does (`Entity.forceSetRotation`): its yaw and pitch in degrees (pitch clamped to -90..90), with its body and
   head; `Some(head_yaw)` then turns a mob's head alone (`setYHeadRot`), so an NPC looks over its shoulder. It takes
