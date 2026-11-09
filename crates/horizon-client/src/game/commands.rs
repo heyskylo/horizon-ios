@@ -531,6 +531,21 @@ impl Game<'_> {
         }
         Ok(p)
     }
+    /// BlockPosArgument.getSpawnablePos: no loaded-chunk or build-height check,
+    /// only `Level.isInSpawnableBounds` (upper bounds exclusive).
+    pub(super) fn spawnable_pos_arg(&self, ctx: &Context, name: &str) -> R<[i32; 3]> {
+        let c = self
+            .coords(ctx, name)
+            .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
+        let p = self.resolve_coords(&c).map(|v| v.floor() as i32);
+        if !(-30_000_000..30_000_000).contains(&p[0])
+            || !(-30_000_000..30_000_000).contains(&p[2])
+            || !(-20_000_000..20_000_000).contains(&p[1])
+        {
+            return Err(err("argument.pos.outofbounds", &[]));
+        }
+        Ok(p)
+    }
     fn int(ctx: &Context, name: &str) -> Option<i32> {
         match ctx.get(name) {
             Some(Arg::Int(v)) => Some(*v),
@@ -3797,7 +3812,7 @@ impl Game<'_> {
             vec![Target::Player]
         };
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
@@ -3861,7 +3876,7 @@ impl Game<'_> {
     }
     fn cmd_setworldspawn(&mut self, ctx: &Context) -> R<i32> {
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
