@@ -83,7 +83,7 @@ ClientHandshakePacketListenerImpl.handleCustomQuery	port	crates/horizon-client/s
 ClientHandshakePacketListenerImpl.fillListenerSpecificCrashDetails	skip:debug		crash report details only
 ClientLevel.handleBlockChangedAck	port	crates/horizon-client/src/game/remote.rs::Game::end_predictions	settles the predicted block actions up to the sequence
 ClientLevel.onBlockEntityAdded	port	crates/horizon-client/src/game.rs::Game::entity_geometry	off-screen block entities (beacon, end gateway, structure and test blocks) are drawn without a view test
-ClientLevel.syncBlockState	port	crates/horizon-client/src/game/remote.rs::Game::end_predictions	gap: minor: writes the server's state but does not move the player out when the block would sit on them (absSnapTo)
+ClientLevel.syncBlockState	port	crates/horizon-client/src/game/remote.rs::Game::end_predictions	writes the server's state and, when the restored block would sit on the player, snaps them to the position the prediction remembered (snap_target/snap_player_to, absSnapTo)
 ClientLevel.setBlock	port	crates/horizon-client/src/game/remote.rs::Game::set_block	gap: minor: the prediction bookkeeping is in Game::server_block
 ClientLevel.<init>	port	crates/horizon-client/src/game/remote.rs::Game::enter_remote_dimension	gap: minor: the environment layers are applied in Game::render
 ClientLevel.addEnvironmentAttributeLayers	port	crates/horizon-client/src/game.rs::Game::render	sky colour and sky light move during a lightning flash
