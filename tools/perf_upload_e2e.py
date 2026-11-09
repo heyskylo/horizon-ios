@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import argparse
 import gzip
-import http.client
 import json
 import os
 from pathlib import Path
 import subprocess
 import urllib.error
-import urllib.parse
 import urllib.request
 
 
@@ -25,7 +23,7 @@ def main() -> None:
     owners: list[tuple[str, str]] = []
 
     def request(method: str, path: str, data: bytes | None = None, token: str | None = None):
-        headers = {"Content-Type": "application/vnd.horizon.perf"}
+        headers = {"Content-Type": "application/vnd.horizon.perf", "User-Agent": "horizon-perf-e2e/0.1"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
@@ -81,12 +79,7 @@ def main() -> None:
         assert newer[:2] == b"\x08\x01"
         newer[1] = 2
         assert request("POST", "/api/perf/captures", gzip.compress(newer))[0] == 422
-        parsed = urllib.parse.urlsplit(base)
-        connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-        connection = connection_cls(parsed.hostname, parsed.port, timeout=30)
-        connection.request("POST", "/api/perf/captures", body=b"", headers={"Content-Type": "application/vnd.horizon.perf", "Content-Length": "67108865"})
-        assert connection.getresponse().status == 413
-        connection.close()
+        assert request("POST", "/api/perf/captures", bytes(64 * 1024 * 1024 + 1))[0] == 413
         print("PASS: malformed, unsupported-format and oversized captures are refused")
 
         for command, shared in [("upload", False), ("share", True)]:
