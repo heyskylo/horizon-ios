@@ -826,7 +826,15 @@ impl Game<'_> {
             f64::from(p.1) + y_off,
             f64::from(p.2) + 0.5,
         ];
-        let id = self.spawn_mob(&name, at, true)?;
+        // EntityType.create: `snapTo(.., Mth.wrapDegrees(level.random.nextFloat() * 360), 0)`.
+        let id = self.spawn_mob_reason_yaw(
+            &name,
+            at,
+            true,
+            false,
+            false,
+            super::creatures::SpawnYaw::Created,
+        )?;
         // finalizeSpawn's riders (chicken jockeys, spider jockeys...) come
         // with a dispensed mob as with any spawn that is not natural.
         self.spawn_jockeys(id, false);
