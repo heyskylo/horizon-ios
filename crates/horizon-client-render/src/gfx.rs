@@ -8214,7 +8214,8 @@ impl Renderer {
         // The layered float frame keeps HDR: its world's light and HUD layer make the picture
         // (`Hdr::sdr_screenshot`), in HDR's own targets at `size`; it presents nothing, as the
         // swapchain is set aside. Other frames draw without HDR, into a target of their own.
-        let layered = self.hdr.as_ref().is_some_and(hdr::Hdr::layered);
+        let output = self.output.scaled_screenshot();
+        let layered = output.hdr_on();
         // Out of video memory (an invalid texture's view is a validation error):
         // tried again at half the size next frame; the window keeps its last one.
         let checks = GpuChecks::push(&self.device);
@@ -8238,7 +8239,6 @@ impl Renderer {
         let offscreen = std::mem::replace(&mut self.offscreen, target);
         let window_depth = std::mem::replace(&mut self.depth, depth);
         // The frame's own targets at `size` can run out of memory too.
-        let output = self.output.sdr();
         let drawn = self.draw_frame(frame, Some(GpuChecks::push(&self.device)), output);
         self.depth = window_depth;
         self.offscreen = offscreen;

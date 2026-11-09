@@ -150,11 +150,13 @@ impl EffectiveOutput {
             DisplayValues::SDR
         }
     }
-    /// This output drawn somewhere HDR output doesn't go (a scaled screenshot's frame): the
-    /// same frame, SDR.
-    pub(crate) fn sdr(self) -> Self {
+    /// What a scaled screenshot's frame is drawn for (`Renderer::draw_scaled_frame`): the
+    /// layered frame keeps HDR, whose world light and HUD layer make the screenshot, so a 0.2
+    /// pack reads this display as every other frame does; any other frame is drawn without
+    /// HDR, into a target of its own, SDR.
+    pub(crate) fn scaled_screenshot(self) -> Self {
         Self {
-            encoding: None,
+            encoding: self.encoding.filter(|_| self.frame.hud_layer),
             ..self
         }
     }
@@ -474,6 +476,34 @@ pub(crate) mod tests {
         let stopped = window_output(window_reading);
         assert_eq!((stopped.system_hdr, stopped.encoding), (None, None));
         assert_eq!(stopped.reported, window_reading.luminance);
+    }
+
+    /// A scaled screenshot of the layered frame keeps HDR, and a 0.2 pack reads the window's
+    /// display in it, not SDR's; the 16-bit and the 8-bit frames shoot SDR, as do SDR windows.
+    #[test]
+    fn a_scaled_screenshot_keeps_the_display_only_on_the_layered_frame() {
+        let on = Graphics {
+            hdr: HdrMode::On,
+            ..Graphics::default()
+        };
+        let no_pack = FrameRequest {
+            linear_pack: false,
+            hdr_float: true,
+        };
+        let (caps, reading) = window(Some(Output::Pq), Some(true));
+        let layered = snapshot(&on, no_pack, caps, reading);
+        assert!(layered.frame.hud_layer && layered.display().hdr);
+        let shot = layered.scaled_screenshot();
+        assert_eq!(shot.encoding, Some(Output::Pq));
+        assert_eq!(shot.display(), layered.display());
+        for out in [
+            snapshot(&on, FrameRequest::default(), caps, reading),
+            snapshot(&Graphics::default(), no_pack, caps, reading),
+        ] {
+            let shot = out.scaled_screenshot();
+            assert_eq!((shot.encoding, shot.display()), (None, DisplayValues::SDR));
+            assert_eq!(shot.frame, out.frame);
+        }
     }
 
     /// What a 0.2 pack reads of the display: the headroom the tone curve eases into, never
