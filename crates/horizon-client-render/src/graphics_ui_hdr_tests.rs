@@ -120,14 +120,86 @@ fn auto_levels_and_setup_read_their_own_renderers_report() {
     assert_eq!(label(H::HdrCalibrate, &silent), "Calibrate...");
 }
 
+/// The setup rows' label and description for each kind of report: none, a compositor's
+/// (Wayland), and Windows', whose peak is the display's own guess.
 #[test]
-fn hdr_setup_follows_what_the_system_reported() {
-    let mut g = crate::graphics::Graphics::default();
-    assert_eq!(setup_of(&g, false), Setup::Unknown);
-    assert_eq!(setup_of(&g, true), Setup::Automatic);
-    g.hdr_paper_white = 80;
-    assert_eq!(setup_of(&g, true), Setup::Changed);
-    assert_eq!(setup_of(&g, false), Setup::Unknown);
+fn the_setup_rows_ask_to_calibrate_unless_the_system_set_the_display_up() {
+    let trusted = offering(true, Some(true));
+    let mut guessed = trusted;
+    guessed.reported = guessed.reported.map(|r| crate::graphics::Reported {
+        peak_guessed: true,
+        ..r
+    });
+    let rows = |s: &Settings, out: &EffectiveOutput| {
+        [H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite].map(|h| {
+            let item = Item::Horizon(h);
+            (item.label(s, out).plain(), description(item, s, out, "-"))
+        })
+    };
+    let calibrate = "Calibrate...";
+    let set_up = "Set up for your display. Leave on Auto unless it looks wrong.";
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::On;
+    let none = (
+        calibrate.into(),
+        "Your display didn't say how bright it gets: calibrate to set it up.",
+    );
+    assert_eq!(
+        rows(&s, &NONE),
+        [
+            none.clone(),
+            ("Peak Brightness: Auto (1000)".into(), "-"),
+            ("Paper White: Auto (203)".into(), "-"),
+        ]
+    );
+    assert_eq!(
+        rows(&s, &guessed),
+        [
+            (
+                calibrate.into(),
+                "Your display's reported peak is often too high: calibrate to set it up."
+            ),
+            ("Peak Brightness: Auto (1000)".into(), "-"),
+            ("Paper White: Auto (400)".into(), "-"),
+        ]
+    );
+    assert_eq!(
+        rows(&s, &trusted),
+        [
+            (
+                "Calibrate Anyway...".into(),
+                "Already set up for your display. Only calibrate if HDR looks wrong."
+            ),
+            ("Peak Brightness: Auto (1000)".into(), set_up),
+            ("Paper White: Auto (400)".into(), set_up),
+        ]
+    );
+    // Calibrated or set by hand, either report offers its automatic setup back.
+    s.horizon.hdr_peak = 800;
+    // Peak's Auto stays a guess on Windows: only Paper White is said to be set up there.
+    let changed = |peak| {
+        [
+            (
+                "Use Automatic Setup".into(),
+                "Puts Peak Brightness and Paper White back to your display's setup.",
+            ),
+            ("Peak Brightness: 800".into(), peak),
+            ("Paper White: Auto (400)".into(), set_up),
+        ]
+    };
+    assert_eq!(rows(&s, &guessed), changed("-"));
+    assert_eq!(rows(&s, &trusted), changed(set_up));
+    assert_eq!(rows(&s, &NONE)[0], none);
+    let mut ui = ui();
+    ui.screen.output = guessed;
+    let at = |[x, y, ..]: [f32; 4]| (x + 8.0, y + 4.0);
+    let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
+    assert_eq!(press(&mut ui, &mut s, at(calibrate)), [CLICK, CHANGED]);
+    assert_eq!((s.horizon.hdr_peak, s.horizon.hdr_paper_white), (0, 0));
+    assert_eq!(
+        press(&mut ui, &mut s, at(calibrate)),
+        [CLICK, Output::Push(OptionsPage::HdrCalibration)]
+    );
 }
 
 /// UI Brightness reads as Paper White does, in nits apart from it: Auto shows the paper white

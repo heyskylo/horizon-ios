@@ -287,8 +287,8 @@ otherwise, and must return quickly. With nothing registered a dispatch is one lo
 build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
-`published` (the world opened to or closed from LAN or friends, on change) and `shutdown` (the window closed, the
-world saved). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+`published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
+world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends'). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
@@ -423,6 +423,78 @@ pub trait Layer: Sync {
 - Sprites, items and the player's state come with their platform API (M6). They are not in this first
   version.
 
+### Look (`horizon_platform::look`)
+
+What the engine draws differently for a crate above, as plain data: PvP & HUD's knobs today (#14217).
+
+```rust
+pub struct Look {       // #[non_exhaustive]; Default is vanilla's
+    pub legacy_pose: bool, pub hide_attack_indicator: bool,
+    pub mute_attack_sounds: bool, pub hide_attack_particles: bool,
+    pub frame: Frame,   // outline, hurt overlay and glint colours
+    pub shield_size: u8, pub totem_scale: f32, pub fire_lower: f32,
+    pub clear_lava: bool, pub clear_water: bool, pub chat: Chat,
+    pub hide_effect_icons: bool, pub time_of_day: Option<i64>, pub weather: Option<(f32, f32)>,
+}
+pub fn update(change: impl FnOnce(&mut Look));  // the player whose turn it is (`seat()`)
+```
+
+- Pushed, not asked: a crate changes its own fields when its settings load or change (several crates share the
+  look, each keeping to its fields), and the engine reads it where it draws (`game/look.rs`, the only reader).
+  Nothing is called per frame, and a seat nothing changed sees vanilla's.
+- A knob is named by what it changes in the picture or the sound, never by the feature that uses it. A new knob
+  is a field added with vanilla's value as its default.
+
+### Container screens (`horizon_platform::containers`)
+
+Input and drawing on an open container screen (the inventory, chests, furnaces, crafting tables...), for the
+extras that act on one: Mouse Tweaks and sorting (M5).
+
+```rust
+/// The open screen's menu, for the length of one call. The engine implements it.
+pub trait Container {
+    fn menu(&self) -> &str;                     // "inventory", "minecraft:generic_9x3", "minecraft:furnace"...
+    fn slots(&self) -> Vec<Slot>;               // every slot drawn, in the screen's order
+    fn stack(&mut self, slot: SlotId) -> Option<Stack>;
+    fn carried(&self) -> Option<Stack>;         // the stack on the cursor
+    fn takes_one(&mut self, slot: SlotId, of: &Stack) -> bool;  // the menu's rules: mayPlace, the slot's limit
+    fn landing(&mut self, slot: SlotId) -> Vec<SlotId>;         // where quickMoveStack would put its items
+    fn click(&mut self, slot: SlotId, click: Click) -> bool;    // one ordinary click, as vanilla sends it
+    fn spread(&self) -> usize;                  // the slots vanilla's quick craft drag covers now
+    fn cursor(&self) -> (f32, f32);             // GUI pixels, from the panel's corner
+    fn shift(&self) -> bool;
+    fn order(&mut self, slot: SlotId) -> (u32, String);         // the creative tabs' order and the shown name
+}
+pub struct SlotId(pub u32);                     // opaque, stable while the screen is open
+pub struct Slot { pub id: SlotId, pub role: Role, pub x: f32, pub y: f32 }  // top left, from the panel's corner
+pub enum Role { Hotbar, Inventory, Storage, Input, Result, Equipment, Other }   // a crafting grid is Input
+pub struct Stack { pub item: String, pub count: u32, pub max: u32, pub kind: u64 }  // kind: equal for the same item and components
+pub enum Click { Pick { right: bool }, QuickMove, Put { one: bool } }               // Put: a one-slot QUICK_CRAFT drag
+
+// In `Hooks`, each `false` (or nothing) by default, so vanilla's handling runs:
+fn container_press(&self, c: &mut dyn Container, slot: Option<SlotId>, right: bool) -> bool;
+fn container_drag(&self, c: &mut dyn Container, slot: Option<SlotId>) -> bool;  // the cursor moved, a button held
+fn container_release(&self, c: &mut dyn Container);
+fn container_wheel(&self, c: &mut dyn Container, slot: Option<SlotId>, steps: f32) -> bool;
+fn container_key(&self, c: &mut dyn Container, slot: Option<SlotId>, key: &str) -> bool;  // `key.keyboard.r`, `key.mouse.middle`
+fn container_draw(&self, c: &dyn Container, canvas: &mut dyn hud::Canvas);    // over the panel, from its corner
+```
+
+- `true` means the hook took the input: vanilla's press, drag or wheel doesn't run, and a press or drag taken
+  ends vanilla's quick craft drag, as Mouse Tweaks' right-drag replaces it. Every hook hears `release`. The
+  first hook that returns `true` wins.
+- Each `click` is an ordinary slot click: the menu engine's on the player's own world, a `ContainerClick` on a
+  server. So an extra built on it works wherever vanilla's clicks do, and anticheats see vanilla's packets.
+- The engine offers every menu screen's slots; the crate decides which menus it acts in, by `menu()` (Mouse
+  Tweaks stays out of those whose slots cost or trigger something: anvils, enchanting, merchants, beacons,
+  crafters). Creative's tabs are no container screen.
+- The reads that ask the menu's rules take `&mut self`, as the engine's do; drawing gets `&dyn Container`,
+  so it reads the rest only.
+- The engine builds a `Container` only when a hook is registered and a container screen gets input or draws.
+  Without one there is no cost, and vanilla's handling is unchanged.
+- `order` is the only text: Sorting ranks by it. The rest is ids and numbers, so the API names no engine type
+  (`ItemStack` stays in the engine).
+
 ## Extras that may leave the game
 
 Horizon's extras are Horizon-layer code. Each one is a candidate to become an optional native mod that players add
@@ -472,7 +544,7 @@ All three run in CI's verify job and in `tools/pr_ready.py`.
 | Crate | Uses, against the rule |
 |---|---|
 | `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-friends`, `-telemetry` |
-| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` |
+| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` and `horizon-friends` (left through `Hooks::tunnel`) |
 | `horizon-client-render` | platform: `horizon-hdr`, `-mod-api-gen`, `-optifine`, `-polytone`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-telemetry` |
 | `horizon-client-input` | platform: `horizon-dualsense`, `horizon-theme` |
 
