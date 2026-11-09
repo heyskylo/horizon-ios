@@ -313,7 +313,12 @@ pub fn slider(
         if live { accent() } else { muted() },
     );
     let handle = [at, line - 3.0, 4.0, 8.0];
-    fill(batch, atlas, handle, if live { handle_fill() } else { muted() });
+    fill(
+        batch,
+        atlas,
+        handle,
+        if live { handle_fill() } else { muted() },
+    );
     if hover && live {
         ring(batch, atlas, [at - 1.0, line - 4.0, 6.0, 10.0], accent());
     }

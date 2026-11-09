@@ -160,7 +160,11 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, strip: &Strip) {
             arrow,
             ax,
             ay,
-            if on { arrow_colour() } else { arrow_off_colour() },
+            if on {
+                arrow_colour()
+            } else {
+                arrow_off_colour()
+            },
             true,
         );
     }
@@ -396,7 +400,8 @@ mod tests {
             let [ax, _] = strip.arrows[i];
             (batch.vertices.iter())
                 .filter(|v| {
-                    (v.pos[0] - ax).abs() < 4.0 && v.color & 0x00FF_FFFF == arrow_colour() & 0x00FF_FFFF
+                    (v.pos[0] - ax).abs() < 4.0
+                        && v.color & 0x00FF_FFFF == arrow_colour() & 0x00FF_FFFF
                 })
                 .map(|v| v.color >> 24)
                 .max()
