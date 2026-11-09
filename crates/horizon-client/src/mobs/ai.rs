@@ -613,7 +613,7 @@ fn drop_invalid_player_target(m: &mut Mob, w: &MobWorld) {
     {
         m.ai.target = None;
         if matches!(m.species(), Species::ZombifiedPiglin | Species::IronGolem) {
-            m.extra.anger = 0;
+            super::neutral_anger::stop(m);
             m.ai.last_hurt_by = None;
         }
     }
