@@ -2884,6 +2884,7 @@ impl SaveDir {
         let tables = self.tables.get().map(|t| &**t);
         let mut chunk = decode_with(&root, registry, biomes, tables, self.shape.column())?;
         load_light(&root.tag, &mut chunk, self.shape.sky_light);
+        chunk.entities = horizon_world::chunk::legacy_entities(&root.tag);
         Some(chunk)
     }
     /// A saved full chunk read for a player's far ring (`lan::far`), as `load` but past the gameplay
@@ -2962,8 +2963,7 @@ impl SaveDir {
             .collect();
         self.queue(Folder::Region, records, false)
     }
-    /// Entities saved for a chunk (`entities/`; older chunks may still keep
-    /// them in the chunk's own `entities` list).
+    /// Entities saved for a chunk in `entities/` (an old chunk's own list: [`Self::load`]).
     pub fn load_entities(&self, x: i32, z: i32) -> Vec<Tag> {
         let mut out = Vec::new();
         if let Some(root) = self.read_record("entities", x, z)
@@ -5356,7 +5356,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
         for s in &mut chunk.sections {
             Arc::make_mut(s).compact();
         }
-        chunk.entities = self.save.load_entities(x, z);
+        chunk.entities.extend(self.save.load_entities(x, z));
         Some(chunk)
     }
     fn lod_surface(&self, worker: &mut G::Worker, x: i32, z: i32) -> Option<crate::lod::Surface> {
@@ -8693,6 +8693,73 @@ mod tests {
         assert_eq!(number(chunk.tag.get("xPos")), Some(0));
         // 1.18's height fix: an Overworld chunk older than the new heights blends with them.
         assert!(chunk.tag.get("blending_data").is_some());
+        let _ = std::fs::remove_dir_all(&world);
+    }
+
+    /// A chunk last saved by 1.16.5 (DataVersion 2586) keeps its entities in its own
+    /// `Level.Entities`: the upgrade moves them to `entities` and the load adds them
+    /// (`SerializableChunkData.postLoadChunk`, `ServerLevel.addLegacyChunkEntities`), so its
+    /// minecart is in the world (#14424).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_chunk_from_before_1_17_loads_the_entities_it_keeps() {
+        let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let assets = crate::assets::Assets::load(&root).expect("assets");
+        let biomes = Biomes::load(&root).expect("biomes");
+        let world = std::env::temp_dir().join(format!("horizon-lazy-116-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&world);
+        let save = SaveDir::new(
+            super::dimension_dir(&world, "minecraft:overworld"),
+            LevelShape::OVERWORLD,
+        );
+        let section = Tag::compound([
+            ("Y", Tag::Byte(0)),
+            (
+                "Palette",
+                Tag::List(vec![
+                    Tag::compound([("Name", string("minecraft:air"))]),
+                    Tag::compound([("Name", string("minecraft:stone"))]),
+                ]),
+            ),
+            (
+                "BlockStates",
+                Tag::LongArray(vec![0x1111_1111_1111_1111; 256]),
+            ),
+        ]);
+        let minecart = Tag::compound([
+            ("id", string("minecraft:minecart")),
+            (
+                "Pos",
+                Tag::List([3.5f64, 16.0, 7.5].map(|v| Tag::Double(v.to_bits())).into()),
+            ),
+            ("UUID", Tag::IntArray(vec![1, 2, 3, 4])),
+        ]);
+        write_old_record(
+            &save,
+            "region",
+            Tag::compound([
+                ("DataVersion", Tag::Int(2586)),
+                (
+                    "Level",
+                    Tag::compound([
+                        ("xPos", Tag::Int(0)),
+                        ("zPos", Tag::Int(0)),
+                        ("Status", string("full")),
+                        ("Biomes", Tag::IntArray(vec![1; 1024])),
+                        ("Sections", Tag::List(vec![section])),
+                        ("Entities", Tag::List(vec![minecart])),
+                    ]),
+                ),
+            ]),
+        );
+        let id = |e: &Tag| text(e.get("id"));
+        let chunk = save
+            .load(0, 0, assets.registry, &biomes)
+            .expect("the chunk loads");
+        let ids: Vec<_> = chunk.entities.iter().map(id).collect();
+        assert_eq!(ids, [Some("minecraft:minecart".to_owned())]);
+        // There is no `entities/` record for it: these are all it has.
+        assert!(save.load_entities(0, 0).is_empty());
         let _ = std::fs::remove_dir_all(&world);
     }
 
