@@ -11572,7 +11572,7 @@ fn keep_client_state(old: Option<&BlockEntity>, new: &mut BlockEntity) {
         (Some(BlockEntity::Beacon(old)), BlockEntity::Beacon(new)) => {
             new.sections.clone_from(&old.sections);
             new.checking.clone_from(&old.checking);
-            new.last_check_y = old.last_check_y;
+            (new.last_check_y, new.levels) = (old.last_check_y, old.levels);
         }
         _ => {}
     }
@@ -12903,10 +12903,10 @@ mod tests {
         assert_eq!(b.sections, vec![(0xF9FFFE, 2)]);
         assert_eq!(b.checking, vec![(0xF9FFFE, 1)]);
         assert_eq!(b.last_check_y, 70);
-        // The powers and the levels are the tag's.
+        // The powers are the tag's; the levels stay the client's own (not read).
         assert_eq!(b.primary.as_deref(), Some("minecraft:haste"));
         assert_eq!(b.secondary.as_deref(), Some("minecraft:regeneration"));
-        assert_eq!(b.levels, 4);
+        assert_eq!(b.levels, 1);
     }
 
     #[test]

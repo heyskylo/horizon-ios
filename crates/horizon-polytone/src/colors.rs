@@ -82,6 +82,17 @@ impl PackColors {
         parse_color(self.entries.get(key)?)
     }
 
+    /// `dye.<name>.<kind>`: a dye's `diffuse` (also plain `dye.<name>`), `text` or `firework` colour.
+    pub fn dye(&self, name: &str, kind: &str) -> Option<u32> {
+        let plain = || (kind == "diffuse").then(|| self.color(&format!("dye.{name}")))?;
+        self.color(&format!("dye.{name}.{kind}")).or_else(plain)
+    }
+
+    /// `sheep.<dye name>`: the wool colour of a sheep of that colour, over the dye's.
+    pub fn sheep(&self, name: &str) -> Option<u32> {
+        self.color(&format!("sheep.{name}"))
+    }
+
     /// `entity_shadows`: false hides every entity's round shadow, whatever the video option says.
     pub fn entity_shadows(&self) -> bool {
         match self.entries.get("entity_shadows") {
@@ -148,6 +159,22 @@ mod tests {
         );
         assert!(p.entity_shadows());
         assert_eq!(p.xp_bar(), [Some(0x00ff22), Some(u32::MAX)]);
+    }
+
+    #[test]
+    fn dyes_name_their_colour_kind() {
+        let mut c = PackColors::default();
+        c.add_json(
+            "",
+            &json!({"dye": {"red": {"diffuse": "00ff00", "text": "0000ff"}, "blue": "ff0000"}, "sheep": {"white": 5}}),
+        );
+        assert_eq!(c.dye("red", "diffuse"), Some(0x00ff00));
+        assert_eq!(c.dye("red", "text"), Some(0x0000ff));
+        assert_eq!(c.dye("red", "firework"), None);
+        assert_eq!(c.dye("blue", "diffuse"), Some(0xff0000));
+        assert_eq!(c.dye("blue", "text"), None);
+        assert_eq!(c.sheep("white"), Some(5));
+        assert_eq!(c.sheep("red"), None);
     }
 
     #[test]

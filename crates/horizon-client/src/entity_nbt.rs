@@ -1544,28 +1544,15 @@ pub fn mob_to_nbt(
         put_attributes(map, m, a);
     }
     put_sulfur_attributes(map, m);
-    // The attribute their load makes, which AttributeMap.pack then saves:
-    // Zombie and Piglin.setBaby (even for an adult) the speed, Rabbit.setVariant
-    // the attack damage.
+    // The instances their own construction and load make (finalize::made_at_load),
+    // which AttributeMap.pack saves although the loaded tag had none.
     use crate::mobs::finalize::Attr;
-    // Every other living entity's first tick makes the movement_speed instance
-    // (LivingEntity.removeFrost reads it through getAttribute); before it, the
-    // mob has only the instances it was loaded with (the kept list above).
-    let speed_at_load = crate::mobs::doors::is_zombie(species)
-        || species == crate::mobs::Species::Piglin
-        || (species == crate::mobs::Species::Ravager && crate::mobs::ravager::immobile(m));
-    let mut made = Vec::new();
-    if speed_at_load || m.age > 0 {
-        made.push(Attr::MovementSpeed);
-    }
-    if species == crate::mobs::Species::Rabbit {
-        made.push(Attr::AttackDamage);
-    }
+    let made = crate::mobs::finalize::made_at_load(m);
     // AttributeMap.pack writes the list even when no instance exists.
     map.entry("attributes".into())
         .or_insert_with(|| Tag::List(Vec::new()));
     for attr in made {
-        let base = crate::mobs::finalize::base_value(m, attr);
+        let base = crate::mobs::finalize::made_base(m, attr);
         let mut list = match map.get(&"attributes".into()) {
             Some(Tag::List(l)) => l.clone(),
             _ => Vec::new(),
@@ -1575,9 +1562,11 @@ pub fn mob_to_nbt(
             .iter_mut()
             .find(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
         {
-            if species == crate::mobs::Species::Ravager
-                && attr == Attr::MovementSpeed
-                && let Tag::Compound(c) = existing
+            // The model owns these bases: a ravager's speed, a wolf's health.
+            if matches!(
+                (species, attr),
+                (S::Ravager, Attr::MovementSpeed) | (S::Wolf, Attr::MaxHealth)
+            ) && let Tag::Compound(c) = existing
             {
                 c.insert("base".into(), Tag::Double(base.to_bits()));
             }

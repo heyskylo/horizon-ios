@@ -4569,6 +4569,37 @@ def cube_saved_age():
 
 
 
+def villager_gossip_decay():
+    """Villager.tick decays gossip with or without AI (#13619)."""
+    # A negative LastGossipDecay is due on the first tick at any game time.
+    cases = [
+        ('noai_new', 'NoAI:1b', None),
+        ('noai_pos', 'NoAI:1b,LastGossipDecay:-30000L', ('minor_positive', 25, 24)),
+        ('noai_neg', 'NoAI:1b,LastGossipDecay:-30000L', ('minor_negative', 100, 80)),
+        ('ai_pos', 'LastGossipDecay:-30000L', ('minor_positive', 25, 24)),
+    ]
+    ops = setup('/scoreboard objectives add h13619 dummy')
+    for i, (name, fields, gossip) in enumerate(cases):
+        if gossip:
+            fields += f',Gossips:[{{Target:[I;1,2,3,4],Type:"{gossip[0]}",Value:{gossip[1]}}}]'
+        ops += setup(f'/summon villager {2.5 + 3 * i} 200 2.5 {{UUID:[I;13619,0,0,{i + 1}],'
+                     f'Tags:["h13619_{name}"],NoGravity:1b,PersistenceRequired:1b,{fields}}}')
+    ops.append({'op': 'tick', 'n': 1})
+    for name, fields, gossip in cases:
+        target = f'@e[tag=h13619_{name},limit=1]'
+        ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+        # maybeDecayGossip stamps this tick's game time.
+        ops += setup('/execute store result score #now h13619 run time query gametime',
+                     f'/execute store result score #decay h13619 run data get entity {target} LastGossipDecay')
+        ops.append(cmd('/execute if score #now h13619 = #decay h13619', expect_result=1))
+        if gossip:
+            ops.append(cmd(f'/data get entity {target} Gossips'))
+            ops.append(cmd(f'/execute if entity @e[tag=h13619_{name},nbt={{Gossips:[{{Type:"{gossip[0]}",Value:{gossip[2]}}}]}}]',
+                           expect_result=1))
+    ops += setup('/kill @e[type=villager]', '/scoreboard objectives remove h13619')
+    return ops
+
+
 def villager_wake_rotation():
     """Use the occupied bed through the live player route, then observe pose."""
     ops = setup('/fill 0 199 3 6 199 9 stone', '/gamemode survival', '/tp @s 4.5 200 4.5', '/time set noon')
@@ -6571,6 +6602,23 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def jigsaw_default_joint():
+    """#13654: `JigsawBlockEntity.loadAdditional` reads `joint`, else `StructureTemplate.getDefaultJointType`:
+    `aligned` when the block's front faces sideways, `rollable` when it faces up or down."""
+    x0, y0, z0 = 4096 - 32, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    cases = [('north_up', '{selection_priority:0}'), ('up_east', '{selection_priority:0}'),
+             ('down_south', '{}'), ('west_up', '{joint:"rollable"}'), ('east_up', '{}')]
+    for n, (orientation, data) in enumerate(cases):
+        x = x0 + 2 + 2 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 4} jigsaw[orientation={orientation}]{data}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 4} joint')]
+    # /data merge without joint loads the block's data again.
+    ops += [cmd(f'/data merge block {x0 + 2} {y0} {z0 + 4} {{selection_priority:3}}'),
+            cmd(f'/data get block {x0 + 2} {y0} {z0 + 4} joint')]
+    return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def command_block_auto_load():
     """#13075: `CommandBlockEntity.loadAdditional` ends with `setAutomatic`, which (with a level:
     `/setblock`, `/data merge block`) schedules the first tick of a block that turned automatic,
@@ -6605,6 +6653,22 @@ def command_block_auto_load():
     reads()
     return ops + setup('/tick unfreeze', f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air',
                        '/scoreboard objectives remove cb_auto', f'/forceload remove {x0} {z0}')
+
+
+def beacon_levels_load():
+    """#13653: `BeaconBlockEntity.saveAdditional` writes `Levels` but `loadAdditional` never reads them:
+    a beacon placed with data reads 0 levels until `updateBase` (every 80 game ticks) sets them."""
+    x0, y0, z0 = 4032, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    for n, levels in enumerate(('-1', '3', '7')):
+        x = x0 + 3 + 3 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 4} beacon{{Levels:{levels}}}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 4} Levels'),
+                cmd(f'/data merge block {x} {y0} {z0 + 4} {{Levels:{levels}}}'),
+                cmd(f'/data get block {x} {y0} {z0 + 4} Levels')]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 
 
 def zombie_villager_summoned_data():
@@ -7207,8 +7271,10 @@ def groups():
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('item fall distance', item_fall_distance()),
+        ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('jigsaw default joint', jigsaw_default_joint()),
         ('command block auto load', command_block_auto_load()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
@@ -7246,6 +7312,7 @@ def groups():
         ('summoned eye of ender', summoned_eye_of_ender()),
         ('awake villager saved position', awake_villager_saved_position()),
         ('villager wake rotation', villager_wake_rotation()),
+        ('villager gossip decay', villager_gossip_decay()),
         ('cube saved Age', cube_saved_age()),
         ('mob baby attribute reads', mob_baby_attribute_reads()),
         ('mob partial block suffocation', mob_partial_block_suffocation()),
