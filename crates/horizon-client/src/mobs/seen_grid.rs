@@ -60,7 +60,8 @@ impl SeenGrid {
     }
     /// The indices, ascending, of every entry whose box can meet `area`
     /// (a superset: callers still test it). False when the area spans more
-    /// columns than the grid holds (or is not finite): scan them all.
+    /// columns than the grid has entries (at least 64), or is not finite:
+    /// scan them all.
     pub fn candidates(&self, area: Aabb, out: &mut Vec<u32>) -> bool {
         out.clear();
         // A box meets `area` only if its minimum corner is below area.max
@@ -287,7 +288,7 @@ mod tests {
     #[ignore]
     fn bench_dense_farm() {
         let n = 300;
-        let mut seed = 0x1234_5678_9abcdef0u64;
+        let mut seed = 0x1234_5678_9abc_def0_u64;
         let mut next = |range: f64| {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             (seed >> 11) as f64 / (1u64 << 53) as f64 * range
