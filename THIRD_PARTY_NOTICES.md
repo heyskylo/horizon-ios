@@ -31,14 +31,6 @@ license.
   description of the behaviour, the Java SE API documentation and the textbook red-black tree, and checked against a
   JVM ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
 
-## winit Wayland file drops
-
-The game uses [winit 0.30.13 with the Wayland file-drop and clipboard backport](https://github.com/crmne/winit/commit/7a962fd46470a137d9a7a1945bf5b5d0b95a002c)
-from [rust-windowing/winit#4729](https://github.com/rust-windowing/winit/pull/4729), copyright the
-winit contributors, under Apache-2.0. It is an unmodified, revision-pinned Cargo dependency, including
-its `dpi` workspace crate; its source and license are supplied by that repository. The backport
-delivers native Wayland file-drop events without changing the other window-system backends.
-
 ## Catnip / Ponder
 
 `crates/horizon-client-render/src/fluid_render.rs` translates the still-fluid face tiling and

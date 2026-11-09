@@ -75,9 +75,6 @@ large_enum_variant = "allow"
 # frame wait for the GPU to finish the one before (#4604).
 # Drop this and the folder once a wgpu release has these fixes.
 [patch.crates-io]
-# winit 0.30.13 + rust-windowing/winit#4729: native Wayland file-drop events (#13174).
-# shortcut: pinned unreleased backport, remove once a winit 0.30 release includes it.
-winit = { git = "https://github.com/crmne/winit", rev = "7a962fd46470a137d9a7a1945bf5b5d0b95a002c" }
 wgpu-hal = { path = "third_party/wgpu-hal" }
 # naga 30.0.1, with the fixes to its GLSL frontend that shader packs need (THIRD_PARTY_NOTICES.md).
 naga = { path = "third_party/naga" }
