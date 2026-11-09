@@ -1488,6 +1488,11 @@ pub fn mob_to_nbt(
         }
         _ => {}
     }
+    // `GoatAi`'s `LONG_JUMP_COOLDOWN_TICKS`: the goat's own memory, saved by
+    // `Brain.Packed` and read back into it.
+    if m.species() == S::Goat {
+        write_goat_memories(m, map);
+    }
     // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
     if m.species() == S::Bogged {
         map.insert("sheared".into(), Tag::Byte(i8::from(m.extra.sheared)));
@@ -2464,6 +2469,15 @@ pub fn mob_from_nbt_with_random(
             m.extra.screaming = flag(tag, "IsScreamingGoat");
             let horn = |key| number(tag.get(key)).is_some_and(|v| v == 0);
             m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
+            // `GoatAi`'s `LONG_JUMP_COOLDOWN_TICKS`: `Brain.Packed` carries the
+            // integer value; an absent memory has no cooldown.
+            let cooldown = tag
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("minecraft:long_jump_cooling_down"))
+                .and_then(|m| m.get("value"))
+                .and_then(int_value);
+            crate::mobs::frog::set_jump_cooldown(&mut m, cooldown.map(i64::from));
         }
         _ => {}
     }
@@ -6515,6 +6529,38 @@ fn write_axolotl_memories(m: &Mob, map: &mut Compound) {
             memories.insert(key.into(), value);
         } else {
             memories.remove(&key.into());
+        }
+    }
+}
+/// `GoatAi`'s `LONG_JUMP_COOLDOWN_TICKS` memory, kept in the goat's memories
+/// as the ticks left. `Brain.Packed` writes the memory's integer value, with
+/// no TTL.
+fn write_goat_memories(m: &Mob, map: &mut Compound) {
+    let brain = map
+        .entry("Brain".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(brain, Tag::Compound(_)) {
+        *brain = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(brain) = brain else { return };
+    let memories = brain
+        .entry("memories".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(memories, Tag::Compound(_)) {
+        *memories = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(memories) = memories else {
+        return;
+    };
+    match crate::mobs::frog::jump_cooldown(m) {
+        Some(ticks) => {
+            memories.insert(
+                "minecraft:long_jump_cooling_down".into(),
+                Tag::compound([("value", Tag::Int(ticks as i32))]),
+            );
+        }
+        None => {
+            memories.remove(&"minecraft:long_jump_cooling_down".into());
         }
     }
 }
