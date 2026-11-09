@@ -197,6 +197,21 @@ impl ThrownTrident {
             last_state: None,
         }
     }
+    /// `AbstractArrow.tick` in flight, before it moves: the rotation turns a
+    /// fifth of the way (`Projectile.lerpRotation`) toward the movement the
+    /// tick starts with, which faces back while it flies without physics.
+    fn turn_towards_movement(&mut self) {
+        use horizon_core::geometry::trig::atan2_degrees;
+        let m = self.velocity;
+        let y_rot = if self.no_physics {
+            atan2_degrees(-m.x, -m.z)
+        } else {
+            atan2_degrees(m.x, m.z)
+        };
+        let x_rot = atan2_degrees(m.y, m.horizontal_distance());
+        self.pitch = horizon_client::arrows::lerp_rotation(self.pitch, x_rot);
+        self.yaw = horizon_client::arrows::lerp_rotation(self.yaw, y_rot);
+    }
     /// `AbstractArrow.shouldFall`: stuck, and nothing solid within 0.06 of it.
     fn should_fall(&self, scene: &horizon_client::arrows::ArrowScene<'_, '_>) -> bool {
         let at = self.position;
@@ -857,12 +872,14 @@ impl Game<'_> {
                     self.trident_block_effects(&mut t, at, at);
                 }
             } else if t.no_physics {
+                t.turn_towards_movement();
                 t.position = Vec3::new(
                     t.position.x + t.velocity.x,
                     t.position.y + t.velocity.y,
                     t.position.z + t.velocity.z,
                 );
             } else {
+                t.turn_towards_movement();
                 // Mobs on the path, then blocks.
                 let mut hit_mob = None;
                 // ProjectileUtil.computeMargin: the boxes it meets grow from
@@ -1133,9 +1150,6 @@ impl Game<'_> {
                         t.velocity.y * drag - gravity,
                         t.velocity.z * drag,
                     );
-                    let h = (t.velocity.x * t.velocity.x + t.velocity.z * t.velocity.z).sqrt();
-                    t.yaw = t.velocity.x.atan2(t.velocity.z).to_degrees() as f32;
-                    t.pitch = t.velocity.y.atan2(h).to_degrees() as f32;
                 }
             }
             if !t.no_physics {
@@ -1307,6 +1321,23 @@ horizon_client::impl_joined!(ThrownTrident);
 mod tests {
     use super::{ThrownTrident, breeze_deflect};
     use horizon_core::geometry::Vec3;
+
+    /// A trident summoned at rest still reads pitch 0 after its first tick
+    /// and -17.999998 after the second, when it starts falling; one summoned
+    /// with Motion [0, 0.5, 0] reads 17.999998 after its first (#13168).
+    #[test]
+    fn a_flying_trident_turns_a_fifth_of_the_way_each_tick() {
+        let mut t = ThrownTrident::remote(1, Vec3::ZERO, 0.0, 0.0);
+        t.turn_towards_movement();
+        assert_eq!((t.yaw, t.pitch), (0.0, 0.0));
+        t.velocity = Vec3::new(0.0, -0.05, 0.0);
+        t.turn_towards_movement();
+        assert_eq!((t.yaw, t.pitch), (0.0, -17.999998));
+        let mut up = ThrownTrident::remote(2, Vec3::ZERO, 0.0, 0.0);
+        up.velocity = Vec3::new(0.0, 0.5, 0.0);
+        up.turn_towards_movement();
+        assert_eq!(up.pitch, 17.999998);
+    }
 
     /// `AbstractArrow` saves `lastState` as `inBlockState` and reads it back.
     #[test]
