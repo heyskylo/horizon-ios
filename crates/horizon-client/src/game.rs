@@ -650,7 +650,7 @@ enum Screen {
     /// WorldOptionsScreen (game/lan_screen.rs).
     WorldOptions,
     /// Play with Friends, from the pause menu's Friends button
-    /// (`friends_screen`, game/friends.rs).
+    /// (game/friends.rs, game/friends/screen.rs).
     Friends,
     /// `SocialInteractionsScreen` (`social_screen`, game/social.rs).
     Social,
@@ -5489,34 +5489,6 @@ impl Game<'_> {
             &mut cancel,
         );
         cancel
-    }
-    /// The ticks the frame shows (animated textures, the HUD, a shader pack's clock): the
-    /// client's, or under `HORIZON_STILL` (`FixedStep::still`) the world's game time, which
-    /// moves only while the world runs.
-    pub(super) fn visual_ticks(&self) -> u64 {
-        if self.clock.still() {
-            self.world.game_time.max(0) as u64
-        } else {
-            self.ticks
-        }
-    }
-    /// The clock of the animated textures: `Minecraft.runTick` ticks the `TextureManager`
-    /// only while the level runs normally. Under `HORIZON_STILL` it is the world's ticks.
-    pub(super) fn texture_clock(&self) -> u64 {
-        if self.clock.still() {
-            self.visual_ticks()
-        } else {
-            self.texture_ticks
-        }
-    }
-    /// `Util.getMillis` for what the frame shows (the world border's scroll, the hearts' blink,
-    /// the glint's under the switch): under `HORIZON_STILL`, the world's ticks in milliseconds.
-    pub(super) fn visual_millis(&self) -> i64 {
-        if self.clock.still() {
-            self.visual_ticks() as i64 * 50
-        } else {
-            self.started.elapsed().as_millis() as i64
-        }
     }
     /// `PresenceHandler.getPresenceStatus`: what an all-sharing player is doing, for
     /// the friends service's `updatePresence`.
@@ -12720,16 +12692,9 @@ pub fn run_with() -> Result<()> {
     if !options.offscreen && !synchronous_startup(&options) {
         let version = horizon_client::telemetry::version();
         horizon_hooks::engine::started(&horizon_hooks::Started::new(&version));
-        let player_dir = horizon_client::logging::player_dir();
         // horizon-extras: the official server is Horizon's (docs/forking.md).
-        if cfg!(feature = "horizon-extras")
-            && let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir)
-        {
-            log::warn!("could not add the official server to servers.dat: {e}");
-        }
-        if let Err(e) = horizon_client::multiplayer::withdraw_partner_servers(&player_dir) {
-            log::warn!("could not take the withdrawn partner server out of servers.dat: {e}");
-        }
+        #[cfg(feature = "horizon-extras")]
+        horizon_client::official_servers::update(&horizon_client::logging::player_dir());
     }
     mods::register_components(&vanilla_root)?;
     mods::register_standalone_models();
