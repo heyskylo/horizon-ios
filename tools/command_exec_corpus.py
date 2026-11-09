@@ -6452,6 +6452,31 @@ def piston_push_ground():
     return ops
 
 
+def falling_block_in_moving_piston():
+    """#13793: `FallingBlockEntity.tick` neither places, drops nor discards a block that comes down
+    where a piston is extending (the block there `is(Blocks.MOVING_PISTON)`), before its `cancelDrop`
+    check: it stays a falling block, the piston pushes it on, and it lands a block further a tick
+    later. The piston fires in the tick's block events, before the entity lands. A sideways motion
+    shows the landing's slowdown (0.7) and the air drag it keeps."""
+    ops = []
+    selector = '@e[type=minecraft:falling_block,tag=piston_falling,limit=1]'
+    for piston, fields in (('sticky_piston', ''), ('piston', ''), ('sticky_piston', ',CancelDrop:1b'),
+                           ('piston', ',Motion:[0.0d,0.0d,0.05d]')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
+                     '/fill 28 209 28 36 209 34 stone', f'/setblock 31 210 31 {piston}[facing=east]',
+                     '/summon minecraft:falling_block 32.5 210 31.5 '
+                     f'{{BlockState:{{Name:"minecraft:sand"}},Tags:["piston_falling"]{fields}}}',
+                     '/setblock 30 210 31 redstone_block')
+        for _ in range(3):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {selector} Pos'))
+            ops.append(cmd(f'/data get entity {selector} Motion'))
+            ops.append(cmd('/execute if block 33 210 31 minecraft:sand'))
+            ops.append(cmd('/execute if entity @e[type=minecraft:item,x=28,y=208,z=28,dx=8,dy=10,dz=6]'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
 def primed_tnt_box():
     """#12020: `EntityTypes.TNT` is sized 0.98F, so its box is half 0.49F wide
     and 0.98F tall, both widened from float: TNT stopped by a wall ends 0.49F
@@ -6812,6 +6837,27 @@ def living_short_timers():
                 cmd(f'/data get entity {uuid} DeathTime'), cmd(f'/data get entity {uuid} HurtTime')]
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
+
+def command_block_last_output():
+    """#13077: `BaseCommandBlock` keeps the feedback it got as a component (stamped with the time:
+    `Component.literal("[HH:mm:ss] ").append(message)`) and saves it with
+    `ComponentSerialization.CODEC`: a failed command keeps its red, click-to-suggest error."""
+    x0, y0, z0 = 3904, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/scoreboard objectives add cb_out dummy', False)]
+    # Two failures, whose styled feedback (red, click to suggest the command) is what the save must keep.
+    # A success's feedback names an entity, a new score holder or a bracketed value, whose components
+    # the two engines build differently (or which change later groups' scoreboard lists).
+    commands = ['say', 'scoreboard players get #nobody cb_out']
+    at = [(x0 + 2 + 3 * n, y0, z0 + 4) for n in range(len(commands))]
+    for command, (x, y, z) in zip(commands, at):
+        ops.append(cmd(f'/setblock {x} {y} {z} minecraft:command_block{{Command:"{command}"}}', expect_result=1))
+        ops.append(cmd(f'/setblock {x} {y + 1} {z} minecraft:redstone_block', expect_result=1))
+    ops.append({'op': 'tick', 'n': 3})
+    for x, y, z in at:
+        ops.append(cmd(f'/data get block {x} {y} {z} LastOutput'))
+    return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
+                       '/scoreboard objectives remove cb_out', f'/forceload remove {x0} {z0}')
 
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
@@ -7396,6 +7442,7 @@ def groups():
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('command block last output', command_block_last_output()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('item fall distance', item_fall_distance()),
@@ -7409,6 +7456,7 @@ def groups():
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
+        ('falling block in a moving piston', falling_block_in_moving_piston()),
         ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),

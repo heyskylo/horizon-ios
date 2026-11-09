@@ -18,7 +18,18 @@ impl Game<'_> {
         let entity_drops = self.ui.rules.bool("entity_drops");
         let join = self.falling[i].join;
         let mut f = self.falling[i].clone();
-        let step = self.fall_step(&mut f, entity_drops, entities)?;
+        let mut step = self.fall_step(&mut f, entity_drops, entities)?;
+        // FallingBlockEntity.tick: a block that comes down where a piston is
+        // moving a block neither lands nor breaks (whatever its cancelDrop).
+        // It slows like any landing and falls on, so the piston pushes it.
+        if let FallStep::Landed([x, y, z]) = step
+            && &*self.res.facts().get(self.world.block(x, y, z)).name == "minecraft:moving_piston"
+        {
+            f.velocity = horizon_client::entity_rules::scale_air_drag(
+                f.velocity.multiply(Vec3::new(0.7, -0.5, 0.7)),
+            );
+            step = FallStep::Falling;
+        }
         let slot = if self.falling.get(i).is_some_and(|e| e.join == join) {
             Some(i)
         } else {

@@ -5,6 +5,7 @@
 
 mod colors;
 mod custom_sky;
+mod item_bars;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -26,6 +27,10 @@ impl PackFormats for Formats {
     fn custom_sky(&self, root: &Path) -> Option<Arc<dyn crate::custom_sky::SkyLayers>> {
         let sky = custom_sky::CustomSky::load(root);
         (!sky.is_empty()).then(|| Arc::new(sky) as _)
+    }
+
+    fn item_bars(&self, root: &Path) -> Option<Arc<dyn crate::pack_palette::ItemBars>> {
+        item_bars::read(root)
     }
 }
 
