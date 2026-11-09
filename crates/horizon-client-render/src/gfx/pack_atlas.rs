@@ -765,6 +765,8 @@ impl PackAtlas {
             item_id_declared: false,
             far_depth: false,
             paged_maps: false,
+            water_mask: false,
+            water_patches: false,
         }
     }
 }

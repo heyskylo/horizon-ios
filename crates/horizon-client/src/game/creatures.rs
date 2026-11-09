@@ -2607,6 +2607,19 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
                     self.post_game_event(event, at, ctx);
                 }
+                // `FarmlandBlock.turnToBaseBlock` and `TurtleEggBlock.decreaseEggs`:
+                // the landing's own block change posts its game event, from the
+                // mob that landed (`Context.of(entity, state)`) unless the block
+                // destroyed itself under it (`Context.of(state)`).
+                MobEvent::LandingGameEvent {
+                    event,
+                    at,
+                    source,
+                    state,
+                } => {
+                    let who = source.map(Who::Mob);
+                    self.post_block_game_event(event, at, who, Some(state));
+                }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
                 // above use their movement's flyDist/nextFlap threshold.
@@ -4775,22 +4788,13 @@ impl Game<'_> {
                 if super::remote_projectiles::has_smoke_trail(&p.kind) {
                     trails.push(p.position);
                 }
-                // ThrownEnderpearl.onAboveBubbleColumn / onInsideBubbleColumn.
-                if keep && hit == Hit::None && matches!(p.kind, ProjectileKind::EnderPearl) {
-                    let (at, h) = (p.position, 0.125);
-                    horizon_client::motion::bubble_column_push_over(
-                        w.world,
-                        w.registry,
-                        w.facts,
-                        w.collision,
-                        Aabb::new(
-                            Vec3::new(at.x - h, at.y, at.z - h),
-                            Vec3::new(at.x + h, at.y + 2.0 * h, at.z + h),
-                        ),
-                        &mut p.velocity,
-                        |pos| bubble_tops.push(pos),
-                    );
-                }
+                // Projectile.onAboveBubbleColumn's particles, from the tick's
+                // bubble column pushes (`Projectile::tick`).
+                bubble_tops.extend(
+                    p.bubble_surfaces
+                        .drain(..)
+                        .map(|[x, y, z]| BlockPos::new(x, y, z)),
+                );
                 let events_from = arrow_events.len();
                 let ordinary_arrow = p.is_arrow();
                 if let Some(a) = p.arrow.as_mut() {

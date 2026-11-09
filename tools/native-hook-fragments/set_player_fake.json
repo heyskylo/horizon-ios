@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_player_fake", "target": "horizon_client::game::native_view_distance::Game<'_>::native_set_player_fake"}
+  ],
+  "rust_summary": "a fake player, a mod's bot with no client (`native_set_player_fake`): a small area kept loaded and ticking, few packets, no natural spawning anchor.",
+  "doc_summary": "`native_set_player_fake(uuid, fake)` marks the player `uuid` as a fake player (a mod's bot with no client), or not: it then keeps only a small area loaded and ticking around it (its view distance plus one, at most the server's plus one), its packets are cut to the few a bot needs (position, entity motion, chunk batch end, keep-alive, ping, combat kill, respawn), and it does not count for natural mob spawning. The mark lasts until the player leaves. False off a server, for a player not online, and inside a guest's packet hook, where the hub is taken out (call it from a tick or console hook). Bundles need \"hooks\": @API:set_player_fake@.",
+  "comments": ["crates/horizon-client/src/game/native_view_distance.rs"]
+}
