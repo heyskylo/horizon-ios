@@ -270,11 +270,9 @@ mod tests {
         snapshot.flags[0] = 4;
         assert!(restore(snapshot).is_err(), "unused flag bits");
         let mut snapshot = capture(&registry, &flags);
-        snapshot.defaults.push(snapshot.defaults[0].clone());
-        // Need a second state but only 2 defaults is still within states
-        // (3 states), so push more than states.len() to trip the cap.
+        // One default more than there are states trips the cap.
         while snapshot.defaults.len() <= snapshot.states.len() {
-            snapshot.defaults.push(snapshot.defaults[0].clone());
+            snapshot.defaults.push(snapshot.defaults[0]);
         }
         assert!(restore(snapshot).is_err(), "too many defaults");
         let mut snapshot = capture(&registry, &flags);
