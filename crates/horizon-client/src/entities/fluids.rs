@@ -115,6 +115,7 @@ pub fn update_entity_fluids(
             0.0023333333333333335
         },
     );
+    let _ = interaction.apply_mod_currents(&mut scene);
     (water_height, lava_height, eye_in_water)
 }
 impl ItemEntity {
