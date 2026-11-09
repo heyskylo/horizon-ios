@@ -738,14 +738,11 @@ impl Game<'_> {
         });
         self.set_pushed_on_ground(target, limited, resolved);
 
-        // Entity.move updates ground before its tiny-collision return. This
-        // native slice covers only unoccupied server NoAI horizontal moves.
-        if let Target::Entity(EntityHandle::Mob(i)) = target {
+        // shortcut: unoccupied server mobs only, expand when controller/passenger authority is bound.
+        let mob = if let Target::Entity(EntityHandle::Mob(i)) = target {
             let m = &self.mobs[i];
-            let eligible = !self.options.execution_role.is_client()
+            (!self.options.execution_role.is_client()
                 && self.remote.is_none()
-                && limited.y == 0.0
-                && m.no_ai
                 && !m.extra.passenger
                 && m.extra.mount.is_none()
                 && m.rider.is_none()
@@ -757,16 +754,22 @@ impl Game<'_> {
                         .guests
                         .iter()
                         .any(|g| host.hub.here(g) && g.vehicle == Some(m.id))
-                });
-            if eligible {
-                self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
-            }
+                }))
+            .then_some(i)
+        } else {
+            None
+        };
+        // Entity.move updates ground before its tiny-collision return.
+        if let Some(i) = mob
+            && self.mobs[i].no_ai
+        {
+            self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
         }
-        // `Entity.move(MoverType.PISTON, …)` restitution, which runs whether or
-        // not the step is applied: so a primed TNT in a chunk that does not tick
-        // entities still loses its velocity into walls and ceilings and
-        // bounces on slime (#12022).
-        self.restitute_piston(target, limited, resolved);
+        let tnt_after_move =
+            tnt.is_some() && !self.options.execution_role.is_client() && self.remote.is_none();
+        if mob.is_none() && !tnt_after_move {
+            self.restitute_piston(target, limited, resolved);
+        }
         let moved = resolved.length_squared() > 1.0e-7
             || limited.length_squared() - resolved.length_squared() < 1.0e-7;
         if moved {
@@ -774,6 +777,12 @@ impl Game<'_> {
         } else {
             // A move the collisions cut to nothing still ends in the check.
             self.release_after_block_move(target);
+        }
+        // Restitution reads the new landing block even when the push was blocked.
+        if let Some(i) = mob {
+            self.mobs[i].restitute_movement(&self.world, &self.motion.blocks, limited, resolved);
+        } else if tnt_after_move {
+            self.restitute_piston(target, limited, resolved);
         }
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
@@ -1053,6 +1062,7 @@ mod tests {
 mod order_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use horizon_client::chunk::Chunk;
+    use horizon_core::geometry::Vec3;
     use horizon_core::{geometry::Direction, position::BlockPos};
     use horizon_world::level::pistons::MovingPiston;
     use std::sync::Arc;
@@ -1151,8 +1161,9 @@ mod order_tests {
         }
         // The near stone's box reaches x 5.5 into a TNT from x 5.01: 0.49 plus
         // PUSH_OFFSET; the far stone's old box stops it at x 6.
+        // Vanilla's TNT width is 0.98F, not the exact decimal 0.98.
         assert!(
-            (moved[0] - 0.5).abs() < 1e-9,
+            (moved[0] - 0.500000009536743).abs() < 1e-9,
             "far stone gone first: {}",
             moved[0]
         );
@@ -1251,7 +1262,7 @@ mod order_tests {
     }
 
     /// A primed TNT pushed down by a piston onto a slime block bounces up,
-    /// matching vanilla's slime restitution (~+0.64) even in a lazy chunk (#12022).
+    /// matching vanilla's restitution even in a lazy chunk (#12022).
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_pushed_tnt_bounces_on_slime() {
@@ -1312,32 +1323,36 @@ mod order_tests {
             death_ticks: 0,
             id: 1,
         };
-        game.block_ticks.moving_pistons = vec![(BlockPos::new(5, 200, 5), piston)];
-        game.sync_moving_pistons();
-        game.tnts.clear();
-        assert!(game.run_command("summon tnt 5.5 200.5 5.5 {fuse:80,Motion:[0.0d,-0.4d,0.0d]}"));
-        assert!(
-            (game.tnts[0].velocity.y - (-0.4)).abs() < 1.0e-9,
-            "TNT starts with vy -0.4, got {:?}",
-            game.tnts[0].velocity
-        );
-        // Piston advances from progress 0 to 0.5 and pushes the TNT down.
-        let pushes: Vec<_> = game
-            .block_ticks
-            .moving_pistons
-            .iter()
-            .map(|&(pos, old)| (pos, old, old.progress + 0.5))
-            .collect();
-        for (_, piston) in &mut game.block_ticks.moving_pistons {
-            piston.progress += 0.5;
+        // Pinned 26.3 PistonMovingBlockEntity.moveCollidedEntities, without entity ticks.
+        for (floor, y, vy, final_y, final_vy) in [
+            (slime, 200.5, -0.4, 200.0, 0.3510000138133766_f64),
+            (stone, 200.5, -0.4, 200.0, 0.0),
+            (slime, 200.0, -0.4, 200.0, 0.3200000047683716),
+            (slime, 200.00001, -0.4, 200.00001, 0.32000064476813395),
+            (slime, 200.5, 0.3, 200.0, 0.0),
+        ] {
+            game.world.set(5, 199, 5, floor).unwrap();
+            game.block_ticks.moving_pistons = vec![(BlockPos::new(5, 200, 5), piston)];
+            game.sync_moving_pistons();
+            game.tnts.clear();
+            assert!(game.run_command(&format!(
+                "summon tnt 5.5 {y} 5.5 {{fuse:80,Motion:[0.0d,{vy}d,0.0d]}}"
+            )));
+            assert_eq!(game.tnts[0].velocity.y, vy);
+            let pushes: Vec<_> = game
+                .block_ticks
+                .moving_pistons
+                .iter()
+                .map(|&(pos, old)| (pos, old, old.progress + 0.5))
+                .collect();
+            for (_, piston) in &mut game.block_ticks.moving_pistons {
+                piston.progress += 0.5;
+            }
+            game.push_piston_entities(pushes);
+            assert_eq!(game.tnts[0].position, Vec3::new(5.5, final_y, 5.5));
+            assert_eq!(game.tnts[0].velocity.y.to_bits(), final_vy.to_bits());
+            assert!(game.tnts[0].on_ground);
         }
-        game.push_piston_entities(pushes);
-        // The slime block at y=199 bounces the TNT up; vertical velocity must be positive.
-        assert!(
-            game.tnts[0].velocity.y > 0.0,
-            "TNT should bounce up on slime, got vy {:?}",
-            game.tnts[0].velocity
-        );
     }
 }
 
@@ -1602,6 +1617,54 @@ mod h255_mob_piston_ground_tests {
     }
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_added_tnt_authority_and_exhausted_budget() {
+        use crate::game::execution_role::ExecutionRole;
+        for role in [
+            ExecutionRole::Client,
+            ExecutionRole::IntegratedServer,
+            ExecutionRole::DedicatedServer,
+        ] {
+            with_role_game(role, |game| {
+                assert!(game.run_command("setblock 5 199 5 slime_block"));
+                assert!(
+                    game.run_command("summon tnt 5.5 200.5 5.5 {fuse:80,Motion:[0d,-0.4d,0d]}")
+                );
+                let mut budget = std::collections::HashMap::new();
+                let push = |game: &mut Game<'_>,
+                            budget: &mut std::collections::HashMap<_, _>,
+                            movement| {
+                    let tnt = &game.tnts[0];
+                    game.move_pushed(
+                        Target::Entity(EntityHandle::Tnt(0)),
+                        tnt.bounds(),
+                        [tnt.position.x, tnt.position.z],
+                        0.0,
+                        tnt.on_ground,
+                        movement,
+                        Direction::Down,
+                        budget,
+                    );
+                };
+                push(game, &mut budget, Vec3::ZERO);
+                assert_eq!(game.tnts[0].position.y, 200.5);
+                assert_eq!(game.tnts[0].velocity.y, -0.4);
+                push(game, &mut budget, Vec3::new(0.0, -0.51, 0.0));
+                let expected = if role.is_client() {
+                    0.0_f64
+                } else {
+                    0.3510000138133766
+                };
+                assert_eq!(game.tnts[0].velocity.y.to_bits(), expected.to_bits());
+                game.tnts[0].position.y = 200.5;
+                game.tnts[0].velocity.y = -0.4;
+                push(game, &mut budget, Vec3::new(0.0, -0.51, 0.0));
+                assert_eq!(game.tnts[0].position.y, 200.5);
+                assert_eq!(game.tnts[0].velocity.y, -0.4);
+            });
+        }
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn h255_added_no_request_and_exhausted_budget_keep_state() {
         with_game(|game| {
             let i = added_mob(game, 20, "horse", true, 8.5);
@@ -1613,6 +1676,16 @@ mod h255_mob_piston_ground_tests {
             added_push(game, i, Vec3::new(0.51, 0.0, 0.0));
             assert!(game.mobs[i].on_ground, "occupied path remains excluded");
             assert_eq!(game.mobs[i].position, Vec3::new(9.01, 202.0, 4.5));
+            assert!(game.run_command("setblock 9 201 4 slime_block"));
+            game.mobs[i].position.y = 202.25;
+            game.mobs[i].velocity = Vec3::new(0.0, -1.0, 0.0);
+            game.mobs[i].sync_position = false;
+            added_push(game, i, Vec3::new(0.0, -0.5, 0.0));
+            assert_eq!(
+                game.mobs[i].velocity.y, 0.0,
+                "occupied restitution stays outside this slice"
+            );
+            assert!(!game.mobs[i].sync_position);
             assert!(game.run_command("ride @s dismount"));
             assert!(game.riding.is_none());
             assert!(game.mobs[i].rider.is_none());
@@ -1655,23 +1728,46 @@ mod h255_mob_piston_ground_tests {
     }
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn h255_added_client_role_ai_and_vertical_paths_keep_native_state() {
+    fn h255_added_client_role_ai_and_vertical_ground_state() {
         use crate::game::execution_role::ExecutionRole as Role;
-        for (role, no_ai, movement) in [
-            (Role::Client, true, Vec3::new(0.25, 0.0, 0.0)),
-            (Role::IntegratedServer, false, Vec3::new(0.25, 0.0, 0.0)),
-            (Role::IntegratedServer, true, Vec3::new(0.0, 0.25, 0.0)),
+        for (role, no_ai, movement, on_ground) in [
+            (Role::Client, true, Vec3::new(0.25, 0.0, 0.0), true),
+            (
+                Role::IntegratedServer,
+                false,
+                Vec3::new(0.25, 0.0, 0.0),
+                true,
+            ),
+            (
+                Role::IntegratedServer,
+                true,
+                Vec3::new(0.0, 0.25, 0.0),
+                false,
+            ),
         ] {
             with_role_game(role, |game| {
                 let i = added_mob(game, 22, "husk", no_ai, 8.5);
                 let before = game.mobs[i].position;
                 added_push(game, i, movement);
                 assert_eq!(game.mobs[i].position, before.add_vector(movement));
-                assert!(
-                    game.mobs[i].on_ground,
-                    "excluded native path remains unchanged; not Java parity"
-                );
+                assert_eq!(game.mobs[i].on_ground, on_ground);
             });
         }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_added_partial_push_reads_slime_after_the_position_changes() {
+        with_game(|game| {
+            assert!(game.run_command("setblock 8 201 4 slime_block"));
+            let i = added_mob(game, 23, "iron_golem", true, 8.5);
+            game.mobs[i].position.y = 202.25;
+            game.mobs[i].velocity = Vec3::new(0.0, -1.0, 0.0);
+            game.mobs[i].sync_position = false;
+            added_push(game, i, Vec3::new(0.0, -0.5, 0.0));
+            assert_eq!(game.mobs[i].position, Vec3::new(8.5, 202.0, 4.5));
+            assert!(game.mobs[i].velocity.y > 0.9);
+            assert!(game.mobs[i].sync_position);
+        });
     }
 }

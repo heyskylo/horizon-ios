@@ -156,8 +156,8 @@ Horizon's own extras and its product, and every built-in address of an outside s
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
   `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
-  `horizon-official`, `horizon-official-servers`, `launcher/`. Still in engine crates today: `game/cosmetics.rs`, `game/emotes.rs`,
-  `game/discord.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
+  `horizon-official`, `horizon-official-servers`, `horizon-discord`, `launcher/`. Still in engine crates today:
+  `game/cosmetics.rs`, `game/emotes.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
 - **Rules:**
   - It uses the platform's public API only, never the engine.
   - Until it moves, every Horizon feature in the game sits behind the `horizon-extras` feature
@@ -378,8 +378,10 @@ pub enum Row {
     Toggle { label: &'static str, on: bool },
     Cycle { label: &'static str, value: Label },
     Slider { label: &'static str, value: f32, text: Label },   // value in 0..=1
-    Button { label: &'static str },
+    Button { label: &'static str, active: bool, half: bool, footer: bool },  // Row::button(..).half()...
     Key { label: &'static str, key: String },                 // a binding: `key.keyboard.z`
+    Text { text: String, quiet: bool, groups: bool },         // Row::text(..): white or grey, wrapped
+    Space(u8),                                                // GUI pixels, on a page drawn as a screen
 }
 pub enum Label { Key(&'static str), Value(String) }
 pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
@@ -389,6 +391,10 @@ pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
   button on the title screen or the pause menu that opens the page. These buttons exist only when something
   registered, so the vanilla menus keep vanilla's look. The page is drawn with the same widgets, tooltips,
   narration, controller focus and `horizon-ctl` ids as the engine's pages.
+- `Button` and `Text` are built with `Row::button` and `Row::text` and their options: `.active(false)` greys a
+  button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
+  `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options
+  shell, text is notes and space is nothing.
 - Rows are rebuilt when the page is drawn or acted on, like the engine's own pages: no cost while no page is
   open.
 - The engine keeps native mods' pages (`Page::NativeMod`) as they are. Both kinds sit in one module that
