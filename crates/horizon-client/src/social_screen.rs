@@ -604,4 +604,16 @@ mod tests {
         assert_eq!(delay.shown(Some(tip), at(1505)), None);
         assert_eq!(delay.shown(Some(tip), at(1506)), Some(tip));
     }
+
+    /// `SocialInteractionsScreen.mouseClicked` gives the widgets the click
+    /// before the list: a click inside the search box is the box's own.
+    #[test]
+    fn a_click_in_the_search_box_is_the_boxes_own() {
+        let size = (427.0, 360.0);
+        let [x, y, w, h] = search_box(size.0);
+        assert!(search_click_at(size, (x + 1.0, y + 1.0)));
+        assert!(search_click_at(size, (x + w - 0.5, y + h - 0.5)));
+        assert!(!search_click_at(size, (x - 1.0, y + 1.0)));
+        assert!(!search_click_at(size, (x + 1.0, y + h)));
+    }
 }
