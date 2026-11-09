@@ -469,9 +469,10 @@ impl Game<'_> {
             Target::Item(id) => {
                 let new = entity_nbt::item_entity_from_nbt(&tag, id, 0.0).ok_or_else(stale)?;
                 if let Some(slot) = self.dropped.iter_mut().find(|e| e.id == id) {
-                    let bob = slot.bob_offset;
-                    *slot = new;
-                    slot.bob_offset = bob;
+                    // `/data` loads into the same entity: its bobOffs and own random stay.
+                    let kept = std::mem::replace(slot, new);
+                    slot.bob_offset = kept.bob_offset;
+                    slot.random = kept.random;
                 }
             }
             Target::Fangs(id) => {

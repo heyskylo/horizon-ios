@@ -68,7 +68,8 @@ impl Game<'_> {
             // ItemEntity.tick's noPhysics (servers only): out of a block
             // placed on it, towards the closest open side (#1252).
             let no_physics = merging && item.inside_block(&self.world, self.collision);
-            let escape_speed = no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
+            // `moveTowardsClosestSpace` draws the speed from the item's own random.
+            let escape_speed = no_physics.then(|| item.random.next_float() * 0.2 + 0.1);
             // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
             // where the item can reach this tick (a block of slack for the next velocity).
             let reach = Vec3::new(
@@ -565,5 +566,49 @@ impl Game<'_> {
         if gained > 0 {
             self.give_orb_points(gained);
         }
+    }
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::chunk::Chunk;
+    use horizon_client::items::ItemStack;
+    use horizon_core::random::RandomSource;
+    use std::sync::Arc;
+
+    /// `Entity.moveTowardsClosestSpace` takes an item's escape speed from the
+    /// item's own random, the one its constructor drew from, and leaves the
+    /// level's random as it was (#13043).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_item_escapes_a_block_at_its_own_randoms_speed() {
+        let mut game = server_game();
+        let feet = horizon_core::geometry::Vec3::new(8.5, 70.0, 8.5);
+        game.player = Some(horizon_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.update_chunk_tickets();
+        assert!(game.entity_ticking_area()(8, 8));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(8, 64, 8, stone).unwrap();
+        let stack = ItemStack::new("minecraft:stone", 2);
+        game.spawn_item(stack, [8.5, 64.4, 8.5], [0.0, 0.0, 0.0], 10);
+        let item = game.dropped.last().unwrap();
+        let expected = f64::from(item.random.clone().next_float() * 0.2 + 0.1);
+        let mut level = game.world.random.clone();
+        game.ticked_entities_through = u32::MAX;
+        game.tick_items();
+        let item = game.dropped.last().unwrap();
+        // Up is the nearest open side from the middle of the block.
+        // The push replaces the fall's velocity; then the 0.98 drag.
+        assert_eq!(item.velocity.y, expected * 0.98);
+        assert_eq!(game.world.random.next_float(), level.next_float());
     }
 }
