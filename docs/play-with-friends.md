@@ -171,12 +171,14 @@ Settings, all optional:
 | `RELAY_SESSION_KBPS` | 1024 | KiB/s each way per relayed stream |
 | `RELAY_TOTAL_MBPS` | 100 | Mbit/s for everything relayed |
 | `RELAY_GLOBAL_UNKNOWN_PER_MIN` | 120 | unknown short codes a minute, all clients together; each IPv4 /24 or IPv6 /48 also has its own budget, 24 a minute (burst 6), checked first |
+| `RELAY_NAMEPLATE_UNKNOWN_PER_MIN` | 5 | unknown short codes a minute for one short code, from every client together (burst 10, `RELAY_NAMEPLATE_UNKNOWN_BURST`), checked before the lookup so one address set cannot spend the global budget on a single short code. Only joins whose short code is unknown count; a wrong secret for a code that exists is the host's limit, five and then it retires the code |
 | `RELAY_PER_ADDRESS_LIMITS` | 1 | per-address rate limits (see below) |
 | `RELAY_PROXY_PROTOCOL` | 0 | read the client address from a PROXY protocol v1 line |
 | `RELAY_PROXY_FROM` | none | with `RELAY_PROXY_PROTOCOL=1`, required: the load balancers' addresses or CIDR ranges (`10.0.0.0/8,fd00::/8`). Connections from anywhere else are closed unanswered; the relay refuses to start with the protocol on and this empty |
 
 Fixed limits: per client address (IPv6 by /64), 6 host registrations a minute (burst 3), 12 joins a
-minute (burst 6), 5 unknown short codes in 10 minutes block joins for 10 minutes; a relayed stream idle
+minute (burst 6), 5 unknown short codes in 10 minutes block joins for 10 minutes, and 5 unknown short
+codes a minute for one short code from every client together (burst 10); a relayed stream idle
 for 120 s is closed (the game's keep-alive sends every 15 s); the first line must be complete within 10 s;
 hosts answer pings within 60 s; five wrong secrets on a short code and the host retires it for a new one,
 waiting 1 s before registering again, then twice as long for each code it retires (at most 5 minutes);
