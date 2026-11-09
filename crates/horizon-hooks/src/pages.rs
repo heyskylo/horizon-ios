@@ -11,6 +11,9 @@ use crate::registry::Registry;
 pub enum Place {
     /// A button on the Horizon Settings page, after the engine's own pages.
     HorizonSettings,
+    /// A full-width button of the pause menu, above Options (under Splitscreen's settings). The
+    /// pause menu has it only when a page registered there.
+    Pause,
 }
 
 /// One page. Its values live in the crate (statics, often its settings [`crate::settings::Store`]);
