@@ -135,3 +135,63 @@ fn an_observer_ignores_changes_on_the_sides_it_does_not_face() {
         }
     }
 }
+
+/// `ButtonBlock.press` powers the button and schedules a tick `ticksToStayPressed`
+/// out; the tick releases it. Stone buttons stay pressed 20 ticks and every wooden
+/// one 30, bamboo and cherry included. A button that is already pressed answers a
+/// second click with nothing: the timer is not extended.
+#[test]
+fn buttons_stay_pressed_for_their_own_ticks_and_a_second_click_does_not_extend_it() {
+    for (name, stays) in [
+        ("stone_button", 20),
+        ("oak_button", 30),
+        ("bamboo_button", 30),
+        ("cherry_button", 30),
+    ] {
+        let mut w = world!();
+        w.floor(0, 5, "stone");
+        let pos = BlockPos::new(0, 1, 0);
+        w.set(pos, w.id(name, &[("face", "floor"), ("facing", "north")]));
+        assert_eq!(w.prop(pos, "powered"), "false", "{name} starts released");
+        w.use_block(pos);
+        assert_eq!(w.prop(pos, "powered"), "true", "{name} is pressed");
+        for tick in 1..stays {
+            w.tick();
+            assert_eq!(w.prop(pos, "powered"), "true", "{name} after {tick} ticks");
+        }
+        w.tick();
+        assert_eq!(
+            w.prop(pos, "powered"),
+            "false",
+            "{name} is released after {stays} ticks"
+        );
+    }
+
+    // A second click half way through changes nothing about when it releases.
+    let mut w = world!();
+    w.floor(0, 5, "stone");
+    let pos = BlockPos::new(0, 1, 0);
+    w.set(
+        pos,
+        w.id("stone_button", &[("face", "floor"), ("facing", "north")]),
+    );
+    w.use_block(pos);
+    for _ in 0..10 {
+        w.tick();
+    }
+    w.use_block(pos);
+    for _ in 0..9 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(pos, "powered"),
+        "true",
+        "19 ticks after the first click"
+    );
+    w.tick();
+    assert_eq!(
+        w.prop(pos, "powered"),
+        "false",
+        "20 ticks after the first click, not after the second"
+    );
+}
