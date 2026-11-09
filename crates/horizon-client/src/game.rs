@@ -12645,10 +12645,8 @@ pub fn run_with() -> Result<()> {
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
         let version = horizon_client::telemetry::version();
-        horizon_hooks::engine::started(&horizon_hooks::Started::new(&version));
-        // horizon-extras: the official server is Horizon's (docs/forking.md).
-        #[cfg(feature = "horizon-extras")]
-        horizon_client::official_servers::update(&horizon_client::logging::player_dir());
+        let game_dir = horizon_client::logging::player_dir();
+        horizon_hooks::engine::started(&horizon_hooks::Started::new(&version, &game_dir));
     }
     mods::register_components(&vanilla_root)?;
     mods::register_standalone_models();

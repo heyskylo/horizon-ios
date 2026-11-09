@@ -87,11 +87,14 @@ pub trait Hooks: Sync {
 pub struct Started<'a> {
     /// The build: the release tag (`0.2.31`), or `dev <crate version>` for a build from source.
     pub version: &'a str,
+    /// The player's game folder: servers.dat, options.txt and saves (the working directory unless
+    /// `--game-dir` names another).
+    pub game_dir: &'a std::path::Path,
 }
 
 impl<'a> Started<'a> {
-    pub fn new(version: &'a str) -> Self {
-        Self { version }
+    pub fn new(version: &'a str, game_dir: &'a std::path::Path) -> Self {
+        Self { version, game_dir }
     }
 }
 
@@ -340,7 +343,7 @@ mod tests {
     fn registered_hooks_hear_the_game_and_late_ones_are_refused() {
         register(&RECORDER).unwrap();
         register(&Silent).unwrap();
-        engine::started(&Started::new("0.2.31"));
+        engine::started(&Started::new("0.2.31", std::path::Path::new("game")));
         // Changes only: the same state every frame is said once.
         for open in [false, true, true, true, false, false] {
             engine::published(open);

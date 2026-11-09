@@ -71,3 +71,12 @@ pub mod pages {
 pub mod hud {
     pub use horizon_hooks::hud::{Canvas, Corner, Layer, register};
 }
+
+/// The multiplayer server list as vanilla stores it (`servers.dat`): read, write, add, remove,
+/// and the lock held while it is read and written back.
+#[cfg(feature = "protocol")]
+pub mod servers {
+    pub use horizon_protocol::servers::{
+        ServerEntry, load, lock, parse_address, prepend, remove_where, save,
+    };
+}
