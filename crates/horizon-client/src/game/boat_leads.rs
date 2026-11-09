@@ -82,7 +82,7 @@ impl Game<'_> {
                     }
                     let bounds = g.bounds();
                     let (lo, hi) = (bounds.min_position(), bounds.max_position());
-                    let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+                    let moved = g.known_movement;
                     return Held::At(
                         HolderState {
                             position: Vec3::new(g.position[0], g.position[1], g.position[2]),
@@ -284,10 +284,17 @@ impl Game<'_> {
                     self.mob_by_uuid(u)
                         .map(|id| (Holder::Mob(id), None))
                         .or_else(|| self.boat_by_uuid(u).map(|id| (Holder::Boat(id), None)))
+                        .or_else(|| self.knot_by_uuid(u).map(|p| (Holder::Knot(p), None)))
                 }
             }
         };
         if let Some((holder, player)) = found {
+            // The boat is out of the list while it ticks: its own knot is
+            // made here, not found by `lead_fences`.
+            if let Holder::Knot(fence) = holder {
+                self.forget_untied_knots();
+                self.tie_knot(fence);
+            }
             b.leash = Some(holder);
             b.leash_player = player;
             b.leash_pending = None;
@@ -336,6 +343,18 @@ impl Game<'_> {
             .iter()
             .find(|(id, u)| **u == uuid && self.boats.iter().any(|b| b.id == **id))
             .map(|(id, _)| *id)
+    }
+
+    /// The fence post of the leash knot with this UUID (`ServerLevel.getEntity`):
+    /// a summoned or loaded `minecraft:leash_knot`, which sits on its block.
+    pub(super) fn knot_by_uuid(&self, uuid: [i32; 4]) -> Option<[i32; 3]> {
+        self.others
+            .iter()
+            .find(|o| o.kind == "minecraft:leash_knot" && self.persist.uuid_of(o.id) == Some(uuid))
+            .map(|o| {
+                let block = horizon_core::position::BlockPos::containing(o.position);
+                [block.x, block.y, block.z]
+            })
     }
 
     /// The boats on the acting player's lead within 32 blocks of a point
@@ -597,5 +616,42 @@ mod tests {
     fn distances_are_euclidean() {
         let d = distance(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 4.0, 0.0));
         assert!((d - 5.0).abs() < 1e-12);
+    }
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn non_guest_holder_branches_keep_their_existing_velocity_sources() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("summon oak_boat 6.5 100 4.5 {UUID:[I;327,1,0,1]}"));
+        let boat = &mut game.boats[0];
+        boat.velocity = Vec3::new(0.25, -0.125, 0.5);
+        let (id, expected) = (boat.id, boat.velocity);
+        let Held::At(state, quad) = game.boat_holder(Holder::Boat(id), None) else {
+            panic!("actual boat holder must resolve");
+        };
+        assert_eq!(state.velocity, expected);
+        assert!(!quad);
+        assert!(game.run_command("summon pig 4.5 100 4.5 {UUID:[I;327,2,0,1],NoAI:1b}"));
+        let mob = &mut game.mobs[0];
+        mob.velocity = Vec3::new(-0.5, 0.25, 0.125);
+        let (id, expected) = (mob.id, mob.velocity);
+        let Held::At(state, quad) = game.boat_holder(Holder::Mob(id), None) else {
+            panic!("actual mob holder must resolve");
+        };
+        assert_eq!(state.velocity, expected);
+        assert!(!quad);
+        assert!(matches!(
+            game.boat_holder(Holder::Player, Some([327, 3, 0, 1])),
+            Held::Gone
+        ));
+        assert!(matches!(
+            game.boat_holder(Holder::Boat(u32::MAX), None),
+            Held::Gone
+        ));
+        assert!(matches!(
+            game.boat_holder(Holder::Knot([0, 100, 0]), None),
+            Held::Gone
+        ));
     }
 }
