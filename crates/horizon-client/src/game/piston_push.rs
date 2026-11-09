@@ -1558,4 +1558,20 @@ mod h255_mob_piston_ground_tests {
             });
         }
     }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_added_partial_push_reads_slime_after_the_position_changes() {
+        with_game(|game| {
+            assert!(game.run_command("setblock 8 201 4 slime_block"));
+            let i = added_mob(game, 23, "iron_golem", true, 8.5);
+            game.mobs[i].position.y = 202.25;
+            game.mobs[i].velocity = Vec3::new(0.0, -1.0, 0.0);
+            game.mobs[i].sync_position = false;
+            added_push(game, i, Vec3::new(0.0, -0.5, 0.0));
+            assert_eq!(game.mobs[i].position, Vec3::new(8.5, 202.0, 4.5));
+            assert!(game.mobs[i].velocity.y > 0.9);
+            assert!(game.mobs[i].sync_position);
+        });
+    }
 }
