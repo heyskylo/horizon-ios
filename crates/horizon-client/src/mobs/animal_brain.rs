@@ -1990,19 +1990,22 @@ fn breed_partner(m: &mut Mob, w: &MobWorld) -> Option<Who> {
 // ---- The sniffer --------------------------------------------------------
 
 /// `Sniffer.transitionTo`: the state and its sound.
-fn transition(m: &mut Mob, cx: &mut Bx, to: u8) {
+pub(crate) fn transition(m: &mut Mob, cx: &mut Bx, to: u8) {
     let at = [m.position.x, m.position.y, m.position.z];
-    let sound = |name: &'static str, pitch: f32| MobEvent::Sound(name, at, 1.0, pitch);
+    // The transitions' this.playSound: silence mutes them.
+    let sound = |name: &'static str, pitch: f32| {
+        (!m.silent).then_some(MobEvent::Sound(name, at, 1.0, pitch))
+    };
     match to {
-        sniffer::FEELING_HAPPY => cx.events.push(sound("entity.sniffer.happy", 1.0)),
+        sniffer::FEELING_HAPPY => cx.events.extend(sound("entity.sniffer.happy", 1.0)),
         sniffer::SCENTING => {
             let pitch = if m.is_baby() { 1.3 } else { 1.0 };
-            cx.events.push(sound("entity.sniffer.scenting", pitch));
+            cx.events.extend(sound("entity.sniffer.scenting", pitch));
         }
-        sniffer::SNIFFING => cx.events.push(sound("entity.sniffer.sniffing", 1.0)),
+        sniffer::SNIFFING => cx.events.extend(sound("entity.sniffer.sniffing", 1.0)),
         // onDiggingStart: the seed drops 120 ticks in.
         sniffer::DIGGING => m.extra.ints[3] = m.age as i32 + 120,
-        sniffer::RISING => cx.events.push(sound("entity.sniffer.digging_stop", 1.0)),
+        sniffer::RISING => cx.events.extend(sound("entity.sniffer.digging_stop", 1.0)),
         _ => {}
     }
     sniffer::set_state(m, to);
