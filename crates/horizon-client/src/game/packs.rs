@@ -17,6 +17,7 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 /// Where overlay roots are built (beside options.txt).
@@ -642,11 +643,29 @@ pub(super) struct PackReload {
     pub(super) progress: super::Progress,
     kind: ReloadKind,
     handle: Option<std::thread::JoinHandle<StageResult>>,
+    /// When the overlay went up. `LoadingOverlay.fadeInStart`, set on the
+    /// first frame it draws.
+    started: Instant,
+    /// How long the overlay stays up before the reload may be applied.
+    hold: Duration,
 }
+/// `LoadingOverlay.isReadyToFadeOut`: a reload started from inside the game
+/// (`fadeIn`) is not ready while `Util.getMillis() - fadeInStart < 1000L`, so
+/// a pack that stages in a few frames still shows its overlay for a second
+/// instead of flashing.
+pub(super) const OVERLAY_HOLD: Duration = Duration::from_millis(1000);
 impl PackReload {
     /// Starts `stage` on its own thread and returns at once.
     fn spawn(
         kind: ReloadKind,
+        stage: impl FnOnce(&super::Progress) -> StageResult + Send + 'static,
+    ) -> std::io::Result<Self> {
+        Self::spawn_holding(kind, OVERLAY_HOLD, stage)
+    }
+    /// `spawn` with the overlay's hold spelled out, so a test need not wait it.
+    fn spawn_holding(
+        kind: ReloadKind,
+        hold: Duration,
         stage: impl FnOnce(&super::Progress) -> StageResult + Send + 'static,
     ) -> std::io::Result<Self> {
         let progress = super::Progress::with(&RELOAD_LINES);
@@ -658,14 +677,17 @@ impl PackReload {
             progress,
             kind,
             handle: Some(handle),
+            started: Instant::now(),
+            hold,
         })
     }
     pub(super) fn kind(&self) -> ReloadKind {
         self.kind
     }
-    /// The staged pack once the worker is done (taken once); none while it runs.
+    /// The staged pack once the worker is done and the overlay has had its
+    /// second (taken once); none while either is outstanding.
     fn finished(&mut self) -> Option<(ReloadKind, StageResult)> {
-        if !self.handle.as_ref()?.is_finished() {
+        if self.started.elapsed() < self.hold || !self.handle.as_ref()?.is_finished() {
             return None;
         }
         let staged = self
