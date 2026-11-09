@@ -1182,6 +1182,10 @@ mod saved_bytes_tests {
         assert_eq!(m.extra.variant3, 1, "abs(7 % 6) is up");
         assert_eq!(m.extra.counter, -1, "the peek byte is kept");
         assert_eq!(m.extra.color, 255, "the color byte is kept");
-        assert_eq!(texture(&m), "entity/shulker/shulker_white", "DyeColor.byId(-1)");
+        assert_eq!(
+            texture(&m),
+            "entity/shulker/shulker_white",
+            "DyeColor.byId(-1)"
+        );
     }
 }
