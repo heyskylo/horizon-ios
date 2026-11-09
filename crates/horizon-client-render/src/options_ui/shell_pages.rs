@@ -27,6 +27,7 @@ impl OptionsUi {
         }
     }
     pub(super) fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
+        self.graphics.screen.output = self.output;
         match self.page() {
             Page::Extras => Some(&mut self.extras),
             page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
@@ -101,7 +102,8 @@ impl OptionsUi {
                 }
                 shell::Output::Push(page) => {
                     if page == Page::HdrCalibration {
-                        self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
+                        self.calibration =
+                            Some(crate::hdr_calibration::Calibration::new(s, &self.output));
                     }
                     self.push(page);
                     // A slot's list, for the slot, opening on what it holds.

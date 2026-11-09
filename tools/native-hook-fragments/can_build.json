@@ -1,0 +1,19 @@
+{
+  "hooks": [
+    {
+      "name": "can_build",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_can_build",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "helpers": [
+    {"name": "may_build", "target": "horizon_client::game::native_world_edit::Game<'_>::native_may_build"}
+  ],
+  "rust_summary": "a region-protection mod's say on where a player may build or break (`native_can_build`, asked through `native_may_build`).",
+  "doc_summary": "`native_can_build(player, name, dimension, pos, action, cancel)` is asked by `native_may_build(player, name, dimension, pos, action)` before a mod edits blocks for a player outside the normal place and break path (`action` is `place` or `break`); set `cancel` to deny it, and any mod doing so denies it. Without a mod that does, it is allowed. Bundles need \"hooks\": @API:can_build@."
+}
