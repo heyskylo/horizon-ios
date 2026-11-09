@@ -3905,11 +3905,11 @@ fn attached_block_pos(tag: &Tag) -> Option<[i32; 3]> {
         }
     }
 }
-/// The block position, facing and variant of a saved painting.
-pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, String)> {
+/// The block position, facing and variant (if saved) of a painting.
+pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, Option<String>)> {
     let pos = attached_block_pos(tag)?;
     let facing = (number(tag.get("facing")).unwrap_or(0) & 3) as u8;
-    Some((pos, facing, text(tag.get("variant"))?))
+    Some((pos, facing, text(tag.get("variant"))))
 }
 /// Cushion.addAdditionalSaveData: the block it sits on and its colour.
 pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
@@ -8376,8 +8376,14 @@ mod fireball_nbt_tests {
         ]);
         assert_eq!(
             painting_from_nbt(&painting),
-            Some(([28, 80, 6], 3, "minecraft:kebab".to_string()))
+            Some(([28, 80, 6], 3, Some("minecraft:kebab".to_string())))
         );
+        // No variant saved (a bare summon): the position and facing still load.
+        let mut bare = painting.clone();
+        if let Tag::Compound(m) = &mut bare {
+            m.remove(&"variant".into());
+        }
+        assert_eq!(painting_from_nbt(&bare), Some(([28, 80, 6], 3, None)));
         let frame = Tag::compound([
             ("id", Tag::String("minecraft:item_frame".into())),
             ("Pos", doubles(&[-0.5, 80.0, 6.5])),

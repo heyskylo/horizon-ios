@@ -1001,8 +1001,13 @@ impl Game<'_> {
 
     /// A saved painting, or its compound when its variant is unknown.
     pub(super) fn load_painting(&mut self, tag: Tag, uuid: Option<[i32; 4]>, key: ChunkKey) {
+        // Painting.defineSynchedData: a painting without a saved variant keeps
+        // VariantUtils.getAny, the registry's first one.
         if let Some((pos, facing, variant)) = entity_nbt::painting_from_nbt(&tag)
-            && let Some(v) = self.painting_variants.get(&variant).cloned()
+            && let Some(v) = match variant {
+                Some(variant) => self.painting_variants.get(&variant).cloned(),
+                None => self.painting_variants.all.first().cloned(),
+            }
         {
             self.next_entity += 1;
             let id = self.next_entity;
