@@ -63,6 +63,10 @@ pub(super) struct Rocket {
     /// `Entity.onGround`: whether its last move was stopped going down (or
     /// the one it was loaded with, until it moves).
     pub(super) on_ground: bool,
+    /// `Projectile.hasBeenShot`: its first tick posts `projectile_shoot`.
+    pub(super) has_been_shot: bool,
+    /// `Entity.isSilent`: no launch sound.
+    pub(super) silent: bool,
 }
 impl Rocket {
     /// A rocket a server sent (`handleAddEntity`): placed and moved by it.
@@ -87,6 +91,9 @@ impl Rocket {
             angled: false,
             item,
             on_ground: false,
+            // The server posts the shot.
+            has_been_shot: true,
+            silent: false,
         }
     }
     /// `FireworkRocketEntity.addAdditionalSaveData`; the owner only when it is `player`.
@@ -112,6 +119,7 @@ impl Rocket {
                 },
                 left_owner: self.left_owner,
                 on_ground: self.on_ground,
+                has_been_shot: self.has_been_shot,
             },
             uuid,
             raw,
@@ -124,7 +132,7 @@ impl Rocket {
             .unwrap_or_else(|| ItemStack::new("minecraft:firework_rocket", 1));
         let (_, explosions) = fireworks_of(&item);
         Self {
-            rotation: [0.0, 0.0],
+            rotation: r.rotation,
             join: Default::default(),
             id: 0,
             position: r.position,
@@ -141,7 +149,28 @@ impl Rocket {
             angled: r.angled,
             item,
             on_ground: r.on_ground,
+            has_been_shot: r.has_been_shot,
+            silent: r.silent,
         }
+    }
+    /// `Entity.load` over a live rocket (`/data merge`, `/data modify`): what
+    /// [`Self::from_nbt`] reads replaces its own; it keeps its id and what it
+    /// boosts.
+    pub(super) fn load_nbt(&mut self, r: RocketNbt) {
+        let loaded = Self::from_nbt(r);
+        self.rotation = loaded.rotation;
+        self.has_been_shot = loaded.has_been_shot;
+        self.silent = loaded.silent;
+        self.position = loaded.position;
+        self.previous = loaded.position;
+        self.velocity = loaded.velocity;
+        self.life = loaded.life;
+        self.lifetime = loaded.lifetime;
+        self.explosions = loaded.explosions;
+        self.item = loaded.item;
+        self.angled = loaded.angled;
+        self.left_owner = loaded.left_owner;
+        self.on_ground = loaded.on_ground;
     }
     /// One tick of a server's client: the rocket flies on by itself between
     /// the server's updates (a rocket that follows an entity is placed by the
@@ -152,6 +181,17 @@ impl Rocket {
             self.free_flight(scene);
         }
         self.life += 1;
+    }
+    /// `Projectile.updateRotation`: a fifth of the way from `old` (yaw,
+    /// pitch) toward its motion's direction, the short way round.
+    fn update_rotation(&mut self, old: [f32; 2]) {
+        let v = self.velocity;
+        let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        let atan2 = horizon_core::geometry::trig::atan2_degrees;
+        self.rotation = [
+            horizon_client::arrows::lerp_rotation(old[0], atan2(v.x, v.z)),
+            horizon_client::arrows::lerp_rotation(old[1], atan2(v.y, horizontal)),
+        ];
     }
     /// The move of a rocket attached to no entity: sped up and rising, or an
     /// angled one's own motion.
@@ -262,6 +302,8 @@ impl Game<'_> {
             angled: false,
             item: stack.clone(),
             on_ground: false,
+            has_been_shot: false,
+            silent: false,
         }
     }
     /// `FireworkRocketItem.useOn`: launch from the clicked point.
@@ -403,6 +445,14 @@ impl Game<'_> {
             }
             let mut r = self.rockets.remove(i);
             r.previous = r.position;
+            // Entity.baseTick's setOldRot: where updateRotation eases from.
+            let old_rotation = r.rotation;
+            // Projectile.tick: the first tick posts the shot, with its owner.
+            if !r.has_been_shot {
+                let at = [r.position.x, r.position.y, r.position.z];
+                self.projectile_shoot_event(r.owner, r.guest, at);
+                r.has_been_shot = true;
+            }
             // Projectile.tick: whether it has left its owner, before it moves.
             let owner = self.rocket_owner(&r);
             if !r.left_owner {
@@ -469,8 +519,9 @@ impl Game<'_> {
                 Some(RocketHit::Block) if !r.explosions.is_empty() => r.life = r.lifetime,
                 Some(RocketHit::Block) | None => {}
             }
+            r.update_rotation(old_rotation);
             let at = [r.position.x, r.position.y, r.position.z];
-            if r.life == 0 {
+            if r.life == 0 && !r.silent {
                 self.audio.play(
                     "minecraft:entity.firework_rocket.launch",
                     Some(at),

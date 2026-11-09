@@ -253,7 +253,13 @@ pub(super) fn potion_cloud_to_nbt(c: &Breath, uuid: [i32; 4], raw: Option<&Tag>)
         "potion_duration_scale".into(),
         Tag::Float(potion.settings.duration_scale.to_bits()),
     );
-    map.insert("potion_contents".into(), Tag::Compound(contents));
+    // Vanilla writes the key only while the contents differ from
+    // PotionContents.EMPTY: no effects and the default water colour.
+    if !(potion.effects.is_empty()
+        && potion.color == horizon_client_core::potions::BASE_POTION_COLOR)
+    {
+        map.insert("potion_contents".into(), Tag::Compound(contents));
+    }
     tag
 }
 
@@ -2734,50 +2740,8 @@ mod sound_on_added_tests {
 }
 
 #[cfg(test)]
-mod xp_bottle_tests {
-    use super::*;
-
-    /// `ThrownExperienceBottle.onHit` uses `awardWithDirection`: every fresh
-    /// orb starts 0.25 out from the face it hit, or back along the bottle's
-    /// motion after an entity hit, moving that way (#11388).
-    #[test]
-    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
-    fn bottle_orbs_start_away_from_what_it_hit() {
-        let mut game = super::super::native_machines::tests::server_game();
-        let bottle = ItemStack::new("minecraft:experience_bottle", 1);
-        let at = Vec3::new(8.5, 70.5, 8.5);
-        // (hit face, the bottle's motion, the axis and sign the orbs leave by)
-        for (face, motion, axis, sign) in [
-            (
-                Some(([9, 70, 8], Direction::West)),
-                Vec3::new(1.0, 0.0, 0.0),
-                0,
-                -1.0,
-            ),
-            (None, Vec3::new(0.0, 0.0, 1.0), 2, -1.0),
-        ] {
-            game.orbs.clear();
-            game.splash(
-                &bottle,
-                at,
-                None,
-                face,
-                0,
-                &PotionOwner::default(),
-                false,
-                motion,
-            );
-            assert!(!game.orbs.is_empty());
-            let at = [at.x, at.y, at.z];
-            for o in game.orbs.iter() {
-                let p = [o.position.x, o.position.y, o.position.z];
-                let v = [o.velocity.x, o.velocity.y, o.velocity.z];
-                assert!((p[axis] - (at[axis] + sign * 0.25)).abs() < 1e-9, "{p:?}");
-                assert!(v[axis] * sign >= 0.0, "{v:?}");
-            }
-        }
-    }
-}
+#[path = "xp_bottle_tests.rs"]
+mod xp_bottle_tests;
 
 #[cfg(test)]
 mod mob_absorption_max_tests {
