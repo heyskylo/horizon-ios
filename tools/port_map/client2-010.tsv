@@ -93,6 +93,7 @@ DebugScreenOverlay.toggleLightmapTexture	port	crates/horizon-client/src/debug_ch
 DebugScreenOverlay.toggleProfilerChart	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::toggle_fps	the chart key turns the FPS chart on (and the F3 overlay with it), turning the network and lightmap charts off
 DebugScreenOverlay.logRemoteSample	missing		minor: unsure: the debug_sample packet is only named in horizon-protocol/src/ids.rs, so a server's samples are not logged
 EditBox.createNarrationMessage	inline	crates/horizon-client/src/screen_narrator.rs::narrate	narrate's edit-box arm: gui.narrate.editBox(message, value); Narratable::edit_box is recorded by ui::EditBox::draw and screen_draw's field
+EditBox.setInvertHighlightedTextColor	port	crates/horizon-client-render/src/ui.rs::EditBox::draw_with_skin	the selected text inverts unless the box turns it off (the anvil's rename box does)
 EditBox.getHighlighted	port	crates/horizon-client-render/src/ui.rs::EditBox::selected_text	the text between cursor and highlight
 EditBox.moveCursorTo	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	sets the cursor and keeps the highlight unless extending
 EditBox.setCursorPosition	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	clamps and scrolls to the cursor
