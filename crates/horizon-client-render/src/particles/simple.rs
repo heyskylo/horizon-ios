@@ -82,6 +82,20 @@ pub(super) fn tick_simple(
     }
     Simple::Done
 }
+/// The same world with a one-chunk lookup cache of its own, for a worker thread.
+///
+/// `ParticleLevel::cached_chunk` is a `Cell`, which a level shared between threads may not hold:
+/// each thread gets a view with an empty cache, built here on the engine thread and moved in. A
+/// cache they shared could not hold "the last chunk looked up" for any one of them in any case.
+fn thread_view<'a>(level: &ParticleLevel<'a>) -> ParticleLevel<'a> {
+    ParticleLevel {
+        world: level.world,
+        facts: level.facts,
+        collision: level.collision,
+        player: level.player,
+        cached_chunk: std::cell::Cell::new(None),
+    }
+}
 /// What `tick_simple` did with a particle.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Simple {
@@ -121,7 +135,7 @@ impl ParticleEngine {
         let per = particles.len().div_ceil(self.parallel_threads);
         let mut handled = vec![Simple::No; particles.len()];
         std::thread::scope(|scope| {
-            let run = |part: &mut [Particle], done: &mut [Simple]| {
+            let run = |part: &mut [Particle], done: &mut [Simple], level: &ParticleLevel| {
                 for (p, done) in part.iter_mut().zip(done) {
                     *done = tick_simple(sets, p, level);
                 }
@@ -129,11 +143,12 @@ impl ParticleEngine {
             let mut parts = particles.chunks_mut(per).zip(handled.chunks_mut(per));
             let own = parts.next();
             for (part, done) in parts {
-                scope.spawn(move || run(part, done));
+                let view = thread_view(level);
+                scope.spawn(move || run(part, done, &view));
             }
             // This thread takes the first share, instead of waiting for the others.
             if let Some((part, done)) = own {
-                run(part, done);
+                run(part, done, level);
             }
         });
         for (p, done) in particles.iter_mut().zip(handled) {

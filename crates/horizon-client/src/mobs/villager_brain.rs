@@ -3384,7 +3384,7 @@ fn same_path(a: Option<&Path>, b: Option<&Path>) -> bool {
 }
 /// `Swim`: deeper than the jump threshold, or in lava.
 fn swim_condition(m: &Mob) -> bool {
-    m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
+    m.floats()
 }
 fn panic_condition(m: &Mob) -> bool {
     mem_ref(m).is_some_and(|mm| mm.hurt_by.present() || mm.nearest_hostile.present())

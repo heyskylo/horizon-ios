@@ -118,6 +118,7 @@ fn with_scene(f: impl FnOnce(&ParticleLevel)) {
         facts: &facts,
         collision: &collision,
         player: None,
+        cached_chunk: std::cell::Cell::new(None),
     });
 }
 

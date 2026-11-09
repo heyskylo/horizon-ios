@@ -26,7 +26,7 @@ that finds the port takes the session.
 ## How it works
 
 **Hosting.** The pause menu's Friends button (vanilla's icon, beside Player Reporting) opens **Play
-with Friends** (`friends_screen.rs`); its **Start Sharing** opens the world to LAN if it isn't (Open to
+with Friends** (`game/friends/screen.rs`); its **Start Sharing** opens the world to LAN if it isn't (Open to
 LAN's defaults), then the host's game, on its own:
 
 1. listens on its **direct port**, TCP 25580 by default (the same port every time, so a port forwarded
@@ -48,6 +48,13 @@ LAN's defaults), then the host's game, on its own:
 **Joining.** The guest's game dials every endpoint in the code at once. The first that answers as a
 Horizon host gets the handshake, the others are dropped. On the same LAN, over a VPN, with IPv6, with a
 router that opened the port, or with a forwarded port, that's it: no server took part.
+
+**In the code.** The engine knows only the address form `friend:<code>` and a hook, `net::tunnel`
+(horizon-client-lib): a resolver registered at startup reads codes and opens the tunnel, which the join
+then reaches on a loopback port like any server. Play with Friends registers its resolver
+(`game/friends/tunnel.rs`) when the `friends` feature is on (it comes with `horizon-extras`); without one
+a `friend:` address is refused. Hosting needs no hook: the host end connects to the world's LAN port
+over loopback, so tunnelled guests are LAN guests.
 
 **Codes.** Crockford base32 (`0-9 A-Z` without `I L O U`; input ignores case, spaces and dashes and reads
 `O` as `0`, `I`/`L` as `1`) in groups of five, with a 16-bit checksum so a typo is caught before
