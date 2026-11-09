@@ -1085,6 +1085,60 @@ mod tests {
         assert!(chunk.surface.heights.get().is_some());
         assert_eq!(chunk.world_surface(3, 3, |_| unreachable!()), before);
     }
+    /// A write two below a column's height can't move it, so the next read asks about no block;
+    /// a write at or above it (placing on top, clearing the top block) is found again on the next
+    /// read by looking down that column alone, and the other columns keep their heights.
+    #[test]
+    fn a_write_finds_its_own_column_again() {
+        // Each column holds its own state (16 + i), so a read that looks at another column's
+        // blocks shows up as a state that isn't air or this column's.
+        let state = |i: usize| 16 + i as u32;
+        let mut chunk = Chunk::empty(0, 0);
+        for i in 0..256 {
+            for y in MIN_Y..MIN_Y + 20 + (i as i32 % 7) {
+                chunk.set(i as i32 & 15, y, i as i32 >> 4, state(i));
+            }
+        }
+        let seen = std::cell::RefCell::new(Vec::new());
+        let surface = |c: &Chunk, i: usize| {
+            c.world_surface(i as i32 & 15, i as i32 >> 4, |v| {
+                seen.borrow_mut().push(v);
+                v == 0
+            })
+        };
+        let heights: Vec<i32> = (0..256).map(|i| surface(&chunk, i)).collect();
+        assert_eq!(heights[0], MIN_Y + 20);
+        assert_eq!(heights[6], MIN_Y + 26);
+        seen.borrow_mut().clear();
+
+        let (column, x, z) = (0x35, 5, 3);
+        let top = heights[column];
+        // Two below the height: the column keeps its map entry.
+        chunk.set(x, top - 2, z, 0);
+        assert_eq!(surface(&chunk, column), top);
+        assert!(seen.borrow().is_empty());
+        chunk.set(x, top - 2, z, state(column));
+
+        // At the height: placed on top, found again down this column only.
+        chunk.set(x, top, z, state(column));
+        assert_eq!(surface(&chunk, column), top + 1);
+        assert!(!seen.borrow().is_empty());
+        assert!(seen.borrow().iter().all(|&v| v == 0 || v == state(column)));
+        seen.borrow_mut().clear();
+        assert_eq!(surface(&chunk, column), top + 1);
+        for i in (0..256).filter(|&i| i != column) {
+            assert_eq!(surface(&chunk, i), heights[i]);
+        }
+        assert!(
+            seen.borrow().is_empty(),
+            "a read found again an untouched column"
+        );
+
+        // One below the height: the top block cleared, the height drops by one.
+        chunk.set(x, top, z, 0);
+        assert_eq!(surface(&chunk, column), top);
+        assert!(seen.borrow().iter().all(|&v| v == 0 || v == state(column)));
+    }
     /// MOTION_BLOCKING ignores states that don't count (air, grass) and
     /// follows writes as the surface map does, both maps kept at once.
     #[test]
