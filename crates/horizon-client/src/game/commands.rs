@@ -851,6 +851,17 @@ impl Game<'_> {
             .map(|(t, _)| t)
             .collect()
     }
+    /// `type=`: every positive must match, no negative may match.
+    fn selector_types_match(&self, s: &Selector, ty: &str) -> bool {
+        s.types.iter().all(|(want, neg)| {
+            let matches = if let Some(tag) = want.strip_prefix('#') {
+                self.entity_tag_matches(tag, ty)
+            } else {
+                want == ty
+            };
+            matches != *neg
+        })
+    }
     /// The candidates of the level in place that pass the selector
     /// (EntitySelector.getPredicate).
     fn select_in_level(
@@ -861,22 +872,27 @@ impl Game<'_> {
     ) -> Vec<(Target, f64)> {
         let level = self.experience.level;
         let creative = self.creative;
+        // EntitySelector tests the type before any predicate. With no scores=
+        // or team= (whose holders may be made as they are read), the rest of
+        // the extra filter is a pure test of each candidate, so the ones of
+        // another type leave first: `@e[type=marker,tag=…]` no longer reads
+        // the tags of every falling block and item in the level.
+        let candidates = if !s.types.is_empty() && s.scores.is_empty() && s.teams.is_empty() {
+            candidates
+                .into_iter()
+                .filter(|&t| self.selector_types_match(s, &self.target_type(t)))
+                .collect()
+        } else {
+            candidates
+        };
         let passing = self.selector_extra_filter(&candidates, s);
         candidates
             .into_iter()
             .filter_map(|t| {
                 let p = self.target_position(t)?;
                 let ty = self.target_type(t);
-                // type=: every positive must match, no negative may match.
-                for (want, neg) in &s.types {
-                    let matches = if let Some(tag) = want.strip_prefix('#') {
-                        self.entity_tag_matches(tag, &ty)
-                    } else {
-                        *want == ty
-                    };
-                    if matches == *neg {
-                        return None;
-                    }
+                if !self.selector_types_match(s, &ty) {
+                    return None;
                 }
                 if !s.include_entities
                     && !t.is_player()
