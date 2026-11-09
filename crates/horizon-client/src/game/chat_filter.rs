@@ -42,8 +42,8 @@ impl Reply {
     }
 
     pub(super) fn duration(millis: i64) -> Text {
-        use horizon_chat_filter::DurationUnit;
-        let (count, unit) = horizon_chat_filter::duration_parts(millis);
+        use horizon_server_files::duration::{DurationUnit, duration_parts};
+        let (count, unit) = duration_parts(millis);
         let key = match (unit, count == 1) {
             (DurationUnit::Minute, true) => "horizon.moderation.duration.minute",
             (DurationUnit::Minute, false) => "horizon.moderation.duration.minutes",
@@ -93,7 +93,7 @@ pub(super) const MUTE_USAGES: [&str; 4] = [
 fn mute_time(words: &[&str]) -> (Option<i64>, usize) {
     match words
         .get(2)
-        .and_then(|w| horizon_chat_filter::parse_duration(w))
+        .and_then(|w| horizon_server_files::duration::parse_duration(w))
     {
         Some(ms) => (Some(ms), 3),
         None => (None, 2),
@@ -133,7 +133,7 @@ impl Game<'_> {
         count: u32,
         action: Action,
     ) {
-        let now = horizon_chat_filter::now_millis();
+        let now = horizon_server_files::duration::now_millis();
         let summary = format!(
             "[chat-filter] Refused {name}'s {} (hit {count}: {})",
             place.name(),
@@ -281,7 +281,7 @@ impl Game<'_> {
         let reason = |from: usize| (words.len() > from).then(|| words[from..].join(" "));
         match words {
             ["mutelist"] => {
-                let now = horizon_chat_filter::now_millis();
+                let now = horizon_server_files::duration::now_millis();
                 let mutes = host.hub.mutes();
                 if mutes.is_empty() {
                     return vec![Reply::translated("horizon.moderation.mutelist.empty", &[])];
@@ -319,7 +319,7 @@ impl Game<'_> {
                 let (time, from) = mute_time(words);
                 vec![self.mute(host, name, time, reason(from), by)]
             }
-            ["tempmute", name, time, ..] => match horizon_chat_filter::parse_duration(time) {
+            ["tempmute", name, time, ..] => match horizon_server_files::duration::parse_duration(time) {
                 Some(ms) => vec![self.mute(host, name, Some(ms), reason(3), by)],
                 None => vec![Reply::translated(
                     "horizon.moderation.invalid_duration",
@@ -353,10 +353,10 @@ impl Game<'_> {
         let Some((uuid, name)) = user else {
             return Reply::no_player();
         };
-        let until = time.map(|ms| horizon_chat_filter::now_millis() + ms);
+        let until = time.map(|ms| horizon_server_files::duration::now_millis() + ms);
         let what = time.map_or_else(
             || "until unmuted".into(),
-            |ms| format!("for {}", horizon_chat_filter::duration_text(ms)),
+            |ms| format!("for {}", horizon_server_files::duration::duration_text(ms)),
         );
         let why = reason
             .as_deref()

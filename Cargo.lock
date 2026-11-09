@@ -1418,6 +1418,7 @@ dependencies = [
 name = "horizon-chat-filter"
 version = "0.1.0"
 dependencies = [
+ "horizon-server-files",
  "serde",
  "serde_json",
  "toml",
