@@ -214,9 +214,12 @@ pub const MISSING_MARK: &str = "?";
 
 // ---------------------------------------------------------------- colours
 
-/// The design system's tokens (`crates/horizon-theme`): the dark page, the night accent and its
-/// text shade, the muted text over a backdrop.
-const DARK: u32 = horizon_theme::DARK.page;
+/// The menu style's overlay colours (`menu_style`, given by the layer above: Horizon's design
+/// system in the official game): the dark page, the lit sector and its bright edge, the muted
+/// text over a backdrop.
+fn dark() -> u32 {
+    crate::menu_style::get().overlay.page
+}
 /// The vignette at the centre, and its alpha at 60% out (0.7, 0.525).
 const VIGNETTE: [u8; 2] = [179, 134];
 const VIGNETTE_MID: f32 = 0.6;
@@ -225,22 +228,34 @@ const VIGNETTE_MID: f32 = 0.6;
 const TRACK_RGB: u32 = 0x22242E;
 const TRACK: u32 = colour(TRACK_RGB, 140);
 const RIM: u32 = colour(0xFFFFFF, 64);
-const HUB_FILL: u32 = colour(DARK, 209);
+fn hub_fill() -> u32 {
+    colour(dark(), 209)
+}
 const HUB_RIM: u32 = colour(0xFFFFFF, 56);
-const SECTOR: u32 = colour(horizon_theme::night::NIGHT.accent, 140);
-const SECTOR_HI: u32 = colour(horizon_theme::night::NIGHT.accent_hi, 255);
+fn sector() -> u32 {
+    colour(crate::menu_style::get().overlay.lit, 140)
+}
+fn sector_hi() -> u32 {
+    colour(crate::menu_style::get().overlay.lit_edge, 255)
+}
 const TILE_BACK: u32 = colour(0x000000, 184);
 const INK: u32 = colour(0xF2F3F7, 255);
-const MUTED: u32 = colour(horizon_theme::BACKDROP_MUTED, 255);
+fn muted() -> u32 {
+    colour(crate::menu_style::get().overlay.backdrop_muted, 255)
+}
 /// The chips' backing when the player's Text Background Opacity is at its default (0 to 1).
 pub const CHIP_BACKING: f32 = 0.8;
 #[cfg(test)]
-const CHIP_FILL: u32 = colour(DARK, 204);
+fn chip_fill() -> u32 {
+    colour(dark(), 204)
+}
 const SLASH: u32 = colour(0xE05050, 255);
 const PIP_COLOUR: u32 = colour(0xFFFFFF, 102);
 const FLASH: u32 = colour(0xFFFFFF, 153);
 /// The hotbar under a small view's dial.
-const HOTBAR_VEIL: u32 = colour(DARK, 140);
+fn hotbar_veil() -> u32 {
+    colour(dark(), 140)
+}
 /// An icon that can't run, and every icon while the stick must be let go.
 const DIM: f32 = 0.3;
 const WAITING_DIM: f32 = 0.55;
@@ -253,20 +268,25 @@ const HOTBAR: [f32; 2] = [182.0, 22.0];
 
 // ---------------------------------------------------------------- motion
 
+/// The design system's curves as CSS `cubic-bezier` points (`horizon_theme::QUICK`, `MOVE`):
+/// quick for opening, flashes and closing, move for the sector and page turns.
+const QUICK: [f32; 4] = [0.4, 0.0, 0.2, 1.0];
+const MOVE: [f32; 4] = [0.23, 1.0, 0.32, 1.0];
+
 /// Opening: a fade and a scale from `OPEN_SCALE`.
-pub const OPEN: Tween = Tween::new(Duration::from_millis(90), horizon_theme::QUICK);
+pub const OPEN: Tween = Tween::new(Duration::from_millis(90), QUICK);
 pub const OPEN_SCALE: f32 = 0.94;
 /// The lit sector easing to a new slot, or sweeping open from `SWEEP_FROM` of its width.
-pub const SELECT: Tween = Tween::new(Duration::from_millis(80), horizon_theme::MOVE);
+pub const SELECT: Tween = Tween::new(Duration::from_millis(80), MOVE);
 pub const SWEEP_FROM: f32 = 0.5;
 /// A page turn: the tiles slide `TURN_SLIDE` in from the bumper's side, fading over
 /// `TURN_FADE_PX` of it, and the strip scrolls.
-pub const TURN: Tween = Tween::new(Duration::from_millis(160), horizon_theme::MOVE);
+pub const TURN: Tween = Tween::new(Duration::from_millis(160), MOVE);
 pub const TURN_SLIDE: f32 = 8.0;
 pub const TURN_FADE_PX: f32 = 12.0;
 /// A commit: the chosen tile flashes, then everything fades. A cancel only fades.
-pub const COMMIT_FLASH: Tween = Tween::new(Duration::from_millis(100), horizon_theme::QUICK);
-pub const CLOSE: Tween = Tween::new(Duration::from_millis(80), horizon_theme::QUICK);
+pub const COMMIT_FLASH: Tween = Tween::new(Duration::from_millis(100), QUICK);
+pub const CLOSE: Tween = Tween::new(Duration::from_millis(80), QUICK);
 
 /// What the dial showed: the page, the selection and whether the stick must be let go.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -654,7 +674,7 @@ pub fn draw_overlay(
     if !lay.roomy {
         let [hw, hh] = HOTBAR;
         let hx = ((lay.w - hw) / 2.0).floor();
-        batch.fill(atlas, hx, lay.h - hh, hw, hh, HOTBAR_VEIL);
+        batch.fill(atlas, hx, lay.h - hh, hw, hh, hotbar_veil());
     }
     draw_ring(batch, atlas, &lay, dial, look, clock);
     let tiles = batch.vertices.len();
@@ -689,9 +709,9 @@ fn draw_ring(
         centre,
         reach,
         &[
-            Stop(0.0, colour(DARK, VIGNETTE[0])),
-            Stop(VIGNETTE_MID, colour(DARK, VIGNETTE[1])),
-            Stop(1.0, colour(DARK, 0)),
+            Stop(0.0, colour(dark(), VIGNETTE[0])),
+            Stop(VIGNETTE_MID, colour(dark(), VIGNETTE[1])),
+            Stop(1.0, colour(dark(), 0)),
         ],
     );
     let [r0, r1] = lay.track();
@@ -705,18 +725,18 @@ fn draw_ring(
             centre,
             [r0, r1],
             [angle - half, angle + half],
-            SECTOR,
+            sector(),
         );
-        batch.fill_disc(atlas, centre, lay.hub, HUB_FILL);
+        batch.fill_disc(atlas, centre, lay.hub, hub_fill());
         batch.fill_arc(
             atlas,
             centre,
             [lay.hub - SECTOR_EDGE, lay.hub],
             [angle - half, angle + half],
-            SECTOR_HI,
+            sector_hi(),
         );
     } else {
-        batch.fill_disc(atlas, centre, lay.hub, HUB_FILL);
+        batch.fill_disc(atlas, centre, lay.hub, hub_fill());
     }
     batch.fill_arc(atlas, centre, [lay.hub, lay.hub + 1.0], [0.0, TAU], HUB_RIM);
 }
@@ -790,7 +810,7 @@ fn draw_tiles(
                     MISSING_MARK,
                     mx,
                     my,
-                    shapes::faded(MUTED, waiting),
+                    shapes::faded(muted(), waiting),
                     true,
                 );
             }
@@ -849,7 +869,7 @@ fn draw_chip(
     lit: bool,
     backing: u8,
 ) {
-    batch.fill(atlas, x, y, w, h, colour(DARK, backing));
+    batch.fill(atlas, x, y, w, h, colour(dark(), backing));
     let tw = atlas.font.width(text).ceil();
     let tx = (x + (w - tw) / 2.0).floor();
     batch.text(
@@ -857,7 +877,7 @@ fn draw_chip(
         text,
         tx,
         y + 1.0,
-        if lit { INK } else { MUTED },
+        if lit { INK } else { muted() },
         true,
     );
 }
@@ -919,12 +939,12 @@ fn hub_lines(
         return (Vec::new(), None);
     };
     match page.slot(slot) {
-        Slot::Empty => (vec![(lang::get(EMPTY), MUTED)], None),
+        Slot::Empty => (vec![(lang::get(EMPTY), muted())], None),
         Slot::Missing(id) => (
             vec![
                 (lang::get(MISSING), INK),
-                (lang::get(WHY_MISSING), MUTED),
-                (id.clone(), MUTED),
+                (lang::get(WHY_MISSING), muted()),
+                (id.clone(), muted()),
             ],
             None,
         ),
@@ -933,15 +953,15 @@ fn hub_lines(
             let more = |text: String, lines: &mut Vec<(String, u32)>| {
                 // A reason or a state that is too wide for one line takes two.
                 for line in fit::wrap(&text, width, |l| atlas.font.width(l)) {
-                    lines.push((line, MUTED));
+                    lines.push((line, muted()));
                 }
             };
             let live = dial.available[slot];
             if let Some(why) = dial.why[slot].filter(|_| !live) {
                 more(lang::get(why), &mut lines);
             } else if let Some((now, next)) = toggle_state(*action, dial.toggles) {
-                lines.push((lang::get(now), MUTED));
-                lines.push((lang::tr(NEXT, &[&lang::get(next)]), MUTED));
+                lines.push((lang::get(now), muted()));
+                lines.push((lang::tr(NEXT, &[&lang::get(next)]), muted()));
             }
             (lines, Some((icon(*action), if live { 1.0 } else { DIM })))
         }
@@ -1005,13 +1025,13 @@ fn draw_header(
         if keys[0].is_some() {
             let room = before - GLYPH_GAP - left;
             let name = fit::ellipsize(atlas, &names[(page + n - 1) % n], room);
-            batch.text(atlas, &name, left, text_y, MUTED, true);
+            batch.text(atlas, &name, left, text_y, muted(), true);
         }
         if keys[1].is_some() {
             let start = after + atlas.font.width("›") + GLYPH_GAP;
             let name = fit::ellipsize(atlas, &names[(page + 1) % n], right - start);
             let nw = atlas.font.width(&name).ceil();
-            batch.text(atlas, &name, right - nw, text_y, MUTED, true);
+            batch.text(atlas, &name, right - nw, text_y, muted(), true);
         }
     }
 }
@@ -1019,7 +1039,7 @@ fn draw_header(
 /// B's Cancel on a plate at the lower right, when the view is roomy.
 fn draw_hint(batch: &mut HudBatch, atlas: &HudAtlas, lay: &Layout, dial: &Dial, page: &Page) {
     let row = HintRow::new([dial.cancel], lang::get("gui.cancel"));
-    let w = (HINT_PAD + row.measure(atlas, &HINT_LOOK) + HINT_PAD).ceil();
+    let w = (HINT_PAD + row.measure(atlas, &hint_look()) + HINT_PAD).ceil();
     let chips: Vec<[f32; 4]> = chips(atlas, lay, dial, page)
         .into_iter()
         .map(|c| c.2)
@@ -1029,15 +1049,17 @@ fn draw_hint(batch: &mut HudBatch, atlas: &HudAtlas, lay: &Layout, dial: &Dial, 
     };
     plate::draw(batch, atlas, Plate::Notice, [x, y, w, h]);
     let ty = y + ((h - LINE_H + 1.0) / 2.0).floor();
-    hint::draw_hint(batch, atlas, &row, &HINT_LOOK, x + HINT_PAD, ty);
+    hint::draw_hint(batch, atlas, &row, &hint_look(), x + HINT_PAD, ty);
 }
 
 /// The Cancel hint's row: a muted caption with its shadow, as the hub's second lines.
-const HINT_LOOK: hint::Look = hint::Look {
-    color: MUTED,
-    shadow: true,
-    ..hint::NOTICE
-};
+fn hint_look() -> hint::Look {
+    hint::Look {
+        color: muted(),
+        shadow: true,
+        ..hint::NOTICE
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1046,6 +1068,13 @@ mod tests {
     use crate::hud_kit::icon::NoItems;
     use crate::hud_kit::room::Keep;
     use crate::pad_glyph::Glyphs;
+
+    /// The dial eases on the design system's curves: its literal copies match them.
+    #[test]
+    fn the_dial_eases_on_the_design_systems_curves() {
+        assert_eq!(QUICK, horizon_theme::QUICK.curve);
+        assert_eq!(MOVE, horizon_theme::MOVE.curve);
+    }
 
     /// A 1280x720 window (and 854x480, and a quarter of a 1708x960 one), GUI scale 4 on
     /// 1280x720, a small view and a wide splitscreen half.
@@ -1254,7 +1283,7 @@ mod tests {
             let batch = draw(size, &dial(&pages, &room, seen, ALL), &shown(seen));
             // The dark fills (the vignette's rim) may run past the view's edge, where nothing draws;
             // the tiles, the text, the header and the hint may not.
-            let dark = |c: u32| c & 0x00FF_FFFF == colour(DARK, 0);
+            let dark = |c: u32| c & 0x00FF_FFFF == colour(dark(), 0);
             for v in batch.vertices.iter().filter(|v| !dark(v.color)) {
                 let [x, y] = v.pos;
                 assert!(
@@ -1303,7 +1332,10 @@ mod tests {
         assert!(colours_in(&dimmed, rect).contains(&SLASH));
         // The hub's second line is the reason, in the muted colour.
         let (lines, _) = hub_lines(&atlas(), 60.0, &blocked, page);
-        assert_eq!(lines[1], (lang::get("horizon.radial.why.cosmetics"), MUTED));
+        assert_eq!(
+            lines[1],
+            (lang::get("horizon.radial.why.cosmetics"), muted())
+        );
     }
 
     #[test]
@@ -1435,9 +1467,9 @@ mod tests {
         // Its mark, not the slash of an action that can't run, and no chip under it.
         let colours = colours_in(&batch, rect);
         assert!(!colours.contains(&SLASH), "a slash on a missing slot");
-        assert!(colours.contains(&MUTED), "no mark in the missing slot");
+        assert!(colours.contains(&muted()), "no mark in the missing slot");
         assert!(
-            !batch.vertices.iter().any(|v| v.color == CHIP_FILL),
+            !batch.vertices.iter().any(|v| v.color == chip_fill()),
             "a chip under it"
         );
     }
