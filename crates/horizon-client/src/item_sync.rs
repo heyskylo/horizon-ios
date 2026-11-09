@@ -213,15 +213,19 @@ pub fn consumable_animation(stack: &ItemStack) -> Option<horizon_world::consumab
     else {
         return None;
     };
+    // ItemUseAnimation.CODEC's names.
     Some(match &*animation.to_string_lossy() {
+        "none" => UseAnimation::None,
         "drink" => UseAnimation::Drink,
         "block" => UseAnimation::Block,
         "bow" => UseAnimation::Bow,
-        "spear" => UseAnimation::Spear,
+        "trident" => UseAnimation::Trident,
+        "crossbow" => UseAnimation::Crossbow,
+        "spyglass" => UseAnimation::Spyglass,
         "toot_horn" => UseAnimation::TootHorn,
         "brush" => UseAnimation::Brush,
         "bundle" => UseAnimation::Bundle,
-        "none" => UseAnimation::None,
+        "spear" => UseAnimation::Spear,
         _ => UseAnimation::Eat,
     })
 }
@@ -236,7 +240,8 @@ pub fn consumable_sound(stack: &ItemStack) -> Option<String> {
         .and_then(|c| c.get("sound"))?;
     match sound {
         Tag::String(id) => Some(id.to_string_lossy()),
-        Tag::Compound(_) => match sound.get("id") {
+        // SoundEvent.DIRECT_CODEC: `{sound_id, range}`.
+        Tag::Compound(_) => match sound.get("sound_id") {
             Some(Tag::String(id)) => Some(id.to_string_lossy()),
             _ => None,
         },
@@ -251,6 +256,28 @@ pub fn consumable_particles(stack: &ItemStack) -> Option<bool> {
     }
     data.and_then(|d| d.other("minecraft:consumable"))
         .map(|c| horizon_world::datafix::dynamic::as_bool(c.get("has_consume_particles"), true))
+}
+/// The `consumable` component a use reads: the stack's own when it has one
+/// (its time, animation, sound and particles, with `Consumable.CODEC`'s
+/// defaults for what it leaves out), else the item's. The item's effects stay:
+/// a stack's `on_consume_effects` are not read.
+pub fn stack_consumable<'a, E: Clone>(
+    stack: &ItemStack,
+    item: &'a horizon_world::consumable::Consumable<String, E>,
+) -> std::borrow::Cow<'a, horizon_world::consumable::Consumable<String, E>> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some())
+        || !data.is_some_and(|d| d.other("minecraft:consumable").is_some())
+    {
+        return std::borrow::Cow::Borrowed(item);
+    }
+    let mut c = item.clone();
+    c.seconds = consumable_seconds(stack).unwrap_or(1.6);
+    c.animation =
+        consumable_animation(stack).unwrap_or(horizon_world::consumable::UseAnimation::Eat);
+    c.sound = consumable_sound(stack).unwrap_or_else(|| "minecraft:entity.generic.eat".into());
+    c.particles = consumable_particles(stack).unwrap_or(true);
+    std::borrow::Cow::Owned(c)
 }
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
@@ -1068,8 +1095,6 @@ mod tests {
     use super::*;
     use horizon_protocol::registry::Ids;
 
-    /// A chestplate a server made a glider: its patch adds `glider` and an
-    /// `equippable` for the chest, or takes `glider` away again.
     #[test]
     fn food_can_always_eat_comes_from_the_stack() {
         let mut stack = ItemStack::new("minecraft:apple", 1);
@@ -1221,6 +1246,39 @@ mod tests {
         assert_eq!(consumable_particles(&stack), None);
     }
 
+    /// A stack's own `consumable` replaces the item's: what it leaves out
+    /// takes the codec's defaults, not the item's values.
+    #[test]
+    fn a_stacks_consumable_takes_the_codecs_defaults() {
+        use horizon_world::consumable::{Consumable, UseAnimation};
+        let honey: Consumable<String> = Consumable {
+            seconds: 2.0,
+            animation: UseAnimation::Drink,
+            sound: "minecraft:item.honey_bottle.drink".into(),
+            particles: false,
+            effects: vec![],
+        };
+        let mut stack = ItemStack::new("minecraft:honey_bottle", 1);
+        assert_eq!(*stack_consumable(&stack, &honey), honey);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "sound",
+                Tag::compound([(
+                    "sound_id",
+                    Tag::String("minecraft:entity.generic.drink".into()),
+                )]),
+            )])),
+        );
+        let c = stack_consumable(&stack, &honey);
+        assert_eq!(c.seconds, 1.6);
+        assert_eq!(c.animation, UseAnimation::Eat);
+        assert_eq!(c.sound, "minecraft:entity.generic.drink");
+        assert!(c.particles);
+    }
+
+    /// A chestplate a server made a glider: its patch adds `glider` and an
+    /// `equippable` for the chest, or takes `glider` away again.
     #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
