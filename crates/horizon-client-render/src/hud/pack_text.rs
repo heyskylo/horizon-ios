@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use horizon_shaders::{CoreProgram, Glue};
+use crate::core_shader::{CoreProgram, Glue};
 
 use super::{HudBatch, HudVertex};
 use crate::gfx::hud_coverage::Pipeline;
@@ -64,7 +64,7 @@ pub(super) fn load_core(
         let path = format!("assets/{namespace}/{path}");
         read(root, &path).or_else(|| read(defaults, &path))
     };
-    match horizon_shaders::translate_core(&vertex, &fragment, defines, &include, glue) {
+    match crate::core_shader::translate_core(&vertex, &fragment, defines, &include, glue) {
         Ok(program) => {
             log::info!("the resource pack's {name} shader is used");
             Some(Arc::new(program))
@@ -132,7 +132,7 @@ impl PackText {
                 count: None,
             })
             .collect();
-        for (_, binding) in horizon_shaders::SAMPLERS {
+        for (_, binding) in crate::core_shader::SAMPLERS {
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility,
@@ -175,7 +175,7 @@ impl PackText {
                 }),
             })
             .collect();
-        for (_, binding) in horizon_shaders::SAMPLERS {
+        for (_, binding) in crate::core_shader::SAMPLERS {
             resources.push(wgpu::BindGroupEntry {
                 binding,
                 resource: wgpu::BindingResource::TextureView(atlas),
