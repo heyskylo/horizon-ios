@@ -1047,6 +1047,22 @@ impl Game<'_> {
         self.lan_explode(center, small, radius, block_count, pushed);
         Ok(())
     }
+    /// `InfestedBlock.spawnAfterBreak` without a tool that prevents it: while
+    /// blocks drop, its silverfish (`spawnInfestation`) comes out at the
+    /// bottom centre of the block, with its spawn animation.
+    pub(super) fn spawn_infestation(&mut self, pos: [i32; 3]) {
+        if !self.ui.rules.bool("block_drops") {
+            return;
+        }
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]),
+            f64::from(pos[2]) + 0.5,
+        ];
+        if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false) {
+            self.mob_poof(id);
+        }
+    }
     /// `BlockBehaviour.onExplosionHit` (TNT: `wasExploded` primes a short fuse).
     fn explosion_hit_block(
         &mut self,
@@ -1090,6 +1106,10 @@ impl Game<'_> {
             self.pending.record(pos, &entity, &name, custom);
         } else if let Some(tag) = super::spill::saved_entity(&self.world, pos) {
             self.pending.record_saved(pos, &tag);
+        }
+        // Block.onExplosionHit runs spawnAfterBreak before the drops.
+        if !is_tnt && name.starts_with("minecraft:infested_") {
+            self.spawn_infestation(pos);
         }
         if !is_tnt {
             let dynamic = self.pending.dynamic(pos);

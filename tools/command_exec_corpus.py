@@ -6602,6 +6602,35 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def explosion_infested_blocks():
+    """#11330: `Block.onExplosionHit` calls `spawnAfterBreak` before the drops, so a blast lets an
+    infested block's silverfish out (`InfestedBlock.spawnInfestation`) while `block_drops` is on. The
+    difficulty is not peaceful, where the silverfish would despawn on their first tick. The blast without
+    drops goes first: the explosion's rays draw from the level's random, and a mob's spawn draws differ."""
+    x0, y0, z0 = 3968, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/difficulty normal', False)]
+    for drops in ('false', 'true'):
+        ops += [cmd(f'/gamerule block_drops {drops}', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                # Four blocks right under the TNT, which every ray breaks: how many edge blocks resist
+                # depends on each ray's random intensity.
+                cmd(f'/fill {x0 + 7} {y0} {z0 + 7} {x0 + 8} {y0} {z0 + 7} infested_stone', expect_result=2),
+                cmd(f'/fill {x0 + 7} {y0} {z0 + 8} {x0 + 8} {y0} {z0 + 8} infested_cobblestone', expect_result=2),
+                cmd(f'/summon tnt {x0 + 8} {y0 + 1} {z0 + 8} {{fuse:0}}', expect_result=1),
+                cmd(f'/execute if entity @e[type=tnt,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                {'op': 'tick', 'n': 1},
+                cmd(f'/execute if entity @e[type=tnt,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/execute if entity @e[type=silverfish,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/execute if block {x0 + 7} {y0} {z0 + 7} infested_stone'),
+                {'op': 'tick', 'n': 3},
+                cmd(f'/execute if entity @e[type=silverfish,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/kill @e[type=!player,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]', False)]
+    return ops + setup('/gamerule block_drops true',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def jigsaw_default_joint():
     """#13654: `JigsawBlockEntity.loadAdditional` reads `joint`, else `StructureTemplate.getDefaultJointType`:
     `aligned` when the block's front faces sideways, `rollable` when it faces up or down."""
@@ -7274,6 +7303,7 @@ def groups():
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('explosion infested blocks', explosion_infested_blocks()),
         ('jigsaw default joint', jigsaw_default_joint()),
         ('command block auto load', command_block_auto_load()),
         ('item block escape', item_block_escape()),
