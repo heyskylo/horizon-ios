@@ -109,7 +109,10 @@ mod tests {
         for host in ["localhost", "example.org:25566", "abcdefgh", "[::1]:25568"] {
             assert!(!is_invite(host, true), "{host}");
         }
-        assert_eq!(shown_address(&format!("{FRIEND}{invite}")), "Friend's world");
+        assert_eq!(
+            shown_address(&format!("{FRIEND}{invite}")),
+            "Friend's world"
+        );
         assert_eq!(
             shown_address(&format!("{FRIEND}{short}")),
             "Friend's world (K7QM-****)"
