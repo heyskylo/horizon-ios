@@ -6721,6 +6721,27 @@ def zombie_villager_summoned_data():
                        f'/forceload remove {x0} {z0}')
 
 
+def projectile_fall_distance():
+    """#13702: `Entity.load` reads `fall_distance` for every entity and `saveWithoutId` writes it; a projectile
+    moves by `setPos`, never through `Entity.move`, so in the air it keeps what it was given."""
+    x0, y0, z0 = 4096 - 96, 280, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    kinds = [('fireball', ''), ('wither_skull', ''), ('small_fireball', ''), ('snowball', ''),
+             ('fireball', ',fall_distance:2.5f')]
+    for n, (kind, extra) in enumerate(kinds, 1):
+        fields = extra.lstrip(',') if extra else 'fall_distance:1.0d'
+        uuid = f'000035f0-0000-0000-0000-{n:04x}00000001'
+        ops += [cmd(f'/summon {kind} {x0 + 2 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;13808,0,{n},1],{fields},'
+                    f'Motion:[0.0d,0.0d,0.0d],acceleration_power:0.0d}}', expect_result=1),
+                cmd(f'/data get entity {uuid} fall_distance')]
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+    for n in range(1, len(kinds) + 1):
+        ops.append(cmd(f'/data get entity 000035f0-0000-0000-0000-{n:04x}00000001 fall_distance'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7299,6 +7320,7 @@ def groups():
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('projectile fall distance', projectile_fall_distance()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),

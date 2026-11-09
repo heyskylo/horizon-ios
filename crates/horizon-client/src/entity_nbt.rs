@@ -22,6 +22,8 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{collections::HashMap, sync::Arc};
+mod projectile_fields;
+use projectile_fields::{load_projectile_entity_fields, put_projectile_entity_fields};
 mod saved_attributes;
 
 /// Saved data carried by `ConversionType.convertCommon` outside the modelled
@@ -3289,7 +3291,7 @@ pub fn fireball_to_nbt(
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
         on_ground: p.on_ground,
-        fall_distance: 0.0,
+        fall_distance: p.fall_distance,
     };
     let mut tag = base.tag(raw);
     put(
@@ -3314,27 +3316,6 @@ pub fn fireball_to_nbt(
         put(&mut tag, "Item", item_to_nbt(item));
     }
     Some(tag)
-}
-
-/// `Entity.load`: fire is read as a short, air as an int and the visual
-/// fire flag as a byte-valued boolean. Portal state lives on the level.
-fn load_projectile_entity_fields(p: &mut Projectile, tag: &Tag) {
-    p.fire_ticks = i32::from(tag.get("Fire").and_then(int_value).unwrap_or(0) as i16);
-    p.air_supply = tag.get("Air").and_then(int_value).unwrap_or(p.air_supply);
-    p.has_visual_fire = flag(tag, "HasVisualFire");
-}
-
-/// `Entity.saveWithoutId`: save the current fire and air as shorts, and
-/// only write the optional visual fire flag when it is true.
-fn put_projectile_entity_fields(tag: &mut Tag, p: &Projectile) {
-    put(tag, "Fire", Tag::Short(p.fire_ticks as i16));
-    put(tag, "Air", Tag::Short(p.air_supply as i16));
-    if let Tag::Compound(map) = tag {
-        map.remove(&"HasVisualFire".into());
-    }
-    if p.has_visual_fire {
-        put(tag, "HasVisualFire", Tag::Byte(1));
-    }
 }
 
 /// `Projectile.addAdditionalSaveData`: Owner, LeftOwner only when set, and
@@ -3440,7 +3421,7 @@ pub fn throwable_to_nbt(
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
         on_ground: p.on_ground,
-        fall_distance: 0.0,
+        fall_distance: p.fall_distance,
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
@@ -3626,6 +3607,7 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
         load_projectile_entity_fields(&mut p, tag);
     }
     p.on_ground = flag(tag, "OnGround");
+    p.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
         p.set_item(item);
