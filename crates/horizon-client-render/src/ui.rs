@@ -810,8 +810,14 @@ fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &
     slider_sprites_ext(hover, active, false, false, dragging)
 }
 
-/// Track and handle sprites: the track outline shows while dragged or focused with
-/// keyboard navigation (!can_change_value), hovering or editing highlights the handle.
+/// `AbstractSliderButton.getSprite` and `getHandleSprite`: the track outline
+/// lights while the slider is focused and its value cannot change
+/// (`isActive() && isFocused() && !canChangeValue`), the handle while it is
+/// hovered or its value can change (`isActive() && (isHovered || canChangeValue)`).
+/// `canChangeValue` is set when the slider is focused with the mouse or Tab and
+/// flipped by Enter (`setFocused`, `keyPressed`): Horizon's `can_change_value`
+/// for the keyboard, and a drag for the mouse, which focuses it with the value
+/// free to change. So a dragged slider keeps its plain track.
 fn slider_sprites_ext(
     hover: bool,
     active: bool,
@@ -819,12 +825,13 @@ fn slider_sprites_ext(
     can_change_value: bool,
     dragging: bool,
 ) -> (&'static str, &'static str) {
-    let track = if dragging || (active && focused && !can_change_value) {
+    let can_change_value = can_change_value || dragging;
+    let track = if active && focused && !can_change_value {
         "gui/sprites/widget/slider_highlighted"
     } else {
         "gui/sprites/widget/slider"
     };
-    let handle = if active && (hover || can_change_value || dragging) {
+    let handle = if active && (hover || can_change_value) {
         "gui/sprites/widget/slider_handle_highlighted"
     } else {
         "gui/sprites/widget/slider_handle"
@@ -2175,15 +2182,36 @@ mod tests {
         }
     }
 
+    /// `AbstractSliderButton.getSprite`/`getHandleSprite`: a focused slider
+    /// whose value can't change lights its track, a hovered one or one whose
+    /// value can change (Tab or Enter, or the mouse's drag) lights its handle.
     #[test]
-    fn slider_track_is_outlined_only_while_dragged() {
+    fn slider_sprites_follow_focus_and_the_drag() {
+        // Hovered, at rest: plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, false);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Dragged: still a plain track, lit handle.
         let (track, handle) = slider_sprites(true, true, true);
-        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Focused with the arrow keys: the value can't change, the track lights.
+        let (track, handle) = slider_sprites_ext(false, true, true, false, false);
+        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // Focused with Tab, or Enter pressed on it: the value can change, the handle lights.
+        let (track, handle) = slider_sprites_ext(false, true, true, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        // Focused while the mouse drags: the track stays plain.
+        let (track, _) = slider_sprites_ext(true, true, true, false, true);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        // Not hovered, not dragged: nothing is lit.
         let (track, handle) = slider_sprites(false, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
+        // An inactive slider highlights neither, even when focused.
+        let (track, handle) = slider_sprites_ext(true, false, true, true, true);
         assert_eq!(track, "gui/sprites/widget/slider");
         assert_eq!(handle, "gui/sprites/widget/slider_handle");
     }
