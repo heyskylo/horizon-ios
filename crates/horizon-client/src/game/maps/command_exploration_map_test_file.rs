@@ -20,8 +20,12 @@ mod command_exploration_map_tests {
         );
         game.build_registries();
         game.set_allow_commands(true);
-        game.world_root = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
-            .join("command-exploration-map-world");
+        // A world of its own under the temporary folder, removed at the end.
+        game.world_root = std::env::temp_dir().join(format!(
+            "horizon-command-exploration-map-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&game.world_root);
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let terrain = horizon_client::vanillagen::VanillaTerrain::new(
             &root.join("worldgen"),
@@ -278,5 +282,6 @@ mod added_preservation_tests {
         assert!(game.maps.data.is_empty());
         assert!(game.maps.last_id.is_none());
         assert_eq!(game.world.game_time, 0);
+        let _ = std::fs::remove_dir_all(&game.world_root);
     }
 }
