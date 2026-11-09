@@ -2737,6 +2737,12 @@ server's command tree ask. Without such a mod every answer is the operator level
   `native_permission_check`, and when no mod answers, whether the player's operator level is `default_level` or above.
   The level is the server's for a player who is on or joining, the acting player's inside their hook; anyone else, and
   every player on a client, counts as level 0. Bundles need `"hooks": @API:permission_check@`.
+- Helper **`native_player_permission_value(player, node)`** (`host.player_permission_value`): the node as the
+  permissions mods set it, three-valued as Bukkit's `isPermissionSet` against `hasPermission`: Some(true), Some(false)
+  (a mod set it to false, which is not the same as unset), or None when no mod answers `native_permission_check` (asked
+  with a `default_level` of 0, no operator fallback). A mod applies its own default and parent-node inheritance on None.
+  The operator level is `native_player_permission(player)`. Works for players on the server or not. Server-side.
+  Bundles need `"hooks": @API:permission_value@`.
 - **`native_player_commands_sent_v2(player, name, names, names_hidden)`**: an additive version of
   `native_player_commands_sent`, heard right after v1 at the same times (join, a change of level, a resend) with
   `names` as v1 left it. `names_hidden` lists the root commands an operator of level 4 would get that this player's
