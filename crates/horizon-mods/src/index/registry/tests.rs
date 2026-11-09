@@ -344,7 +344,9 @@ fn a_version_taken_down_by_hash_may_leave_its_entry() {
     let r = review_with_revoked(one, next, &[down("coords_hud", &old.sha256)], "ludovic111");
     assert!(r.errors.is_empty(), "{r:?}");
     assert!(
-        r.notes.iter().any(|n| n == "coords_hud 0.1.0: leaves the entry, taken down in revoked.toml"),
+        r.notes
+            .iter()
+            .any(|n| n == "coords_hud 0.1.0: leaves the entry, taken down in revoked.toml"),
         "{r:?}"
     );
     // Not taken down, another project's take-down, or a take-down of every version
@@ -352,11 +354,16 @@ fn a_version_taken_down_by_hash_may_leave_its_entry() {
     for revoked in [
         vec![],
         vec![down("other_mod", &old.sha256)],
-        vec![Revoked { sha256: None, ..down("coords_hud", "") }],
+        vec![Revoked {
+            sha256: None,
+            ..down("coords_hud", "")
+        }],
     ] {
         let r = review_with_revoked(one, next, &revoked, "ludovic111");
         assert!(
-            r.errors.iter().any(|e| e.contains("coords_hud 0.1.0: removed")),
+            r.errors
+                .iter()
+                .any(|e| e.contains("coords_hud 0.1.0: removed")),
             "{revoked:?}: {r:?}"
         );
     }
