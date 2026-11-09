@@ -167,6 +167,7 @@ impl Game<'_> {
                 || self.settings.extras.pvp.tweaks.clear_lava,
             full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
+            environment: self.pack.polytone_colors.env,
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
         if !self.settings.horizon.fog {
@@ -263,7 +264,7 @@ impl Game<'_> {
         let horizon = if self.level_flat() {
             f64::from(self.level_min_y())
         } else {
-            63.0
+            f64::from(self.pack.polytone_colors.env.horizon_height)
         };
         self.dim == Dim::Overworld
             && camera.y < horizon

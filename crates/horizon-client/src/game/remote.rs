@@ -81,7 +81,7 @@ pub(super) fn builtin_registries(root: &std::path::Path) -> Option<Arc<Builtin>>
 /// `ChatType`'s two decorations: how a message shows in the chat, and what
 /// the narrator says of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Decoration {
+pub(super) enum Decoration {
     Chat,
     Narration,
 }
@@ -5371,15 +5371,13 @@ impl Game<'_> {
                     p.unsigned_content.as_ref(),
                     &line,
                 );
-                // ChatListener.showMessageToPlayer: `Minecraft.isBlocked` hides the
-                // message of a player hidden in the Social Interactions screen; it
-                // counts as processed, not shown.
-                if self.social_hides(p.sender) {
+                // A hidden or fully filtered message counts as processed, not shown.
+                let Some((line, narration)) = self.shown_player_chat(&p, line, narration) else {
                     if let Some(signature) = &signature {
                         self.mark_message_processed(signature, false);
                     }
                     return Ok(());
-                }
+                };
                 self.handle_player_chat(QueuedChat {
                     line,
                     signature,
@@ -6226,7 +6224,7 @@ impl Game<'_> {
     /// ChatType.Bound.decorate (`Decoration::Chat`) and `decorateNarration`
     /// (`Decoration::Narration`): the chat type's decoration from the
     /// server's registry, applied to `content`.
-    fn decorate_chat(
+    pub(super) fn decorate_chat(
         &self,
         bound: &play::ChatTypeBound,
         content: &serde_json::Value,
@@ -6256,11 +6254,12 @@ impl Game<'_> {
         };
         let at = Vec3::new(p[0], p[1], p[2]);
         // ItemEntity's constructor draws bobOffs from the item's own random.
-        let bob_offset = horizon_client::mobs::entity_random(id as u32, at).next_float()
-            * std::f32::consts::PI
-            * 2.0;
-        self.dropped
-            .push(ItemEntity::new(id as u32, stack, at, velocity, bob_offset));
+        let mut random = horizon_client::mobs::entity_random(id as u32, at);
+        let bob_offset = random.next_float() * std::f32::consts::PI * 2.0;
+        self.dropped.push(ItemEntity {
+            random,
+            ..ItemEntity::new(id as u32, stack, at, velocity, bob_offset)
+        });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
     /// entities whose own tick moves them on a client: dropped items, experience
