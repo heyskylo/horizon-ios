@@ -139,6 +139,16 @@ pub(super) fn mark_fresh(tag: &mut Tag) {
 /// it doesn't join the level again. Taken off like [`FRESH_ADD`].
 const SAME_LEVEL_MOVE: &str = "horizon:same_level_move";
 
+/// `PrimedTnt.readAdditionalSaveData`: `getShortOr("fuse", 80)` accepts any
+/// numeric tag; floating values floor to int before the short narrowing.
+pub(super) fn tnt_fuse(tag: &Tag) -> i32 {
+    i32::from(match tag.get("fuse") {
+        Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+        Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+        other => horizon_client::save::number(other).unwrap_or(80) as i16,
+    })
+}
+
 /// Whether `tag` was queued as a move within its level; the mark comes off.
 fn take_moved(tag: &mut Tag) -> bool {
     match tag {
@@ -853,11 +863,7 @@ impl Game<'_> {
             let id = self.next_entity;
             // getShortOr uses NumericTag.shortValue: floor floating values
             // to int before short narrowing; integer tags narrow directly.
-            let fuse = i32::from(match tag.get("fuse") {
-                Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
-                Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
-                other => horizon_client::save::number(other).unwrap_or(80) as i16,
-            });
+            let fuse = tnt_fuse(&tag);
             self.tnts.push(super::tnt::PrimedTnt {
                 rotation: [0.0, 0.0],
                 join: Default::default(),

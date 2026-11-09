@@ -570,11 +570,7 @@ impl Game<'_> {
                 tnt.previous = position;
                 tnt.velocity = entity_nbt::motion(&tag);
                 tnt.rotation = entity_nbt::rotation(&tag);
-                // Keep the existing loaded-fuse conversion policy (H090 is separate).
-                tnt.fuse = match tag.get("fuse") {
-                    Some(Tag::Short(fuse)) => i32::from(*fuse),
-                    _ => 80,
-                };
+                tnt.fuse = super::super::persist::tnt_fuse(&tag);
                 tnt.on_ground = entity_nbt::flag(&tag, "OnGround");
                 tnt.fall_distance =
                     horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0);
