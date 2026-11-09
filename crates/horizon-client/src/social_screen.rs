@@ -616,4 +616,15 @@ mod tests {
         assert_eq!(delay.shown(Some(tip), at(1505)), None);
         assert_eq!(delay.shown(Some(tip), at(1506)), Some(tip));
     }
+
+    /// `AbstractSelectionList.scrollBarX`: the bar's column is the rows' right
+    /// edge (220 wide, centred) plus `scrollbarWidth` (6) and 2. It shows only
+    /// when the content overflows the list's height.
+    #[test]
+    fn the_list_scrollbar_sits_right_of_the_rows() {
+        assert_eq!(scrollbar_x(427.0), 331.0);
+        assert_eq!(scrollbar_x(854.0), 545.0);
+        assert!(max_scroll(240.0, 10) > 0.0);
+        assert_eq!(max_scroll(1000.0, 2), 0.0);
+    }
 }
