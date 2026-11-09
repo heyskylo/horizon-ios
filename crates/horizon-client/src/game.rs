@@ -1496,7 +1496,7 @@ impl LevelAccess for GameLevel<'_> {
                 signal
             };
         }
-        if let Some(signal) = books::lectern_signal(self.world, pos) {
+        if let Some(signal) = books::lectern_signal(self.world, self.registry, state, pos) {
             return signal;
         }
         if let Some(signal) =

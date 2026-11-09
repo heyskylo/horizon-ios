@@ -5,19 +5,21 @@
 //! with a redstone pulse, the comparator output and taking the book).
 use super::{Game, lan::LanHost, screen_info};
 use horizon_client::{
+    block_entity_item,
     containers::{BlockEntity, Lectern},
     first_person::Hand,
     hud::{HudBatch, rgba},
     item_data::{StackData, WrittenBook},
     items::ItemStack,
     menu::{Kind, Menu},
+    mobs::Who,
     text::Text,
     ui,
     widgets::{self, Narratable, ScreenInfo},
 };
 use horizon_core::position::BlockPos;
 use horizon_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
-use horizon_world::level::flags as level_flags;
+use horizon_world::{level::flags as level_flags, registry::BlockStateId};
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -823,6 +825,33 @@ impl Game<'_> {
             });
         }
     }
+    /// `LecternBlock.resetBookState`: `POWERED` off and `HAS_BOOK` in one
+    /// `setBlockAndUpdate`, the `block_change` game event, then `updateBelow`.
+    fn reset_lectern_book_state(&mut self, key: (i32, i32, i32), has_book: bool, who: Option<Who>) {
+        let state = self.world.block(key.0, key.1, key.2);
+        let registry = self.pack.assets.registry;
+        let Some(mut s) = registry.state(state).cloned() else {
+            return;
+        };
+        for (name, value) in [("powered", false), ("has_book", has_book)] {
+            if !s.properties.contains_key(name) {
+                return;
+            }
+            s.properties.insert(name.into(), value.to_string());
+        }
+        let Some(new) = registry.id(&s) else { return };
+        let p = BlockPos::new(key.0, key.1, key.2);
+        self.with_level(|b, level, ticks| {
+            b.set_block(level, ticks, p, new, level_flags::UPDATE_ALL)
+        });
+        self.post_block_game_event(
+            "minecraft:block_change",
+            [key.0, key.1, key.2],
+            who,
+            Some(new),
+        );
+        self.with_level(|b, level, ticks| b.lectern_update_below(level, ticks, p, new));
+    }
     /// The 2-tick pulses of turned lecterns.
     pub(super) fn tick_lecterns(&mut self) {
         self.follow_lectern();
@@ -836,6 +865,16 @@ impl Game<'_> {
         self.lectern_pulses.retain(|(_, left)| *left > 0);
         for key in done {
             self.set_lectern_powered(key, false);
+        }
+    }
+    /// `LecternBlock.getStateForPlacement`: a lectern placed from an item
+    /// whose `block_entity_data` holds a `Book`, by a placer who may use
+    /// game-master blocks, has `has_book` on. The block entity already took
+    /// the book from the stack (`BlockItem.updateCustomBlockEntityTag`), so
+    /// the model draws it and the comparator reads it.
+    pub(super) fn lectern_placed(&mut self, pos: [i32; 3], stack: &ItemStack, game_master: bool) {
+        if game_master && block_entity_item::carries_book(stack) {
+            self.set_lectern_property((pos[0], pos[1], pos[2]), "has_book", true);
         }
     }
     /// `LecternBlock.useItemOn`: a book goes onto an empty lectern.
@@ -873,7 +912,9 @@ impl Game<'_> {
                 page: 0,
             }),
         );
-        self.set_lectern_property(key, "has_book", true);
+        // `LecternBlock.placeBook`: `setBook` then `resetBookState` with the
+        // player as the source entity, then the put sound.
+        self.reset_lectern_book_state(key, true, Some(Who::Player));
         if !self.creative {
             self.consume_held();
         }
@@ -1106,8 +1147,9 @@ impl Game<'_> {
         l.book = menu.slot(0).cloned();
         l.page = menu.data[0];
         if had && l.book.is_none() {
-            self.set_lectern_powered(key, false);
-            self.set_lectern_property(key, "has_book", false);
+            // `LecternBlockEntity.onBookItemRemove`: `resetBookState` with no
+            // source entity.
+            self.reset_lectern_book_state(key, false, None);
             self.container_changed(key);
         } else if menu.data[0] != before {
             self.set_lectern_powered(key, true);
@@ -1608,10 +1650,25 @@ impl Game<'_> {
         }
     }
 }
-/// `LecternBlockEntity.getRedstoneSignal`.
-pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos) -> Option<i32> {
+/// `LecternBlock.getAnalogOutputSignal` and
+/// `LecternBlockEntity.getRedstoneSignal`: the state's `has_book` gates the
+/// answer, and an entity with no book reads 14 (a page count of 0 is a page
+/// progress of 1.0 with no book to add).
+pub(super) fn lectern_signal(
+    world: &horizon_client::world::World,
+    registry: &horizon_world::registry::BlockRegistry,
+    state: BlockStateId,
+    pos: BlockPos,
+) -> Option<i32> {
+    let s = registry.state(state)?;
+    if s.name != "minecraft:lectern" {
+        return None;
+    }
+    if s.properties.get("has_book").is_none_or(|v| v != "true") {
+        return Some(0);
+    }
     match world.block_entities.get(&(pos.x, pos.y, pos.z)) {
-        Some(BlockEntity::Lectern(l)) => Some(l.book.as_ref().map_or(0, |b| {
+        Some(BlockEntity::Lectern(l)) => Some(l.book.as_ref().map_or(14, |b| {
             let data = b.data();
             let count = data
                 .and_then(|d| d.written.as_ref().map(|w| w.pages.len()))
@@ -1712,6 +1769,10 @@ mod lectern_books_tag_tests {
 }
 
 #[cfg(test)]
+#[path = "lectern_tests.rs"]
+mod lectern_tests;
+
+#[cfg(test)]
 mod lectern_signal_tests {
     use super::super::native_machines::tests::server_game;
     use super::lectern_signal;
@@ -1723,45 +1784,41 @@ mod lectern_signal_tests {
     use horizon_core::position::BlockPos;
     use horizon_world::registry::BlockStateId;
 
-    fn signal(game: &mut super::Game<'_>, book: Option<ItemStack>, page: i32) -> i32 {
+    fn signal(
+        game: &mut super::Game<'_>,
+        has_book: bool,
+        book: Option<ItemStack>,
+        page: i32,
+    ) -> i32 {
         let key = (8, 64, 8);
-        let state: BlockStateId = game
-            .pack
-            .assets
-            .registry
-            .default_state("minecraft:lectern")
-            .unwrap();
+        let registry = game.pack.assets.registry;
+        let default = registry.default_state("minecraft:lectern").unwrap();
+        let mut state = registry.state(default).unwrap().clone();
+        state
+            .properties
+            .insert("has_book".into(), has_book.to_string());
+        let state: BlockStateId = registry.id(&state).unwrap();
         game.world.set(key.0, key.1, key.2, state).unwrap();
         game.world
             .block_entities
             .insert(key, BlockEntity::Lectern(Lectern { book, page }));
-        lectern_signal(&game.world, BlockPos::new(key.0, key.1, key.2)).unwrap()
+        let pos = BlockPos::new(key.0, key.1, key.2);
+        lectern_signal(&game.world, registry, state, pos).unwrap()
     }
 
-    /// `LecternBlockEntity.getRedstoneSignal`: `floor(page / (pageCount - 1)
-    /// * 14) + (hasBook() ? 1 : 0)`. `hasBook()` asks for a book-content
-    /// component, so a stack that only sits in the lectern (a non-book item a
-    /// command left in `Book`) reads 14, not the book's 15.
+    /// `LecternBlock.getAnalogOutputSignal` asks for the state's `HAS_BOOK`
+    /// first, so a lectern without it reads 0 whatever its block entity holds;
+    /// with it, `LecternBlockEntity.getRedstoneSignal` is `floor(page /
+    /// (pageCount - 1) * 14) + (hasBook() ? 1 : 0)`. `hasBook()` asks for a
+    /// book-content component, so a stack that only sits in the lectern (a
+    /// non-book item a command left in `Book`) reads 14, not the book's 15.
+    /// An entity with no book at all reads 14 too: a page count of 0 is a page
+    /// progress of 1.0 with no book to add.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_lecterns_signal_adds_one_only_for_a_book() {
         let mut game = server_game();
-        assert_eq!(signal(&mut game, None, 0), 0, "no book");
-        assert_eq!(
-            signal(&mut game, Some(ItemStack::new("minecraft:stone", 1)), 0),
-            14,
-            "a non-book stack has no book content"
-        );
-        // `writable_book_content` is a writable book's default component.
-        assert_eq!(
-            signal(
-                &mut game,
-                Some(ItemStack::new("minecraft:writable_book", 1)),
-                0
-            ),
-            15,
-            "a writable book is a book"
-        );
+        let writable = Some(ItemStack::new("minecraft:writable_book", 1));
         let mut written = ItemStack::new("minecraft:written_book", 1);
         written.extra = Some(Box::new(StackData {
             written: Some(WrittenBook {
@@ -1772,8 +1829,25 @@ mod lectern_signal_tests {
             }),
             ..Default::default()
         }));
-        assert_eq!(signal(&mut game, Some(written.clone()), 0), 1, "page 0");
-        assert_eq!(signal(&mut game, Some(written), 1), 15, "last page");
+        // `has_book=false`: no signal, whatever the block entity holds.
+        assert_eq!(signal(&mut game, false, None, 0), 0);
+        assert_eq!(
+            signal(&mut game, false, writable.clone(), 0),
+            0,
+            "state denies"
+        );
+        // `has_book=true`, an entity with no book: page progress 1.0.
+        assert_eq!(signal(&mut game, true, None, 0), 14, "no book");
+        let stone = Some(ItemStack::new("minecraft:stone", 1));
+        assert_eq!(signal(&mut game, true, stone, 0), 14, "no book content");
+        // `writable_book_content` is a writable book's default component.
+        assert_eq!(signal(&mut game, true, writable, 0), 15, "a book");
+        assert_eq!(
+            signal(&mut game, true, Some(written.clone()), 0),
+            1,
+            "page 0"
+        );
+        assert_eq!(signal(&mut game, true, Some(written), 1), 15, "last page");
     }
 }
 
