@@ -677,6 +677,28 @@ mod tests {
     use super::*;
     use horizon_world::nbt::Tag;
 
+    /// `Entity.saveWithoutId` writes `OnGround` and `fall_distance`; a
+    /// cushion never moves, so a save keeps what it was loaded with.
+    #[test]
+    fn a_cushion_save_keeps_its_loaded_ground_state() {
+        use crate::entity_nbt::{cushion_from_nbt, cushion_to_nbt};
+        let d = |v: f64| Tag::Double(v.to_bits());
+        let pos = Tag::List(vec![d(0.5), d(64.0), d(0.5)]);
+        let raw = Tag::compound([
+            ("Pos", pos),
+            ("block_pos", Tag::IntArray(vec![0, 64, 0])),
+            ("OnGround", Tag::Byte(1)),
+            ("fall_distance", d(20.0)),
+        ]);
+        let c = cushion_from_nbt(&raw, 1).unwrap();
+        let saved = cushion_to_nbt(&c, [1, 2, 3, 4], Some(&raw));
+        assert_eq!(saved.get("OnGround"), Some(&Tag::Byte(1)));
+        assert_eq!(saved.get("fall_distance"), Some(&d(20.0)));
+        let fresh = cushion_to_nbt(&c, [1, 2, 3, 4], None);
+        assert_eq!(fresh.get("OnGround"), Some(&Tag::Byte(0)));
+        assert_eq!(fresh.get("fall_distance"), Some(&d(0.0)));
+    }
+
     /// `Cushion.getCushionItemStackWithData`: a named cushion drops named.
     #[test]
     fn a_named_cushion_drops_with_its_name() {
