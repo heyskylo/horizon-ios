@@ -117,10 +117,17 @@ impl NameTagLayouts {
 impl Game<'_> {
     /// A named name tag names the mob under the crosshair.
     pub(super) fn name_mob(&mut self, index: usize) -> bool {
-        let Some(name) = self
+        // `NameTagItem`: the mob takes the tag's `custom_name` component, style and all.
+        let Some((name, text)) = self
             .held()
             .filter(|h| &*h.item == "minecraft:name_tag")
-            .and_then(|h| h.custom_name())
+            .and_then(|h| {
+                let text = h.data()?.other("minecraft:custom_name");
+                Some((
+                    h.custom_name()?,
+                    text.map(horizon_client::entity_nbt::name_text),
+                ))
+            })
         else {
             return false;
         };
@@ -131,6 +138,7 @@ impl Game<'_> {
         let entity_id = m.id;
         let entity_name = name.clone();
         m.custom_name = Some(name);
+        m.custom_name_text = text;
         m.persistent = true;
         // itemStack.shrink(1), in creative too.
         self.consume_held();
