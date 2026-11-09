@@ -179,7 +179,7 @@ fn packed_wanted() -> bool {
     std::env::var("HORIZON_PACKED_QUADS").as_deref() != Ok("0")
 }
 
-mod animate;
+pub(crate) mod animate;
 mod arena;
 pub mod capture;
 pub mod compositor;
@@ -4247,16 +4247,13 @@ impl Renderer {
             CRUMBLING_BLEND,
             false,
         );
-        // RenderPipelines.ENTITY_SHADOW: translucent, back-face culled, depth
-        // test without writes. The quads lie exactly on the block tops like
-        // vanilla's, facing +Y so looking up from below culls them, but
-        // terrain and shadows are separate draw paths, so their fp32 depth
-        // interpolations disagree by a few dozen ulps of the fragment depth
-        // and the shadow's rim z-fights with the block top (speckle that
-        // re-rolls as the camera drifts a subpixel). A constant bias of 128
-        // ulps covers that spread at any resolution while staying far below
-        // the 0.001 a model's feet sit higher, so shadows never bleed onto
-        // the feet.
+        // RenderPipelines.ENTITY_SHADOW: translucent, back-face culled, depth test without writes.
+        // The quads lie exactly on the block tops like vanilla's, facing +Y so looking up from
+        // below culls them, but terrain and shadows are separate draw paths, so their fp32 depth
+        // interpolations disagree by a few dozen ulps of the fragment depth and the shadow's rim
+        // z-fights with the block top (speckle that re-rolls as the camera drifts a subpixel). A
+        // constant bias of 128 ulps covers that spread at any resolution while staying far below
+        // the 0.001 a model's feet sit higher, so shadows never bleed onto the feet.
         let shadow_blob_pipeline = entity_pipeline_with(
             "Entity shadows",
             Some(wgpu::Face::Back),
@@ -8354,8 +8351,12 @@ impl Renderer {
             t.begin(&self.device, &self.queue);
         }
         if self.animated_textures {
-            self.hud
-                .animate_sprites(&mut self.uploads, &mut encoder, frame.ticks);
+            self.hud.animate(
+                &mut self.uploads,
+                &mut encoder,
+                frame.ticks,
+                &self.animations,
+            );
         }
         self.update_lightmap(
             &mut encoder,
@@ -9293,13 +9294,11 @@ impl Renderer {
         }
         // Near water and distant water share one back-to-front draw order.
         if self.translucent_draws.len() > section_translucent {
-            // Distant water goes after the near chunks', and replaced tiles'
-            // after all: each is a hair behind the one before, so depth leaves
-            // it only where that one has none. Back to front together, a far
-            // tile's water under a near chunk's (one fading in, or brought
-            // into view by a longer render distance) blended twice and looked
-            // opaque. The cost: far water just behind near water shows no
-            // surface of its own there.
+            // Distant water goes after the near chunks', and replaced tiles' after all: each is a
+            // hair behind the one before, so depth leaves it only where that one has none. Back to
+            // front together, a far tile's water under a near chunk's (one fading in, or brought
+            // into view by a longer render distance) blended twice and looked opaque. The cost: far
+            // water just behind near water shows no surface of its own there.
             let tier = |instance: usize| match instance.checked_sub(visible.len()) {
                 None => 0,
                 Some(tile) if visible_lods[tile].old => 2,
