@@ -76,11 +76,34 @@ impl Launcher {
         }
         // Pictures line up: a world without one gets a plain tile when another has one.
         let pictures = list.iter().any(|w| w.icon.is_some());
-        for w in list {
-            let row = self.glass_world_row(&w, pictures, cx);
-            body = body.child(row).children(self.world_packs_panel(&w, cx));
-        }
-        Some(body)
+        // A long saves folder: only the rows near the view are built (`cull`). The world being
+        // worked on and the one whose ⋯ menu is open stay built, wherever the page is scrolled.
+        let kept: Vec<bool> = list
+            .iter()
+            .map(|w| {
+                let key = format!("world-{}", w.folder);
+                self.worlds.busy.as_ref() == Some(&w.folder)
+                    || self.worlds.confirm_delete.as_ref() == Some(&w.folder)
+                    || self.list_menu.as_ref().is_some_and(|(k, _)| **k == *key)
+            })
+            .collect();
+        let (cull, scroll) = (self.worlds.cull.clone(), self.content_scroll.handle.clone());
+        let rows = cull.column(
+            &scroll,
+            list.len(),
+            0.,
+            |i| kept[i],
+            |i| {
+                let w = &list[i];
+                let row = self.glass_world_row(w, pictures, cx);
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(row)
+                    .children(self.world_packs_panel(w, cx))
+            },
+        );
+        Some(body.child(rows))
     }
 
     fn glass_world_row(&mut self, w: &World, pictures: bool, cx: &mut Context<Self>) -> Div {
