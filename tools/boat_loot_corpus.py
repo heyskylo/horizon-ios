@@ -20,8 +20,9 @@ def boat_loot(cmd):
                 cmd(f'/execute unless data entity {actor} Items', expect_result=1)]
         if mode in ('pull', 'push'):
             y = 199 if mode == 'pull' else 201
-            extra = '' if mode == 'pull' else '{Items:[{Slot:0b,id:"minecraft:diamond",count:1}]}'
+            extra = '{TransferCooldown:0}' if mode == 'pull' else '{TransferCooldown:0,Items:[{Slot:0b,id:"minecraft:diamond",count:1}]}'
             out += [cmd(f'/setblock 8 {y} 8 hopper[facing=down]' + extra, expect_result=1),
+                    cmd(f'/data get block 8 {y} 8 TransferCooldown', expect_result=0),
                     cmd('/execute store result score #start boatloot run time query gametime', False),
                     cmd('/tick step 1'), {'op': 'tick', 'n': 1},
                     cmd('/execute store result score #elapsed boatloot run time query gametime', False),
