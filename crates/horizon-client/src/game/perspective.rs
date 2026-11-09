@@ -280,7 +280,7 @@ impl Game<'_> {
     /// front of) it, pulled in where visual shapes are in the way. Returns the
     /// position, yaw and pitch to render from.
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
-        if self.studio.freecam.active {
+        if self.studio.flying() {
             return Some((
                 self.studio.freecam.position,
                 self.studio.freecam.yaw,
@@ -643,7 +643,7 @@ impl Game<'_> {
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
-        if self.studio.freecam.active {
+        if self.studio.flying() {
             self.studio
                 .freecam
                 .turn((xo * 0.15) as f32, (yo * 0.15) as f32);
@@ -698,7 +698,7 @@ impl Game<'_> {
     /// `LevelExtractor`'s skip of the camera entity: the player's own body
     /// is drawn unless the camera is in first person, or while it sleeps.
     pub(super) fn own_body_in_view(&self) -> bool {
-        !self.camera_type.first_person() || self.sleeping.is_some() || self.studio.freecam.active
+        !self.camera_type.first_person() || self.sleeping.is_some() || self.studio.flying()
     }
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).

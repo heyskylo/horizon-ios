@@ -5961,7 +5961,7 @@ impl Game<'_> {
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
-        let in_studio = self.studio.replay.is_some();
+        let in_studio = self.studio.replaying();
         let show_hud = !self.ui.hide_gui && !in_studio;
         // Hud.extractRenderState asks `Screen.isInGameUi` twice: such a screen
         // defers the subtitles over itself, and keeps them while F1 hides the
@@ -6301,23 +6301,7 @@ impl Game<'_> {
             self.draw_sign_editor(&mut batch);
             self.draw_book(&mut batch);
         }
-        if !self.ui.hide_gui
-            && self.screen == Screen::Playing
-            && (self.studio.replay.is_some() || self.studio.freecam.active)
-        {
-            self.studio.topbar.render(
-                &mut batch,
-                &self.gui.atlas,
-                self.cursor,
-                self.studio.freecam.locked_to_path,
-            );
-            self.studio.timeline.render(
-                &mut batch,
-                &self.gui.atlas,
-                self.cursor,
-                &self.studio.freecam,
-            );
-        }
+        self.draw_studio_bars(&mut batch);
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
         }
@@ -6566,7 +6550,7 @@ impl Game<'_> {
     /// `Camera.setRotation`: the camera's orientation, turned round in
     /// third-person front view.
     pub(super) fn camera_orientation(&self) -> glam::Quat {
-        if self.studio.freecam.active {
+        if self.studio.flying() {
             return camera_rotation(
                 perspective::CameraType::FirstPerson,
                 self.studio.freecam.yaw,
@@ -6778,7 +6762,7 @@ impl Game<'_> {
         self.mark_player(out.len(), !self.own_body_in_view());
         let player_start = out.len();
         self.mark_motion(player_start, Self::MOTION_OWN_PLAYER);
-        let player_alpha = if self.studio.replay.is_some() {
+        let player_alpha = if self.studio.replaying() {
             (self.studio.virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
         } else {
             self.clock.camera_fraction()
@@ -9281,7 +9265,7 @@ impl Game<'_> {
         let camera_alpha = self.clock.camera_fraction();
         let vanilla = self.camera_view(camera_alpha as f32);
         let view = vanilla.map(|view| {
-            if self.shows_panorama() || self.studio.freecam.active {
+            if self.shows_panorama() || self.studio.flying() {
                 view
             } else {
                 self.native_camera_pose_now(camera_alpha as f32, view)
@@ -9459,14 +9443,7 @@ impl Game<'_> {
         // hitboxes (F3+G, F3+B).
         let mut lines = self.fishing_line(alpha, size);
         let mut g = self.debug_gizmos(alpha as f32, camera.to_array());
-        if self.studio.freecam.active || self.studio.replay.is_some() {
-            horizon_client::studio::render_camera_path(
-                &self.studio.freecam.track,
-                &mut g,
-                None,
-                100,
-            );
-        }
+        self.studio_camera_path(&mut g);
         lines.extend(g.lines);
         let on_top = g.on_top;
         pr.lap("pr_debug");
@@ -9488,7 +9465,7 @@ impl Game<'_> {
             Vec::new()
         };
         pr.lap("pr_native_visuals");
-        let view = if self.studio.freecam.active {
+        let view = if self.studio.flying() {
             glam::Mat4::from_quat(self.camera_orientation().conjugate())
         } else {
             horizon_client::camera::view_matrix(view_yaw, view_pitch)
@@ -9614,7 +9591,7 @@ impl Game<'_> {
         } else {
             self.fov_degrees(camera_alpha as f32, camera.to_array())
         };
-        let camera_effects = fov::camera_effects_enabled(title, self.studio.freecam.active);
+        let camera_effects = fov::camera_effects_enabled(title, self.studio.flying());
         let bob = if !camera_effects {
             glam::Mat4::IDENTITY
         } else {
@@ -10507,21 +10484,7 @@ impl Game<'_> {
                         let b = HudBatch::new([r.config.width, r.config.height]);
                         let previous = self.cursor;
                         self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
-                        if self.screen == Screen::Playing
-                            && (self.studio.timeline.dragging_playhead
-                                || self.studio.timeline.dragging_keyframe.is_some())
-                        {
-                            let action = self.studio.timeline.handle_mouse_drag(
-                                self.cursor,
-                                b.width,
-                                &mut self.studio.freecam,
-                            );
-                            if matches!(
-                                action,
-                                horizon_client::studio::TimelineAction::KeyframeMoved
-                            ) {
-                                self.studio.camera_track_dirty = true;
-                            }
+                        if self.studio_mouse_dragged(b.width) {
                             return Ok(());
                         }
                         if self.screen_mouse_dragged(previous) {
@@ -10572,7 +10535,7 @@ impl Game<'_> {
                     }
                 }
                 WindowEvent::MouseWheel { .. }
-                    if self.screen == Screen::Playing && self.studio.replay.is_some() => {}
+                    if self.screen == Screen::Playing && self.studio.replaying() => {}
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (raw_x, raw_y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
@@ -10849,90 +10812,7 @@ impl Game<'_> {
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
                     let pressed = state == ElementState::Pressed;
-                    if !pressed && button == MouseButton::Left {
-                        let action = self.studio.timeline.handle_mouse_up();
-                        if !matches!(action, horizon_client::studio::TimelineAction::None) {
-                            self.handle_studio_timeline_action(action);
-                        }
-                    }
-                    if (self.studio.freecam.active || self.studio.replay.is_some())
-                        && button == MouseButton::Right
-                    {
-                        if let Some(renderer) = &self.renderer {
-                            let batch =
-                                HudBatch::new([renderer.config.width, renderer.config.height]);
-                            if self.studio.timeline.visible
-                                && self.cursor.1 >= batch.height - self.studio.timeline.height()
-                            {
-                                if pressed
-                                    && let Some(index) = self.studio.timeline.keyframe_at_cursor(
-                                        self.cursor,
-                                        batch.width,
-                                        batch.height,
-                                        &self.studio.freecam,
-                                    )
-                                {
-                                    if index < self.studio.freecam.track.keyframes.len() {
-                                        self.studio.freecam.track.keyframes.remove(index);
-                                        self.studio.camera_track_dirty = true;
-                                    }
-                                    self.studio.timeline.selected_keyframe = None;
-                                }
-                                return Ok(());
-                            }
-                        }
-                        if pressed {
-                            self.studio.topbar.close_dropdown();
-                            self.studio.rmb_down = true;
-                            self.capture(true);
-                            return Ok(());
-                        } else if self.studio.rmb_down {
-                            self.studio.rmb_down = false;
-                            self.capture(false);
-                            return Ok(());
-                        }
-                    }
-                    if pressed
-                        && button == MouseButton::Left
-                        && self.screen == Screen::Playing
-                        && (self.studio.replay.is_some() || self.studio.freecam.active)
-                    {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|renderer| [renderer.config.width, renderer.config.height])
-                            .unwrap_or([1, 1]);
-                        let batch = HudBatch::new(size);
-                        let had_open_menu = self.studio.topbar.open_menu.is_some();
-                        let topbar_action = self.studio.topbar.handle_mouse_click(
-                            self.cursor,
-                            batch.width,
-                            batch.height,
-                        );
-                        if !matches!(topbar_action, horizon_client::studio::TopBarAction::None) {
-                            self.handle_studio_topbar_action(topbar_action);
-                            return Ok(());
-                        }
-                        if had_open_menu || self.cursor.1 <= self.studio.topbar.height {
-                            return Ok(());
-                        }
-                        if self.studio.timeline.visible {
-                            let action = self.studio.timeline.handle_mouse_down(
-                                self.cursor,
-                                batch.width,
-                                batch.height,
-                                &self.studio.freecam,
-                            );
-                            if !matches!(action, horizon_client::studio::TimelineAction::None) {
-                                self.handle_studio_timeline_action(action);
-                                return Ok(());
-                            }
-                            if self.cursor.1 >= batch.height - self.studio.timeline.height() {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    if self.screen == Screen::Playing && self.studio.replay.is_some() {
+                    if self.studio_mouse_input(pressed, button) {
                         return Ok(());
                     }
                     if matches!(self.screen, Screen::Inventory | Screen::Creative)
@@ -11403,24 +11283,7 @@ impl Game<'_> {
                     let between = now.saturating_duration_since(self.frame_end);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
-                    if self.studio.freecam.active
-                        && self.screen == Screen::Playing
-                        && !self.dialog_open()
-                    {
-                        let held = |key| f64::from(u8::from(self.keys.raw(&key)));
-                        let forward = held(KeyCode::KeyW) - held(KeyCode::KeyS);
-                        let strafe = held(KeyCode::KeyD) - held(KeyCode::KeyA);
-                        let vertical =
-                            held(KeyCode::KeyE) - held(KeyCode::KeyQ) + held(KeyCode::Space);
-                        let fast = self.keys.raw(&KeyCode::ControlRight);
-                        self.studio.freecam.update_flight_motion(
-                            forward,
-                            strafe,
-                            vertical,
-                            fast,
-                            elapsed.as_secs_f64().min(0.1),
-                        );
-                    }
+                    self.studio_fly(elapsed);
                     // Arrow-key camera controls belong to gameplay; chat and
                     // other screens use the same keys for their own navigation.
                     if self.screen == Screen::Playing
