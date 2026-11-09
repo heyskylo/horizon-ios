@@ -56,7 +56,7 @@ GuardianRenderer.submit	port	crates/horizon-client/src/mobs/guardian.rs::beam_ge
 GuardianRenderer.vertex	inline	crates/horizon-client/src/mobs/guardian.rs::beam_geometry	vertex built inline
 GuardianRenderer.extractRenderState	port	crates/horizon-client/src/mobs/guardian.rs::beam	beam attack scale and time
 HappyGhastRenderer.getBoundingBoxForCulling	port	crates/horizon-client/src/game/entity_culling.rs::cull_box	setMinY(minY - getBbHeight() / 2) for the riders hanging below it
-HappyGhastRenderer.extractRenderState	port	crates/horizon-client/src/mobs/happy_ghast.rs::wearing_harness	gap: player: the body item (harness) is not drawn on the ghast; only the harnessed state is read
+HappyGhastRenderer.extractRenderState	port	crates/horizon-client/src/mobs/happy_ghast.rs::wearing_harness	the harnessed state is read here; the harness (body item) is drawn by render::layers
 HoglinRenderer.isShaking	port	crates/horizon-client/src/mobs/render.rs::shaking	converting hoglin shakes
 HorseRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::body	variant and baby texture
 HorseRenderer.extractRenderState	port	crates/horizon-client/src/mobs/equine.rs::markings	variant, markings and armour layer
@@ -68,7 +68,7 @@ HumanoidMobRenderer.getEquipmentIfRenderable	port	crates/horizon-client/src/mobs
 IllagerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/illager.rs::holding_crossbow	crossbow charge and aggressive pose
 IllusionerRenderer.getBoundingBoxForCulling	port	crates/horizon-client/src/game/entity_culling.rs::cull_box	inflate(3, 0, 3), room for the mirror images drawn outside the box
 IllusionerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/illusioner.rs::offsets	mirror-image offsets; casting flag
-IronGolemRenderer.extractRenderState	port	crates/horizon-client/src/mobs/golem.rs::client_tick	gap: player: the offered poppy is not drawn in the golem hand and cracks from damage are not drawn
+IronGolemRenderer.extractRenderState	port	crates/horizon-client/src/mobs/golem.rs::client_tick	the offered poppy is drawn by game/mob_blocks.rs::Game::golem_flower_geometry, the damage cracks by render::layers (golem::crackiness)
 IronGolemRenderer.setupRotations	port	crates/horizon-client/src/mobs/render.rs::base_transform_at	the 6.5-degree triangle wave over a 13-block walk phase
 ItemEntityRenderer.extractRenderState	port	crates/horizon-client/src/game/item_draw.rs::Game::dropped_item_geometry	bob offset, spin and spread; the light is Entity.getLightProbePosition's eye (0.2125 up, on the frame's position) over getBlockLightLevel's isOnFire rule (`entities.rs::ItemEntity::light_probe`, `render_light`)
 ItemEntityRenderer.renderMultipleFromCount	port	crates/horizon-client/src/item_render.rs::cluster_poses	copies of a stack laid out by depth
@@ -86,11 +86,11 @@ LlamaRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::
 LlamaRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::llama	chest flag; decor layers in mobs/render.rs::layers
 LlamaSpitRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: minor: drawn as a camera-facing sprite, not the spit model with its rotation
 LlamaSpitRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	rotation read there
-MobRenderer.checkMagicName	inline	crates/horizon-client/src/mobs/render.rs::body	gap: player: Toast is handled; a sheep named jeb_ does not get rainbow wool
+MobRenderer.checkMagicName	inline	crates/horizon-client/src/mobs/render.rs::body	Toast is handled here; jeb_ (rainbow wool) is matched in render::layers
 MushroomCowRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::body	variant and baby texture
-MushroomCowRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::body	gap: player: the mushroom block on the back is not drawn
+MushroomCowRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::body	the mushroom blocks are drawn by crates/horizon-client/src/game/mob_blocks.rs::Game::worn_block_geometry
 NautilusRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::layers	saddle and armour layers
-OcelotRenderer.extractRenderState	missing		player: an ocelot keeps the standing pose when crouching or sprinting; no ocelot pose code in mobs/
+OcelotRenderer.extractRenderState	port	crates/horizon-client/src/mobs/tame.rs::cat_anim	isCrouching and isSprinting are read (feline poses, shared with cats; tame::feline_server_ai_step sets them)
 OminousItemSpawnerRenderer.extractRenderState	inline	crates/horizon-client/src/game/ominous_item_spawner.rs::Game::ominous_item_spawner_geometry	item and age read there
 OminousItemSpawnerRenderer.submit	port	crates/horizon-client/src/game/ominous_item_spawner.rs::Game::ominous_item_spawner_geometry	spinning item cluster, scaled in during the first 50 ticks
 PaintingRenderer.submit	port	crates/horizon-client/src/game/paintings.rs::Game::painting_geometry	
@@ -99,7 +99,7 @@ PaintingRenderer.renderPainting	port	crates/horizon-client/src/game/paintings.rs
 PaintingRenderer.vertex	inline	crates/horizon-client/src/game/paintings.rs::Game::painting_geometry	vertex built inline
 PandaRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::panda	sit, lie, sneeze and roll states
 ParrotRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::parrot	pose and flap angle
-PhantomRenderer.extractRenderState	port	crates/horizon-client/src/mobs/phantom.rs::anim	gap: player: phantom size is not read, so phantoms never grow
+PhantomRenderer.extractRenderState	port	crates/horizon-client/src/mobs/phantom.rs::anim	size is drawn by render::species_scale (PhantomRenderer.scale: 15% bigger per size)
 PhantomRenderer.scale	port	crates/horizon-client/src/mobs/render.rs::species_scale	1 + 0.15 * size, with the model's 1.3125 offset
 PhantomRenderer.setupRotations	port	crates/horizon-client/src/mobs/phantom.rs::anim	gap: minor: body pitch (xRot) is not applied; wings and tail are
 PigRenderer.bakeModels	skip:data		model baking; Horizon loads model data from files
@@ -124,7 +124,7 @@ ShulkerRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/shulker.r
 ShulkerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/shulker.rs::rotations	peek and head angles
 SnifferRenderer.getBoundingBoxForCulling	port	crates/horizon-client/src/game/entity_culling.rs::cull_box	inflate(0.6) all round
 SnifferRenderer.extractRenderState	port	crates/horizon-client/src/mobs/sniffer.rs::anim	searching state and animation clocks
-SnowGolemRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::snow_golem	gap: player: a carved pumpkin on the head is not drawn; the pumpkin flag is not read
+SnowGolemRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::snow_golem	the carved pumpkin is drawn unless sheared, by crates/horizon-client/src/game/mob_blocks.rs::Game::worn_block_geometry
 SquidRenderer.extractRenderState	port	crates/horizon-client/src/mobs/aquatic.rs::squid_ai_step	tentacle cycle clock
 SquidRenderer.setupRotations	inline	crates/horizon-client/src/mobs/aquatic.rs::rotations	the body tilt alongside the ink vector rotation
 StriderRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::body	cold texture when suffocating
