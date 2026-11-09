@@ -3,10 +3,6 @@
 //! and the jump's data is above zero, and it posts `GameEvent.ENTITY_ACTION`
 //! from the camel beside its dash sound
 //! (tools/test_camel_jump_parity.py measures the same on vanilla 26.3).
-//! `TestCommand.showPos` under `execute as <guest>`: the source player is
-//! the guest, and its own `pick` (eyes and view) finds the block, while the
-//! message goes to the command's issuer
-//! (tools/test_test_pos_guest_parity.py measures the same on vanilla 26.3).
 use crate::game::*;
 use horizon_client::{
     chunk::Chunk,
