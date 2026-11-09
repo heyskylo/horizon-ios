@@ -2192,12 +2192,20 @@ fn describe_adapter(adapter: &wgpu::Adapter) {
 /// in one array.
 fn check_layers(adapter: &wgpu::Adapter, layers: u32) -> Result<u32> {
     let info = adapter.get_info();
-    Ok(layer_split(
+    let split = layer_split(
         adapter.limits().max_texture_array_layers,
         info.backend == wgpu::Backend::Gl,
         adapter_requested_split(&info, requested_split(), layers),
         layers,
-    )?)
+    )?;
+    if info.backend == wgpu::Backend::Metal && split > 512 && requested_split().is_none() {
+        // Ties a big pack's texture-corruption report to the lifted Metal cap (#8471, #12155).
+        log::warn!(
+            "Block sprites: {layers} layers need {split}-layer arrays on Metal (above 512) on {}",
+            info.name
+        );
+    }
+    Ok(split)
 }
 /// Whether the swapchain can take a window of `width` x `height`: each side from 1 to the
 /// device's `max_texture_dimension_2d` (`max`), else `Surface::configure` panics. 0 is a
