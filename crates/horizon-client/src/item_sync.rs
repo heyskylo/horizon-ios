@@ -149,6 +149,17 @@ pub fn can_always_eat(stack: &ItemStack, default: bool) -> bool {
     }
     default
 }
+/// `Consumable.consumeSeconds` from the stack's `consumable` component.
+pub fn consumable_seconds(stack: &ItemStack) -> Option<f32> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    data.and_then(|d| d.other("minecraft:consumable"))
+        .map(|consumable| {
+            horizon_world::datafix::dynamic::as_float(consumable.get("consume_seconds"), 1.6)
+        })
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -984,6 +995,24 @@ mod tests {
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
         );
         assert!(!can_always_eat(&stack, true));
+    }
+
+    #[test]
+    fn consumable_seconds_come_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "consume_seconds",
+                Tag::Float(0.5f32.to_bits()),
+            )])),
+        );
+        assert_eq!(consumable_seconds(&stack), Some(0.5));
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_seconds(&stack), None);
     }
 
     #[test]
