@@ -2226,8 +2226,6 @@ mod tests {
             vec!["minecraft:diamond_sword", "minecraft:diamond_axe"]
         );
     }
-    /// A world pack's stonecutting recipe takes its place in registration
-    /// order (path, then namespace), not a place after the game's own.
     #[test]
     fn stonecutter_result_keeps_its_components() {
         let root = std::env::temp_dir().join(format!(
@@ -2249,6 +2247,8 @@ mod tests {
         assert_eq!(listed[0].result.custom_name().as_deref(), Some("Cut Stone"));
     }
 
+    /// A world pack's stonecutting recipe takes its place in registration
+    /// order (path, then namespace), not a place after the game's own.
     #[test]
     fn stonecutter_lists_recipes_in_registration_order() {
         let root =
