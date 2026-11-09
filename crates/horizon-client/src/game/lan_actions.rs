@@ -381,16 +381,21 @@ pub(super) fn building_cache(host: Option<&LanHost>) {
     BUILDING_CACHE.with(|c| *c.borrow_mut() = bodies);
 }
 
-/// The cached body of the guest `conn` as it is now in the hub, after a turn
-/// that may have moved, killed or changed it.
-fn refresh_building_player(host: &LanHost, conn: u32) {
+/// The cached bodies as they are now in the hub, after `conn`'s turn (or its
+/// death step). Every entry, not only the actor's: a turn can move, kill or
+/// change another guest too (`/tp`, an attack, an explosion), and the turns
+/// after it must see that guest where it is now, as a list built afresh would.
+/// Copies into the shared cells, no allocation.
+fn refresh_building_player(host: &LanHost, _conn: u32) {
     BUILDING_CACHE.with(|c| {
         if let Some(list) = c.borrow().as_ref()
-            && let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn)
-            && let Some(p) = list.get(i)
-            && p.get().conn == Some(conn)
+            && list.len() == host.hub.guests.len()
         {
-            p.set(building_player(&host.hub.guests[i]));
+            for (p, g) in list.iter().zip(&host.hub.guests) {
+                if p.get().conn == Some(g.conn) {
+                    p.set(building_player(g));
+                }
+            }
         }
     });
 }
