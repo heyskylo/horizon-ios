@@ -1586,9 +1586,15 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+            let mut cancel = false;
             if item != "minecraft:experience_bottle" {
-                self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                self.native_potion_splash_v2(&item, [at.x, at.y, at.z], &mut cancel);
+            }
+            if !cancel {
+                self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+                if item != "minecraft:experience_bottle" {
+                    self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                }
             }
         }
     }

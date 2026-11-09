@@ -3,6 +3,7 @@
 //! GUI scale is applied when drawing).
 use crate::Result;
 use horizon_assets::animation::AnimationMetadata;
+use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -902,18 +903,20 @@ impl HudAtlas {
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
     /// minimap, a native mod's own image, downloaded skins, world and pack
-    /// icons and the on-screen keyboard's text.
+    /// icons and the on-screen keyboard's text. Their pixels are already zero
+    /// in the destination atlas, so keep the source buffers empty and avoid
+    /// duplicating the atlas-sized allocation during packing.
     fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32), mod_image: bool) {
         for i in 0..MAP_SLOTS {
             let name = map_slot_sprite(i).unwrap_or_default();
-            images.push((name.into(), 128, 128, vec![0; 128 * 128 * 4]));
+            images.push((name.into(), 128, 128, Vec::new()));
         }
         // The minimap extra's image (game/extras.rs).
         images.push((
             MINIMAP_SPRITE.into(),
             crate::minimap::SIZE as u32,
             crate::minimap::SIZE as u32,
-            vec![0; crate::minimap::SIZE * crate::minimap::SIZE * 4],
+            Vec::new(),
         ));
         // A mod's own image (native `mod_image`), only when a mod is loaded.
         if mod_image {
@@ -921,45 +924,29 @@ impl HudAtlas {
                 MOD_IMAGE_SPRITE.into(),
                 MOD_IMAGE_SIZE,
                 MOD_IMAGE_SIZE,
-                vec![0; (MOD_IMAGE_SIZE * MOD_IMAGE_SIZE * 4) as usize],
+                Vec::new(),
             ));
         }
         // Downloaded skins (game/scoreboard.rs).
         for i in 0..SKIN_SLOTS {
-            images.push((format!("horizon/skin{i}"), 64, 64, vec![0; 64 * 64 * 4]));
+            images.push((format!("horizon/skin{i}"), 64, 64, Vec::new()));
         }
         for i in 0..TRIM_SLOTS {
-            images.push((
-                format!("horizon/trim{i}"),
-                trim.0,
-                trim.1,
-                vec![0; (trim.0 * trim.1 * 4) as usize],
-            ));
+            images.push((format!("horizon/trim{i}"), trim.0, trim.1, Vec::new()));
         }
         for i in 0..WORLD_ICON_SLOTS {
-            images.push((
-                format!("horizon/world-icon{i}"),
-                64,
-                64,
-                vec![0; 64 * 64 * 4],
-            ));
+            images.push((format!("horizon/world-icon{i}"), 64, 64, Vec::new()));
         }
-        let side = PACK_ICON_SIZE as usize;
         for i in 0..PACK_ICON_SLOTS {
             images.push((
                 format!("horizon/pack-icon{i}"),
                 PACK_ICON_SIZE,
                 PACK_ICON_SIZE,
-                vec![0; side * side * 4],
+                Vec::new(),
             ));
         }
         // The on-screen keyboard's text and corner masks (ui_theme), rasterized at run time.
-        images.push((
-            "horizon/ui-text".into(),
-            2048,
-            1024,
-            vec![0; 2048 * 1024 * 4],
-        ));
+        images.push(("horizon/ui-text".into(), 2048, 1024, Vec::new()));
     }
     /// Only the font's metrics, for a game that draws nothing (the
     /// integrated or dedicated server): text measures as with the full atlas,
@@ -1528,10 +1515,12 @@ impl HudAtlas {
             {
                 translucent.insert(name.clone());
             }
-            for row in 0..*h {
-                let src = &data[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
-                let dst = (((py + row) * width + px) * 4) as usize;
-                pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
+            if !data.is_empty() {
+                for row in 0..*h {
+                    let src = &data[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
+                    let dst = (((py + row) * width + px) * 4) as usize;
+                    pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
+                }
             }
             let b = u32::from(bordered.contains(name));
             let (px, py, w, h) = (px + b, py + b, w - 2 * b, h - 2 * b);
@@ -1842,12 +1831,31 @@ impl HudBatch {
         }
         out
     }
-    fn runs_in(&self, vertices: std::ops::Range<u32>) -> Vec<(std::ops::Range<u32>, Blend)> {
-        let mut runs = self.runs();
-        for (range, _) in &mut runs {
-            *range = range.start.max(vertices.start)..range.end.min(vertices.end);
+    fn runs_in(
+        &self,
+        vertices: std::ops::Range<u32>,
+    ) -> SmallVec<[(std::ops::Range<u32>, Blend); 16]> {
+        let mut runs = SmallVec::new();
+        let mut at = vertices.start;
+        for (range, blend) in &self.blends {
+            if range.start > at {
+                let start = at.max(vertices.start);
+                let end = range.start.min(vertices.end);
+                if start < end {
+                    runs.push((start..end, Blend::Alpha));
+                }
+            }
+            let start = range.start.max(vertices.start);
+            let end = range.end.min(vertices.end);
+            if start < end {
+                runs.push((start..end, *blend));
+            }
+            at = at.max(range.end);
         }
-        runs.retain(|(range, _)| !range.is_empty());
+        let end = (self.vertices.len() as u32).min(vertices.end);
+        if at < end {
+            runs.push((at.max(vertices.start)..end, Blend::Alpha));
+        }
         runs
     }
     /// `AbstractContainerScreen.init`: center in integer GUI coordinates.
@@ -3001,7 +3009,8 @@ impl HudRenderer {
         if vertices.is_empty() || size.contains(&0) {
             return;
         }
-        let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
+        let mut attachments = [None, None];
+        attachments[0] = Some(wgpu::RenderPassColorAttachment {
             view: target,
             resolve_target: None,
             depth_slice: None,
@@ -3009,9 +3018,13 @@ impl HudRenderer {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             },
-        })];
+        });
+        let attachment_count;
         if let Some(view) = coverage {
-            attachments.push(Some(hud_coverage::attachment(view)));
+            attachments[1] = Some(hud_coverage::attachment(view));
+            attachment_count = 2;
+        } else {
+            attachment_count = 1;
         }
         let runs = batch.runs_in(vertices);
         let mut at = 0;
@@ -3031,7 +3044,7 @@ impl HudRenderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD"),
                 timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("HUD")),
-                color_attachments: &attachments,
+                color_attachments: &attachments[..attachment_count],
                 depth_stencil_attachment: clip.map(|_| wgpu::RenderPassDepthStencilAttachment {
                     view: depth,
                     depth_ops: Some(wgpu::Operations {

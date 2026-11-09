@@ -1710,7 +1710,9 @@ impl Game<'_> {
                 power,
                 interaction,
                 false,
-                super::explosion::ExplosionSource::default().with_silence(silent),
+                super::explosion::ExplosionSource::default()
+                    .with_silence(silent)
+                    .with_entity(c.id, "minecraft:tnt_minecart"),
             )
         });
         self.combat.explosion_in_water = false;

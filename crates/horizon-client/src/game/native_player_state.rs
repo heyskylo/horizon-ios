@@ -9,6 +9,7 @@ use super::{Game, commands::Target};
 use horizon_client::{brewing, effects::EffectInstance, entities::Experience, lan::playerdata};
 use horizon_world::{
     attribute_map::ValueKind,
+    attributes::Operation,
     nbt::{JavaString, Tag},
 };
 
@@ -33,6 +34,28 @@ pub struct NativeEffect {
     pub particles: bool,
 }
 
+/// A `NativeEffect` with its icon flag, as `native_effects_v2` reads it and
+/// `native_set_effects_v2` takes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeEffectV2 {
+    pub effect: NativeEffect,
+    /// Whether its icon shows in the inventory and on the HUD (vanilla's
+    /// `showIcon`, `/effect`'s default true).
+    pub show_icon: bool,
+}
+
+/// A transient attribute modifier on a player, as `native_attribute_modifiers`
+/// lists it: the attribute's name (`minecraft:movement_speed`), the modifier's
+/// id, its amount and its operation (0 add, 1 add multiplied base, 2 add
+/// multiplied total, as the protocol numbers them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeAttributeModifier {
+    pub attribute: String,
+    pub id: String,
+    pub amount: f64,
+    pub operation: u8,
+}
+
 /// The game's effect for `effect`: None for an unknown id or a duration
 /// below -1 or 0.
 fn instance(effect: &NativeEffect) -> Option<EffectInstance> {
@@ -43,6 +66,13 @@ fn instance(effect: &NativeEffect) -> Option<EffectInstance> {
     let mut e = EffectInstance::new(def.id, effect.duration, i32::from(effect.amplifier));
     e.ambient = effect.ambient;
     e.visible = effect.particles;
+    Some(e)
+}
+
+/// `instance` with the icon flag of a `NativeEffectV2`.
+fn instance_v2(effect: &NativeEffectV2) -> Option<EffectInstance> {
+    let mut e = instance(&effect.effect)?;
+    e.show_icon = effect.show_icon;
     Some(e)
 }
 
@@ -118,6 +148,29 @@ impl Game<'_> {
             .iter()
             .position(|g| g.uuid == uuid && g.placed && !g.released)
             .map(Place::Guest)
+    }
+
+    /// Sets a player's game mode (0 survival, 1 creative, 2 adventure, 3
+    /// spectator, as `native_player_game_mode_changed` names them), as
+    /// `/gamemode` does: a guest's change runs in their own turn, and the
+    /// mods hear it. True when the mode changed; false for an unknown mode,
+    /// a player who is not on, or a change a mod cancelled. API
+    /// @API:set_game_mode@.
+    pub(super) fn native_set_game_mode(&mut self, player: u128, mode: i32) -> bool {
+        if !(0..=3).contains(&mode) {
+            return false;
+        }
+        let target = match self.native_place(player) {
+            Some(Place::Acting) => Target::Player,
+            Some(Place::Guest(i)) => match self.lan.as_ref() {
+                Some(host) => Target::Guest(host.hub.guests[i].conn),
+                None => return false,
+            },
+            None => return false,
+        };
+        let mode = super::game_mode::mode_from_id(mode);
+        self.for_player(target, |g| g.set_game_mode(mode))
+            .unwrap_or(false)
     }
 
     /// The player `uuid`'s compound as the server would save it now
@@ -257,6 +310,23 @@ impl Game<'_> {
         Some(list.iter().map(native_effect).collect())
     }
 
+    /// `native_effects` with each effect's icon flag (`NativeEffectV2`).
+    /// None as `native_effects`. API @API:player_effects@.
+    pub(super) fn native_effects_v2(&self, uuid: u128) -> Option<Vec<NativeEffectV2>> {
+        let list = match self.native_place(uuid)? {
+            Place::Acting => &self.potions.effects.list,
+            Place::Guest(i) => &self.lan.as_ref()?.hub.guests[i].effects.list,
+        };
+        Some(
+            list.iter()
+                .map(|e| NativeEffectV2 {
+                    effect: native_effect(e),
+                    show_icon: e.show_icon,
+                })
+                .collect(),
+        )
+    }
+
     /// Gives the player `uuid` `effect` as vanilla's `LivingEntity.addEffect`
     /// (Bukkit's `addPotionEffect`): it takes the place of a weaker or
     /// shorter one of the same kind, which waits under it. Their client gets
@@ -296,6 +366,20 @@ impl Game<'_> {
         let Some(list) = effects.iter().map(instance).collect::<Option<Vec<_>>>() else {
             return false;
         };
+        self.set_effect_list(uuid, list)
+    }
+
+    /// `native_set_effects` with each effect's icon flag (`NativeEffectV2`):
+    /// the same refusals. API @API:player_effects@.
+    pub(super) fn native_set_effects_v2(&mut self, uuid: u128, effects: &[NativeEffectV2]) -> bool {
+        let Some(list) = effects.iter().map(instance_v2).collect::<Option<Vec<_>>>() else {
+            return false;
+        };
+        self.set_effect_list(uuid, list)
+    }
+
+    /// Replaces the player `uuid`'s effects with `list`, as `native_set_effects`.
+    fn set_effect_list(&mut self, uuid: u128, list: Vec<EffectInstance>) -> bool {
         self.native_player_turn(uuid, |game| {
             game.potions.effects.clear();
             game.apply_effect_status();
@@ -322,6 +406,42 @@ impl Game<'_> {
         let base = motion.attributes.value(Some(key.clone()), ValueKind::Base);
         let value = motion.attributes.value(Some(key), ValueKind::Computed);
         Some((base.ok()?, value.ok()?))
+    }
+
+    /// The transient attribute modifiers of the player `uuid`: every modifier
+    /// on any of their attributes that is not permanent (what
+    /// `native_set_attributes` loads is permanent; these are the ones given
+    /// for a time, as `/attribute ... modifier add` without `permanent`). None
+    /// for a player not reached or between bodies, as `native_attribute`.
+    /// API @API:player_attributes@.
+    pub(super) fn native_attribute_modifiers(
+        &mut self,
+        uuid: u128,
+    ) -> Option<Vec<NativeAttributeModifier>> {
+        let motion = match self.native_place(uuid)? {
+            Place::Acting => self.player.as_mut()?,
+            Place::Guest(i) => self.lan.as_mut()?.hub.guests[i].motion.as_deref_mut()?,
+        };
+        let mut out = Vec::new();
+        for (_, key, instance) in motion.attributes.instances() {
+            let permanent = instance.permanent_modifiers();
+            for m in instance.modifiers() {
+                if permanent.iter().any(|p| p.same_identity(m)) {
+                    continue;
+                }
+                out.push(NativeAttributeModifier {
+                    attribute: key.name().to_owned(),
+                    id: m.id().to_owned(),
+                    amount: m.amount(),
+                    operation: match m.operation() {
+                        Operation::AddValue => 0,
+                        Operation::AddMultipliedBase => 1,
+                        Operation::AddMultipliedTotal => 2,
+                    },
+                });
+            }
+        }
+        Some(out)
     }
 
     /// Sets the base value of the player `uuid`'s attribute `attribute`, as
@@ -437,6 +557,26 @@ mod tests {
         assert!(instance(&effect("minecraft:no_such_effect", 200)).is_none());
         assert!(instance(&effect("minecraft:speed", 0)).is_none());
         assert!(instance(&effect("minecraft:speed", -2)).is_none());
+    }
+
+    /// `native_set_effects_v2` sets the icon flag it is given, and the rest as
+    /// `native_set_effects` does; a refused effect is refused the same.
+    #[test]
+    fn an_effect_v2_carries_its_icon_flag() {
+        for show_icon in [false, true] {
+            let e = NativeEffectV2 {
+                effect: effect("minecraft:speed", 200),
+                show_icon,
+            };
+            let game = instance_v2(&e).unwrap();
+            assert_eq!(game.show_icon, show_icon);
+            assert_eq!(native_effect(&game), e.effect);
+        }
+        let bad = NativeEffectV2 {
+            effect: effect("minecraft:speed", 0),
+            show_icon: false,
+        };
+        assert!(instance_v2(&bad).is_none());
     }
 
     #[test]
