@@ -436,12 +436,12 @@ pub struct Look {       // #[non_exhaustive]; Default is vanilla's
     pub clear_lava: bool, pub clear_water: bool, pub chat: Chat,
     pub hide_effect_icons: bool, pub time_of_day: Option<i64>, pub weather: Option<(f32, f32)>,
 }
-pub fn set(look: Look);  // the player whose turn it is (`seat()`)
+pub fn update(change: impl FnOnce(&mut Look));  // the player whose turn it is (`seat()`)
 ```
 
-- Pushed, not asked: a crate sets the whole look when its settings load or change, and the engine reads it where
-  it draws (`game/look.rs`, the only reader). Nothing is called per frame, and a seat that never set one sees
-  vanilla's.
+- Pushed, not asked: a crate changes its own fields when its settings load or change (several crates share the
+  look, each keeping to its fields), and the engine reads it where it draws (`game/look.rs`, the only reader).
+  Nothing is called per frame, and a seat nothing changed sees vanilla's.
 - A knob is named by what it changes in the picture or the sound, never by the feature that uses it. A new knob
   is a field added with vanilla's value as its default.
 
