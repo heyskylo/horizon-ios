@@ -760,3 +760,31 @@ fn a_door_opens_with_power_beside_either_half_and_closes_without_it() {
         }
     }
 }
+
+/// `TrapDoorBlock` and `FenceGateBlock` take `POWERED` and `OPEN` from
+/// `hasNeighborSignal` of their own position, and give both up with it.
+#[test]
+fn trapdoors_and_fence_gates_open_with_power_beside_them() {
+    let blocks: [(&str, &[(&str, &str)]); 4] = [
+        ("oak_trapdoor", &[("facing", "north"), ("half", "bottom")]),
+        ("iron_trapdoor", &[("facing", "north"), ("half", "bottom")]),
+        ("oak_fence_gate", &[("facing", "north")]),
+        ("bamboo_fence_gate", &[("facing", "north")]),
+    ];
+    for (name, props) in blocks {
+        let mut w = world!();
+        let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(1, 5, 0));
+        w.set(at, w.id(name, props));
+        assert_eq!(w.prop(at, "open"), "false", "{name} starts closed");
+        w.set(source, w.id("redstone_block", &[]));
+        assert_eq!(w.prop(at, "open"), "true", "{name} opens with power");
+        assert_eq!(w.prop(at, "powered"), "true", "{name} is powered");
+        w.set(source, w.b().air());
+        assert_eq!(w.prop(at, "open"), "false", "{name} closes without it");
+        assert_eq!(
+            w.prop(at, "powered"),
+            "false",
+            "{name} is no longer powered"
+        );
+    }
+}
