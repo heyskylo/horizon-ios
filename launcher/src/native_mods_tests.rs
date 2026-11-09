@@ -1857,6 +1857,44 @@ fn compiles_outside_the_players_cargo_configuration(rust: &Toolchain) {
 }
 
 #[test]
+fn the_game_build_is_the_official_game_where_the_revision_has_it() {
+    let stage = dir("official-game");
+    // A revision from before horizon-official: horizon-client's game, as its release shipped.
+    assert_eq!(
+        api::game_package(&stage, Target::Client, false),
+        "horizon-client"
+    );
+    fs::create_dir_all(stage.join("crates/horizon-official")).unwrap();
+    fs::write(stage.join("crates/horizon-official/Cargo.toml"), "").unwrap();
+    assert_eq!(
+        api::game_package(&stage, Target::Client, false),
+        api::OFFICIAL
+    );
+    // The server build has no Horizon parts; trait mods build their generated executable.
+    assert_eq!(
+        api::game_package(&stage, Target::Server, false),
+        "horizon-client"
+    );
+    assert_eq!(
+        api::game_package(&stage, Target::Client, true),
+        api::PACKAGE
+    );
+    for rust in toolchains("/rust/1.99.1-x") {
+        let cmd = compile(
+            &rust,
+            &stage,
+            Target::Client,
+            Path::new("/native/target"),
+            Profile::Performance,
+            api::OFFICIAL,
+        );
+        let args = args_after_host(&rust, &cmd);
+        assert!(args.ends_with(&["-p", api::OFFICIAL, "--bin", api::OFFICIAL].map(String::from)));
+    }
+    let _ = fs::remove_dir_all(stage);
+}
+
+#[test]
 fn builds_fall_back_to_release_where_the_source_has_no_fast_profile() {
     let d = dir("profile");
     assert_eq!(profile_of(&d, Profile::Performance), Profile::Release);

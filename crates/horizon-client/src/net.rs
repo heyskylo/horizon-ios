@@ -7,10 +7,8 @@
 //! (crate::auth): the login joins the server through the session service and
 //! encrypts the connection (ClientHandshakePacketListenerImpl.handleHello).
 use crate::auth::AuthSession;
-use crate::studio::{Metadata, RecorderStatus, StudioRecorder};
 use horizon_protocol::{
     PROTOCOL_VERSION,
-    buf::Reader,
     connection::{ConnReader, ConnWriter, Connection, Counters},
     crypto::{generate_secret, offline_uuid, server_hash},
     packets::{Empty, configuration as cfg, handshake, login, play},
@@ -37,6 +35,37 @@ use std::{
 /// `ClientboundCookieRequestPacket`. A `transfer` carries them to the next
 /// connection (`TransferState`), so a proxy's backend switch keeps them.
 pub type Cookies = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+
+/// A recording of the session's packets: the tap a replay recorder plugs into. Replay recording is a
+/// platform feature (docs/layers.md, "Controllers, splitscreen, replays and UI pages"); the engine only
+/// hands it the packets: the network thread what it receives, the game thread what the client makes for
+/// the recording itself (its own movement, pose and swings).
+pub trait PacketRecorder: Send {
+    /// Whether it still takes packets (false once stopped or failed).
+    fn is_active(&self) -> bool;
+    /// A play packet the network thread received, decoded, with its id and payload as they came.
+    /// The recorder decides what it keeps.
+    fn received(&self, packet: &play::Clientbound, id: i32, payload: &[u8]);
+    /// A packet the client made for the recording, encoded, stamped now.
+    fn record_packet(&self, id: i32, payload: &[u8]);
+    fn status(&self) -> RecorderStatus;
+    /// Finishes the recording; the file it wrote.
+    fn stop(self: Box<Self>) -> std::io::Result<PathBuf>;
+}
+
+/// Where a recording stands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecorderStatus {
+    pub active: bool,
+    pub path: PathBuf,
+    pub elapsed: Duration,
+    pub packet_count: u64,
+    pub bytes_written: u64,
+    pub error: Option<String>,
+}
+
+/// The session's recorder, shared with its network thread.
+type RecorderSlot = Arc<Mutex<Option<Box<dyn PacketRecorder>>>>;
 
 /// What the network thread reports to the game.
 pub enum Event {
@@ -116,8 +145,8 @@ pub struct Session {
     debug: bool,
     /// The far terrain requests waiting for the server (`lod_net`).
     far: Arc<crate::lod_net::Inbox>,
-    /// Active packet recorder for Studio replay recordings.
-    pub recorder: Arc<Mutex<Option<StudioRecorder>>>,
+    /// The recording running, if any.
+    recorder: RecorderSlot,
 }
 impl Session {
     /// The negotiated wire release, once the connection has been established.
@@ -308,31 +337,16 @@ impl Session {
     pub fn poll(&self) -> Vec<Event> {
         self.events.try_iter().collect()
     }
-    /// Start recording network packets to `.mcpr` format at `path`.
-    pub fn start_recording(
+    /// Starts recording into `recorder`. `initialize` runs first, while the network thread
+    /// can't record, so what it writes (a snapshot of the world) comes before any live packet.
+    pub fn start_recording<R: PacketRecorder + 'static>(
         &self,
-        path: impl Into<PathBuf>,
-        metadata: Metadata,
-    ) -> std::io::Result<()> {
-        self.start_recording_with_init(path, metadata, |_| {})
-    }
-
-    /// Start recording and initialize the stream while live packet recording is
-    /// excluded. This lets callers write the initial snapshot before packets
-    /// arriving on the network thread.
-    pub fn start_recording_with_init(
-        &self,
-        path: impl Into<PathBuf>,
-        metadata: Metadata,
-        initialize: impl FnOnce(&StudioRecorder),
-    ) -> std::io::Result<()> {
-        let rec = StudioRecorder::start(path.into(), metadata)?;
-        let mut recorder = self.recorder.lock().unwrap();
-        *recorder = Some(rec);
-        if let Some(recorder) = recorder.as_ref() {
-            initialize(recorder);
-        }
-        Ok(())
+        recorder: R,
+        initialize: impl FnOnce(&R),
+    ) {
+        let mut slot = self.recorder.lock().unwrap();
+        initialize(&recorder);
+        *slot = Some(Box::new(recorder));
     }
     /// Stop recording and finalize the `.mcpr` archive.
     pub fn stop_recording(&self) -> Option<std::io::Result<PathBuf>> {
@@ -351,25 +365,15 @@ impl Session {
     pub fn recorder_status(&self) -> Option<RecorderStatus> {
         self.recorder.lock().unwrap().as_ref().map(|r| r.status())
     }
-    /// Record an explicit packet into the active recording session at `timestamp_ms`.
-    pub fn record_packet_at(&self, timestamp_ms: u32, id: i32, payload: &[u8]) {
-        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
-            rec.record_packet_at(timestamp_ms, id, payload);
-        }
-    }
-    /// Record a packet into the active recording session at current elapsed time.
-    pub fn record_packet(&self, id: i32, payload: &[u8]) {
-        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
-            rec.record_packet(id, payload);
-        }
-    }
     /// Record an encoded Clientbound packet into the active recording session at current elapsed time.
     pub fn record_clientbound(&self, packet: &horizon_protocol::packets::play::Clientbound) {
         if self.is_recording() {
             let encoded = packet.encode();
             let mut reader = horizon_protocol::buf::Reader::new(&encoded);
-            if let Ok(id) = reader.varint() {
-                self.record_packet(id, reader.rest());
+            if let Ok(id) = reader.varint()
+                && let Some(rec) = self.recorder.lock().unwrap().as_ref()
+            {
+                rec.record_packet(id, reader.rest());
             }
         }
     }
@@ -782,7 +786,7 @@ fn run(
     transferred: bool,
     resources: &Path,
     lan: bool,
-    recorder: &Arc<Mutex<Option<StudioRecorder>>>,
+    recorder: &RecorderSlot,
 ) -> Result<Reason, Reason> {
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
@@ -983,7 +987,7 @@ fn receive_play(
     cookies: &Cookies,
     far: &crate::lod_net::Inbox,
     resources: &Path,
-    recorder: &Arc<Mutex<Option<StudioRecorder>>>,
+    recorder: &RecorderSlot,
 ) -> Result<Reason, Reason> {
     loop {
         let (id, payload) = reader
@@ -1002,14 +1006,10 @@ fn receive_play(
                 continue;
             }
         };
-        // Only while a recording runs: the filter copies what it keeps, and re-encodes
-        // AddEntity with a fresh UUID.
         if let Some(rec) = recorder.lock().unwrap().as_ref()
             && rec.is_active()
-            && let Some((recorded_id, recorded_payload)) =
-                studio_recording_packet(&packet, id, &payload)
         {
-            rec.record_packet(recorded_id, &recorded_payload);
+            rec.received(&packet, id, &payload);
         }
         let reply = |p: play::Serverbound| {
             if let Some(w) = shared_writer.lock().unwrap().as_mut() {
@@ -1080,52 +1080,6 @@ fn receive_play(
                 }
             }
         }
-    }
-}
-
-/// Return the packet bytes safe to persist in a Studio recording.
-///
-/// Unknown packets fail closed so a newly added protocol packet cannot bypass
-/// the privacy policy. `AddEntity` retains its entity id and state, but gets a
-/// fresh UUID so the recording cannot link that entity to an account UUID.
-fn studio_recording_packet<'a>(
-    packet: &play::Clientbound,
-    packet_id: i32,
-    payload: &'a [u8],
-) -> Option<(i32, std::borrow::Cow<'a, [u8]>)> {
-    use play::Clientbound as P;
-    use std::borrow::Cow;
-    match packet {
-        P::AddEntity(entity) => {
-            let mut anonymous = entity.clone();
-            anonymous.uuid = u128::from_be_bytes(generate_secret().ok()?);
-            let encoded = P::AddEntity(anonymous).encode();
-            let mut reader = Reader::new(&encoded);
-            let id = reader.varint().ok()?;
-            Some((id, Cow::Owned(reader.rest().to_vec())))
-        }
-        P::CookieRequest(_)
-        | P::CustomChatCompletions(_)
-        | P::CustomPayload(_)
-        | P::DeleteChat(_)
-        | P::Disconnect(_)
-        | P::DisguisedChat(_)
-        | P::PlayerChat(_)
-        | P::PlayerCombatKill(_)
-        | P::PlayerInfoRemove(_)
-        | P::PlayerInfoUpdate(_)
-        | P::ResetScore(_)
-        | P::ResourcePackPush(_)
-        | P::ServerLinks(_)
-        | P::SetPlayerTeam(_)
-        | P::SetScore(_)
-        | P::StoreCookie(_)
-        | P::SystemChat(_)
-        | P::TabList(_)
-        | P::TrackedWaypoint(_)
-        | P::Transfer(_)
-        | P::Unknown(..) => None,
-        _ => Some((packet_id, Cow::Borrowed(payload))),
     }
 }
 
@@ -1624,170 +1578,6 @@ mod tests {
             "Connecting to play.example.net, 25577"
         );
         assert_eq!(line("[::1]:25566"), "Connecting to ::1, 25566");
-    }
-
-    #[test]
-    fn studio_recording_drops_packets_with_direct_player_identity_or_private_text() {
-        use horizon_protocol::packets::configuration::{
-            ResourcePackPush, ServerLink, ServerLinkKind, ServerLinks, StoreCookie, Transfer,
-        };
-        use play::{
-            ChatTypeBound, Clientbound as P, CustomChatCompletions, PlayerInfo, PlayerInfoRemove,
-            PlayerInfoUpdate, ResetScore, SetPlayerTeam, SetScore, TrackedWaypoint, WaypointId,
-            WaypointTarget,
-        };
-
-        let packets = [
-            P::CookieRequest(cfg::CookieRequest {
-                key: "private_cookie".into(),
-            }),
-            P::CustomChatCompletions(CustomChatCompletions {
-                action: 2,
-                entries: vec!["/msg PlayerName private text".into()],
-            }),
-            P::CustomPayload(cfg::CustomPayload {
-                channel: "private:channel".into(),
-                data: b"private payload".to_vec(),
-            }),
-            P::DeleteChat(play::DeleteChat {
-                signature: (3, Some(vec![1, 2, 3])),
-            }),
-            P::DisguisedChat(play::DisguisedChat {
-                message: Tag::String("private message".into()),
-                chat_type: ChatTypeBound {
-                    chat_type: 0,
-                    name: Tag::String("PlayerName".into()),
-                    target: None,
-                },
-            }),
-            P::PlayerCombatKill(play::PlayerCombatKill {
-                id: 7,
-                message: Tag::String("PlayerName was slain".into()),
-            }),
-            P::PlayerChat(play::PlayerChat {
-                global_index: 1,
-                sender: 7,
-                index: 2,
-                signature: None,
-                content: "private message".into(),
-                timestamp: 3,
-                salt: 4,
-                last_seen: vec![],
-                unsigned_content: None,
-                filter: (0, vec![]),
-                chat_type: ChatTypeBound {
-                    chat_type: 0,
-                    name: Tag::String("PlayerName".into()),
-                    target: None,
-                },
-            }),
-            P::ResetScore(ResetScore {
-                owner: "PlayerName".into(),
-                objective: Some("deaths".into()),
-            }),
-            P::SetScore(SetScore {
-                owner: "PlayerName".into(),
-                objective: "deaths".into(),
-                score: 1,
-                display: None,
-                number_format: None,
-            }),
-            P::PlayerInfoRemove(PlayerInfoRemove { uuids: vec![7] }),
-            P::PlayerInfoUpdate(PlayerInfoUpdate {
-                actions: 1,
-                entries: vec![PlayerInfo {
-                    uuid: 7,
-                    name: Some("PlayerName".into()),
-                    ..PlayerInfo::default()
-                }],
-            }),
-            P::ResourcePackPush(ResourcePackPush {
-                id: 8,
-                url: "https://private.example/pack.zip".into(),
-                hash: "hash".into(),
-                required: false,
-                prompt: None,
-            }),
-            P::ServerLinks(ServerLinks {
-                links: vec![ServerLink {
-                    kind: ServerLinkKind::Known(0),
-                    link: "https://private.example".into(),
-                }],
-            }),
-            P::SetPlayerTeam(SetPlayerTeam {
-                name: "red".into(),
-                method: 3,
-                parameters: None,
-                players: vec!["PlayerName".into()],
-            }),
-            P::StoreCookie(StoreCookie {
-                key: "private_cookie".into(),
-                payload: b"secret".to_vec(),
-            }),
-            P::SystemChat(play::SystemChat {
-                content: Tag::String("private message".into()),
-                overlay: false,
-            }),
-            P::TabList(play::TabList {
-                header: Tag::String("PlayerName".into()),
-                footer: Tag::End,
-            }),
-            P::TrackedWaypoint(TrackedWaypoint {
-                operation: play::waypoint_operation::TRACK,
-                id: WaypointId::Uuid(7),
-                style: "minecraft:default".into(),
-                color: None,
-                target: WaypointTarget::Empty,
-            }),
-            P::Transfer(Transfer {
-                host: "private.example".into(),
-                port: 25565,
-            }),
-            P::Disconnect(cfg::Disconnect {
-                reason: Tag::String("PlayerName was disconnected".into()),
-            }),
-            P::Unknown(999, b"unclassified private payload".to_vec()),
-        ];
-
-        for packet in packets {
-            assert!(
-                studio_recording_packet(&packet, packet.id(), b"raw packet payload").is_none(),
-                "{} should be excluded from recordings",
-                packet.name()
-            );
-        }
-    }
-
-    #[test]
-    fn studio_recording_replaces_entity_uuids_but_keeps_entity_state() {
-        let original = play::AddEntity {
-            id: 18,
-            uuid: 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10,
-            kind: 42,
-            position: [1.0, 64.0, -2.0],
-            velocity: [0.0, 0.0, 0.0],
-            pitch: 1,
-            yaw: 2,
-            head_yaw: 3,
-            data: 4,
-        };
-        let packet = play::Clientbound::AddEntity(original.clone());
-        let (id, payload) = studio_recording_packet(&packet, packet.id(), b"unused").unwrap();
-        let play::Clientbound::AddEntity(recorded) =
-            play::Clientbound::decode(id, &payload).unwrap()
-        else {
-            panic!("sanitized packet changed type")
-        };
-
-        assert_ne!(recorded.uuid, original.uuid);
-        assert_eq!(recorded.id, original.id);
-        assert_eq!(recorded.kind, original.kind);
-        assert_eq!(recorded.position, original.position);
-        assert_eq!(recorded.velocity, original.velocity);
-        assert_eq!(recorded.pitch, original.pitch);
-        assert_eq!(recorded.yaw, original.yaw);
-        assert_eq!(recorded.head_yaw, original.head_yaw);
-        assert_eq!(recorded.data, original.data);
     }
 
     #[test]
@@ -2415,8 +2205,45 @@ mod tests {
         }
     }
 
+    /// A recorder that keeps what reaches it, as (id, payload).
+    #[derive(Clone, Default)]
+    struct TestRecorder(Arc<Mutex<Vec<(i32, Vec<u8>)>>>);
+    impl PacketRecorder for TestRecorder {
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn received(&self, _packet: &play::Clientbound, id: i32, payload: &[u8]) {
+            self.0.lock().unwrap().push((id, payload.to_vec()));
+        }
+        fn record_packet(&self, id: i32, payload: &[u8]) {
+            self.0.lock().unwrap().push((id, payload.to_vec()));
+        }
+        fn status(&self) -> RecorderStatus {
+            RecorderStatus {
+                active: true,
+                path: PathBuf::from("test.mcpr"),
+                elapsed: Duration::ZERO,
+                packet_count: self.0.lock().unwrap().len() as u64,
+                bytes_written: 0,
+                error: None,
+            }
+        }
+        fn stop(self: Box<Self>) -> std::io::Result<PathBuf> {
+            Ok(PathBuf::from("test.mcpr"))
+        }
+    }
+    impl TestRecorder {
+        fn decoded(&self) -> Vec<play::Clientbound> {
+            let packets = self.0.lock().unwrap();
+            packets
+                .iter()
+                .map(|(id, payload)| play::Clientbound::decode(*id, payload).unwrap())
+                .collect()
+        }
+    }
+
     #[test]
-    fn session_studio_recording_tap_records_packets_to_mcpr() {
+    fn session_recorder_gets_the_play_packets_the_network_thread_receives() {
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let (send, events) = channel();
@@ -2433,20 +2260,8 @@ mod tests {
             far: Arc::default(),
             recorder: Arc::new(Mutex::new(None)),
         };
-
-        let temp_dir = std::env::temp_dir().join(format!(
-            "horizon-studio-test-{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let mcpr_path = temp_dir.join("test_tap.mcpr");
-
-        let meta = Metadata::new("Singleplayer World".into(), true, "26.3".into());
-        session.start_recording(&mcpr_path, meta).unwrap();
+        let recorder = TestRecorder::default();
+        session.start_recording(recorder.clone(), |_| {});
         assert!(session.is_recording());
 
         let (thread_writer, thread_configuring, thread_recorder) = (
@@ -2478,54 +2293,36 @@ mod tests {
             relatives: 0,
         });
         server.send(&pos_pkt.encode()).unwrap();
-
-        // Disconnect ends receive_play loop
+        // Disconnect ends receive_play's loop.
         let disc_pkt = play::Clientbound::Disconnect(cfg::Disconnect {
             reason: Tag::String("Replay tap test completed".into()),
         });
         server.send(&disc_pkt.encode()).unwrap();
-
         let _ = thread.join().unwrap();
 
-        let saved_path = session.stop_recording().unwrap().unwrap();
-        assert_eq!(saved_path, mcpr_path);
+        assert_eq!(
+            session.stop_recording().unwrap().unwrap(),
+            PathBuf::from("test.mcpr")
+        );
         assert!(!session.is_recording());
-        assert!(mcpr_path.exists());
-
-        // Verify that the recording archive contains the clientbound packets.
-        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
-        assert_eq!(recording.total_packets(), 1);
-        assert_eq!(recording.metadata.server_name, "Singleplayer World");
-        assert!(recording.metadata.singleplayer);
-        assert!(recording.metadata.players.is_empty());
-
-        let packet1 = recording.next_packet().unwrap().unwrap();
-        assert!(recording.next_packet().unwrap().is_none());
-
-        let decoded1 = play::Clientbound::decode(packet1.id, &packet1.payload).unwrap();
-        assert_eq!(decoded1, pos_pkt);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        // The recorder is handed both; what a recording keeps is the recorder's choice.
+        assert_eq!(recorder.decoded(), [pos_pkt, disc_pkt]);
     }
 
     #[test]
-    fn studio_session_record_local_player_motion() {
-        use crate::studio::Metadata;
-        use horizon_protocol::packets::play;
+    fn session_recorder_gets_the_packets_the_client_makes() {
+        use horizon_protocol::entity_data::{Value, serializer};
 
         let session = Session::replay("StudioTester");
-
-        let temp_dir =
-            std::env::temp_dir().join(format!("horizon-studio-motion-test-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let mcpr_path = temp_dir.join("test_motion.mcpr");
-
-        let meta = Metadata::new("local".into(), true, "26.3".into());
-        session.start_recording(&mcpr_path, meta).unwrap();
-        assert!(session.is_recording());
-
-        // Simulate local player movement packet recorded during recording session
-        let pos_pkt = play::Clientbound::PlayerPosition(play::PlayerPosition {
+        session.record_clientbound(&play::Clientbound::SwingAnimation(play::SwingAnimation {
+            id: 1,
+            hand: 0,
+            kind: 0,
+            duration: 6,
+        }));
+        let recorder = TestRecorder::default();
+        // What `initialize` writes comes first.
+        let snapshot = play::Clientbound::PlayerPosition(play::PlayerPosition {
             teleport: 0,
             position: [12.5, 64.0, -88.5],
             delta: [0.0; 3],
@@ -2533,43 +2330,12 @@ mod tests {
             pitch: 15.0,
             relatives: 0,
         });
-        let encoded = pos_pkt.encode();
-        let mut reader = horizon_protocol::buf::Reader::new(&encoded);
-        let id = reader.varint().unwrap();
-        session.record_packet(id, reader.rest());
-
-        let saved_path = session.stop_recording().unwrap().unwrap();
-        assert_eq!(saved_path, mcpr_path);
-        assert!(!session.is_recording());
-
-        // Verify the recording preserves the motion packet for replay playback.
-        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
-        assert_eq!(recording.total_packets(), 1);
-        let packet = recording.next_packet().unwrap().unwrap();
-        let decoded = play::Clientbound::decode(packet.id, &packet.payload).unwrap();
-        assert_eq!(decoded, pos_pkt);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn studio_session_record_local_player_animations() {
-        use crate::studio::Metadata;
-        use horizon_protocol::entity_data::{Value, serializer};
-        use horizon_protocol::packets::play;
-
-        let session = Session::replay("StudioTester");
-
-        let temp_dir =
-            std::env::temp_dir().join(format!("horizon-studio-anim-test-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let mcpr_path = temp_dir.join("test_anim.mcpr");
-
-        let meta = Metadata::new("local".into(), true, "26.3".into());
-        session.start_recording(&mcpr_path, meta).unwrap();
-        assert!(session.is_recording());
-
-        // 1. Arm swing animation
+        session.start_recording(recorder.clone(), |rec| {
+            let encoded = snapshot.encode();
+            let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+            let id = reader.varint().unwrap();
+            rec.record_packet(id, reader.rest());
+        });
         let swing_pkt = play::Clientbound::SwingAnimation(play::SwingAnimation {
             id: 42,
             hand: 0,
@@ -2577,8 +2343,6 @@ mod tests {
             duration: 6,
         });
         session.record_clientbound(&swing_pkt);
-
-        // 2. Crouch and sprint entity metadata
         let data_pkt = play::Clientbound::SetEntityData(play::SetEntityData {
             id: 42,
             values: vec![
@@ -2587,24 +2351,12 @@ mod tests {
             ],
         });
         session.record_clientbound(&data_pkt);
+        assert_eq!(session.recorder_status().unwrap().packet_count, 3);
+        session.stop_recording().unwrap().unwrap();
+        // Nothing reaches a stopped recording.
+        session.record_clientbound(&swing_pkt);
 
-        let saved_path = session.stop_recording().unwrap().unwrap();
-        assert_eq!(saved_path, mcpr_path);
-        assert!(!session.is_recording());
-
-        // Verify the recording preserves both animation packets for playback.
-        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
-        assert_eq!(recording.total_packets(), 2);
-        let packets = [
-            recording.next_packet().unwrap().unwrap(),
-            recording.next_packet().unwrap().unwrap(),
-        ];
-        let decoded_swing = play::Clientbound::decode(packets[0].id, &packets[0].payload).unwrap();
-        assert_eq!(decoded_swing, swing_pkt);
-        let decoded_data = play::Clientbound::decode(packets[1].id, &packets[1].payload).unwrap();
-        assert_eq!(decoded_data, data_pkt);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        assert_eq!(recorder.decoded(), [snapshot, swing_pkt, data_pkt]);
     }
 
     #[test]

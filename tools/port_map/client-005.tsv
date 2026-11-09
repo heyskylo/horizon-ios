@@ -97,7 +97,7 @@ EnderDragonRenderState.getHeadPartYOffset	port	crates/horizon-client/src/game/dr
 EntityRenderState.fillCrashReportCategory	skip:debug		crash report detail only
 HumanoidRenderState.ticksUsingItem	port	crates/horizon-client/src/game/mob_blocks.rs::Game::held_item_geometry	use time for the hand that is using an item
 ItemClusterRenderState.extractItemGroupRenderState	port	crates/horizon-client/src/item_render.rs::rendered_amount	rendered count of the stack; the seed is taken in cluster_poses
-SheepRenderState.getWoolColor	port	crates/horizon-client/src/mobs/render.rs::sheep_wool_rgb	gap: player: a jeb_ sheep does not cycle through the rainbow (ColorLerper)
+SheepRenderState.getWoolColor	inline	crates/horizon-client/src/mobs/render.rs::layers	the wool colour the layers draw: a jeb_ custom name lerps the 16 dye colours over 25 ticks (jeb_wool_rgb), any other sheep uses pack_dyes::sheep_wool(color)
 BabyModelTransform.apply	skip:data		baby meshes are baked into entity-models.json
 HumanoidModel.createMesh	skip:data		humanoid mesh is baked into entity-models.json
 HumanoidModel.createArmorMeshSet	skip:data		armour meshes are baked into entity-models.json
