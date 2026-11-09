@@ -335,10 +335,16 @@ impl SectionScratch {
 }
 
 /// Lighting scratch (some 4.4 MB at full height) shared by every thread that lights: a job takes one
-/// (or makes one) and gives it back, and at most [`KEPT_SCRATCH`] stay allocated between jobs. One per
+/// (or makes one) and gives it back, and at most [`kept_scratch`] stay allocated between jobs. One per
 /// thread kept that much on every generation worker for good.
 static SCRATCH_POOL: std::sync::Mutex<Vec<LightScratch>> = std::sync::Mutex::new(Vec::new());
-const KEPT_SCRATCH: usize = 4;
+
+/// How many scratches the pool keeps: one per worker thread (at least 4), so a chunk-load burst
+/// that lights on every streaming worker at once reuses them instead of building and freeing a
+/// scratch per job. `worker_count` is read once and cached.
+fn kept_scratch() -> usize {
+    horizon_threads::worker_count().max(4)
+}
 
 /// A scratch from the pool, or a new one.
 fn take_scratch() -> LightScratch {
@@ -349,12 +355,12 @@ fn take_scratch() -> LightScratch {
     taken.unwrap_or_else(LightScratch::new)
 }
 
-/// Gives a scratch back to the pool, unless it already keeps [`KEPT_SCRATCH`].
+/// Gives a scratch back to the pool, unless it already keeps [`kept_scratch`].
 fn give_scratch(scratch: LightScratch) {
     let mut pool = SCRATCH_POOL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pool.len() < KEPT_SCRATCH {
+    if pool.len() < kept_scratch() {
         pool.push(scratch);
     }
 }
@@ -2437,7 +2443,7 @@ pub(crate) mod tests {
             std::array::from_fn(|dz| std::array::from_fn(|dx| Some(&chunks[dz * 3 + dx])));
         let want = old_light_chunk(&region, &t, true);
         std::thread::scope(|s| {
-            for _ in 0..KEPT_SCRATCH * 2 {
+            for _ in 0..kept_scratch() + 2 {
                 s.spawn(|| {
                     for _ in 0..3 {
                         let got = light_chunk(&region, &t, true);
@@ -2449,7 +2455,7 @@ pub(crate) mod tests {
                 });
             }
         });
-        assert!(SCRATCH_POOL.lock().unwrap().len() <= KEPT_SCRATCH);
+        assert!(SCRATCH_POOL.lock().unwrap().len() <= kept_scratch());
     }
 
     #[test]
