@@ -69,6 +69,13 @@ pub(super) fn capture(compiler: &Compiler<'_>, input: impl BufRead, mut log: imp
         if output.errors.len() < 4 {
             output.errors.push(rendered.to_owned());
         }
+        // A mod's own package (its trait mod's `[api]` package, a mixin crate) is all the mod's:
+        // an error there names it whatever the plan says, so a trait mod made for another commit
+        // is left out like a helper that no longer compiles.
+        if let Some(owner) = package_owner(compiler, &value["manifest_path"]) {
+            output.owners.insert(owner);
+            continue;
+        }
         if let (Some(plan), Some(spans)) = (&plan, message["spans"].as_array()) {
             for span in spans.iter().filter(|s| s["is_primary"] == true) {
                 if let Some(owner) = owner(compiler, plan, &value["manifest_path"], span) {
@@ -78,6 +85,21 @@ pub(super) fn capture(compiler: &Compiler<'_>, input: impl BufRead, mut log: imp
         }
     }
     output
+}
+
+/// The mod whose own package `manifest` is (`native-api/<id>/`, `native-crates/<id>/<crate>/` in
+/// the stage), as `id version`; none for Horizon's crates.
+fn package_owner(compiler: &Compiler<'_>, manifest: &Value) -> Option<String> {
+    let manifest = Path::new(manifest.as_str()?).canonicalize().ok()?;
+    let stage = compiler.stage.canonicalize().ok()?;
+    let mut parts = manifest.strip_prefix(&stage).ok()?.components();
+    let folder = parts.next()?.as_os_str();
+    if folder != "native-api" && folder != "native-crates" {
+        return None;
+    }
+    let id = parts.next()?.as_os_str().to_str()?;
+    let (id, version) = compiler.mods.iter().find(|(m, _)| m == id)?;
+    Some(format!("{id} {version}"))
 }
 
 /// A file's functions (where each is, its name and its tokens), inline modules (where, name),
@@ -448,6 +470,47 @@ mod tests {
             "{error}"
         );
         assert!(!error.contains("fast_mesh"), "{error}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A trait mod pinned to a fork's commit (its `[api]` package uses hooks the base Nightly
+    /// lacks): the error is in the mod's own package, so the mod is named and left out, and the
+    /// build can move to the commit it pins. Horizon's own crates name no one.
+    #[test]
+    fn an_error_in_a_mods_own_package_names_the_mod() {
+        let dir = super::super::tests::dir("compiler-package-owner");
+        for package in [
+            "native-api/quests",
+            "native-crates/quests/shared",
+            "crates/horizon-client",
+        ] {
+            fs::create_dir_all(dir.join(package)).unwrap();
+            fs::write(dir.join(package).join("Cargo.toml"), "").unwrap();
+        }
+        let mods = vec![("quests".to_owned(), "0.1.0".to_owned())];
+        let compiler = Compiler {
+            stage: &dir,
+            source: &dir.join("original"),
+            mods: &mods,
+        };
+        let line = |package: &str| {
+            json!({
+                "reason": "compiler-message",
+                "manifest_path": dir.join(package).join("Cargo.toml"),
+                "message": {"level": "error", "rendered": "error[E0432]: unresolved import\n", "spans": []},
+            })
+            .to_string()
+        };
+        for package in ["native-api/quests", "native-crates/quests/shared"] {
+            let output = capture(&compiler, Cursor::new(line(package)), Vec::new());
+            assert_eq!(output.owners(), ["quests 0.1.0"], "{package}");
+        }
+        let output = capture(
+            &compiler,
+            Cursor::new(line("crates/horizon-client")),
+            Vec::new(),
+        );
+        assert!(output.owners().is_empty(), "{:?}", output.owners());
         fs::remove_dir_all(dir).unwrap();
     }
 

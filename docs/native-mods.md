@@ -181,6 +181,11 @@ API 2 adds the item panel beside container screens and its recipe pages (`native
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
 recipe viewer needs.
 
+The pending `panel_style` helper, `native_panel_style(mod_id, style)`, lets a recipe viewer's panel look like one:
+`NativePanelStyle::Viewer` draws its page buttons as square buttons on a bar over the items and its search box with the
+viewer's skin, as Horizon's Recipes panel does; `NativePanelStyle::RecipeBook` (the default) keeps the recipe book's
+arrows. Only the drawing changes. Bundles need `"hooks": @API:panel_style@`.
+
 API 11 adds `GameLevel::native_send_particles` on authoritative servers. It sends supported
 vanilla particles to nearby players. Block particles require a valid block state. Item, trail and
 vibration particles are not supported by the current dispatch. Count zero sends one directional
@@ -3842,6 +3847,18 @@ chest's own slots, then the player's inventory, then the hotbar; an empty slot i
 counts the slots, this lists them. It is `None` on a server, while no server-opened menu is up (the window's own
 inventory, creative) and for a menu whose slots the client doesn't lay out (a lectern).
 
+`host.menu_slot_roles()` (client, `native_menu_slot_roles`, API @API:slot_roles@) says what each of those slots is for,
+in the same numbering, so an inventory mod (drags, the wheel, sorting, quick-stack) works in any menu without a list
+of menu type ids: `NativeSlotRole::Hotbar` and `Inventory` (the player's), `Equipment` (armour, the off hand, a
+mount's saddle and body armour), `Storage` (slots that only hold items: chests, barrels, shulker boxes, ender chests,
+hoppers, dispensers, droppers, a mount's chest, a content mod menu type's `links`), `CraftingGrid` (the inventory's
+2x2, the crafting table's and the crafter's 3x3, a mod menu type's `crafting` grid), `Result` (crafting, furnace and
+workstation results, a mod menu type's `results` and crafting result) and `Input` (any other slot: a furnace's input
+and fuel, a workstation's inputs, a mod menu type's slots its JSON gives no role). It is `None` where `menu_stacks` is.
+The enum is `#[non_exhaustive]`: treat a role you don't know as `Input`. An injection mod, which clicks by Horizon's
+own slot ids (`Game::slots`), asks `Game::native_slot_roles()` for `(slot, role)` pairs of the open menu screen
+instead; Horizon's sort buttons (the extras) use it too.
+
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
 
@@ -4825,6 +4842,38 @@ placement counts and takes from the player's inventory first, then the sources i
 `ServerPlaceRecipe` matching. What the grid held goes back to the player as vanilla's does. A changed source is saved
 and its comparators update. Every mod adds to the same list. With no answer the placement is vanilla's, from the
 inventory alone. A recipe viewer's craftable marks are still worked out on the client from the player's inventory.
+
+### Recipe viewers: lookups and categories
+
+A mod that draws items on screens of its own (a quest book, a guide) can open whatever recipe viewer is installed
+without depending on it. `native_show_recipes(stack, lookup)` (client, `host.show_recipes`) asks for `stack`'s recipes
+(`NativeRecipeLookup::Recipes`, a left click), its uses (`Uses`, a right click), or for what a key that went down over it
+does in the viewer (`Key("key.keyboard.a")`), so the viewer's own recipe, uses and bookmark keys work there as over its
+item list, however the player bound them. It only queues the ask, so a screen hook with `&dyn Host` may call it. The
+viewer hears it at the start of the next frame:
+
+```rust
+fn recipe_lookup(&self, host: &mut dyn Host, event: &mut RecipeLookupEvent<'_>) -> Flow {
+    match event.lookup {
+        NativeRecipeLookup::Recipes => open_recipes(host, event.stack),
+        NativeRecipeLookup::Uses => open_uses(host, event.stack),
+        NativeRecipeLookup::Key(key) if is_my_key(host, key) => act(host, key, event.stack),
+        _ => return Flow::Continue,
+    }
+    Flow::Cancel // handled: no other viewer hears it
+}
+```
+
+With no viewer installed nothing happens, and the asking mod works as before.
+
+`native_recipe_categories(categories)` (client) collects the mods' own recipe categories for a viewer: a fishing spot,
+a sieve, a machine. A `NativeRecipeCategory` has an id, a title and a subtitle in the player's language, an icon, its
+catalysts (the items or blocks that do it) and its recipes, each of input slots to outputs (`NativeChanceOutput`: the
+stack, the chance it comes each time, the count range, notes) with notes of its own. A viewer gets them with
+`native_collect_recipe_categories()` and gets them again when `native_recipe_categories_version()` moves; a mod moves
+it with `native_recipe_categories_changed()`, as when its server's data reaches it. The categories come from the
+client, so a mod whose data the server owns (loot tables a data pack may change) works them out on the server and sends
+them to its client half with its own messages, on join and after `/reload`.
 
 ### Menu links
 
