@@ -9348,7 +9348,11 @@ mod piglin_live_anger_memory_tests {
     /// had angered came back calm after its chunk reloaded.
     #[test]
     fn a_saved_guarded_anger_loads_its_uuid_and_ticks() {
-        let raw = raw();
+        let mut raw = raw();
+        if let Tag::Compound(fields) = &mut raw {
+            fields.insert("id".into(), string("minecraft:piglin"));
+            fields.insert("Pos", doubles(&[0.0, 64.0, 0.0]));
+        }
         let template = mob();
         let types = [(template.kind.id.clone(), template.kind.clone())].into();
         let loaded = mob_from_nbt(&raw, &types, 2, None).unwrap();
@@ -9361,6 +9365,7 @@ mod piglin_live_anger_memory_tests {
         // counter holds the longest it can while the goal ticks it down.
         let forever = Tag::compound([
             ("id", string("minecraft:piglin")),
+            ("Pos", doubles(&[0.0, 64.0, 0.0])),
             (
                 "Brain",
                 Tag::compound([(
