@@ -280,11 +280,11 @@ impl Game<'_> {
     /// front of) it, pulled in where visual shapes are in the way. Returns the
     /// position, yaw and pitch to render from.
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
-        if self.studio_freecam.active {
+        if self.studio.freecam.active {
             return Some((
-                self.studio_freecam.position,
-                self.studio_freecam.yaw,
-                self.studio_freecam.pitch,
+                self.studio.freecam.position,
+                self.studio.freecam.yaw,
+                self.studio.freecam.pitch,
             ));
         }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
@@ -311,8 +311,8 @@ impl Game<'_> {
             }
         };
         let mut view = self.view;
-        // An emote pulls the camera back from the player's face (`game/cosmetics/emotes.rs`).
-        let pull = self.emote_camera_pull(partial);
+        // A hook may pull the camera back (an emote, from the player's face).
+        let pull = self.hooks_camera_distance(partial);
         let kind = match self.camera_type {
             CameraType::FirstPerson => horizon_client::camera::CameraType::FirstPerson,
             CameraType::ThirdPersonBack => horizon_client::camera::CameraType::ThirdPersonBack,
@@ -643,8 +643,9 @@ impl Game<'_> {
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
-        if self.studio_freecam.active {
-            self.studio_freecam
+        if self.studio.freecam.active {
+            self.studio
+                .freecam
                 .turn((xo * 0.15) as f32, (yo * 0.15) as f32);
             return;
         }
@@ -697,7 +698,7 @@ impl Game<'_> {
     /// `LevelExtractor`'s skip of the camera entity: the player's own body
     /// is drawn unless the camera is in first person, or while it sleeps.
     pub(super) fn own_body_in_view(&self) -> bool {
-        !self.camera_type.first_person() || self.sleeping.is_some() || self.studio_freecam.active
+        !self.camera_type.first_person() || self.sleeping.is_some() || self.studio.freecam.active
     }
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).

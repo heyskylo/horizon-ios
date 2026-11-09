@@ -3,7 +3,9 @@
 //! crate until the platform's executable installs it: it uses only the crate's public API, so it
 //! moves to a platform crate unchanged, and nothing else in the crate names it.
 
+mod colors;
 mod custom_sky;
+mod item_bars;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,9 +16,21 @@ use crate::pack_hooks::PackFormats;
 pub struct Formats;
 
 impl PackFormats for Formats {
+    fn colors(&self, root: &Path) -> Option<crate::pack_palette::PackColors> {
+        Some(colors::read(root))
+    }
+
+    fn emissive_suffix(&self, root: &Path) -> Option<String> {
+        Some(horizon_optifine::emissive::suffix(root))
+    }
+
     fn custom_sky(&self, root: &Path) -> Option<Arc<dyn crate::custom_sky::SkyLayers>> {
         let sky = custom_sky::CustomSky::load(root);
         (!sky.is_empty()).then(|| Arc::new(sky) as _)
+    }
+
+    fn item_bars(&self, root: &Path) -> Option<Arc<dyn crate::pack_palette::ItemBars>> {
+        item_bars::read(root)
     }
 }
 

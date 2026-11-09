@@ -2666,9 +2666,9 @@ pub fn mob_from_nbt_with_random(
         m.extra.counter = number(tag.get("still_timeout")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Shulker {
-        m.extra.variant3 = number(tag.get("AttachFace")).unwrap_or(0).clamp(0, 5) as u8;
-        m.extra.counter = number(tag.get("Peek")).unwrap_or(0).clamp(0, 100) as i32;
-        m.extra.color = number(tag.get("Color")).map_or(16, |c| c.clamp(0, 16) as u8);
+        m.extra.variant3 = (number(tag.get("AttachFace")).unwrap_or(0) % 6).unsigned_abs() as u8;
+        m.extra.counter = number(tag.get("Peek")).map_or(0, |v| v as i8 as i32);
+        m.extra.color = number(tag.get("Color")).map_or(16, |v| v as i8 as u8);
         m.anim.v[0] = m.extra.counter as f32 * 0.01;
         m.anim.vo[0] = m.anim.v[0];
         // Shulker.setPos: square on its block.

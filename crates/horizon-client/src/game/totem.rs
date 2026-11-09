@@ -149,7 +149,7 @@ impl Game<'_> {
         self.audio
             .play_unshared("minecraft:item.totem.use", Some(body.bounds.feet), 1.0, 1.0);
         if target == TrackingTarget::LocalPlayer {
-            self.pad_rumble(horizon_client::gamepad::Rumble::Totem);
+            self.input_feedback(horizon_client::input_source::Feedback::Totem);
             // findTotem, then LocalPlayer.displayItemActivation. The offsets
             // come from the player's own random in vanilla, not the level's:
             // the client-only particle random stands in for it. The server

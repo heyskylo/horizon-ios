@@ -359,12 +359,19 @@ impl Game<'_> {
             self.sculk.tracker = WardenSpawnTracker::from_nbt(tag);
         }
     }
-    /// Write the tracker into the player data being saved.
+    /// The tracker as saved, once it has been loaded.
+    pub(super) fn warden_tracker_tag(&self) -> Option<horizon_world::nbt::Tag> {
+        self.sculk
+            .tracker_loaded
+            .then(|| self.sculk.tracker.to_nbt())
+    }
+    /// Write the tracker into the player data being saved. With a LAN owner,
+    /// `store_owner` rewrites that from the owner's guest, so it puts the
+    /// tracker there as well (`playerdata::with_warden`).
     pub(super) fn save_warden_tracker(&mut self) {
-        if !self.sculk.tracker_loaded {
+        let Some(tag) = self.warden_tracker_tag() else {
             return;
-        }
-        let tag = self.sculk.tracker.to_nbt();
+        };
         let extra = self
             .level
             .player_extra
