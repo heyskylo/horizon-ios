@@ -592,3 +592,38 @@ fn a_repeater_is_locked_only_by_a_powered_diode_pointing_into_its_side() {
         "a redstone block beside it"
     );
 }
+
+/// `PoweredRailBlock.findPoweredRailSignal` gives up at `searchDepth >= 8`: a rail
+/// takes power from a powered neighbour up to eight rails away along the line, in
+/// either direction, and not from the ninth. A redstone block beside the rail at
+/// x = 0 powers the rails from x = -8 to x = 8.
+#[test]
+fn a_powered_rail_passes_power_eight_rails_along_in_both_directions() {
+    let mut w = world!();
+    w.floor(0, 14, "stone");
+    let rail = w.id("powered_rail", &[("shape", "east_west")]);
+    for x in -11..=11 {
+        w.set(BlockPos::new(x, 1, 0), rail);
+    }
+    for x in -11..=11 {
+        assert_eq!(
+            w.prop(BlockPos::new(x, 1, 0), "powered"),
+            "false",
+            "x = {x} before"
+        );
+    }
+    // Beside the middle rail, so only that one has a power source of its own.
+    w.set(BlockPos::new(0, 1, 1), w.id("redstone_block", &[]));
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    for x in -11i32..=11 {
+        let lit = x.abs() <= 8;
+        assert_eq!(
+            w.prop(BlockPos::new(x, 1, 0), "powered"),
+            if lit { "true" } else { "false" },
+            "the rail {} blocks from the powered one",
+            x.abs()
+        );
+    }
+}
