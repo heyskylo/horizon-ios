@@ -948,6 +948,15 @@ pub(super) struct TagStyle {
     pub line: u32,
 }
 
+/// `Entity.DATA_CUSTOM_NAME` of a mob named `name`: its component with its style (a name
+/// summoned or set as `{text: "..", color: "red"}` keeps its colour), else the plain text.
+pub(super) fn name_component(m: &Mob, name: &str) -> horizon_world::nbt::Tag {
+    match &m.custom_name_text {
+        Some(text) => horizon_client::scoreboard::json_to_tag(&text.component()),
+        None => horizon_protocol::text::literal(name),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,6 +964,29 @@ mod tests {
     use horizon_client::pose::Pose;
     use horizon_core::geometry::Vec3;
     use std::sync::Arc;
+
+    #[test]
+    fn a_mobs_name_is_sent_with_its_style() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let Ok(types) = horizon_client::mobs::MobTypes::load(&root) else {
+            return;
+        };
+        let cow = Arc::new(types.types["minecraft:cow"].clone());
+        let mut m = Mob::new(1, cow, Vec3::new(0.0, 64.0, 0.0), 0.0);
+        m.custom_name = Some("RED NAME".into());
+        let plain = horizon_protocol::text::literal("RED NAME");
+        assert_eq!(name_component(&m, "RED NAME"), plain);
+        let styled = horizon_world::nbt::Tag::compound([
+            ("text", horizon_world::nbt::Tag::String("RED NAME".into())),
+            ("color", horizon_world::nbt::Tag::String("red".into())),
+        ]);
+        m.custom_name_text = Some(horizon_client::entity_nbt::name_text(&styled));
+        let sent = horizon_client::entity_nbt::name_text(&name_component(&m, "RED NAME"));
+        assert_eq!(sent, horizon_client::entity_nbt::name_text(&styled));
+        assert_ne!(sent, horizon_client::entity_nbt::name_text(&plain));
+    }
 
     fn tag_font() -> HudAtlas {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
