@@ -627,3 +627,43 @@ fn a_powered_rail_passes_power_eight_rails_along_in_both_directions() {
         );
     }
 }
+
+/// `RedstoneLampBlock`: a lamp lights the moment it is powered, and loses its light
+/// only on a tick scheduled four ticks after the power goes: lit through the third
+/// tick, dark at the fourth. Power that comes back in time cancels it.
+#[test]
+fn a_redstone_lamp_lights_at_once_and_goes_dark_exactly_four_ticks_after_its_power() {
+    let mut w = world!();
+    let (lamp, power, air) = (
+        w.id("redstone_lamp", &[]),
+        w.id("redstone_block", &[]),
+        w.b().air(),
+    );
+    let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(1, 5, 0));
+    w.set(at, lamp);
+    w.set(source, power);
+    assert_eq!(w.prop(at, "lit"), "true", "lit at once, with no tick");
+    w.set(source, air);
+    for tick in 1..4 {
+        w.tick();
+        assert_eq!(w.prop(at, "lit"), "true", "still lit after {tick} ticks");
+    }
+    w.tick();
+    assert_eq!(w.prop(at, "lit"), "false", "dark after four");
+
+    // Power back inside the delay: the scheduled tick finds it powered and keeps the light.
+    w.set(source, power);
+    assert_eq!(w.prop(at, "lit"), "true");
+    w.set(source, air);
+    w.tick();
+    w.tick();
+    w.set(source, power);
+    for _ in 0..6 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(at, "lit"),
+        "true",
+        "power returned before the delay ran out"
+    );
+}
