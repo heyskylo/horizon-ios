@@ -45,9 +45,13 @@ and compares their outputs.
   [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one.
 - **Horizon's own features** (the launcher, the new menus) follow [the design system](docs/design-system.md) and are
   off by default wherever they would change the vanilla look.
-- **Three layers: engine, platform, Horizon.** Vanilla code never depends on the platform (mods, shader packs,
-  Horizon-only settings) or on Horizon (cosmetics, the shop, official servers, telemetry), and the platform never
-  depends on Horizon. [docs/layers.md](docs/layers.md) says where a new feature goes; CI checks the dependencies.
+- **Three layers: engine, platform, Horizon.**
+  - Vanilla code never depends on the platform (mods, shader packs, HDR, the settings system) or on Horizon
+    (its extras, cosmetics, the shop, official servers, telemetry).
+  - The platform never depends on Horizon.
+  - Horizon uses only the platform, never the engine: it will live in its own repository.
+
+  [docs/layers.md](docs/layers.md) says where a new feature goes; CI checks the dependencies.
 - **Everything players run is Rust.** Python and Java are fine for dev tools and harness drivers in `tools/`, never
   for player-facing code.
 - **No game files in the repo.** Never commit game files, decompiled source or prepared resources (`.local/`):
