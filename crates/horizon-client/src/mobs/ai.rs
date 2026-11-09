@@ -2308,11 +2308,10 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     let persistent = m.persistent || requires_custom_persistence(m);
     // removeWhenFarAway: animals, villagers, golems, patrols and raiders,
     // zombie villagers being cured and ridden mobs stay, bar the two felines.
-    let creature = m.kind.category == "creature";
     let feline_goes = feline_removed_when_far(m.species(), m.extra.tame || m.extra.trusting, m.age);
     let removable = !(never_removed_when_far(m.species())
         || super::aquatic::named_keeps_it(m)
-        || creature && m.kind.flags.animal && !m.extra.jockey && !feline_goes
+        || m.kind.category == "creature" && m.kind.flags.animal && !m.extra.jockey && !feline_goes
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
         || super::riders::keeps_alive(m));
