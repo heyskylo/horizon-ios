@@ -10,41 +10,8 @@ impl Game<'_> {
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         self.direct_craft_stop();
-        if self.screen == Screen::Playing && self.studio.replay.is_some() {
-            match key {
-                KeyCode::Escape => {
-                    self.close_studio_replay();
-                    return Ok(());
-                }
-                KeyCode::KeyP => {
-                    self.pause_focus = None;
-                    self.screen = Screen::Paused;
-                    self.pause_menu = true;
-                    self.capture(false);
-                }
-                KeyCode::KeyF => self.handle_studio_timeline_action(
-                    horizon_client::studio::TimelineAction::ToggleFreecam,
-                ),
-                KeyCode::KeyT => self.studio.timeline.visible = !self.studio.timeline.visible,
-                KeyCode::KeyM => self.add_studio_marker(),
-                KeyCode::Home => self.handle_studio_topbar_action(
-                    horizon_client::studio::TopBarAction::ResetCameraToPlayer,
-                ),
-                KeyCode::KeyL => {
-                    self.studio.freecam.locked_to_path = !self.studio.freecam.locked_to_path;
-                }
-                KeyCode::KeyK => self.handle_studio_timeline_action(
-                    horizon_client::studio::TimelineAction::AddCameraKeyframe,
-                ),
-                KeyCode::Delete => {
-                    if let Some(index) = self.studio.timeline.selected_keyframe {
-                        self.handle_studio_timeline_action(
-                            horizon_client::studio::TimelineAction::RemoveCameraKeyframe(index),
-                        );
-                    }
-                }
-                _ => {}
-            }
+        if self.screen == Screen::Playing && self.studio.replaying() {
+            self.studio_key(key);
             return Ok(());
         }
         // `CreativeModeInventoryScreen.keyPressed` clears `ignoreTextInput` on
@@ -78,7 +45,7 @@ impl Game<'_> {
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
-                    if self.studio.replay.is_some() && self.captured {
+                    if self.studio.replaying() && self.captured {
                         self.capture(false);
                         return Ok(());
                     }
@@ -213,7 +180,7 @@ impl Game<'_> {
             // key.toggleGui is a KeyMapping: it clicks only with no screen open.
             KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
             KeyCode::F11 => self.toggle_fullscreen(),
-            KeyCode::F5 if self.screen == Screen::Playing && self.studio.replay.is_none() => {
+            KeyCode::F5 if self.screen == Screen::Playing && !self.studio.replaying() => {
                 self.cycle_camera()
             }
             KeyCode::KeyE

@@ -6,7 +6,7 @@
 use super::{Game, PendingWorldEntry, Screen, packs};
 use horizon_client::{
     Result,
-    studio::{Metadata, ReplayDriver},
+    studio::{Metadata, ReplayDriver, TimelineAction},
     text::Text,
 };
 use serde_json::{Value, json};
@@ -33,6 +33,21 @@ pub(super) struct Studio {
     pub(super) replay_standalone: bool,
     pub(super) last_replay_tick: Option<std::time::Instant>,
     pub(super) virtual_tick_ms: f32,
+}
+
+impl Studio {
+    /// A replay plays: the world shown is the recording's.
+    pub(super) fn replaying(&self) -> bool {
+        self.replay.is_some()
+    }
+    /// The free camera flies, apart from the player.
+    pub(super) fn flying(&self) -> bool {
+        self.freecam.active
+    }
+    /// Studio is up (its bars, its camera path, its mouse): a replay plays or the free camera flies.
+    pub(super) fn active(&self) -> bool {
+        self.replaying() || self.flying()
+    }
 }
 
 pub const HELP: &[&str] = &[
@@ -1276,5 +1291,200 @@ impl Game<'_> {
         log::info!(
             "Studio Recorder: Dumped initial world snapshot ({count} chunks) at timestamp 0ms"
         );
+    }
+}
+
+/// What the engine's frame, render and window code hand to Studio.
+impl Game<'_> {
+    /// The top bar and the timeline over the HUD, while Studio is up in play.
+    pub(super) fn draw_studio_bars(&mut self, batch: &mut super::HudBatch) {
+        if self.ui.hide_gui || self.screen != Screen::Playing || !self.studio.active() {
+            return;
+        }
+        self.studio.topbar.render(
+            batch,
+            &self.gui.atlas,
+            self.cursor,
+            self.studio.freecam.locked_to_path,
+        );
+        self.studio
+            .timeline
+            .render(batch, &self.gui.atlas, self.cursor, &self.studio.freecam);
+    }
+
+    /// The camera path among the debug lines, while Studio is up.
+    pub(super) fn studio_camera_path(&self, gizmos: &mut horizon_client::gizmos::Gizmos) {
+        if self.studio.active() {
+            horizon_client::studio::render_camera_path(
+                &self.studio.freecam.track,
+                gizmos,
+                None,
+                100,
+            );
+        }
+    }
+
+    /// The pointer moved while the timeline's playhead or a keyframe is dragged: Studio took it.
+    pub(super) fn studio_mouse_dragged(&mut self, width: f32) -> bool {
+        if self.screen != Screen::Playing
+            || !(self.studio.timeline.dragging_playhead
+                || self.studio.timeline.dragging_keyframe.is_some())
+        {
+            return false;
+        }
+        let action =
+            self.studio
+                .timeline
+                .handle_mouse_drag(self.cursor, width, &mut self.studio.freecam);
+        if matches!(action, TimelineAction::KeyframeMoved) {
+            self.studio.camera_track_dirty = true;
+        }
+        true
+    }
+
+    /// A mouse button while Studio is up: true when Studio took it (its bars, the right button's
+    /// mouse look, every click while a replay plays).
+    pub(super) fn studio_mouse_input(
+        &mut self,
+        pressed: bool,
+        button: winit::event::MouseButton,
+    ) -> bool {
+        if !pressed && button == winit::event::MouseButton::Left {
+            let action = self.studio.timeline.handle_mouse_up();
+            if !matches!(action, TimelineAction::None) {
+                self.handle_studio_timeline_action(action);
+            }
+        }
+        if (self.studio.freecam.active || self.studio.replay.is_some())
+            && button == winit::event::MouseButton::Right
+        {
+            if let Some(renderer) = &self.renderer {
+                let batch = super::HudBatch::new([renderer.config.width, renderer.config.height]);
+                if self.studio.timeline.visible
+                    && self.cursor.1 >= batch.height - self.studio.timeline.height()
+                {
+                    if pressed
+                        && let Some(index) = self.studio.timeline.keyframe_at_cursor(
+                            self.cursor,
+                            batch.width,
+                            batch.height,
+                            &self.studio.freecam,
+                        )
+                    {
+                        if index < self.studio.freecam.track.keyframes.len() {
+                            self.studio.freecam.track.keyframes.remove(index);
+                            self.studio.camera_track_dirty = true;
+                        }
+                        self.studio.timeline.selected_keyframe = None;
+                    }
+                    return true;
+                }
+            }
+            if pressed {
+                self.studio.topbar.close_dropdown();
+                self.studio.rmb_down = true;
+                self.capture(true);
+                return true;
+            } else if self.studio.rmb_down {
+                self.studio.rmb_down = false;
+                self.capture(false);
+                return true;
+            }
+        }
+        if pressed
+            && button == winit::event::MouseButton::Left
+            && self.screen == Screen::Playing
+            && (self.studio.replay.is_some() || self.studio.freecam.active)
+        {
+            let size = self
+                .renderer
+                .as_ref()
+                .map(|renderer| [renderer.config.width, renderer.config.height])
+                .unwrap_or([1, 1]);
+            let batch = super::HudBatch::new(size);
+            let had_open_menu = self.studio.topbar.open_menu.is_some();
+            let topbar_action =
+                self.studio
+                    .topbar
+                    .handle_mouse_click(self.cursor, batch.width, batch.height);
+            if !matches!(topbar_action, horizon_client::studio::TopBarAction::None) {
+                self.handle_studio_topbar_action(topbar_action);
+                return true;
+            }
+            if had_open_menu || self.cursor.1 <= self.studio.topbar.height {
+                return true;
+            }
+            if self.studio.timeline.visible {
+                let action = self.studio.timeline.handle_mouse_down(
+                    self.cursor,
+                    batch.width,
+                    batch.height,
+                    &self.studio.freecam,
+                );
+                if !matches!(action, TimelineAction::None) {
+                    self.handle_studio_timeline_action(action);
+                    return true;
+                }
+                if self.cursor.1 >= batch.height - self.studio.timeline.height() {
+                    return true;
+                }
+            }
+        }
+        if self.screen == Screen::Playing && self.studio.replay.is_some() {
+            return true;
+        }
+        false
+    }
+
+    /// The free camera flies by the movement keys, once per frame.
+    pub(super) fn studio_fly(&mut self, elapsed: Duration) {
+        if !self.studio.flying() || self.screen != Screen::Playing || self.dialog_open() {
+            return;
+        }
+        use winit::keyboard::KeyCode;
+        let held = |key| f64::from(u8::from(self.keys.raw(&key)));
+        let forward = held(KeyCode::KeyW) - held(KeyCode::KeyS);
+        let strafe = held(KeyCode::KeyD) - held(KeyCode::KeyA);
+        let vertical = held(KeyCode::KeyE) - held(KeyCode::KeyQ) + held(KeyCode::Space);
+        let fast = self.keys.raw(&KeyCode::ControlRight);
+        self.studio.freecam.update_flight_motion(
+            forward,
+            strafe,
+            vertical,
+            fast,
+            elapsed.as_secs_f64().min(0.1),
+        );
+    }
+
+    /// A key pressed while a replay plays: Studio's shortcuts, and nothing else reaches play.
+    pub(super) fn studio_key(&mut self, key: winit::keyboard::KeyCode) {
+        use winit::keyboard::KeyCode;
+        match key {
+            KeyCode::Escape => {
+                self.close_studio_replay();
+            }
+            KeyCode::KeyP => {
+                self.pause_focus = None;
+                self.screen = Screen::Paused;
+                self.pause_menu = true;
+                self.capture(false);
+            }
+            KeyCode::KeyF => self.handle_studio_timeline_action(TimelineAction::ToggleFreecam),
+            KeyCode::KeyT => self.studio.timeline.visible = !self.studio.timeline.visible,
+            KeyCode::KeyM => self.add_studio_marker(),
+            KeyCode::Home => self.handle_studio_topbar_action(
+                horizon_client::studio::TopBarAction::ResetCameraToPlayer,
+            ),
+            KeyCode::KeyL => {
+                self.studio.freecam.locked_to_path = !self.studio.freecam.locked_to_path;
+            }
+            KeyCode::KeyK => self.handle_studio_timeline_action(TimelineAction::AddCameraKeyframe),
+            KeyCode::Delete => {
+                if let Some(index) = self.studio.timeline.selected_keyframe {
+                    self.handle_studio_timeline_action(TimelineAction::RemoveCameraKeyframe(index));
+                }
+            }
+            _ => {}
+        }
     }
 }

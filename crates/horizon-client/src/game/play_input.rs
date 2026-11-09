@@ -180,7 +180,7 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
-        if self.screen == Screen::Playing && self.studio.replay.is_some() {
+        if self.screen == Screen::Playing && self.studio.replaying() {
             if !pressed {
                 self.keys.release(&key, source);
                 return Ok(());
@@ -191,7 +191,7 @@ impl Game<'_> {
                 }
                 return Ok(());
             }
-            if !studio_freecam_movement_key(key) || !self.studio.freecam.active {
+            if !studio_freecam_movement_key(key) || !self.studio.flying() {
                 return Ok(());
             }
         }
