@@ -105,7 +105,12 @@ fn mesh() -> Vec<Vertex> {
 }
 
 impl CustomSky {
-    pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    /// The layers' pipelines for a frame of `format`, holding linear light where `linear`
+    /// (`linear_blend`).
+    pub(super) fn new(
+        device: &wgpu::Device,
+        (format, linear): (wgpu::TextureFormat, bool),
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Custom sky bindings"),
             entries: &[
@@ -192,10 +197,7 @@ impl CustomSky {
                             "fs_custom_sky"
                         }),
                         compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &[(
-                                "HDR_WRITE_LIGHT",
-                                f64::from(u8::from(format == super::LINEAR_FRAME)),
-                            )],
+                            constants: &super::linear_blend::frame_constants(format, linear),
                             ..Default::default()
                         },
                         targets: &[Some(wgpu::ColorTargetState {
@@ -511,7 +513,7 @@ mod tests {
             label: None,
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
-        let sky = CustomSky::new(&device, wgpu::TextureFormat::Rgba16Float);
+        let sky = CustomSky::new(&device, (wgpu::TextureFormat::Rgba16Float, false));
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&sky.layout)],
@@ -555,19 +557,37 @@ mod tests {
         let view = target.create_view(&Default::default());
         // Independent scalar expectation: a sky mark of 206/255 gives this gamma gain.
         let hdr_gain = (1.0f32 + 3.0 * (1.0 - 206.0 / 255.0) / 0.24).powf(1.0 / 2.2);
-        for (mode_index, mode, debug, written) in MODES
+        // A frame of linear light (`FRAME_LINEAR`, `[frame] blend = "linear"`): the layer stored
+        // decoded, products kept exact.
+        let linear_modes = [
+            Blend::Replace,
+            Blend::Multiply,
+            Blend::Overlay,
+            Blend::Alpha,
+        ]
+        .map(|m| {
+            (
+                MODES.iter().position(|&n| n == m).unwrap(),
+                m,
+                false,
+                false,
+                true,
+            )
+        });
+        for (mode_index, mode, debug, written, linear) in MODES
             .iter()
             .copied()
             .enumerate()
-            .map(|(i, m)| (i, m, false, true))
-            .chain([(5, Blend::Screen, true, true)])
+            .map(|(i, m)| (i, m, false, true, false))
+            .chain([(5, Blend::Screen, true, true, false)])
             .chain(
                 MODES
                     .iter()
                     .copied()
                     .enumerate()
-                    .map(|(i, m)| (i, m, false, false)),
+                    .map(|(i, m)| (i, m, false, false, false)),
             )
+            .chain(linear_modes)
         {
             let gain = if written { hdr_gain } else { 1.0 };
             let uniform = Uniform {
@@ -611,7 +631,10 @@ mod tests {
                         module: &shader,
                         entry_point: Some(entry),
                         compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &[("HDR_WRITE_LIGHT", 1.0)],
+                            constants: &[
+                                ("HDR_WRITE_LIGHT", 1.0),
+                                ("FRAME_LINEAR", f64::from(u8::from(linear))),
+                            ],
                             ..Default::default()
                         },
                         targets: &[Some(wgpu::ColorTargetState {
@@ -718,7 +741,17 @@ mod tests {
                 (alpha - coverage).abs() < 0.001,
                 "{mode:?}: alpha {alpha}, expected {coverage}"
             );
-            let expected = if debug {
+            let decode = |v: f32| v.powf(2.2);
+            let expected = if linear {
+                // The sky under it is linear light, 2.0; the layer is gamma.
+                match mode {
+                    Blend::Replace => decode(t),
+                    Blend::Multiply => d * decode(1.0 + (t - 1.0) * k),
+                    Blend::Overlay => d * decode(2.0 * (0.5 + (t - 0.5) * k)),
+                    Blend::Alpha => decode(t) * k + d * (1.0 - k),
+                    _ => unreachable!(),
+                }
+            } else if debug {
                 let grey = (0.2126f32 * 0.8f32.powf(2.2)
                     + 0.7152 * 0.4f32.powf(2.2)
                     + 0.0722 * 0.2f32.powf(2.2))
@@ -739,11 +772,11 @@ mod tests {
             };
             assert!(
                 (got - expected).abs() < 0.004,
-                "{mode:?} debug {debug}: {got} expected {expected}"
+                "{mode:?} debug {debug} linear {linear}: {got} expected {expected}"
             );
         }
         eprintln!(
-            "HDR custom sky GPU ran all nine modes with and without gain, plus debug Screen, checking RGB and coverage"
+            "HDR custom sky GPU ran all nine modes with and without gain, plus debug Screen and four on linear light, checking RGB and coverage"
         );
     }
 }

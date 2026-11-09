@@ -160,6 +160,15 @@ fn stage_input(
         &frame_view,
         &input.create_view(&Default::default()),
     );
+    texel((device, queue), encoder, &input)
+}
+
+/// The first texel of the half-float `texture` once `encoder` ran.
+fn texel(
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    mut encoder: wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+) -> [f32; 4] {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: 256,
@@ -167,7 +176,7 @@ fn stage_input(
         mapped_at_creation: false,
     });
     encoder.copy_texture_to_buffer(
-        input.as_image_copy(),
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
             layout: wgpu::TexelCopyBufferLayout {
@@ -254,6 +263,118 @@ fn stages_read_the_same_light_under_either_blend() {
         for i in 0..3 {
             assert!((gamma[i] - linear[i]).abs() < 0.003 * want[i].max(1.0));
         }
+    }
+}
+
+// A section fading in mixes the pack's material result toward the fog colour in vanilla's
+// gamma, as the fog does. Fog gamma 0.8, the pack's light 0.2 (gamma 0.2^(1/2.2) = 0.4812), half
+// visible: under "linear" the frame stores (0.5 * 0.8 + 0.5 * 0.4812)^2.2 = 0.3757, not the
+// 0.5 a mix in light gives; under "gamma" the result is already gamma, 0.5 * 0.8 + 0.5 * 0.2.
+#[test]
+fn a_fading_section_mixes_toward_the_fog_in_gamma() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("linear blend GPU unavailable");
+        return;
+    };
+    let globals = super::super::Globals {
+        fog_color: [0.8; 4],
+        // The pack's material result, as `horizon_material_color` gives it.
+        sky_color: [0.2, 0.2, 0.2, 1.0],
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::bytes_of(&globals),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    for (linear, want) in [(false, 0.5), (true, 0.3757)] {
+        let source = super::super::native_material::coverage_test_shader((Api::V0_2, linear))
+            + "
+@fragment fn test_faded() -> @location(0) vec4<f32> {
+    var o: HorizonMaterialOut;
+    // Half visible (`horizon_material_vertex`), past 32 blocks.
+    o.hdr_code = 32768u << 16u;
+    o.spherical = 40.0;
+    return horizon_material_faded(o, horizon_terrain_globals.sky_color);
+}
+";
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let constants = frame_constants(LINEAR_FRAME, linear)
+            .map(|(name, value)| (format!("horizon_terrain_{name}"), value));
+        let constants: Vec<(&str, f64)> = constants.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("test_vertex"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("test_faded"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
+                targets: &[Some(LINEAR_FRAME.into())],
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            }],
+        });
+        let frame = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: LINEAR_FRAME,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.create_view(&Default::default()),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        let got = texel((&device, &queue), encoder, &frame);
+        assert!(
+            (got[0] - want).abs() < 0.002,
+            "linear {linear}: {got:?}, expected {want}"
+        );
+        assert_eq!(got[3], 1.0, "alpha kept");
     }
 }
 

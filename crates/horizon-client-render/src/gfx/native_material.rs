@@ -63,11 +63,14 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
 }
 // terrain.wgsl's fade-in (terrain.vsh's chunkVisibility): whole within 16 blocks, the section's
 // own visibility from 32 out, toward the fog colour, alpha kept. The distance blend runs here on
-// the interpolated distance, as vanilla's interpolated `visibility`, not once per triangle.
+// the interpolated distance, as vanilla's interpolated `visibility`, not once per triangle. In
+// vanilla's gamma, as the fog: on a frame of linear light, encoded for it.
 fn horizon_material_faded(in: HorizonMaterialOut, color: vec4<f32>) -> vec4<f32> {
     let instance = 1.0 - f32(in.hdr_code >> 16u) / 65535.0;
     let visibility = mix(1.0, instance, clamp((in.spherical - 16.0) / 16.0, 0.0, 1.0));
-    return vec4(mix(horizon_terrain_globals.fog_color.rgb, color.rgb, visibility), color.a);
+    let gamma = horizon_terrain_frame_gamma(color);
+    let faded = mix(horizon_terrain_globals.fog_color.rgb, gamma.rgb, visibility);
+    return horizon_terrain_frame_stored(vec4(faded, color.a));
 }
 // `light`: sky, block, 16 per level.
 fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
@@ -589,7 +592,9 @@ impl NativeMaterial {
 }
 
 #[cfg(test)]
-pub(super) fn coverage_test_shader(api: horizon_shader_api::Api) -> String {
+/// A material pack's terrain shader on shader API line `api`, its frame holding linear light
+/// where `linear`, with a full-screen `test_vertex`.
+pub(super) fn coverage_test_shader((api, linear): (horizon_shader_api::Api, bool)) -> String {
     use horizon_shader_api::{MANIFEST, Pack, StageKind, check};
     let manifest = format!(
         "schema = 1\nid = \"coverage\"\nname = \"Coverage\"\nversion = \"1\"\napi = \"{api}\"\n[material]\nfile = \"material.wgsl\"\n[displacement]\n"
@@ -604,7 +609,7 @@ pub(super) fn coverage_test_shader(api: horizon_shader_api::Api) -> String {
         .iter()
         .find(|s| s.kind == StageKind::Material)
         .unwrap();
-    shader_source(&stage.source, &[], &[], (false, true), (api, false))
+    shader_source(&stage.source, &[], &[], (false, true), (api, linear))
         + r#"
 override TEST_TIER: u32 = 0u;
 override TEST_OVERLAY: u32 = 0u;
