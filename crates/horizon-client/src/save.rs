@@ -994,7 +994,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     }
     if id == "minecraft:beacon" {
         let beacon = crate::containers::Beacon {
-            levels: int("Levels").unwrap_or(0),
+            // BeaconBlockEntity.loadAdditional never reads `Levels`: updateBase sets them.
             primary: text(tag.get("primary_effect")),
             secondary: text(tag.get("secondary_effect")),
             last_check_y: i32::MIN / 2,
