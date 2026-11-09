@@ -150,12 +150,14 @@ pub fn sheep_color(climate: Climate, random: &mut impl RandomSource) -> u8 {
     }
 }
 
-/// `Sheep.readAdditionalSaveData`'s `Color`: `DyeColor.LEGACY_ID_CODEC`
-/// (`ByIdMap.continuous` with `OutOfBoundsStrategy.ZERO`) gives white for an
-/// id outside 0..=15; the old `& 15` wrapped the id instead.
+/// `Sheep.readAdditionalSaveData`'s `Color`: `DyeColor.LEGACY_ID_CODEC` reads
+/// `Codec.BYTE` (any number tag, `Number.byteValue`), then `ByIdMap.continuous`
+/// with `OutOfBoundsStrategy.ZERO` gives white for a byte outside 0..=15; the
+/// old `& 15` wrapped the id instead.
 pub fn saved_color(value: Option<&horizon_world::nbt::Tag>) -> u8 {
     value
-        .and_then(|tag| crate::save::number(Some(tag)))
+        .and_then(horizon_world::datafix::dynamic::as_number)
+        .map(|n| n.byte_value())
         .and_then(|id| u8::try_from(id).ok())
         .filter(|id| *id < 16)
         .unwrap_or(0)
@@ -262,5 +264,8 @@ mod sheep_colour_save_tests {
         ]);
         let m = crate::entity_nbt::mob_from_nbt(&tag, &types, 1, None).unwrap();
         assert_eq!(m.extra.color, 0, "an unknown dye id is white");
+        // Codec.BYTE takes an int tag's low byte: 259 is 3, light blue.
+        assert_eq!(saved_color(Some(&Tag::Int(259))), 3);
+        assert_eq!(saved_color(Some(&Tag::Byte(-1))), 0);
     }
 }
