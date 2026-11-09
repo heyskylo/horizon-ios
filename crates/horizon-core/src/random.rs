@@ -1,8 +1,10 @@
 //! Vanilla's two seeded random streams. No platform/default Rust RNG is used.
 mod hash;
+mod ordered;
 mod positional;
 mod worldgen;
 pub use hash::{seed_from_hash, seed_from_hash_utf16};
+pub use ordered::OrderedDraws;
 pub use positional::{
     LegacyPositionalRandom, PositionalRandom, XoroshiroPositionalRandom, java_string_hash,
     position_seed,
@@ -104,10 +106,23 @@ pub trait RandomSource: Sized {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct LegacyRandom {
     state: u64,
     gaussian: Option<f64>,
+    /// A lane of an [`OrderedDraws`] stream: each item's first draw waits for its turn.
+    gate: Option<Box<ordered::Gate>>,
+}
+
+/// A copy draws on its own, from the state it was copied at: it is never gated.
+impl Clone for LegacyRandom {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state,
+            gaussian: self.gaussian,
+            gate: None,
+        }
+    }
 }
 
 impl LegacyRandom {
@@ -118,6 +133,7 @@ impl LegacyRandom {
         Self {
             state: (seed as u64 ^ Self::MULTIPLIER) & Self::MASK,
             gaussian: None,
+            gate: None,
         }
     }
 
@@ -126,6 +142,7 @@ impl LegacyRandom {
         Self {
             state,
             gaussian: None,
+            gate: None,
         }
     }
 
@@ -134,7 +151,18 @@ impl LegacyRandom {
         self.state
     }
 
+    /// A gated lane's first draw of an item waits for its turn and takes the shared state.
+    #[inline]
+    fn sync(&mut self) {
+        if let Some(gate) = self.gate.as_deref_mut()
+            && !gate.held()
+        {
+            (self.state, self.gaussian) = gate.take();
+        }
+    }
+
     fn bits(&mut self, count: u32) -> i32 {
+        self.sync();
         self.state = self.state.wrapping_mul(Self::MULTIPLIER).wrapping_add(11) & Self::MASK;
         let value = (self.state >> (48 - count)) as i32;
         #[cfg(feature = "rng-trace")]
@@ -190,6 +218,7 @@ impl RandomSource for LegacyRandom {
         value as f64 * (1.0 / 9_007_199_254_740_992.0)
     }
     fn next_gaussian(&mut self) -> f64 {
+        self.sync();
         let mut cache = self.gaussian.take();
         let value = marsaglia_polar(&mut cache, || self.next_double());
         self.gaussian = cache;
