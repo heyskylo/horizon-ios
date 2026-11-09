@@ -151,5 +151,77 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("LAUNCHER es ", out)
 
 
+class ReviewTests(unittest.TestCase):
+    """The record of what a person checked: anything else, or anything changed since, is unreviewed."""
+
+    def test_only_entries_checked_in_their_present_text_count_as_reviewed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder, review = Path(tmp) / "lang", Path(tmp) / "review"
+            folder.mkdir()
+            review.mkdir()
+            write(folder, "en_us.json", '{\n  "a": "Apple",\n  "b": "Banana",\n  "c": "Cherry",\n'
+                                        '  "d": "Date"\n}\n')
+            write(folder, "xx.json", '{\n  "a": "Manzana",\n  "b": "Platano",\n  "c": "Cereza",\n'
+                                     '  "d": ""\n}\n')
+            # "b" was checked, then its text changed; "z" left the file.
+            write(review, "xx.json", '{\n  "a": "Manzana",\n  "b": "Banano",\n  "z": "Zeta"\n}\n')
+            _, rows = lang_coverage.game_rows(folder, set(), review)
+        self.assertEqual(by_code(rows, "xx")["unreviewed"], ["b", "c"])
+        self.assertEqual(by_code(rows, "en_us")["unreviewed"], [])
+
+    def test_mark_reviewed_records_present_text_in_file_order_and_drops_gone_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game, launcher, review = Path(tmp) / "game", Path(tmp) / "launcher", Path(tmp) / "review"
+            game.mkdir()
+            launcher.mkdir()
+            write(game, "en_us.json", '{\n  "a": "Apple",\n  "b": "Banana",\n  "c": "Cherry"\n}\n')
+            write(game, "xx_yy.json", '{\n  "a": "Manzana",\n  "b": "Platano",\n  "c": "Cereza"\n}\n')
+            (review / "game").mkdir(parents=True)
+            write(review / "game", "xx_yy.json", '{\n  "gone": "Ido"\n}\n')
+            keys = Path(tmp) / "keys.txt"
+            keys.write_text("a\n\n", encoding="utf-8")
+            common = ("--game-dir", str(game), "--launcher-dir", str(launcher), "--review-dir", str(review))
+            code, out, _ = run(*common, "--lang", "xx_yy", "--mark-reviewed", "c", "--keys-file", str(keys))
+            self.assertEqual(code, 0, out)
+            record = (review / "game" / "xx_yy.json").read_text(encoding="utf-8")
+            self.assertEqual(record, '{\n  "a": "Manzana",\n  "c": "Cereza"\n}\n')
+            code, out, _ = run(*common, "--game-only", "--lang", "xx_yy", "--unreviewed")
+            self.assertEqual(code, 0)
+            self.assertIn("xx_yy: 1 unreviewed", out)
+            self.assertIn("en_us: Banana", out)
+            code, _, err = run(*common, "--lang", "xx_yy", "--mark-reviewed", "nosuch")
+            self.assertEqual(code, 1)
+            self.assertIn("no key 'nosuch'", err)
+
+    def test_mark_reviewed_refuses_what_it_cannot_tell_apart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game, launcher = Path(tmp) / "game", Path(tmp) / "launcher"
+            game.mkdir()
+            launcher.mkdir()
+            write(game, "en_us.json", '{\n  "a": "Apple"\n}\n')
+            write(game, "xx.json", '{\n  "a": "Manzana"\n}\n')
+            write(launcher, "xx.json", '{\n  "Apple": "Manzana"\n}\n')
+            common = ("--game-dir", str(game), "--launcher-dir", str(launcher),
+                      "--review-dir", str(Path(tmp) / "review"))
+            for extra, wanted in [(("--lang", "xx"), "--game-only or --launcher-only"),
+                                  (("--lang", "xx", "en_us"), "exactly one --lang"),
+                                  (("--lang", "en_us"), "English reference"),
+                                  (("--lang", "xx", "--game-only"), "needs keys")]:
+                with self.subTest(extra=extra):
+                    code, _, err = run(*common, *extra, "--mark-reviewed")
+                    self.assertEqual(code, 2)
+                    self.assertIn(wanted, err)
+            code, _, _ = run(*common, "--lang", "xx", "--launcher-only", "--mark-reviewed", "Apple")
+            self.assertEqual(code, 0)
+            self.assertTrue((Path(tmp) / "review" / "launcher" / "xx.json").exists())
+
+    def test_every_repository_record_belongs_to_a_lang_file_and_reads(self):
+        for kind, folder in (("game", lang_coverage.GAME), ("launcher", lang_coverage.LAUNCHER)):
+            for record in sorted((lang_coverage.REVIEW / kind).glob("*.json")):
+                with self.subTest(record=record.name, kind=kind):
+                    self.assertTrue((folder / record.name).exists(), f"{record} names no lang file")
+                    self.assertTrue(lang_coverage.reviewed(record))
+
+
 if __name__ == "__main__":
     unittest.main()

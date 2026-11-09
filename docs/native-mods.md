@@ -4293,7 +4293,7 @@ a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws 
 fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
 and may be named in fluid tags; tanks still take undeclared ids as before. A declared fluid with a `block` flows in the
 world as that block (`native_fluid_level_change` gets its id, `ruby:honey`, where vanilla's are `water` and `lava`); a
-cauldron takes only water and lava, and no bucket pours a mod's fluid yet.
+cauldron takes only water and lava. Its `bucket` pours and picks it up as vanilla's do, so `native_bucket_empty` hears it with its id.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
@@ -5339,9 +5339,12 @@ A new hook needs its fragment in `tools/native-hook-fragments/` with its `mod_ap
 `let _ = (every, parameter);` (all its parameters, in order), and a run of `cargo run -p xtask -- mod-api`.
 That command only replaces the placeholder in `native_hooks.rs` with the `dispatch_<hook>` call; commit
 that source change and the fragment. The `horizon-mod-api-gen` build dependency generates the hook traits,
-`Host` methods and dispatch code into Cargo's `OUT_DIR` when the game and renderer build, including release
-builds. These generated Rust files are not kept in the source tree or committed, and no manual regeneration
-is needed after a merge. Every hook needs a `mod_api` entry: the build fails naming any hook without one.
+`Host` methods and dispatch code into Cargo's `OUT_DIR` when the game builds, including release builds.
+These generated Rust files are not kept in the source tree or committed, and no manual regeneration is
+needed after a merge. The one exception is the renderer's (`horizon-client-render`, an engine crate, which
+may not depend on the generator: [layers.md](layers.md)): its `RenderHooks` trait and dispatch are committed
+in `gfx/native_render/generated.rs`. A render hook's change rewrites that file when you run
+`cargo run -p xtask -- mod-api`, and the game's build fails while it is out of date. Every hook needs a `mod_api` entry: the build fails naming any hook without one.
 A body that is neither the
 placeholder nor already calls the dispatch is an error, and the generator never changes it. Hooks that are
 free functions outside `Game` are wired by hand: those crates can't see the mod list, so each calls a callback

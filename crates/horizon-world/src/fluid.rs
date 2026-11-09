@@ -50,6 +50,9 @@ pub struct FluidInfo {
     /// A mod fluid's liquid block (a copy of its template's, `level` 0 to 15);
     /// vanilla's are `minecraft:water` and `minecraft:lava`.
     pub block: Option<&'static str>,
+    /// A mod fluid's bucket item; vanilla's are `minecraft:water_bucket` and
+    /// `minecraft:lava_bucket`.
+    pub bucket: Option<&'static str>,
 }
 
 /// The content root's file that lists its mod fluids, in network-id order
@@ -65,6 +68,8 @@ pub struct ModFluid {
     pub template: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick_delay: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +109,7 @@ pub fn set_mod_fluids(fluids: &[ModFluid]) -> io::Result<()> {
             convert_to_source: f.convert_to_source,
         };
         let block = f.block.as_deref().map(leak);
+        let bucket = f.bucket.as_deref().map(leak);
         for name in [&f.id, &f.flowing] {
             rows.push(FluidInfo {
                 name: leak(name),
@@ -112,6 +118,7 @@ pub fn set_mod_fluids(fluids: &[ModFluid]) -> io::Result<()> {
                 flowing,
                 numbers,
                 block,
+                bucket,
             });
         }
     }
@@ -155,6 +162,7 @@ const VANILLA: [FluidInfo; 5] = {
             flowing,
             numbers,
             block: None,
+            bucket: None,
         }
     }
     let (empty, flowing_water, water, flowing_lava, lava) = (
@@ -228,6 +236,13 @@ impl FluidKind {
     }
     pub fn from_name(name: &str) -> Option<Self> {
         Self::all().find(|kind| kind.name() == name)
+    }
+    /// The mod fluid (its source form) whose bucket is `item`.
+    pub fn of_bucket(item: &str) -> Option<Self> {
+        mod_rows()
+            .iter()
+            .find(|row| row.bucket == Some(item))
+            .map(|row| row.source)
     }
     /// The mod fluid (its source form) whose liquid block is `block`.
     pub fn of_liquid_block(block: &str) -> Option<Self> {
@@ -725,10 +740,24 @@ mod tests {
             flowing: "ruby:flowing_honey".into(),
             template: "minecraft:water".into(),
             block: Some("ruby:honey".into()),
+            bucket: Some("ruby:honey_bucket".into()),
             ..ModFluid::default()
         }])
         .unwrap();
         let honey = FluidKind::from_name("ruby:honey").unwrap();
+        // Its bucket pours the source; the flowing form has none of its own.
+        assert_eq!(FluidKind::of_bucket("ruby:honey_bucket"), Some(honey));
+        assert_eq!(honey.info().bucket, Some("ruby:honey_bucket"));
+        assert_eq!(FluidKind::of_bucket("minecraft:water_bucket"), None);
+        assert_eq!(
+            crate::level::mod_bucket_contents("ruby:honey_bucket"),
+            Some((
+                crate::level::BucketContent::Fluid(honey),
+                "minecraft:item.bucket.empty",
+                None
+            ))
+        );
+        assert!(!crate::level::is_lava_bucket("ruby:honey_bucket"));
         let state = |level: u32| {
             registry
                 .state(crate::registry::BlockStateId(33 + level))
