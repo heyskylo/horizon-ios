@@ -367,7 +367,7 @@ impl Game<'_> {
     }
     /// Write the tracker into the player data being saved. With a LAN owner,
     /// `store_owner` rewrites that from the owner's guest, so it puts the
-    /// tracker there as well.
+    /// tracker there as well (`playerdata::with_warden`).
     pub(super) fn save_warden_tracker(&mut self) {
         let Some(tag) = self.warden_tracker_tag() else {
             return;

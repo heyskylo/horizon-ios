@@ -58,14 +58,20 @@ pub const WARDEN_TRACKER_KEY: &str = "warden_spawn_tracker";
 
 /// Put a player's `warden_spawn_tracker` into the compound `store` writes from
 /// (`guest.saved`), so a save keeps it rather than the older one loaded with
-/// the file. Other saved keys are left as they are.
-pub fn set_warden_tracker(guest: &mut Guest, tracker: Tag) {
+/// the file (the LAN owner's tracker lives in `Game`, `save_warden_tracker`).
+/// Other saved keys are left as they are; no tracker (not loaded yet) changes
+/// nothing.
+pub fn with_warden(guest: &mut Guest, tracker: Option<Tag>) -> &mut Guest {
+    let Some(tracker) = tracker else {
+        return guest;
+    };
     let saved = guest
         .saved
         .get_or_insert_with(|| Tag::Compound(Default::default()));
     if let Tag::Compound(map) = saved {
         map.insert(WARDEN_TRACKER_KEY.into(), tracker);
     }
+    guest
 }
 
 /// `PlayerDataStorage.load`: a guest's saved state, if they have been here
@@ -687,7 +693,7 @@ mod tests {
             warning_level: 3,
             cooldown_ticks: 200,
         };
-        set_warden_tracker(&mut g, tracker.to_nbt());
+        with_warden(&mut g, Some(tracker.to_nbt()));
         let (tag, _) = round_trip(&g);
         let mut back = guest();
         let mut level = Level::default();

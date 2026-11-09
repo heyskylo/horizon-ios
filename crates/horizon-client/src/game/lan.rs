@@ -1818,13 +1818,7 @@ impl Game<'_> {
             // from carries those, as `save_guest` gives them on leaving. The map
             // stays their one owner.
             let live = self.guest_attachments.get(&uuid).cloned();
-            let g = &mut host.hub.guests[i];
-            // `store` writes the owner's compound from `g.saved`: put the
-            // warden spawn tracker there (`save_warden_tracker`), or the
-            // loaded one would overwrite it.
-            if let Some(tracker) = self.warden_tracker_tag() {
-                playerdata::set_warden_tracker(g, tracker);
-            }
+            let g = playerdata::with_warden(&mut host.hub.guests[i], self.warden_tracker_tag());
             let held = live.map(|a| std::mem::replace(&mut g.attachments, a));
             playerdata::store(g, &mut self.level, vehicle);
             if let Some(held) = held {
