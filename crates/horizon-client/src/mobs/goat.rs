@@ -593,8 +593,7 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         .get("Brain")
         .and_then(|b| b.get("memories"))
         .and_then(|b| b.get("minecraft:long_jump_cooling_down"))
-        .and_then(|m| m.get("value"))
-        .and_then(crate::save::number);
+        .and_then(|m| crate::save::number(m.get("value")));
     crate::mobs::frog::set_jump_cooldown(m, cooldown);
 }
 

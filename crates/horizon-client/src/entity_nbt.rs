@@ -1480,11 +1480,6 @@ pub fn mob_to_nbt(
         }
         _ => {}
     }
-    // `GoatAi`'s `LONG_JUMP_COOLDOWN_TICKS`: the goat's own memory, saved by
-    // `Brain.Packed` and read back into it.
-    if m.species() == S::Goat {
-        write_goat_memories(m, map);
-    }
     // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
     if m.species() == S::Bogged {
         map.insert("sheared".into(), Tag::Byte(i8::from(m.extra.sheared)));
