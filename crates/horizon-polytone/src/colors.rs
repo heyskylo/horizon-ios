@@ -22,6 +22,9 @@ pub struct Environment {
     pub water_fog_brightening: f32,
     /// `water_fog_brightening_time`: the ticks under water it takes (vanilla's 600).
     pub water_fog_brightening_time: f32,
+    /// `horizon_height`: below it the sky draws its dark disc (vanilla's 63; flat worlds keep
+    /// their floor).
+    pub horizon_height: f32,
 }
 
 impl Default for Environment {
@@ -33,8 +36,18 @@ impl Default for Environment {
             boss_fog_distance: 96.0,
             water_fog_brightening: 1.0,
             water_fog_brightening_time: 600.0,
+            horizon_height: 63.0,
         }
     }
+}
+
+/// A `biome_colors` entry: what replaces one of vanilla's biome colour functions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BiomeColor {
+    /// A flat colour (RGB).
+    Flat(u32),
+    /// A colormap id (`polytone/colormaps/<path>`).
+    Colormap(String),
 }
 
 /// Every pack's custom colours, by dotted key.
@@ -207,7 +220,24 @@ impl PackColors {
                 vanilla.water_fog_brightening_time,
             )
             .max(1.0),
+            horizon_height: number("horizon_height", vanilla.horizon_height),
         }
+    }
+
+    /// `biome_colors.<function>` (`grass`, `foliage`, `dry_foliage`, `water`): a colormap id or
+    /// a flat colour. Inline colormaps aren't read.
+    pub fn biome_color(&self, function: &str) -> Option<BiomeColor> {
+        let value = self.entries.get(&format!("biome_colors.{function}"))?;
+        if let Json::String(s) = value {
+            let s = s.trim();
+            if s.contains(':') {
+                return Some(BiomeColor::Colormap(s.to_owned()));
+            }
+            if parse_color(value).is_none() {
+                return Some(BiomeColor::Colormap(format!("minecraft:{s}")));
+            }
+        }
+        parse_color(value).map(|c| BiomeColor::Flat(c & 0xFF_FFFF))
     }
 
     /// `entity_shadows`: false hides every entity's round shadow, whatever the video option says.
@@ -325,6 +355,25 @@ mod tests {
             (e.water_fog_brightening, e.water_fog_brightening_time),
             (1.0, 200.0)
         );
+    }
+
+    #[test]
+    fn biome_colours_are_colormaps_or_flat() {
+        let mut c = PackColors::default();
+        c.add_json(
+            "",
+            &json!({"biome_colors": {"grass": "my_pack:grass", "foliage": "0x0000ff", "water": "lake"}}),
+        );
+        assert_eq!(
+            c.biome_color("grass"),
+            Some(BiomeColor::Colormap("my_pack:grass".into()))
+        );
+        assert_eq!(c.biome_color("foliage"), Some(BiomeColor::Flat(0x0000ff)));
+        assert_eq!(
+            c.biome_color("water"),
+            Some(BiomeColor::Colormap("minecraft:lake".into()))
+        );
+        assert_eq!(c.biome_color("dry_foliage"), None);
     }
 
     #[test]

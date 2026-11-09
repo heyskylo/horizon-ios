@@ -26,18 +26,23 @@ pub struct AnimationMetadata {
 pub enum ClipMode {
     /// `day_time`: frame 0 at time 0, the last at the cycle's end, then again.
     DayTime { cycle: i64 },
+    /// `screen_time`: the ticks the open screen has been open, over the cycle, held on the last
+    /// frame once it has run (it doesn't loop, measured on the real mod).
+    ScreenTime { cycle: i64 },
     /// `weather`: frame 0 in clear weather, 1 in rain, 2 in a storm (the rain and thunder levels
     /// added up), at most the last.
     Weather,
     /// A Polytone expression: its value's fraction is how far through the animation it is.
     Expression(String),
-    /// `game_time`, `screen_time`, `season`: not driven yet; the animation runs on ticks.
+    /// `game_time`, `season`: not driven; the animation runs on ticks.
     Unsupported(String),
 }
 
 /// The values [`ClipMode`]s read this frame.
 pub struct ModeInputs<'a> {
     pub day_time: i64,
+    /// The ticks the open screen has been open (0 without one).
+    pub screen_time: i64,
     /// The rain level plus the thunder level, 0 to 2.
     pub weather: f32,
     /// An expression's value this frame, by its source.
@@ -116,7 +121,8 @@ impl AnimationMetadata {
                     match mode.as_str() {
                         "day_time" => ClipMode::DayTime { cycle },
                         "weather" => ClipMode::Weather,
-                        "game_time" | "screen_time" | "season" => ClipMode::Unsupported(mode),
+                        "screen_time" => ClipMode::ScreenTime { cycle },
+                        "game_time" | "season" => ClipMode::Unsupported(mode),
                         _ => ClipMode::Expression(mode),
                     }
                 }),
@@ -239,6 +245,9 @@ impl AnimationClip {
     pub fn sample_mode(&self, inputs: &ModeInputs) -> Option<AnimationSample> {
         let fraction = match self.mode.as_ref()? {
             ClipMode::DayTime { cycle } => day_fraction(inputs.day_time, *cycle),
+            ClipMode::ScreenTime { cycle } => {
+                (inputs.screen_time.max(0) as f64 / *cycle as f64).min(1.0 - f64::EPSILON)
+            }
             ClipMode::Weather => {
                 let last = self.sequence.len() - 1;
                 let index = (inputs.weather.max(0.0) as usize).min(last);
@@ -288,6 +297,7 @@ mod mode_tests {
         let expression = move |_: &str| Some(value);
         clip.sample_mode(&ModeInputs {
             day_time,
+            screen_time: day_time,
             weather,
             expression: &expression,
         })
@@ -302,6 +312,13 @@ mod mode_tests {
             .map(|t| frame(&day, t, 0.0, 0.0))
             .into();
         assert_eq!(frames, [0, 1, 2, 3, 1]);
+        // 26.3-6.8.6, four frames over 200 ticks: 40 ticks open show the first, and from ten
+        // seconds on the last, even after 27 (it doesn't loop).
+        let screen = clip(r#"{"frametime": 1, "mode": "screen_time", "time_cycle_duration": 200}"#);
+        let frames: Vec<u32> = [0, 40, 200, 360, 540]
+            .map(|t| frame(&screen, t, 0.0, 0.0))
+            .into();
+        assert_eq!(frames, [0, 0, 3, 3, 3]);
         let value = clip(r#"{"frametime": 1, "mode": "0.6"}"#);
         assert_eq!(frame(&value, 0, 0.0, 0.6), 2);
         assert_eq!(frame(&value, 0, 0.0, 2.0), 0);
@@ -321,6 +338,7 @@ mod mode_tests {
             clip(r#"{"frametime": 1}"#)
                 .sample_mode(&ModeInputs {
                     day_time: 0,
+                    screen_time: 0,
                     weather: 0.0,
                     expression: &|_| None
                 })
@@ -330,6 +348,7 @@ mod mode_tests {
             clip(r#"{"frametime": 1, "mode": "season"}"#)
                 .sample_mode(&ModeInputs {
                     day_time: 0,
+                    screen_time: 0,
                     weather: 0.0,
                     expression: &|_| None
                 })

@@ -331,11 +331,44 @@ public final class VanillaDispenserOracle {
         return ent;
     }
 
+    /** Native BlocksAttacks.hurtBlockingItem, with a server player and live item components. */
+    static void blockingWear(VanillaBlockUpdateOracle.World world, JsonObject op, List<String> result) throws Exception {
+        var player = (BlockingWearer) VanillaBlockUpdateOracle.allocate.invoke(VanillaBlockUpdateOracle.unsafe, BlockingWearer.class);
+        player.world = world;
+        player.creative = op.has("creative") && op.get("creative").getAsBoolean();
+        var advancements = (net.minecraft.server.PlayerAdvancements) VanillaBlockUpdateOracle.allocate.invoke(
+            VanillaBlockUpdateOracle.unsafe, net.minecraft.server.PlayerAdvancements.class);
+        VanillaBlockUpdateOracle.set(net.minecraft.server.PlayerAdvancements.class, advancements, "activeTriggers", new HashMap<>());
+        VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerPlayer.class, player, "advancements", advancements);
+        ItemStack item = stack(op.get("item").getAsString());
+        var blocking = item.get(net.minecraft.core.component.DataComponents.BLOCKS_ATTACKS);
+        for (int i = 0; i < 2; i++) {
+            if (!item.isEmpty()) {
+                blocking.hurtBlockingItem(world, item, player, net.minecraft.world.InteractionHand.MAIN_HAND, 4);
+            }
+            result.add("blocking wear " + item.getCount() + " " + item.getDamageValue());
+        }
+    }
+
+    static final class BlockingWearer extends net.minecraft.server.level.ServerPlayer {
+        ServerLevel world;
+        boolean creative;
+        BlockingWearer() { super(null, null, null, null); }
+        @Override public ServerLevel level() { return world; }
+        @Override public boolean hasInfiniteMaterials() { return creative; }
+        @Override public void awardStat(net.minecraft.stats.Stat<?> stat, int count) {}
+        @Override public void onEquippedItemBroken(ItemStack stack, EquipmentSlot slot) {}
+    }
+
     static void run(JsonObject f, List<String> result) throws Exception {
         VanillaBlockUpdateOracle.World w = VanillaBlockUpdateOracle.build(f);
         w.entities = new ArrayList<>();
         w.registries = ParityData.access;
         w.server.loot.delegate = ParityData.loot;
+        if (f.has("blocking_wear")) {
+            blockingWear(w, f.getAsJsonObject("blocking_wear"), result);
+            return;
+        }
         VanillaBlockUpdateOracle.set(Level.class, w, "damageSources", new net.minecraft.world.damagesource.DamageSources(ParityData.access));
         if (f.has("dim") && f.get("dim").getAsString().equals("nether")) {
             // The Nether's dimension type and attributes (respawn anchors work, beds explode).

@@ -1870,7 +1870,7 @@ fn manhattan(a: [i32; 3], b: [i32; 3]) -> i32 {
 }
 /// `Swim`: deeper than the jump threshold, or in lava.
 fn swim_condition(m: &Mob) -> bool {
-    m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
+    m.floats()
 }
 /// `PositionTracker.isVisibleBy`.
 fn tracker_visible(m: &mut Mob, w: &MobWorld, t: Tracker) -> bool {

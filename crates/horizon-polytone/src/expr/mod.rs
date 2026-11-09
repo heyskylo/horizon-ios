@@ -148,6 +148,40 @@ impl Program {
         Ok(Self { body, locals })
     }
 
+    /// Whether the program reads nothing of its context but the `root.name()` methods `allowed`
+    /// accepts (with any arguments): no other method, no context object passed on or kept, and
+    /// no game function. A host can then share one value between contexts that agree on those.
+    pub fn reads_only(&self, allowed: &dyn Fn(Root, &str) -> bool) -> bool {
+        fn expr(e: &Expr, allowed: &dyn Fn(Root, &str) -> bool) -> bool {
+            match e {
+                Expr::Const(_) | Expr::Local(_) => true,
+                Expr::Root(_) | Expr::Host(..) => false,
+                Expr::Neg(a) | Expr::Not(a) => expr(a, allowed),
+                Expr::Binary(_, a, b) | Expr::And(a, b) | Expr::Or(a, b) => {
+                    expr(a, allowed) && expr(b, allowed)
+                }
+                Expr::Cond(c, a, b) => expr(c, allowed) && expr(a, allowed) && expr(b, allowed),
+                Expr::Call(_, args) => args.iter().all(|a| expr(a, allowed)),
+                Expr::Method(target, name, args) => {
+                    matches!(**target, Expr::Root(root) if allowed(root, name))
+                        && args.iter().all(|a| expr(a, allowed))
+                }
+            }
+        }
+        fn block(body: &[Stmt], allowed: &dyn Fn(Root, &str) -> bool) -> bool {
+            body.iter().all(|s| match s {
+                Stmt::Expr(e) | Stmt::Assign(_, _, e) => expr(e, allowed),
+                Stmt::If(branches, otherwise) => {
+                    branches
+                        .iter()
+                        .all(|(c, b)| expr(c, allowed) && block(b, allowed))
+                        && block(otherwise, allowed)
+                }
+            })
+        }
+        block(&self.body, allowed)
+    }
+
     /// Runs the statements; the result is the last statement's value (an assignment's is the
     /// value it stored).
     pub fn eval(&self, host: &mut dyn Host) -> Result<Value, String> {
@@ -226,6 +260,25 @@ impl Run<'_> {
         args.iter().map(|a| self.expr(a)).collect()
     }
 
+    /// Runs `f` on the arguments' values, kept on the stack when there are few (most calls
+    /// have one to three), so a call allocates nothing.
+    fn with_args<R>(
+        &mut self,
+        args: &[Expr],
+        f: impl FnOnce(&mut Self, &[Value]) -> Result<R, String>,
+    ) -> Result<R, String> {
+        const FEW: usize = 4;
+        if args.len() > FEW {
+            let values = self.all(args)?;
+            return f(self, &values);
+        }
+        let mut values: [Value; FEW] = std::array::from_fn(|_| Value::Null);
+        for (slot, arg) in values.iter_mut().zip(args) {
+            *slot = self.expr(arg)?;
+        }
+        f(self, &values[..args.len()])
+    }
+
     fn expr(&mut self, e: &Expr) -> Result<Value, String> {
         Ok(match e {
             Expr::Const(v) => v.clone(),
@@ -243,18 +296,23 @@ impl Run<'_> {
                 let pick = if self.expr(c)?.truthy() { a } else { b };
                 self.expr(pick)?
             }
+            Expr::Call(f, args) if args.len() <= 4 => {
+                let mut nums = [0.0; 4];
+                for (slot, arg) in nums.iter_mut().zip(args) {
+                    *slot = self.expr(arg)?.num();
+                }
+                Value::Num(f(&nums[..args.len()]))
+            }
             Expr::Call(f, args) => {
                 let args: Vec<f64> = self.all(args)?.iter().map(Value::num).collect();
                 Value::Num(f(&args))
             }
             Expr::Host(name, args) => {
-                let args = self.all(args)?;
-                self.host.function(name, &args)?
+                self.with_args(args, |run, args| run.host.function(name, args))?
             }
             Expr::Method(target, name, args) => {
                 let target = self.expr(target)?;
-                let args = self.all(args)?;
-                self.host.method(&target, name, &args)?
+                self.with_args(args, |run, args| run.host.method(&target, name, args))?
             }
         })
     }
