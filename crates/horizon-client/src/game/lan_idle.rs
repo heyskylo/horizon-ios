@@ -64,6 +64,9 @@ pub(super) struct IdlePass<'a> {
     viewers: Vec<(usize, [f64; 2], i32)>,
     /// `entity-broadcast-range-percentage`, as the tracker scales ranges.
     percent: i32,
+    /// The last type asked about and its scaled tracking range: the
+    /// entities of a type come in runs (a farm, a pile of items).
+    last_kind: Option<(String, i32)>,
 }
 
 impl IdleStates {
@@ -99,6 +102,19 @@ impl<'a> IdlePass<'a> {
             now,
             viewers,
             percent,
+            last_kind: None,
+        }
+    }
+
+    /// The type's tracking range in blocks, scaled as the tracker scales it.
+    fn range(&mut self, kind: &str) -> i32 {
+        match &mut self.last_kind {
+            Some((last, range)) if last.as_str() == kind => *range,
+            last => {
+                let range = self.percent * (i32::from(tracking::settings(kind).0) * 16) / 100;
+                *last = Some((kind.to_owned(), range));
+                range
+            }
         }
     }
 
@@ -137,7 +153,7 @@ impl<'a> IdlePass<'a> {
             return false;
         }
         // The tracker's `sees`, but for the chunk it also asks the client to have.
-        let range = self.percent * (i32::from(tracking::settings(kind).0) * 16) / 100;
+        let range = self.range(kind);
         // Only a client within `range` along x can be within it: a block
         // more spares the rounding of the squares.
         let reach = f64::from(range) + 1.0;
