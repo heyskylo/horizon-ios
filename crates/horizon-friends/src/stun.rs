@@ -7,10 +7,9 @@ use std::{
     time::Duration,
 };
 
-/// Two independent operators, so one outage doesn't break discovery; both
-/// run free public STUN for WebRTC at a global scale. Configurable with
-/// `HORIZON_STUN_SERVERS` (a comma list; `none` turns STUN off).
-pub const DEFAULT_SERVERS: &[&str] = &["stun.cloudflare.com:3478", "stun.l.google.com:19302"];
+/// [`horizon_addresses::STUN_SERVERS`]. Configurable with `HORIZON_STUN_SERVERS` (a comma list;
+/// `none` turns STUN off).
+pub const DEFAULT_SERVERS: &[&str] = horizon_addresses::STUN_SERVERS;
 
 const MAGIC: u32 = 0x2112_A442;
 
