@@ -355,9 +355,11 @@ fn worn_of(
 }
 
 /// The UUID the service knows the player's own model by. On a server, the profile it gave
-/// (`profile`). In single player the window's own server (`solo`) names the player by their
-/// offline profile, which the service doesn't know: the signed-in account's (`account`) then, only
-/// with *Cosmetics in single player* on (`shown`); off, nothing is asked or drawn.
+/// (`profile`), but an offline-mode server's is `nameUUIDFromBytes` of the name (version 3), which
+/// the service doesn't know: the signed-in account's (`account`) then, as an online server's would
+/// be (#12820). Only the own model: another player's name can be anyone's there. In single player
+/// the window's own server (`solo`) names the player by their offline profile too: the account's
+/// then, only with *Cosmetics in single player* on (`shown`); off, nothing is asked or drawn.
 fn own_uuid(
     profile: Option<u128>,
     solo: bool,
@@ -365,6 +367,7 @@ fn own_uuid(
     account: impl FnOnce() -> Option<u128>,
 ) -> Option<u128> {
     match solo {
+        false if profile.is_some_and(|p| (p >> 76) & 0xf == 3) => account().or(profile),
         false => profile,
         true if shown && profile.is_some() => account(),
         true => None,
@@ -1083,6 +1086,37 @@ mod tests {
         };
         let (worn, asked) = other_player(&hid, short);
         assert!(worn.is_none() && asked.is_empty());
+    }
+
+    #[test]
+    fn an_offline_servers_profile_asks_by_my_account_and_an_online_one_by_its_own() {
+        const ACCOUNT: u128 = 0x1f2e_3d4c_5b6a_4978_8695_a4b3_c2d1_e0ff;
+        let offline = horizon_protocol::crypto::offline_uuid("Steve");
+        let online = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
+        let signed_in = || Some(ACCOUNT);
+        // An offline-mode server's profile: the service knows the account, so the account's.
+        assert_eq!(
+            own_uuid(Some(offline), false, false, signed_in),
+            Some(ACCOUNT)
+        );
+        // An online server's profile is the account's own already: kept as it is.
+        assert_eq!(
+            own_uuid(Some(online), false, false, signed_in),
+            Some(online)
+        );
+        // Signed out: the profile, as before.
+        assert_eq!(
+            own_uuid(Some(offline), false, false, || None),
+            Some(offline)
+        );
+        // No profile yet: nothing to ask by.
+        assert_eq!(own_uuid(None, false, false, signed_in), None);
+        // Single player still follows its own setting.
+        assert_eq!(own_uuid(Some(offline), true, false, signed_in), None);
+        assert_eq!(
+            own_uuid(Some(offline), true, true, signed_in),
+            Some(ACCOUNT)
+        );
     }
 
     #[test]
