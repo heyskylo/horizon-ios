@@ -3,9 +3,12 @@
 //! changes only values (the luminance, the UI brightness, what the display reports) updates
 //! them in place. Another encoding or frame is built and the swapchain configured for it before
 //! the snapshot says so. One that fails is never published as active, and is not tried again
-//! until the request, the capabilities or the surface change.
+//! until the request, the capabilities or the surface change. Auto keeps HDR on through a
+//! moment's loss of the display's report ([`auto_grace`]).
 use super::{DisplayReading, DisplayWatch, Renderer, hdr, output};
+use crate::graphics::HdrMode;
 use output::{EffectiveOutput, OutputCapabilities};
+use std::time::{Duration, Instant};
 
 /// What an output's resources are made for: the encoding presented and the frame.
 type Key = (Option<hdr::Output>, output::FrameConfiguration);
@@ -99,6 +102,95 @@ pub(super) fn surface_config(
         config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
     }
     config
+}
+
+/// How long Auto keeps HDR on once the display stops reporting it. A fixed window that
+/// coalesces the report's churn as a display wakes or the window moves to another one; not a
+/// measured sleep/wake time.
+const AUTO_OFF_DELAY: Duration = Duration::from_millis(500);
+
+/// The display's report `update_output` resolves Auto with at `now`. While Auto presents HDR
+/// and the surface still offers that encoding, a report that turns false or unknown starts
+/// the timer `since`, once, and HDR stays on at the values last applied until it has held
+/// for [`AUTO_OFF_DELAY`]; a positive report before then clears it. Off and On, a changed
+/// offer, and entering HDR take `raw` at once.
+fn auto_grace(
+    now: Instant,
+    mode: HdrMode,
+    offered: Option<hdr::Output>,
+    raw: DisplayReading,
+    applied: &EffectiveOutput,
+    since: &mut Option<Instant>,
+) -> DisplayReading {
+    let lost = mode == HdrMode::Auto
+        && applied.encoding.is_some()
+        && offered == applied.encoding
+        && raw.hdr != Some(true);
+    if !lost {
+        if since.take().is_some() && raw.hdr == Some(true) {
+            log::info!("Horizon renderer: the display reports HDR again; HDR stays on");
+        }
+    } else if since.is_none() {
+        log::info!(
+            "Horizon renderer: the display stopped reporting HDR; Auto keeps it on for {} ms",
+            AUTO_OFF_DELAY.as_millis()
+        );
+        *since = Some(now);
+    } else if grace_over(*since, now) {
+        *since = None;
+    }
+    graced(*since, raw, applied)
+}
+
+fn grace_over(since: Option<Instant>, now: Instant) -> bool {
+    since.is_some_and(|since| now.saturating_duration_since(since) >= AUTO_OFF_DELAY)
+}
+
+/// What the display reports as the output takes it: during Auto's grace (`since`), HDR at the
+/// luminance `applied` was resolved with; `raw` otherwise.
+pub(super) fn graced(
+    since: Option<Instant>,
+    raw: DisplayReading,
+    applied: &EffectiveOutput,
+) -> DisplayReading {
+    match since {
+        Some(_) => DisplayReading {
+            luminance: applied.reported,
+            hdr: Some(true),
+        },
+        None => raw,
+    }
+}
+
+/// Whether the output resolves again at `now`: a due poll (`read`, with the surface's
+/// `offer`; on Wayland, an event) changed `reading` or `caps`, or Auto's grace `since` is
+/// over. Its end reads the display once more first, however long until the next poll.
+fn poll_display(
+    watch: Option<&mut DisplayWatch>,
+    reading: &mut DisplayReading,
+    caps: &mut OutputCapabilities,
+    since: Option<Instant>,
+    now: Instant,
+    read: impl FnOnce() -> DisplayReading,
+    offer: impl FnOnce() -> Option<Option<hdr::Output>>,
+) -> bool {
+    let over = grace_over(since, now);
+    let Some(watch) = watch else {
+        return over;
+    };
+    if over && let Some(next) = &mut watch.polled {
+        *next = now;
+    }
+    let Some(read) = watch.poll(*reading, now, read) else {
+        return over;
+    };
+    observe(reading, caps, read, offer()) || over
+}
+
+/// What `surface` offers now (`None` offscreen): Vulkan's offered formats can change with
+/// desktop HDR or the window's output, and a display can offer the other encoding.
+fn offer(surface: Option<&wgpu::Surface>, adapter: &wgpu::Adapter) -> Option<Option<hdr::Output>> {
+    Some(hdr::output(&surface?.get_capabilities(adapter)))
 }
 
 /// Takes what a due poll read into `reading` and `caps`: the display's report `now`, and what
@@ -221,10 +313,18 @@ impl Renderer {
     ) {
         self.watch_hdr(settings.hdr);
         self.hold_hdr_back(settings);
+        let reading = auto_grace(
+            Instant::now(),
+            settings.hdr,
+            self.output_caps.hdr,
+            self.reading,
+            &self.output,
+            &mut self.auto_off_since,
+        );
         let candidate = output::resolve_output(
             settings,
             self.output_caps,
-            self.reading,
+            reading,
             self.output.frame,
             self.surface.is_some() || self.offscreen.is_some(),
         );
@@ -269,24 +369,24 @@ impl Renderer {
             let (watch, now) =
                 DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter);
             self.display = Some(watch);
-            self.output_caps.hdr = self.surface_offer().unwrap_or(self.output_caps.hdr);
+            let offer = offer(self.surface.as_deref(), &self.adapter);
+            self.output_caps.hdr = offer.unwrap_or(self.output_caps.hdr);
             self.reading = now;
             self.display_fresh = true;
         }
     }
 
-    /// What the window's surface offers now (`None` offscreen): Vulkan's offered formats can
-    /// change with desktop HDR or the window's output, and a display can offer the other
-    /// encoding.
-    fn surface_offer(&self) -> Option<Option<hdr::Output>> {
-        let surface = self.surface.as_ref()?;
-        Some(hdr::output(&surface.get_capabilities(&self.adapter)))
+    /// The swapchain's configuration: `config` (what every pipeline draws in), or
+    /// HDR10 or scRGB while HDR output is on.
+    pub(super) fn surface_config(&self) -> wgpu::SurfaceConfiguration {
+        surface_config(&self.config, self.hdr.as_ref().map(|hdr| hdr.output))
     }
 
     /// After a new window surface: what it offers, and an output that failed on the old one
     /// may be tried again. The settings apply again.
     pub(super) fn surface_recreated(&mut self) {
-        self.output_caps.hdr = self.surface_offer().unwrap_or(self.output_caps.hdr);
+        let offer = offer(self.surface.as_deref(), &self.adapter);
+        self.output_caps.hdr = offer.unwrap_or(self.output_caps.hdr);
         self.display_fresh = true;
         self.output_rejected = None;
     }
@@ -295,22 +395,23 @@ impl Renderer {
     /// (another output, the player recalibrating the desktop, desktop HDR offering the other
     /// encoding): the settings' Auto values and the output follow it then, so apply them
     /// again. Each due poll reads the surface's capabilities as well, even when the display
-    /// reports the same.
+    /// reports the same. So does the end of Auto's grace (`auto_grace`), with or without a
+    /// poll or an event then.
     pub fn display_changed(&mut self) -> bool {
         super::flush_display_log();
         if std::mem::take(&mut self.display_fresh) {
             return true;
         }
-        let Some(watch) = self.display.as_mut() else {
-            return false;
-        };
         let (surface, adapter) = (self.surface.as_deref(), &self.adapter);
-        let read = || DisplayReading::read(surface, adapter);
-        let Some(now) = watch.poll(self.reading, std::time::Instant::now(), read) else {
-            return false;
-        };
-        let offer = self.surface_offer();
-        observe(&mut self.reading, &mut self.output_caps, now, offer)
+        poll_display(
+            self.display.as_mut(),
+            &mut self.reading,
+            &mut self.output_caps,
+            self.auto_off_since,
+            Instant::now(),
+            || DisplayReading::read(surface, adapter),
+            || offer(surface, adapter),
+        )
     }
 }
 
@@ -528,5 +629,269 @@ mod tests {
         rejected = None;
         commit(&mut swapchain, &pq, next, caps, &mut rejected);
         assert_eq!(swapchain.asked.len(), 4);
+    }
+
+    /// A window in Auto presenting HDR10 at 400/1000 nits on the layered frame, followed on
+    /// fake time as the game follows a renderer each frame: `display_changed`, then
+    /// `update_output` where it says so.
+    struct Auto {
+        settings: Graphics,
+        start: Instant,
+        watch: DisplayWatch,
+        reading: DisplayReading,
+        caps: OutputCapabilities,
+        applied: EffectiveOutput,
+        since: Option<Instant>,
+        swapchain: Swapchain,
+        /// What the system reports when it is read, and when (ms) it was.
+        report: DisplayReading,
+        reads: Vec<u64>,
+    }
+    impl Auto {
+        /// `polled`: the system is read every `DISPLAY_POLL` from 0, else it sends events
+        /// (`event`), as on Wayland.
+        fn new(polled: bool) -> Self {
+            let settings = Graphics {
+                hdr: HdrMode::Auto,
+                ..Graphics::default()
+            };
+            let (caps, reading) = window(Some(Pq), Some(true));
+            let applied = snapshot(&settings, NO_PACK, caps, reading);
+            assert!(applied.encoding == Some(Pq) && applied.frame.hud_layer);
+            let start = Instant::now();
+            Self {
+                settings,
+                start,
+                watch: DisplayWatch {
+                    #[cfg(target_os = "linux")]
+                    wayland: None,
+                    polled: polled.then_some(start),
+                },
+                reading,
+                caps,
+                applied,
+                since: None,
+                swapchain: Swapchain::default(),
+                report: reading,
+                reads: Vec::new(),
+            }
+        }
+        /// A frame at `ms`.
+        fn frame(&mut self, ms: u64) {
+            let now = self.start + Duration::from_millis(ms);
+            let (report, offer, reads) = (self.report, Some(self.caps.hdr), &mut self.reads);
+            let read = || {
+                reads.push(ms);
+                report
+            };
+            let (reading, caps) = (&mut self.reading, &mut self.caps);
+            if poll_display(
+                Some(&mut self.watch),
+                reading,
+                caps,
+                self.since,
+                now,
+                read,
+                || offer,
+            ) {
+                self.update(ms);
+            }
+        }
+        /// Frames from `from` to `to` ms, every 10 ms.
+        fn frames(&mut self, from: u64, to: u64) {
+            for ms in (from..=to).step_by(10) {
+                self.frame(ms);
+            }
+        }
+        /// What the system reports from `ms` on: HDR `hdr`, with no luminance unless it is
+        /// HDR, at 300/800 nits then.
+        fn reports(&mut self, hdr: Option<bool>, offer: Option<hdr::Output>) {
+            self.report = DisplayReading {
+                luminance: (hdr == Some(true)).then_some(Reported {
+                    paper_white: 300,
+                    peak: 800,
+                }),
+                hdr,
+            };
+            self.caps.hdr = offer;
+        }
+        /// The system's event at `ms`, with what it now `reports`.
+        fn event(&mut self, ms: u64, hdr: Option<bool>, offer: Option<hdr::Output>) {
+            self.reports(hdr, offer);
+            self.reading = self.report;
+            self.update(ms);
+        }
+        /// `update_output` at `ms`.
+        fn update(&mut self, ms: u64) {
+            let now = self.start + Duration::from_millis(ms);
+            let applied = &self.applied;
+            let reading = auto_grace(
+                now,
+                self.settings.hdr,
+                self.caps.hdr,
+                self.reading,
+                applied,
+                &mut self.since,
+            );
+            let next = candidate(&self.settings, self.caps, reading, applied);
+            self.applied = commit(&mut self.swapchain, applied, next, self.caps, &mut None);
+            // While HDR stays on, the frame the game asks for (`Renderer::requested_frame`) is
+            // this one: no new renderer.
+            let reading = graced(self.since, self.reading, &self.applied);
+            let frame = output::resolve_frame(
+                &self.settings,
+                NO_PACK,
+                self.caps,
+                reading,
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+            );
+            assert_eq!(
+                frame == self.applied.frame,
+                self.applied.hdr_on(),
+                "{ms} ms"
+            );
+        }
+        fn presented(&self) -> Vec<Option<hdr::Output>> {
+            self.swapchain.asked.iter().map(|a| a.0).collect()
+        }
+    }
+
+    /// The display's report flickers off and back, false or unknown: HDR stays on, nothing
+    /// is presented again, and the shader `Frame`, what the settings show as active and the
+    /// nits stay as they were applied, even while the report says nothing of them.
+    #[test]
+    fn a_report_that_flickers_off_and_back_swaps_nothing() {
+        for lost in [Some(false), None] {
+            let mut auto = Auto::new(false);
+            let before = auto.applied;
+            auto.event(0, Some(true), Some(Pq));
+            auto.frames(0, 90);
+            let fresh = auto.applied;
+            assert_eq!(fresh.nits, [300.0, 800.0, 0.0], "a positive report applies");
+            auto.event(100, lost, Some(Pq));
+            auto.frames(100, 390);
+            assert_eq!(auto.applied, fresh, "{lost:?}");
+            assert!(auto.applied.requests_hdr(HdrMode::Auto) && auto.applied.display().hdr);
+            auto.event(400, Some(true), Some(Pq));
+            auto.frames(400, 1500);
+            assert_eq!((auto.applied, auto.since), (fresh, None), "{lost:?}");
+            assert!(auto.presented().is_empty(), "{lost:?}");
+            assert_eq!(auto.applied.frame, before.frame);
+        }
+    }
+
+    /// A loss held through 600 ms turns HDR off once, at 500 ms, and on an event-driven
+    /// display with no event then. The same loss reported again doesn't restart the timer.
+    #[test]
+    fn a_loss_held_turns_hdr_off_once_at_the_deadline() {
+        for lost in [Some(false), None] {
+            let mut auto = Auto::new(false);
+            auto.event(0, lost, Some(Pq));
+            auto.frames(0, 190);
+            auto.event(200, lost, Some(Pq));
+            auto.frames(200, 490);
+            assert_eq!(auto.applied.encoding, Some(Pq), "{lost:?}");
+            auto.frame(500);
+            assert_eq!(auto.applied.encoding, None, "{lost:?}");
+            auto.frames(500, 3000);
+            assert_eq!(auto.presented(), [None], "{lost:?}");
+            assert_eq!(auto.since, None);
+        }
+    }
+
+    /// Where the system is polled, a false read by the poll that starts the timer is read
+    /// again at the deadline, not two seconds after, before it counts: the display came back
+    /// meanwhile, so HDR stays; where it didn't, HDR turns off then. The two-second cadence
+    /// stays otherwise.
+    #[test]
+    fn a_polled_false_is_read_again_at_the_deadline() {
+        for back in [true, false] {
+            let mut auto = Auto::new(true);
+            auto.frames(0, 1990);
+            auto.reports(Some(false), Some(Pq));
+            auto.frame(2000);
+            assert_eq!(
+                (auto.applied.encoding, auto.since.is_some()),
+                (Some(Pq), true)
+            );
+            if back {
+                auto.reports(Some(true), Some(Pq));
+            }
+            auto.frames(2010, 2490);
+            assert_eq!(auto.applied.encoding, Some(Pq), "never before the deadline");
+            auto.frames(2500, 4990);
+            assert_eq!(auto.reads, [0, 2000, 2500, 4500], "back {back}");
+            let after = if back { vec![] } else { vec![None] };
+            assert_eq!(auto.presented(), after, "back {back}");
+        }
+    }
+
+    /// A positive report clears the timer: a later loss has its own 500 ms.
+    #[test]
+    fn a_positive_report_clears_the_timer() {
+        let mut auto = Auto::new(false);
+        auto.event(100, Some(false), Some(Pq));
+        auto.event(300, Some(true), Some(Pq));
+        auto.event(700, Some(false), Some(Pq));
+        auto.frames(700, 1190);
+        assert_eq!(auto.applied.encoding, Some(Pq));
+        auto.frame(1200);
+        assert_eq!(auto.presented(), [None]);
+    }
+
+    /// Off acts at once, and On or Off clear the timer: Auto again starts it anew.
+    #[test]
+    fn off_and_on_take_no_grace() {
+        let mut auto = Auto::new(false);
+        auto.event(100, Some(false), Some(Pq));
+        auto.settings.hdr = HdrMode::Off;
+        auto.update(200);
+        assert_eq!((auto.presented(), auto.since), (vec![None], None));
+        let mut auto = Auto::new(false);
+        auto.event(100, Some(false), Some(Pq));
+        auto.settings.hdr = HdrMode::On;
+        auto.update(200);
+        assert_eq!((auto.applied.encoding, auto.since), (Some(Pq), None));
+        auto.settings.hdr = HdrMode::Auto;
+        auto.update(300);
+        auto.frames(300, 790);
+        assert_eq!(auto.applied.encoding, Some(Pq));
+        auto.frame(800);
+        assert_eq!(auto.presented(), [None]);
+    }
+
+    /// The surface no longer offering the encoding presented ends the grace at once: SDR
+    /// without a report, the other encoding with one.
+    #[test]
+    fn an_encoding_no_longer_offered_is_not_kept() {
+        for offer in [None, Some(ScRgb)] {
+            let mut auto = Auto::new(false);
+            auto.event(100, Some(false), Some(Pq));
+            auto.event(200, Some(false), offer);
+            assert_eq!((auto.presented(), auto.since), (vec![None], None));
+            let mut auto = Auto::new(false);
+            auto.event(100, None, offer);
+            assert_eq!(auto.presented(), [None], "{offer:?}");
+        }
+        let mut auto = Auto::new(false);
+        auto.event(100, Some(false), Some(Pq));
+        auto.event(200, Some(true), Some(ScRgb));
+        assert_eq!(auto.presented(), [Some(ScRgb)]);
+    }
+
+    /// Two windows' timers run apart.
+    #[test]
+    fn two_renderers_keep_their_own_timer() {
+        let (mut a, mut b) = (Auto::new(false), Auto::new(false));
+        b.start = a.start;
+        a.event(100, Some(false), Some(Pq));
+        b.event(300, Some(false), Some(Pq));
+        a.event(400, Some(true), Some(Pq));
+        for ms in (300..=900).step_by(10) {
+            a.frame(ms);
+            b.frame(ms);
+            assert_eq!(b.applied.hdr_on(), ms < 800, "{ms} ms");
+        }
+        assert_eq!((a.presented(), b.presented()), (vec![], vec![None]));
     }
 }
