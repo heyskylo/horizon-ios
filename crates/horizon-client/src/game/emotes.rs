@@ -6,9 +6,9 @@
 
 use super::Game;
 use super::perspective::CameraType;
-use horizon_cosmetics::account::OwnedEmote;
 use horizon_client::mobs::Mob;
 use horizon_client::mobs::anim::BodyPose;
+use horizon_cosmetics::account::OwnedEmote;
 use horizon_cosmetics::{Item, Playing, Slot};
 use std::sync::Arc;
 
@@ -68,7 +68,9 @@ pub(super) fn playing(m: &Mob) -> Option<&Playing> {
 pub(super) fn set_playing(m: &mut Mob, next: Option<Playing>) {
     let same = match (playing(m), &next) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(&a.item, &b.item) && a.start == b.start && a.stop == b.stop,
+        (Some(a), Some(b)) => {
+            Arc::ptr_eq(&a.item, &b.item) && a.start == b.start && a.stop == b.stop
+        }
         _ => false,
     };
     if !same {
