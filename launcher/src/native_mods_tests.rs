@@ -201,9 +201,11 @@ fn two_mods_on_one_hook_warn_in_run_order() {
         ),
     ];
     assert_eq!(
-            warn_conflicts(&mods),
-            ["mods beta, alpha both inject at hook `frame` HEAD; beta runs first (priority descending, mod id ascending)."]
-        );
+        warn_conflicts(&mods),
+        [
+            "mods beta, alpha both inject at hook `frame` HEAD; beta runs first (priority descending, mod id ascending)."
+        ]
+    );
 }
 
 /// horizon-mixins defaults a mod's priority to 0, not to the README
@@ -221,9 +223,11 @@ fn the_default_priority_is_zero() {
         ),
     ];
     assert_eq!(
-            warn_conflicts(&mods),
-            ["mods beta, alpha both inject at hook `frame` HEAD; beta runs first (priority descending, mod id ascending)."]
-        );
+        warn_conflicts(&mods),
+        [
+            "mods beta, alpha both inject at hook `frame` HEAD; beta runs first (priority descending, mod id ascending)."
+        ]
+    );
 }
 
 #[test]
@@ -239,9 +243,11 @@ fn a_priority_tie_orders_by_mod_id() {
         ),
     ];
     assert_eq!(
-            warn_conflicts(&mods),
-            ["mods alpha, beta both inject at hook `tick` HEAD; alpha runs first (priority descending, mod id ascending)."]
-        );
+        warn_conflicts(&mods),
+        [
+            "mods alpha, beta both inject at hook `tick` HEAD; alpha runs first (priority descending, mod id ascending)."
+        ]
+    );
 }
 
 #[test]
@@ -258,9 +264,11 @@ fn an_injections_priority_overrides_its_mods() {
     ];
     // beta's is 0 (the default), alpha's 50: alpha first.
     assert_eq!(
-            warn_conflicts(&mods),
-            ["mods alpha, beta both inject at hook `tick` HEAD; alpha runs first (priority descending, mod id ascending)."]
-        );
+        warn_conflicts(&mods),
+        [
+            "mods alpha, beta both inject at hook `tick` HEAD; alpha runs first (priority descending, mod id ascending)."
+        ]
+    );
 }
 
 #[test]
@@ -276,9 +284,11 @@ fn two_mods_on_one_raw_target_warn_too() {
         ),
     ];
     assert_eq!(
-            warn_conflicts(&mods),
-            ["mods alpha, beta both inject at `game::calls::compute` HEAD; alpha runs first (priority descending, mod id ascending)."]
-        );
+        warn_conflicts(&mods),
+        [
+            "mods alpha, beta both inject at `game::calls::compute` HEAD; alpha runs first (priority descending, mod id ascending)."
+        ]
+    );
 }
 
 /// HEAD and RETURN wrap the whole function: HEAD runs on entry, RETURN
@@ -296,9 +306,11 @@ fn head_and_return_on_one_function_warn_without_a_runs_first() {
         ),
     ];
     assert_eq!(
-            warn_conflicts(&mods),
-            ["mods alpha (HEAD), beta (RETURN) inject into hook `tick`: HEAD runs on entry, RETURN on return, whatever their priorities."]
-        );
+        warn_conflicts(&mods),
+        [
+            "mods alpha (HEAD), beta (RETURN) inject into hook `tick`: HEAD runs on entry, RETURN on return, whatever their priorities."
+        ]
+    );
 }
 
 /// Two interior injections of one function with different selectors are
@@ -336,9 +348,11 @@ fn same_selector_and_ordinal_is_one_place() {
         ),
     ];
     assert_eq!(
-            warn_conflicts(&mods),
-            ["mods alpha, beta both inject at hook `tick` BEFORE_CALL selector `x` ordinal 1; alpha runs first (priority descending, mod id ascending)."]
-        );
+        warn_conflicts(&mods),
+        [
+            "mods alpha, beta both inject at hook `tick` BEFORE_CALL selector `x` ordinal 1; alpha runs first (priority descending, mod id ascending)."
+        ]
+    );
 }
 
 #[test]
@@ -363,9 +377,11 @@ fn a_cancelling_head_on_a_hook_point_warns() {
         "[[injection]]\nid = \"stop\"\nhook = \"frame\"\nkind = \"HEAD\"\ncancellable = true\n",
     )];
     assert_eq!(
-            warn_conflicts(&mods),
-            ["alpha's `stop` can cancel at hook `frame` HEAD: a Break skips the later injections and the function's body."]
-        );
+        warn_conflicts(&mods),
+        [
+            "alpha's `stop` can cancel at hook `frame` HEAD: a Break skips the later injections and the function's body."
+        ]
+    );
 }
 
 /// Cancellation is allowed on the interior kinds too, but what a Break
@@ -441,15 +457,26 @@ fn mixin_input_excludes_trait_only_bundles_but_keeps_trait_injections() {
     let root = dir("mixed-mixin-input");
     let incoming = root.join("incoming");
     for (id, injection) in [
-            ("plain", ""),
-            ("ordinary", "[[injection]]\nid = 'ordinary'\n"),
-            ("trait_injection", "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'HEAD'\ntrait_method = 'tick'\n"),
-        ] {
-            let bundle = incoming.join(id);
-            fs::create_dir_all(bundle.join("engine")).unwrap();
-            fs::write(bundle.join("engine/Cargo.toml"), "[package]\nname = 'example'\nversion = '1.0.0'\n").unwrap();
-            fs::write(bundle.join(MANIFEST), format!("[mod]\nid = '{id}'\nversion = '1'\n[api]\npath = 'engine'\n{injection}")).unwrap();
-        }
+        ("plain", ""),
+        ("ordinary", "[[injection]]\nid = 'ordinary'\n"),
+        (
+            "trait_injection",
+            "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'HEAD'\ntrait_method = 'tick'\n",
+        ),
+    ] {
+        let bundle = incoming.join(id);
+        fs::create_dir_all(bundle.join("engine")).unwrap();
+        fs::write(
+            bundle.join("engine/Cargo.toml"),
+            "[package]\nname = 'example'\nversion = '1.0.0'\n",
+        )
+        .unwrap();
+        fs::write(
+            bundle.join(MANIFEST),
+            format!("[mod]\nid = '{id}'\nversion = '1'\n[api]\npath = 'engine'\n{injection}"),
+        )
+        .unwrap();
+    }
     let mods = bundles(&incoming).unwrap();
     assert!(!mods[1].mixins_content);
     assert!(mods[0].mixins_content && mods[2].mixins_content);
@@ -496,8 +523,8 @@ fn write_native(at: &Path, id: &str, horizon: &str, mixins: &str) {
     fs::create_dir_all(at.join("mixins").join(id)).unwrap();
     fs::write(at.join(NATIVE_MANIFEST), manifest.to_string()).unwrap();
     let toml = format!(
-            "[mod]\nid = \"{id}\"\nversion = \"0.3.0\"\n[compatibility]\nhorizon_revision = \"{horizon}\"\n"
-        );
+        "[mod]\nid = \"{id}\"\nversion = \"0.3.0\"\n[compatibility]\nhorizon_revision = \"{horizon}\"\n"
+    );
     fs::write(at.join("mixins").join(id).join(MANIFEST), toml).unwrap();
 }
 
@@ -1631,15 +1658,15 @@ fn cargos_output_gives_the_crate_and_the_progress() {
     );
     // The bar is redrawn with carriage returns and escapes, then the next line follows.
     assert_eq!(
-            parse_cargo(
-                "   Building [=>   ] 3/9: a\r\x1b[K   Building [==>  ] 4/9: b\r      \r   Compiling b v0.1.0"
-            ),
-            vec![
-                Cargo::Progress(3, 9),
-                Cargo::Progress(4, 9),
-                Cargo::Compiling("b".into())
-            ]
-        );
+        parse_cargo(
+            "   Building [=>   ] 3/9: a\r\x1b[K   Building [==>  ] 4/9: b\r      \r   Compiling b v0.1.0"
+        ),
+        vec![
+            Cargo::Progress(3, 9),
+            Cargo::Progress(4, 9),
+            Cargo::Compiling("b".into())
+        ]
+    );
     assert!(parse_cargo("warning: unused variable").is_empty());
     assert!(parse_cargo("    Finished `fast` profile in 1m").is_empty());
     // The log leaves out the progress bar, never what follows it on the same line.
@@ -2074,4 +2101,60 @@ fn a_build_smart_app_control_blocked_says_how_to_build() {
     ]);
     let e = run(cmd, "Compiling the game", |_| {}).unwrap_err();
     assert!(!e.contains("Smart App Control"), "{e}");
+}
+
+#[test]
+fn combined_content_is_snapshotted_with_its_exact_native_build() {
+    let incoming = dir("combined-source");
+    write_native(&incoming, "veinminer", A, B);
+    fs::write(incoming.join("horizon-mod.toml"), "id=\"veinminer\"\nname=\"Sounds\"\nversion=\"0.3.0\"\napi=\"0.2\"\ncapabilities=[\"registries\"]\n").unwrap();
+    let sound = "assets/veinminer/sounds.json";
+    fs::create_dir_all(incoming.join("assets/veinminer")).unwrap();
+    fs::write(incoming.join(sound), b"{}").unwrap();
+    let home = dir("combined-install");
+    fs::create_dir_all(home.join(INSTALLED)).unwrap();
+    let archive = home.join(INSTALLED).join("veinminer.hmod");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for (name, path) in files(&incoming).unwrap() {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&fs::read(path).unwrap()).unwrap();
+    }
+    zip.finish().unwrap();
+    crate::browser::java::set_enabled(&home, "veinminer", true).unwrap();
+    let staged = dir("combined-staged");
+    installed_mods_into(&home, &staged).unwrap();
+    let mods = bundles(&staged).unwrap();
+    assert_eq!(
+        crate::native_status::enabled(&home)[0].2,
+        source_digest(&mods[0])
+    );
+    let before = version_for(A, B, Profile::Performance, Target::Client, None, &mods).unwrap();
+    let built = dir("combined-built");
+    install_content(&mods, &built).unwrap();
+    let snapshot = built.join("native-content/veinminer");
+    let package = horizon_mods::Package::read(&snapshot).unwrap();
+    let content = horizon_mods::Content::read(&snapshot, &package.manifest).unwrap();
+    assert_eq!(content.file(sound).unwrap(), b"{}");
+    fs::write(
+        staged.join("veinminer").join(sound),
+        b"{\"new\":{\"sounds\":[]}}",
+    )
+    .unwrap();
+    fs::write(&archive, b"a later downloaded version").unwrap();
+    assert_ne!(
+        before,
+        version_for(A, B, Profile::Performance, Target::Client, None, &mods).unwrap()
+    );
+    assert_eq!(
+        fs::read(snapshot.join(sound)).unwrap(),
+        b"{}",
+        "later installed updates cannot mutate a built version"
+    );
+    let rebuilt = dir("combined-rebuilt");
+    copy_base(&built, &rebuilt, Target::Client).unwrap();
+    assert!(
+        !rebuilt.join("native-content").exists(),
+        "disabled mods leave no content in the next build"
+    );
 }
