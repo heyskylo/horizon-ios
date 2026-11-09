@@ -3017,9 +3017,16 @@ impl Game<'_> {
             let (x, y, z) = pos;
             self.native_brewing_start([x, y, z], &ingredient);
         }
-        if out != brewing::BrewTick::default() {
+        let out_changed = out != brewing::BrewTick::default();
+        // `BrewingStandBlockEntity.serverTick`: setChanged when fuel was
+        // taken, while a brew runs, when one starts, and when the pots or a
+        // dropped remainder changed. The block state only carries the bottle
+        // bits, so most of these had no other mark.
+        if !was_idle || consumed_fuel || started || out_changed {
+            self.container_changed(pos);
+        }
+        if out_changed {
             let (x, y, z) = pos;
-            self.world.modified.insert((x >> 4, z >> 4));
             if out.brewed {
                 self.native_brewing_complete([x, y, z]);
                 self.play_at("minecraft:block.brewing_stand.brew", [x, y, z], 1.0, 1.0);
@@ -3242,5 +3249,61 @@ mod cycling_tests {
         // Near top screen edge
         let (_x, y) = tooltip_position((50.0, 5.0), (640.0, 360.0), (100.0, 20.0));
         assert_eq!(y, 4.0);
+    }
+}
+
+#[cfg(test)]
+mod brewing_changed_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{brewing::BrewingStand, containers::BlockEntity, items::ItemStack};
+
+    /// `BrewingStandBlockEntity.serverTick` sets changed when a brew starts
+    /// (the fuel is taken and the timer begins); the block state only carries
+    /// the bottle bits, so nothing else marked this start.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn starting_a_brew_marks_the_chunk() {
+        let mut game = server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:brewing_stand")
+            .unwrap();
+        let pos = (8, 64, 8);
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world.block_entities.insert(
+            pos,
+            BlockEntity::Brewing(Box::new(BrewingStand {
+                items: [
+                    Some(ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water")),
+                    None,
+                    None,
+                    Some(ItemStack::new("minecraft:nether_wart", 1)),
+                    None,
+                ],
+                brew_time: 0,
+                total_brew_time: 400,
+                fuel: 10,
+                total_fuel: 20,
+                speed: 1.0,
+                ingredient: None,
+                // The bottle bits the block state already shows: this tick
+                // changes only the fuel and the timer.
+                last_bottles: Some([true, false, false]),
+            })),
+        );
+        game.world.modified.clear();
+
+        game.tick_brewing_stand(pos).expect("the stand ticks");
+
+        let Some(BlockEntity::Brewing(b)) = game.world.block_entities.get(&pos) else {
+            panic!("no brewing stand");
+        };
+        assert_eq!((b.fuel, b.brew_time), (9, 400), "the brew started");
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "a started brew left the chunk unmarked"
+        );
     }
 }
