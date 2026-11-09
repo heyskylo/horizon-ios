@@ -52,6 +52,10 @@ impl Game<'_> {
                 {
                     return None;
                 }
+                // The mod API has no natural fence knots (#13036).
+                if let Target::Knot(_) = t {
+                    return None;
+                }
                 Some((id, g.target_type(t)))
             });
             if let Some(Some((id, kind))) = found {
@@ -375,6 +379,10 @@ impl Game<'_> {
         if let Target::Mob(m) = t
             && !self.mobs.iter().any(|x| x.id == m && !x.removed)
         {
+            return None;
+        }
+        // The mod API has no natural fence knots (#13036).
+        if let Target::Knot(_) = t {
             return None;
         }
         self.target_position(t)

@@ -138,6 +138,20 @@ impl Game<'_> {
         for pos in removed {
             self.jukebox_removed(pos);
         }
+        if edit.neighbour_updates {
+            // `ServerLevel.updateNeighboursOnBlockSet` for each block changed, as `set_block` does with its flags.
+            for &((x, y, z), old, new) in &out.tracked {
+                if old == new {
+                    continue;
+                }
+                let at = horizon_core::position::BlockPos::new(x, y, z);
+                self.with_level(|b, level, ticks| {
+                    let block = b.block(BlockStateId(new));
+                    b.update_neighbors_at(level, ticks, at, block);
+                });
+            }
+            let _ = self.process_level_events();
+        }
         for entry in &edit.block_entities {
             if !self.set_block_entity_checked([entry.x, entry.y, entry.z], &entry.nbt) {
                 log::warn!(
@@ -515,7 +529,7 @@ mod tests {
             palette: vec!["stone".into(), "air".into()],
             filters: vec!["#dirt".into()],
             runs,
-            block_entities: Vec::new(),
+            ..Default::default()
         }
     }
 
