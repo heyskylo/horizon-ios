@@ -3465,7 +3465,7 @@ pub(crate) mod tests {
     use crate::{banner::Banners, brewing::Brewing, crafting::Recipes};
     use horizon_world::loot::PackOverlay;
 
-    fn stack(item: &str, count: u32) -> Option<ItemStack> {
+    pub(crate) fn stack(item: &str, count: u32) -> Option<ItemStack> {
         Some(ItemStack {
             item: format!("minecraft:{item}").into(),
             count,
@@ -4142,7 +4142,7 @@ pub(crate) mod tests {
 
     /// A mod menu type laid out as `CraftingMenu`: the result in slot 0, the
     /// grid in 1 to 9, as many container slots as the table's.
-    fn mod_crafting_table() -> Kind {
+    pub(crate) fn mod_crafting_table() -> Kind {
         Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {
             id: "test:station",
             slots: 10,
@@ -4278,7 +4278,7 @@ pub(crate) mod tests {
             );
             // A furnace needs 8 cobblestone, which no one has: nothing moves.
             let before = station.sources.clone();
-            let refused = station.transfer_recipe(env, "minecraft:furnace");
+            let refused = station.transfer_recipe(env, "minecraft:furnace", false);
             assert_eq!(refused, Err(place::TransferError::Missing));
             assert_eq!(station.sources, before);
         });

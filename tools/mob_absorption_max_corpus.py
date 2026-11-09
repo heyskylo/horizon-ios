@@ -41,6 +41,12 @@ def mob_absorption_max(raw=False):
         ('other', None, [f'/effect give {T} minecraft:speed 100 0']),
         ('modifier', None, [f'/attribute {T} minecraft:max_absorption modifier add h203:extra 6 add_value',
                             f'/effect give {T} minecraft:absorption 100 0']),
+        # #13078: loading sets the amount as saved (internalSetAbsorptionAmount, unclamped), and the hit's
+        # setAbsorptionAmount clamps what is left to max_absorption: 0 without the effect, 4 with Absorption I.
+        ('data_soak', None, [f'/data merge entity {T} {{AbsorptionAmount:10.0f}}', f'/damage {T} 1 minecraft:generic']),
+        ('data_soak_effect', None, [f'/effect give {T} minecraft:absorption 100 0',
+                                    f'/data merge entity {T} {{AbsorptionAmount:10.0f}}',
+                                    f'/damage {T} 1 minecraft:generic']),
     ]
     tags = []
     for i, (name, base, setup) in enumerate(cases):
