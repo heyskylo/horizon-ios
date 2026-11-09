@@ -3006,51 +3006,7 @@ impl Game<'_> {
             world_items!(self),
             self.res.providers(),
         );
-        let consumed_fuel = was_unfueled && b.fuel > 0;
-        let started = was_idle && b.brew_time > 0;
-        let ingredient = started.then(|| b.ingredient.clone()).flatten();
-        if consumed_fuel && let Some(item) = fuel_item {
-            let (x, y, z) = pos;
-            self.native_brewing_fuel([x, y, z], &item);
-        }
-        if let Some(ingredient) = ingredient {
-            let (x, y, z) = pos;
-            self.native_brewing_start([x, y, z], &ingredient);
-        }
-        if out != brewing::BrewTick::default() {
-            let (x, y, z) = pos;
-            self.world.modified.insert((x >> 4, z >> 4));
-            if out.brewed {
-                self.native_brewing_complete([x, y, z]);
-                self.play_at("minecraft:block.brewing_stand.brew", [x, y, z], 1.0, 1.0);
-            }
-            for d in out.drops {
-                self.pop_resource([x, y, z], d);
-            }
-            if let Some(bottles) = out.bottles {
-                let state = self.world.block(x, y, z);
-                if let Some(mut s) = self.pack.assets.registry.state(state).cloned()
-                    && AsRef::<str>::as_ref(&s.name) == "minecraft:brewing_stand"
-                {
-                    for (i, has) in bottles.iter().enumerate() {
-                        s.properties
-                            .insert(format!("has_bottle_{i}"), has.to_string());
-                    }
-                    if let Ok(id) = self.pack.assets.registry.resolve(&s) {
-                        self.level_set_with_flags(
-                            [x, y, z],
-                            id,
-                            horizon_world::level::flags::UPDATE_CLIENTS,
-                        )?;
-                    }
-                }
-            }
-        }
-        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
-        {
-            self.world.block_entities.sleep(pos);
-        }
-        Ok(())
+        self.finish_brewing_tick(pos, was_idle, was_unfueled, fuel_item, out)
     }
 }
 
@@ -3244,3 +3200,8 @@ mod cycling_tests {
         assert_eq!(y, 4.0);
     }
 }
+
+mod brewing_tick;
+
+#[cfg(test)]
+mod brewing_changed_tests;

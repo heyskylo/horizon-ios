@@ -259,7 +259,10 @@ impl Campfire {
         for i in 0..4 {
             if self.progress[i] > 0 {
                 changed = true;
-                self.progress[i] = (self.progress[i] - 2).clamp(0, self.total[i]);
+                // `Mth.clamp(value, 0, cookingTime)`: min(max(value, 0), time).
+                // A negative time a command saved answers itself, where
+                // i32::clamp would panic (min > max).
+                self.progress[i] = (self.progress[i] - 2).max(0).min(self.total[i]);
             }
         }
         changed
@@ -994,5 +997,26 @@ mod tests {
         assert!(entity.fits("minecraft:end_portal"));
         // A stone block is not an end portal.
         assert!(BlockEntity::for_block("minecraft:stone").is_none());
+    }
+}
+
+#[cfg(test)]
+mod cooldown_negative_tests {
+    use super::*;
+
+    /// `CampfireBlockEntity.cooldownTick` clamps with `Mth.clamp(progress, 0,
+    /// cookingTime)` = `min(max(progress, 0), cookingTime)`. A cooking time a
+    /// command saved as negative answers itself, where `i32::clamp` (which
+    /// needs min <= max) would panic.
+    #[test]
+    fn a_negative_cooking_time_cools_to_itself() {
+        let mut c = Campfire::default();
+        c.progress[0] = 5;
+        c.total[0] = -1;
+        assert!(c.cooldown_tick());
+        assert_eq!(
+            c.progress[0], -1,
+            "Mth.clamp(3, 0, -1) is -1, as vanilla answers"
+        );
     }
 }

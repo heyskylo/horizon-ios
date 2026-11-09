@@ -3268,8 +3268,9 @@ impl Hub {
             // Block entities with data the client shows.
             for &(x, y, z) in &positions {
                 // A decorated pot is no block entity: its tag is the chunk's saved one.
+                let state = world.block(x, y, z).0;
                 let tag = match world.block_entities.get(&(x, y, z)) {
-                    Some(entity) => self.encoder.update_tag((x, y, z), entity),
+                    Some(entity) => self.encoder.update_tag((x, y, z), state, entity),
                     None => world
                         .chunks
                         .get(&(x >> 4, z >> 4))
@@ -3278,7 +3279,6 @@ impl Hub {
                 let Some(tag) = tag else {
                     continue;
                 };
-                let state = world.block(x, y, z).0;
                 let Some(kind) = self.encoder.entity_type(state) else {
                     continue;
                 };
@@ -4676,8 +4676,8 @@ impl Hub {
                 positions.push(pos);
             }
         }
-        for pos in positions {
-            let state = ctx.world.block(pos[0], pos[1], pos[2]);
+        for pos @ [x, y, z] in positions {
+            let state = ctx.world.block(x, y, z);
             self.send_to(
                 conn,
                 &C::BlockUpdate(play::BlockUpdate {
@@ -4685,10 +4685,10 @@ impl Hub {
                     state: state.0 as i32,
                 }),
             );
-            let Some(entity) = ctx.world.block_entities.get(&(pos[0], pos[1], pos[2])) else {
+            let Some(entity) = ctx.world.block_entities.get(&(x, y, z)) else {
                 continue;
             };
-            let Some(tag) = self.encoder.update_tag((pos[0], pos[1], pos[2]), entity) else {
+            let Some(tag) = self.encoder.update_tag((x, y, z), state.0, entity) else {
                 continue;
             };
             let Some(kind) = self.encoder.entity_type(state.0) else {
