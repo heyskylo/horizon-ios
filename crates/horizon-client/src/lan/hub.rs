@@ -798,17 +798,6 @@ impl Hub {
         self.sync.builtin.get(registry)?.name(id)
     }
 
-    /// The name of a network id in a built-in or synchronized registry,
-    /// custom data component types included (the reverse of `registry_id`).
-    pub fn synced_name(&self, registry: &str, id: i32) -> Option<String> {
-        use horizon_protocol::item::Names;
-        horizon_protocol::registry::SyncedNames {
-            builtin: &self.sync.builtin,
-            dynamic: &self.sync.dynamic,
-        }
-        .name(registry, id)
-    }
-
     pub fn item_id(&mut self, item: &Arc<str>) -> i32 {
         if let Some(id) = self.item_ids.get(item) {
             return *id;
