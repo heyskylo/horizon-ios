@@ -12235,27 +12235,9 @@ impl Game<'_> {
                 // bound gameplay mapping below, so a movement key pressed
                 // before the screen opened doesn't stay held after it closes.
                 WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Social && event.state == ElementState::Pressed =>
+                    if self.screen.takes_presses() && event.state == ElementState::Pressed =>
                 {
-                    self.social_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::CommandBlock
-                        && event.state == ElementState::Pressed =>
-                {
-                    self.command_block_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::DebugOptions
-                        && event.state == ElementState::Pressed =>
-                {
-                    self.debug_options_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::BlockEditor
-                        && event.state == ElementState::Pressed =>
-                {
-                    self.block_editor_key(&event)
+                    self.screen_press(&event)
                 }
                 // Options consumes presses; releases still reach the bound
                 // gameplay mapping below, including sneak/sprint toggles.
