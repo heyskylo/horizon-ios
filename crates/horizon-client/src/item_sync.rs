@@ -138,6 +138,21 @@ pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
     out
 }
 
+/// `FoodProperties.nutrition` and `saturation` from the stack's `food`
+/// component, else the item's.
+pub fn food(stack: &ItemStack, default: Option<(u32, f32)>) -> Option<(u32, f32)> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:food").is_some()) {
+        return None;
+    }
+    if let Some(food) = data.and_then(|d| d.other("minecraft:food")) {
+        return Some((
+            horizon_world::datafix::dynamic::as_int(food.get("nutrition"), 0).max(0) as u32,
+            horizon_world::datafix::dynamic::as_float(food.get("saturation"), 0.0),
+        ));
+    }
+    default
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
