@@ -19,6 +19,7 @@
 //! start, and the run is drawn indirectly with the count the copy reached.
 use super::SolidPipeline;
 use super::arena::GRAIN;
+use smallvec::SmallVec;
 
 /// One section draw for `flatten.wgsl`: index count, first sorted index (or
 /// `QUADS` for a solid draw; phase 2: its entry in phase 2's draws), base
@@ -825,7 +826,7 @@ impl Flat {
             });
             self.phase2_group = Some((group, count as u32));
         }
-        let groups: Vec<(wgpu::BindGroup, u32)> = self
+        let groups: SmallVec<[(wgpu::BindGroup, u32); 8]> = self
             .segments
             .iter()
             .filter_map(|&(source, first, count)| {

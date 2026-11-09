@@ -5,7 +5,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import net.minecraft.client.multiplayer.SessionSearchTrees;
+import net.minecraft.client.resources.language.ClientLanguage;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.locale.Language;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.packs.PackLocationInfo;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.PathPackResources;
+import net.minecraft.server.packs.repository.PackSource;
+import net.minecraft.server.packs.resources.MultiPackResourceManager;
 import net.minecraft.world.flag.FeatureFlags;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.CreativeModeTabs;
@@ -20,19 +28,20 @@ import net.minecraft.world.item.ItemStack;
  * (FullTextSearchTree over creative tooltip lines and item ids, IdSearchTree
  * over item tags after "#").
  *
- *   VanillaCreativeSearchOracle QUERIES.json EXPORT.json OUT.json [permissions]
+ *   VanillaCreativeSearchOracle QUERIES.json EXPORT.json OUT.json RESOURCES [permissions]
  *
  * With "permissions", the screen's tabs are built as for an operator in creative
  * with the Operator Items Tab option on (CreativeModeInventoryScreen.hasPermissions).
  *
  * The queries are the file's list, then every search stack's item path and
  * tooltip lines and every item tag, each also as a prefix and with "#".
+ * Then the same search trees are reloaded in French for the focused queries.
  */
 public final class VanillaCreativeSearchOracle {
     public static void main(String[] args) throws Exception {
         ParityData.init();
         var lookup = ParityData.lookup;
-        boolean hasPermissions = args.length > 3 && args[3].equals("permissions");
+        boolean hasPermissions = args.length > 4 && args[4].equals("permissions");
         Files.writeString(Path.of(args[1]),
             VanillaCreativeTabsExporter.export(FeatureFlags.DEFAULT_FLAGS, lookup).toString(),
             StandardCharsets.UTF_8);
@@ -61,8 +70,9 @@ public final class VanillaCreativeSearchOracle {
         }
         out.add("tabs", tabs);
 
+        var querySets = JsonParser.parseString(Files.readString(Path.of(args[0]))).getAsJsonObject();
         var queries = new LinkedHashSet<String>();
-        for (var q : JsonParser.parseString(Files.readString(Path.of(args[0]))).getAsJsonArray()) queries.add(q.getAsString());
+        for (var q : querySets.getAsJsonArray("english")) queries.add(q.getAsString());
         var context = net.minecraft.world.item.Item.TooltipContext.of(lookup);
         var flag = net.minecraft.world.item.TooltipFlag.Default.NORMAL.asCreative();
         var tags = new TreeSet<String>();
@@ -82,6 +92,22 @@ public final class VanillaCreativeSearchOracle {
         }
         var index = new IdentityHashMap<ItemStack, Integer>();
         for (int i = 0; i < searchItems.size(); i++) index.put(searchItems.get(i), i);
+        out.add("searches", queryResults(trees, index, queries));
+
+        var pack = new PathPackResources(new PackLocationInfo("vanilla", Component.literal("vanilla"),
+            PackSource.BUILT_IN, Optional.empty()), Path.of(args[3]));
+        try (var resources = new MultiPackResourceManager(PackType.CLIENT_RESOURCES, List.of(pack))) {
+            Language.inject(ClientLanguage.loadFrom(resources, List.of("en_us", "fr_fr"), false));
+            trees.rebuildAfterLanguageChange();
+            var french = new ArrayList<String>();
+            for (var q : querySets.getAsJsonArray("french")) french.add(q.getAsString());
+            out.add("frenchSearches", queryResults(trees, index, french));
+        }
+        Files.writeString(Path.of(args[2]), out.toString(), StandardCharsets.UTF_8);
+    }
+
+    private static JsonArray queryResults(SessionSearchTrees trees, Map<ItemStack, Integer> index,
+                                          Iterable<String> queries) {
         var results = new JsonArray();
         for (String query : queries) {
             var r = new JsonObject();
@@ -91,8 +117,7 @@ public final class VanillaCreativeSearchOracle {
             r.add("results", found);
             results.add(r);
         }
-        out.add("searches", results);
-        Files.writeString(Path.of(args[2]), out.toString(), StandardCharsets.UTF_8);
+        return results;
     }
 
     /** CreativeModeInventoryScreen.refreshSearchResults' items for the search box's value. */
