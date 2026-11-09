@@ -764,9 +764,7 @@ impl Game<'_> {
         }
         if success && was_empty && view.kind == Kind::Hopper {
             let dest = view.parts[0].0;
-            let from_ticked = from_hopper
-                .and_then(|p| self.hoppers.get(&p).map(|h| h.ticked))
-                .or_else(|| from_hopper.map(|_| self.world.game_time));
+            let from_ticked = from_hopper.and_then(|p| self.hoppers.get(&p).map(|h| h.ticked));
             let state = self.hoppers.entry(dest).or_default();
             if state.cooldown <= 8 {
                 let skip = i32::from(from_ticked.is_some_and(|t| state.ticked >= t));
@@ -821,14 +819,16 @@ impl Game<'_> {
     /// is still a hopper (`BlockEntityType.isValid`).
     pub(super) fn tick_hopper(&mut self, pos: Pos) {
         let time = self.world.game_time;
-        if let Some(state) = self.hoppers.get_mut(&pos) {
-            state.cooldown = state.cooldown.wrapping_sub(1);
-            state.ticked = time;
-            if state.cooldown > 0 {
-                return;
-            }
-            state.cooldown = 0;
+        // Every hopper keeps its cooldown and the tick it last ticked
+        // (`HopperBlockEntity.tickedGameTime`), idle ones too: a hopper that
+        // receives an item reads it for its cooldown (8, or 7 once it ticked).
+        let state = self.hoppers.entry(pos).or_default();
+        state.cooldown = state.cooldown.wrapping_sub(1);
+        state.ticked = time;
+        if state.cooldown > 0 {
+            return;
         }
+        state.cooldown = 0;
         // Most ticks only advance the cooldown: the block is checked when the
         // hopper is about to move, not on every tick it waits.
         let state = self.world.block(pos.0, pos.1, pos.2);
@@ -848,10 +848,8 @@ impl Game<'_> {
     /// Drops the cooldowns of hoppers whose block entity is gone.
     pub(super) fn forget_gone_hoppers(&mut self) {
         let entities = &self.world.block_entities;
-        let time = self.world.game_time;
-        self.hoppers.retain(|p, state| {
-            (state.cooldown > 0 || state.ticked == time)
-                && matches!(entities.get(p), Some(BlockEntity::Chest(items)) if items.len() == HOPPER_SLOTS)
+        self.hoppers.retain(|p, _| {
+            matches!(entities.get(p), Some(BlockEntity::Chest(items)) if items.len() == HOPPER_SLOTS)
         });
     }
     /// `HopperBlockEntity.tryMoveItems` with `suckInItems`.
@@ -923,9 +921,7 @@ impl Game<'_> {
             changed |= self.hopper_suck(pos, &view);
         }
         if changed {
-            let state = self.hoppers.entry(pos).or_default();
-            state.cooldown = 8;
-            state.ticked = self.world.game_time;
+            self.hoppers.entry(pos).or_default().cooldown = 8;
             self.container_changed(pos);
         }
     }
@@ -1025,9 +1021,7 @@ impl Game<'_> {
             }
         }
         if changed {
-            let state = self.hoppers.entry(pos).or_default();
-            state.cooldown = 8;
-            state.ticked = self.world.game_time;
+            self.hoppers.entry(pos).or_default().cooldown = 8;
             self.container_changed(pos);
         }
         taken
