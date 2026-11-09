@@ -8,6 +8,7 @@ use crate::game::Game;
 use crate::game::perspective::CameraType;
 use horizon_client::mobs::Mob;
 use horizon_client::mobs::anim::BodyPose;
+use horizon_hooks::players::PlayerModels;
 use horizon_cosmetics::account::OwnedEmote;
 use horizon_cosmetics::{Item, Playing, Slot};
 use std::sync::Arc;
@@ -37,10 +38,10 @@ pub(in crate::game) struct Emotes {
 
 impl Emotes {
     /// The emote to tell the service about, while it plays: its id and whether it loops.
-    pub(in crate::game) fn sending(&self) -> Option<(String, bool)> {
+    pub(in crate::game) fn sending(&self) -> Option<(&str, bool)> {
         let p = self.playing.as_ref().filter(|p| p.stop.is_none())?;
         let looping = p.item.emote.as_ref().is_some_and(|e| e.looping);
-        Some((p.item.id.clone(), looping))
+        Some((&p.item.id, looping))
     }
 }
 
@@ -59,23 +60,48 @@ impl BodyPose for EmotePose {
     }
 }
 
-/// The emote `m` plays, if any.
-pub(in crate::game) fn playing(m: &Mob) -> Option<&Playing> {
-    let any: &dyn std::any::Any = &**m.emote.as_ref()?;
+/// The emote a model's pose plays, if it is one.
+pub(in crate::game) fn pose_playing(pose: Option<&Arc<dyn BodyPose>>) -> Option<&Playing> {
+    let any: &dyn std::any::Any = &**pose?;
     any.downcast_ref::<EmotePose>().map(|e| &e.0)
 }
 
-/// Makes `m` play `next`, unless it plays that already (a new one allocates).
-pub(in crate::game) fn set_playing(m: &mut Mob, next: Option<Playing>) {
-    let same = match (playing(m), &next) {
+/// The emote `m` plays, if any.
+pub(in crate::game) fn playing(m: &Mob) -> Option<&Playing> {
+    pose_playing(m.emote.as_ref())
+}
+
+/// The pose that plays `next` where `now` is laid, unless it plays that already (None: keep
+/// it; a new one allocates).
+fn replaced(
+    now: Option<&Arc<dyn BodyPose>>,
+    next: Option<Playing>,
+) -> Option<Option<Arc<dyn BodyPose>>> {
+    let same = match (pose_playing(now), &next) {
         (None, None) => true,
         (Some(a), Some(b)) => {
             Arc::ptr_eq(&a.item, &b.item) && a.start == b.start && a.stop == b.stop
         }
         _ => false,
     };
-    if !same {
-        m.emote = next.map(|p| Arc::new(EmotePose(p)) as Arc<dyn BodyPose>);
+    (!same).then(|| next.map(|p| Arc::new(EmotePose(p)) as Arc<dyn BodyPose>))
+}
+
+/// Makes `m` play `next`, unless it plays that already.
+pub(in crate::game) fn set_playing(m: &mut Mob, next: Option<Playing>) {
+    if let Some(pose) = replaced(m.emote.as_ref(), next) {
+        m.emote = pose;
+    }
+}
+
+/// Makes model `id` play `next`, unless it plays that already.
+pub(in crate::game) fn set_model_playing(
+    models: &mut dyn PlayerModels,
+    id: u32,
+    next: Option<Playing>,
+) {
+    if let Some(pose) = replaced(models.body_pose(id), next) {
+        models.set_body_pose(id, pose);
     }
 }
 
@@ -229,7 +255,7 @@ impl Game<'_> {
         }
     }
 
-    /// Once a tick: my emote, then the other players'.
+    /// Once a tick: my emote (the others' are `cosmetics::Service::tick`'s, a hook's).
     pub(in crate::game) fn tick_emotes(&mut self) {
         if let Some(done) = self
             .cosmetics
@@ -250,7 +276,6 @@ impl Game<'_> {
             }
         }
         self.tick_emote();
-        self.tick_others_emotes();
     }
 
     /// How far the camera stands back while an emote pulls it (1: the usual distance): it eases

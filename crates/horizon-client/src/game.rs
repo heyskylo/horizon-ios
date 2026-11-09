@@ -368,6 +368,7 @@ mod pick_entity;
 mod pickups;
 mod piglins;
 mod piston_push;
+pub(crate) mod player_hooks;
 #[cfg(test)]
 mod place_feature_tests;
 mod play_input;
@@ -7522,7 +7523,6 @@ impl Game<'_> {
         self.spawn_phantoms();
         self.tick_advancements();
         self.tick_player_model();
-        self.tick_emotes();
         Ok(())
     }
 

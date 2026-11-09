@@ -147,8 +147,20 @@ pub struct Session {
     far: Arc<crate::lod_net::Inbox>,
     /// The recording running, if any.
     recorder: RecorderSlot,
+    /// This connection's number, new for each one ([`Session::serial`]).
+    serial: u64,
+}
+/// The next [`Session::serial`].
+static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn next_serial() -> u64 {
+    NEXT_SERIAL.fetch_add(1, Ordering::Relaxed)
 }
 impl Session {
+    /// A number of its own for each connection, never 0: entity ids are per connection, so what
+    /// is kept by id goes when it changes (`horizon_hooks::players::PlayerModels::connection`).
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
     /// The negotiated wire release, once the connection has been established.
     pub fn server_version(&self) -> horizon_protocol::adapter::ServerVersion {
         self.writer.lock().unwrap().as_ref().map_or(
@@ -254,6 +266,7 @@ impl Session {
             debug: false,
             far: Arc::new(crate::lod_net::Inbox::default()),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         }
     }
     fn start(
@@ -331,6 +344,7 @@ impl Session {
             debug,
             far,
             recorder,
+            serial: next_serial(),
         }
     }
     /// Everything received since the last poll.
@@ -1873,6 +1887,7 @@ mod tests {
                 debug: false,
                 far: Arc::default(),
                 recorder: Arc::new(Mutex::new(None)),
+                serial: next_serial(),
             };
             let started = std::time::Instant::now();
             if explicit_disconnect {
@@ -1976,6 +1991,7 @@ mod tests {
             debug: false,
             far: Arc::default(),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         };
         let (thread_writer, thread_configuring, thread_recorder) = (
             session.writer.clone(),
@@ -2259,6 +2275,7 @@ mod tests {
             debug: false,
             far: Arc::default(),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         };
         let recorder = TestRecorder::default();
         session.start_recording(recorder.clone(), |_| {});
