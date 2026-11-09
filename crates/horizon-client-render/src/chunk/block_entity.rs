@@ -80,6 +80,8 @@ pub enum BlockEntity {
     Skull(Skull),
     /// `TheEndGatewayBlockEntity`: its age and configured destination.
     EndGateway(EndGateway),
+    /// `TheEndPortalBlockEntity`: no data, only identity.
+    EndPortal,
     /// `DaylightDetectorBlockEntity`: no data, only the ticker
     /// (`DaylightDetectorBlock.tickEntity`).
     DaylightDetector,

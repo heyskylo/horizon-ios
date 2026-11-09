@@ -9,8 +9,11 @@
 #[derive(Default)]
 pub struct Readback {
     texture: Option<wgpu::Texture>,
+    /// The 8-bit texture `finish` put the frame on, where the swapchain image can't be read
+    /// back; `present` then draws it instead of `texture`.
+    finished: Option<wgpu::Texture>,
     blitter: Option<(wgpu::TextureFormat, wgpu::util::TextureBlitter)>,
-    /// A frame drew into `texture` and still has to reach the swapchain.
+    /// A frame drew into `texture` (or `finished`) and still has to reach the swapchain.
     drawn: bool,
 }
 
@@ -53,7 +56,47 @@ impl Readback {
         self.texture.clone()
     }
 
-    /// Draws the frame `target` gave onto the swapchain image `surface`; nothing
+    /// The frame `target` gave, finished onto 8 bits of the swapchain image `surface`'s format,
+    /// clipped and rounded as an 8-bit frame holds it, for what draws over it from here on
+    /// (`Renderer::overlay_format`): `surface` itself, or, for a screenshot it can't be copied
+    /// from, a texture of its own that `present` then draws there.
+    pub fn finish(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        surface: &wgpu::Texture,
+        screenshot: bool,
+    ) -> Option<wgpu::Texture> {
+        let frame = self.texture.clone().filter(|_| self.drawn)?;
+        let format = surface.format().remove_srgb_suffix();
+        let target = if !screenshot || surface.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            self.drawn = false;
+            surface.clone()
+        } else {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Horizon finished frame"),
+                size: frame.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.finished = Some(texture.clone());
+            texture
+        };
+        let view = target.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(format),
+            ..Default::default()
+        });
+        self.blit(device, encoder, &frame, &view, format);
+        Some(target)
+    }
+
+    /// Draws the frame `target` (or `finish`) gave onto the swapchain image `surface`; nothing
     /// when this frame drew straight into it.
     pub fn present(
         &mut self,
@@ -61,10 +104,11 @@ impl Readback {
         encoder: &mut wgpu::CommandEncoder,
         surface: &wgpu::Texture,
     ) {
+        let finished = self.finished.take();
         if !std::mem::take(&mut self.drawn) {
             return;
         }
-        let Some(texture) = self.texture.clone() else {
+        let Some(texture) = finished.or_else(|| self.texture.clone()) else {
             return;
         };
         self.draw_onto(device, encoder, &texture, surface);
@@ -345,5 +389,69 @@ mod tests {
         };
         let float = wgpu::TextureFormat::Rgba16Float;
         reaches_an_8_bit_swapchain(&device, &queue, float, color, [0, 51, 255, 255]);
+    }
+
+    /// `finish` puts a float frame on 8 bits before the overlays draw: on the swapchain image
+    /// itself, which `present` then leaves alone, or, for a screenshot of an image that can't
+    /// be copied from, on a texture of its own that the screenshot reads and `present` draws.
+    #[test]
+    fn a_float_frame_finishes_on_8_bits_before_the_overlays() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let float = wgpu::TextureFormat::Rgba16Float;
+        let color = wgpu::Color {
+            r: 1.5,
+            g: 0.2,
+            b: -0.5,
+            a: 1.0,
+        };
+        let check = texture(
+            &device,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let blitter = wgpu::util::TextureBlitter::new(&device, F);
+        let view = |t: &wgpu::Texture| t.create_view(&Default::default());
+        for (usage, screenshot) in [
+            (wgpu::TextureUsages::COPY_SRC, false),
+            (wgpu::TextureUsages::COPY_SRC, true),
+            (wgpu::TextureUsages::empty(), false),
+            (wgpu::TextureUsages::empty(), true),
+        ] {
+            let surface = texture(
+                &device,
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | usage,
+            );
+            let mut readback = Readback::default();
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let frame = readback
+                .target(&device, &surface, float, screenshot)
+                .unwrap();
+            clear(&mut encoder, &frame, color);
+            let finished = readback
+                .finish(&device, &mut encoder, &surface, screenshot)
+                .unwrap();
+            assert_eq!(finished.format(), F);
+            let own = screenshot && usage.is_empty();
+            assert_eq!(finished == surface, !own, "{usage:?} {screenshot}");
+            assert_eq!(readback.drawn, own);
+            let shot = screenshot
+                .then(|| crate::gfx::copy_frame(&device, &mut encoder, &finished, [70, 3]));
+            readback.present(&device, &mut encoder, &surface);
+            blitter.copy(&device, &mut encoder, &view(&surface), &view(&check));
+            let shown = crate::gfx::copy_frame(&device, &mut encoder, &check, [70, 3]);
+            queue.submit([encoder.finish()]);
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                panic!("{usage:?} {screenshot}: {error}");
+            }
+            assert_eq!(last_pixel(&device, &shown), [0, 51, 255, 255]);
+            if let Some(shot) = shot {
+                assert_eq!(last_pixel(&device, &shot), [0, 51, 255, 255]);
+            }
+            assert!(!readback.drawn && readback.finished.is_none());
+        }
     }
 }

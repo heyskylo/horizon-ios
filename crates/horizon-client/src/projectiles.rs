@@ -217,6 +217,10 @@ pub struct Projectile {
     pub previous_pitch: f32,
     pub age: u32,
     pub stuck: bool,
+    /// `Entity.stuckSpeedMultiplier`: set by a cobweb or powder snow its box
+    /// passed through on a block's push (`makeStuckInBlock`); the next push
+    /// (`Entity.move`) then stops it dead. Zero: not stuck.
+    pub stuck_speed: Vec3,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
     pub left_owner: bool,
     /// Non-arrow Projectile.hasBeenShot, independent of entity age.
@@ -231,6 +235,10 @@ pub struct Projectile {
     /// `Entity.needsSync`: a server tells its clients about the change this
     /// tick instead of at the next update interval.
     pub needs_sync: bool,
+    /// The bubble column tops this tick's `onAboveBubbleColumn` pushes came
+    /// from, for their particles (`sendBubbleColumnParticles`); the caller
+    /// drains them.
+    pub bubble_surfaces: Vec<[i32; 3]>,
     /// `Entity.wasTouchingWater`: what the last tick's
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
@@ -269,6 +277,15 @@ pub enum Hit {
 }
 /// The world a projectile flies through: block ray clipping, water, and
 /// the boxes of entities it could hit.
+/// The speed multiplier `makeStuckInBlock` gives an entity in block `name`
+/// (`WebBlock.entityInside`, `PowderSnowBlock.entityInside`), if any.
+pub fn stuck_speed_of(name: &str) -> Option<Vec3> {
+    match name {
+        "minecraft:cobweb" => Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25)),
+        "minecraft:powder_snow" => Some(Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32))),
+        _ => None,
+    }
+}
 pub trait ProjectileWorld {
     fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])>;
     /// `Entity.isInWater` as `updateFluidInteraction` sets it: some water
@@ -297,6 +314,11 @@ pub trait ProjectileWorld {
     /// column's `drag`, and whether nothing is above it (its surface, where
     /// it throws harder); None for any other block.
     fn bubble_column(&self, _p: [i32; 3]) -> Option<(bool, bool)> {
+        None
+    }
+    /// `entityInside`'s `makeStuckInBlock` for the block at `p`: a cobweb's
+    /// or powder snow's speed multiplier, None for any other block.
+    fn stuck_speed(&self, _p: [i32; 3]) -> Option<Vec3> {
         None
     }
 }
@@ -381,13 +403,20 @@ pub fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f6
     )
 }
 impl Projectile {
-    /// `Entity.getBoundingBox`: its type's square box standing on its position.
+    /// `Entity.getBoundingBox`: its type's square box standing on its position,
+    /// a wind charge's 0.15 lower (`AbstractWindCharge.makeBoundingBox`).
     pub fn bounds(&self) -> Aabb {
         let (p, half) = (self.position, self.kind.size() / 2.0);
         let height = self.kind.size();
+        let bottom = match self.kind {
+            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => {
+                p.y - f64::from(0.15_f32)
+            }
+            _ => p.y,
+        };
         Aabb::new(
-            Vec3::new(p.x - half, p.y, p.z - half),
-            Vec3::new(p.x + half, p.y + height, p.z + half),
+            Vec3::new(p.x - half, bottom, p.z - half),
+            Vec3::new(p.x + half, bottom + height, p.z + half),
         )
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
@@ -421,12 +450,14 @@ impl Projectile {
             previous_pitch: 0.0,
             age: 0,
             stuck: false,
+            stuck_speed: Vec3::ZERO,
             left_owner: false,
             has_been_shot: false,
             shoot_event: None,
             bonus: Default::default(),
             acceleration,
             needs_sync: false,
+            bubble_surfaces: Vec::new(),
             touching_water: false,
             no_gravity: false,
             fire_ticks: 0,
@@ -439,18 +470,9 @@ impl Projectile {
             }),
         }
     }
-    /// Entity box from the feet (`EntityType.sized` cube of `kind.size()`).
+    /// Entity box (`EntityType.sized` cube of `kind.size()`), as `bounds`.
     pub fn aabb(&self) -> Aabb {
-        let s = self.kind.size();
-        let h = s * 0.5;
-        Aabb::new(
-            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
-            Vec3::new(
-                self.position.x + h,
-                self.position.y + s,
-                self.position.z + h,
-            ),
-        )
+        self.bounds()
     }
     /// The arrow's own random from now on (`Entity.random`).
     pub fn with_arrow_random(mut self, random: horizon_core::random::LegacyRandom) -> Self {
@@ -1053,19 +1075,28 @@ impl Projectile {
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.tick_with(w, true)
     }
-    /// One tick of a server's projectile on its client: [`tick`](Self::tick)
-    /// with `ThrowableProjectile.tick`'s swept bubble columns, which push it on
-    /// the client too, so a pearl held in a stasis chamber hovers between the
-    /// server's updates instead of sinking and snapping back. The first tick's
-    /// column scan is in [`tick`](Self::tick) itself, for a server too.
+    /// One tick of a server's projectile on its client: [`tick`](Self::tick),
+    /// whose bubble columns push it on the client too, so a pearl held in a
+    /// stasis chamber hovers between the server's updates instead of sinking
+    /// and snapping back.
     pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        if !self.is_throwable_projectile() {
-            return self.tick(w);
-        }
-        let from = self.position;
-        let result = self.tick(w);
-        self.bubble_columns_along(w, from);
-        result
+        self.tick(w)
+    }
+    /// The projectiles whose tick applies the effects of the blocks they moved
+    /// through (`applyEffectsFromBlocks`), bubble columns among them:
+    /// `ThrowableProjectile`, `AbstractHurtingProjectile` and `ShulkerBullet`.
+    /// Arrows push themselves (`arrows::tick`); llama spit applies none.
+    fn applies_block_effects(&self) -> bool {
+        self.is_throwable_projectile()
+            || matches!(
+                self.kind,
+                ProjectileKind::SmallFireball
+                    | ProjectileKind::LargeFireball { .. }
+                    | ProjectileKind::WitherSkull { .. }
+                    | ProjectileKind::WindCharge
+                    | ProjectileKind::BreezeWindCharge
+                    | ProjectileKind::ShulkerBullet { .. }
+            )
     }
     /// A `ThrowableProjectile`: the thrown kinds but llama spit, a plain
     /// `Projectile` with its own tick.
@@ -1083,7 +1114,7 @@ impl Projectile {
             for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
                 for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
                     if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
-                        self.bubble_column_push(drag, surface);
+                        self.bubble_column_push(drag, surface, [x, y, z]);
                     }
                 }
             }
@@ -1091,7 +1122,10 @@ impl Projectile {
     }
     /// `Projectile.onAboveBubbleColumn` / `onInsideBubbleColumn`: unlike
     /// `Entity`'s, a projectile's pushes are not clamped.
-    fn bubble_column_push(&mut self, drag: bool, surface: bool) {
+    fn bubble_column_push(&mut self, drag: bool, surface: bool, at: [i32; 3]) {
+        if surface {
+            self.bubble_surfaces.push(at);
+        }
         self.velocity.y += match (drag, surface) {
             (true, _) => -0.03,
             (false, true) => 0.1,
@@ -1151,7 +1185,7 @@ impl Projectile {
                 Vec3::new(f64::from(p.x + 1), f64::from(p.y + 1), f64::from(p.z + 1)),
             );
             if far || deflated.intersects(cell) {
-                self.bubble_column_push(drag, surface);
+                self.bubble_column_push(drag, surface, [p.x, p.y, p.z]);
             }
         }
     }
@@ -1171,6 +1205,7 @@ impl Projectile {
         if base_first {
             self.tick_shoot_event();
         }
+        self.bubble_surfaces.clear();
         // `ThrowableProjectile.tick` begins with `handleFirstTickBubbleColumn`,
         // before its gravity and inertia, so the push takes the tick's drag
         // with it. A server simulates it too, not only a client.
@@ -1179,6 +1214,9 @@ impl Projectile {
         }
         let from = self.position;
         let result = self.tick_inner(w, impact);
+        if self.applies_block_effects() {
+            self.bubble_columns_along(w, from);
+        }
         w.block_contacts(
             self.id as i32,
             self.kind.id(),
@@ -1187,10 +1225,38 @@ impl Projectile {
             self.bounds(),
         );
         self.fire_tick(w);
+        self.stuck_tick(w, from);
         if !base_first {
             self.tick_shoot_event();
         }
         result
+    }
+    /// `applyEffectsFromBlocks` after the tick's move, for its cobwebs and
+    /// powder snow (`makeStuckInBlock`): the last such block its box (deflated
+    /// by 1e-5, `checkInsideBlocks`) met between `from` and where it is now
+    /// sets `stuck_speed`, which the next block's push (`Entity.move`) spends.
+    fn stuck_tick(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        let end = self.bounds();
+        let start = end.move_by(from.subtract(self.position));
+        let lo = Vec3::new(
+            start.min_position().x.min(end.min_position().x) + 1.0e-5,
+            start.min_position().y.min(end.min_position().y) + 1.0e-5,
+            start.min_position().z.min(end.min_position().z) + 1.0e-5,
+        );
+        let hi = Vec3::new(
+            start.max_position().x.max(end.max_position().x) - 1.0e-5,
+            start.max_position().y.max(end.max_position().y) - 1.0e-5,
+            start.max_position().z.max(end.max_position().z) - 1.0e-5,
+        );
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    if let Some(stuck) = w.stuck_speed([x, y, z]) {
+                        self.stuck_speed = stuck;
+                    }
+                }
+            }
+        }
     }
     /// The first-tick notification branch of vanilla's base projectile tick.
     /// Arrows own this state in ArrowState and follow their separate tick path.
@@ -1540,7 +1606,8 @@ mod tests {
     /// a snowball is shot in pushes it by the column it spawned in, before its
     /// gravity and the air drag, and only on that first tick. The client path
     /// (`tick_remote`) had it and the host's did not, so a throwable in a bubble
-    /// column rose for a guest and sank for the host.
+    /// column rose for a guest and sank for the host. Every tick then ends with
+    /// `applyEffectsFromBlocks`, whose columns push it again after the move.
     #[test]
     fn a_throwable_spawned_in_a_bubble_column_is_pushed_on_its_first_tick() {
         let air = f64::from(0.99_f32);
@@ -1571,7 +1638,7 @@ mod tests {
             p.tick(&column);
             assert_eq!(
                 p.velocity.y,
-                (push - 0.03) * air,
+                (push - 0.03) * air + push,
                 "drag {} surface {}",
                 column.drag,
                 column.surface
@@ -1579,17 +1646,20 @@ mod tests {
             p.velocity = Vec3::ZERO;
             p.tick(&column);
             // The box is in the column's water after the first move, so the
-            // drag is `getWaterDrag`'s 0.8F; the push was the first tick's only.
+            // drag is `getWaterDrag`'s 0.8F; the first tick's own scan is not
+            // run again, only the push of the blocks the move went through.
             assert_eq!(
                 p.velocity.y,
-                -0.03 * f64::from(0.8_f32),
+                -0.03 * f64::from(0.8_f32) + push,
                 "drag {} surface {}",
                 column.drag,
                 column.surface
             );
         }
-        // A kind that is no `ThrowableProjectile` is not pushed by a column its
-        // box is in: the hurting projectiles apply their own inertia only.
+        // A kind that is no `ThrowableProjectile` has no first-tick scan: a
+        // hurting projectile is pushed only by the blocks its move went through
+        // (`AbstractHurtingProjectile.tick`'s `applyEffectsFromBlocks`): its
+        // 1-block box spans two column blocks.
         let mut p = Projectile::new(
             ProjectileKind::LargeFireball { power: 1 },
             Vec3::new(0.5, 100.5, 0.5),
@@ -1599,7 +1669,7 @@ mod tests {
             drag: false,
             surface: false,
         });
-        assert_eq!(p.velocity.y, 0.0);
+        assert_eq!(p.velocity.y, 0.12);
     }
     #[test]
     fn a_pearl_outside_any_bubble_column_only_falls() {

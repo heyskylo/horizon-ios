@@ -1459,6 +1459,26 @@ impl BlockEntityRenderer {
         registry: &BlockRegistry,
         visibility: FaceVisibility,
     ) -> Result<Self> {
+        Self::load_with_visibility_inner(root, registry, visibility, None)
+    }
+
+    /// Load with item defaults already decoded by the resource bootstrap.
+    /// Passing them avoids a second `items.json` decode and native-hook pass.
+    pub fn load_with_visibility_and_defaults(
+        root: &Path,
+        registry: &BlockRegistry,
+        visibility: FaceVisibility,
+        defaults: &horizon_world::item_defaults::Defaults,
+    ) -> Result<Self> {
+        Self::load_with_visibility_inner(root, registry, visibility, Some(defaults))
+    }
+
+    fn load_with_visibility_inner(
+        root: &Path,
+        registry: &BlockRegistry,
+        visibility: FaceVisibility,
+        defaults: Option<&horizon_world::item_defaults::Defaults>,
+    ) -> Result<Self> {
         let all: Value = serde_json::from_slice(&std::fs::read(root.join("entity-models.json"))?)?;
         let models = MODELS
             .iter()
@@ -1469,12 +1489,17 @@ impl BlockEntityRenderer {
         // The packs' custom entity models (`.jem` files), before anything draws.
         renderer.set_shapes(renderer.shapes_for(root));
         // Sherd items: provides_pottery_pattern -> decorated_pot_pattern asset id.
-        let items = match horizon_world::item_defaults::read(root) {
-            Ok(items) => items,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
-            Err(e) => return Err(e.into()),
+        let owned_defaults = if defaults.is_none() {
+            Some(match horizon_world::item_defaults::read(root) {
+                Ok(items) => items,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+                Err(e) => return Err(e.into()),
+            })
+        } else {
+            None
         };
-        for (item, components) in &items {
+        let items = defaults.or(owned_defaults.as_ref()).unwrap();
+        for (item, components) in items {
             let Some(pattern) = components["minecraft:provides_pottery_pattern"].as_str() else {
                 continue;
             };

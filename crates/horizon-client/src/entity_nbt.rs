@@ -61,10 +61,14 @@ pub fn rotation(tag: &Tag) -> [f32; 2] {
 }
 /// `NumericTag.byteValue`'s nonzero test for entity NBT, defaulting to false.
 pub fn flag(tag: &Tag, key: &str) -> bool {
+    flag_or(tag, key, false)
+}
+/// `getBooleanOr(key, default)`: any numeric tag's nonzero test, else `default`.
+pub fn flag_or(tag: &Tag, key: &str, default: bool) -> bool {
     // NBT floats floor before int narrowing; the final byte keeps the low bits.
     tag.get(key)
         .and_then(int_value)
-        .is_some_and(|value| value as i8 != 0)
+        .map_or(default, |value| value as i8 != 0)
 }
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
@@ -753,9 +757,10 @@ pub fn mob_to_nbt(
         "Invulnerable".into(),
         Tag::Byte(i8::from(m.invulnerable_flag)),
     );
-    // Entity.saveWithoutId: the hurt immunity left, only while there is some.
-    if m.invulnerable > 0 {
-        map.insert("invulnerable_time".into(), Tag::Int(m.invulnerable));
+    // Entity.saveWithoutId: `invulnerableTime`, only while there is some (the
+    // hurt cooldown is not saved).
+    if m.invulnerable_time > 0 {
+        map.insert("invulnerable_time".into(), Tag::Int(m.invulnerable_time));
     } else {
         map.remove(&horizon_world::nbt::JavaString::from("invulnerable_time"));
     }
@@ -787,7 +792,6 @@ pub fn mob_to_nbt(
     );
     for (key, value) in [
         ("AbsorptionAmount", Tag::Float(0)),
-        ("current_impulse_context_reset_grace_time", Tag::Int(0)),
         (
             "Brain",
             Tag::compound([("memories", Tag::Compound(Compound::new()))]),
@@ -795,6 +799,10 @@ pub fn mob_to_nbt(
     ] {
         map.entry(key.into()).or_insert(value);
     }
+    map.insert(
+        "current_impulse_context_reset_grace_time".into(),
+        Tag::Int(m.impulse_grace_time),
+    );
     // What the mob's class saves: a content mod's living type saves as its
     // template does (the `id` written above stays its own).
     let id = m.kind.class_id();
@@ -970,9 +978,11 @@ pub fn mob_to_nbt(
             }
         }
         "minecraft:piglin" | "minecraft:piglin_brute" | "minecraft:hoglin" => {
-            // Only Piglin.addAdditionalSaveData writes CannotHunt.
+            // Only Piglin.addAdditionalSaveData writes CannotHunt, always.
             if id == "minecraft:piglin_brute" {
                 map.remove(&"CannotHunt".into());
+            } else if id == "minecraft:piglin" {
+                map.entry("CannotHunt".into()).or_insert(Tag::Byte(0));
             }
             map.insert(
                 "IsImmuneToZombification".into(),
@@ -1238,6 +1248,14 @@ pub fn mob_to_nbt(
                     Tag::compound([("value", Tag::Int(m.extra.ints[2]))]),
                 ));
             }
+            // ITEM_PICKUP_COOLDOWN_TICKS (`Codec.INT`), which a throw sets to 60,
+            // while it runs.
+            if m.extra.ints[3] > 0 {
+                memories.push((
+                    "minecraft:item_pickup_cooldown_ticks",
+                    Tag::compound([("value", Tag::Int(m.extra.ints[3]))]),
+                ));
+            }
             // Always written, so a forgotten note block does not come back
             // from the compound the allay was loaded with.
             map.insert(
@@ -1440,6 +1458,10 @@ pub fn mob_to_nbt(
             map.entry("ExplosionPower".into()).or_insert(Tag::Byte(1));
         }
         _ => {}
+    }
+    // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
+    if m.species() == S::Bogged {
+        map.insert("sheared".into(), Tag::Byte(i8::from(m.extra.sheared)));
     }
     // Zombie.addAdditionalSaveData: CanBreakDoors.
     if crate::mobs::doors::is_zombie(m.species()) {
@@ -2086,6 +2108,8 @@ pub fn mob_from_nbt(
         m.extra.set_main_hand(None);
     }
     m.death_time = number(tag.get("DeathTime")).unwrap_or(0) as i32;
+    m.impulse_grace_time =
+        number(tag.get("current_impulse_context_reset_grace_time")).unwrap_or(0) as i32;
     // Mob.readAdditionalSaveData overrides what the constructor set (copper
     // golems and elder guardians start persistent).
     m.persistent = flag(tag, "PersistenceRequired");
@@ -2144,7 +2168,15 @@ pub fn mob_from_nbt(
             ))
         };
     }
-    m.extra.pick_up_loot = flag(tag, "CanPickUpLoot");
+    // AbstractPiglin.readAdditionalSaveData: getBooleanOr("CanPickUpLoot", true).
+    let piglin = matches!(
+        m.species(),
+        crate::mobs::Species::Piglin | crate::mobs::Species::PiglinBrute
+    );
+    m.extra.pick_up_loot = tag
+        .get("CanPickUpLoot")
+        .and_then(int_value)
+        .map_or(piglin, |value| value as i8 != 0);
     m.custom_name = custom_name(tag);
     m.custom_name_text = tag.get("CustomName").map(name_text);
     m.extra.left_handed = flag(tag, "LeftHanded");
@@ -2217,7 +2249,7 @@ pub fn mob_from_nbt(
     m.silent = flag(tag, "Silent");
     m.invulnerable_flag = flag(tag, "Invulnerable");
     // Entity.load: `getIntOr("invulnerable_time", 0)`.
-    m.invulnerable = number(tag.get("invulnerable_time")).unwrap_or(0) as i32;
+    m.invulnerable_time = number(tag.get("invulnerable_time")).unwrap_or(0) as i32;
     if m.species() == crate::mobs::Species::Bat {
         // Bat.readAdditionalSaveData: BatFlags bit 0, resting.
         m.extra.flag = number(tag.get("BatFlags")).unwrap_or(0) & 1 != 0;
@@ -2506,6 +2538,8 @@ pub fn mob_from_nbt(
         };
         m.extra.ints[2] =
             number(memory("minecraft:liked_noteblock_cooldown_ticks")).unwrap_or(0) as i32;
+        m.extra.ints[3] =
+            number(memory("minecraft:item_pickup_cooldown_ticks")).unwrap_or(0) as i32;
         if let Some(st) = m.extra.allay.as_mut()
             && let Some(noteblock) = memory("minecraft:liked_noteblock")
             && let Some(Tag::IntArray(p)) = noteblock.get("pos")
@@ -2622,6 +2656,9 @@ pub fn mob_from_nbt(
         );
         if let Some(t) = number(tag.get("scute_time")) {
             m.extra.egg_time = t as i32;
+        } else {
+            // Armadillo(): scuteTime = pickNextScuteDropTime().
+            m.extra.egg_time = crate::mobs::ai::next_scute_time(&mut m);
         }
     }
     if m.species() == crate::mobs::Species::Ravager {
@@ -2644,6 +2681,10 @@ pub fn mob_from_nbt(
             m.extra.home = Some([v[0], v[1], v[2]]);
         }
         m.extra.egg_time = number(tag.get("life_ticks")).map_or(-1, |v| v as i32);
+    }
+    // Bogged.readAdditionalSaveData: unsheared when absent.
+    if m.species() == crate::mobs::Species::Bogged {
+        m.extra.sheared = flag(tag, "sheared");
     }
     // Sheep.readAdditionalSaveData: white and unsheared when absent.
     if m.species() == crate::mobs::Species::Sheep {
@@ -2772,10 +2813,6 @@ pub fn mob_from_nbt(
     // A mob saved mid-death finishes dying; one saved dead is dropped.
     if m.health <= 0.0 && m.death_time == 0 {
         return None;
-    }
-    // DeathTime only counts while dead.
-    if m.health > 0.0 {
-        m.death_time = 0;
     }
     Some(m)
 }
@@ -3929,6 +3966,24 @@ mod cushion_tests {
     use super::*;
 
     #[test]
+    fn flags_take_any_number_and_fall_back_when_absent() {
+        let tag = Tag::compound([
+            ("byte", Tag::Byte(2)),
+            ("int", Tag::Int(1)),
+            ("wrapped", Tag::Int(256)),
+            ("short", Tag::Short(0)),
+            ("text", string("1")),
+        ]);
+        assert!(flag(&tag, "byte"));
+        assert!(flag(&tag, "int"));
+        assert!(!flag(&tag, "wrapped"));
+        assert!(!flag_or(&tag, "short", true));
+        assert!(flag_or(&tag, "text", true));
+        assert!(flag_or(&tag, "absent", true));
+        assert!(!flag(&tag, "absent"));
+    }
+
+    #[test]
     fn cushion_save_preserves_color_anchor_rotation_and_unknown_data() {
         let cushion = Cushion {
             id: 7,
@@ -4162,11 +4217,14 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
 /// `AbstractBoat.addAdditionalSaveData` / `ContainerEntity.addChestVehicleSaveData`:
 /// only chest boats own container fields; a pending table replaces `Items`.
 /// Ordinary slots use `ContainerHelper.saveAllItems` through the existing item encoder.
+/// `ground` is the live `OnGround` and `fall_distance` (`Entity.saveWithoutId`).
+#[allow(clippy::too_many_arguments)]
 pub fn boat_to_nbt(
     id: &str,
     position: Vec3,
     motion: Vec3,
     rotation: [f32; 2],
+    ground: (bool, f64),
     uuid: [i32; 4],
     raw: Option<&Tag>,
     items: Option<&[Option<crate::items::ItemStack>]>,
@@ -4177,8 +4235,8 @@ pub fn boat_to_nbt(
         position,
         motion,
         rotation,
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: ground.0,
+        fall_distance: ground.1,
     }
     .non_mob_tag(raw);
     if let Tag::Compound(map) = &mut tag {
@@ -4200,12 +4258,14 @@ pub fn boat_to_nbt(
     }
     tag
 }
-/// A vehicle's base entity tag (boats and minecarts).
+/// A vehicle's base entity tag (minecarts, the dragon and end crystals), with
+/// the live `OnGround` and `fall_distance` in `ground`.
 pub fn vehicle_to_nbt(
     id: &str,
     position: Vec3,
     motion: Vec3,
     rotation: [f32; 2],
+    ground: (bool, f64),
     uuid: [i32; 4],
     raw: Option<&Tag>,
 ) -> Tag {
@@ -4215,13 +4275,22 @@ pub fn vehicle_to_nbt(
         position,
         motion,
         rotation,
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: ground.0,
+        fall_distance: ground.1,
     }
     .tag(raw)
 }
 pub fn boat_from_nbt(tag: &Tag) -> Option<(Vec3, Vec3, f32)> {
     Some((position(tag)?, motion(tag), rotation(tag)[0]))
+}
+/// `Entity.load`'s `OnGround` (`getBooleanOr`: `byteValue() != 0`) and
+/// `fall_distance` (`getDoubleOr`: any number's `doubleValue`), defaulting to
+/// false and 0.
+pub fn ground_from_nbt(tag: &Tag) -> (bool, f64) {
+    (
+        flag(tag, "OnGround"),
+        float(tag.get("fall_distance")).unwrap_or(0.0),
+    )
 }
 
 /// `VillagerData`: type, profession and level.
@@ -5920,6 +5989,7 @@ mod tests {
                             boat.0,
                             boat.1,
                             [boat.2, 0.0],
+                            (false, 0.0),
                             uuid,
                             source,
                             (id == "minecraft:oak_chest_boat").then_some(&[]),
@@ -6120,6 +6190,7 @@ mod tests {
             Vec3::ZERO,
             Vec3::ZERO,
             [90.0, 10.0],
+            (false, 0.0),
             [1; 4],
             None,
         );
@@ -7782,6 +7853,29 @@ mod sheep_nbt_tests {
             assert_eq!(number(tag.get(conversion)), Some(-1), "{kind}");
             assert_eq!(number(tag.get(affliction)), Some(-1), "{kind}");
         }
+        // AbstractPiglin: a piglin or brute saved without CanPickUpLoot picks up
+        // loot. Piglin always writes CannotHunt, the brute never does.
+        for (kind, hunt) in [
+            ("minecraft:piglin", Some(0)),
+            ("minecraft:piglin_brute", None),
+        ] {
+            let back = mob_from_nbt(&empty(kind), &types, 5, None).unwrap();
+            assert!(back.can_pick_up_loot(), "{kind}");
+            let tag = mob_to_nbt(&back, [1, 2, 3, 4], None, Some(&registry), |_| None);
+            assert_eq!(number(tag.get("CannotHunt")), hunt, "{kind}");
+        }
+        let mut saved = empty("minecraft:piglin");
+        put(&mut saved, "CanPickUpLoot", Tag::Byte(0));
+        let back = mob_from_nbt(&saved, &types, 6, None).unwrap();
+        assert!(!back.can_pick_up_loot());
+        // Bogged: whether it was sheared comes back, and a fresh one saves false.
+        let (_, tag) = round_trip(&new("minecraft:bogged"));
+        assert_eq!(number(tag.get("sheared")), Some(0));
+        let mut bogged = new("minecraft:bogged");
+        bogged.extra.sheared = true;
+        let (back, tag) = round_trip(&bogged);
+        assert_eq!(number(tag.get("sheared")), Some(1));
+        assert!(back.extra.sheared);
         // A saved conversion time starts one: `startConversion`.
         let saved = Tag::compound([
             ("id", string("minecraft:zombie")),

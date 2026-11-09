@@ -226,6 +226,8 @@ enum Light {
     AgeEmission4,
     /// `FireflyParticle.getLightCoords`: block light fading in and out, no sky.
     Firefly,
+    /// A Polytone particle's `light_level`: block light at least this level.
+    MinBlock(u8),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Behaviour {
@@ -527,7 +529,7 @@ pub struct Particle {
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
     controller: Option<Box<dyn native::Controller>>,
-    /// A resource pack's Polytone custom particle type, for its `limit`.
+    /// A resource pack's Polytone custom particle type, for its `limit` and `exclusion_radius`.
     polytone_type: Option<std::sync::Arc<str>>,
     /// How a Polytone custom particle's quad turns (`rotation_mode`).
     orientation: polytone_gpu::Orientation,
@@ -1098,6 +1100,7 @@ impl Particle {
                 let b = (b * b) * (b * b);
                 (sky, (block + (b.clamp(0.0, 1.0) * 240.0) as u32).min(240))
             }
+            Light::MinBlock(level) => (sky, block.max(u32::from(level) * 16)),
             Light::Firefly => (
                 0,
                 (255.0 * fade_amount(self.lifetime_progress(self.age as f32 + partial), 0.1, 0.3))
@@ -1286,6 +1289,9 @@ impl ParticleLevel<'_> {
 pub struct ParticleEngine {
     particles: Vec<Particle>,
     pending: Vec<Particle>,
+    /// While the live particles tick (out of `particles`), what their emitters spawn waits
+    /// here, so a spawn's `limit` and `exclusion_radius` see every live particle.
+    spawned_in_tick: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
     /// `ParticleEngine.random`, handed to every `ParticleProvider`.
     random: LegacyRandom,
     /// `ClientLevel.random` as particle constructors use it (`level.getRandom()`).
@@ -1497,6 +1503,7 @@ impl ParticleEngine {
         let mut engine = Self {
             particles: Vec::new(),
             pending: Vec::new(),
+            spawned_in_tick: None,
             random: LegacyRandom::new(0x7061_7274),
             level_random: LegacyRandom::new(0x6c65_7665),
             spell_random: LegacyRandom::new(0x7370_656c),
@@ -2037,8 +2044,18 @@ impl ParticleEngine {
             return;
         }
         let seed = self.seeds.next_long();
-        if let Some(particle) = self.make(options, p, v, seed) {
+        if let Some(mut particle) = self.make(options, p, v, seed) {
             *self.made.entry(options.ty.name()).or_default() += 1;
+            // Resource packs' Polytone particle modifiers (#11486), once as it spawns.
+            if let Some(registry) = &self.polytone
+                && registry.modifies_particles()
+            {
+                let id = match &options.mod_particle {
+                    Some(name) => name.clone(),
+                    None => format!("minecraft:{}", options.ty.name()),
+                };
+                polytone::modify(registry, &id, &mut particle);
+            }
             // The provider has drawn, so rejecting here keeps vanilla's RNG order.
             // shortcut: counts live plus queued particles by scanning instead of
             // vanilla's counted map; use a counter if spore spawning shows in profiles.
@@ -3871,11 +3888,15 @@ impl ParticleEngine {
         });
         self.emitters = emitters;
         let mut particles = std::mem::take(&mut self.particles);
+        self.spawned_in_tick = Some(Vec::new());
         for p in &mut particles {
             self.tick_particle(p, level);
         }
         particles.retain(|p| !p.removed);
         self.particles = particles;
+        for (options, pos, velocity) in self.spawned_in_tick.take().unwrap_or_default() {
+            self.add(&options, pos, velocity);
+        }
         let pending = std::mem::take(&mut self.pending);
         for mut p in pending {
             if p.pre_tick {
@@ -3983,8 +4004,12 @@ impl ParticleEngine {
                     if let Some(frame) = update.frame {
                         self.set_sprite_frame(p, frame);
                     }
-                    for (options, pos, velocity) in update.spawned {
-                        self.add(&options, pos, velocity);
+                    if let Some(later) = &mut self.spawned_in_tick {
+                        later.extend(update.spawned);
+                    } else {
+                        for (options, pos, velocity) in update.spawned {
+                            self.add(&options, pos, velocity);
+                        }
                     }
                 } else {
                     p.remove();
@@ -4928,7 +4953,10 @@ impl ParticleEngine {
                 (pos.as_vec3(), p.quad_size(partial))
             });
             let rotation = if p.orientation != polytone_gpu::Orientation::Camera {
-                let velocity = FVec3::new(
+                // A custom particle's `movement_aligned` quad has its texture's top against
+                // its motion (measured in Java: a light ray rising toward the noon sun hangs
+                // below the leaves it starts at); a GPU particle's has it along its motion.
+                let velocity = -FVec3::new(
                     p.velocity[0] as f32,
                     p.velocity[1] as f32,
                     p.velocity[2] as f32,
@@ -5018,6 +5046,13 @@ impl ParticleEngine {
                 r.v0 + dv * p.uv[3],
             );
             let target: &mut Vec<Vertex> = if p.additive { &mut additive } else { &mut *out };
+            let overlay = if p.additive {
+                crate::gfx::ADDITIVE_PARTICLE_OVERLAY
+            } else if layer {
+                crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY
+            } else {
+                0
+            };
             for rotation in rotations.into_iter().flatten() {
                 for (n, uv) in [
                     ((1.0, -1.0), [u1, v1]),
@@ -5030,11 +5065,7 @@ impl ParticleEngine {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
-                        layer: if layer {
-                            crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY
-                        } else {
-                            0
-                        } | u32::from(hdr_tier(p.ty)) << 16,
+                        layer: overlay | u32::from(hdr_tier(p.ty)) << 16,
                         color,
                         light,
 
@@ -5122,6 +5153,8 @@ const CREEPER: [[f64; 2]; 12] = [
     [0.0, -0.4],
 ];
 
+#[cfg(test)]
+mod tick_bench;
 #[cfg(test)]
 mod tests {
     use super::*;
