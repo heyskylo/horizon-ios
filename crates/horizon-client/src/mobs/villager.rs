@@ -274,10 +274,6 @@ pub struct Ext {
     /// (`hasFirstWaveSpawned && !isBetweenWaves`).
     pub raid_wave: bool,
     /// What the villager remembers of players (`gossips`).
-    /// Visibility inputs for another villager's noncombat sensor.
-    pub invisible: bool,
-    pub crouching: bool,
-    pub armor: [Option<std::sync::Arc<str>>; 4],
     pub gossips: crate::gossip::Gossips,
     /// `Villager.lastTradedPlayer`: the most recent trader, consumed by the
     /// next customServerAiStep. This is runtime state, not saved gossip.
@@ -613,6 +609,10 @@ impl Ext {
 /// reads the other villager itself).
 #[derive(Clone, Debug, Default)]
 pub struct Seen {
+    /// Visibility inputs for another villager's noncombat sensor.
+    pub invisible: bool,
+    pub crouching: bool,
+    pub armor: [Option<std::sync::Arc<str>>; 4],
     pub gossips: crate::gossip::Gossips,
     pub last_gossip_time: i64,
     /// `countFoodPointsInInventory`.
