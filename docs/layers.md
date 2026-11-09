@@ -141,8 +141,9 @@ exposes. Ports to consoles and handhelds need them, and other projects can build
   search and undo, today `settings_shell.rs` and `extras_ui.rs`'s pages). The engine exposes screens: open one, draw on
   the GUI layer, take input and focus. The platform gives the page API stable types (as #1608 does for the mod
   API). Horizon Settings, the controller pages and the PvP & HUD page all become clients of it.
-- **PvP & HUD:** the HUD widget framework (placing, sizing and toggling HUD elements, `hud_layout.rs`) is
-  platform. The PvP presets and Horizon's own widgets (keystrokes, CPS, reach readout, `pvp.rs`, `pvp_hud.rs`)
+- **PvP & HUD:** the HUD widget framework (placing, sizing and toggling HUD elements: `hud_kit.rs` and `hud_kit/`,
+  `extras_hud.rs`, `game/hud_room.rs`, `game/hud_editor.rs`) is platform. `hud_layout.rs` is vanilla's `Hud` as draw
+  calls, which the parity fixture compares with the vanilla client: engine, like `hud_overlays.rs`. The PvP presets and Horizon's own widgets (keystrokes, CPS, reach readout, `pvp.rs`, `pvp_hud.rs`)
   are Horizon extras, and candidates to become native mods.
 
 ## Horizon
@@ -192,7 +193,7 @@ is Horizon (PvP & HUD and replays, [above](#controllers-splitscreen-replays-and-
 | Controller support: a device, bindings, glyphs, pad menus | platform | the pad modules, on the engine's input hooks ([Controllers](#controllers-splitscreen-replays-and-ui-pages)) |
 | Splitscreen or more players on one machine | platform | the `split` modules, on the engine's compositor |
 | A render pipeline capability vanilla's path doesn't use but a higher layer can't add without rebuilding the pipeline (the compositor) | engine | `gfx.rs` and `gfx/`, doing nothing on vanilla's path |
-| A UI page others can add to, a HUD widget framework, replay recording and playback | platform | the page API, `hud_layout.rs`, `studio/recorder.rs`, `mcpr.rs`, `replay.rs` |
+| A UI page others can add to, a HUD widget framework, replay recording and playback | platform | the page API, `hud_kit.rs` and `hud_kit/`, `studio/recorder.rs`, `mcpr.rs`, `replay.rs` |
 | A finished feature built on those (PvP presets, the replay editor) | Horizon, or a native mod | behind `horizon-extras` |
 | A Horizon extra (a setting, screen or HUD element vanilla doesn't have) | Horizon | its own module behind `horizon-extras`, built on platform API; or an optional native mod that players add themselves |
 | Anything that talks to playhorizon.dev, a partner or a third-party service by itself | Horizon | a Horizon crate, its address in `horizon-addresses` |
