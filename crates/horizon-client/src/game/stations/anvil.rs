@@ -48,11 +48,13 @@ mod tests {
         assert!(station.rename.editable);
         assert_eq!(station.rename.value, "Diamond Sword");
 
-        // The input is taken out again: read-only, and the name stays.
+        // The input is taken out again: read-only, and slotChanged's
+        // `setValue("")` empties it (the caller passes the empty name).
         station.inputs[0] = None;
-        input_changed(&mut station, "Diamond Sword".into());
+        input_changed(&mut station, String::new());
         assert!(!station.rename.editable);
-        assert_eq!(station.rename.value, "Diamond Sword");
+        assert_eq!(station.rename.value, "");
+        station.rename.set_value("Diamond Sword");
 
         // A read-only box still keeps the caret keys; Backspace is consumed
         // without taking a character.
