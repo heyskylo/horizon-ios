@@ -81,14 +81,6 @@ pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
     effects
 }
 
-/// The mods' fluids in registry order, by id as effects are. Each takes two
-/// network ids after vanilla's, its source's then its flowing form's.
-pub fn fluids(mods: &[ContentMod]) -> Vec<&Fluid> {
-    let mut fluids: Vec<&Fluid> = mods.iter().flat_map(|m| &m.content.fluids).collect();
-    fluids.sort_by(|a, b| a.id.cmp(&b.id));
-    fluids
-}
-
 /// the mods' entity types in registry order, by id as effects are.
 pub fn entity_types(mods: &[ContentMod]) -> Vec<&EntityType> {
     let mut types: Vec<&EntityType> = mods.iter().flat_map(|m| &m.content.entity_types).collect();
@@ -3108,6 +3100,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
+    fluids::write_table(&overlay, &plan.fluids)?;
     // clients must agree on the block states and the items', mob effects',
     // fluids', entity types' and menu types' network ids.
     if !plan.blocks.is_empty()
@@ -3311,6 +3304,10 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
+
+#[path = "mod_content_fluids.rs"]
+mod fluids;
+pub use fluids::fluids;
 
 #[cfg(test)]
 #[path = "mod_content_tests.rs"]
