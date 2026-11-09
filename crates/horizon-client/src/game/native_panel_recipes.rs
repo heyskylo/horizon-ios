@@ -14,6 +14,7 @@ use super::{
 use horizon_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
+    text::Text,
 };
 use std::time::Instant;
 
@@ -23,6 +24,56 @@ const TITLE: f32 = 18.0;
 /// A tab's step: an 18 px slot and a gap.
 const TAB: f32 = 20.0;
 const GAP: f32 = 6.0;
+const FUEL_COLUMNS: usize = 10;
+const FUEL_ROWS: usize = 4;
+const FUEL_POPUP_SIZE: [f32; 2] = [216.0, 124.0];
+
+#[derive(Clone, Copy)]
+pub(super) struct FuelPopup {
+    origin: (f32, f32),
+    slot: [f32; 4],
+    recipe: usize,
+    row: usize,
+    preview: usize,
+}
+
+impl FuelPopup {
+    fn bounds(self) -> [f32; 4] {
+        [
+            self.origin.0,
+            self.origin.1,
+            FUEL_POPUP_SIZE[0],
+            FUEL_POPUP_SIZE[1],
+        ]
+    }
+
+    fn grid(self) -> (f32, f32) {
+        (self.origin.0 + 10.0, self.origin.1 + 32.0)
+    }
+
+    fn hit(self, cursor: (f32, f32)) -> Option<usize> {
+        let (x, y) = self.grid();
+        if !inside(
+            cursor,
+            [x, y, FUEL_COLUMNS as f32 * SLOT, FUEL_ROWS as f32 * SLOT],
+        ) {
+            return None;
+        }
+        let column = ((cursor.0 - x) / SLOT) as usize;
+        let row = ((cursor.1 - y) / SLOT) as usize;
+        Some((self.row + row) * FUEL_COLUMNS + column)
+    }
+
+    fn marker_height(last_row: usize) -> f32 {
+        (70.0 * FUEL_ROWS as f32 / (last_row + FUEL_ROWS) as f32)
+            .round()
+            .clamp(14.0, 70.0)
+    }
+
+    fn last_row(count: usize) -> usize {
+        count.div_ceil(FUEL_COLUMNS).saturating_sub(FUEL_ROWS)
+    }
+}
 
 /// Recipes a page may show, slots in one, stacks a slot cycles, and tabs.
 const RECIPES: usize = 256;
@@ -82,6 +133,7 @@ pub(super) struct Shown {
     slots: Vec<Vec<(BrowserStack, ItemStack)>>,
     note: String,
     action: Option<bool>,
+    has_fuel: bool,
 }
 
 /// The recipes a panel shows, and its page.
@@ -93,15 +145,52 @@ pub(super) struct Pages {
     recipes: Vec<Shown>,
     page: usize,
     since: Instant,
+    fuels: Vec<ItemStack>,
 }
 
 impl Pages {
+    fn fuel_preview(&self) -> usize {
+        self.since.elapsed().as_secs() as usize % self.fuels.len()
+    }
+
     pub(super) fn new(
         items: &horizon_client::items::Items,
+        providers: &horizon_client::providers::Providers,
         shown: &RecipePage,
         old: Option<Pages>,
+        official: bool,
     ) -> Self {
         let (title, list, tab) = (&shown.title, &shown.recipes, shown.tab as usize);
+        let station = shown
+            .tabs
+            .get(shown.tab as usize)
+            .map(|stack| stack.item.as_str());
+        let fuels = match station {
+            Some("minecraft:furnace" | "minecraft:blast_furnace" | "minecraft:smoker")
+                if official =>
+            {
+                let fast = station != Some("minecraft:furnace");
+                // AnyFuel uses DataComponentLookup: first occurrence of each
+                // component value sets the group order, then registry order within it.
+                let mut groups: Vec<(_, Vec<_>)> = Vec::new();
+                for id in &items.registry_order {
+                    let Some(fuel) = items.get(id).and_then(|item| item.fuel.as_ref()) else {
+                        continue;
+                    };
+                    let stack = ItemStack::new(id.as_ref(), 1);
+                    if providers.burn_time(items, &stack, fast) <= 0 {
+                        continue;
+                    }
+                    if let Some((_, group)) = groups.iter_mut().find(|(value, _)| *value == fuel) {
+                        group.push(stack);
+                    } else {
+                        groups.push((fuel, vec![stack]));
+                    }
+                }
+                groups.into_iter().flat_map(|(_, group)| group).collect()
+            }
+            _ => Vec::new(),
+        };
         let kept = old.filter(|o| o.title == *title && o.tab == tab);
         let cycle = |stacks: &[BrowserStack]| -> Vec<(BrowserStack, ItemStack)> {
             stacks
@@ -121,6 +210,7 @@ impl Pages {
                     slots,
                     note: r.note.clone(),
                     action: r.action,
+                    has_fuel: !fuels.is_empty(),
                 }
             })
             .collect();
@@ -135,6 +225,7 @@ impl Pages {
             recipes,
             page: kept.as_ref().map_or(0, |o| o.page),
             since: kept.map_or_else(Instant::now, |o| o.since),
+            fuels,
         }
     }
 }
@@ -152,7 +243,17 @@ impl Shown {
                 ((w as f32 * SLOT, h as f32 * SLOT), at)
             }
             // The input over the flame.
-            BrowserLayout::Cooking => ((SLOT, 2.0 * SLOT), vec![(0.0, 0.0)]),
+            BrowserLayout::Cooking => (
+                (
+                    SLOT,
+                    if self.has_fuel {
+                        3.0 * SLOT
+                    } else {
+                        2.0 * SLOT
+                    },
+                ),
+                vec![(0.0, 0.0)],
+            ),
             BrowserLayout::Single => ((SLOT, SLOT), row(1)),
             BrowserLayout::Smithing => ((3.0 * SLOT, SLOT), row(3)),
             BrowserLayout::Brewing => ((2.0 * SLOT, SLOT), row(2)),
@@ -210,6 +311,16 @@ fn recipes_top(pages: &Pages, layout: &Layout) -> f32 {
     let tabs = tab_places(pages, layout);
     tabs.last()
         .map_or(layout.grid.1 + TITLE, |&(_, y)| y + TAB + 3.0)
+}
+
+fn recipe_skin(
+    batch: &mut HudBatch,
+    atlas: &horizon_client::hud::HudAtlas,
+    sprite: &str,
+    rect: [f32; 4],
+) {
+    let [x, y, w, h] = rect;
+    horizon_client::ui::nine_slice(batch, atlas, sprite, x, y, w, h, u32::MAX);
 }
 
 impl Game<'_> {
@@ -388,6 +499,7 @@ impl Game<'_> {
                 batch.sprite(atlas, "gui/sprites/container/slot", x + sx, y + sy);
             }
             if cooking {
+                self.draw_cooking_fuel(batch, x, y);
                 batch.sprite(
                     atlas,
                     "gui/sprites/container/furnace/lit_progress",
@@ -471,6 +583,278 @@ impl Game<'_> {
             horizon_client::widgets::record(&warning, [x, y, w, h], false);
             self.draw_tooltip_lines(batch, &lines, cursor.0, cursor.1);
         }
+    }
+
+    fn draw_cooking_fuel(&self, batch: &mut HudBatch, x: f32, y: f32) {
+        let Some(pages) = &self.panel.recipes else {
+            return;
+        };
+        let atlas = &self.gui.atlas;
+        if !pages.fuels.is_empty() {
+            let fuel_y = y + 36.0;
+            let index = self
+                .panel
+                .fuel_popup
+                .filter(|popup| popup.slot[..2] == [x, fuel_y])
+                .map_or_else(|| pages.fuel_preview(), |popup| popup.preview);
+            batch.sprite(atlas, "horizon/jei/slot", x, fuel_y);
+            self.draw_item(batch, &pages.fuels[index], x + 1.0, fuel_y + 1.0);
+            if pages.fuels.len() > 1 {
+                batch.sprite(atlas, "horizon/jei/icons/list_badge", x + 9.0, fuel_y);
+            }
+        }
+    }
+
+    pub(super) fn draw_recipe_fuels(&mut self, batch: &mut HudBatch, layout: &Layout) -> bool {
+        let held = self.has_shift_down();
+        let cursor = self.cursor;
+        if self.panel.fuel_popup.is_some_and(|popup| {
+            !inside(cursor, popup.slot) && !(held && inside(cursor, popup.bounds()))
+        }) {
+            self.panel.fuel_popup = None;
+        }
+        let Some(pages) = self
+            .panel
+            .recipes
+            .as_ref()
+            .filter(|pages| pages.fuels.len() > 1)
+        else {
+            return false;
+        };
+        if self.panel.fuel_popup.is_none() {
+            let Some((recipe, slot)) =
+                self.recipes_shown(layout)
+                    .into_iter()
+                    .find_map(|(recipe, (x, y))| {
+                        let slot = [x, y + 36.0, SLOT, SLOT];
+                        (pages.recipes[recipe].layout == BrowserLayout::Cooking
+                            && inside(cursor, slot))
+                        .then_some((recipe, slot))
+                    })
+            else {
+                return false;
+            };
+            let preview = pages.fuel_preview();
+            let origin = (
+                (slot[0] + 14.0)
+                    .min(batch.width - FUEL_POPUP_SIZE[0] - 2.0)
+                    .max(2.0),
+                (slot[1] - 10.0)
+                    .min(batch.height - FUEL_POPUP_SIZE[1] - 2.0)
+                    .max(2.0),
+            );
+            self.panel.fuel_popup = Some(FuelPopup {
+                origin,
+                slot,
+                recipe,
+                row: 0,
+                preview,
+            });
+        }
+        let popup = self.panel.fuel_popup.unwrap();
+        let [x, y, w, h] = popup.bounds();
+        let atlas = &self.gui.atlas;
+        let hint = if held {
+            Vec::new()
+        } else {
+            let label = self.translate(
+                "horizon.recipes.fuel.options",
+                "Hold SHIFT to pin this tooltip, then click an ingredient to view recipes.",
+            );
+            atlas
+                .font
+                .wrap_components(&Text::literal(label).italic(), w as i32 - 8)
+        };
+        let preview_shift = if held { 0.0 } else { -2.0 };
+        if held {
+            batch.fill(
+                atlas,
+                0.0,
+                0.0,
+                batch.width,
+                batch.height,
+                rgba(0, 0, 0, 64),
+            );
+            recipe_skin(
+                batch,
+                atlas,
+                "horizon/jei/interactive_ingredient_tooltip_background",
+                [x, y, w, h],
+            );
+        }
+        let text_x = x + 6.0;
+        let frame = [
+            x - 6.0,
+            y - 6.0,
+            w + 12.0,
+            h + 12.0 + preview_shift + hint.len() as f32 * 10.0,
+        ];
+        for skin in [
+            "gui/sprites/tooltip/background",
+            "gui/sprites/tooltip/frame",
+        ] {
+            recipe_skin(batch, atlas, skin, frame);
+        }
+        let stack = &pages.fuels[popup.preview];
+        batch.text_styled(
+            atlas,
+            &Text::literal(self.translate("horizon.recipes.fuel.any", "Any Fuel")).italic(),
+            text_x,
+            y + 6.0,
+            rgba(255, 170, 0, 255),
+            true,
+        );
+        batch.text(
+            atlas,
+            &self.pack.names.display_item(&stack.item),
+            text_x,
+            y + 18.0 + preview_shift,
+            u32::MAX,
+            true,
+        );
+        let (gx, gy) = popup.grid();
+        let gy = gy + preview_shift;
+        recipe_skin(
+            batch,
+            atlas,
+            "horizon/jei/recipe_preview_background_v2",
+            [gx - 4.0, gy - 4.0, 204.0, 82.0],
+        );
+        let first = popup.row * FUEL_COLUMNS;
+        for (i, fuel) in pages
+            .fuels
+            .iter()
+            .skip(first)
+            .take(FUEL_COLUMNS * FUEL_ROWS)
+            .enumerate()
+        {
+            let sx = gx + (i % FUEL_COLUMNS) as f32 * SLOT;
+            let sy = gy + (i / FUEL_COLUMNS) as f32 * SLOT;
+            batch.sprite(
+                atlas,
+                "horizon/jei/ingredient_list_slot_background_v2",
+                sx,
+                sy,
+            );
+            self.draw_item(batch, fuel, sx + 1.0, sy + 1.0);
+            if held && inside(cursor, [sx, sy, SLOT, SLOT]) {
+                batch.fill(
+                    atlas,
+                    sx + 1.0,
+                    sy + 1.0,
+                    16.0,
+                    16.0,
+                    rgba(255, 255, 255, 96),
+                );
+            }
+            horizon_client::widgets::record(
+                &self.pack.names.display_item(&fuel.item),
+                [sx, sy, SLOT, SLOT],
+                held,
+            );
+        }
+        let last = FuelPopup::last_row(pages.fuels.len());
+        if last > 0 {
+            recipe_skin(
+                batch,
+                atlas,
+                "horizon/jei/scrollbar_background_v2",
+                [gx + 182.0, gy, 14.0, 72.0],
+            );
+            let marker = FuelPopup::marker_height(last);
+            let offset = (popup.row as f32 * (70.0 - marker) / last as f32).round();
+            recipe_skin(
+                batch,
+                atlas,
+                "horizon/jei/scrollbar_marker_v2",
+                [gx + 183.0, gy + 1.0 + offset, 12.0, marker],
+            );
+        }
+        let mut footer = y + 110.0 + preview_shift;
+        for line in &hint {
+            batch.text_styled(atlas, line, text_x, footer, rgba(170, 170, 170, 255), true);
+            footer += 10.0;
+        }
+        if let Some((namespace, _)) = stack.item.split_once(':') {
+            let name = if namespace == "minecraft" {
+                self.translate("horizon.recipes.fuel.minecraft", "Minecraft")
+            } else {
+                namespace.to_owned()
+            };
+            batch.text_styled(
+                atlas,
+                &Text::literal(name).italic(),
+                text_x,
+                footer,
+                rgba(85, 85, 255, 255),
+                true,
+            );
+        }
+        true
+    }
+
+    pub(super) fn recipe_fuel_scroll(&mut self, amount: f32) -> bool {
+        if self.has_shift_down()
+            && let Some(popup) = self.panel.fuel_popup.as_mut()
+            && inside(self.cursor, popup.bounds())
+            && let Some(pages) = &self.panel.recipes
+        {
+            let step = amount.abs().ceil() as usize;
+            popup.row = if amount > 0.0 {
+                popup.row.saturating_sub(step)
+            } else {
+                popup
+                    .row
+                    .saturating_add(step)
+                    .min(FuelPopup::last_row(pages.fuels.len()))
+            };
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn recipe_fuel_press(&mut self, owner: &Owner, right: bool) -> bool {
+        if !self.has_shift_down()
+            || !matches!(
+                self.screen,
+                super::Screen::Inventory | super::Screen::Creative
+            )
+        {
+            return false;
+        }
+        let Some(popup) = self
+            .panel
+            .fuel_popup
+            .filter(|popup| inside(self.cursor, popup.bounds()))
+        else {
+            return false;
+        };
+        let Some(pages) = &self.panel.recipes else {
+            return false;
+        };
+        let (gx, gy) = popup.grid();
+        let last = FuelPopup::last_row(pages.fuels.len());
+        if !right && last > 0 && inside(self.cursor, [gx + 182.0, gy, 14.0, 72.0]) {
+            let marker = FuelPopup::marker_height(last);
+            let fraction =
+                ((self.cursor.1 - gy - 1.0 - marker / 2.0) / (70.0 - marker)).clamp(0.0, 1.0);
+            let row = (fraction * last as f32).round() as usize;
+            self.panel.fuel_popup = Some(FuelPopup { row, ..popup });
+        } else if let Some(fuel) = popup.hit(self.cursor).and_then(|i| pages.fuels.get(i)) {
+            let event = BrowserEvent::SlotClicked {
+                recipe: popup.recipe as u32,
+                slot: pages.recipes[popup.recipe].slots.len() as u32,
+                stack: BrowserStack {
+                    item: fuel.item.to_string(),
+                    count: 1,
+                    components: String::new(),
+                },
+                right,
+            };
+            self.panel.fuel_popup = None;
+            self.panel_event(owner, event);
+        }
+        true
     }
 
     /// The tabs, on slots; the selected one framed.

@@ -1,0 +1,15 @@
+[package]
+name = "horizon-heartbeat"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The anonymous \"I'm playing\" ping behind the launcher's \"N playing now\" (docs/telemetry.md)"
+
+[dependencies]
+horizon-platform = { path = "../horizon-platform" }
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
+log = "0.4"
+
+[lints]
+workspace = true

@@ -224,7 +224,7 @@ fn prism_native_jars_are_found_through_the_linked_folder() {
     );
     let official = Path::new("com/mojang/jtracy/1.14.38/jtracy-1.14.38-natives-windows.jar");
     assert!(!linked.join("libraries").join(official).exists());
-    let found = horizon_prepare::artifacts::launcher_library(
+    let found = horizon_platform::prepare::artifacts::launcher_library(
         &linked,
         "com.mojang:jtracy:1.14.38:natives-windows",
         official,

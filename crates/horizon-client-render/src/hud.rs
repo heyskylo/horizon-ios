@@ -1427,32 +1427,7 @@ impl HudAtlas {
         }
         if full {
             // Official Recipes artwork from Just Enough Items, under MIT.
-            for (name, png) in [
-                (
-                    "button_enabled_v2",
-                    include_bytes!("jei_recipes/button_enabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_disabled_v2",
-                    include_bytes!("jei_recipes/button_disabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_highlight_v2",
-                    include_bytes!("jei_recipes/button_highlight_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_previous_v2",
-                    include_bytes!("jei_recipes/icons/arrow_previous_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_next_v2",
-                    include_bytes!("jei_recipes/icons/arrow_next_v2.png").as_slice(),
-                ),
-                (
-                    "search_background_v2",
-                    include_bytes!("jei_recipes/search_background_v2.png").as_slice(),
-                ),
-            ] {
+            for (name, png) in crate::jei_sprites::SPRITES {
                 let (width, height, rgba) = decode_bytes(png)?;
                 images.push((format!("horizon/jei/{name}"), width, height, rgba));
             }

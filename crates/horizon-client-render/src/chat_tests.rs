@@ -1026,3 +1026,43 @@ fn a_compact_repeat_keeps_the_scrolled_view_still() {
     says(&mut chat, "new");
     assert_eq!(chat.scroll, 6);
 }
+
+/// `FilterMask.applyWithFormatting`: a pass-through mask keeps the message, a
+/// fully filtered one hides it, and a partial one turns each masked UTF-16 unit
+/// into a dark grey `#` whose hover reads `chat.filtered`.
+#[test]
+fn a_server_filter_mask_hides_or_masks_the_message() {
+    let text = |v: &serde_json::Value| crate::component::to_text(v, &mut |s| Text::literal(s));
+    let shown = |content: &str, mask: (i32, Vec<i64>)| {
+        filtered_message(content, &mask).map(|v| text(&v).plain())
+    };
+    assert_eq!(shown("hello", (0, vec![])), Some("hello".to_owned()));
+    assert_eq!(shown("hello", (1, vec![])), None);
+    assert_eq!(shown("hello", (2, vec![0b0110])), Some("h##lo".to_owned()));
+    assert_eq!(
+        shown("hello", (2, vec![0b1_0001])),
+        Some("#ell#".to_owned())
+    );
+    // An emoji is two UTF-16 units, so two bits and two `#`.
+    assert_eq!(
+        shown("a\u{1F600}b", (2, vec![0b0110])),
+        Some("a##b".to_owned())
+    );
+    // Bit 65 is in the second word.
+    let long = "x".repeat(70);
+    let mut expected = long.clone();
+    expected.replace_range(65..66, "#");
+    assert_eq!(shown(&long, (2, vec![0, 0b10])), Some(expected));
+    let masked = text(&filtered_message("hello", &(2, vec![0b0110])).unwrap());
+    let hash = masked.spans.iter().find(|s| s.text == "##").unwrap();
+    assert_eq!(hash.style.color, Some(text::DARK_GRAY));
+    let hover = hash.style.hover.as_ref().unwrap();
+    assert_eq!(hover.spans[0].text, "chat.filtered");
+    assert!(
+        masked
+            .spans
+            .iter()
+            .filter(|s| s.text != "##")
+            .all(|s| s.style.color.is_none())
+    );
+}
