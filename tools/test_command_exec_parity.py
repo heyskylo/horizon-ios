@@ -227,6 +227,7 @@ def main():
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_ITEM_COUNT]
     if args.vehicle_container_diagnostic:
         try:
             from .vehicle_container_corpus import vehicle_containers
@@ -414,11 +415,15 @@ def main():
     if args.vehicle_kill_diagnostic:
         from vehicle_kill_corpus import vehicle_kill_contents
         groups = [('setup', corpus_module.group_setup()), ('vehicle kill contents', vehicle_kill_contents(corpus_module.cmd, True))]
+    if args.only in corpus_module.ISOLATED_ITEM_COUNT:
+        groups = [g for g in groups if g[0] == args.only]
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     if any(name in corpus_module.ISOLATED_JUKEBOX_CLOCK for name, _ in groups) and len(groups) != 1:
         parser.error('jukebox clock fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_ITEM_COUNT for name, _ in groups) and len(groups) != 1:
+        parser.error('item count fixture requires --only with its exact group')
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
