@@ -6176,7 +6176,7 @@ impl Game<'_> {
                 player.spectator = self.spectator();
                 player.velocity = delta;
                 self.player = Some(player);
-                self.pad.player_replaced();
+                self.input_player_replaced();
                 self.sway = Default::default();
                 self.eye = 1.62;
                 self.previous_eye = 1.62;
@@ -6441,7 +6441,7 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        let stick = self.pad_move();
+        let stick = self.input_move();
         if self.player.is_none() {
             return Ok(());
         }
@@ -9525,7 +9525,7 @@ impl Game<'_> {
                 KeyCode::KeyQ if !self.spectator() => {
                     // Minecraft.hasControlDown: the physical keys, so a toggled
                     // sprint on Left Control does not make Q drop the stack.
-                    let all = self.has_control_down() || std::mem::take(&mut self.pad.drop_stack);
+                    let all = self.has_control_down() || self.input_takes_stack_drop();
                     self.remote_drop(all);
                 }
                 KeyCode::KeyE

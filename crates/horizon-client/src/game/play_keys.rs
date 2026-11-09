@@ -279,8 +279,7 @@ impl Game<'_> {
             KeyCode::KeyQ if self.screen == Screen::Playing => {
                 // handleKeybinds: the number keys select before key.drop.
                 self.select_queued_hotbar();
-                let all =
-                    drop_whole_stack(self.modifiers) || std::mem::take(&mut self.pad.drop_stack);
+                let all = drop_whole_stack(self.modifiers) || self.input_takes_stack_drop();
                 self.drop_held(all);
             }
             KeyCode::Digit1
