@@ -1328,6 +1328,8 @@ mod tests {
         use horizon_hooks::players::{Light, Motion};
         let ring = CROWN
             .replace(r#""slot": "head", "bone": "head""#, r#""slot": "aura""#)
+            // At the feet: an aura reaches at most 6 pixels above them.
+            .replace(r#""attach": {"offset": [0, -18, 0]},"#, "")
             .replace(
                 r#""uv": [0, 0]}]}]}"#,
                 r#""uv": [0, 0]}]}], "aura": {"at": "feet", "alpha": 0.5}}"#,
