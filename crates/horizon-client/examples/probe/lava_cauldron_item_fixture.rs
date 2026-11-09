@@ -73,6 +73,7 @@ pub fn main() -> horizon_client::Result<()> {
             no_gravity: true,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
         };
         output.push_str(f[0]);
         for _ in 0..2 {
