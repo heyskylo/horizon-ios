@@ -1,5 +1,5 @@
 //! The movement prediction's replay (docs/anticheat.md): each client tick a player's record holds
-//! ([`horizon_anticheat::prediction::Record`]) is played again with the client's own movement code,
+//! ([`Record`]) is played again with the client's own movement code,
 //! from where the last one ended, and compared with where the client said it went.
 //!
 //! The inputs are known exactly: a vanilla client sends ServerboundPlayerInputPacket after its tick's
@@ -21,7 +21,9 @@
 
 use std::collections::VecDeque;
 
-use horizon_anticheat::prediction::{Change, ClientTick, KEPT, Record, Restart};
+pub mod record;
+
+use record::{Change, ClientTick, KEPT, Record, Restart};
 use horizon_core::geometry::Vec3;
 
 use crate::motion::PlayerMotion;
@@ -656,7 +658,7 @@ mod tests {
         motion::{MotionResources, MotionWorld},
         world::World,
     };
-    use horizon_anticheat::prediction::Record;
+    use super::record::Record;
     use std::path::Path;
 
     /// Keys for each tick: 20 walking, 12 sprint-jumping, 12 strafing while turning, 6 still.

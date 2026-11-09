@@ -157,9 +157,8 @@ impl Hub {
         };
         if ac.config.runs(Check::Prediction) {
             let g = &mut self.guests[i];
-            let (input, sprinting) = (g.input, g.anticheat.sprinting);
-            g.anticheat
-                .record
+            let (input, sprinting) = (g.input, g.client_sprinting);
+            g.record
                 .get_or_insert_default()
                 .tick_end(input, sprinting);
         }
@@ -249,7 +248,7 @@ impl Hub {
         flags: u8,
     ) {
         if self.recording() {
-            let record = self.guests[i].anticheat.record.get_or_insert_default();
+            let record = self.guests[i].record.get_or_insert_default();
             record.moved(pos, rot, flags);
         }
     }
@@ -259,7 +258,7 @@ impl Hub {
     pub(super) fn anticheat_pong(&mut self, i: usize, id: i32) {
         let ticks = self.ticks;
         if self.recording() {
-            let record = self.guests[i].anticheat.record.get_or_insert_default();
+            let record = self.guests[i].record.get_or_insert_default();
             // Ids are server ticks, cut to 32 bits.
             record.pong(u64::from(id as u32), ticks);
         }
@@ -280,7 +279,7 @@ impl Hub {
                     .get_mut()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
-            if let Some(record) = g.anticheat.record.as_deref_mut() {
+            if let Some(record) = g.record.as_deref_mut() {
                 for change in changes {
                     record.changed(ticks, change);
                 }

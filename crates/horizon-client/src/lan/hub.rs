@@ -3168,7 +3168,7 @@ impl Hub {
                     // changed, so the one nearest the player stands for them.
                     for &i in &viewers {
                         let g = &mut self.guests[i];
-                        let Some(record) = g.anticheat.record.as_deref_mut() else {
+                        let Some(record) = g.record.as_deref_mut() else {
                             continue;
                         };
                         let slack = super::prediction::slack(std::array::from_fn(|i| {
@@ -3252,7 +3252,7 @@ impl Hub {
             if recording {
                 for &i in &viewers {
                     let g = &mut self.guests[i];
-                    let Some(record) = g.anticheat.record.as_deref_mut() else {
+                    let Some(record) = g.record.as_deref_mut() else {
                         continue;
                     };
                     let slack = super::prediction::slack(std::array::from_fn(|i| {
@@ -3643,7 +3643,7 @@ impl Hub {
             }));
             for at in gone.drain(..) {
                 let block = at.map(|v| v.floor() as i32);
-                if let Some(record) = g.anticheat.record.as_deref_mut()
+                if let Some(record) = g.record.as_deref_mut()
                     && super::prediction::near(g.position, block, slack)
                 {
                     record.entity_gone(ticks);
@@ -4045,7 +4045,7 @@ impl Hub {
     fn set_sprinting(&mut self, i: usize, sprinting: bool) {
         let g = &mut self.guests[i];
         g.sprinting = sprinting;
-        g.anticheat.sprinting = sprinting;
+        g.client_sprinting = sprinting;
         if let Some(m) = g.motion.as_mut() {
             let _ = m.set_sprint_modifier(sprinting);
         }
@@ -5119,7 +5119,7 @@ impl Hub {
         // ClientPacketListener.handleRespawn without KEEP_ENTITY_DATA: the client's new player
         // starts with wasSprinting false. (A level change keeps it: the new player sprints on, or
         // says STOP.)
-        g.anticheat.sprinting = false;
+        g.client_sprinting = false;
         // The respawned player is a new one, without effects; so is the
         // client's (ClientPacketListener.handleRespawn).
         g.effects = Default::default();

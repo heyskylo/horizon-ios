@@ -66,7 +66,7 @@ impl Game<'_> {
             motion.item_use_speed = item_use.map(|(speed, _)| speed);
             motion.item_use_slows_sprint = item_use.is_some_and(|(_, slows)| slows);
         }
-        let (Some(record), Some(server)) = (g.anticheat.record.as_deref_mut(), g.motion.as_deref())
+        let (Some(record), Some(server)) = (g.record.as_deref_mut(), g.motion.as_deref())
         else {
             return;
         };
