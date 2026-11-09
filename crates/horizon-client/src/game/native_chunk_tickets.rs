@@ -5,6 +5,9 @@
 //! nor releases it and it isn't saved.
 use super::{Dim, Game};
 
+#[cfg(test)]
+mod native_chunk_load_tests;
+
 /// How far a chunk a mod asked for with `native_chunk_load_request` is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeChunkLoad {
