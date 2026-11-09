@@ -195,3 +195,92 @@ fn buttons_stay_pressed_for_their_own_ticks_and_a_second_click_does_not_extend_i
         "20 ticks after the first click, not after the second"
     );
 }
+
+/// A lever at `start` and a line of wires after it along `step`: the last wire
+/// carries `power`, since a wire gives up one level a block (a lever's own wire
+/// has 15). Returns the position of that last wire. Levers are switched on by the
+/// caller once everything stands, so nothing settles half built.
+fn signal_line(
+    w: &mut World,
+    start: BlockPos,
+    step: (i32, i32),
+    power: i32,
+) -> (BlockPos, BlockPos) {
+    let lever = w.id("lever", &[("face", "floor"), ("facing", "north")]);
+    let wire = w.id("redstone_wire", &[]);
+    w.set(start, lever);
+    let mut last = start;
+    for n in 1..=(16 - power) {
+        last = BlockPos::new(start.x + step.0 * n, start.y, start.z + step.1 * n);
+        w.set(last, wire);
+    }
+    (start, last)
+}
+
+fn switch_on(w: &mut World, lever: BlockPos) {
+    let on = w
+        .b()
+        .table
+        .set_bool(w.get(lever), w.b().props.powered, true);
+    w.set(lever, on);
+}
+
+/// `ComparatorBlock.calculateOutputSignal`: no input is no output; a side input
+/// above the input silences it; otherwise COMPARE passes the input through and
+/// SUBTRACT outputs `input - side`. `shouldTurnOn` (the `powered` state) agrees,
+/// with one difference: equal inputs turn a COMPARE comparator on and a SUBTRACT
+/// one off. Read from the wire in front of it, which takes the output as its own power.
+#[test]
+fn a_comparator_compares_and_subtracts_by_vanillas_rules() {
+    // (input, side, mode, the output signal, the comparator's `powered`)
+    let cases = [
+        (15, 0, "compare", 15, true),
+        (10, 4, "compare", 10, true),
+        (10, 10, "compare", 10, true),
+        (10, 11, "compare", 0, false),
+        (10, 4, "subtract", 6, true),
+        (10, 10, "subtract", 0, false),
+        (10, 11, "subtract", 0, false),
+        (7, 0, "subtract", 7, true),
+        (0, 5, "compare", 0, false),
+    ];
+    for (input, side, mode, output, powered) in cases {
+        let mut w = world!();
+        w.floor(0, 24, "stone");
+        // The comparator faces west: it reads the wire at its west and outputs east.
+        let comparator_x = if input > 0 { 17 - input } else { 3 };
+        let at = BlockPos::new(comparator_x, 1, 0);
+        let mut levers = Vec::new();
+        if input > 0 {
+            levers.push(signal_line(&mut w, BlockPos::new(0, 1, 0), (1, 0), input).0);
+        }
+        if side > 0 {
+            // From the south side (z = 1), ending beside the comparator.
+            let start = BlockPos::new(comparator_x, 1, 1 + (16 - side));
+            levers.push(signal_line(&mut w, start, (0, -1), side).0);
+        }
+        w.set(
+            at,
+            w.id("comparator", &[("facing", "west"), ("mode", mode)]),
+        );
+        let readout = BlockPos::new(comparator_x + 1, 1, 0);
+        w.set(readout, w.id("redstone_wire", &[]));
+        for lever in levers {
+            switch_on(&mut w, lever);
+        }
+        for _ in 0..10 {
+            w.full_tick();
+        }
+        let case = format!("input {input}, side {side}, {mode}");
+        assert_eq!(
+            w.prop(readout, "power"),
+            output.to_string(),
+            "{case}: output"
+        );
+        assert_eq!(
+            w.prop(at, "powered"),
+            if powered { "true" } else { "false" },
+            "{case}: powered"
+        );
+    }
+}
