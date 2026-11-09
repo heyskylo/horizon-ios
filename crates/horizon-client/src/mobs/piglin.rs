@@ -2247,6 +2247,7 @@ pub fn write_guarded_anger(m: &Mob, map: &mut horizon_world::nbt::Compound) {
 /// reads the memory with the brain, and an expired one no longer angers the
 /// piglin; the counter is what Horizon's goals ask.
 pub fn read_guarded_anger(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
+    use horizon_world::nbt::Tag;
     let memory = tag
         .get("Brain")
         .and_then(|b| b.get("memories"))
@@ -2255,10 +2256,12 @@ pub fn read_guarded_anger(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     let Some(uuid) = crate::save::uuid_from_tag(memory.get("value")) else {
         return;
     };
-    let ttl = memory
-        .get("ttl")
-        .and_then(crate::nbt_path::int_value)
-        .unwrap_or(i32::MAX);
+    // The TTL is a long: one past the counter's range holds as long as it can.
+    let ttl = match memory.get("ttl") {
+        Some(Tag::Long(v)) => (*v).clamp(0, i64::from(i32::MAX)) as i32,
+        Some(t) => crate::nbt_path::int_value(t).unwrap_or(i32::MAX),
+        None => i32::MAX,
+    };
     m.extra.anger = ttl.max(0);
     m.extra.piglin.guarded_angry_at = Some(Some(uuid));
 }
