@@ -91,6 +91,11 @@ pub fn max_scroll(h: f32, rows: usize) -> f32 {
     // `AbstractSelectionList.contentHeight`: the rows and 4px.
     (rows as f32 * ITEM_HEIGHT + 4.0 - (list_end(h) - LIST_START)).max(0.0)
 }
+/// `AbstractSelectionList.scrollBarX`: the scrollbar's column, six pixels
+/// right of the rows and two more (`getRowRight + scrollbarWidth + 2`).
+pub fn scrollbar_x(w: f32) -> f32 {
+    row_left(w) + ROW_WIDTH + 6.0 + 2.0
+}
 fn tabs(w: f32) -> [(f32, Page); 3] {
     let width = (ROW_WIDTH / 3.0).floor();
     let (left, right) = (row_left(w), row_left(w) + ROW_WIDTH);
@@ -330,7 +335,7 @@ pub fn draw(
     search.text_color = WHITE;
     search.focused = true;
     search.draw(batch, atlas, None);
-    // The rows, clipped to the list. It draws no scrollbar, but a focus step still walks them.
+    // The rows, clipped to the list; a focus step still walks them.
     let max = max_scroll(h, view.entries.len());
     if max > 0.0 {
         crate::widgets::scroll_area(
@@ -429,6 +434,20 @@ pub fn draw(
     hud_layout::paint(batch, atlas, &faces);
     // `enableScissor`: from 4px below the list's top.
     batch.clip_since(start, 0.0, LIST_START + 4.0, w, list_end(h));
+    // `AbstractSelectionList.extractScrollbar`: the rows' scrollbar, right of
+    // them, when they overflow the list.
+    let content = view.entries.len() as f32 * ITEM_HEIGHT + 4.0;
+    if content > list_end(h) - LIST_START {
+        ui::scrollbar(
+            batch,
+            atlas,
+            scrollbar_x(w),
+            LIST_START,
+            list_end(h),
+            content,
+            view.scroll,
+        );
+    }
     // `Done`.
     let [dx, dy, dw, dh] = done(w, h);
     ui::action_button(
