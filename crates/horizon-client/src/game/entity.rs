@@ -1042,6 +1042,10 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
+
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }

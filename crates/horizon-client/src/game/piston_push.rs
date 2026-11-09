@@ -685,40 +685,13 @@ impl Game<'_> {
         });
         self.set_pushed_on_ground(target, limited, resolved);
 
-        // Entity.move updates ground before its tiny-collision return. This
-        // native slice covers only unoccupied server NoAI horizontal moves.
-        if let Target::Entity(EntityHandle::Mob(i)) = target {
-            let m = &self.mobs[i];
-            let eligible = !self.options.execution_role.is_client()
-                && self.remote.is_none()
-                && limited.y == 0.0
-                && m.no_ai
-                && !m.extra.passenger
-                && m.extra.mount.is_none()
-                && m.rider.is_none()
-                && m.extra.rider.is_none()
-                && self.riding != Some(m.id)
-                && self.lan.as_ref().is_none_or(|host| {
-                    !host
-                        .hub
-                        .guests
-                        .iter()
-                        .any(|g| host.hub.here(g) && g.vehicle == Some(m.id))
-                });
-            if eligible {
-                self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
-            }
-        }
-        // `Entity.move(MoverType.PISTON, …)` restitution, which runs whether or
-        // not the step is applied: so a primed TNT in a chunk that does not tick
-        // entities still loses its velocity into walls and ceilings and
-        // bounces on slime (#12022).
-        self.restitute_piston(target, limited, resolved);
         let moved = resolved.length_squared() > 1.0e-7
             || limited.length_squared() - resolved.length_squared() < 1.0e-7;
         if moved {
             self.apply_push(target, resolved);
         }
+        // Restitution also runs when a blocked push cannot change the position.
+        self.restitute_piston(target, limited, resolved);
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
         }
@@ -735,15 +708,17 @@ impl Game<'_> {
 
     /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
     /// server entity (`canSimulateMovement`; a player's own client moves it):
-    /// an axis the collision cut off stops (no entity bounces off walls), and
-    /// a cut-off vertical push stops the fall or rise, except a fall onto
-    /// slime fast enough to bounce. The bounce is of the entity's own
-    /// velocity, scaled by the part of the push that was made. The ground
-    /// flag is set by `set_pushed_on_ground`.
+    /// mobs use their travel restitution; non-living entities stop on walls
+    /// and ceilings and bounce on slime. The ground flag is set by
+    /// `set_pushed_on_ground`.
     fn restitute_piston(&mut self, target: Target, limited: Vec3, resolved: Vec3) {
         let Target::Entity(handle) = target else {
             return;
         };
+        if let EntityHandle::Mob(i) = handle {
+            self.mobs[i].restitute_movement(&self.world, &self.motion.blocks, limited, resolved);
+            return;
+        }
         // `Mth.equal` horizontally, exact vertically, as `Entity.move` compares.
         let collided_x = (limited.x - resolved.x).abs() >= 1.0e-5;
         let collided_z = (limited.z - resolved.z).abs() >= 1.0e-5;
