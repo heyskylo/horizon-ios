@@ -1006,6 +1006,7 @@ use super::{
 use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
+pub(crate) use horizon_client::mod_api::NativeLootOdds;
 use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
     self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
@@ -1069,105 +1070,9 @@ use std::{
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
 
-pub(super) struct ObservedScreen {
-    id: &'static str,
-    menu: Option<String>,
-    title: Option<Text>,
-    rect: [f32; 4],
-    slots: usize,
-    mouse: [f32; 2],
-    partial_tick: f32,
-}
-
-impl ObservedScreen {
-    fn view(&self) -> NativeScreenView<'_> {
-        NativeScreenView {
-            id: self.id,
-            menu: self.menu.as_deref(),
-            title: self.title.as_ref(),
-            rect: self.rect,
-            slots: self.slots,
-            mouse: self.mouse,
-            partial_tick: self.partial_tick,
-        }
-    }
-}
-
-fn observed_overlay_id(overlays: &[(bool, &'static str)]) -> Option<&'static str> {
-    overlays.iter().find_map(|(open, id)| open.then_some(*id))
-}
-
-impl Game<'_> {
-    fn observed_screen_view(&self) -> Option<NativeScreenView<'_>> {
-        let book = match &self.book {
-            Some(super::books::BookScreen::Edit { signing: true, .. }) => Some("book_sign"),
-            Some(super::books::BookScreen::Edit { .. }) => Some("book_edit"),
-            Some(super::books::BookScreen::View {
-                lectern: Some(_), ..
-            }) => Some("lectern"),
-            Some(super::books::BookScreen::View { .. }) => Some("book_view"),
-            None => None,
-        };
-        let overlay = observed_overlay_id(&[
-            (self.command_prompt.is_some(), "command_prompt"),
-            (self.link_prompt.is_some(), "link_prompt"),
-            (self.code_of_conduct.is_some(), "code_of_conduct"),
-            (self.server_packs.prompt.is_some(), "server_pack_prompt"),
-            (self.dialog_open(), "dialog"),
-            (book.is_some(), book.unwrap_or("book_view")),
-            (self.sign_edit.is_some(), "sign_editor"),
-        ]);
-        let Some(id) = overlay else {
-            return self.screen_view_now();
-        };
-        let renderer = self.renderer.as_ref()?;
-        let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
-        Some(NativeScreenView {
-            id,
-            menu: None,
-            title: None,
-            rect: [0.0, 0.0, batch.width, batch.height],
-            slots: 0,
-            mouse: self.native_cursor(),
-            partial_tick: self.clock.fraction() as f32,
-        })
-    }
-
-    pub(super) fn observe_screen(&mut self) {
-        // Free with no native mod: the snapshot clones the title and menu.
-        if mod_api::mods().is_empty() {
-            return;
-        }
-        let current = self.observed_screen_view().map(|view| ObservedScreen {
-            id: view.id,
-            menu: view.menu.map(str::to_owned),
-            title: view.title.cloned(),
-            rect: view.rect,
-            slots: view.slots,
-            mouse: view.mouse,
-            partial_tick: view.partial_tick,
-        });
-        let changed = match (&self.observed_screen, &current) {
-            (Some(old), Some(new)) => old.id != new.id || old.menu != new.menu,
-            (None, None) => false,
-            _ => true,
-        };
-        if changed {
-            if let Some(old) = &self.observed_screen {
-                self.native_screen_closing(&old.view());
-            }
-            if let Some(new) = &current {
-                self.native_screen_opening(&new.view());
-                self.native_screen_init_post(&new.view());
-            }
-        } else if let (Some(old), Some(new)) = (&self.observed_screen, &current)
-            && old.rect != new.rect
-        {
-            self.native_screen_init_post(&new.view());
-        }
-        self.observed_screen = current;
-    }
-}
+#[path = "native_screen_observer.rs"]
+mod screen_observer;
+pub(super) use screen_observer::ObservedScreen;
 
 /// `Level.setBlock`'s flags, for the `native_set_block_property` helpers:
 /// `flags::UPDATE_CLIENTS` as a vanilla crop grows, `flags::UPDATE_ALL` as a
@@ -11783,6 +11688,24 @@ impl Game<'_> {
     /// hotbar, then the inventory. The count is cut to one stack.
     pub(super) fn native_give(&mut self, item: &str, count: u32) -> Result<(), String> {
         self.recipe_give(item, count)
+    }
+    /// The items loot table `table` (`minecraft:blocks/gravel`) can drop and
+    /// their odds from one roll, from the world's tables (its data packs
+    /// merged): each item's chance to come at least once, how many come, and
+    /// the conditions on its way this could not judge, taken as met. Weights,
+    /// rolls, nested entries and tables, random chances and set counts count;
+    /// luck and enchantments are none. With `tool` (`minecraft:brush`),
+    /// `match_tool` conditions are judged with that tool in hand; without, they
+    /// are taken as met and named in `conditions`. None for a table that isn't
+    /// there. For a recipe viewer that lists a mod's chance outputs:
+    /// a server works them out and sends them to its players. Server-side
+    /// (any side with the world's data). API @API:loot_odds@.
+    pub(super) fn native_loot_odds(
+        &mut self,
+        table: &str,
+        tool: Option<&str>,
+    ) -> Option<Vec<NativeLootOdds>> {
+        self.loot_odds(table, tool)
     }
     /// Asks the recipe viewer to show `stack`: its recipes (`Recipes`), its
     /// uses (`Uses`), or to act on a key that went down over it in a screen

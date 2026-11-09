@@ -4888,6 +4888,17 @@ placement counts and takes from the player's inventory first, then the sources i
 and its comparators update. Every mod adds to the same list. With no answer the placement is vanilla's, from the
 inventory alone. A recipe viewer's craftable marks are still worked out on the client from the player's inventory.
 
+### Loot odds
+
+`native_loot_odds(table, tool)` (`host.loot_odds`) works out what one roll of the world's loot table `table` gives, its
+data packs merged: one `NativeLootOdds` per item, with its chance to come at least once, the fewest one drop gives and
+the most the table gives at once, and the conditions on its way it could not judge, taken as met and named
+(`needs a brush`, `without a brush`, `in certain weather`). Weights, rolls (constant, uniform and binomial),
+alternatives, groups, sequences, nested tables, `random_chance` and set counts count; luck and enchantments are none
+(`table_bonus` and `random_chance_with_enchanted_bonus` take their unenchanted chances). With `tool`
+(`minecraft:brush`), `match_tool` conditions are judged with that item in hand, so a block table brushed shows only
+what a brush sifts out. Conditions are taken as independent of each other. None when there is no such table.
+
 ### Recipe viewers: lookups and categories
 
 A mod that draws items on screens of its own (a quest book, a guide) can open whatever recipe viewer is installed
