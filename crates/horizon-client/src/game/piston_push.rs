@@ -685,13 +685,11 @@ impl Game<'_> {
         });
         self.set_pushed_on_ground(target, limited, resolved);
 
-        // Entity.move updates ground before its tiny-collision return. This
-        // native slice covers unoccupied server NoAI moves, including vertical pushes.
-        if let Target::Entity(EntityHandle::Mob(i)) = target {
+        // shortcut: unoccupied server mobs only, expand when controller/passenger authority is bound.
+        let mob = if let Target::Entity(EntityHandle::Mob(i)) = target {
             let m = &self.mobs[i];
-            let eligible = !self.options.execution_role.is_client()
+            (!self.options.execution_role.is_client()
                 && self.remote.is_none()
-                && m.no_ai
                 && !m.extra.passenger
                 && m.extra.mount.is_none()
                 && m.rider.is_none()
@@ -703,18 +701,29 @@ impl Game<'_> {
                         .guests
                         .iter()
                         .any(|g| host.hub.here(g) && g.vehicle == Some(m.id))
-                });
-            if eligible {
-                self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
-            }
+                }))
+            .then_some(i)
+        } else {
+            None
+        };
+        // Entity.move updates ground before its tiny-collision return.
+        if let Some(i) = mob
+            && self.mobs[i].no_ai
+        {
+            self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
+        }
+        if mob.is_none() {
+            self.restitute_piston(target, limited, resolved);
         }
         let moved = resolved.length_squared() > 1.0e-7
             || limited.length_squared() - resolved.length_squared() < 1.0e-7;
         if moved {
             self.apply_push(target, resolved);
         }
-        // Restitution also runs when a blocked push cannot change the position.
-        self.restitute_piston(target, limited, resolved);
+        // Restitution reads the new landing block even when the push was blocked.
+        if let Some(i) = mob {
+            self.mobs[i].restitute_movement(&self.world, &self.motion.blocks, limited, resolved);
+        }
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
         }
@@ -731,20 +740,15 @@ impl Game<'_> {
 
     /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
     /// server entity (`canSimulateMovement`; a player's own client moves it):
-    /// mobs use their travel restitution; non-living entities stop on walls
-    /// and ceilings and bounce on slime. The ground flag is set by
-    /// `set_pushed_on_ground`.
+    /// an axis the collision cut off stops (no entity bounces off walls), and
+    /// a cut-off vertical push stops the fall or rise, except a fall onto
+    /// slime fast enough to bounce. The bounce is of the entity's own
+    /// velocity, scaled by the part of the push that was made. The ground
+    /// flag is set by `set_pushed_on_ground`.
     fn restitute_piston(&mut self, target: Target, limited: Vec3, resolved: Vec3) {
         let Target::Entity(handle) = target else {
             return;
         };
-        if let EntityHandle::Mob(i) = handle
-            && !self.options.execution_role.is_client()
-            && self.remote.is_none()
-        {
-            self.mobs[i].restitute_movement(&self.world, &self.motion.blocks, limited, resolved);
-            return;
-        }
         // `Mth.equal` horizontally, exact vertically, as `Entity.move` compares.
         let collided_x = (limited.x - resolved.x).abs() >= 1.0e-5;
         let collided_z = (limited.z - resolved.z).abs() >= 1.0e-5;
@@ -1490,6 +1494,16 @@ mod h255_mob_piston_ground_tests {
             added_push(game, i, Vec3::new(0.51, 0.0, 0.0));
             assert!(game.mobs[i].on_ground, "occupied path remains excluded");
             assert_eq!(game.mobs[i].position, Vec3::new(9.01, 202.0, 4.5));
+            assert!(game.run_command("setblock 9 201 4 slime_block"));
+            game.mobs[i].position.y = 202.25;
+            game.mobs[i].velocity = Vec3::new(0.0, -1.0, 0.0);
+            game.mobs[i].sync_position = false;
+            added_push(game, i, Vec3::new(0.0, -0.5, 0.0));
+            assert_eq!(
+                game.mobs[i].velocity.y, 0.0,
+                "occupied restitution stays outside this slice"
+            );
+            assert!(!game.mobs[i].sync_position);
             assert!(game.run_command("ride @s dismount"));
             assert!(game.riding.is_none());
             assert!(game.mobs[i].rider.is_none());
