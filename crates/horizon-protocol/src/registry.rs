@@ -89,15 +89,15 @@ impl Builtin {
                 // a crafted report, and resizing to it would allocate
                 // gigabytes for one entry.
                 if id > 1_000_000 {
-                    return Err(Error::new(format!("{entry}: protocol_id {id} out of range")));
+                    return Err(Error::new(format!(
+                        "{entry}: protocol_id {id} out of range"
+                    )));
                 }
                 if id >= names.len() {
                     names.resize(id + 1, String::new());
                 }
                 if !names[id].is_empty() {
-                    return Err(Error::new(format!(
-                        "{entry}: duplicate protocol_id {id}"
-                    )));
+                    return Err(Error::new(format!("{entry}: duplicate protocol_id {id}")));
                 }
                 names[id] = entry.clone();
             }
@@ -312,7 +312,8 @@ mod tests {
     /// silently overwriting.
     #[test]
     fn huge_or_duplicate_protocol_ids_are_rejected() {
-        let huge = r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":2000000000}}}}"#;
+        let huge =
+            r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":2000000000}}}}"#;
         assert!(Builtin::parse(huge).is_err());
         let dup = r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":1},"minecraft:air":{"protocol_id":1}}}}"#;
         assert!(Builtin::parse(dup).is_err());
