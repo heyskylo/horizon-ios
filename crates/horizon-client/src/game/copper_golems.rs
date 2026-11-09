@@ -3,6 +3,13 @@
 //! recheck, turning into statues, and the hand-over, waxing, scraping and
 //! shearing interactions.
 use super::Game;
+
+// The test names `super::commands`, as it did when game.rs held it.
+#[cfg(test)]
+use super::commands;
+#[cfg(test)]
+#[path = "golem_gift_tests.rs"]
+mod golem_gift_tests;
 use horizon_client::{
     containers::BlockEntity,
     items::ItemStack,
@@ -21,6 +28,21 @@ use horizon_world::{
 const RECHECK_TICKS: i64 = 5;
 
 impl Game<'_> {
+    /// `OfferFlowerGoal.stop` (`MobEvent::Gift`): the item on the target's
+    /// empty antenna, as a guaranteed drop.
+    pub(super) fn receive_gift(&mut self, target: u32, item: &'static str) {
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target)
+            && m.saddle_item().is_none()
+        {
+            m.set_saddle(Some(ItemStack::new(item, 1)));
+            // OfferFlowerGoal.stop: Mob.setGuaranteedDrop(antenna).
+            horizon_client::mobs::finalize::set_drop_chance(
+                m,
+                horizon_client::mobs::finalize::SADDLE,
+                2.0,
+            );
+        }
+    }
     /// A copper golem opened or closed a chest half: the counter changes, the
     /// first opener posts CONTAINER_OPEN and the last closer CONTAINER_CLOSE
     /// (`ContainerOpenersCounter.incrementOpeners` / `decrementOpeners`), and
