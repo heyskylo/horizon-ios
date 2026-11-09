@@ -226,6 +226,25 @@ impl Game<'_> {
         });
     }
 
+    /// `Entity.collide`'s `getEntityCollisions` for a body a piston or a
+    /// shulker lid pushes: the entities it can collide with
+    /// (`canCollideWith`, which for every mover but a vehicle is
+    /// `canBeCollidedWith`): a boat, a living shulker, a happy ghast held
+    /// still. A pushed boat or minecart collides by `canVehicleCollide`
+    /// instead, which this doesn't cover, and the player moves itself.
+    fn pushed_entity_colliders(&self, target: Target) -> Vec<Aabb> {
+        match target {
+            Target::Entity(EntityHandle::Boat(_) | EntityHandle::Cart(_)) => Vec::new(),
+            Target::Entity(handle) => {
+                let own = with_entity!(self, handle, entity => Entity::bounds(entity));
+                let mut boxes = self.item_entity_collisions();
+                boxes.retain(|b| *b != own);
+                boxes
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// The collision view of the moving piston at `pos` takes the progress
     /// its tick gave it. One no longer moving keeps its entry until
     /// `sync_moving_pistons`.
@@ -284,6 +303,7 @@ impl Game<'_> {
                 self.shulker_push_player(movement);
                 return;
             }
+            let entities = self.pushed_entity_colliders(target);
             let Ok(moved) = pushed_movement(
                 SceneCollisions {
                     world: &self.world,
@@ -298,6 +318,7 @@ impl Game<'_> {
                 body.step_height,
                 body.on_ground,
                 None,
+                &entities,
             ) else {
                 return;
             };
@@ -695,6 +716,7 @@ impl Game<'_> {
             }
             _ => None,
         };
+        let entities = self.pushed_entity_colliders(target);
         let resolved = with_piston_noclip(piston_direction, || {
             pushed_movement(
                 SceneCollisions {
@@ -709,6 +731,7 @@ impl Game<'_> {
                 step_height,
                 on_ground,
                 tnt.as_ref().map(|t| t.3),
+                &entities,
             )
             .unwrap_or(Vec3::ZERO)
         });
@@ -939,19 +962,16 @@ fn pushed_movement<W>(
     step_height: f32,
     on_ground: bool,
     context: Option<CollisionContext<'_>>,
+    entities: &[Aabb],
 ) -> horizon_client::Result<Vec3>
 where
     W: BlockCollisionWorld<Error = std::io::Error> + EntityMovementWorld<Error = std::io::Error>,
 {
     // Without the entity's own context, the one `resolve` reads at its feet.
     let context = context.unwrap_or_else(|| CollisionContext::position(before.min_position().y));
-    EntityCollisions::with_border(blocks, border, at).resolve_with_context(
-        before,
-        movement,
-        step_height,
-        on_ground,
-        context,
-    )
+    let mut collisions = EntityCollisions::with_border(blocks, border, at);
+    collisions.entities = entities;
+    collisions.resolve_with_context(before, movement, step_height, on_ground, context)
 }
 
 #[cfg(test)]
@@ -980,6 +1000,7 @@ mod tests {
             0.0,
             false,
             None,
+            &[],
         )
         .expect("the push resolves");
         // The wall stops the body 0.4 blocks short of the whole push.
@@ -1003,6 +1024,7 @@ mod tests {
             0.0,
             false,
             None,
+            &[],
         )
         .expect("the push resolves");
         assert!(
