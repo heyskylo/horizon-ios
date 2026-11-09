@@ -237,17 +237,17 @@ impl<P: Copy, S: Copy> Lines<P, S> {
 pub(crate) fn backdrop(batch: &mut HudBatch, atlas: &HudAtlas, in_world: bool) {
     let (w, h) = (batch.width, batch.height);
     ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
-    style::fill(batch, atlas, [0.0, 0.0, w, h], style::VEIL);
+    style::fill(batch, atlas, [0.0, 0.0, w, h], style::veil());
 }
 
 /// The mark and the screen's name over the search field.
 pub(crate) fn mark(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, title: &str) {
     let (x, y) = (cols.side_x, cols.side_y);
-    style::fill(batch, atlas, [x, y + 2.0, 6.0, 6.0], style::ACCENT);
+    style::fill(batch, atlas, [x, y + 2.0, 6.0, 6.0], style::accent());
     let horizon = Text::literal("Horizon");
     batch.text_styled(atlas, &horizon, x + 10.0, y, style::WHITE, true);
     let title = Text::literal(title);
-    batch.text_styled(atlas, &title, x, y + 10.0, style::MUTED, true);
+    batch.text_styled(atlas, &title, x, y + 10.0, style::muted(), true);
 }
 
 /// A page in the page list: the open page on a plate with the accent's bar beside it, the
@@ -273,13 +273,13 @@ pub(crate) fn page_tab(
         crate::widgets::target_as(rect, crate::widgets::Kind::Tab(open));
     }
     if open {
-        style::fill(batch, atlas, rect, style::OPEN);
-        style::fill(batch, atlas, [px, py, 2.0, ph], style::ACCENT);
+        style::fill(batch, atlas, rect, style::open());
+        style::fill(batch, atlas, [px, py, 2.0, ph], style::accent());
     }
     let color = match (open || hover, has) {
         (true, _) => style::WHITE,
-        (false, true) => style::SOFT,
-        (false, false) => style::MUTED,
+        (false, true) => style::soft(),
+        (false, false) => style::muted(),
     };
     let ty = py + ((ph - 8.0) / 2.0).floor();
     let name = Text::literal(style::fit(atlas, name, pw - 12.0));
@@ -312,12 +312,12 @@ pub(crate) fn search_field(
     search.draw(batch, atlas, None);
     if search.value.is_empty() && !focused {
         let hint = Text::literal(search.message.clone());
-        batch.text_styled(atlas, &hint, x + 5.0, search.y, style::MUTED, true);
+        batch.text_styled(atlas, &hint, x + 5.0, search.y, style::muted(), true);
     }
     if !search.value.is_empty() {
         let hover = ui::hovered(cursor, clear[0], clear[1], clear[2], clear[3]);
         crate::widgets::widget_cursor(hover, true);
-        let color = if hover { style::WHITE } else { style::MUTED };
+        let color = if hover { style::WHITE } else { style::muted() };
         let cy = y + ((h - 8.0) / 2.0).floor();
         ui::centered_text(
             batch,
@@ -344,7 +344,7 @@ pub(crate) fn plate(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, head
         batch,
         atlas,
         [px + 8.0, py + 24.0, pw - 16.0, 1.0],
-        style::HEAD_RULE,
+        style::head_rule(),
     );
 }
 
@@ -383,9 +383,9 @@ pub(crate) fn list<P: Copy, S: Copy>(
         }
         let Some(setting) = line.setting else {
             let (name, color, dy) = match line.group {
-                Some(("", _)) => (page_name(line.page), style::MUTED, 3.0),
-                Some((name, _)) => (lang::get(name), style::MUTED, 3.0),
-                None => (page_name(line.page), style::ACCENT, 4.0),
+                Some(("", _)) => (page_name(line.page), style::muted(), 3.0),
+                Some((name, _)) => (lang::get(name), style::muted(), 3.0),
+                None => (page_name(line.page), style::accent(), 4.0),
             };
             let name = Text::literal(name);
             batch.text_styled(atlas, &name, cols.list_x + 2.0, y + dy, color, true);
@@ -393,7 +393,7 @@ pub(crate) fn list<P: Copy, S: Copy>(
         };
         if !after_name {
             let rule = [cols.list_x + 8.0, y, cols.list_w - 16.0, 1.0];
-            style::fill(batch, atlas, rule, style::ROW_RULE);
+            style::fill(batch, atlas, rule, style::row_rule());
         }
         row(batch, setting, y);
     }
@@ -404,7 +404,7 @@ pub(crate) fn list<P: Copy, S: Copy>(
             &none,
             cols.list_x + 2.0,
             cols.top + 4.0,
-            style::MUTED,
+            style::muted(),
             true,
         );
     }
@@ -499,7 +499,7 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
     let active = live && (hover || focused || held);
     if active {
         let lit = [rect[0] + 2.0, y + 1.0, rect[2] - 4.0, style::ROW - 2.0];
-        style::fill(batch, atlas, lit, style::HOVER);
+        style::fill(batch, atlas, lit, style::hover());
     }
     crate::widgets::widget_cursor(hover, live);
     // The control socket's widget tree, the narrator and a controller's focus.
@@ -523,8 +523,8 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
     if live {
         crate::widgets::target_as(rect, kind);
     }
-    let color = if live { style::WHITE } else { style::MUTED };
-    let soft = if live { style::SOFT } else { style::MUTED };
+    let color = if live { style::WHITE } else { style::muted() };
+    let soft = if live { style::soft() } else { style::muted() };
     let ty = y + ((style::ROW - 8.0) / 2.0).floor();
     let lit = live && (hover || held);
     let left = rect[0] + style::INSET;
@@ -611,7 +611,7 @@ fn lit(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, _]: [f32; 4]) {
         batch,
         atlas,
         [x + 2.0, y + 1.0, w - 4.0, style::ROW - 2.0],
-        style::HOVER,
+        style::hover(),
     );
 }
 
@@ -644,7 +644,7 @@ fn read_row(
     let room = rect[2] - 2.0 * style::INSET - name_w - 8.0;
     let value = style::fit(atlas, value, room);
     let vx = rect[0] + rect[2] - style::INSET - atlas.font.width(&value);
-    batch.text_styled(atlas, &Text::literal(value), vx, ty, style::SOFT, true);
+    batch.text_styled(atlas, &Text::literal(value), vx, ty, style::soft(), true);
     if focused {
         style::ring(
             batch,
@@ -749,7 +749,7 @@ fn pad_row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32, view:
         batch.text_styled(atlas, &yellow(close), right.ceil(), ty, style::WHITE, true);
     }
     let left = rect[0] + style::INSET;
-    let color = if live { style::WHITE } else { style::MUTED };
+    let color = if live { style::WHITE } else { style::muted() };
     let shown = Text::literal(style::fit(atlas, name, chip[0] - 6.0 - left));
     batch.text_styled(atlas, &shown, left, ty, color, true);
     if focused {
@@ -799,7 +799,7 @@ fn side_lines(
         ];
         crate::widgets::record(line, rect, false);
         let shown = Text::literal(style::fit(atlas, line, rect[2]));
-        batch.text_styled(atlas, &shown, rect[0], rect[1], style::MUTED, true);
+        batch.text_styled(atlas, &shown, rect[0], rect[1], style::muted(), true);
     }
 }
 /// A line under the page list: its inset, and its height.
@@ -881,7 +881,7 @@ fn heading(batch: &mut HudBatch, atlas: &HudAtlas, text: &str, [x, y, w, _]: [f3
     let rect = [x + SIDE_INSET, y + HEADING_Y, w - 2.0 * SIDE_INSET, 8.0];
     crate::widgets::record(text, rect, false);
     let shown = Text::literal(style::fit(atlas, text, rect[2]));
-    batch.text_styled(atlas, &shown, rect[0], rect[1], style::MUTED, true);
+    batch.text_styled(atlas, &shown, rect[0], rect[1], style::muted(), true);
 }
 
 /// Vanilla's scroller, inside the panel's right edge, sized as `ui::Scroll` drags it.
@@ -1896,8 +1896,8 @@ impl<S: Screen> Shell<S> {
             // The row's page is open: lit as the list's open page is.
             if list.lit == Some(*shown) {
                 let row @ [x, y, _, h] = strip.area;
-                style::fill(batch, atlas, row, style::OPEN);
-                style::fill(batch, atlas, [x, y, 2.0, h], style::ACCENT);
+                style::fill(batch, atlas, row, style::open());
+                style::fill(batch, atlas, [x, y, 2.0, h], style::accent());
             }
             tabs::draw(batch, atlas, strip);
         }
@@ -2134,7 +2134,14 @@ impl<S: Screen> Shell<S> {
             crate::widgets::narratable(|| crate::widgets::Narratable::text(row.name.clone(), rect));
             let ty = y + ((style::ROW - 8.0) / 2.0).floor();
             let name = Text::literal(style::fit(atlas, &row.name, rect[2] - 2.0 * style::INSET));
-            batch.text_styled(atlas, &name, rect[0] + style::INSET, ty, style::MUTED, true);
+            batch.text_styled(
+                atlas,
+                &name,
+                rect[0] + style::INSET,
+                ty,
+                style::muted(),
+                true,
+            );
             return;
         }
         let over = |[x, y, w, h]: [f32; 4]| pointer.is_some_and(|at| ui::hovered(at, x, y, w, h));
@@ -2240,7 +2247,7 @@ impl<S: Screen> Shell<S> {
         // Labelled for the widget tree: what the strip says is what a test or an agent reads.
         crate::widgets::record(about, cols.dock, false);
         let color = if why.is_some() {
-            style::MUTED
+            style::muted()
         } else {
             style::GREY
         };

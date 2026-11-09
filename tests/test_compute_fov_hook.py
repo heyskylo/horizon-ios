@@ -27,6 +27,7 @@ impl View {
 struct Settings { fov: f32 }
 struct StudioFreecam { active: bool, fov: f32 }
 struct Studio { freecam: StudioFreecam }
+impl Studio { fn flying(&self) -> bool { self.freecam.active } }
 struct Game { view: View, settings: Settings, override_fov: Option<f32>, studio: Studio }
 impl Game {
     fn fov_effect_scale(&self) -> f32 { 1.0 }

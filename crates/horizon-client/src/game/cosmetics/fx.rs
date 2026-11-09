@@ -314,8 +314,7 @@ impl Game<'_> {
             light = FULL_LIGHT;
         }
         let mut poses = self.cosmetics.poses.borrow_mut();
-        let poses = &mut poses.1;
-        self.pose_companion(item, m, alpha, poses, &model);
-        self.cosmetics_model(&model, matrix, poses, uv, light, false, None, out);
+        self.pose_companion(item, m, alpha, &mut poses, &model);
+        self.cosmetics_model(&model, matrix, &poses, uv, light, false, None, out);
     }
 }

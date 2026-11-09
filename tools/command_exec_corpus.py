@@ -6322,6 +6322,14 @@ def moving_piston_presentation_diagnostic():
     return moving_piston_presentation(cmd, setup)
 
 
+def piston_mob_bounce():
+    try:
+        from .piston_bounce_corpus import piston_bounce
+    except ImportError:
+        from piston_bounce_corpus import piston_bounce
+    return piston_bounce(cmd, setup)
+
+
 def piston_entity_tick_order():
     """#9337: entities travel before moving pistons push them, not afterward."""
     ops = []
@@ -7512,6 +7520,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('piston mob bounce', piston_mob_bounce()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('command block last output', command_block_last_output()),
