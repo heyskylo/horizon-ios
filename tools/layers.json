@@ -59,6 +59,19 @@
     "horizon-mod-api-gen-tests": "tool",
     "xtask": "tool"
   },
+  "portable": {
+    "_doc": "docs/layers.md#engine: vanilla's rules and data with no desktop in them, which a port builds on. They depend only on each other, and never on a forbidden library.",
+    "crates": [
+      "horizon-assets",
+      "horizon-client-core",
+      "horizon-command",
+      "horizon-core",
+      "horizon-items",
+      "horizon-protocol",
+      "horizon-world"
+    ],
+    "forbidden": ["arboard", "cpal", "gilrs", "ureq", "wgpu", "winit"]
+  },
   "allowed": [
     "horizon-client -> horizon-anticheat",
     "horizon-client -> horizon-bench",
