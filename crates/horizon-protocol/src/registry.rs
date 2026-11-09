@@ -298,6 +298,25 @@ mod tests {
     use crate::packets::configuration::RegistryEntry;
 
     #[test]
+    fn synced_names_look_up_builtin_then_synced_registries() {
+        use crate::item::Names;
+        let report = r#"{"minecraft:item":{"default":"minecraft:air","entries":{"minecraft:stone":{"protocol_id":1},"minecraft:air":{"protocol_id":0}},"protocol_id":5}}"#;
+        let builtin = Builtin::parse(report).unwrap();
+        let dynamic = Dynamic::default();
+        let names = SyncedNames {
+            builtin: &builtin,
+            dynamic: &dynamic,
+        };
+        assert_eq!(
+            names.name("minecraft:item", 1).as_deref(),
+            Some("minecraft:stone")
+        );
+        assert_eq!(names.name("minecraft:item", 2), None);
+        assert_eq!(names.name("minecraft:item", -1), None);
+        assert_eq!(names.name("minecraft:unknown", 0), None);
+    }
+
+    #[test]
     fn parses_registry_reports() {
         let report = r#"{"minecraft:item":{"default":"minecraft:air","entries":{"minecraft:stone":{"protocol_id":1},"minecraft:air":{"protocol_id":0}},"protocol_id":5}}"#;
         let b = Builtin::parse(report).unwrap();

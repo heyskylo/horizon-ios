@@ -11,10 +11,16 @@
 //! A new hook is a new method with an empty default body, so existing implementations keep
 //! compiling, and a dispatch function in [`engine`] that the engine calls at the place vanilla
 //! does the matching thing.
+//!
+//! The platform registries (docs/layers.md, "Platform registries") have the same shape:
+//! [`settings`] for the settings each crate keeps in its own lines.
 #![forbid(unsafe_code)]
 
+mod registry;
+pub mod settings;
+
+use registry::Registry;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
 /// implement only those you need. Hooks run on the game's thread (the render thread) unless a
@@ -112,10 +118,7 @@ impl<'a> Started<'a> {
     }
 }
 
-/// Hooks registered before the game seals the list.
-static PENDING: Mutex<Vec<&'static dyn Hooks>> = Mutex::new(Vec::new());
-/// The list the engine dispatches to, fixed at its first dispatch.
-static SEALED: OnceLock<Box<[&'static dyn Hooks]>> = OnceLock::new();
+static HOOKS: Registry<dyn Hooks> = Registry::new();
 
 /// Why [`register`] refused a hook.
 #[derive(Debug, PartialEq, Eq)]
@@ -133,29 +136,23 @@ impl std::error::Error for TooLate {}
 /// `main`, before it runs the game); once the engine has dispatched, the list is fixed and this
 /// returns [`TooLate`]. Hooks are called in the order they registered.
 pub fn register(hooks: &'static dyn Hooks) -> Result<(), TooLate> {
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    // Checked under the lock: `all` seals under it too, so a hook is never lost in between.
-    if SEALED.get().is_some() {
-        return Err(TooLate);
-    }
-    pending.push(hooks);
-    Ok(())
+    HOOKS.register(hooks)
 }
 
 /// The registered hooks, sealing the list on the first call.
 fn all() -> &'static [&'static dyn Hooks] {
-    SEALED.get_or_init(|| {
-        std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner())).into_boxed_slice()
-    })
+    HOOKS.all()
 }
 
 /// The engine's side: where it calls the hooks. Only the engine calls these.
 pub mod engine {
     use super::*;
 
-    /// Seals the list; `started` and the first frame do it anyway. Call where registration ends.
+    /// Seals every list (hooks and the registries); their first use does it anyway. Call where
+    /// registration ends.
     pub fn seal() {
         all();
+        crate::settings::all();
     }
 
     /// [`Hooks::started`].
