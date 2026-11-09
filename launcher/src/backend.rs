@@ -1915,11 +1915,7 @@ type Completion = (
 
 const COMPLETIONS: [Completion; 5] = [
     // Preparers before #1538 left the built-in packs out.
-    (
-        "Programmer Art and High Contrast",
-        "packs",
-        prepare::packs,
-    ),
+    ("Programmer Art and High Contrast", "packs", prepare::packs),
     // A preparation that could not read the asset store keeps the client jar's 1x1 grey
     // placeholders, its English alone, and no sounds (#1867: Prism Launcher installs prepared
     // since 0.2.48).
@@ -2643,10 +2639,7 @@ pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
 
 /// Runs `Preparer::InProcess` on this thread, each progress line to `log`. A panic is an
 /// error like any other, so the window never waits on a preparation that died.
-pub fn prepare_in_process(
-    options: &prepare::Options,
-    log: &dyn Fn(String),
-) -> Result<(), String> {
+pub fn prepare_in_process(options: &prepare::Options, log: &dyn Fn(String)) -> Result<(), String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         prepare::prepare(options, &|line| log(line.to_string()))
     }))
