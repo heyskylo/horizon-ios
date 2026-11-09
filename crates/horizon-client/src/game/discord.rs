@@ -21,11 +21,13 @@ impl Game<'_> {
         let play = if let Some(host) = &self.lan {
             Play::Hosting {
                 players: 1 + host.hub.guests.len(),
+                max: horizon_client::lan::MAX_PLAYERS,
             }
         } else if let Some(server) = &self.integrated {
             match (server.published(), &self.remote) {
                 (Some(_), Some(remote)) => Play::Hosting {
                     players: remote.player_count(),
+                    max: horizon_client::lan::MAX_PLAYERS,
                 },
                 _ => Play::Singleplayer,
             }

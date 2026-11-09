@@ -7,6 +7,8 @@
 //! service once a run, `OwnerCheck`): anyone else sees a vanilla game and the game asks nothing
 //! about other players, until the player chooses otherwise in the settings.
 
+pub(super) mod emote_wheel;
+pub(super) mod emotes;
 mod fx;
 
 use super::Game;
@@ -22,6 +24,9 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
+
+/// Horizon's mark before a Horizon player's name, over their name tag and in the player list.
+pub(super) const MARK: horizon_client::tab_list::NameMark = &horizon_cosmetics::mark::MARK;
 
 /// An item as the renderer takes it.
 struct Baked {
@@ -72,6 +77,10 @@ pub(super) struct Cosmetics {
     emote_out: EmoteOut,
     /// Companions, trails and auras.
     fx: RefCell<Fx>,
+    /// Emotes: those the wheel offers and the one playing (`cosmetics/emotes.rs`).
+    emotes: emotes::Emotes,
+    /// The emote wheel (`cosmetics/emote_wheel.rs`).
+    wheel: emote_wheel::Wheel,
 }
 
 /// The emote the player plays, told to the service: the last wish sent (`Some(None)`: stopped),
@@ -518,7 +527,7 @@ impl Game<'_> {
                 }
             }
             // My emote: only while I show myself as a Horizon player (playing one says so).
-            let playing = self.emotes.sending();
+            let playing = c.emotes.sending();
             let looping = playing.as_ref().is_some_and(|(_, looping)| *looping);
             let wish = playing.map(|(id, _)| id).filter(|_| extras.horizon_listed);
             let o = &mut c.emote_out;
@@ -577,14 +586,15 @@ impl Game<'_> {
             for m in self.mobs.iter_mut() {
                 let age = m.age as f32;
                 if &*m.kind.id == "minecraft:mannequin"
-                    && m.emote.as_ref().is_none_or(|p| p.at(age).is_none())
+                    && emotes::playing(m).is_none_or(|p| p.at(age).is_none())
                 {
-                    m.emote = Some(horizon_cosmetics::Playing {
+                    let playing = horizon_cosmetics::Playing {
                         item: first.clone(),
                         // Out of step, so a crowd doesn't move as one.
                         start: age - (m.id % 40) as f32,
                         stop: None,
-                    });
+                    };
+                    emotes::set_playing(m, Some(playing));
                 }
             }
             return;
@@ -595,7 +605,7 @@ impl Game<'_> {
         if !shown {
             feed.ask([]);
             for m in self.mobs.iter_mut() {
-                m.emote = None;
+                emotes::set_playing(m, None);
             }
             return;
         }
@@ -622,7 +632,8 @@ impl Game<'_> {
                 let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
                 dx * dx + dz * dz > 1e-4
             };
-            match (seen, &mut m.emote) {
+            let mut next = emotes::playing(m).cloned();
+            match (seen, &mut next) {
                 (Some(seen), Some(p)) if Arc::ptr_eq(&p.item, &seen.item) => {
                     if moved && p.stop.is_none() {
                         p.stop = Some(age);
@@ -639,9 +650,7 @@ impl Game<'_> {
                 (_, Some(p)) if p.stop.is_none() => p.stop = Some(age),
                 _ => {}
             }
-            if m.emote.as_ref().is_some_and(|p| p.at(age).is_none()) {
-                m.emote = None;
-            }
+            emotes::set_playing(m, next.filter(|p| p.at(age).is_some()));
         }
     }
 
@@ -649,7 +658,7 @@ impl Game<'_> {
     /// every 10 minutes (a folder's emotes need no asking; an offline account has none).
     pub(super) fn refresh_owned_emotes(&mut self) {
         const AGAIN: Duration = Duration::from_secs(600);
-        let e = &mut self.emotes;
+        let e = &mut self.cosmetics.emotes;
         if self.cosmetics.local
             || !enabled()
             || horizon_client::auth::current().is_none()
@@ -790,7 +799,7 @@ impl Game<'_> {
         let worn = self.worn(m, own);
         // An emote's props: its time and weight while it plays.
         let ticks = m.age as f32 + alpha;
-        let emote = m.emote.as_ref().and_then(|p| {
+        let emote = emotes::playing(m).and_then(|p| {
             let (t, w) = p.at(ticks)?;
             (p.item.vertices > 0).then_some((&p.item, t, w))
         });
