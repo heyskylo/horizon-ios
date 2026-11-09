@@ -246,7 +246,9 @@ impl Goal for DefendVillage {
         // wider, as the box test is strict).
         let near = b.inflate(Vec3::new(1.0, 1.0, 1.0));
         // Villager.getPlayerReputation of the player this golem sees: the
-        // villager's gossips about that player's own UUID.
+        // villager's gossips about that player's own UUID. The villagers come
+        // through the same `attackTargeting` (`forCombat().range(64)`), so the
+        // golem must see them too.
         let bad = cx.w.others_near(near).any(|s| {
             s.species == Species::Villager
                 && s.alive
@@ -255,6 +257,7 @@ impl Goal for DefendVillage {
                     .is_some_and(|v| v.gossips.reputation(p.uuid) <= -100)
                 && b.contains(s.position)
                 && s.position.distance_squared(m.position) <= 64.0 * 64.0
+                && m.sees(cx.w, Who::Mob(s.id))
         });
         bad && m.sees(cx.w, Who::Player)
     }
@@ -322,6 +325,39 @@ impl Goal for MoveTowardsTarget {
         m.nav_stop();
     }
 }
+impl Mob {
+    /// `IronGolem.mobInteract`: the repair sound's pitch comes from the
+    /// golem's own random, not the level's.
+    pub fn golem_repair_pitch(&mut self) -> f32 {
+        1.0 + (self.random.next_float() - self.random.next_float()) * 0.2
+    }
+}
+/// `Level.isBrightOutside`: a fixed-time dimension (the End) is never bright.
+fn bright_outside(w: &MobWorld) -> bool {
+    w.daylight && !w.dimension_type.has_fixed_time
+}
+/// `OfferFlowerGoal.getNearestEntity`: the nearest of
+/// #candidate_for_iron_golem_gift (villagers and copper golems) in the golem's
+/// box inflated by (6, 2, 6) that passes `forNonCombat().range(6.0)`: within
+/// six blocks and in sight.
+fn gift_candidate(m: &mut Mob, w: &MobWorld) -> Option<u32> {
+    let area = m.bounds().inflate(Vec3::new(6.0, 2.0, 6.0));
+    let mut best: Option<(f64, u32)> = None;
+    for s in w.others_near(area) {
+        if !matches!(s.species, Species::Villager | Species::CopperGolem)
+            || !s.alive
+            || !area.intersects(s.bounds)
+        {
+            continue;
+        }
+        let d = s.position.distance_squared(m.position);
+        if d > 36.0 || best.is_some_and(|(b, _)| d >= b) || !m.sees(w, Who::Mob(s.id)) {
+            continue;
+        }
+        best = Some((d, s.id));
+    }
+    best.map(|(_, id)| id)
+}
 /// `OfferFlowerGoal`: by day, now and then, hold out a poppy to a villager.
 #[derive(Clone, Debug)]
 struct OfferFlower {
@@ -334,16 +370,10 @@ impl Goal for OfferFlower {
         MOVE | LOOK
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if !cx.w.daylight || m.random.next_int_bound(8000).unwrap_or(1) != 0 {
+        if !bright_outside(cx.w) || m.random.next_int_bound(8000).unwrap_or(1) != 0 {
             return false;
         }
-        // The nearest of #candidate_for_iron_golem_gift: villagers and copper golems.
-        self.villager =
-            cx.w.nearby(m.position, 6.0, |s| {
-                matches!(s.species, Species::Villager | Species::CopperGolem) && s.alive
-            })
-            .map(|s| s.id)
-            .next();
+        self.villager = gift_candidate(m, cx.w);
         self.villager.is_some()
     }
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
@@ -565,18 +595,20 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     for i in 0..4 {
         let xx = (m.position.x + f64::from((i % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
         let zz = (m.position.z + f64::from((i / 2 % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
-        let here = w.facts.get(w.world.block(xx, y, zz));
         let below = w.facts.get(w.world.block(xx, y - 1, zz));
-        // SnowLayerBlock.canSurvive: a full top face, not ice.
-        let ice = matches!(
-            below.name.as_ref(),
-            "minecraft:ice" | "minecraft:packed_ice" | "minecraft:barrier"
-        );
-        if here.name.as_ref() == "minecraft:air"
-            && below.full_collision
-            && !ice
-            && !placed.contains(&[xx, y, zz])
-        {
+        // SnowLayerBlock.canSurvive: the two snow-layer tags decide first,
+        // then a full top face (or a full snow layer) supports the snow.
+        let in_tag = |tag: &str| {
+            w.block_tags
+                .get(tag)
+                .is_some_and(|t| t.contains(&*below.name))
+        };
+        let supported = if in_tag("minecraft:cannot_support_snow_layer") {
+            false
+        } else {
+            in_tag("minecraft:support_override_snow_layer") || below.full_collision
+        };
+        if w.facts.is_air(w.world.block(xx, y, zz)) && supported && !placed.contains(&[xx, y, zz]) {
             placed.push([xx, y, zz]);
             events.push(MobEvent::SetBlockName {
                 mob: Some(m.id),
@@ -608,6 +640,78 @@ mod tests {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = species;
         Mob::new(id, Arc::new(kind), at, 0.0)
+    }
+
+    fn villager_at(id: u32, at: Vec3) -> crate::mobs::Seen {
+        mob(id, Species::Villager, at).seen(None)
+    }
+
+    fn pick(w: &MobWorld) -> Option<u32> {
+        let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
+        gift_candidate(&mut golem, w)
+    }
+
+    fn with_chunks(world: &mut crate::world::World, _: &horizon_world::registry::BlockRegistry) {
+        for cx in -2..2 {
+            for cz in -2..2 {
+                world.chunks.insert(
+                    (cx, cz),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                );
+            }
+        }
+    }
+
+    /// `OfferFlowerGoal`: the search box is the golem's box inflated by
+    /// (6, 2, 6) and the candidate must be within six blocks (Euclidean).
+    #[test]
+    fn the_poppy_goes_to_a_villager_in_the_box_within_six_blocks() {
+        let cases = [
+            (Vec3::new(4.5, 64.0, 0.5), true),
+            // 6.5 blocks on one axis: outside the range.
+            (Vec3::new(7.0, 64.0, 0.5), false),
+            // About 8.5 blocks away, inside the per-axis box of six.
+            (Vec3::new(6.0, 64.0, 6.0), false),
+            // Five blocks above: outside the box's two-block rise.
+            (Vec3::new(0.5, 69.0, 0.5), false),
+        ];
+        for (at, offered) in cases {
+            let villager = villager_at(2, at);
+            crate::mobs::world::with_built_test_world(&[villager], with_chunks, |w, _| {
+                assert_eq!(pick(w).is_some(), offered, "villager at {at:?}");
+            });
+        }
+    }
+
+    /// The candidate must also be in sight, and a fixed-time dimension is
+    /// never bright outside.
+    #[test]
+    fn the_poppy_needs_sight_and_a_dimension_with_a_day() {
+        let villager = villager_at(2, Vec3::new(4.5, 64.0, 0.5));
+        let wall = |world: &mut crate::world::World, r: &horizon_world::registry::BlockRegistry| {
+            with_chunks(world, r);
+            let stone = r.default_state("minecraft:stone").unwrap();
+            for y in 62..70 {
+                for z in -6..8 {
+                    world.set(2, y, z, stone).unwrap();
+                }
+            }
+        };
+        crate::mobs::world::with_built_test_world(std::slice::from_ref(&villager), wall, |w, _| {
+            assert_eq!(pick(w), None, "a villager behind a wall");
+        });
+        crate::mobs::world::with_built_test_world(&[villager], with_chunks, |w, _| {
+            assert!(bright_outside(w));
+            assert_eq!(pick(w), Some(2));
+            let mut end = w.clone();
+            end.dimension_type =
+                horizon_world::dimension_type::DimensionFacts::vanilla("minecraft:the_end")
+                    .unwrap();
+            assert!(!bright_outside(&end));
+            let mut night = w.clone();
+            night.daylight = false;
+            assert!(!bright_outside(&night));
+        });
     }
 
     #[test]
@@ -656,6 +760,53 @@ mod tests {
         );
         // Without the vanilla data under .local/horizon-client the world cannot be built: the test has nothing to check.
         let _ = ran;
+    }
+
+    /// `SnowGolem.aiStep` tests `isAir` (cave and void air too) and
+    /// `SnowLayerBlock.canSurvive` (the two snow-layer tags, then a full top face).
+    #[test]
+    fn snow_trail_follows_is_air_and_the_snow_layer_tags() {
+        let cases = [
+            ("minecraft:stone", "minecraft:cave_air", true),
+            ("minecraft:stone", "minecraft:void_air", true),
+            ("minecraft:soul_sand", "minecraft:air", true),
+            ("minecraft:mud", "minecraft:air", true),
+            ("minecraft:honey_block", "minecraft:air", true),
+            ("minecraft:ice", "minecraft:air", false),
+            ("minecraft:packed_ice", "minecraft:air", false),
+            ("minecraft:barrier", "minecraft:air", false),
+            ("minecraft:stone", "minecraft:water", false),
+        ];
+        for (floor, here, expect) in cases {
+            crate::mobs::world::with_built_test_world(
+                &[],
+                |world, reg| {
+                    world
+                        .chunks
+                        .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                    for x in 0..3 {
+                        for z in 0..3 {
+                            world
+                                .set(x, 0, z, reg.default_state(floor).unwrap())
+                                .unwrap();
+                            world
+                                .set(x, 1, z, reg.default_state(here).unwrap())
+                                .unwrap();
+                        }
+                    }
+                },
+                |w, _| {
+                    let mut golem = mob(7, Species::SnowGolem, Vec3::new(1.5, 1.0, 1.5));
+                    let mut events = Vec::new();
+                    snow_ai_step(&mut golem, w, &mut events);
+                    let placed = events
+                        .iter()
+                        .filter(|e| matches!(e, MobEvent::SetBlockName { .. }))
+                        .count();
+                    assert_eq!(placed > 0, expect, "{floor} under {here}");
+                },
+            );
+        }
     }
 
     /// `MoveTowardsTargetGoal.canUse` picks a random spot within 16 blocks and

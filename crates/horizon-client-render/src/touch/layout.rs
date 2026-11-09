@@ -176,9 +176,21 @@ pub struct Settings {
     pub sensitivity_vertical: f32,
     /// The sprint button toggles sprinting instead of holding it.
     pub sprint_toggle: bool,
+    /// In the crosshair schemes, taps and holds on the world also attack and
+    /// use (at the crosshair), as in the tap schemes.
+    pub crosshair_gestures: bool,
+    /// In the crosshair schemes, dragging the attack button turns the camera.
+    pub attack_button_look: bool,
     /// In the tap schemes, the use button shows while it would act on what
     /// the crosshair points at.
     pub contextual_interact: bool,
+    /// The joystick appears where the finger lands, within the dynamic area.
+    pub dynamic_joystick: bool,
+    /// The dynamic area's width: a fraction of the surface, from the
+    /// joystick's edge inwards.
+    pub dynamic_area_x: f32,
+    /// The dynamic area's height, centred on the joystick (1 is the whole height).
+    pub dynamic_area_y: f32,
     /// Scales every control without changing the saved sizes (0.5-2).
     pub button_scale: f32,
 }
@@ -220,7 +232,12 @@ impl Default for Settings {
             sensitivity_horizontal: 1.0,
             sensitivity_vertical: 1.0,
             sprint_toggle: false,
+            crosshair_gestures: false,
+            attack_button_look: true,
             contextual_interact: false,
+            dynamic_joystick: false,
+            dynamic_area_x: 0.25,
+            dynamic_area_y: 1.0,
             button_scale: 1.0,
         }
     }
@@ -265,6 +282,8 @@ impl Settings {
             *v = finite_or(*v, 1.0).clamp(0.1, 3.0);
         }
         self.button_scale = finite_or(self.button_scale, 1.0).clamp(0.5, 2.0);
+        self.dynamic_area_x = finite_or(self.dynamic_area_x, 0.25).clamp(0.0, 1.0);
+        self.dynamic_area_y = finite_or(self.dynamic_area_y, 1.0).clamp(0.0, 1.0);
     }
 
     /// Whether attack and use act on the crosshair rather than on a tap.
@@ -437,14 +456,19 @@ mod tests {
     #[test]
     fn control_options_default_safely_and_stay_in_range() {
         let read: Settings = serde_json::from_str(r#"{"mode":"tap"}"#).unwrap();
-        assert!(!read.sprint_toggle && !read.contextual_interact);
-        assert_eq!(read.button_scale, 1.0);
+        assert!(read.attack_button_look && !read.sprint_toggle && !read.dynamic_joystick);
+        assert_eq!([read.dynamic_area_x, read.dynamic_area_y], [0.25, 1.0]);
         let mut s = Settings {
             button_scale: f32::NAN,
+            dynamic_area_x: -1.0,
+            dynamic_area_y: f32::INFINITY,
             ..Settings::default()
         };
         s.sanitize();
-        assert_eq!(s.button_scale, 1.0);
+        assert_eq!(
+            [s.button_scale, s.dynamic_area_x, s.dynamic_area_y],
+            [1.0, 0.0, 1.0]
+        );
         s.button_scale = 9.0;
         s.sanitize();
         assert_eq!(s.button_scale, 2.0);
