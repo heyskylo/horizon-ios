@@ -3014,13 +3014,14 @@ impl Game<'_> {
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
     }
     /// The block entity part of `BlockInput.place`: load the block entity
-    /// from the argument's tag; true when its saved data changed.
-    pub(super) fn load_block_entity_nbt(&mut self, pos: [i32; 3], nbt: &str) -> bool {
+    /// from the argument's tag (read; `load_block_entity_nbt` reads SNBT); true when its saved data changed.
+    pub(super) fn load_block_entity_tag(
+        &mut self,
+        pos: [i32; 3],
+        mut tag: horizon_world::nbt::Tag,
+    ) -> bool {
         use horizon_world::nbt::Tag;
         if self.pot_data(pos).is_some() {
-            let Ok((tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-                return false;
-            };
             return self.set_pot_data(pos, &tag).unwrap_or(false);
         }
         let key = (pos[0], pos[1], pos[2]);
@@ -3029,9 +3030,6 @@ impl Game<'_> {
         };
         let name = self.data_block_name(pos);
         let before = horizon_client::save::encode_block_entity(key, e, &name);
-        let Ok((mut tag, _)) = horizon_world::nbt::parse_snbt(nbt) else {
-            return false;
-        };
         if let Tag::Compound(c) = &mut tag {
             for k in ["id", "x", "y", "z"] {
                 if let Some(v) = before.get(k) {

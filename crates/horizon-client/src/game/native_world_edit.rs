@@ -42,10 +42,10 @@ pub struct NativeBlockEdit {
     pub palette: Vec<String>,
     pub filters: Vec<String>,
     pub runs: Vec<NativeBlockRun>,
-    /// Block entity data, loaded after all runs: an entry whose position holds no block entity, or whose `id`
-    /// names another type, is skipped (the block stays as the runs made it).
-    pub block_entities: Vec<NativeBlockNbt>,
     pub neighbour_updates: bool,
+    /// Block entity data, loaded after all runs: an entry whose position holds no block entity, or whose `id`
+    /// names another type, is skipped (the block stays as the runs made it). API @API:edit_blocks_nbt@.
+    pub block_entities: Vec<NativeBlockNbt>,
 }
 
 impl Game<'_> {
@@ -96,32 +96,6 @@ impl Game<'_> {
             );
         }
         Ok(changed)
-    }
-    /// For a server mod: load SNBT `nbt` into the block entity at `pos` of the level being ticked, as the NBT of
-    /// `/setblock ... {nbt}` is loaded (`id`, `x`, `y`, `z` are the block entity's own and kept). False, changing
-    /// nothing: another dimension, a client, a chunk not loaded, NBT that doesn't read or isn't a compound, no block
-    /// entity at `pos`, or an `id` that isn't that block entity's type. API @API:edit_blocks_nbt@.
-    pub(super) fn native_set_block_entity(
-        &mut self,
-        dimension: &str,
-        pos: [i32; 3],
-        nbt: &str,
-    ) -> bool {
-        self.native_level_open(dimension) && self.set_block_entity_checked(pos, nbt)
-    }
-    /// For a server mod: the full saved NBT of the block entity at `pos` of the level being ticked, as SNBT
-    /// (`/data get block`), None where there is none, in another dimension or on a client. API
-    /// @API:edit_blocks_nbt@.
-    pub(super) fn native_block_entity_nbt(
-        &mut self,
-        dimension: &str,
-        pos: [i32; 3],
-    ) -> Option<String> {
-        if !self.native_level_open(dimension) {
-            return None;
-        }
-        self.block_entity_nbt(pos)
-            .map(|tag| horizon_client::snbt::to_snbt(&tag))
     }
     /// Whether `dimension` is the authoritative level being ticked: where a server mod's world helpers act.
     pub(super) fn native_level_open(&self, dimension: &str) -> bool {
@@ -208,5 +182,33 @@ impl Game<'_> {
             .filter(|(_, _, p)| (0..3).all(|i| min[i] <= p[i] && p[i] <= max[i]))
             .map(|(id, _, _)| id)
             .collect()
+    }
+    /// For a server mod: load SNBT `nbt` into the block entity at `pos` of the level being ticked, as the NBT of
+    /// `/setblock ... {nbt}` is loaded (`id`, `x`, `y`, `z` are the block entity's own and kept). False, changing
+    /// nothing: another dimension, a client, a chunk not loaded, NBT that doesn't read or isn't a compound, no block
+    /// entity at `pos`, or an `id` that isn't that block entity's type. API @API:edit_blocks_nbt@.
+    pub(super) fn native_set_block_entity(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        nbt: &str,
+    ) -> bool {
+        self.native_level_open(dimension)
+            && super::block_edits::parse_block_entity_nbt(nbt)
+                .is_ok_and(|tag| self.set_block_entity_checked(pos, tag))
+    }
+    /// For a server mod: the full saved NBT of the block entity at `pos` of the level being ticked, as SNBT
+    /// (`/data get block`), None where there is none, in another dimension or on a client. API
+    /// @API:edit_blocks_nbt@.
+    pub(super) fn native_block_entity_nbt(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+    ) -> Option<String> {
+        if !self.native_level_open(dimension) {
+            return None;
+        }
+        self.block_entity_nbt(pos)
+            .map(|tag| horizon_client::snbt::to_snbt(&tag))
     }
 }
