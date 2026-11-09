@@ -5581,20 +5581,10 @@ impl Game<'_> {
                     }
                     self.trigger_bee_nest_destroyed(broken, held.as_ref(), bees);
                 }
-                // InfestedBlock.spawnAfterBreak: its silverfish comes out unless the
-                // tool has silk touch (#prevents_infested_spawns) or blocks don't drop.
-                if facts.name.starts_with("minecraft:infested_")
-                    && !silk
-                    && self.ui.rules.bool("block_drops")
-                {
-                    let at = [
-                        f64::from(pos[0]) + 0.5,
-                        f64::from(pos[1]),
-                        f64::from(pos[2]) + 0.5,
-                    ];
-                    if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false) {
-                        self.mob_poof(id);
-                    }
+                // InfestedBlock.spawnAfterBreak, unless the tool has silk touch
+                // (#prevents_infested_spawns).
+                if facts.name.starts_with("minecraft:infested_") && !silk {
+                    self.spawn_infestation(pos);
                 }
                 // Block.tryDropExperience samples before Silk Touch removes the XP.
                 // SpawnerBlock.spawnAfterBreak ignores Silk Touch. Both sample even
