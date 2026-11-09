@@ -990,6 +990,7 @@
 //! Bodies have no `cfg` and no macros: horizon-mixins refuses a target with
 //! either (`tests::hook_points_stay_hookable`).
 use super::native_data_maps::NativeDataMapType;
+use super::native_guards::{box_meets, finite, finite_params, mod_image_fits};
 use super::native_item_energy::ItemEnergyBuffer;
 use super::{
     Game, GameLevel, LevelDimension, Screen,
@@ -12774,16 +12775,6 @@ impl Game<'_> {
     }
 }
 
-/// Whether `rgba` is a whole `width` x `height` image that fits a
-/// `slot_width` x `slot_height` atlas slot (a native mod's `mod_image`).
-fn mod_image_fits(width: u32, height: u32, rgba: usize, slot_width: u32, slot_height: u32) -> bool {
-    width > 0
-        && height > 0
-        && width <= slot_width
-        && height <= slot_height
-        && rgba == width as usize * height as usize * 4
-}
-
 /// Whether F3's debug screen, open when `debug`, covers `corner`
 /// (`DebugScreenOverlay.extractRenderState`): its left and right columns
 /// the top corners, and its charts the bottom corners `charts` (bottom left,
@@ -12843,12 +12834,6 @@ fn config_dir(game_dir: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// `params` with each value that isn't finite as 0, so a mod's mistake can't
-/// put a NaN in every pixel of a pack's picture.
-fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
-    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
-}
-
 /// Whether `native_play_local_sound` takes these values: a sound event's id
 /// (`sound_id`, as `native_play_sound` takes), a finite position, a volume
 /// and pitch at or above 0, and a delay of a minute at most.
@@ -12862,11 +12847,6 @@ fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32
         && (0..=1200).contains(&delay)
 }
 
-/// `v` within `lo..=hi`; `lo` when it is not a number.
-fn finite(v: f32, lo: f32, hi: f32) -> f32 {
-    if v.is_finite() { v.clamp(lo, hi) } else { lo }
-}
-
 /// An item entity as `native_item_entities` lists it. API 42.
 /// Read by mods only.
 #[derive(Clone, Debug)]
@@ -12878,17 +12858,6 @@ pub struct NativeItemEntity {
     /// Ticks before a player may pick it up (`ItemEntity.pickupDelay`);
     /// hoppers take it whatever this is.
     pub pickup_delay: u32,
-}
-
-/// `AABB.intersects`: the boxes overlap, touching faces excluded.
-fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> bool {
-    let (lo, hi) = (b.min_position(), b.max_position());
-    lo.x < max[0]
-        && hi.x > min[0]
-        && lo.y < max[1]
-        && hi.y > min[1]
-        && lo.z < max[2]
-        && hi.z > min[2]
 }
 
 /// What `native_mod_screen_open(mod_id)` does over `screen` (`blocked`: an
