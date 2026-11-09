@@ -10,14 +10,16 @@ use horizon_client::{
     mobs::{
         MobTypes,
         data::MobData,
-        spawn_rules::{self, Dimension, Reason, SpawnLevel},
+        spawn_rules::{self, Reason, SpawnLevel},
         spawn_selection::{
             self, Heightmap, MobType as SelectionMobType, NaturalLevel, SpawnCost, StructureAt,
             StructureSpawns, spawn_aabb,
         },
     },
 };
+use horizon_core::LevelKey;
 use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_world::dimension_type::DimensionFacts;
 use horizon_world::loot::PackOverlay;
 use horizon_world::{chunk::BlockState, registry::BlockStateId};
 use std::{
@@ -28,6 +30,7 @@ use std::{
 };
 
 struct Column<'a> {
+    border: horizon_core::geometry::border::BorderGeometry,
     facts: &'a BlockFacts,
     data: &'a MobData,
     block_tags: &'a HashMap<String, HashSet<String>>,
@@ -43,7 +46,7 @@ struct Column<'a> {
     surface: i32,
     seed: i64,
     peaceful: bool,
-    dimension: Dimension,
+    dimension: &'static DimensionFacts,
     biome: String,
     slime: f32,
     /// A player position and whether it is survival or adventure.
@@ -53,6 +56,10 @@ struct Column<'a> {
     structure_spawns: StructureSpawns,
 }
 impl SpawnLevel for Column<'_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.border
+            .is_within_bounds(f64::from(x), f64::from(z), 0.0)
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         if x != self.x0 || z != self.z0 {
             return self.air;
@@ -95,7 +102,7 @@ impl SpawnLevel for Column<'_> {
     fn peaceful(&self) -> bool {
         self.peaceful
     }
-    fn dimension(&self) -> Dimension {
+    fn dimension_type(&self) -> &DimensionFacts {
         self.dimension
     }
     fn surface_slime_chance(&self, _: i32, _: i32, _: i32) -> f32 {
@@ -264,6 +271,11 @@ pub fn main() -> horizon_client::Result<()> {
             )
         });
         let level = Column {
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [get("borderx", "0").parse()?, get("borderz", "0").parse()?],
+                get("bordersize", "59999968").parse()?,
+                29_999_984,
+            )?,
             facts: &facts,
             data: &data,
             block_tags: &items.block_tags,
@@ -279,11 +291,10 @@ pub fn main() -> horizon_client::Result<()> {
             surface: get("surface", "0").parse()?,
             seed: get("wseed", "0").parse()?,
             peaceful: get("difficulty", "normal") == "peaceful",
-            dimension: match get("dim", "minecraft:overworld").as_str() {
-                "minecraft:the_nether" => Dimension::Nether,
-                "minecraft:the_end" => Dimension::End,
-                _ => Dimension::Overworld,
-            },
+            dimension: DimensionFacts::of_builtin_level(LevelKey::builtin_or_overworld(&get(
+                "dim",
+                "minecraft:overworld",
+            ))),
             biome: get("biome", "minecraft:plains"),
             slime: get("slime", "0.0").parse()?,
             player,

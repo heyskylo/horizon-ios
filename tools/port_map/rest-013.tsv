@@ -134,7 +134,7 @@ ReloadableServerRegistries.createAndValidateFullContext	skip:data		registry cont
 ReloadableServerRegistries.validateLootRegistries	skip:data		loot table validation at load
 ReloadableServerResources.loadResources	skip:data		server resource loading
 ServerAdvancementManager.validate	skip:data		advancement validation logging at load
-ServerFunctionLibrary.reload	port	crates/horizon-client/src/game/functions.rs::Game::rebuild_store	rebuilds the function store from the data packs
+ServerFunctionLibrary.reload	port	crates/horizon-client/src/game/functions.rs::Game::reload_datapacks	loads a candidate store, refreshes explicit-reload content, validates ordinary commands, then commits accepted functions
 ServerFunctionLibrary.readLines	inline	crates/horizon-client-render/src/datapack.rs::parse_function	splits the function text into lines
 ServerFunctionManager.executeTagFunctions	port	crates/horizon-client/src/game/functions.rs::Game::tick_functions	runs the functions of a tag
 ServerFunctionManager.execute	port	crates/horizon-client/src/game/functions.rs::Game::run_function	runs one function as the sender

@@ -60,6 +60,11 @@ impl Game<'_> {
                 .iter()
                 .find(|e| e.id == id)
                 .map(|e| extents(e.bounds())),
+            Target::Cushion(id) => self
+                .cushions
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| extents(e.bounds())),
             Target::Crystal(id) => self
                 .crystals
                 .iter()
@@ -70,6 +75,15 @@ impl Game<'_> {
             | Target::Dragon(_)
             | Target::Spawner(_)
             | Target::Cloud(_) => None,
+            // LeashFenceKnotEntity.recalculateBoundingBox, at the knot's centre.
+            Target::Knot(id) => self.natural_knot(id).map(|fence| {
+                let knot = horizon_client::mobs::leash::knot_state(fence);
+                let (p, half) = (knot.position, knot.width / 2.0);
+                Aabb::new(
+                    Vec3::new(p.x - half, p.y, p.z - half),
+                    Vec3::new(p.x + half, p.y + knot.height, p.z + half),
+                )
+            }),
         }
     }
 }

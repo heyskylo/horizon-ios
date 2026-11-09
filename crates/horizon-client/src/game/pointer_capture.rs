@@ -2,6 +2,10 @@
 //! `releaseMouse`), the cursor icon, and pausing a world whose window loses focus.
 use super::*;
 
+fn studio_suppresses_focus_pause(replay_active: bool, freecam_active: bool) -> bool {
+    replay_active || freecam_active
+}
+
 impl Game<'_> {
     /// The options `MouseHandler.turnPlayer` reads.
     pub(super) fn look_options(&self) -> LookOptions {
@@ -20,7 +24,9 @@ impl Game<'_> {
         let look = self.look_options();
         let time = self.started.elapsed().as_secs_f64();
         let pointer = self.captured || self.agent_pointer;
-        let grabbed = pointer && self.screen == Screen::Playing && self.player.is_some();
+        let grabbed = pointer
+            && self.screen == Screen::Playing
+            && (self.player.is_some() || self.studio_freecam.active);
         let active = self.focused || self.agent_pointer;
         if let Some((xo, yo)) = self
             .mouse
@@ -85,6 +91,10 @@ impl Game<'_> {
             .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
             && self.control.is_none()
             && self.screen == Screen::Playing
+            && !studio_suppresses_focus_pause(
+                self.studio_replay.is_some(),
+                self.studio_freecam.active,
+            )
             && self.player.is_some()
             && !self.options.no_pause
             && self.settings.file.bool("pauseOnLostFocus")
@@ -140,7 +150,7 @@ impl Game<'_> {
         // grabs only on `setScreen(null)`: the pack prompt and server dialogs
         // are screens over the world that keep the pointer.
         if capture
-            && (!self.focused
+            && ((!self.focused && !self.unclaimed_window && !self.scripted_run())
                 || self.server_packs.prompt.is_some()
                 || self.dialog_open()
                 || self.command_prompt.is_some())
@@ -155,6 +165,7 @@ impl Game<'_> {
         self.reset_inventory_clicks();
         if !capture {
             self.stop_mining();
+            self.studio_rmb_down = false;
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
@@ -184,15 +195,14 @@ impl Game<'_> {
         };
         let scale = HudBatch::new(size).scale;
         let was_grabbed = self.captured;
-        if self.options.offscreen && !self.split_window {
-            // A genuinely hidden `--offscreen` run leaves the system pointer where
-            // the person at the computer has it. Its grab is internal (an
-            // agent turns the view with `mouse-move`).
+        if self.internal_grab() {
+            // Its grab is internal (an agent turns the view with `mouse-move`). A grab the
+            // window already held when a scripted run began stays the system's until the
+            // run ends (`settle_after_run`).
             if capture {
                 self.mouse.set_ignore_first_move();
             }
             self.captured = capture;
-            self.capture_mode = None;
         } else if capture {
             self.mouse.set_ignore_first_move();
             // macOS warps by re-associating the mouse with the pointer,
@@ -253,8 +263,43 @@ impl Game<'_> {
         ) {
             self.cursor = pos;
         }
-        if !self.options.offscreen || self.split_window {
+        if !self.internal_grab() {
             window.set_cursor_visible(!self.captured);
+        }
+    }
+    /// The game's pointer grab leaves the system pointer where the person at the computer has
+    /// it: a genuinely hidden `--offscreen` run, an agent's window no one has clicked yet, or a
+    /// scripted run, which plays the game while the person may be using the computer.
+    pub(super) fn internal_grab(&self) -> bool {
+        (self.options.offscreen && !self.split_window)
+            || self.unclaimed_window
+            || self.scripted_run()
+    }
+    /// Once a scripted run is over, the person's last click into the window or away from it
+    /// applies (`held_focus`), and the system pointer follows the grab the run left inside the
+    /// game, as if the window had taken or released it now.
+    pub(super) fn settle_after_run(&mut self, event_loop: &dyn EventLoopCtl) {
+        if self.scripted_run() {
+            return;
+        }
+        if let Some(focused) = self.focus_after_run.take() {
+            let id = self
+                .window
+                .as_ref()
+                .map_or_else(WindowId::dummy, |w| w.id());
+            self.handle_window_event(
+                event_loop,
+                id,
+                WindowEvent::Focused(focused),
+                input_trace::InputOrigin::User,
+            );
+        }
+        // Outside a run, a window whose grab is the system's holds it exactly while the game
+        // has it grabbed; only a run leaves the two apart.
+        if !self.internal_grab() && self.captured != self.capture_mode.is_some() {
+            let grab = self.captured;
+            self.captured = self.capture_mode.is_some();
+            self.capture(grab);
         }
     }
     /// A Linux window manager can release the native pointer grab while the
@@ -266,6 +311,7 @@ impl Game<'_> {
             && self.focused
             && self.captured
             && !self.options.offscreen
+            && !self.internal_grab()
             && let (Some(window), Some(mode)) = (&self.window, self.capture_mode)
         {
             let other = match mode {
@@ -323,8 +369,26 @@ impl Game<'_> {
     /// click. A screen that is open keeps it free, as releasing the pointer
     /// for that screen did: it is the screen, not the focus, that shows it.
     pub(super) fn regrab_on_refocus(&mut self) {
+        if self.studio_replay.is_some() || self.studio_freecam.active {
+            self.regrab_on_refocus = false;
+            self.studio_rmb_down = false;
+            self.capture(false);
+            return;
+        }
         if std::mem::take(&mut self.regrab_on_refocus) && self.screen == Screen::Playing {
             self.capture(true);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::studio_suppresses_focus_pause;
+
+    #[test]
+    fn studio_replay_and_freecam_never_pause_on_focus_loss() {
+        assert!(studio_suppresses_focus_pause(true, false));
+        assert!(studio_suppresses_focus_pause(false, true));
+        assert!(!studio_suppresses_focus_pause(false, false));
     }
 }

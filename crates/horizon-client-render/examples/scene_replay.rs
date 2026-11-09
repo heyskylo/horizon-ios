@@ -223,9 +223,10 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.graphics_api(),
         settings.translucent_batching,
         false,
-        false,
-        false,
-        false,
+        // HDR off, as the replays draw.
+        &horizon_client_render::graphics::Graphics::default(),
+        Default::default(),
+        Default::default(),
     ))?;
     drop(pixels);
     render.pixels.pack();
@@ -245,6 +246,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.fxaa,
         settings.taa,
         settings.upscale,
+        0.85,
     );
     let mut notes = Vec::new();
     let mut note = |what: &str, result: horizon_client_render::Result<()>| {
@@ -660,6 +662,7 @@ fn remesh(
                         blend_radius,
                         smooth_lighting,
                         cutout_leaves,
+                        opaque_ice: false,
                         translucent_layers: &[],
                         leaf_culling,
                     };

@@ -3,7 +3,15 @@
 //! recheck, turning into statues, and the hand-over, waxing, scraping and
 //! shearing interactions.
 use super::Game;
+
+// The test names `super::commands`, as it did when game.rs held it.
+#[cfg(test)]
+use super::commands;
+#[cfg(test)]
+#[path = "golem_gift_tests.rs"]
+mod golem_gift_tests;
 use horizon_client::{
+    containers::BlockEntity,
     items::ItemStack,
     mobs::{
         Mob, Species,
@@ -11,17 +19,38 @@ use horizon_client::{
     },
 };
 use horizon_core::random::RandomSource;
-use horizon_world::chunk::BlockState;
+use horizon_world::{
+    chunk::BlockState,
+    nbt::{Compound, Tag},
+};
 
 /// `ContainerOpenersCounter.CHECK_TICK_DELAY`.
 const RECHECK_TICKS: i64 = 5;
 
 impl Game<'_> {
-    /// A copper golem opened or closed a chest half: the counter changes and
+    /// `OfferFlowerGoal.stop` (`MobEvent::Gift`): the item on the target's
+    /// empty antenna, as a guaranteed drop.
+    pub(super) fn receive_gift(&mut self, target: u32, item: &'static str) {
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target)
+            && m.saddle_item().is_none()
+        {
+            m.set_saddle(Some(ItemStack::new(item, 1)));
+            // OfferFlowerGoal.stop: Mob.setGuaranteedDrop(antenna).
+            horizon_client::mobs::finalize::set_drop_chance(
+                m,
+                horizon_client::mobs::finalize::SADDLE,
+                2.0,
+            );
+        }
+    }
+    /// A copper golem opened or closed a chest half: the counter changes, the
+    /// first opener posts CONTAINER_OPEN and the last closer CONTAINER_CLOSE
+    /// (`ContainerOpenersCounter.incrementOpeners` / `decrementOpeners`), and
     /// the clients see the block event (`openerCountChanged`).
-    pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool) {
+    pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool, mob: u32) {
         let key = (chest[0], chest[1], chest[2]);
         let entry = self.world.chest_openers.entry(key).or_insert((0, 0.0));
+        let before = entry.0;
         if open {
             entry.0 += 1;
             entry.1 = entry.1.max(3.0);
@@ -34,6 +63,12 @@ impl Game<'_> {
         let count = entry.0;
         if count <= 0 {
             self.world.chest_openers.remove(&key);
+        }
+        let who = Some(horizon_client::mobs::Who::Mob(mob));
+        if open && before == 0 {
+            self.post_block_game_event("minecraft:container_open", chest, who, None);
+        } else if !open && count == 0 {
+            self.post_block_game_event("minecraft:container_close", chest, who, None);
         }
         self.block_entity_event(chest, 1, count.max(0));
         // The guests get the same `ClientboundBlockEventPacket` (the lid).
@@ -95,9 +130,11 @@ impl Game<'_> {
             if count == before {
                 continue;
             }
+            // `recheckOpeners`: the game event has no source.
             if count == 0 {
                 self.world.chest_openers.remove(&key);
                 self.golem_chest_sound(p, false);
+                self.post_block_game_event("minecraft:container_close", p, None, None);
             } else if let Some(o) = self.world.chest_openers.get_mut(&key) {
                 o.0 = count;
             }
@@ -178,6 +215,15 @@ impl Game<'_> {
         if self.level_set(pos, id).is_err() {
             return;
         }
+        // `createStatue`: the golem's custom name goes into the statue's components.
+        let mut components = Compound::new();
+        if let Some(name) = self.golem_name_tag(m) {
+            components.insert("minecraft:custom_name".into(), name);
+        }
+        self.world.block_entities.insert(
+            (pos[0], pos[1], pos[2]),
+            BlockEntity::CopperGolemStatue(components),
+        );
         self.golem_drop_equipment(m);
         m.extra.opened_chest = None;
         if m.extra.leash.is_some() {
@@ -191,6 +237,53 @@ impl Game<'_> {
             1.0,
             1.0,
         );
+    }
+    /// The golem's `CustomName` as a component: the styled name it was loaded
+    /// or summoned with while it still matches the plain name, else the plain one.
+    fn golem_name_tag(&self, m: &Mob) -> Option<Tag> {
+        let plain = m.custom_name.as_ref()?;
+        let saved = self
+            .persist
+            .raw
+            .get(&m.id)
+            .and_then(|raw| raw.get("CustomName"))
+            .filter(|name| match name {
+                Tag::String(s) => s.to_string_lossy() == *plain,
+                Tag::Compound(_) => matches!(
+                    name.get("text"),
+                    Some(Tag::String(s)) if s.to_string_lossy() == *plain
+                ),
+                _ => false,
+            });
+        Some(
+            saved
+                .cloned()
+                .unwrap_or_else(|| Tag::String(plain.as_str().into())),
+        )
+    }
+    /// `Entity.setCustomName` of golem `id` with the component `name`: its plain
+    /// and styled forms, and the saved compound a later save writes it from.
+    fn name_golem(&mut self, id: u32, name: Tag) {
+        let plain = match &name {
+            Tag::String(s) => Some(s.to_string_lossy()),
+            Tag::Compound(_) => match name.get("text") {
+                Some(Tag::String(s)) => Some(s.to_string_lossy()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            m.custom_name = plain;
+            m.custom_name_text = Some(horizon_client::entity_nbt::name_text(&name));
+        }
+        if let Tag::Compound(raw) = self
+            .persist
+            .raw
+            .entry(id)
+            .or_insert_with(|| Tag::Compound(Default::default()))
+        {
+            raw.insert("CustomName".into(), name);
+        }
     }
     /// `Mob.dropPreservedEquipment`: the guaranteed drops in `EquipmentSlot`
     /// order, the carried stack (main hand) then the antenna flower (saddle),
@@ -239,9 +332,19 @@ impl Game<'_> {
             f64::from(pos[1]),
             f64::from(pos[2]) + 0.5,
         ];
-        let Some(id) = self.spawn_mob("minecraft:copper_golem", at, true) else {
+        // `removeStatue`: the golem takes the custom name the statue keeps.
+        let name = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+            Some(BlockEntity::CopperGolemStatue(components)) => {
+                components.get(&"minecraft:custom_name".into()).cloned()
+            }
+            _ => None,
+        };
+        let Some(id) = self.spawn_mob_raw("minecraft:copper_golem", at, true) else {
             return false;
         };
+        if let Some(name) = name {
+            self.name_golem(id, name);
+        }
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.yaw = yaw;
             m.previous_yaw = yaw;

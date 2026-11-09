@@ -82,11 +82,11 @@ pub(super) fn serverbound(
     })
 }
 
-/// Entity data in 1.21.4's indexes, from 1.21.5's (`translate::v1_21_4::remap_entity_data`, back). `kind` is the
+/// Entity data in 1.21.4's indexes, from 1.21.5's (`translate::client_layout_v1_21_4::remap_entity_data`, back). `kind` is the
 /// entity's type in the pinned ids, `None` when unknown, which leaves the data as it is.
 pub(super) fn entity_data(kind: Option<i32>, data: &mut play::SetEntityData) {
     if let Some(kind) = kind {
-        translate::v1_21_4::remap_entity_data(kind, data, false);
+        translate::client_layout_v1_21_4::remap_entity_data(kind, data, false);
     }
 }
 
@@ -98,7 +98,7 @@ fn paletted_down(r: &mut Reader, w: &mut Writer, blocks: bool) -> Result<()> {
     let mut storage = bits;
     if bits == 0 {
         w.varint(r.varint()?);
-    } else if translate::v1_21_4::indirect(bits, blocks) {
+    } else if translate::client_layout_v1_21_4::indirect(bits, blocks) {
         let n = r.varint()?;
         w.varint(n);
         for _ in 0..n {
@@ -137,7 +137,7 @@ fn heightmaps_down(r: &mut Reader, w: &mut Writer) -> Result<()> {
     for _ in 0..n {
         let kind = r.varint()?;
         let longs = r.long_array()?;
-        if let Some(&(_, name)) = translate::v1_21_4::HEIGHTMAPS
+        if let Some(&(_, name)) = translate::client_layout_v1_21_4::HEIGHTMAPS
             .iter()
             .find(|(k, _)| *k == kind)
         {
@@ -151,7 +151,7 @@ fn heightmaps_down(r: &mut Reader, w: &mut Writer) -> Result<()> {
     Ok(())
 }
 
-/// Level chunk with light, 1.21.5's layout to 1.21.4's (the mirror of `translate::v1_21_4::chunk_up`).
+/// Level chunk with light, 1.21.5's layout to 1.21.4's (the mirror of `translate::client_layout_v1_21_4::chunk_up`).
 fn chunk_down(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let mut w = Writer::new();
@@ -164,7 +164,7 @@ fn chunk_down(payload: &[u8]) -> Result<Vec<u8>> {
     Ok(w.data)
 }
 
-/// Chunk biomes, 1.21.5's layout to 1.21.4's (the mirror of `translate::v1_21_4::chunks_biomes_up`).
+/// Chunk biomes, 1.21.5's layout to 1.21.4's (the mirror of `translate::client_layout_v1_21_4::chunks_biomes_up`).
 fn chunks_biomes_down(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let mut w = Writer::new();
@@ -204,12 +204,12 @@ fn team_down(payload: &[u8]) -> Result<Vec<u8>> {
     if method == 0 || method == 2 {
         w.nbt(&r.nbt()?);
         w.u8(r.u8()?);
-        w.string(translate::v1_21_4::name_of(
-            &translate::v1_21_4::VISIBILITY,
+        w.string(translate::client_layout_v1_21_4::name_of(
+            &translate::client_layout_v1_21_4::VISIBILITY,
             r.varint()?,
         )?);
-        w.string(translate::v1_21_4::name_of(
-            &translate::v1_21_4::COLLISION,
+        w.string(translate::client_layout_v1_21_4::name_of(
+            &translate::client_layout_v1_21_4::COLLISION,
             r.varint()?,
         )?);
         w.varint(r.varint()?);
@@ -271,7 +271,7 @@ mod tests {
 
     fn read_back_clientbound(id: i32, down: &[u8]) -> Vec<u8> {
         let session = Session::new(ServerVersion::V1_21_4);
-        translate::v1_21_4::clientbound(&session, State::Play, id, down)
+        translate::client_layout_v1_21_4::clientbound(&session, State::Play, id, down)
             .unwrap()
             .unwrap()
     }
@@ -387,7 +387,10 @@ mod tests {
             panic!("a chat is rewritten");
         };
         assert_eq!(pinned.last(), Some(&0));
-        assert_eq!(translate::v1_21_4::without_checksum(&pinned), older);
+        assert_eq!(
+            translate::client_layout_v1_21_4::without_checksum(&pinned),
+            older
+        );
     }
 
     /// A level chunk in 1.21.5's layout: two heightmaps, then a single-valued section, an indirect one (4 bits
@@ -430,7 +433,10 @@ mod tests {
         let newer = chunk_1_21_5();
         let older = clientbound(State::Play, id, &newer).unwrap().unwrap();
         assert_ne!(older, newer);
-        assert_eq!(translate::v1_21_4::chunk_up(&older).unwrap(), newer);
+        assert_eq!(
+            translate::client_layout_v1_21_4::chunk_up(&older).unwrap(),
+            newer
+        );
     }
 
     #[test]
@@ -449,7 +455,7 @@ mod tests {
         );
         w.nbt(&horizon_world::nbt::Tag::Compound(map));
         w.byte_array(&[]);
-        let up = translate::v1_21_4::chunk_up(&w.data).unwrap();
+        let up = translate::client_layout_v1_21_4::chunk_up(&w.data).unwrap();
         let mut r = Reader::new(&up);
         assert_eq!((r.i32().unwrap(), r.i32().unwrap()), (0, 0));
         assert_eq!(r.varint().unwrap(), 1);
@@ -474,7 +480,10 @@ mod tests {
         let newer = w.data;
         let older = clientbound(State::Play, id, &newer).unwrap().unwrap();
         assert_ne!(older, newer);
-        assert_eq!(translate::v1_21_4::chunks_biomes_up(&older).unwrap(), newer);
+        assert_eq!(
+            translate::client_layout_v1_21_4::chunks_biomes_up(&older).unwrap(),
+            newer
+        );
     }
 
     /// Entity data of `kind` taken through translate's way up, then this step's way back.
@@ -486,7 +495,7 @@ mod tests {
             id: 1,
             values: older,
         };
-        translate::v1_21_4::remap_entity_data(kind, &mut d, true);
+        translate::client_layout_v1_21_4::remap_entity_data(kind, &mut d, true);
         let newer = d.values.clone();
         entity_data(Some(kind), &mut d);
         (newer, d.values)
@@ -499,7 +508,7 @@ mod tests {
             (18, serializer::BOOLEAN, Value::Bool(true)),
             (19, serializer::INT, Value::Int(5)),
         ];
-        let (newer, back) = up_then_down(translate::v1_21_4::DOLPHIN, older);
+        let (newer, back) = up_then_down(translate::client_layout_v1_21_4::DOLPHIN, older);
         assert_eq!(
             newer,
             vec![
@@ -526,7 +535,7 @@ mod tests {
             (21, serializer::BOOLEAN, Value::Bool(true)),
             (22, serializer::BOOLEAN, Value::Bool(true)),
         ];
-        let (newer, back) = up_then_down(translate::v1_21_4::TURTLE, older);
+        let (newer, back) = up_then_down(translate::client_layout_v1_21_4::TURTLE, older);
         assert_eq!(
             newer,
             vec![
@@ -550,7 +559,7 @@ mod tests {
             (18, serializer::BOOLEAN, Value::Bool(true)),
             (19, serializer::BOOLEAN, Value::Bool(true)),
         ];
-        let (newer, back) = up_then_down(translate::v1_21_4::STRIDER, older);
+        let (newer, back) = up_then_down(translate::client_layout_v1_21_4::STRIDER, older);
         let kept = vec![
             (17, serializer::INT, Value::Int(3)),
             (18, serializer::BOOLEAN, Value::Bool(true)),
@@ -565,7 +574,7 @@ mod tests {
             (17, serializer::BOOLEAN, Value::Bool(true)),
             (18, serializer::INT, Value::Int(7)),
         ];
-        let (newer, back) = up_then_down(translate::v1_21_4::PIG, older);
+        let (newer, back) = up_then_down(translate::client_layout_v1_21_4::PIG, older);
         assert_eq!(newer, vec![(17, serializer::INT, Value::Int(7))]);
         assert_eq!(back, vec![(18, serializer::INT, Value::Int(7))]);
     }
@@ -573,7 +582,8 @@ mod tests {
     #[test]
     fn a_mooshroom_s_type_is_a_string_then_a_varint() {
         let older = vec![(17, serializer::STRING, Value::String("brown".into()))];
-        let (newer, back) = up_then_down(translate::v1_21_4::MOOSHROOM, older.clone());
+        let (newer, back) =
+            up_then_down(translate::client_layout_v1_21_4::MOOSHROOM, older.clone());
         assert_eq!(newer, vec![(17, serializer::INT, Value::Int(1))]);
         assert_eq!(back, older);
     }
@@ -585,7 +595,7 @@ mod tests {
             (9, serializer::INT, Value::Int(2)),
             (10, serializer::BOOLEAN, Value::Bool(true)),
         ];
-        let (newer, back) = up_then_down(translate::v1_21_4::MINECARTS[0], older);
+        let (newer, back) = up_then_down(translate::client_layout_v1_21_4::MINECARTS[0], older);
         assert_eq!(
             newer,
             vec![
@@ -610,7 +620,7 @@ mod tests {
             (9, serializer::INT, Value::Int(2)),
             (10, serializer::BOOLEAN, Value::Bool(false)),
         ];
-        let (newer, back) = up_then_down(translate::v1_21_4::MINECARTS[1], older);
+        let (newer, back) = up_then_down(translate::client_layout_v1_21_4::MINECARTS[1], older);
         assert_eq!(newer, vec![(12, serializer::INT, Value::Int(2))]);
         assert_eq!(back, vec![(9, serializer::INT, Value::Int(2))]);
     }
@@ -621,7 +631,10 @@ mod tests {
             id: 1,
             values: vec![(8, serializer::INT, Value::Int(4))],
         };
-        entity_data(Some(translate::v1_21_4::EXPERIENCE_ORB), &mut d);
+        entity_data(
+            Some(translate::client_layout_v1_21_4::EXPERIENCE_ORB),
+            &mut d,
+        );
         assert!(d.values.is_empty());
     }
 
@@ -632,7 +645,7 @@ mod tests {
             (17, serializer::BOOLEAN, Value::Bool(false)),
             (18, serializer::BOOLEAN, Value::Bool(true)),
         ];
-        let (newer, back) = up_then_down(translate::v1_21_4::PIGLIN, older.clone());
+        let (newer, back) = up_then_down(translate::client_layout_v1_21_4::PIGLIN, older.clone());
         assert_eq!(
             newer,
             vec![
@@ -650,7 +663,10 @@ mod tests {
             id: 1,
             values: vec![(17, serializer::CHICKEN_VARIANT, Value::Id(3))],
         };
-        entity_data(Some(translate::v1_21_4::CHICKEN), &mut chicken);
+        entity_data(
+            Some(translate::client_layout_v1_21_4::CHICKEN),
+            &mut chicken,
+        );
         assert!(chicken.values.is_empty());
         let mut wolf = play::SetEntityData {
             id: 1,
@@ -659,7 +675,7 @@ mod tests {
                 (23, serializer::WOLF_SOUND_VARIANT, Value::Id(2)),
             ],
         };
-        entity_data(Some(translate::v1_21_4::WOLF), &mut wolf);
+        entity_data(Some(translate::client_layout_v1_21_4::WOLF), &mut wolf);
         assert_eq!(
             wolf.values,
             vec![(22, serializer::WOLF_VARIANT, Value::Id(1))]
@@ -705,7 +721,7 @@ mod tests {
         else {
             panic!("a container click is rewritten");
         };
-        let back = translate::v1_21_4::container_click(&pinned).unwrap();
+        let back = translate::client_layout_v1_21_4::container_click(&pinned).unwrap();
         assert_eq!(back, older);
     }
 }

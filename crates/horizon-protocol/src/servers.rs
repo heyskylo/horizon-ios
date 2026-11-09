@@ -1,6 +1,7 @@
 //! The multiplayer server list, stored like vanilla's ServerList in an
 //! uncompressed `servers.dat`: `{servers: [{name, ip, icon?, acceptTextures?,
-//! acceptedCodeOfConduct?}]}`.
+//! acceptedCodeOfConduct?, hidden}]}`. Hidden entries (servers joined by
+//! Direct Connection or quick play) are not shown but keep their settings.
 use horizon_world::nbt::{self, JavaString, NamedTag, Tag};
 use std::path::Path;
 
@@ -66,58 +67,111 @@ impl ServerEntry {
     }
 }
 
-/// ServerList.load: missing or unreadable files give an empty list.
+/// ServerList.load: the shown entries; missing or unreadable files give an empty list.
 pub fn load(path: &Path) -> Vec<ServerEntry> {
+    load_all(path).0
+}
+/// ServerList.load: the shown entries (`serverList`) and the hidden ones
+/// (`hiddenServerList`, `hidden` set), each in the file's order.
+pub fn load_all(path: &Path) -> (Vec<ServerEntry>, Vec<ServerEntry>) {
+    let (mut shown, mut hidden) = (Vec::new(), Vec::new());
     let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
+        return (shown, hidden);
     };
     let Ok((root, _)) = nbt::read_named(&bytes, nbt::Limits::default()) else {
-        return Vec::new();
+        return (shown, hidden);
     };
-    // ServerList skips entries flagged "hidden" (the LAN/quick-play ones).
-    match root.tag.get("servers") {
-        Some(Tag::List(list)) => list
-            .iter()
-            .filter(|t| !matches!(t.get("hidden"), Some(Tag::Byte(1))))
-            .filter_map(ServerEntry::from_tag)
-            .collect(),
-        _ => Vec::new(),
+    if let Some(Tag::List(list)) = root.tag.get("servers") {
+        for t in list {
+            let Some(entry) = ServerEntry::from_tag(t) else {
+                continue;
+            };
+            // CompoundTag.getBooleanOr("hidden", false): any number but zero.
+            let is_hidden = match t.get("hidden") {
+                Some(Tag::Byte(b)) => *b != 0,
+                Some(Tag::Short(n)) => *n as i8 != 0,
+                Some(Tag::Int(n)) => *n as i8 != 0,
+                Some(Tag::Long(n)) => *n as i8 != 0,
+                _ => false,
+            };
+            if is_hidden {
+                hidden.push(entry);
+            } else {
+                shown.push(entry);
+            }
+        }
     }
+    (shown, hidden)
 }
-/// ServerList.save: write to a temporary file, then replace.
+/// ServerList.save for the shown entries, keeping the hidden ones the file has.
 pub fn save(path: &Path, servers: &[ServerEntry]) -> std::io::Result<()> {
+    let (_, hidden) = load_all(path);
+    save_all(path, servers, &hidden)
+}
+/// ServerList.save: the shown entries with `hidden: false`, then the hidden
+/// ones with `hidden: true`, written to a temporary file, then replaced.
+pub fn save_all(
+    path: &Path,
+    servers: &[ServerEntry],
+    hidden: &[ServerEntry],
+) -> std::io::Result<()> {
+    let flagged = |entry: &ServerEntry, flag: bool| {
+        let mut tag = entry.to_tag();
+        if let Tag::Compound(c) = &mut tag {
+            c.insert(JavaString::from("hidden"), Tag::Byte(i8::from(flag)));
+        }
+        tag
+    };
+    let list = servers
+        .iter()
+        .map(|e| flagged(e, false))
+        .chain(hidden.iter().map(|e| flagged(e, true)))
+        .collect();
     let root = NamedTag {
         name: JavaString::from(""),
-        tag: Tag::compound([(
-            "servers",
-            Tag::List(servers.iter().map(ServerEntry::to_tag).collect()),
-        )]),
+        tag: Tag::compound([("servers", Tag::List(list))]),
     };
     write(path, &root)
+}
+/// ServerList.add(server, true): a hidden entry goes first, and only the 16
+/// newest hidden entries are kept (`MAX_HIDDEN_SERVERS`); then saved.
+pub fn add_hidden(path: &Path, entry: ServerEntry) -> std::io::Result<()> {
+    let (shown, mut hidden) = load_all(path);
+    hidden.insert(0, entry);
+    hidden.truncate(16);
+    save_all(path, &shown, &hidden)
 }
 /// Puts `entry` first, keeping every other entry and field as the file has them (the hidden
 /// ones too). A file that is there but can't be read is left as it is.
 pub fn prepend(path: &Path, entry: &ServerEntry) -> std::io::Result<()> {
     insert(path, entry, |_| None)
 }
-/// Puts `entry` just after the first entry whose address `after` accepts, or last when none
-/// does, keeping every other entry and field as the file has them (the hidden ones too).
-pub fn insert_after(
-    path: &Path,
-    entry: &ServerEntry,
-    after: impl Fn(&str) -> bool,
-) -> std::io::Result<()> {
-    insert(path, entry, |list| {
-        let ip = |t: &Tag| match t.get("ip") {
-            Some(Tag::String(s)) => s.to_string_lossy(),
-            _ => String::new(),
-        };
-        Some(
-            list.iter()
-                .position(|t| after(&ip(t)))
-                .map_or(list.len(), |i| i + 1),
-        )
-    })
+/// Removes every entry `matches` accepts (given its name and address), keeping the other
+/// entries and every field as the file has them (the hidden ones too). Whether any went; a
+/// missing file has none, and the file is only written when something went.
+pub fn remove_where(path: &Path, matches: impl Fn(&str, &str) -> bool) -> std::io::Result<bool> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let mut root = nbt::read_named(&bytes, nbt::Limits::default())
+        .map_err(std::io::Error::other)?
+        .0;
+    let Some(Tag::List(list)) = root.tag.get_mut("servers") else {
+        return Ok(false);
+    };
+    let text = |t: &Tag, key: &str| match t.get(key) {
+        Some(Tag::String(s)) => s.to_string_lossy(),
+        _ => String::new(),
+    };
+    let before = list.len();
+    list.retain(|t| !matches(&text(t, "name"), &text(t, "ip")));
+    if list.len() == before {
+        return Ok(false);
+    }
+    write(path, &root)?;
+    Ok(true)
 }
 /// Inserts `entry` at the index `at` picks in the file's list (`None`: first).
 fn insert(

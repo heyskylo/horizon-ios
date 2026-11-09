@@ -149,9 +149,6 @@ impl Game<'_> {
         }
         self.score.storage =
             horizon_client::command_storage::CommandStorage::load(&self.world_root);
-        // ServerLevel.getWorldBorder: the level in place reads its own file; the other levels
-        // read theirs when they are opened (`open_level`).
-        self.border = self.load_border(self.dim);
         self.score.stopwatches = horizon_client::stopwatches::Stopwatches::load(&self.world_root);
         self.sync_score_registries();
     }
@@ -221,6 +218,7 @@ impl Game<'_> {
             | Target::Crystal(id)
             | Target::Dragon(id)
             | Target::Tnt(id)
+            | Target::Cushion(id)
             | Target::Falling(id)
             | Target::Rocket(id)
             | Target::Trident(id)
@@ -233,8 +231,12 @@ impl Game<'_> {
                 .iter()
                 .find(|s| s.id == id)
                 .map(|s| uuid_text(s.uuid)),
-            // Orbs and projectiles have no UUID here.
-            Target::Orb(_) | Target::Projectile(_) => None,
+            // An orb's registered identity, as its saved UUID reads.
+            Target::Orb(id) => Some(uuid_text(self.uuid_for(id))),
+            // Projectiles have no UUID here.
+            Target::Projectile(_) => None,
+            // The UUID the tie gave the knot (game/leads.rs `tie_knot`).
+            Target::Knot(id) => self.persist.uuids.get(&id).map(|&u| uuid_text(u)),
         }
     }
     fn holder_for(&mut self, t: Target) -> Option<Holder> {
@@ -265,6 +267,7 @@ impl Game<'_> {
             | Target::Boat(id)
             | Target::Cart(id)
             | Target::Tnt(id)
+            | Target::Cushion(id)
             | Target::Orb(id)
             | Target::Projectile(id)
             | Target::Crystal(id)
@@ -287,6 +290,8 @@ impl Game<'_> {
                 .iter()
                 .find(|f| f.id == id)
                 .and_then(|f| f.saved.as_ref().map(|s| &s.1)),
+            // A natural knot keeps no saved compound: it has no tags.
+            Target::Knot(_) => None,
         };
         match raw.and_then(|r| r.get("Tags")) {
             Some(Tag::List(l)) => l
@@ -547,13 +552,6 @@ impl Game<'_> {
                 board.for_all_objectives(&criteria, &victim_name, inc);
             }
         }
-    }
-    /// `Scoreboard.entityRemoved`: a dead non-player entity leaves the board.
-    pub(super) fn score_entity_removed(&mut self, id: u32) {
-        let Some(uuid) = self.persist.uuids.get(&id).copied() else {
-            return;
-        };
-        self.score.board.entity_removed(&uuid_text(uuid));
     }
 
     // ---- teams in gameplay -----------------------------------------------------
@@ -904,7 +902,8 @@ impl Game<'_> {
         let up = |id: u128| upside_down.contains(&id);
         // Horizon's mark before the names of Horizon players (the cosmetics service's cache).
         let horizon = self.horizon_players(players.iter().map(|p| p.uuid));
-        let marked = |id: u128| horizon.contains(&id);
+        let horizon_mark: tab_list::NameMark = &horizon_cosmetics::mark::MARK;
+        let marked = |id: u128| horizon.contains(&id).then_some(horizon_mark);
         let inputs = TabInputs {
             players: &players,
             board,
@@ -918,7 +917,7 @@ impl Game<'_> {
                 f64::from(self.settings.text_background_opacity),
             ),
             upside_down: &up,
-            horizon: &marked,
+            mark: &marked,
         };
         let draws = self.tab_list.layout(&inputs, &self.gui.atlas.font);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);

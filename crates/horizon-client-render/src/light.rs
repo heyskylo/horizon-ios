@@ -22,7 +22,6 @@ use crate::{
 use horizon_core::geometry::{Direction, ShapeOp, VoxelShape};
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use std::{
-    cell::RefCell,
     collections::{HashMap, VecDeque},
     path::Path,
     sync::Arc,
@@ -335,8 +334,35 @@ impl SectionScratch {
     }
 }
 
-thread_local! {
-    static SCRATCH: RefCell<LightScratch> = RefCell::new(LightScratch::new());
+/// Lighting scratch (some 4.4 MB at full height) shared by every thread that lights: a job takes one
+/// (or makes one) and gives it back, and at most [`kept_scratch`] stay allocated between jobs. One per
+/// thread kept that much on every generation worker for good.
+static SCRATCH_POOL: std::sync::Mutex<Vec<LightScratch>> = std::sync::Mutex::new(Vec::new());
+
+/// How many scratches the pool keeps: one per worker thread (at least 4), so a chunk-load burst
+/// that lights on every streaming worker at once reuses them instead of building and freeing a
+/// scratch per job. `worker_count` is read once and cached.
+fn kept_scratch() -> usize {
+    horizon_threads::worker_count().max(4)
+}
+
+/// A scratch from the pool, or a new one.
+fn take_scratch() -> LightScratch {
+    let taken = SCRATCH_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop();
+    taken.unwrap_or_else(LightScratch::new)
+}
+
+/// Gives a scratch back to the pool, unless it already keeps [`kept_scratch`].
+fn give_scratch(scratch: LightScratch) {
+    let mut pool = SCRATCH_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pool.len() < kept_scratch() {
+        pool.push(scratch);
+    }
 }
 
 /// Where a section sits in the 48-wide region.
@@ -449,7 +475,10 @@ pub fn light_chunk(
     tables: &LightTables,
     sky_light: bool,
 ) -> Vec<Light> {
-    SCRATCH.with_borrow_mut(|scratch| light_chunk_with_scratch(region, tables, sky_light, scratch))
+    let mut scratch = take_scratch();
+    let lit = light_chunk_with_scratch(region, tables, sky_light, &mut scratch);
+    give_scratch(scratch);
+    lit
 }
 
 fn light_chunk_with_scratch(
@@ -653,15 +682,17 @@ fn pack_lighting(
     sky_light: bool,
 ) -> Vec<Light> {
     let open = if sky_light { 0xF0 } else { 0x00 };
+    let mut data = [open; 4096];
     (0..sections)
         .map(|si| {
             if si * 16 >= h {
                 return Light::Uniform(open);
             }
-            let mut data = Box::new([open; 4096]);
             for ly in 0..16 {
                 let y = si * 16 + ly;
                 if y >= h {
+                    let out_row = ly << 8;
+                    data[out_row..out_row + 256].fill(open);
                     continue;
                 }
                 let y_offset = y * (W * W);
@@ -674,7 +705,7 @@ fn pack_lighting(
                     }
                 }
             }
-            Light::packed(data)
+            Light::from_slice(&data)
         })
         .collect()
 }
@@ -1281,7 +1312,7 @@ fn relight_layer(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chunk::{HEIGHT, MIN_Y, SECTIONS};
 
@@ -1310,13 +1341,13 @@ mod tests {
         assert_eq!(dirty(&[(0, 0, 0)]).len(), 8);
     }
 
-    const AIR: u32 = 0;
+    pub(crate) const AIR: u32 = 0;
     const STONE: u32 = 1;
-    const TORCH: u32 = 2;
+    pub(crate) const TORCH: u32 = 2;
     const SLAB: u32 = 3;
     /// Air, stone, torch and a bottom slab (full bottom face, half sides,
     /// empty top), with a third face shape for the half sides.
-    fn tables() -> LightTables {
+    pub(crate) fn tables() -> LightTables {
         let cell = |dampening, emission, faces: [u16; 6]| Cell {
             dampening,
             emission,
@@ -1335,7 +1366,7 @@ mod tests {
             3,
         )
     }
-    fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
+    pub(crate) fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
         world_of(crate::chunk::ColumnLayout::VANILLA, edit)
     }
     /// Lit chunks around (0, 0) of `layout`, stone up to y 0.
@@ -2387,6 +2418,44 @@ mod tests {
                 assert_eq!(queue, want_queue, "{distinct} values, emitting {emitting}");
             }
         }
+    }
+
+    /// Threads lighting at once each take their own scratch from the pool: every result is what the old
+    /// flood fill gives, and the pool keeps no more than its cap afterwards.
+    #[test]
+    fn pooled_scratch_lights_like_the_old_algorithm_across_threads() {
+        let t = tables();
+        let layout = ColumnLayout::VANILLA;
+        let mut chunks = Vec::new();
+        for cz in -1..=1 {
+            for cx in -1..=1 {
+                let mut c = Chunk::with_layout(cx, cz, layout);
+                for i in 0..256 {
+                    c.set(i & 15, 60, i >> 4, STONE);
+                }
+                c.set(((cx + 1) * 5) & 15, 61, ((cz + 1) * 3) & 15, TORCH);
+                c.set(8, 40, 8, TORCH);
+                c.set(2, 70 + cx * 3, 14, SLAB);
+                chunks.push(c);
+            }
+        }
+        let region: [[Option<&Chunk>; 3]; 3] =
+            std::array::from_fn(|dz| std::array::from_fn(|dx| Some(&chunks[dz * 3 + dx])));
+        let want = old_light_chunk(&region, &t, true);
+        std::thread::scope(|s| {
+            for _ in 0..kept_scratch() + 2 {
+                s.spawn(|| {
+                    for _ in 0..3 {
+                        let got = light_chunk(&region, &t, true);
+                        assert_eq!(got.len(), want.len());
+                        for (g, w) in got.iter().zip(&want) {
+                            assert!((0..4096).all(|i| g.get(i) == w.get(i)));
+                        }
+                    }
+                });
+            }
+        });
+        assert!(SCRATCH_POOL.lock().unwrap().len() <= kept_scratch());
     }
 
     #[test]

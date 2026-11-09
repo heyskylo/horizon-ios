@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 mod face_buttons;
 mod hid_layout;
 mod sdl_row;
+mod trigger_effects;
 mod triggers;
 
 /// The controllers gilrs sees and the DualSense's output.
@@ -264,6 +265,7 @@ impl Pads {
         // Another pad, or none: its A going away isn't a release.
         if self.devices.active != active {
             self.menu.armed = None;
+            self.menu.stop_craft();
         }
         let Some(pad) = self
             .devices
@@ -575,7 +577,7 @@ impl Game<'_> {
         };
         let lights = self.settings.controller.lightbar != gamepad::Lightbar::Off;
         let state = horizon_dualsense::device::State {
-            triggers: self.settings.controller.trigger_effects(using, attacking),
+            triggers: trigger_effects::effects(&self.settings.controller, using, attacking),
             lightbar: lightbar.filter(|_| lights),
             player_leds: lights.then_some(horizon_dualsense::PLAYER_1),
         };

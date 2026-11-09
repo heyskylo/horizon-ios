@@ -249,6 +249,8 @@ pub const ENCHANTMENT_EFFECT_COMPONENT_TYPE_DOWN: &[(u16, u16, u16)] = &[
 pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[(36, "minecraft:map_color")];
 /// Every table above, as the adapter reads them.
 pub const IDS: super::ids::Ids = super::ids::Ids {
+    dropped_components: DROPPED_COMPONENTS,
+    substitutes: super::ids::Substitutes::NONE,
     quirks: super::ids::Quirks::NONE,
     states: (OLD_STATES, PINNED_STATES),
     block_state: super::ids::Remap::Runs {
@@ -328,8 +330,6 @@ pub const IDS: super::ids::Ids = super::ids::Ids {
         up: ENCHANTMENT_EFFECT_COMPONENT_TYPE_UP,
         down: ENCHANTMENT_EFFECT_COMPONENT_TYPE_DOWN,
     },
-    dropped_components: DROPPED_COMPONENTS,
     // Not a registry: set by hand where a version numbers EntityDataSerializers differently.
     entity_data_serializer: super::ids::Remap::Same,
-    substitutes: super::ids::Substitutes::NONE,
 };

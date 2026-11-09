@@ -46,6 +46,21 @@ thread_local! {
 }
 /// The current language's `bidirectional`, read for every drawn string.
 static BIDIRECTIONAL: AtomicBool = AtomicBool::new(false);
+/// Counts the languages set (`set`): another count is another language, so text looked up
+/// before it may read otherwise.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    /// Counts the scopes this thread entered and left (`scoped`), which no other thread sees.
+    static SCOPE_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+/// Which language text looks up in now, on this thread, as a count that changes whenever that
+/// can: both counts only grow, so their sum changes when either does.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed) + SCOPE_GENERATION.get()
+}
+fn scope_changed() {
+    SCOPE_GENERATION.set(SCOPE_GENERATION.get() + 1);
+}
 
 /// A source of resource files: the prepared root plus packs, highest priority last.
 pub trait ResourceSource {
@@ -524,6 +539,7 @@ pub fn available(sources: &[&dyn ResourceSource]) -> Vec<LanguageInfo> {
 pub fn set(language: Language) {
     BIDIRECTIONAL.store(language.bidirectional, Ordering::Relaxed);
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(language));
+    GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 pub fn current() -> Option<Arc<Language>> {
     if let Some(language) = SCOPE.with(|s| s.borrow().as_ref().map(|s| s.language.clone())) {
@@ -543,6 +559,7 @@ pub fn scoped<R>(language: Language, f: impl FnOnce() -> R) -> (R, Vec<String>) 
     impl Drop for Restore {
         fn drop(&mut self) {
             SCOPE.with(|s| *s.borrow_mut() = self.0.take());
+            scope_changed();
         }
     }
     let outer = SCOPE.with(|s| {
@@ -552,6 +569,7 @@ pub fn scoped<R>(language: Language, f: impl FnOnce() -> R) -> (R, Vec<String>) 
         })
     });
     let _restore = Restore(outer);
+    scope_changed();
     let result = f();
     let missed = SCOPE.with(|s| {
         s.borrow_mut()
@@ -633,10 +651,10 @@ mod tests {
         assert_eq!(zh.get("Preset"), Some("预设"));
         assert_eq!(zh.get("%s chunks"), Some("%s 个区块"));
         // Not every bundle is complete: the en_us layer is in every map, so a
-        // missing key falls back to English (`horizon.mods.not_built` is not
-        // in ru_ru either).
+        // missing key falls back to English (no bundle exists for xx_xx).
         assert_eq!(zh.get("LOD Distance"), Some("LOD 距离"));
-        assert_eq!(ru.get("horizon.mods.not_built"), Some(" (Not built)"));
+        let xx = Language::load(&[&empty], "xx_xx");
+        assert_eq!(xx.get("horizon.mods.not_built"), Some(" (Not built)"));
         let pl = Language::load(&[&empty], "pl_pl");
         assert_eq!(pl.get("horizon.options.controller"), Some("Kontroler"));
         assert_eq!(pl.get("horizon.options.vibration"), Some("Wibracje"));

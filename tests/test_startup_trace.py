@@ -29,6 +29,19 @@ class StartupTraceTests(unittest.TestCase):
     def test_a_missing_trace_has_no_events(self):
         self.assertEqual(startup_trace.read_trace("/nonexistent/trace.jsonl"), [])
 
+    def test_step_stats_aggregate_named_durations(self):
+        runs = [
+            [(0.0, 10.0, "core.assets", "main"), (0.0, 4.0, "rest.recipes", "rest")],
+            [(0.0, 14.0, "core.assets", "main"), (0.0, 6.0, "rest.recipes", "rest")],
+        ]
+        self.assertEqual(
+            startup_trace.step_stats(runs),
+            {
+                "core.assets": {"n": 2, "median_ms": 12.0, "p95_ms": 14.0, "total_ms": 24.0},
+                "rest.recipes": {"n": 2, "median_ms": 5.0, "p95_ms": 6.0, "total_ms": 10.0},
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

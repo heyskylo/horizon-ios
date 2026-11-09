@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare what vanilla and Horizon do when a block with a block entity goes away.
+"""Compare block removal and player-mined experience with vanilla.
 
 A container, jukebox, lectern, campfire, decorated pot, chiseled bookshelf,
 shelf, shulker box or another block entity holder at the origin holds random
@@ -16,7 +16,8 @@ dispenser oracle
 (`HORIZON_DISPENSE_FIXTURE`). Both print the block changes, the contents left,
 every item entity (position, motion, stack), level events, sounds, game events
 and the level random. Motions from an item's own unseeded random ("~") are
-compared within their spread.
+compared within their spread. Deterministic ore, spawner and sculk mining cases
+cover XP values and RNG advancement with block drops and Silk Touch on/off.
 """
 import json
 import os
@@ -169,12 +170,32 @@ def cases(facts, count, seed, only, creative=True):
         yield case
 
 
+def mining_experience_cases(facts, only):
+    """Actual player mining: sampling precedes Silk Touch and the drops rule."""
+    states = d.States(facts)
+    for name in ('diamond_ore', 'spawner', 'sculk', 'sculk_catalyst'):
+        if only and only not in name:
+            continue
+        for seed in (0, 1, 42, 123456789):
+            for drops in (False, True):
+                for silk in (False, True):
+                    item = 'diamond_hoe' if name.startswith('sculk') else 'diamond_pickaxe'
+                    tool = plain(item)
+                    if silk:
+                        tool = ('{id:"minecraft:%s",count:1,components:'
+                                '{"minecraft:enchantments":{"minecraft:silk_touch":1}}}' % item)
+                    yield {'seed': seed, 'mode': 'remove', 'pos': [0, 0, 0],
+                           'cells': [[0, 0, 0, states.get(name)]], 'items': [],
+                           'rules': {'block_drops': drops},
+                           'remove': {'op': 'mine', 'item': tool}}
+
+
 def describe(case, facts):
     cells = ' '.join(f'{c[0]},{c[1]},{c[2]}={facts.describe(c[3])}' for c in case['cells'])
     op = dict(case['remove'])
     if 'state' in op:
         op['state'] = facts.describe(op['state'])
-    return f'{cells} items={json.dumps(case["items"])} remove={json.dumps(op)} seed={case["seed"]}'
+    return f'{cells} items={json.dumps(case["items"])} remove={json.dumps(op)} seed={case["seed"]} rules={case.get("rules", {})}'
 
 
 def main():
@@ -189,7 +210,8 @@ def main():
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'block-removal-parity'
     work.mkdir(parents=True, exist_ok=True)
-    all_cases = list(cases(facts, args.count, args.seed, args.only, not args.survival_only))
+    all_cases = list(mining_experience_cases(facts, args.only))
+    all_cases.extend(cases(facts, args.count, args.seed, args.only, not args.survival_only))
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)

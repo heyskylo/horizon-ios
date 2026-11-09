@@ -172,6 +172,7 @@ impl Game<'_> {
         if changed {
             let infos = super::packs::pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.update_pack_infos(infos);
+            self.ui.options.pack_configs = super::packs::pack_configs(&self.vanilla_root());
         }
     }
     pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
@@ -179,9 +180,13 @@ impl Game<'_> {
         let context = self.controller_settings_context();
         let mut ui = std::mem::take(&mut self.ui.options);
         if ui.controller_open() {
-            ui.controller.context = context;
+            ui.set_controller_context(context);
         }
-        ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
+        let output = self
+            .renderer
+            .as_ref()
+            .map_or(Default::default(), |r| *r.output());
+        ui.draw(&self.settings, output, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
         self.show_calibration(batch.height);
     }
@@ -197,8 +202,7 @@ impl Game<'_> {
             player,
             device: self.pad.device_or_virtual(),
             detected: detected_controller_style(self.pad.device.as_ref(), self.pad.style),
-            style: self.ui.options.pad_style,
-            by_letter: self.ui.options.pad_by_letter,
+            glyphs: self.ui.options.pad_glyphs,
         }
     }
     /// HDR calibration's test picture to the renderer, full screen while it runs: the
@@ -402,6 +406,11 @@ impl Game<'_> {
                     self.settings.save(&Self::options_path());
                     self.reload_packs();
                 }
+                Event::PackOptions { entries, chosen } => {
+                    super::packs::save_pack_options(&entries, chosen);
+                    self.ui.options.pack_configs = super::packs::pack_configs(&self.vanilla_root());
+                    self.reload_packs();
+                }
                 Event::OpenPackFolder => {
                     let dir = super::packs::packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
@@ -560,19 +569,26 @@ impl Game<'_> {
                 s.horizon.fxaa,
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
+                s.horizon.upscaling_sharpness as f32 / 100.0,
             );
             r.set_frame_generation(
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
             r.set_hdr_lighting(s.horizon.hdr_lighting);
             // Where it is offered (`Renderer::gpu_culling_offer`); unchanged, it does nothing.
-            let _ = r.set_gpu_culling(s.horizon.gpu_culling);
-            r.set_hdr(
-                s.horizon.hdr,
-                s.horizon.paper_white_nits() as f32,
-                s.horizon.peak_nits() as f32,
-                s.horizon.black_level_nits(),
-                s.horizon.hdr_ui_brightness as f32 / 100.0,
+            // Auto has it on while its measurements say so (`GpuCullingAuto`), and starts over
+            // when the choice is another one.
+            let gpu_culling = match s.horizon.gpu_culling {
+                horizon_client::graphics::GpuCullingMode::Off => false,
+                horizon_client::graphics::GpuCullingMode::On => true,
+                horizon_client::graphics::GpuCullingMode::Auto => self.gpu_culling_auto.on(),
+            };
+            if s.horizon.gpu_culling != horizon_client::graphics::GpuCullingMode::Auto {
+                self.gpu_culling_auto.reset();
+            }
+            let _ = r.set_gpu_culling(gpu_culling);
+            r.update_output(
+                &s.horizon,
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
             );
         }

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Saved LodestoneTracker default with stationary real item entities, no world steps.
+"""Saved LodestoneTracker default with stationary real item entities, and world
+steps for a compass worn in the player's armour slots.
+
+The saved-default corpus has no world steps. The armour family adds one player
+tick: a compass in the head armour slot whose lodestone is removed must lose
+its target, as `ItemStack.inventoryTick` / `LodestoneTracker.tick` do from
+`LivingEntity.tick`'s `EntityEquipment` pass. More ticks cover a loaded
+target, an untracked tracker and a target in another dimension. `--no-armor`
+leaves that family out and reproduces the corpus before it.
 
 --full-diagnostic records whole entity bodies and absolute clocks too. Those
 commands remain traced in the scoped program. All saved-component, typed identity,
@@ -13,11 +21,11 @@ import sys
 import test_command_exec_parity as driver
 
 
-def program(full=False):
+def program(full=False, armor=True):
     ops = []
 
-    def cmd(text, label, result=None, callback=None, admission=True, diagnostic=False):
-        op = {'op': 'cmd', 'cmd': text, 'label': label, 'admission': admission}
+    def cmd(text, label, result=None, callback=None, admission=True, diagnostic=False, record=True):
+        op = {'op': 'cmd', 'cmd': text, 'label': label, 'admission': admission, 'record': record}
         if result is not None:
             op['expect_result'] = result
         if callback is not None:
@@ -94,6 +102,51 @@ def program(full=False):
     cmd('/execute store result score now h329 run time query gametime', 'clock-end', diagnostic=True)
     cmd('/scoreboard players operation now h329 -= start h329', 'clock-delta-operation', 0)
     cmd('/scoreboard players get now h329', 'clock-delta', 0)
+    if armor:
+        def equip(label, pos, tracked=None, dim='minecraft:overworld'):
+            # The equippable component is what lets a non-armour item into an
+            # armour slot; the compass itself still ticks its tracker. The
+            # command's own feedback names the item, which is another suite's
+            # subject, so only the reads below are compared.
+            tracker = f'target:{{dimension:"{dim}",pos:[I;{pos},200,12]}}'
+            if tracked is not None:
+                tracker += f',tracked:{tracked}'
+            item = (f'minecraft:compass[minecraft:lodestone_tracker={{{tracker}}},'
+                    'minecraft:equippable={slot:"head"},minecraft:custom_data={armor:1}]')
+            cmd(f'/item replace entity @s armor.head with {item} 1', label + '-equip',
+                admission=False, record=False)
+
+        def tick(label):
+            ops.append({'op': 'player_loop', 'n': 1, 'label': label, 'record': True})
+
+        def tracker(label):
+            cmd('/data get entity @s equipment.head.components."minecraft:lodestone_tracker"', label)
+            cmd('/execute if data entity @s equipment.head.components."minecraft:lodestone_tracker".target',
+                label + '-target')
+            cmd('/data get entity @s equipment.head.id', label + '-id', 17)
+
+        cmd('/setblock 14 200 12 lodestone', 'armor-stone-setup', 1)
+        equip('armor-air', 12)
+        tracker('armor-air-before')
+        cmd('/setblock 12 200 12 air', 'armor-air-remove', 1)
+        tick('armor-air-tick')
+        tracker('armor-air-after')
+        cmd('/setblock 14 200 12 stone', 'armor-stone-replace', 1)
+        equip('armor-stone', 14)
+        tracker('armor-stone-before')
+        tick('armor-stone-tick')
+        tracker('armor-stone-after')
+        cmd('/setblock 12 200 12 lodestone', 'armor-loaded-setup', 1)
+        equip('armor-loaded', 12)
+        tick('armor-loaded-tick')
+        tracker('armor-loaded-after')
+        equip('armor-untracked', 12, tracked='false')
+        cmd('/setblock 12 200 12 air', 'armor-untracked-remove', 1)
+        tick('armor-untracked-tick')
+        tracker('armor-untracked-after')
+        equip('armor-dimension', 14, dim='minecraft:the_nether')
+        tick('armor-dimension-tick')
+        tracker('armor-dimension-after')
     return ops
 
 
@@ -108,12 +161,16 @@ def main():
         del sys.argv[i:i + 2]
     if '--work-dir' not in sys.argv:
         sys.argv += ['--work-dir', str(driver.lab.LOCAL / 'lodestone-default-parity')]
+    armor = '--no-armor' not in sys.argv
+    if not armor:
+        sys.argv.remove('--no-armor')
     build = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()
-    ops = program(full)
+    ops = program(full, armor)
     driver.corpus_module.groups = lambda: [('saved lodestone tracker default', ops)]
     sys.argv.append('--allow-gaps')
     driver.main()
-    recorded = [op for op in ops if op['op'] == 'cmd' and op.get('record', True)]
+    recorded = [op for op in ops if (op['op'] == 'cmd' and op.get('record', True))
+                or (op['op'] in ('tick', 'player_loop') and op.get('record'))]
     java = [json.loads(s) for s in (build / 'vanilla.jsonl').read_text().splitlines()]
     for op, row in zip(recorded, java):
         if 'expect_results' in op:
@@ -132,11 +189,16 @@ def main():
               'reference_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
               'comparison': 'complete raw records, no masks/tolerances', 'differences': differences}
     (build / 'strict-report.json').write_text(json.dumps(report, indent=2) + '\n')
-    if not full:
-        for op, a, b in zip(recorded, expected, native):
-            if op['admission']:
-                assert a == b, ('actual fixture admission', op, a, b)
+    if armor:
+        slots = ('air', 'stone')
+        matched = sum(1 for slot in slots
+                      if not any(item['label'].startswith(f'armor-{slot}-') for item in differences))
+        print(f'Armor tracking: {matched}/{len(slots)} cases match')
     print(f'Strict raw records: {report["passed"]}/{report["records"]}')
+    if not full and not differences:
+        for op, a, b in zip(recorded, expected, native):
+            if op.get('admission'):
+                assert a == b, ('actual fixture admission', op, a, b)
     if differences:
         raise SystemExit(1)
 

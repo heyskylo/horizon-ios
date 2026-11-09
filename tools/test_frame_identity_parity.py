@@ -10,10 +10,22 @@ must leave the picture alone carries the frame-identity label (docs/release-flow
 
 Sessions, each a fresh game and world (seed 7) per build:
 
-- vanilla: HDR off and no shader pack: day over water, night with light sources, stained glass, the Nether.
+- vanilla: HDR off and no shader pack: day over water, night with light sources, stained glass, the Nether, and the
+  HUD over light: chat over the sun, chat and the crosshair over lava, the pause menu over it.
 - golden_hour: the Golden Hour example pack (shader API 0.1) in SDR, the same scenes.
 - golden_hour_hdr: Golden Hour with offscreen HDR output on (HORIZON_HDR_OUTPUT=pq): each screenshot and its -hdr.png.
 - hdr_toggle: vanilla started with HDR on (the 16-bit frame), shot, HDR turned off from its settings page, shot.
+- golden_hour_0_2, golden_hour_0_2_hdr: the Golden Hour 0.2 pack (shader API 0.2) on HORIZON_HDR_FRAME=float, in SDR
+  and with HDR on.
+- oit, hdr_oit: Improved Transparency with HDR off, and with HDR on the 16-bit frame.
+- visbuffer, hdr_visbuffer: the visibility buffer (HORIZON_VISBUFFER=1) with HDR off, and with HDR on the 16-bit frame.
+- float_hdr, float_oit, float_visbuffer: the float frame (HORIZON_HDR_FRAME=float) with HDR on, drawn forward, with
+  Improved Transparency and with the visibility buffer, the last on a 300-nit display with the HUD at half brightness.
+- float_unlit: the float frame with HDR on and HDR Lighting off, on that display.
+
+The float frame's HDR shots are also held to their SDR ones in each build (hdr_gates, Tests 3 and 4): with HDR
+Lighting off the picture is HDR off's, and with it on the SDR screenshot is the HDR shot through its shoulder, white
+HUD shows at UI Brightness and nothing passes the peak.
 
 Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is installed (Linux), else the machine's
 default. When the base and the change differ only in files no game binary is built from (tools/, tests/, .github/,
@@ -263,7 +275,12 @@ def prepare(game):
               'gamerule spawn_mobs false', 'weather clear 1000000', 'effect clear @s',
               f'forceload add {X - 40} {Z - 40} {X + 40} {Z + 40}'):
         game.command(c)
-    game.command(f'execute in minecraft:overworld run tp @s {X + 0.5} {Y + 3} {Z + 0.5}')
+    # 🤖 Agent: The player waits on the first viewpoint's block: left in the air, it falls into the sea below while the
+    # scenes are built, which unlocks the boat recipes, and their toast shows over the first shots at a different
+    # moment each run.
+    where, _, (x, y, z), _, _ = SCENES['day_water']
+    game.command(f'execute in minecraft:{where} run setblock {int(x // 1)} {y - 1} {int(z // 1)} minecraft:stone')
+    game.command(f'execute in minecraft:{where} run tp @s {x} {y} {z}')
     game.settle()
     # 🤖 Agent: Day over water: a stone platform with a pool, sand around it, the sky and clouds behind.
     game.command(f'fill {X - 8} {Y - 1} {Z - 8} {X + 8} {Y - 1} {Z + 8} minecraft:stone')
@@ -286,6 +303,9 @@ def prepare(game):
         game.command(f'setblock {gx - 5 + 2 * i} {Y + 3} {Z} minecraft:{colour}_stained_glass_pane')
     game.command(f'fill {gx - 1} {Y} {Z + 4} {gx + 1} {Y} {Z + 4} minecraft:ice')
     game.command(f'fill {gx - 3} {Y} {Z + 5} {gx + 3} {Y} {Z + 5} minecraft:water')
+    # 🤖 Agent: A lava pool for the HUD over light, north of the platform, behind every other viewpoint and too far
+    # for its light to reach them.
+    game.command(f'fill {X - 7} {Y - 1} {Z - 35} {X + 7} {Y - 1} {Z - 29} minecraft:lava')
     # 🤖 Agent: The Nether: a pocket carved out of its rock, lit by glowstone, lava and soul fire.
     # 🤖 Agent: Carved before the player goes there: the Nether's rock and lava would hold it, and set it on fire.
     game.command('execute in minecraft:the_nether run forceload add -16 -16 16 16')
@@ -307,30 +327,66 @@ SCENES = {
     'night_lights': ('overworld', 18000, (X + 24.5, Y, Z - 4.5), 0, 20),
     'glass': ('overworld', 6000, (X - 23.5, Y, Z - 3.5), 0, 5),
     'nether': ('the_nether', 18000, (0.5, 61, -4.5), 0, 15),
+    # 🤖 Agent: The HUD over light (HUD below): chat over the sun high in the sky, the hotbar over the sky; and the same
+    # view without chat, which shows where the sun's light passes white (hdr_gates).
+    'hud_sun': ('overworld', 4000, (X + 0.5, Y + 3, Z - 9.5), -70, -85),
+    'sun': ('overworld', 4000, (X + 0.5, Y + 3, Z - 9.5), -70, -85),
+    # 🤖 Agent: Chat and the crosshair over the lava pool at night, and the pause menu over both.
+    'hud_lava': ('overworld', 18000, (X + 0.5, Y + 3, Z - 27.5), 180, 45),
+    'menu': ('overworld', 18000, (X + 0.5, Y + 3, Z - 27.5), 180, 45),
 }
+WORLD = ['day_water', 'night_lights', 'glass', 'nether']
+# 🤖 Agent: What each HUD scene shows over the world: chat, and the pause menu (its blur and darkening) over it.
+HUD = {'hud_sun': ('chat',), 'hud_lava': ('chat',), 'menu': ('chat', 'pause')}
+# 🤖 Agent: The options a scene turns off while it is shot. Over the sun, clouds and the vignette: either, drawn over
+# light above white, comes out brighter than over vanilla's clipped sky (Why gamma storage), well beyond where the
+# light passes white, so all that covers the sun's light there is the HUD.
+OFF = {'hud_sun': ('renderClouds', 'vignette'), 'sun': ('renderClouds', 'vignette')}
 
 
 def shoot(game, out, scene):
     where, day_time, (x, y, z), yaw, pitch = SCENES[scene]
-    game.command(f'time set {day_time}')
+    shows, off = HUD.get(scene, ()), OFF.get(scene, ())
+    game.command(f'execute in minecraft:{where} run time set {day_time}')
     game.command(f'execute in minecraft:{where} run tp @s {x} {y} {z} {yaw} {pitch}')
     game.ctl('look', yaw, pitch)
+    for option in off:
+        game.ctl('options-set', option, 'false')
+    if 'chat' in shows:
+        # 🤖 Agent: Chat lines over a see-through background, sent now: they fade on the client's ticks.
+        game.ctl('options-set', 'chatVisibility', '0')
+        for colour in ('white', 'yellow', 'red', 'aqua', 'white'):
+            game.command(f'tellraw @s {{"text":"Chat over the light: {colour} text on its background","color":"{colour}"}}')
     game.settle()
+    if 'pause' in shows:
+        # 🤖 Agent: The pause menu stops the ticks settle waits on; the screenshot is of a frame drawn after it.
+        game.ctl('pause')
+        game.ctl('wait-for', 'screen', 'paused', '--timeout', 30)
     game.ctl('screenshot', out / f'{scene}.png')
+    if 'pause' in shows:
+        game.ctl('close')
+    for option in off:
+        game.ctl('options-set', option, 'true')
+    if 'chat' in shows:
+        game.ctl('options-set', 'chatVisibility', '2')
 
 
 def set_hdr(game, on):
     """Turn HDR output on or off from its settings page, as a player does."""
     game.ctl('options', 'graphics-hdr')
-    widgets = game.ctl('ui')
-    widgets = widgets.get('widgets', widgets) if isinstance(widgets, dict) else widgets
-    # 🤖 Agent: The page's tab is labelled HDR too: the switch is the button reading "HDR: On" or "HDR: Off".
-    switch = next((w for w in widgets if w.get('kind') == 'button' and str(w.get('label', '')).startswith('HDR: ')),
-                  None)
-    if switch is None:
-        raise RuntimeError(f'no HDR switch on the HDR page: {json.dumps(widgets)[:600]}')
-    if switch['label'].endswith(': On') != on:
-        game.ctl('click', switch['id'])
+    # 🤖 Agent: Both the base's switch and the three-state choice reach an explicit On or Off.
+    for _ in range(3):
+        widgets = game.ctl('ui')
+        widgets = widgets.get('widgets', widgets) if isinstance(widgets, dict) else widgets
+        choice = next((w for w in widgets if w.get('kind') == 'button'
+                       and str(w.get('label', '')).startswith('HDR: ')), None)
+        if choice is None:
+            raise RuntimeError(f'no HDR control on the HDR page: {json.dumps(widgets)[:600]}')
+        if choice['label'].endswith(': On' if on else ': Off'):
+            break
+        game.ctl('click', choice['id'])
+    else:
+        raise RuntimeError('HDR control did not reach the requested setting')
     game.ctl('close')
     game.ctl('close', check=False)
     game.settle(60)
@@ -338,11 +394,36 @@ def set_hdr(game, on):
 
 SESSIONS = {
     # 🤖 Agent: name: (horizon-graphics.txt, extra environment, scenes, HDR turned off after the first shots)
-    'vanilla': ('', {}, list(SCENES), False),
-    'golden_hour': ('', {'HORIZON_SHADER_PACK': 'golden_hour'}, list(SCENES), False),
+    'vanilla': ('', {}, WORLD + list(HUD) + ['sun'], False),
+    # 🤖 Agent: An offered HDR output without a system report must leave Auto in SDR.
+    'auto_unknown': ('hdr:auto\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
+    'golden_hour': ('', {'HORIZON_SHADER_PACK': 'golden_hour'}, WORLD, False),
     'golden_hour_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour', 'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
     'hdr_toggle': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], True),
+    'golden_hour_0_2': ('', {'HORIZON_SHADER_PACK': 'golden_hour_0_2', 'HORIZON_HDR_FRAME': 'float'},
+                        ['day_water', 'night_lights'], False),
+    'golden_hour_0_2_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour_0_2',
+                        'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
+    'oit': ('', {}, ['day_water', 'night_lights'], False),
+    'hdr_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'},
+                        ['day_water', 'night_lights'], False),
+    # 🤖 Agent: The visibility buffer draws only frames drawn flat, which frames without a pack are by default only on
+    # Metal and some Intel drivers.
+    'visbuffer': ('', {'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'}, ['day_water', 'night_lights'], False),
+    'hdr_visbuffer': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
+                      ['day_water', 'night_lights'], False),
+    'float_hdr': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD), False),
+    'float_oit': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, WORLD, False),
+    # 🤖 Agent: On a display with little headroom (300 nits), the HUD at half brightness: the tone curve and the HUD's
+    # composite have the least room there (hdr_gates).
+    'float_visbuffer': ('hdr:true\nhdrPeak:300\nhdrUiBrightness:50\n', {'HORIZON_HDR_FRAME': 'float',
+                        'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
+                        WORLD + list(HUD), False),
+    # 🤖 Agent: HDR Lighting off, at that headroom too, where the tone curve's knee is at white: the picture is SDR's
+    # (hdr_gates).
+    'float_unlit': ('hdr:true\nhdrLighting:false\nhdrPeak:300\n', {'HORIZON_HDR_FRAME': 'float',
+                    'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD) + ['sun'], False),
 }
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which HORIZON_STILL doesn't cover: off, as by default.
@@ -356,15 +437,24 @@ def run_session(name, label, bin_dir, out, env_base, args):
     folder.mkdir(parents=True)
     (folder / 'horizon-graphics.txt').write_text(GRAPHICS + graphics)
     # 🤖 Agent: No chat, no tutorial toasts, no pause when the offscreen window has no focus.
-    (folder / 'options.txt').write_text('chatVisibility:2\ntutorialStep:none\npauseOnLostFocus:false\n')
+    options = 'chatVisibility:2\ntutorialStep:none\npauseOnLostFocus:false\n'
+    (folder / 'options.txt').write_text(options)
     if 'HORIZON_SHADER_PACK' in extra:
-        shutil.copytree(ROOT / 'crates/horizon-shader-api/packs/golden_hour', folder / 'shaderpacks/golden_hour')
+        pack = extra['HORIZON_SHADER_PACK']
+        shutil.copytree(ROOT / 'crates/horizon-shader-api/packs' / pack, folder / 'shaderpacks' / pack)
     env = lab.game_env(env_base, HORIZON_STILL='1', **extra)
     out.mkdir(parents=True, exist_ok=True)
     game = Game(bin_dir, folder, env, args)
     started = time.monotonic()
     try:
         game.launch()
+        if name in ('oit', 'hdr_oit', 'float_oit'):
+            # 🤖 Agent: Old unversioned options run through the graphics-mode migration, which resets this switch.
+            game.ctl('options-set', 'improvedTransparency', 'true')
+            option = game.ctl('options-get', 'improvedTransparency')
+            if option.get('options', {}).get('improvedTransparency', {}).get('value') is not True:
+                raise RuntimeError(f'Improved Transparency was not requested: {option}')
+            lab.write_json(out / f'{name}.option.json', option)
         prepare(game)
         for scene in scenes:
             shoot_named(game, out, name, scene)
@@ -401,13 +491,193 @@ def session_checks(shots, sessions):
                     problems.append(f'{prefix}.{scene}: HDR output was {"off" if on else "on"}')
         # 🤖 Agent: the pack's pictures against the same scenes without it: vanilla's, or with HDR on hdr_toggle's
         # first shots (the same settings), sidecars included.
-        without = 'hdr_toggle' if hdr else 'vanilla'
+        without = 'float_hdr' if name == 'float_oit' else ('hdr_toggle' if hdr else 'vanilla')
         if 'HORIZON_SHADER_PACK' in extra and without in sessions:
             same = [s for s in scenes if any(
                 compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
                 for x in ('.png', '-hdr.png')
                 if (shots / f'{without}.{s}{x}').exists() and (shots / f'{name}.{s}{x}').exists())]
             problems += [f'{name}.{s}: the same as without the pack: it didn\'t run' for s in same]
+        # 🤖 Agent: the log says whether the visibility buffer was built; with HORIZON_FLAT_DRAWS=1 it draws every frame.
+        log = shots / f'{name}.log'
+        built = log.exists() and 'through a visibility buffer' in log.read_text(encoding='utf-8')
+        if 'HORIZON_VISBUFFER' in extra and not built:
+            problems.append(f'{name}: the visibility buffer didn\'t run')
+        # 🤖 Agent: Improved Transparency needs blendable float targets; without them the option changes nothing.
+        if name in ('oit', 'hdr_oit', 'float_oit') and without in sessions and all(
+                compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
+                for s in scenes for x in ('.png', '-hdr.png') if (shots / f'{name}.{s}{x}').exists()):
+            problems.append(f'{name}: the same as without Improved Transparency: it didn\'t run')
+    return problems
+
+
+# 🤖 Agent: HDR's gates (docs/design/hdr-linear-light.md, Tests 3 and 4): what a build's HDR shots must be against
+# its SDR ones, whatever the base drew. The HDR shot is HDR10: BT.2020 primaries, SMPTE ST 2084 (PQ), 10 bits a
+# channel.
+
+ST2084 = (2610 / 16384, 2523 / 32, 3424 / 4096, 2413 / 128, 2392 / 128)
+# 🤖 Agent: Linear BT.709 to BT.2020, ITU-R BT.2087, by rows.
+BT2020 = ((0.6274, 0.3293, 0.0433), (0.0691, 0.9195, 0.0114), (0.0164, 0.0880, 0.8956))
+# 🤖 Agent: And back, ITU-R BT.2407.
+BT709 = ((1.6605, -0.5876, -0.0728), (-0.1246, 1.1329, -0.0083), (-0.0182, -0.1006, 1.1187))
+
+
+def pq(nits):
+    m1, m2, c1, c2, c3 = ST2084
+    y = (max(nits, 0.0) / 10000) ** m1
+    return ((c1 + c2 * y) / (1 + c3 * y)) ** m2
+
+
+def hdr10(light, paper, cap=float('inf')):
+    """The HDR10 codes of linear BT.709 `light` in units of paper white, each channel at most `cap` of it."""
+    light = [min(c, cap) for c in light]
+    return [1023 * pq(paper * sum(m * c for m, c in zip(row, light))) for row in BT2020]
+
+
+def pixels(path):
+    """A PNG's width and its pixels as RGB tuples, row by row: 8-bit values, or 10-bit ones from the game's 16-bit
+    HDR PNG."""
+    width, height, bpp, raw, (depth, _) = read_png(path)
+    out = []
+    for row in unfilter(width, height, bpp, raw):
+        values = [int.from_bytes(row[i:i + 2], 'big') >> 6 for i in range(0, len(row), 2)] if depth == 16 else row
+        step = bpp // (depth // 8)
+        out += [tuple(values[i:i + 3]) for i in range(0, len(values), step)]
+    return width, out
+
+
+def hud_boxes(width, height):
+    """Where the crosshair and the hotbar are, x0, y0, x1, y1, at the GUI scale Auto picks for the shot's size (the
+    window's, scaled by the desktop's)."""
+    scale = max(1, min(width // 320, height // 240))
+    x, y = width // 2, height // 2
+    return ((x - 9 * scale, y - 9 * scale, x + 9 * scale, y + 9 * scale),
+            (x - 92 * scale, height - 24 * scale, x + 92 * scale, height))
+
+
+def unshoulder(light):
+    """The light the SDR screenshot's shoulder (hdr.wgsl screenshot_world) maps to `light`: k + (1 - k)(t - k) /
+    (t + 1 - 2k) on the brightest channel t, k = 0.6, the channels scaled together. It never reaches white."""
+    top = max(light)
+    if top <= 0.6:
+        return light
+    if top >= 1:
+        return [float('inf')] * 3
+    return [c * (0.36 - 0.2 * top) / (1 - top) / top for c in light]
+
+
+def shows(sdr, paper, cap=float('inf'), mapped=lambda light: light):
+    """The HDR10 codes an 8-bit SDR pixel allows: half a step either way (its rounding), its light through `mapped`
+    first, and a code either way (the HDR shot's own rounding)."""
+    low, high = ([(max(v + step, 0) / 255) ** 2.2 for v in sdr] for step in (-0.5, 0.5))
+    return [c - 1 for c in hdr10(mapped(low), paper, cap)], [c + 1 for c in hdr10(mapped(high), paper, cap)]
+
+
+def unpq(code):
+    """The nits of a 10-bit PQ code: ST 2084's EOTF."""
+    m1, m2, c1, c2, c3 = ST2084
+    e = (code / 1023) ** (1 / m2)
+    return 10000 * (max(e - c1, 0) / (c2 - c3 * e)) ** (1 / m1)
+
+
+def above_white(path, paper):
+    """The pixels, (x, y), of an HDR shot whose light passes paper white on a BT.709 channel."""
+    nits = [unpq(code) / paper for code in range(1024)]
+    width, hdr = pixels(path)
+    return {(i % width, i // width) for i, h in enumerate(hdr)
+            if max(sum(m * nits[c] for m, c in zip(row, h)) for row in BT709) > 1}
+
+
+def clipped(path):
+    """The pixels, (x, y), of an 8-bit shot with a channel at 255."""
+    width, sdr = pixels(path)
+    return {(i % width, i // width) for i, p in enumerate(sdr) if 255 in p}
+
+
+def setting(name, key, default=None):
+    """A session's value of a horizon-graphics.txt key, after GRAPHICS's, else the game's default."""
+    graphics = GRAPHICS + SESSIONS[name][0]
+    return int(graphics.rsplit(f'{key}:', 1)[1].split()[0]) if f'{key}:' in graphics else default
+
+
+def hdr_gates(shots, sessions):
+    """With HDR Lighting off (float_unlit), the picture is SDR's: its SDR screenshot is HDR off's within a step of
+    rounding (two in at most 1 pixel in 10 000, where the float frame blends several times), and its HDR shot is
+    that screenshot's picture. Where the sun's light passes white (above_white of the sun shot, in sun and hud_sun)
+    and HDR off clips it too, the screenshot clips it and the HDR shot keeps it, so there the HDR shot is only never darker; and the later
+    blends over that light come out brighter than vanilla's over its clipped sky (Why gamma storage), so there the
+    screenshot isn't held to HDR off.
+    With HDR Lighting on, the SDR screenshot is the HDR shot through its shoulder (in the world scenes, outside the
+    HUD), white HUD shows at UI Brightness times paper white, nothing passes the peak, and the night's lights pass
+    paper white."""
+    problems = []
+
+    def each(name, scene, test, what):
+        """`test(sdr, hdr, x, y, boxes)` on each pixel of a scene's two shots; their pixels."""
+        width, sdr = pixels(shots / f'{name}.{scene}.png')
+        _, hdr = pixels(shots / f'{name}.{scene}-hdr.png')
+        boxes = hud_boxes(width, len(sdr) // width)
+        bad = [i for i, (s, h) in enumerate(zip(sdr, hdr)) if not test(s, h, i % width, i // width, boxes)]
+        if bad:
+            i = bad[0]
+            problems.append(f'{name}.{scene}: {what}: {len(bad)} pixels, first at {i % width},{i // width}: '
+                            f'SDR {sdr[i]}, HDR10 {hdr[i]}')
+        return sdr, hdr
+
+    for name in sessions:
+        graphics, extra = GRAPHICS + SESSIONS[name][0], SESSIONS[name][1]
+        # 🤖 Agent: Without a pack: a 0.2 pack's [tonemap] maps its own picture for each output.
+        if 'HORIZON_HDR_FRAME' not in extra or 'HORIZON_SHADER_PACK' in extra or 'hdr:true' not in graphics:
+            continue
+        paper, peak, ui = setting(name, 'hdrPaperWhite'), setting(name, 'hdrPeak'), setting(name, 'hdrUiBrightness', 100)
+        lighting = 'hdrLighting:false' not in graphics
+        for scene in SESSIONS[name][2]:
+            if not (shots / f'{name}.{scene}-hdr.png').exists():
+                continue
+            ranges = {}
+            if not lighting:
+                hot = set()
+                if scene in OFF:
+                    sun, plain_sun = shots / f'{name}.sun-hdr.png', shots / 'vanilla.sun.png'
+                    if not sun.exists() or not plain_sun.exists():
+                        problems.append(f'{name}.{scene}: no sun shots to find where light passes white')
+                        continue
+                    # 🤖 Agent: Only where HDR off clipped too: HDR off's shot is the base's, byte for byte, so a
+                    # build that wrongly lifts light above white can't excuse it.
+                    hot = above_white(sun, paper) & clipped(plain_sun)
+                if 'vanilla' in sessions:
+                    width, plain = pixels(shots / f'vanilla.{scene}.png')
+                    _, unlit = pixels(shots / f'{name}.{scene}.png')
+                    steps = [max(abs(a - b) for a, b in zip(p, q)) for i, (p, q) in enumerate(zip(plain, unlit))
+                             if (i % width, i // width) not in hot]
+                    if max(steps, default=0) > 2 or 10000 * steps.count(2) > len(steps):
+                        problems.append(f'{name}.{scene}: the SDR screenshot isn\'t HDR off\'s within rounding: '
+                                        f'{len(steps) - steps.count(0) - steps.count(1)} pixels more than a step '
+                                        f'apart, by up to {max(steps)}')
+
+                def test(s, h, x, y, _):
+                    if s not in ranges:
+                        ranges[s] = shows(s, paper)
+                    low, high = ranges[s]
+                    return all(lo <= c and ((x, y) in hot or c <= hi) for c, lo, hi in zip(h, low, high))
+                each(name, scene, test, 'the HDR shot isn\'t its SDR screenshot\'s picture')
+                continue
+            top, white = 1023 * pq(peak) + 1, 1023 * pq(paper * ui / 100)
+
+            def test(s, h, x, y, boxes):
+                if max(h) > top or (s == (255, 255, 255) and any(abs(c - white) > 1 for c in h)):
+                    return False
+                if scene in HUD or any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in boxes):
+                    return True
+                if s not in ranges:
+                    ranges[s] = shows(s, paper, peak / paper, unshoulder)
+                return all(lo <= c <= hi for c, lo, hi in zip(h, *ranges[s]))
+            sdr, hdr = each(name, scene, test, 'the SDR screenshot isn\'t the HDR shot through its shoulder, white '
+                            'HUD isn\'t at UI Brightness, or the HDR shot passes the peak')
+            if scene in HUD and (255, 255, 255) not in sdr:
+                problems.append(f'{name}.{scene}: no white HUD to check')
+            if scene == 'night_lights' and max(map(max, hdr)) <= 1023 * pq(paper) + 1:
+                problems.append(f'{name}.{scene}: no light passes paper white in the HDR shot')
     return problems
 
 
@@ -478,6 +748,8 @@ def main():
     if compared == 0:
         failures.append('no screenshots were taken')
     failures += session_checks(shots / 'base', sessions)
+    for label in ('base', 'change'):
+        failures += [f'{label}: {p}' for p in hdr_gates(shots / label, sessions)]
     lab.write_json(RUN / 'report.json', {'base': base, 'change': head, 'lavapipe': str(icd) if icd else None,
                                          'compared': compared, 'failures': failures, 'timings': timings})
     print(json.dumps(timings), flush=True)

@@ -9,10 +9,13 @@ use horizon_client::actions::Action;
 use horizon_client::held::Source;
 use horizon_client::{
     Result,
-    controller_notice::{Glyph, Notice, NoticeId, Priority},
+    controller_notice::{Notice, NoticeId, Priority},
     controller_ui::Device,
-    gamepad::{self, Button, Edges, GlyphStyle, HealthWatch, PadState, Route, Rumble},
+    gamepad::{
+        self, Button, Edges, GlyphOf, GlyphStyle, HealthWatch, MenuJob, PadState, Route, Rumble,
+    },
     keymapping::SNEAK,
+    pad_glyph::{Glyph, Glyphs},
 };
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -25,8 +28,19 @@ pub(super) const HELP: &[&str] = &[
     "pad trigger left|right VALUE   pull a virtual trigger (0..1)",
     "pad release                    centre and release the virtual controller",
     "pad status                     connected controllers, the active one and its state",
-    "pad connection connected|disconnected   as if a controller came or went at this game's own reader",
+    "pad connection connected [FAMILY]|disconnected   as if a controller (PlayStation unless FAMILY) came or went at this game's own reader",
+    "pad family xbox|playstation|nintendo|auto   the pad playing is that family's (its glyphs; a Nintendo one's letters)",
 ];
+
+/// A pad family `pad` names; `auto` is a pad of no known maker.
+fn style_named(name: &str) -> Result<GlyphStyle> {
+    GlyphStyle::ALL
+        .into_iter()
+        .find(|style| style.name() == name)
+        .ok_or_else(|| {
+            format!("family must be xbox, playstation, nintendo or auto, not {name}").into()
+        })
+}
 
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
@@ -44,7 +58,7 @@ pub(super) struct Pads {
     virtual_input: bool,
     /// Buttons a `pad ... tap` releases at the next poll.
     taps: Vec<Button>,
-    edges: Edges,
+    pub(super) edges: Edges,
     activity: gamepad::Activity,
     context: Option<Context>,
     blocked_sticks: [bool; 2],
@@ -215,6 +229,7 @@ impl Pads {
         if self.feed_source != source {
             self.feed_source = source;
             self.menu.armed = None;
+            self.menu.stop_craft();
         }
         self.feed = Some(state);
     }
@@ -231,6 +246,7 @@ impl Pads {
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
         self.menu.armed = None;
+        self.menu.stop_craft();
         self.injected = PadState::default();
     }
 
@@ -249,11 +265,27 @@ impl Pads {
 
     /// The active pad is a Nintendo one going by its letters.
     fn by_letter(&self, settings: &gamepad::PadSettings) -> bool {
-        self.style == GlyphStyle::Nintendo && settings.nintendo_letters
+        settings.by_letter(self.style)
     }
 }
 
 impl Game<'_> {
+    /// The glyph for what a button does, in this player's glyphs (`ui.options.pad_glyphs`, a
+    /// Nintendo pad's letters included): the way gameplay asks for one. None while an action is
+    /// unbound.
+    pub(super) fn glyph(&self, of: impl Into<GlyphOf>) -> Option<Glyph> {
+        Glyph::of(
+            of.into(),
+            &self.settings.controller,
+            self.ui.options.pad_glyphs,
+        )
+    }
+
+    /// A menu job's glyph in this player's glyphs.
+    pub(super) fn menu_glyph(&self, job: MenuJob) -> Glyph {
+        Glyph::menu(job, self.ui.options.pad_glyphs)
+    }
+
     fn pad_context(&self) -> Context {
         Context {
             screen: self.key_screen(),
@@ -286,6 +318,11 @@ impl Game<'_> {
             return;
         }
         let hardware = match self.pad.feed {
+            // A scripted run leaves the person's pad at rest and unread, as the window drops
+            // their keys and mouse: a read makes a newly touched pad the active one, which lets
+            // go of the run's A held in a menu. A held button lets go as the run starts and is
+            // held again after it.
+            _ if self.scripted_run() => PadState::default(),
             Some(state) => state,
             None => self.pad.read(),
         };
@@ -311,11 +348,7 @@ impl Game<'_> {
         for change in std::mem::take(&mut self.pad.connections) {
             self.pad_connection_notice(change);
         }
-        let style = self.settings.controller.glyphs.resolve(self.pad.style);
-        self.ui.options.pad_style = style;
-        // Nintendo glyphs on a pad going by its letters name the button playing each part.
-        self.ui.options.pad_by_letter =
-            style == GlyphStyle::Nintendo && self.pad.by_letter(&self.settings.controller);
+        self.ui.options.pad_glyphs = Glyphs::of(&self.settings.controller, self.pad.style);
         self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
         let mut state = hardware.merge(&self.pad.injected);
         let activity = self.pad.activity.observe(&state, &self.settings.controller);
@@ -397,8 +430,11 @@ impl Game<'_> {
 
     /// End held actions and captures before another context receives input.
     fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
-        // Before the releases below: a cancelled press must not click.
+        // Before the releases below: a cancelled press must not click, nor a cancelled trigger
+        // change the recipe book's category as it comes up.
         self.pad.menu.armed = None;
+        self.pad.menu.trigger = None;
+        self.direct_craft_stop();
         let held_sticks = [
             gamepad::radial(self.pad.state.left, self.settings.controller.move_deadzone)
                 != [0.0; 2],
@@ -717,10 +753,11 @@ impl Game<'_> {
                 split("controller_connected"),
                 horizon_client::lang::get("horizon.pad.notice.connected.press"),
             )
-            .with_glyph(Glyph {
-                button: Button::South,
-                style: self.settings.controller.glyphs.resolve(family),
-            }),
+            // In the new pad's own glyphs, its letters included: pressed, it plays.
+            .with_glyph(Glyph::menu(
+                MenuJob::Confirm,
+                Glyphs::of(&self.settings.controller, family),
+            )),
             Connection::Disconnected { active } => Notice::new(
                 NoticeId::Connection,
                 if active {
@@ -784,7 +821,10 @@ impl Game<'_> {
             }
             "connection" => {
                 let change = match arg(2)? {
-                    "connected" => Connection::Connected(GlyphStyle::PlayStation),
+                    "connected" => Connection::Connected(match words.get(3) {
+                        Some(family) => style_named(family)?,
+                        None => GlyphStyle::PlayStation,
+                    }),
                     "disconnected" => Connection::Disconnected { active: true },
                     other => {
                         return Err(format!(
@@ -796,8 +836,14 @@ impl Game<'_> {
                 self.pad.connections.push(change);
                 Ok(json!({ "ok": true }))
             }
+            // The pad playing poses as this family's: its glyphs, and a Nintendo one's letters.
+            "family" => {
+                self.pad.style = style_named(arg(2)?)?;
+                Ok(json!({ "ok": true }))
+            }
             "release" => {
                 self.pad.menu.armed = None;
+                self.direct_craft_stop();
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();
                 Ok(json!({ "ok": true }))

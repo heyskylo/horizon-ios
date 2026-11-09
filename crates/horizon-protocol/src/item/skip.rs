@@ -316,6 +316,10 @@ fn consume_effect(r: &mut Reader) -> Result<()> {
 /// BlockPredicate: blocks, properties, nbt, then DataComponentMatchers (exact, partial).
 fn block_predicate(r: &mut Reader) -> Result<()> {
     optional(r, holder_set)?;
+    block_properties_and_nbt(r)?;
+    component_matchers(r)
+}
+pub(super) fn block_properties_and_nbt(r: &mut Reader) -> Result<()> {
     // StatePropertiesPredicate: PropertyMatchers, each a name and an
     // Either<ExactMatcher (value), RangedMatcher (min, max)>.
     optional(r, |r| {
@@ -329,9 +333,12 @@ fn block_predicate(r: &mut Reader) -> Result<()> {
             }
         })
     })?;
-    optional(r, nbt)?;
+    optional(r, nbt)
+}
+pub(super) fn component_matchers(r: &mut Reader) -> Result<()> {
     // DataComponentExactPredicate: TypedDataComponents, a component type id and its value.
     list(r, |r| {
+        let _nested = Nested::enter()?;
         let kind = r.varint()?;
         Component::read(kind, r).map(drop)
     })?;
@@ -381,16 +388,6 @@ fn equippable(r: &mut Reader) -> Result<()> {
     optional(r, holder_set)?;
     (0..5).try_for_each(|_| boolean(r))?;
     sound(r)
-}
-/// Equippable as 1.21.5 writes it: the fields up to equipOnInteract. 26.3 adds canBeSheared and
-/// shearingSound after them (1.21.6).
-pub(super) fn equippable_before_1_21_6(r: &mut Reader) -> Result<()> {
-    varint(r)?;
-    sound(r)?;
-    optional(r, ident)?;
-    optional(r, ident)?;
-    optional(r, holder_set)?;
-    (0..4).try_for_each(|_| boolean(r))
 }
 /// BlocksAttacks: blockDelaySeconds, disableCooldownScale, damageReductions (angle, type,
 /// base, factor), itemDamage (threshold, base, factor), bypassedBy, blockSound, disableSound.

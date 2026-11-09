@@ -232,7 +232,7 @@ fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     );
     // Splash potions throw with gravity 0.05.
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + dist * 0.2, zd],
         if dist <= 2.0 { 0.45 } else { 0.75 },
         8.0,

@@ -64,6 +64,7 @@ impl StartupMenu {
                 name: options.player_name(),
                 cookies: None,
                 lan: false,
+                realm: false,
             })
         } else {
             options
@@ -219,11 +220,16 @@ impl StartupMenu {
                 creative,
                 create: Some(Box::new(options)),
             },
-            Action::Connect { address, lan } => PendingWorldEntry::Server {
+            Action::Connect {
+                address,
+                lan,
+                realm,
+            } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
                 cookies: None,
                 lan,
+                realm,
             },
             _ => return,
         };
@@ -366,12 +372,12 @@ pub(super) fn spawn_loader(
         .name("resource-loader".into())
         .spawn(move || {
             let mut pack_error = None;
-            let root = packs::startup_root(&vanilla_root, &settings.resource_packs, &[])
+            let base = mods::content_root(&vanilla_root, &settings.mods.enabled, &dev_mods);
+            let root = packs::startup_root(&vanilla_root, &base, &settings.resource_packs, &[])
                 .unwrap_or_else(|error| {
                     pack_error = Some(error.to_string());
-                    vanilla_root.clone()
+                    base.clone()
                 });
-            let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
             let result = load_resources(
                 root,
                 world.as_deref(),
@@ -516,6 +522,7 @@ impl Loading {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
         self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[]);
+        self.menu.options.pack_configs = packs::pack_configs(&self.vanilla_root);
         self.menu.options.pack_selection = self.settings.resource_packs.clone();
         self.menu.options.pack_screen = None;
         self.menu.options_open = true;
@@ -546,6 +553,11 @@ impl Loading {
                 }
                 Event::Packs(_) => {
                     self.save_menu_settings();
+                    self.menu.reload_packs = true;
+                }
+                Event::PackOptions { entries, chosen } => {
+                    packs::save_pack_options(&entries, chosen);
+                    self.menu.options.pack_configs = packs::pack_configs(&self.vanilla_root);
                     self.menu.reload_packs = true;
                 }
                 Event::OpenPackFolder => {
@@ -1241,9 +1253,13 @@ impl Loading {
                 self.menu.win = None;
             }
         } else if self.menu.options_open {
+            let output = self
+                .renderer
+                .as_ref()
+                .map_or(Default::default(), |r| *r.output());
             self.menu
                 .options
-                .draw(&self.settings, batch, &gui.atlas, self.menu.cursor);
+                .draw(&self.settings, output, batch, &gui.atlas, self.menu.cursor);
         } else if let Some(title) = &mut self.menu.title {
             title.poll_backup();
             if std::mem::take(&mut title.onboarding_finished) {
@@ -1446,6 +1462,7 @@ mod tests {
             Action::Connect {
                 address: "localhost:25565".into(),
                 lan: true,
+                realm: false,
             },
             "Guest".into(),
         );

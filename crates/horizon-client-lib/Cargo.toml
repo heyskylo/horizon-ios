@@ -22,6 +22,8 @@ horizon-command = { path = "../horizon-command" }
 horizon-cosmetics = { path = "../horizon-cosmetics" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+# Extension points for the crates above the engine (docs/layers.md, "How a Horizon crate plugs in").
+horizon-hooks = { path = "../horizon-hooks" }
 # `horizon-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
 horizon-mcp = { path = "../horizon-mcp" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
@@ -81,8 +83,6 @@ crc32fast = "1"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
-# The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
-horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-bidi = "0.3.18"
@@ -97,8 +97,8 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 # Use the registered URI handler without routing links through Explorer/cmd.
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
-# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
-# on the PATH.
+# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or on integrated GPUs with DXC
+# (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -119,7 +119,7 @@ default = ["audio", "controllers", "discord", "friends", "heartbeat"]
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
 audio = ["horizon-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
-controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
+controllers = ["dep:gilrs", "horizon-client-input/controllers"]
 # "Playing Horizon" on the player's Discord profile (`discord_presence`).
 discord = []
 # Play with Friends, joining side (`net.rs`): without it no invite code joins.

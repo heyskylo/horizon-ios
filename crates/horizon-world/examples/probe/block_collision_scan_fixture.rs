@@ -5,7 +5,7 @@ use horizon_core::{
 };
 use horizon_world::{
     block_collision_scan::{BlockCollisionScan, BlockCollisionWorld, CollisionBlock},
-    collision_context::{CollisionContext, CollisionEntity},
+    collision_context::{CollisionContext, CollisionEntity, EntityContextKind},
     entity_obstruction::EntityIdentity,
     ground_support::find_supporting_block,
     registry::BlockStateId,
@@ -153,6 +153,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             let context = CollisionContext::for_entity(
                 CollisionEntity {
                     identity: EntityIdentity(1),
+                    kind: EntityContextKind::Other,
                     y: position.y,
                     descending: false,
                     main_hand: None,
