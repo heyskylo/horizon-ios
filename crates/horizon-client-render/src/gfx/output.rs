@@ -299,6 +299,7 @@ pub(crate) mod tests {
                 luminance: Some(Reported {
                     paper_white: 400,
                     peak: 1000,
+                    peak_guessed: false,
                 }),
                 hdr: system,
             },
@@ -616,6 +617,7 @@ pub(crate) mod tests {
         window_reading.luminance = Some(Reported {
             paper_white: 300,
             peak: 800,
+            peak_guessed: false,
         });
         assert_eq!(window_output(window_reading).nits[..2], [300.0, 800.0]);
         assert_eq!(

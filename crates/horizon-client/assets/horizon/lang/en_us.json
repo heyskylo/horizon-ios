@@ -444,6 +444,7 @@
   "Sets the three below full screen, one test picture at a time.": "Sets the three below full screen, one test picture at a time.",
   "A key that opens this screen from the game. Not bound at first.": "A key that opens this screen from the game. Not bound at first.",
   "Your display didn't say how bright it gets: calibrate to set it up.": "Your display didn't say how bright it gets: calibrate to set it up.",
+  "Your display's reported peak is often too high: calibrate to set it up.": "Your display's reported peak is often too high: calibrate to set it up.",
   "Already set up for your display. Only calibrate if HDR looks wrong.": "Already set up for your display. Only calibrate if HDR looks wrong.",
   "Puts Peak Brightness and Paper White back to your display's setup.": "Puts Peak Brightness and Paper White back to your display's setup.",
   "Set up for your display. Leave on Auto unless it looks wrong.": "Set up for your display. Leave on Auto unless it looks wrong.",
