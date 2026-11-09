@@ -40,4 +40,3 @@ pub(super) fn subtitles(show_hud: bool, in_game_ui: bool) -> Subtitles {
         Subtitles::Hidden
     }
 }
-

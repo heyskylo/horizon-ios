@@ -35,4 +35,3 @@ pub(super) fn is_game_master_block(name: &str) -> bool {
                 | "minecraft:test_instance_block"
         )
 }
-
