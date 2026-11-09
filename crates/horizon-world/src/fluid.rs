@@ -426,21 +426,21 @@ impl FluidState {
         f32::from(self.amount) / 9.0
     }
     pub fn from_block(state: &BlockState) -> io::Result<Self> {
-        let water = state.name == "minecraft:water";
-        // A mod's liquid block (a copy of water's or lava's, with `level`) holds its own fluid.
-        let modded = FluidKind::of_liquid_block(&state.name);
-        if water || state.name == "minecraft:lava" || modded.is_some() {
-            let level = state
-                .properties
-                .get("level")
+        let level = state.properties.get("level");
+        // A mod's liquid block (a copy of water's or lava's, with `level`) holds
+        // its own fluid. Its lookup (a lock and a scan) comes last: this runs
+        // for every block an entity's fluid checks touch.
+        let source = match state.name.as_str() {
+            "minecraft:water" => Some(FluidKind::Water),
+            "minecraft:lava" => Some(FluidKind::Lava),
+            name if level.is_some() => FluidKind::of_liquid_block(name),
+            _ => None,
+        };
+        if let Some(source) = source {
+            let level = level
                 .and_then(|v| v.parse::<u8>().ok())
                 .filter(|v| *v <= 15)
                 .ok_or_else(|| invalid("invalid liquid block level"))?;
-            let source = modded.unwrap_or(if water {
-                FluidKind::Water
-            } else {
-                FluidKind::Lava
-            });
             let kind = if level == 0 { source } else { source.flowing() };
             return Ok(Self {
                 kind,
