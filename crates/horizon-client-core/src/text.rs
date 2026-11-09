@@ -282,17 +282,20 @@ impl Text {
     pub fn push(&mut self, other: impl Into<Text>) {
         let other = other.into();
         let sibling = other.component();
-        let mut root = if self.spans.is_empty() && self.source.is_none() {
-            json!({ "text": "" })
-        } else {
-            let c = self.component();
-            if STYLE_KEYS.iter().any(|k| c.get(*k).is_some()) {
-                json!({ "text": "", "extra": [c] })
-            } else {
-                c
-            }
+        // The tree is appended to in place: cloning all of it on every append made a component
+        // with N siblings (a server's chat or MOTD "extra") cost N^2.
+        let root = match self.source.take() {
+            None if self.spans.is_empty() => std::sync::Arc::new(json!({ "text": "" })),
+            None => std::sync::Arc::new(self.component()),
+            Some(c) => c,
         };
-        if let Value::Object(o) = &mut root {
+        let mut root = if STYLE_KEYS.iter().any(|k| root.get(*k).is_some()) {
+            let c = std::sync::Arc::try_unwrap(root).unwrap_or_else(|c| (*c).clone());
+            std::sync::Arc::new(json!({ "text": "", "extra": [c] }))
+        } else {
+            root
+        };
+        if let Value::Object(o) = std::sync::Arc::make_mut(&mut root) {
             match o.get_mut("extra") {
                 Some(Value::Array(a)) => a.push(sibling),
                 _ => {
@@ -300,7 +303,7 @@ impl Text {
                 }
             }
         }
-        self.source = Some(root.into());
+        self.source = Some(root);
         self.spans.extend(other.spans);
     }
     /// Apply `style` underneath every span (MutableComponent.withStyle on a parent).
@@ -749,6 +752,42 @@ pub fn format_translation(template: &str, args: &[Text]) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn appending_builds_the_same_tree_in_linear_time() {
+        // A styled text is wrapped once, so its style doesn't reach what follows; a plain one
+        // takes the siblings itself; a copy taken before an append keeps its own tree.
+        let mut styled = Text::literal("a").with_style(&Style {
+            bold: Some(true),
+            ..Style::default()
+        });
+        styled.push(Text::literal("b"));
+        let before = styled.clone();
+        styled.push(Text::literal("c"));
+        assert_eq!(
+            styled.component(),
+            json!({"text": "", "extra": [{"text": "a", "bold": true}, {"text": "b"}, {"text": "c"}]})
+        );
+        assert_eq!(
+            before.component(),
+            json!({"text": "", "extra": [{"text": "a", "bold": true}, {"text": "b"}]})
+        );
+        let mut plain = Text::default();
+        plain.push(Text::literal("x"));
+        plain.push(Text::literal("y"));
+        assert_eq!(
+            plain.component(),
+            json!({"text": "", "extra": [{"text": "x"}, {"text": "y"}]})
+        );
+        // 20 000 siblings, as a server's chat may carry: 76 s before, as each append cloned the
+        // whole tree.
+        let started = std::time::Instant::now();
+        let mut long = Text::default();
+        for _ in 0..20_000 {
+            long.push(Text::literal("a"));
+        }
+        assert_eq!(long.spans.len(), 20_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
     #[test]
     fn click_events_serialize_and_inherit_as_one_style_field() {
         for (event, json) in [
