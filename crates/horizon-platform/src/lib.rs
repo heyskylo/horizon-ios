@@ -47,7 +47,7 @@ pub use horizon_server_files as server_files;
 /// in"). The engine's dispatch side is not part of the API.
 pub mod hooks {
     pub use horizon_hooks::{
-        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register,
+        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, tunnel,
     };
 }
 
@@ -55,4 +55,23 @@ pub mod hooks {
 /// folder, loaded and saved with the player's settings (docs/layers.md, "Platform registries").
 pub mod settings {
     pub use horizon_hooks::settings::{Store, register};
+}
+
+/// Settings pages a crate adds to the options screens (docs/layers.md, "Platform registries").
+pub mod pages {
+    pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, register};
+}
+
+/// Drawing on the HUD (docs/layers.md, "Platform registries").
+pub mod hud {
+    pub use horizon_hooks::hud::{Canvas, Corner, Layer, register};
+}
+
+/// The multiplayer server list as vanilla stores it (`servers.dat`): read, write, add, remove,
+/// and the lock held while it is read and written back.
+#[cfg(feature = "protocol")]
+pub mod servers {
+    pub use horizon_protocol::servers::{
+        ServerEntry, load, lock, parse_address, prepend, remove_where, save,
+    };
 }

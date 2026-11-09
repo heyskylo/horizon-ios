@@ -30,7 +30,7 @@ use std::{
     time::Duration,
 };
 
-pub mod tunnel;
+use horizon_hooks::tunnel;
 
 /// `CommonListenerCookie.serverCookies`: cookies the server asked the client
 /// to store (`ClientboundStoreCookiePacket`), answered to
@@ -498,7 +498,7 @@ impl Drop for Session {
 }
 
 /// An address of the form `friend:K7QM-3XPD` joins a friend's world through
-/// its invite code (Play with Friends, through the registered [`tunnel::Resolver`]):
+/// its invite code (Play with Friends, through a hook's [`tunnel::Resolver`]):
 /// the session goes through a tunnel the client reaches on a loopback port, so
 /// everything after is a plain join.
 pub const FRIEND: &str = tunnel::PREFIX;
@@ -506,14 +506,14 @@ pub const FRIEND: &str = tunnel::PREFIX;
 /// Whether `code` is an invite code; with `full`, only a full one (a short
 /// relay code could also be a host name). Without a resolver nothing is one.
 pub fn is_invite(code: &str, full: bool) -> bool {
-    tunnel::resolver().is_some_and(|r| r.is_code(code, full))
+    horizon_hooks::engine::tunnel().is_some_and(|r| r.is_code(code, full))
 }
 
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
     match address.strip_prefix(FRIEND) {
-        Some(code) => match tunnel::resolver().and_then(|r| r.nameplate(code)) {
+        Some(code) => match horizon_hooks::engine::tunnel().and_then(|r| r.nameplate(code)) {
             Some(nameplate) => format!("Friend's world ({nameplate}-****)"),
             None => "Friend's world".to_owned(),
         },
@@ -527,7 +527,7 @@ pub fn friends_relay_setting() -> Option<String> {
     let dir = std::env::current_dir().ok()?;
     crate::ui_theme::preference(&dir, "friendsRelay")
         .filter(|r| !r.is_empty())
-        .or_else(|| tunnel::resolver().and_then(|r| r.relay_from_env()))
+        .or_else(|| horizon_hooks::engine::tunnel().and_then(|r| r.relay_from_env()))
 }
 /// Remember the relay typed on Join a friend (empty forgets it).
 pub fn save_friends_relay(relay: &str) {
@@ -544,7 +544,7 @@ fn join_friend(
     lang: &Language,
     send: &Sender<Event>,
 ) -> Result<(String, u16, Vec<u8>), Reason> {
-    let Some(resolver) = tunnel::resolver() else {
+    let Some(resolver) = horizon_hooks::engine::tunnel() else {
         return Err(Reason::keyed_arg(
             "horizon.multiplayer.invalid_address",
             lang,

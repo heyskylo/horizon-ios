@@ -156,9 +156,8 @@ Horizon's own extras and its product, and every built-in address of an outside s
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
   `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
-  `horizon-official`, `horizon-discord`, `launcher/`. Still in engine crates today: `game/cosmetics.rs`, `game/emotes.rs`,
-  `game/extras.rs`, `game/tweaks.rs`, `multiplayer.rs` (`add_official_server`), `extras_ui.rs`,
-  `pvp.rs`.
+  `horizon-official`, `horizon-official-servers`, `horizon-discord`, `launcher/`. Still in engine crates today:
+  `game/cosmetics.rs`, `game/emotes.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
 - **Rules:**
   - It uses the platform's public API only, never the engine.
   - Until it moves, every Horizon feature in the game sits behind the `horizon-extras` feature
@@ -287,8 +286,8 @@ otherwise, and must return quickly. With nothing registered a dispatch is one lo
 build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
-`published` (the world opened to or closed from LAN or friends, on change) and `shutdown` (the window closed, the
-world saved). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+`published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
+world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends'). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
@@ -472,7 +471,7 @@ All three run in CI's verify job and in `tools/pr_ready.py`.
 | Crate | Uses, against the rule |
 |---|---|
 | `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-friends`, `-telemetry` |
-| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` and `horizon-friends` (left through the `net::tunnel` hook) |
+| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` and `horizon-friends` (left through `Hooks::tunnel`) |
 | `horizon-client-render` | platform: `horizon-hdr`, `-mod-api-gen`, `-optifine`, `-polytone`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-telemetry` |
 | `horizon-client-input` | platform: `horizon-dualsense`, `horizon-theme` |
 
@@ -513,7 +512,7 @@ Horizon's own and third-party addresses (Horizon layer):
 | `cosmetics.playhorizon.dev` | cosmetics, emotes, presence | `horizon-addresses` (#12993) |
 | `telemetry.playhorizon.dev` | opt-in telemetry, the "I'm playing" ping, benchmark uploads | `horizon-addresses` (#12993) |
 | `stun.cloudflare.com`, `stun.l.google.com` | Play with Friends NAT discovery | `horizon-addresses` (#12993) |
-| `afri-network.co.za` | the withdrawn partner server, so the game can remove the entry it added | `multiplayer.rs` (`WITHDRAWN_PARTNER`) |
+| `afri-network.co.za` | the withdrawn partner server, so the game can remove the entry it added | `horizon-addresses` |
 | `horizon-rust.github.io/horizon-mods`, `github.com/horizon-rust/horizon-mods` | the mod registry index and files: a build of this repository alone asks the player for a registry | `mod_registry.rs`, `horizon-mods/src/index*.rs`, `cargo-horizon-mod` |
 | `api.modrinth.com`, `cdn.modrinth.com` | the in-game resource pack browser, modpack porting | `pack_browser.rs`, `horizon-port-pack` |
 | `github.com`, `raw.githubusercontent.com`, `gitlab.com`, `maven.neoforged.net` | modpack porting's sources | `horizon-port-pack` |
