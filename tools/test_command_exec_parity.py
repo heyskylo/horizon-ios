@@ -728,6 +728,65 @@ MASKS = [
 GAMERULES = re.compile(r'/gamerule \(([^)]*)\)')
 
 
+ATTRIBUTES_LIST = re.compile(r'attributes: \[')
+
+
+def unordered_attributes(record):
+    """The record with every SNBT `attributes: [...]` list in its messages sorted by entry.
+
+    `AttributeMap.pack` lists the instances in the iteration order of an `Object2ObjectOpenHashMap` keyed by
+    `Holder.Reference`, which keeps `Object.hashCode`: an identity hash, so the order changes with the JVM's
+    startup (the same script gives another order under another main class). Each entry keeps its text and
+    styles; only the entries' order is normalised. parity_fuzz compares these lists unordered too."""
+    out = json.loads(json.dumps(record))
+    for line in out.get('messages') or []:
+        if not isinstance(line, list) or not all(isinstance(span, list) and len(span) == 2 for span in line):
+            continue
+        chars = [(ch, span[1]) for span in line for ch in span[0]]
+        text = ''.join(ch for ch, _ in chars)
+        for match in reversed(list(ATTRIBUTES_LIST.finditer(text))):
+            start = i = match.end()
+            depth, quoted, cuts = 0, False, [start]
+            while i < len(text):
+                ch = text[i]
+                if quoted:
+                    if ch == '\\':
+                        i += 1
+                    elif ch == '"':
+                        quoted = False
+                elif ch == '"':
+                    quoted = True
+                elif ch in '[{':
+                    depth += 1
+                elif ch in ']}':
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif ch == ',' and depth == 0 and text[i + 1:i + 2] == ' ':
+                    cuts += [i, i + 2]
+                    i += 1
+                i += 1
+            if len(cuts) == 1:
+                continue
+            cuts.append(i)
+            entries = [chars[a:b] for a, b in zip(cuts[0::2], cuts[1::2])]
+            separator = chars[cuts[1]:cuts[2]]
+            ordered = sorted(entries, key=lambda e: json.dumps(e))
+            joined = ordered[0]
+            for entry in ordered[1:]:
+                joined = joined + separator + entry
+            chars[start:i] = joined
+            text = ''.join(ch for ch, _ in chars)
+        spans = []
+        for ch, style in chars:
+            if spans and spans[-1][1] == style:
+                spans[-1][0] += ch
+            else:
+                spans.append([ch, style])
+        line[:] = spans
+    return out
+
+
 def masked(record):
     text = json.dumps(record['messages'], ensure_ascii=False)
     # GameRuleCommand registers the rules in identity-hash order, different

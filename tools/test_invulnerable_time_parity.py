@@ -34,8 +34,10 @@ if __name__ == '__main__':
         source = build / 'vanilla.jsonl' if full else (reference or build / 'vanilla.jsonl')
         if reference and not full:
             assert source.read_bytes() == (build / 'vanilla.jsonl').read_bytes(), 'fresh Java bytes changed'
-        expected = [json.loads(s) for s in source.read_text().splitlines()]
-        native = [json.loads(s) for s in (build / 'rust.jsonl').read_text().splitlines()]
+        # A pig's saved `attributes` list is in identity-hash order (driver.unordered_attributes).
+        expected = [driver.unordered_attributes(json.loads(s)) for s in source.read_text().splitlines()]
+        native = [driver.unordered_attributes(json.loads(s))
+                  for s in (build / 'rust.jsonl').read_text().splitlines()]
         assert len(expected) == len(native) == len(recorded)
         for op, a, b in zip(recorded, expected, native):
             if op['admission'] and not full:

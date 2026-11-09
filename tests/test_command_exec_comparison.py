@@ -33,3 +33,28 @@ class CommandComparisonTests(unittest.TestCase):
     def test_unknown_comparison_fails_loudly(self):
         with self.assertRaises(ValueError):
             compare(self.record(1), self.record(1), 'typo')
+
+
+class UnorderedAttributesTests(unittest.TestCase):
+    KEY, PLAIN, ID = [5636095] + [False] * 5, [None] + [False] * 5, [5635925] + [False] * 5
+
+    def body(self, *entries):
+        """`/data get entity` feedback holding an `attributes` list of (id, base) entries, as the printer styles it."""
+        spans = [['Pig has the following entity data: {', self.PLAIN], ['attributes', self.KEY], [': [', self.PLAIN]]
+        for n, (name, base) in enumerate(entries):
+            spans += [['{' if n == 0 else ', {', self.PLAIN], ['id', self.KEY], [': "', self.PLAIN],
+                      [f'minecraft:{name}', self.ID], ['", ', self.PLAIN], ['base', self.KEY], [': ' + base, self.PLAIN],
+                      ['}', self.PLAIN]]
+        spans += [[']}', self.PLAIN]]
+        return {'cmd': '/data get entity x', 'messages': [spans], 'results': [[True, 1]]}
+
+    def test_the_lists_order_is_ignored_and_its_entries_are_not(self):
+        from tools.test_command_exec_parity import unordered_attributes
+        speed_first = self.body(('movement_speed', '0.25d'), ('max_health', '20.0d'))
+        health_first = self.body(('max_health', '20.0d'), ('movement_speed', '0.25d'))
+        other_base = self.body(('max_health', '10.0d'), ('movement_speed', '0.25d'))
+        self.assertNotEqual(speed_first, health_first)
+        self.assertEqual(unordered_attributes(speed_first), unordered_attributes(health_first))
+        self.assertNotEqual(unordered_attributes(other_base), unordered_attributes(health_first))
+        plain = {'cmd': '/say', 'messages': [[['attributes', self.PLAIN]]], 'results': [[True, 1]]}
+        self.assertEqual(unordered_attributes(plain), plain)
