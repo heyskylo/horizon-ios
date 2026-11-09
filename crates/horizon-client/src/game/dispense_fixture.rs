@@ -660,11 +660,7 @@ impl Game<'_> {
         Ok(out)
     }
 
-    /// The player's hit on the first target with the case's item, from the
-    /// attack strength's scaled `base` damage on: the item's damage bonus and
-    /// source, the hurt with the weapon's armor effects, then `weapon_hit`
-    /// (the mace's smash, post-attack enchantments, the wear), as
-    /// `VanillaDispenserOracle.attack` prints them.
+    /// Compare a raised item's durability across two frontal hits.
     fn fixture_blocking_wear(&mut self, op: &Value) -> Result<Vec<String>> {
         let stack = parse_stack(op["item"].as_str().ok_or("missing blocking stack")?)?
             .ok_or("empty blocking stack")?;
@@ -704,6 +700,11 @@ impl Game<'_> {
         Ok(lines)
     }
 
+    /// The player's hit on the first target with the case's item, from the
+    /// attack strength's scaled `base` damage on: the item's damage bonus and
+    /// source, the hurt with the weapon's armor effects, then `weapon_hit`
+    /// (the mace's smash, post-attack enchantments, the wear), as
+    /// `VanillaDispenserOracle.attack` prints them.
     fn fixture_attack(&mut self, op: &Value, targets: &[Target]) -> Result<Vec<String>> {
         let stack = parse_stack(op["item"].as_str().unwrap_or("-"))?;
         self.mode = if op["creative"].as_bool().unwrap_or(false) {
