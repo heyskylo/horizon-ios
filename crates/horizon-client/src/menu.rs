@@ -3137,9 +3137,13 @@ impl Menu {
 
     /// The PICKUP_ALL branch (double click).
     /// `canTakeItemForPickAll`: never the result slots of the menus that
-    /// override it (crafting, smithing, stonecutter, cartography), MerchantMenu's
-    /// or an item tab's display slots.
-    fn can_take_for_pick_all(&self, t: usize) -> bool {
+    /// override it (crafting, smithing, stonecutter, cartography; a mod menu
+    /// type's crafting result is one), MerchantMenu's or an item tab's
+    /// display slots.
+    /// The screen asks it before a double click's PICKUP_ALL
+    /// (`AbstractContainerScreen.mouseReleased`): a refused slot's second
+    /// click stays a PICKUP, another craft.
+    pub fn can_take_for_pick_all(&self, t: usize) -> bool {
         self.kind != Kind::Merchant
             && self.slots[t].role != Role::CreativeDisplay
             && (self.slots[t].container != RESULT
@@ -4198,6 +4202,38 @@ pub(crate) mod tests {
                     );
                 }
             }
+        });
+    }
+
+    /// Clicking the result quickly, over and over: every click after the
+    /// first is a double click (the same slot within 250 ms, a stack in
+    /// hand), and `AbstractContainerScreen.mouseReleased` sends PICKUP_ALL
+    /// only where `canTakeItemForPickAll` allows it, else the PICKUP that
+    /// crafts again. Ten clicks on planks are ten crafts of sticks, on the
+    /// crafting table and on a mod menu type's grid alike.
+    #[test]
+    fn rapid_clicks_on_a_crafting_result_each_craft() {
+        const CLICKS: u32 = 10;
+        with_menu(Kind::Crafting, |env, table| {
+            let station = &mut Menu::new(mod_crafting_table());
+            for menu in [&mut *table, &mut *station] {
+                menu.set_slot(env, 1, stack("oak_planks", 32));
+                menu.set_slot(env, 4, stack("oak_planks", 32));
+                for k in 0..CLICKS {
+                    let double = k > 0 && menu.carried.is_some();
+                    let input = if double && menu.can_take_for_pick_all(0) {
+                        Input::PickupAll
+                    } else {
+                        Input::Pickup
+                    };
+                    menu.click(env, 0, 0, input).unwrap();
+                }
+                assert!(!menu.can_take_for_pick_all(0));
+                let sticks = menu.carried.as_ref().map(|c| (&*c.item, c.count));
+                assert_eq!(sticks, Some(("minecraft:stick", 4 * CLICKS)));
+                assert_eq!(menu.slot(1).map(|s| s.count), Some(32 - CLICKS));
+            }
+            assert_eq!(seen(station), seen(table));
         });
     }
 
