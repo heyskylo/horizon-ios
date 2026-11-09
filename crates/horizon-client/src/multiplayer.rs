@@ -7,6 +7,7 @@ use crate::lan::discovery::Scanner;
 use crate::text::{DARK_GRAY, GRAY, Text, format_translation};
 use crate::title::confirm_top;
 use horizon_protocol::servers::{self, ServerEntry};
+pub use page::Form;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -138,6 +139,8 @@ pub enum Screen {
         relay: String,
         focus: u8,
     },
+    /// A page a crate registered at the title screen's Friends icon, as a form.
+    Page(Form),
     Disconnected {
         reason: String,
         /// Auto-reconnect's next attempt, until it is cancelled.
@@ -146,6 +149,21 @@ pub enum Screen {
         lines: std::cell::Cell<usize>,
     },
 }
+mod page;
+
+/// What the title screen's Friends icon opens: the page a crate registered there
+/// (`Place::Title`), else Join a Friend when an invite code can be joined. None: it is inactive.
+pub fn title_entry() -> Option<Screen> {
+    match page::title_page() {
+        Some(page) => Some(Screen::Page(Form::open(page))),
+        None => crate::net::joins_friends().then(|| Screen::friend(true)),
+    }
+}
+/// Whether the title screen's Friends icon opens something ([`title_entry`]).
+pub fn has_title_entry() -> bool {
+    page::title_page().is_some() || crate::net::joins_friends()
+}
+
 /// What a click asks the title screen to do.
 pub enum Outcome {
     None,
@@ -176,6 +194,7 @@ impl Screen {
             Self::Direct { .. } => "direct_connect",
             Self::ConfirmDelete { .. } => "server_delete",
             Self::Friend { .. } => "friends_join",
+            Self::Page(form) => form.id(),
             Self::Disconnected { .. } => "disconnected",
         }
     }
@@ -744,6 +763,7 @@ impl Screen {
                     53,
                 ),
             ],
+            Self::Page(form) => form.buttons(w, h),
             Self::Friend { code, .. } => vec![
                 b(
                     half(w) - 100.0,
@@ -864,6 +884,7 @@ impl Screen {
                     ]),
                 )
             }
+            Self::Page(form) => form.narration(),
             Self::Friend { .. } => ScreenInfo::new(
                 "multiplayer/friend",
                 get("horizon.multiplayer.join_friend", "Join a Friend"),
@@ -1318,6 +1339,7 @@ impl Screen {
                     centered(batch, &line.plain(), top + 17.0 + i as f32 * 9.0, u32::MAX);
                 }
             }
+            Self::Page(form) => form.draw(atlas, batch, caret, focused_at),
             Self::Friend {
                 code, relay, focus, ..
             } => {
@@ -1383,6 +1405,7 @@ impl Screen {
     /// selected server or LAN game, as a click on it does.
     pub fn confirm(&self) -> Outcome {
         match self {
+            Self::Page(form) => form.confirm(),
             Self::Direct { address } if servers::parse_address(address).is_some() => {
                 Outcome::Connect {
                     address: direct_address(address),
@@ -1431,6 +1454,9 @@ impl Screen {
         saves: &Path,
     ) -> Outcome {
         let (w, h) = size;
+        if let Self::Page(form) = self {
+            return form.click(id, x, y);
+        }
         match (&mut *self, id) {
             (
                 Self::List {
@@ -1823,6 +1849,7 @@ impl Screen {
             Self::Friend { focus: 0, .. } => 64.0,
             Self::Friend { focus: 1, .. } => 105.0,
             Self::Friend { .. } => return None,
+            Self::Page(form) => return form.focused_box(),
             _ => return None,
         };
         Some([(w / 2.0).floor() - 100.0, y, 200.0, 20.0])
@@ -1850,6 +1877,13 @@ impl Screen {
             },
             _ => None,
         }
+    }
+    /// Whether a press off the buttons may land on one of its text fields.
+    pub fn has_fields(&self) -> bool {
+        matches!(
+            self,
+            Self::Edit { .. } | Self::Friend { .. } | Self::Page(_)
+        )
     }
     /// Join a friend, with the relay the player set before.
     pub fn friend(from_title: bool) -> Self {
@@ -1910,6 +1944,9 @@ impl Screen {
     }
     /// The focused text field, its id and maximum length (copy and paste).
     pub fn focused_text(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
+        if let Self::Page(form) = self {
+            return form.focused_text();
+        }
         let id = match self {
             Self::Edit { focus: 0, .. } => SERVER_NAME,
             Self::Edit { .. } => SERVER_ADDRESS,
@@ -1934,6 +1971,9 @@ impl Screen {
     /// round to the first field. `button` is the focused button, if any; a field
     /// has the focus (`focus` below 2) only while no button does.
     pub fn tab_dir(&mut self, reverse: bool, buttons: &[u8], button: &mut Option<u8>) {
+        if let Self::Page(form) = self {
+            return form.tab_dir(reverse, buttons, button);
+        }
         let (Self::Edit { focus, .. } | Self::Friend { focus, .. }) = self else {
             return;
         };
@@ -1960,6 +2000,7 @@ impl Screen {
     pub fn escape(&mut self, saves: &Path) -> bool {
         match self {
             Self::List { .. }
+            | Self::Page(_)
             | Self::Friend {
                 from_title: true, ..
             } => true,

@@ -65,7 +65,7 @@ pub mod settings {
 
 /// Settings pages a crate adds to the options screens (docs/layers.md, "Platform registries").
 pub mod pages {
-    pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, register};
+    pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, connect, register};
 }
 
 /// Drawing on the HUD (docs/layers.md, "Platform registries").
