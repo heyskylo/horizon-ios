@@ -58,6 +58,9 @@ pub struct OverlayColours {
     /// The main action, and its text.
     pub accent: u32,
     pub on_accent: u32,
+    /// A lit choice and its bright edge (the controller dial's sector).
+    pub lit: u32,
+    pub lit_edge: u32,
 }
 
 /// `ui_theme`'s type scale and shapes, in dp.
@@ -109,6 +112,8 @@ pub const NEUTRAL: MenuStyle = MenuStyle {
         rule: 0x303030,
         accent: 0xffffff,
         on_accent: 0x000000,
+        lit: 0xffffff,
+        lit_edge: 0xffffff,
     },
     sizes: Sizes {
         caption: 12.0,
