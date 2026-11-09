@@ -294,6 +294,9 @@ pub struct Ext {
     pub hurt_seen: i32,
     /// A zombie villager's cure under way.
     pub cure: Option<super::zombie_villager::Cure>,
+    /// `ZombieVillager.villagerDataFinalized`: only a save with
+    /// `VillagerDataFinalized` or `VillagerData` sets it.
+    pub data_finalized: bool,
     /// The villager's brain, built at its first tick.
     pub brain: Option<Box<super::villager_brain::Brain>>,
     /// Saved memories awaiting the first brain initialization.
