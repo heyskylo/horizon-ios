@@ -33,6 +33,8 @@ fn book_title_box() -> ui::EditBox {
     edit.bordered = false;
     edit.max_length = 15;
     edit.text_color = BLACK;
+    // BookSignScreen sets the title box centred.
+    edit.centered = true;
     edit.focused = true;
     edit
 }
