@@ -337,20 +337,20 @@ impl SectionScratch {
 /// Lighting scratch (some 4.4 MB at full height) shared by every thread that lights: a job takes one
 /// (or makes one) and gives it back, and at most [`KEPT_SCRATCH`] stay allocated between jobs. One per
 /// thread kept that much on every generation worker for good.
-static SCRATCH_POOL: std::sync::Mutex<Vec<Box<LightScratch>>> = std::sync::Mutex::new(Vec::new());
+static SCRATCH_POOL: std::sync::Mutex<Vec<LightScratch>> = std::sync::Mutex::new(Vec::new());
 const KEPT_SCRATCH: usize = 4;
 
 /// A scratch from the pool, or a new one.
-fn take_scratch() -> Box<LightScratch> {
+fn take_scratch() -> LightScratch {
     let taken = SCRATCH_POOL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .pop();
-    taken.unwrap_or_else(|| Box::new(LightScratch::new()))
+    taken.unwrap_or_else(LightScratch::new)
 }
 
 /// Gives a scratch back to the pool, unless it already keeps [`KEPT_SCRATCH`].
-fn give_scratch(scratch: Box<LightScratch>) {
+fn give_scratch(scratch: LightScratch) {
     let mut pool = SCRATCH_POOL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
