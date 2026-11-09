@@ -26,7 +26,7 @@ struct Head {
 /// The key an offline name's head is kept under: its offline UUID, as the game makes it, whose
 /// default skin it wears without one of its own.
 pub fn offline_key(name: &str) -> String {
-    format!("{:032x}", horizon_protocol::crypto::offline_uuid(name))
+    format!("{:032x}", horizon_platform::protocol::offline_uuid(name))
 }
 
 impl Heads {

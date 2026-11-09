@@ -111,11 +111,24 @@ pub fn double_click(
 }
 
 /// The input state `mouseClicked`/`mouseReleased` keep between events.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Clicks {
     /// `isQuickCrafting` with `quickCraftingButton`.
     quick_crafting: Option<Button>,
     skip_next_release: bool,
+}
+
+impl Default for Clicks {
+    fn default() -> Self {
+        Self {
+            quick_crafting: None,
+            // AbstractContainerScreen's constructor: `this.skipNextRelease =
+            // true`. The release of the click that opened the screen (a chest
+            // right-click opens it on the server's answer) is not a click on
+            // the slot now under the pointer.
+            skip_next_release: true,
+        }
+    }
 }
 
 /// What a release does.
@@ -150,7 +163,9 @@ impl Clicks {
     /// dead on every screen after it.
     pub fn cancel_drag(&mut self) {
         self.quick_crafting = None;
-        self.skip_next_release = false;
+        // A fresh `AbstractContainerScreen` starts with `skipNextRelease`
+        // true, so the next release without a press is swallowed.
+        self.skip_next_release = true;
     }
 
     /// `mouseClicked` (no double click): the `slotClicked` input it sends on
@@ -396,6 +411,45 @@ mod tests {
         assert_eq!(
             clicks.press(&slot, Button::Left, true, false, false),
             Some(Input::Pickup)
+        );
+    }
+
+    /// `AbstractContainerScreen`'s constructor sets `skipNextRelease = true`:
+    /// a release with no press before it on this screen clicks nothing. This
+    /// is the release of the click that opened the screen (the server's
+    /// answer to a chest's right-click comes after the button went up), over
+    /// the slot now under the pointer. A carried stack is what makes the
+    /// release click, so that is the hand it is tested with.
+    #[test]
+    fn a_release_before_any_press_clicks_nothing() {
+        let slot = Target::<usize>::Slot(0);
+        let mut clicks = Clicks::default();
+        assert_eq!(
+            clicks.release(&slot, Button::Left, false, false, false, false),
+            Release::Nothing
+        );
+        // A press and release are a normal click again.
+        assert_eq!(clicks.press(&slot, Button::Left, false, false, false), None);
+        assert_eq!(
+            clicks.release(&slot, Button::Left, false, false, false, false),
+            Release::Click(Input::Pickup)
+        );
+    }
+
+    /// A screen that takes the pointer over starts as a fresh
+    /// `AbstractContainerScreen` does: `cancel_drag` drops the old drag and
+    /// leaves `skipNextRelease` true, so the opening click's release (a
+    /// carried stack is what would click) does nothing.
+    #[test]
+    fn a_screen_that_takes_the_pointer_over_swallows_its_first_release() {
+        let slot = Target::<usize>::Slot(3);
+        let mut clicks = Clicks::default();
+        // The old screen's press with a stack carried left a drag behind.
+        clicks.press(&slot, Button::Left, false, false, false);
+        clicks.cancel_drag();
+        assert_eq!(
+            clicks.release(&slot, Button::Left, false, false, false, false),
+            Release::Nothing
         );
     }
 
