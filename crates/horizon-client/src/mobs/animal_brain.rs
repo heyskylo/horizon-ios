@@ -1989,13 +1989,10 @@ fn breed_partner(m: &mut Mob, w: &MobWorld) -> Option<Who> {
 
 // ---- The sniffer --------------------------------------------------------
 
-/// `Sniffer.transitionTo`: the state and its sound.
+/// `Sniffer.transitionTo`: the state and its sound (`this.playSound`, muted by silence).
 pub(crate) fn transition(m: &mut Mob, cx: &mut Bx, to: u8) {
-    let at = [m.position.x, m.position.y, m.position.z];
-    // The transitions' this.playSound: silence mutes them.
-    let sound = |name: &'static str, pitch: f32| {
-        (!m.silent).then_some(MobEvent::Sound(name, at, 1.0, pitch))
-    };
+    let (at, silent) = ([m.position.x, m.position.y, m.position.z], m.silent);
+    let sound = |n: &'static str, p: f32| (!silent).then_some(MobEvent::Sound(n, at, 1.0, p));
     match to {
         sniffer::FEELING_HAPPY => cx.events.extend(sound("entity.sniffer.happy", 1.0)),
         sniffer::SCENTING => {
