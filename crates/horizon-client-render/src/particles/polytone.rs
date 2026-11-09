@@ -1386,6 +1386,19 @@ impl ParticleEngine {
         }
     }
 
+    /// Whether the packs' block modifiers stop `state`'s own particles (`disable_particles`): its
+    /// `Block.animateTick` doesn't run.
+    pub fn polytone_disables_particles(
+        &self,
+        state: horizon_world::registry::BlockStateId,
+    ) -> bool {
+        self.polytone
+            .as_ref()
+            .and_then(|r| r.block_emitters.get(state.0 as usize))
+            .and_then(Option::as_ref)
+            .is_some_and(|modifiers| modifiers.iter().any(|m| m.disable_particles))
+    }
+
     /// The block emitters of the packs' block modifiers aimed at the block at `at`, run from a
     /// block animate tick (`Block.animateTick`, as torches spawn their flames).
     pub fn polytone_animate(&mut self, level: &ParticleLevel<'_>, at: [i32; 3]) {
@@ -1549,6 +1562,22 @@ mod tests {
                 }),
             ),
         ])
+    }
+
+    #[test]
+    fn disable_particles_stops_only_its_blocks_own_particles() {
+        let blocks = blocks();
+        let root = pack(&[(
+            "assets/minecraft/polytone/block_modifiers/torch.json",
+            serde_json::json!({"disable_particles": true}),
+        )]);
+        let engine = engine(Registry::read(&root, Default::default(), blocks));
+        let state = |name| blocks.default_state(name).unwrap();
+        assert!(engine.polytone_disables_particles(state("minecraft:torch")));
+        assert!(!engine.polytone_disables_particles(state("minecraft:air")));
+        // Without a Polytone pack nothing is stopped.
+        let plain = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        assert!(!plain.polytone_disables_particles(state("minecraft:torch")));
     }
 
     #[test]
