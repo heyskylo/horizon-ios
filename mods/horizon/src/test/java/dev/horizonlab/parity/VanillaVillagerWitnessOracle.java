@@ -10,6 +10,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.Brain;
 import net.minecraft.world.entity.ai.memory.NearestVisibleLivingEntities;
 import net.minecraft.world.entity.ai.sensing.Sensing;
@@ -75,7 +76,7 @@ public final class VanillaVillagerWitnessOracle {
         var diagonal = actor(world, 4, 15, 15, false);
         var close = actor(world, 6, 1.5, 0, true);
         var far = actor(world, 7, 20, 0, false);
-        var candidates = List.of(near, hidden, diagonal, close, far);
+        List<LivingEntity> candidates = List.of(near, hidden, diagonal, close, far);
         var memory = new NearestVisibleLivingEntities(world, victim, candidates);
         try (var out = Files.newBufferedWriter(Path.of(args[0]))) {
             out.write("witnesses " + witnesses(memory) + "\n");
