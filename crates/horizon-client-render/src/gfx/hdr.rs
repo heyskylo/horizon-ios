@@ -204,7 +204,7 @@ pub struct Hdr {
     /// The display's black level, in nits: shadows are lifted onto it (`hdr.wgsl`).
     pub black: f32,
     pub tiers: [Tier; 4],
-    /// The HUD and menus' brightness, as a share of paper white (0.25..=1).
+    /// The HUD and menus' brightness, as a share of paper white: above 1 brighter than it.
     pub ui: f32,
     /// Which pixels of a light source shine (`Masks`).
     pub masks: Masks,
@@ -978,7 +978,7 @@ impl Hdr {
             f32::from(u8::from(pq)),
         ]);
         params[5] = self.black.clamp(0.0, paper);
-        params[6] = self.ui.clamp(0.25, 1.0);
+        params[6] = self.ui;
         params[7] = if self.lighting {
             scene_gain(self.peak, self.paper_white)
         } else {
@@ -2079,9 +2079,11 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
             // Covered: the HUD as drawn, at UI Brightness.
             (2.0, 0.3, 1.0, 1.0, 0.3),
             (2.0, 0.3, 1.0, 0.5, 0.3 * 0.5f32.powf(1.0 / 2.2)),
+            // UI Brightness above paper white: brighter than drawn.
+            (2.0, 0.3, 1.0, 2.0, 0.3 * 2f32.powf(1.0 / 2.2)),
             // Added over the world (the text highlight), which it doesn't hide.
             (0.6, 0.8, 0.0, 1.0, 0.8),
-            // At or below white, at 100%: the HUD's picture as drawn.
+            // At or below white, at paper white: the HUD's picture as drawn.
             (0.7, 0.45, 0.5, 1.0, 0.45),
         ] {
             hdr.ui = ui;
@@ -2098,6 +2100,50 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
                 (got[0] - want).abs() < 0.01 && got[3] == 1.0,
                 "{world} {hud} {coverage} {ui}: {got:?}"
             );
+        }
+    }
+
+    /// On the frame without the HUD's layer, the HUD at UI Brightness reaches its nits, and
+    /// above the peak stops there, as on the layered frame.
+    #[test]
+    fn the_hud_at_ui_brightness_stops_at_the_peak() {
+        let Some((device, queue)) = gpu() else {
+            return;
+        };
+        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba8Unorm, Output::ScRgb, false, None);
+        (hdr.paper_white, hdr.peak) = (200.0, 300.0);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Output::ScRgb.format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        // UI Brightness (a share of paper white) and the white HUD's nits.
+        for (ui, want) in [(0.5, 100.0), (1.25, 250.0), (2.0, 300.0)] {
+            hdr.ui = ui;
+            let frame = hdr.frame(&device, [1, 1]);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            fill(&mut encoder, &frame, [0.2, 0.2, 0.2, 1.0]);
+            hdr.keep_world(&mut encoder, None);
+            // Opaque white HUD over the world: alpha 1 is full coverage.
+            fill(&mut encoder, &frame, [1.0; 4]);
+            hdr.begin(&queue, true);
+            hdr.present(&queue, &mut encoder, &target, true, None);
+            let got = texel(&device, &queue, encoder, &target);
+            for c in &got[..3] {
+                assert!(
+                    (c * 80.0 - want).abs() < 0.5,
+                    "UI {ui}: {got:?}, not {want} nits"
+                );
+            }
         }
     }
 

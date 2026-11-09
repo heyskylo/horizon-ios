@@ -1530,6 +1530,8 @@ pub struct Renderer {
     output_caps: output::OutputCapabilities,
     /// An output that failed to apply, not tried again until something it needs changes.
     output_rejected: Option<output_apply::Rejected>,
+    /// Since when Auto keeps HDR on through the display's loss of its report.
+    auto_off_since: Option<std::time::Instant>,
     /// The output applied (`update_output`), with the frame every pipeline that draws it
     /// targets: the swapchain's 8-bit format, or `Rgba16Unorm` when the renderer was made with
     /// HDR output on and Smooth Gradients and the device draws and blends into it, or
@@ -5355,6 +5357,7 @@ impl Renderer {
             emission_stats,
             output_caps,
             output_rejected: None,
+            auto_off_since: None,
             // Nothing is presented as HDR yet: `update_output` applies the settings.
             output: output::resolve_output(settings, output_caps, display, frame, false),
             frame_kept_logged: false,
@@ -7094,11 +7097,6 @@ impl Renderer {
             horizon_hdr::set_metadata(&self.device, surface, hdr.declared_peak(), hdr.black);
         }
     }
-    /// The swapchain's configuration: `config` (what every pipeline draws in), or
-    /// HDR10 or scRGB while HDR output is on.
-    fn surface_config(&self) -> wgpu::SurfaceConfiguration {
-        output_apply::surface_config(&self.config, self.hdr.as_ref().map(|hdr| hdr.output))
-    }
     /// This renderer's output as applied, with what its destination offers and reports.
     pub fn output(&self) -> &output::EffectiveOutput {
         &self.output
@@ -7154,7 +7152,7 @@ impl Renderer {
             settings,
             request,
             self.caps_for(settings),
-            self.reading,
+            output_apply::graced(self.auto_off_since, self.reading, &self.output),
             self.config.format,
         )
     }
