@@ -400,39 +400,38 @@ mod tests {
     /// `AbstractContainerScreen`'s constructor sets `skipNextRelease = true`:
     /// a release with no press before it on this screen clicks nothing. This
     /// is the release of the click that opened the screen (the server's
-    /// answer to a chest's right-click comes after the button went up), which
-    /// would otherwise pick up the slot now under the pointer.
+    /// answer to a chest's right-click comes after the button went up), over
+    /// the slot now under the pointer. A carried stack is what makes the
+    /// release click, so that is the hand it is tested with.
     #[test]
     fn a_release_before_any_press_clicks_nothing() {
         let slot = Target::<usize>::Slot(0);
         let mut clicks = Clicks::default();
         assert_eq!(
-            clicks.release(&slot, Button::Left, true, false, false, false),
+            clicks.release(&slot, Button::Left, false, false, false, false),
             Release::Nothing
         );
-        // The press after it is a normal click again.
+        // A press and release are a normal click again.
+        assert_eq!(clicks.press(&slot, Button::Left, false, false, false), None);
         assert_eq!(
-            clicks.press(&slot, Button::Left, true, false, false),
-            Some(Input::Pickup)
-        );
-        assert_eq!(
-            clicks.release(&slot, Button::Left, true, false, false, false),
+            clicks.release(&slot, Button::Left, false, false, false, false),
             Release::Click(Input::Pickup)
         );
     }
 
     /// A screen that takes the pointer over starts as a fresh
     /// `AbstractContainerScreen` does: `cancel_drag` drops the old drag and
-    /// leaves `skipNextRelease` true for the first release.
+    /// leaves `skipNextRelease` true, so the opening click's release (a
+    /// carried stack is what would click) does nothing.
     #[test]
     fn a_screen_that_takes_the_pointer_over_swallows_its_first_release() {
         let slot = Target::<usize>::Slot(3);
         let mut clicks = Clicks::default();
-        clicks.press(&slot, Button::Left, true, false, false);
-        clicks.release(&slot, Button::Left, true, false, false, false);
+        // The old screen's press with a stack carried left a drag behind.
+        clicks.press(&slot, Button::Left, false, false, false);
         clicks.cancel_drag();
         assert_eq!(
-            clicks.release(&slot, Button::Left, true, false, false, false),
+            clicks.release(&slot, Button::Left, false, false, false, false),
             Release::Nothing
         );
     }
