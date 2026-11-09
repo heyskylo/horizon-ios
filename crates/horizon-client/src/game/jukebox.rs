@@ -19,10 +19,14 @@ use horizon_core::{
 };
 use horizon_world::level::flags as level_flags;
 
-/// `JukeboxSong.fromStack`: the song the disc names through its own
-/// `jukebox_playable` component, else the item's default one. A removed
-/// component (`!minecraft:jukebox_playable`) names no song.
-fn song_of_record(record: &ItemStack, items: &horizon_client::items::Items) -> Option<String> {
+/// The stack's `jukebox_playable` component (`JukeboxPlayable`), else the
+/// item's default one: `None` when it has none (a removed component,
+/// `!minecraft:jukebox_playable`, included), `Some(None)` for an inline song
+/// definition, which has no id in the song registry.
+fn jukebox_playable(
+    record: &ItemStack,
+    items: &horizon_client::items::Items,
+) -> Option<Option<String>> {
     let data = record.data();
     if data
         .and_then(|d| d.other("!minecraft:jukebox_playable"))
@@ -31,13 +35,15 @@ fn song_of_record(record: &ItemStack, items: &horizon_client::items::Items) -> O
         return None;
     }
     match data.and_then(|d| d.other("minecraft:jukebox_playable")) {
-        Some(horizon_world::nbt::Tag::String(song)) => Some(song.to_string_lossy()),
-        Some(component) => component.get("song").and_then(|song| match song {
-            horizon_world::nbt::Tag::String(song) => Some(song.to_string_lossy()),
-            _ => None,
-        }),
-        None => items.get(&record.item)?.jukebox_song.clone(),
+        Some(horizon_world::nbt::Tag::String(song)) => Some(Some(song.to_string_lossy())),
+        Some(_) => Some(None),
+        None => Some(Some(items.get(&record.item)?.jukebox_song.clone()?)),
     }
+}
+
+/// `JukeboxSong.fromStack`: the song the disc names, by its id.
+fn song_of_record(record: &ItemStack, items: &horizon_client::items::Items) -> Option<String> {
+    jukebox_playable(record, items).flatten()
 }
 
 impl Game<'_> {
@@ -177,12 +183,8 @@ impl Game<'_> {
             return true;
         }
         let Some(stack) = held else { return false };
-        let Some(song) = self
-            .res
-            .items()
-            .get(&stack.item)
-            .and_then(|i| i.jukebox_song.clone())
-        else {
+        // JukeboxBlock.useItemOn: an item without JUKEBOX_PLAYABLE tries the empty hand.
+        let Some(song) = jukebox_playable(stack, self.res.items()) else {
             return false;
         };
         // JukeboxPlayable.tryInsertIntoJukebox
@@ -204,7 +206,9 @@ impl Game<'_> {
             }),
         );
         self.set_has_record(pos, true);
-        self.start_song(pos, &song);
+        if let Some(song) = song {
+            self.start_song(pos, &song);
+        }
         self.jukebox_changed(pos);
         // ServerPlayerGameMode.useItemOn: the action was consumed.
         self.trigger_block("minecraft:item_used_on_block", pos, stack);
@@ -226,13 +230,7 @@ impl Game<'_> {
             .state(state)
             .and_then(|s| s.properties.get("has_record"))
             .is_some_and(|v| v == "true");
-        has_record
-            || held.is_some_and(|stack| {
-                self.res
-                    .items()
-                    .get(&stack.item)
-                    .is_some_and(|i| i.jukebox_song.is_some())
-            })
+        has_record || held.is_some_and(|stack| jukebox_playable(stack, self.res.items()).is_some())
     }
     /// Level event 1010: the song from the jukebox, and the "Now Playing" overlay.
     fn start_song(&mut self, pos: [i32; 3], song: &str) {
@@ -724,6 +722,43 @@ mod jukebox_component_tests {
             comparator(&mut game, other),
             cat,
             "the stack's own component names the song"
+        );
+    }
+
+    /// `JukeboxBlock.useItemOn` asks the stack for `JUKEBOX_PLAYABLE`: a disc
+    /// whose component was removed is not taken, any item given one is.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_jukebox_takes_what_the_stacks_component_makes_playable() {
+        let mut game = server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:jukebox")
+            .unwrap();
+        game.world.set(8, 64, 8, state).unwrap();
+        let takes =
+            |game: &super::Game<'_>, stack: ItemStack| game.jukebox_takes([8, 64, 8], Some(&stack));
+        assert!(takes(&game, ItemStack::new("minecraft:music_disc_cat", 1)));
+        assert!(!takes(&game, ItemStack::new("minecraft:stone", 1)));
+        let mut removed = ItemStack::new("minecraft:music_disc_cat", 1);
+        removed.data_mut().set_other(
+            "!minecraft:jukebox_playable",
+            Some(Tag::Compound(Default::default())),
+        );
+        assert!(
+            !takes(&game, removed),
+            "a removed component is not playable"
+        );
+        let mut stone = ItemStack::new("minecraft:stone", 1);
+        stone.data_mut().set_other(
+            "minecraft:jukebox_playable",
+            Some(Tag::String("minecraft:cat".into())),
+        );
+        assert!(
+            takes(&game, stone),
+            "the stack's own component makes it playable"
         );
     }
 }
