@@ -1278,6 +1278,27 @@ impl Items {
         }
         self.get(&stack.item)?.tool_damage_per_block
     }
+    /// `Weapon.disableBlockingForSeconds`: the stack's `weapon` component,
+    /// else the item's prototype; zero without one.
+    pub fn weapon_disable_blocking(&self, stack: &ItemStack) -> f32 {
+        if stack.count == 0 || &*stack.item == "minecraft:air" {
+            return 0.0;
+        }
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:weapon").is_some())
+        {
+            return 0.0;
+        }
+        if let Some(weapon) = stack.data().and_then(|d| d.other("minecraft:weapon")) {
+            return horizon_world::datafix::dynamic::as_float(
+                weapon.get("disable_blocking_for_seconds"),
+                0.0,
+            );
+        }
+        self.get(&stack.item)
+            .map_or(0.0, |i| i.disable_blocking_seconds)
+    }
     /// Mining wear on an already durable item prototype. Custom durability on
     /// non-durable items needs item-aware DAMAGE-presence decoding first.
     pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
@@ -2931,6 +2952,28 @@ mod tests {
         assert!(items.songs.contains_key("minecraft:cat"));
         assert!(!items.songs.contains_key("minecraft:tune"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn weapon_disable_blocking_comes_from_the_stack() {
+        let items = Items::for_tests(HashMap::new());
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        sword.data_mut().set_other(
+            "minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound([(
+                "disable_blocking_for_seconds",
+                horizon_world::nbt::Tag::Float(1.5f32.to_bits()),
+            )])),
+        );
+        assert_eq!(items.weapon_disable_blocking(&sword), 1.5);
+        sword.data_mut().set_other(
+            "!minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(items.weapon_disable_blocking(&sword), 0.0);
     }
 
     #[test]
