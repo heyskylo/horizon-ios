@@ -17,8 +17,12 @@ use std::{
 /// How long a tile is kept after the plan let it go.
 pub(super) const KEPT_FOR: Duration = Duration::from_secs(600);
 /// About as many bytes as a 512-chunk view's tiles hold, so one whole place
-/// is kept; a far tile is some 20 to 60 KB.
+/// is kept; a far tile is some 20 to 60 KB. The most kept at any far distance.
 pub(super) const KEPT_BYTES: usize = 512 << 20;
+/// The tiles a 512-chunk view plans: a smaller view keeps a share of
+/// `KEPT_BYTES` as large as its share of these (`KeptTiles::fit_to_view`), so
+/// travelling with a short far distance doesn't fill the whole budget.
+const VIEW_512_TILES: usize = 4700;
 
 struct Kept {
     columns: Arc<Vec<Column>>,
@@ -45,6 +49,14 @@ impl KeptTiles {
             time,
             budget,
         }
+    }
+
+    /// The budget for a view that plans `tiles`: `KEPT_BYTES` for a 512-chunk
+    /// view, a share of it for a smaller one.
+    pub(super) fn fit_to_view(&mut self, tiles: usize) {
+        self.budget = (KEPT_BYTES / VIEW_512_TILES)
+            .saturating_mul(tiles)
+            .min(KEPT_BYTES);
     }
 
     pub(super) fn len(&self) -> usize {
@@ -163,6 +175,18 @@ mod tests {
         assert_eq!(mask, Some([u64::MAX; 4]));
         assert!(kept.take(&key(0)).is_none());
         assert_eq!(kept.bytes(), 0);
+    }
+
+    #[test]
+    fn a_smaller_view_keeps_a_share_of_the_budget() {
+        let mut kept = KeptTiles::new(KEPT_FOR, KEPT_BYTES);
+        kept.fit_to_view(VIEW_512_TILES);
+        assert_eq!(kept.budget, KEPT_BYTES / VIEW_512_TILES * VIEW_512_TILES);
+        // A 128-chunk view plans about a sixteenth of the tiles.
+        kept.fit_to_view(VIEW_512_TILES / 16);
+        assert!(kept.budget <= KEPT_BYTES / 16);
+        kept.fit_to_view(VIEW_512_TILES * 4);
+        assert_eq!(kept.budget, KEPT_BYTES);
     }
 
     #[test]

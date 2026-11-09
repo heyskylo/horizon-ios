@@ -2555,6 +2555,7 @@ impl Lod {
             .copied()
             .collect();
         self.plan = plan;
+        self.kept.fit_to_view(self.plan.nodes.len());
         // Tiles leaving the plan are kept for a return, with their detail. Not
         // stale ones (their source has more), nor ones of cells a chunk wide or
         // less over the full-detail columns: never drawn there, they came back
