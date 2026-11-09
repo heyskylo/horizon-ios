@@ -500,6 +500,19 @@ pub struct NativeChanceOutput {
     pub notes: Vec<String>,
 }
 
+/// How a native mod's item panel draws its page buttons and search box
+/// (`native_panel_style`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativePanelStyle {
+    /// The recipe book's page arrows and a plain search box (the default).
+    #[default]
+    RecipeBook,
+    /// A recipe viewer's: square page buttons on a bar over the items and
+    /// the viewer's search box, as Horizon's Recipes panel draws them.
+    Viewer,
+}
+
 /// What the player did on a native mod's panel (`native_panel_event`).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
