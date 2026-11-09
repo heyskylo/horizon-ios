@@ -1,4 +1,6 @@
-//! The ICC profile of HDR screenshots, for programs that don't read PNG's `cICP`: BT.2020
+//! The content light levels of HDR screenshots (PNG's `cLLI`), and their ICC profile.
+//!
+//! The ICC profile is for programs that don't read PNG's `cICP`: BT.2020
 //! primaries and the PQ curve, with HDR reference white (203 nits) as the profile's white.
 //! An ICC profile has no values above white, so those programs show a correct SDR picture
 //! with its highlights clipped, where without it they took PQ's values for sRGB's and showed
@@ -20,6 +22,31 @@ fn pq_nits(signal: f64) -> f64 {
     let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 128.0, 2392.0 / 128.0);
     let p = signal.powf(1.0 / m2);
     10_000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+}
+
+/// PNG's `cLLI` of a 16-bit big-endian RGB image in PQ: MaxCLL, the brightest channel of
+/// any pixel, and MaxFALL, the average over the image of each pixel's brightest channel
+/// (CTA-861.3), both in nits decoded from the values as written, in 0.0001-nit units.
+pub(super) fn content_light_levels(rgb16: &[u8]) -> [u8; 8] {
+    // PQ rises with its value, so a pixel's brightest channel is its largest value; count
+    // those and decode each value once.
+    let mut count = vec![0u64; 65536];
+    for px in rgb16.as_chunks::<6>().0 {
+        let v = |i: usize| u16::from_be_bytes([px[i], px[i + 1]]);
+        count[v(0).max(v(2)).max(v(4)) as usize] += 1;
+    }
+    let (mut max, mut sum, mut pixels) = (0.0, 0.0, 0u64);
+    for (value, &n) in count.iter().enumerate().filter(|(_, n)| **n > 0) {
+        let nits = pq_nits(value as f64 / 65535.0);
+        max = nits;
+        sum += nits * n as f64;
+        pixels += n;
+    }
+    let units = |nits: f64| ((nits * 10_000.0).round() as u32).to_be_bytes();
+    [units(max), units(sum / pixels.max(1) as f64)]
+        .concat()
+        .try_into()
+        .unwrap()
 }
 
 fn s15_fixed16(v: f64) -> [u8; 4] {
@@ -155,5 +182,29 @@ mod tests {
         assert!(value(0.57) < 65535);
         assert_eq!(value(0.59), 65535);
         assert_eq!(value(1.0), 65535);
+    }
+
+    #[test]
+    fn the_content_light_levels_are_the_images() {
+        // 10 000 nits is PQ's top; 100 nits is a PQ signal of 0.50808 (SMPTE ST 2084).
+        let px = |r: u16, g: u16, b: u16| [r, g, b].map(u16::to_be_bytes).concat();
+        let hundred = (0.508_078_42_f64 * 65535.0).round() as u16;
+        assert!((pq_nits(f64::from(hundred) / 65535.0) - 100.0).abs() < 0.01);
+        // One pixel at 10 000 nits in green only, three whose brightest channel is 100
+        // nits, and the darker channels beside it don't count.
+        let image = [
+            px(0, 65535, 0),
+            px(hundred, 0, 0),
+            px(hundred, hundred, hundred),
+            px(1000, 2000, hundred),
+        ]
+        .concat();
+        let cll = content_light_levels(&image);
+        let units = |i: usize| u32::from_be_bytes(cll[i..i + 4].try_into().unwrap());
+        assert_eq!(units(0), 100_000_000);
+        // (10 000 + 3 * 100) / 4 = 2575 nits.
+        assert!(units(4).abs_diff(25_750_000) <= 100, "{}", units(4));
+        assert_eq!(content_light_levels(&[]), [0; 8]);
+        assert_eq!(content_light_levels(&px(0, 0, 0)), [0; 8]);
     }
 }
