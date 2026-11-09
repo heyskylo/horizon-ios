@@ -47,12 +47,18 @@ fn game() -> Game<'static> {
     .unwrap();
     game.build_registries();
     game.set_allow_commands(true);
-    game.world
-        .chunks
-        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-    game.block_ticks
-        .add_empty_chunk(ChunkPos::new(0, 0))
-        .unwrap();
+    // Entities tick once the 2 columns around their chunk are loaded
+    // (`ChunkMap.prepareEntityTickingChunk`), so the chunk of the mobs has all of them.
+    for x in -2..=2 {
+        for z in -2..=2 {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(Chunk::empty(x, z)));
+            game.block_ticks
+                .add_empty_chunk(ChunkPos::new(x, z))
+                .unwrap();
+        }
+    }
     for command in [
         "forceload add 0 0",
         "fill 0 99 0 15 99 15 stone",
@@ -153,8 +159,10 @@ fn the_saved_hurt_by_mob_follows_the_live_record_only() {
     let a = game.mobs[a_index].id;
     // No record, no raw copy: nothing.
     assert_eq!(fields(&mut game, victim), (None, None), "no record");
-    // A raw copy from the summon, no live record: both keys go.
+    // A raw copy from a stale compound, no live record and no read-back
+    // reference: both keys go.
     let echo = index(&mut game, ECHO);
+    game.mobs[echo].ai.last_hurt_by_ref = None;
     assert_eq!(fields(&mut game, echo), (None, None), "stale raw copy");
     // A live record of a resident mob: both keys, at 100 ticks still.
     let age = game.mobs[victim].age as i32;
@@ -188,4 +196,75 @@ fn the_saved_hurt_by_mob_follows_the_live_record_only() {
     game.mobs[ai].health = 0.0;
     assert!(!game.mobs[ai].alive());
     assert_eq!(fields(&mut game, victim), (None, None), "dead attacker");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_loaded_hurt_by_mob_is_read_back_and_ends_after_100_ticks() {
+    use horizon_client::mobs::Who;
+    let mut game = game();
+    let echo = index(&mut game, ECHO);
+    let a_index = index(&mut game, A);
+    let a = game.mobs[a_index].id;
+    // Read back at once (vanilla: `last_hurt_by_mob` A, ticks 0 then 1).
+    assert_eq!(
+        fields(&mut game, echo),
+        (Some(Tag::IntArray(vec![24724, 0, 0, 2])), Some(Tag::Int(0))),
+        "read back"
+    );
+    step(&mut game, 1);
+    let echo = index(&mut game, ECHO);
+    assert_eq!(game.mobs[echo].ai.last_hurt_by, Some(Who::Mob(a)));
+    assert_eq!(fields(&mut game, echo).1, Some(Tag::Int(1)));
+    // `tickCount - timestamp > 100` ends it: still there after 100 ticks.
+    step(&mut game, 99);
+    let echo = index(&mut game, ECHO);
+    assert_eq!(game.mobs[echo].ai.last_hurt_by, Some(Who::Mob(a)));
+    assert_eq!(fields(&mut game, echo).1, Some(Tag::Int(100)));
+    step(&mut game, 1);
+    let echo = index(&mut game, ECHO);
+    assert_eq!(game.mobs[echo].ai.last_hurt_by, None, "101 ticks");
+    assert_eq!(fields(&mut game, echo), (None, None), "101 ticks");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_loaded_hurt_by_mob_of_a_dead_attacker_ends_at_the_next_tick() {
+    let mut game = game();
+    step(&mut game, 1);
+    let echo = index(&mut game, ECHO);
+    assert!(game.mobs[echo].ai.last_hurt_by.is_some(), "resolved");
+    let a = index(&mut game, A);
+    game.mobs[a].health = 0.0;
+    step(&mut game, 1);
+    let echo = index(&mut game, ECHO);
+    assert_eq!(game.mobs[echo].ai.last_hurt_by, None, "dead attacker");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_loaded_hurt_by_mob_naming_no_entity_stays_until_it_arrives() {
+    let mut game = game();
+    assert!(game.run_command(
+        "summon pig 8.5 100 12.5 {NoAI:1b,PersistenceRequired:1b,UUID:[I;24724,0,0,5],last_hurt_by_mob:[I;24724,0,0,99],ticks_since_last_hurt_by_mob:7}"
+    ));
+    let ghost = index(&mut game, "00006094-0000-0000-0000-000000000005");
+    let named = Some(Tag::IntArray(vec![24724, 0, 0, 99]));
+    assert_eq!(fields(&mut game, ghost), (named.clone(), Some(Tag::Int(7))));
+    // Nothing resolves it: no baseTick end, however long, and it keeps aging.
+    step(&mut game, 200);
+    let ghost = index(&mut game, "00006094-0000-0000-0000-000000000005");
+    assert_eq!(game.mobs[ghost].ai.last_hurt_by, None, "not the AI's yet");
+    assert_eq!(fields(&mut game, ghost), (named, Some(Tag::Int(207))));
+    // The entity it names arrives: it resolves, is past 100 ticks, and ends.
+    assert!(game.run_command(
+        "summon pig 12.5 100 12.5 {NoAI:1b,PersistenceRequired:1b,UUID:[I;24724,0,0,99]}"
+    ));
+    step(&mut game, 1);
+    let ghost = index(&mut game, "00006094-0000-0000-0000-000000000005");
+    assert_eq!(
+        fields(&mut game, ghost),
+        (None, None),
+        "resolved, then ended"
+    );
 }

@@ -673,6 +673,7 @@ fn valid_player_target(w: &MobWorld) -> bool {
 fn stop_being_angry(m: &mut Mob) {
     // setLastHurtByMob(null) also stamps the time.
     m.ai.last_hurt_by = None;
+    m.ai.last_hurt_by_ref = None;
     m.ai.last_hurt_by_time = m.age as i32;
     m.ai.target = None;
     m.extra.angry_at = None;
