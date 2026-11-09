@@ -2,16 +2,21 @@
 //! colours and the controls it draws with. The screen (`graphics_ui`) only
 //! lays out rows and handles input; a menu theme replaces this module.
 //!
-//! It takes the design system's Blocks palette (`horizon_theme::BLOCKS_DARK`,
-//! `docs/design-system.md`) in a lighter form: square panels of dark glass
-//! with a thin edge, so the world shows through, flat controls, and the violet
-//! face on the one main button, in vanilla's font.
+//! Its colours come from `menu_style`, given at startup (in the official game the design
+//! system's Blocks palette, `docs/design-system.md`), in a lighter form: square panels of
+//! dark glass with a thin edge, so the world shows through, flat controls, and the face on
+//! the one main button, in vanilla's font.
+use crate::menu_style::{self, SettingsColours};
 use crate::{
     hud::{HudAtlas, HudBatch},
     text::Text,
     ui,
 };
-use horizon_theme::BLOCKS_DARK as B;
+
+/// The settings pages' colours (`menu_style`, given at startup).
+fn b() -> &'static SettingsColours {
+    &menu_style::get().settings
+}
 
 /// What a setting costs in frame time, shown with its description.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,54 +41,91 @@ impl Cost {
     /// `0xRRGGBB`: the palette's success, warn and danger.
     pub fn rgb(self) -> u32 {
         match self {
-            Cost::None => B.ink_soft,
-            Cost::Low | Cost::Saves => B.success,
-            Cost::Medium => B.warn,
-            Cost::High => B.danger,
+            Cost::None => b().ink_soft,
+            Cost::Low | Cost::Saves => b().success,
+            Cost::Medium => b().warn,
+            Cost::High => b().danger,
         }
     }
 }
 
-/// `0xRRGGBB` and an alpha in the HUD's colour encoding.
-const fn hex(c: u32, a: u8) -> u32 {
-    (a as u32) << 24 | (c & 0xff) << 16 | (c >> 8 & 0xff) << 8 | (c >> 16 & 0xff)
-}
+use menu_style::hud_colour as hex;
 /// The plate and the strip: the page's dark, see-through, so the world shows behind them.
-const GLASS: u32 = hex(B.page, 118);
+fn glass() -> u32 {
+    hex(b().page, 118)
+}
 /// Their 1 px edge.
-pub const EDGE: u32 = hex(B.ink, 26);
+pub fn edge() -> u32 {
+    hex(b().ink, 26)
+}
 /// A group's panel, a little lighter than the plate it sits on.
-const GROUP: u32 = hex(B.ink, 11);
+fn group_fill() -> u32 {
+    hex(b().ink, 11)
+}
 /// A hovered or focused row, lit on its group's panel.
-pub const HOVER: u32 = hex(B.ink, 18);
+pub fn hover() -> u32 {
+    hex(b().ink, 18)
+}
 /// The open page in the page list.
-pub const OPEN: u32 = hex(B.ink, 26);
+pub fn open() -> u32 {
+    hex(b().ink, 26)
+}
 /// The rule under the plate's heading, and between two rows of a group.
-pub const HEAD_RULE: u32 = hex(B.ink, 31);
-pub const ROW_RULE: u32 = hex(B.ink, 15);
+pub fn head_rule() -> u32 {
+    hex(b().ink, 31)
+}
+pub fn row_rule() -> u32 {
+    hex(b().ink, 15)
+}
 /// Fields, boxes and the value stepper: sunk, see-through.
-const WELL: u32 = hex(B.outline, 102);
+fn well_fill() -> u32 {
+    hex(b().outline, 102)
+}
 /// A button, a slider's track, the scroller's thumb.
-const BUTTON: u32 = hex(B.ink, 20);
-const BUTTON_HOVER: u32 = hex(B.ink, 41);
-const TRACK: u32 = hex(B.ink, 64);
-const HANDLE: u32 = hex(B.ink, 255);
+fn button_fill() -> u32 {
+    hex(b().ink, 20)
+}
+fn button_hover() -> u32 {
+    hex(b().ink, 41)
+}
+fn track_fill() -> u32 {
+    hex(b().ink, 64)
+}
+fn handle_fill() -> u32 {
+    hex(b().ink, 255)
+}
 /// The one main button.
-pub const FACE: u32 = hex(B.face, 255);
-const FACE_HOVER: u32 = hex(0x6a50e6, 255);
+pub fn face() -> u32 {
+    hex(b().face, 255)
+}
+fn face_hover() -> u32 {
+    hex(b().face_hover, 255)
+}
 /// A tick box's edge when off.
-const BOX_EDGE: u32 = hex(B.ink_soft, 89);
-const OUTLINE: u32 = hex(B.outline, 255);
-pub const ACCENT: u32 = hex(B.accent, 255);
+fn box_edge() -> u32 {
+    hex(b().ink_soft, 89)
+}
+fn outline() -> u32 {
+    hex(b().outline, 255)
+}
+pub fn accent() -> u32 {
+    hex(b().accent, 255)
+}
 /// Vanilla's white text, and its grey for what can't be used now.
 pub const WHITE: u32 = u32::MAX;
-pub const MUTED: u32 = hex(B.muted, 255);
+pub fn muted() -> u32 {
+    hex(b().muted, 255)
+}
 /// A page that isn't open, a value at rest.
-pub const SOFT: u32 = hex(B.ink_soft, 255);
+pub fn soft() -> u32 {
+    hex(b().ink_soft, 255)
+}
 /// Vanilla's grey for a tooltip's lines under its first (`ChatFormatting.GRAY`).
 pub const GREY: u32 = hex(0xaaaaaa, 255);
 /// A light veil over the backdrop, under the panels.
-pub const VEIL: u32 = hex(B.page, 77);
+pub fn veil() -> u32 {
+    hex(b().page, 77)
+}
 
 /// Sizes in GUI pixels.
 /// Shorter screens than this (a 720p window at scale 3) keep a narrower margin on top.
@@ -120,21 +162,21 @@ pub fn ring(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4], colo
 }
 /// The screen's plate, and the strip under it: dark glass with a thin edge.
 pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    fill(batch, atlas, rect, GLASS);
-    ring(batch, atlas, rect, EDGE);
+    fill(batch, atlas, rect, glass());
+    ring(batch, atlas, rect, edge());
 }
 /// A group's panel on the plate, its rows on it.
 pub fn group(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    fill(batch, atlas, rect, GROUP);
+    fill(batch, atlas, rect, group_fill());
 }
 /// A sunk well: the search field, the value stepper.
 pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    fill(batch, atlas, rect, WELL);
+    fill(batch, atlas, rect, well_fill());
 }
 /// The scroller: a faint track and its thumb.
 pub fn scroller(batch: &mut HudBatch, atlas: &HudAtlas, track: [f32; 4], thumb: [f32; 4]) {
-    fill(batch, atlas, track, ROW_RULE);
-    fill(batch, atlas, thumb, TRACK);
+    fill(batch, atlas, track, row_rule());
+    fill(batch, atlas, thumb, track_fill());
 }
 /// `text` cut to `width` with an ellipsis, as a long name gives way to its control: the HUD
 /// kit's `fit::ellipsize`.
@@ -142,11 +184,11 @@ pub use crate::hud_kit::fit::ellipsize as fit;
 /// A 12 px tick box ending at `right`, centred in the row at `y`: its edge in the accent when on.
 pub fn checkbox(batch: &mut HudBatch, atlas: &HudAtlas, right: f32, y: f32, on: bool, live: bool) {
     let rect = [right - 12.0, y + 4.0, 12.0, 12.0];
-    fill(batch, atlas, rect, WELL);
+    fill(batch, atlas, rect, well_fill());
     let edge = match (on, live) {
-        (true, true) => ACCENT,
-        (true, false) => MUTED,
-        (false, _) => BOX_EDGE,
+        (true, true) => accent(),
+        (true, false) => muted(),
+        (false, _) => box_edge(),
     };
     ring(batch, atlas, rect, edge);
     if on {
@@ -169,7 +211,7 @@ fn tick(batch: &mut HudBatch, atlas: &HudAtlas, x: f32, y: f32, color: u32) {
         for (i, c) in row.chars().enumerate() {
             if c == '#' {
                 let (px, py) = (x + i as f32, y + j as f32);
-                fill(batch, atlas, [px + 1.0, py + 1.0, 1.0, 1.0], OUTLINE);
+                fill(batch, atlas, [px + 1.0, py + 1.0, 1.0, 1.0], outline());
                 fill(batch, atlas, [px, py, 1.0, 1.0], color);
             }
         }
@@ -198,17 +240,17 @@ pub fn button_with_room(
 ) {
     let [x, y, w, h] = rect;
     let face = match (live, primary, hover) {
-        (false, _, _) => WELL,
-        (true, true, false) => FACE,
-        (true, true, true) => FACE_HOVER,
-        (true, false, false) => BUTTON,
-        (true, false, true) => BUTTON_HOVER,
+        (false, _, _) => well_fill(),
+        (true, true, false) => face(),
+        (true, true, true) => face_hover(),
+        (true, false, false) => button_fill(),
+        (true, false, true) => button_hover(),
     };
     fill(batch, atlas, rect, face);
     if hover && live {
         ring(batch, atlas, rect, WHITE);
     }
-    let color = if live { WHITE } else { MUTED };
+    let color = if live { WHITE } else { muted() };
     let ty = y + ((h - 8.0) / 2.0).floor();
     let left = x + 2.0 + room;
     scrolling_label(
@@ -252,7 +294,7 @@ pub fn slider(
     (hover, live): (bool, bool),
 ) {
     let [x, y, w, h] = rect;
-    let color = if live { WHITE } else { MUTED };
+    let color = if live { WHITE } else { muted() };
     scrolling_label(
         batch,
         atlas,
@@ -263,17 +305,22 @@ pub fn slider(
     );
     let line = y + h - 3.0;
     let at = x + (position.clamp(0.0, 1.0) * (w - 4.0)).round();
-    fill(batch, atlas, [x, line, w, 2.0], TRACK);
+    fill(batch, atlas, [x, line, w, 2.0], track_fill());
     fill(
         batch,
         atlas,
         [x, line, at - x, 2.0],
-        if live { ACCENT } else { MUTED },
+        if live { accent() } else { muted() },
     );
     let handle = [at, line - 3.0, 4.0, 8.0];
-    fill(batch, atlas, handle, if live { HANDLE } else { MUTED });
+    fill(
+        batch,
+        atlas,
+        handle,
+        if live { handle_fill() } else { muted() },
+    );
     if hover && live {
-        ring(batch, atlas, [at - 1.0, line - 4.0, 6.0, 10.0], ACCENT);
+        ring(batch, atlas, [at - 1.0, line - 4.0, 6.0, 10.0], accent());
     }
 }
 /// A value that a press steps through: in a well, between the arrows that say so.
@@ -290,13 +337,13 @@ pub fn cycler(
         ring(batch, atlas, rect, WHITE);
     }
     let ty = y + ((h - 8.0) / 2.0).floor();
-    let arrows = if hover && live { WHITE } else { MUTED };
+    let arrows = if hover && live { WHITE } else { muted() };
     batch.text_styled(atlas, &Text::literal("<"), x + 3.0, ty, arrows, true);
     batch.text_styled(atlas, &Text::literal(">"), x + w - 8.0, ty, arrows, true);
     let color = match (live, hover) {
-        (false, _) => MUTED,
+        (false, _) => muted(),
         (true, true) => WHITE,
-        (true, false) => SOFT,
+        (true, false) => soft(),
     };
     scrolling_label(batch, atlas, value, [x + 9.0, ty, w - 18.0], (y, h), color);
 }
