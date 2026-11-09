@@ -4,6 +4,7 @@
 //! then what Play still needs (the launcher's rows). Dark appearance only.
 use super::*;
 use crate::glass_ui::{self as ui, white};
+use crate::scrollbar::TakeWheel;
 use home_tabs::HomeTab;
 use horizon_theme::glass::{ink, radius};
 
@@ -23,9 +24,9 @@ impl Launcher {
             .map(|(tab, _)| *tab)
             .find(|tab| *tab == self.home_tab)
             .unwrap_or(HomeTab::Overview);
-        let compact = self.window_width < 1200.;
-        let very_compact = self.window_width < 960.;
-        let super_compact = self.window_width < 750.;
+        let compact = self.window_width < crate::glass_home::SIDE_BY_SIDE;
+        let very_compact = self.window_width < crate::glass_home::NARROW;
+        let super_compact = self.window_width < crate::glass_home::NARROWEST;
         let pad = if super_compact {
             4.
         } else if very_compact {
@@ -51,10 +52,11 @@ impl Launcher {
             .px(px(8.))
             .pt(px(8.))
             .pb(px(4.))
-            .w_full()
-            .min_w_0()
-            .overflow_x_scroll()
-            .on_scroll(|_, _, cx| cx.stop_propagation())
+            // At its own size the strip leaves room for `glass::tabbed`'s notch; on a narrow
+            // window it takes the panel's width and its tabs wrap onto a further row, so every
+            // tab stays in reach from the panel's left padding and nothing scrolls sideways.
+            .when(!compact, |d| d.flex_none())
+            .when(compact, |d| d.flex_wrap().w_full().min_w_0())
             .child(crate::glass::measure(self.home_strip.clone()))
             .children(tabs.into_iter().map(|(tab, count)| {
                 let (name, icon) = match tab {
@@ -132,7 +134,7 @@ impl Launcher {
 
     /// Overview: the last screenshots and the patch log side by side, then `rows`.
     fn glass_overview(&mut self, rows: Div, cx: &mut Context<Self>) -> Div {
-        let wide = self.window_width >= 1200.;
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
         let shots = self.overview_shots(cx);
         let patch = div()
             .relative()
@@ -375,6 +377,10 @@ impl Launcher {
             .rounded(px(radius::LARGE))
             .bg(white(0.04))
             .overflow_y_scroll()
+            .track_scroll(&self.patch_scroll.handle)
+            // The list takes the wheel while it can still move that way; at an end, or when
+            // everything fits, the page behind it gets it.
+            .take_wheel(&self.patch_scroll)
             .child(
                 div()
                     .flex()
@@ -389,7 +395,7 @@ impl Launcher {
                             .hover(|s| s.text_color(white(ink::FULL)))
                             .child(tr("All notes"))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.go(Page::Notes);
+                                this.go(Page::Versions);
                                 cx.notify();
                             })),
                     ),

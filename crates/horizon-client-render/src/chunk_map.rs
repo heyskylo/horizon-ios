@@ -52,6 +52,10 @@ pub struct ChunkMap {
     recent_deltas: VecDeque<(u64, ChunkMembershipDelta)>,
     /// The resident chunks generation has not placed its animals in yet.
     fresh: FxHashSet<Key>,
+    /// For each column, how many of the 3×3 columns around it (itself
+    /// included) are resident; absent when none is. `surrounded` asks one
+    /// map instead of nine every tick, for every ticking chunk.
+    near: FxHashMap<Key, u8>,
 }
 impl Default for ChunkMap {
     fn default() -> Self {
@@ -62,6 +66,7 @@ impl Default for ChunkMap {
             min_valid_revision: revision,
             recent_deltas: VecDeque::new(),
             fresh: FxHashSet::default(),
+            near: FxHashMap::default(),
         }
     }
 }
@@ -124,6 +129,11 @@ impl ChunkMap {
         }
         let previous = self.columns.insert(key, chunk);
         if previous.is_none() {
+            for z in key.1 - 1..=key.1 + 1 {
+                for x in key.0 - 1..=key.0 + 1 {
+                    *self.near.entry((x, z)).or_insert(0) += 1;
+                }
+            }
             self.revision = next_revision();
             self.record_delta(ChunkMembershipDelta::Added(key));
         }
@@ -133,6 +143,16 @@ impl ChunkMap {
         self.fresh.remove(key);
         let previous = self.columns.remove(key);
         if previous.is_some() {
+            for z in key.1 - 1..=key.1 + 1 {
+                for x in key.0 - 1..=key.0 + 1 {
+                    if let Some(n) = self.near.get_mut(&(x, z)) {
+                        *n -= 1;
+                        if *n == 0 {
+                            self.near.remove(&(x, z));
+                        }
+                    }
+                }
+            }
             self.revision = next_revision();
             self.record_delta(ChunkMembershipDelta::Removed(*key));
         }
@@ -142,12 +162,17 @@ impl ChunkMap {
         if !self.columns.is_empty() {
             self.columns.clear();
             self.fresh.clear();
+            self.near.clear();
             self.revision = next_revision();
             self.recent_deltas.clear();
             self.recent_deltas
                 .push_back((self.revision, ChunkMembershipDelta::Reset));
             self.min_valid_revision = self.revision;
         }
+    }
+    /// Whether the column at `key` and its eight neighbours are all resident.
+    pub fn surrounded(&self, key: Key) -> bool {
+        self.near.get(&key) == Some(&9)
     }
     pub fn has_fresh(&self) -> bool {
         !self.fresh.is_empty()
@@ -381,5 +406,42 @@ mod tests {
             .collect();
         assert_eq!(ordered, expected);
         assert_eq!(ordered.len(), 3);
+    }
+
+    #[test]
+    fn surrounded_follows_loads_unloads_and_clears() {
+        // Brute force: the column and its eight neighbours are all resident.
+        fn expected(map: &ChunkMap, (x, z): Key) -> bool {
+            (-1..=1).all(|dz| (-1..=1).all(|dx| map.contains_key(&(x + dx, z + dz))))
+        }
+        let mut map = ChunkMap::default();
+        let mut seed = 0x2545_f491_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for step in 0..4000 {
+            let key = ((next() % 9) as i32 - 4, (next() % 9) as i32 - 4);
+            if next() % 3 == 0 {
+                map.remove(&key);
+            } else {
+                // Replacing a resident column changes nothing.
+                map.insert(key, Arc::new(Chunk::empty(key.0, key.1)));
+            }
+            if step == 2500 {
+                map.clear();
+            }
+            for x in -6..=6 {
+                for z in -6..=6 {
+                    assert_eq!(
+                        map.surrounded((x, z)),
+                        expected(&map, (x, z)),
+                        "{x},{z} at {step}"
+                    );
+                }
+            }
+        }
     }
 }

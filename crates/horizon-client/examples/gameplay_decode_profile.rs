@@ -2,7 +2,10 @@
 //! Build with `cargo build --release -p horizon-client --example gameplay_decode_profile`.
 //! Each invocation runs one phase in a separate process for CPU/RSS measurements.
 extern crate horizon_client_lib as horizon_client;
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "this fixture shares another one's source and uses part of it"
+)]
 #[path = "../../horizon-items/src/blocks/decode.rs"]
 mod decode;
 

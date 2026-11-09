@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_display_name", "target": "horizon_client::game::native_server::Game<'_>::native_set_display_name"}
+  ],
+  "rust_summary": "a player's styled name in chat (`native_set_display_name`), as Bukkit's `Player.setDisplayName`.",
+  "doc_summary": "`native_set_display_name(uuid, name)` shows styled text for a player in chat (their messages, `/me`, `/msg`, the join and leave lines) in place of their nickname or name (None: back), inside their team's formatting, the real name on hover. Kept by UUID. Bundles need \"hooks\": @API:set_display_name@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

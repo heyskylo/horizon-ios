@@ -100,7 +100,7 @@ impl Launcher {
         let sections = ui::flat_rows(|| self.glass_settings_sections(b, cx));
         let active = self.settings_section(sections.len());
         self.settings_marked = active;
-        let wide = self.window_width >= 1180.;
+        let wide = self.window_width >= crate::glass_home::COMPACT;
         let items: Vec<_> = SECTIONS
             .iter()
             .enumerate()
@@ -366,7 +366,7 @@ impl Launcher {
             .bg(white(0.08))
             .child(ui::icon("computer", 21., white(0.8)))
             .into_any_element();
-        let wide = self.window_width >= 1200.;
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
         div()
             .flex()
             .when(wide, |d| d.flex_row())

@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "world_border", "target": "horizon_client::game::native_world_border::Game<'_>::native_world_border"}
+  ],
+  "rust_summary": "a level's world border bounds (`native_world_border`).",
+  "doc_summary": "`native_world_border(dimension)`, the bounds of a level's world border as the server enforces it (one border for every level in Horizon today). Bundles need \"hooks\": @API:world_border@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_world_border.rs"
+  ]
+}

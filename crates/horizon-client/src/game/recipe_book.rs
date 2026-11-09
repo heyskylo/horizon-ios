@@ -10,6 +10,7 @@ use horizon_client::{
     hud::{HudBatch, Rect, rgba},
     items::ItemStack,
     menu::place::{PostPlace, Stacked},
+    random_source,
     recipe_book::{Book, BookType, ClientBook, Collection, Entry, GhostTarget, Tab},
     recipe_book_screen::{
         self as screen, ButtonView, Call, Drawn, GhostView, ItemCall, OverlayRecipe, OverlayView,
@@ -65,7 +66,7 @@ struct View {
 pub(super) struct RecipeUi {
     book: Option<Book>,
     tab: Option<Tab>,
-    search: Option<EditBox>,
+    pub(super) search: Option<EditBox>,
     page: usize,
     /// Ticks, for the ghost and button cycling (`RecipeBookComponent.time`).
     time: f32,
@@ -84,6 +85,10 @@ pub(super) struct RecipeUi {
     client: ClientBook,
     client_known: Option<BTreeSet<String>>,
     client_version: u64,
+    /// The entries a server's packets carried, by display id: the book is
+    /// made with them over its own (`Book::use_server_entries`).
+    server_entries:
+        std::collections::BTreeMap<i32, horizon_protocol::packets::recipes::RecipeBookEntry>,
     /// The display a click last placed (`lastRecipe`), which Enter and Space
     /// place again; slot clicks keep it.
     last_clicked: Option<i32>,
@@ -115,7 +120,7 @@ fn sprite(name: &str) -> String {
 
 impl Game<'_> {
     /// The book the open screen has, if any.
-    fn active_book(&self) -> Option<BookType> {
+    pub(super) fn active_book(&self) -> Option<BookType> {
         if self.screen != Screen::Inventory || self.station.is_some() {
             return None;
         }
@@ -222,7 +227,7 @@ impl Game<'_> {
         let index = &self.stations().recipe_index;
         let book = self.recipe_ui.book.as_ref();
         // SmithingTrimDemoSlotDisplay draws from a random of its own.
-        let mut random = super::dispenser::entity_random();
+        let mut random = random_source::entity();
         let mut items = Vec::new();
         let mut first = None;
         for id in recipes {
@@ -375,16 +380,52 @@ impl Game<'_> {
             self.recipe_ui.client.displays(),
         )
     }
+    /// A new session forgets the entries the last server's packets carried.
+    pub(super) fn recipe_ui_forget_server_entries(&mut self) {
+        self.recipe_ui.server_entries.clear();
+    }
     /// The book's model is made again from `Game::recipes` when next needed:
     /// the server's recipes arrived, or a new session began.
     pub(super) fn forget_book(&mut self) {
         self.recipe_ui.book = None;
         self.recipe_tables.categories = None;
     }
+    /// Puts a server's entries over `book` (`Book::use_server_entries`). The
+    /// names come from the connection's registries; a tag's items are the ones
+    /// the client knows for it (the server's tags are not read).
+    fn server_entries_over<'a>(
+        &self,
+        book: &mut Book,
+        entries: impl IntoIterator<Item = &'a horizon_protocol::packets::recipes::RecipeBookEntry>,
+    ) {
+        let Some(r) = self.remote.as_ref() else {
+            return;
+        };
+        let items = self.items();
+        let name_of = |registry: &str, id: i32| {
+            r.builtin
+                .get(registry)
+                .and_then(|ids| ids.name(id))
+                .map(str::to_owned)
+        };
+        let item = |id: i32| name_of("minecraft:item", id);
+        let category = |id: i32| name_of("minecraft:recipe_book_category", id);
+        let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
+        book.use_server_entries(
+            entries,
+            &horizon_client::recipe_book::PacketNames {
+                item: &item,
+                category: &category,
+                tag: &tag,
+            },
+        );
+    }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
             let mut book = Book::build(self.recipes(), self.items());
             book.set_display_ids(&self.stations().recipe_index);
+            // A server numbers and describes its recipes itself.
+            self.server_entries_over(&mut book, self.recipe_ui.server_entries.values());
             self.recipe_ui.book = Some(book);
         }
         if self.recipe_ui.search.is_none() {
@@ -546,6 +587,7 @@ impl Game<'_> {
                     horizon_client::item_tooltip::lines(
                         stack,
                         self.items().get(&stack.item),
+                        self.enchantments(),
                         &|k| self.pack.names.display_get(k),
                     )
                 })
@@ -854,6 +896,108 @@ impl Game<'_> {
         self.audio
             .play("minecraft:ui.button.click", None, 0.25, 1.0);
     }
+    /// The crafting book's entry of the recipe button under the pointer, in its overlay if open.
+    pub(super) fn recipe_under_pointer(&self) -> Option<usize> {
+        let batch = self.batch_for_size()?;
+        let book_type = self.active_book()?;
+        if !self.book_open(book_type) || self.spectator() {
+            return None;
+        }
+        let cursor = self.cursor;
+        if let Some(overlay) = &self.recipe_ui.overlay {
+            let maxrow = if overlay.entries.len() <= 16 { 4 } else { 5 };
+            return overlay.entries.iter().enumerate().find_map(|(n, e)| {
+                let x = overlay.x + 4.0 + 25.0 * (n % maxrow) as f32;
+                let y = overlay.y + 5.0 + 25.0 * (n / maxrow) as f32;
+                inside(cursor, x, y, 24.0, 24.0).then_some(e.0)
+            });
+        }
+        let (xo, yo) = self.book_origin(&batch);
+        let first = self.recipe_ui.page * 20;
+        (0..20).find_map(|n| {
+            let button = self.recipe_ui.view.buttons.get(first + n)?;
+            let (x, y) = Self::button_pos(xo, yo, n);
+            inside(cursor, x, y, 25.0, 25.0)
+                .then(|| button.entries[self.swap_index() % button.entries.len()].0)
+        })
+    }
+    /// The recipe button under the pointer has others to show (`gui.recipebook.moreRecipes`).
+    pub(super) fn recipe_has_alternatives_under_pointer(&self) -> bool {
+        let Some(batch) = self.batch_for_size() else {
+            return false;
+        };
+        if self.recipe_ui.overlay.is_some() {
+            return false;
+        }
+        let (xo, yo) = self.book_origin(&batch);
+        let first = self.recipe_ui.page * 20;
+        (0..20).any(|n| {
+            let (x, y) = Self::button_pos(xo, yo, n);
+            inside(self.cursor, x, y, 25.0, 25.0)
+                && self
+                    .recipe_ui
+                    .view
+                    .buttons
+                    .get(first + n)
+                    .is_some_and(|button| button.entries.len() > 1)
+        })
+    }
+    /// The pointer is on one of the book's own controls, a recipe or not.
+    pub(super) fn recipe_book_under_pointer(&self) -> bool {
+        self.recipe_book_targets().iter().any(|t| {
+            let [x, y, w, h] = t.rect;
+            inside(self.cursor, x, y, w, h)
+        })
+    }
+    /// Whether the crafting book's entry can be crafted from what the menu holds now.
+    pub(super) fn recipe_craftable(&mut self, entry_index: usize) -> bool {
+        let available = self.book_available(BookType::Crafting);
+        self.recipe_ui.book.as_ref().is_some_and(|book| {
+            book.entries
+                .get(entry_index)
+                .is_some_and(|entry| book.can_craft(entry, &available))
+        })
+    }
+    /// The crafting book's entry by what a rebuilt book keeps of it (`pad_craft::RecipeKey`).
+    pub(super) fn recipe_stable_key(
+        &self,
+        entry_index: usize,
+    ) -> Option<super::pad_craft::RecipeKey> {
+        let entry = self.recipe_ui.book.as_ref()?.entries.get(entry_index)?;
+        Some(super::pad_craft::RecipeKey {
+            id: entry.id.clone(),
+            display: entry.display_id,
+        })
+    }
+    /// Where the crafting book holds the recipe now: none once the book has it no more.
+    pub(super) fn recipe_entry_index(&self, key: &super::pad_craft::RecipeKey) -> Option<usize> {
+        self.recipe_ui
+            .book
+            .as_ref()?
+            .entries
+            .iter()
+            .position(|e| e.id == key.id && e.display_id == key.display)
+    }
+    /// What the crafting book's entry makes: none when the book has no such entry.
+    pub(super) fn recipe_results(&self, entry_index: usize) -> &[ItemStack] {
+        self.recipe_ui
+            .book
+            .as_ref()
+            .and_then(|book| book.entries.get(entry_index))
+            .map_or(&[], Entry::results)
+    }
+    /// Places one set of the crafting book's entry, as a click on its button places it.
+    pub(super) fn recipe_place_once(&mut self, entry_index: usize) {
+        self.recipe_ui.last_placed = self
+            .recipe_ui
+            .book
+            .as_ref()
+            .and_then(|b| b.entries.get(entry_index))
+            .map(|e| e.id.clone());
+        self.recipe_ui.ghost.clear();
+        self.recipe_ui.overlay = None;
+        self.place_recipe(BookType::Crafting, entry_index, false);
+    }
     /// The recipe book's buttons a controller can focus: the book button,
     /// recipes, page arrows, the craftable filter and the tabs (GUI pixels;
     /// the search box registers itself as a field).
@@ -873,6 +1017,13 @@ impl Game<'_> {
             return out;
         }
         let (xo, yo) = self.book_origin(&batch);
+        if self.recipe_ui.overlay.is_none() {
+            // The search box is painted by hand: a field, for the pad's keyboard.
+            out.push(Target {
+                rect: [xo + 25.0, yo + 13.0, 81.0, 14.0],
+                kind: Kind::Field,
+            });
+        }
         if let Some(overlay) = &self.recipe_ui.overlay {
             // The alternatives overlay takes every click while open.
             let maxrow = if overlay.entries.len() <= 16 { 4 } else { 5 };
@@ -994,11 +1145,20 @@ impl Game<'_> {
         true
     }
     /// Whether the open screen takes `native_place_recipe`: a crafting grid's
-    /// book (the inventory's or a crafting table's).
+    /// book (the inventory's or a crafting table's), or a mod menu type's
+    /// crafting grid.
     pub(super) fn mod_recipe_screen(&self) -> bool {
         self.screen == Screen::Inventory
-            && self.active_book() == Some(BookType::Crafting)
+            && (self.active_book() == Some(BookType::Crafting) || self.mod_crafting_open())
             && !self.spectator()
+    }
+    /// Whether the open menu is a mod menu type with a crafting grid.
+    fn mod_crafting_open(&self) -> bool {
+        self.remote
+            .as_ref()
+            .and_then(|r| r.menu.as_ref())
+            .and_then(|(_, menu)| horizon_client::containers::mod_menu_type(menu))
+            .is_some_and(|t| t.crafting.is_some())
     }
     /// `native_place_recipe`: the book's click on the recipe with this display
     /// id, refused as `handlePlaceRecipe` refuses it (no crafting screen,
@@ -1019,6 +1179,109 @@ impl Game<'_> {
         self.recipe_ui.ghost.clear();
         self.place_recipe(BookType::Crafting, index, all);
     }
+    /// A viewer's transfer of one set of ingredients, or with `all` as many as
+    /// the items allow (vanilla's Shift placement, `useMaxItems`).
+    pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32, all: bool) {
+        self.panel.transfer_warning = None;
+        if !self.mod_recipe_screen()
+            || (self.creative && self.craft_size != 3 && !self.mod_crafting_open())
+        {
+            self.show_transfer_result(3);
+            return;
+        }
+        if self.remote.as_ref().is_some_and(|r| !r.recipe_transfer) {
+            // Older Horizon and vanilla servers still accept book clicks.
+            if self.recipe_place(display_id, all).is_err() {
+                self.show_transfer_result(4);
+            }
+            return;
+        }
+        self.ensure_book();
+        let Some(id) = self
+            .recipe_ui
+            .book
+            .as_ref()
+            .and_then(|book| {
+                book.entries
+                    .iter()
+                    .find(|entry| entry.display_id == display_id)
+            })
+            .map(|entry| entry.id.clone())
+        else {
+            self.show_transfer_result(3);
+            return;
+        };
+        if self.remote.is_some() {
+            let mut request = horizon_protocol::buf::Writer::new();
+            request.varint(self.remote_menu_id());
+            request.string(&id);
+            // A trailing flag asks for as many as fit; a single transfer
+            // sends none, so servers from before it still take it.
+            if all {
+                request.u8(1);
+            }
+            self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+                horizon_protocol::packets::configuration::CustomPayload {
+                    channel: horizon_client::lan::recipes::TRANSFER_CHANNEL.into(),
+                    data: request.data,
+                },
+            ));
+            return;
+        }
+        use horizon_client::menu::place::TransferError;
+        let mut result = Err(TransferError::Unavailable);
+        self.menu_session(|menu, env, _| {
+            result = menu.transfer_recipe(env, &id, all);
+            Some(result.is_ok())
+        });
+        self.show_transfer_result(match result {
+            Ok(()) => 0,
+            Err(TransferError::Missing) => 1,
+            Err(TransferError::NoRoom) => 2,
+            Err(TransferError::Unavailable) => 3,
+        });
+        if result.is_ok() {
+            self.recipe_book_changed();
+        }
+    }
+
+    pub(super) fn remote_recipe_transfer(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            if let Some(remote) = &mut self.remote {
+                remote.recipe_transfer = true;
+            }
+            return;
+        }
+        let mut reader = horizon_protocol::buf::Reader::new(data);
+        if let (Ok(container), Ok(result)) = (reader.varint(), reader.u8())
+            && reader.remaining() == 0
+            && container == self.remote_menu_id()
+            && self.mod_recipe_screen()
+            && self.panel.recipes.is_some()
+        {
+            self.show_transfer_result(result);
+        }
+    }
+
+    fn show_transfer_result(&mut self, result: u8) {
+        if result == 0 {
+            self.close_transferred_recipe();
+        }
+        self.panel.transfer_warning = match result {
+            1 => Some(("horizon.recipe_transfer.missing", "Missing Items")),
+            2 => Some(("horizon.recipe_transfer.no_room", "Inventory full")),
+            3 => Some((
+                "horizon.recipe_transfer.unavailable",
+                "Recipe does not fit this menu",
+            )),
+            4 => Some((
+                "horizon.recipe_transfer.unsupported",
+                "Server requires a known recipe",
+            )),
+            _ => None,
+        };
+    }
+
     /// `ServerboundPlaceRecipePacket`: the server places the recipe
     /// (`ServerPlaceRecipe` on the menu engine) and answers with a ghost
     /// recipe when the items are missing.
@@ -1084,10 +1347,12 @@ impl Game<'_> {
         let ui = &mut self.recipe_ui;
         if p.replace {
             ui.client.clear();
+            ui.server_entries.clear();
         }
         let mut toast = Vec::new();
         for e in &p.entries {
             ui.client.add(e.id);
+            ui.server_entries.insert(e.id, e.clone());
             if e.flags & 2 != 0 {
                 ui.client.highlight.insert(e.id);
             }
@@ -1101,6 +1366,14 @@ impl Game<'_> {
         // A local world opened later syncs its book from scratch.
         ui.client_known = None;
         ui.client_version += 1;
+        // A replacing packet starts the book again from its own recipes; a
+        // later one puts its entries over the book as it is.
+        if p.replace {
+            ui.book = None;
+        } else if let Some(mut book) = ui.book.take() {
+            self.server_entries_over(&mut book, p.entries.iter());
+            self.recipe_ui.book = Some(book);
+        }
         self.recipe_toast(&toast);
     }
     /// ClientboundRecipeBookRemovePacket.
@@ -1110,6 +1383,7 @@ impl Game<'_> {
     ) {
         for id in p.ids {
             self.recipe_ui.client.remove(id);
+            self.recipe_ui.server_entries.remove(&id);
         }
         self.recipe_ui.client_version += 1;
     }
@@ -1144,6 +1418,8 @@ impl Game<'_> {
             self.recipe_ui.ghost.clear();
             self.fill_ghost(book_type, &entry);
         }
+        // The server is missing an item the client counted: nothing was placed.
+        self.direct_craft_refused();
     }
 
     // ---- ghost recipe ----
@@ -1238,8 +1514,7 @@ impl Game<'_> {
                         .map(|e| vec![book.entries[e.0].result.clone()])
                         .collect();
                     let stack = screen::display_stack(&results, self.swap_index());
-                    let names = |id: &str| self.pack.names.display_item(id);
-                    let item = horizon_client::stations::hover_name(&names, &stack);
+                    let item = horizon_client::stations::hover_name(&self.pack.names, &stack);
                     let (x, y) = Self::button_pos(xo, yo, n);
                     in_book(
                         Narratable::recipe(item, b.entries.len() > 1, [x, y, 25.0, 25.0]),

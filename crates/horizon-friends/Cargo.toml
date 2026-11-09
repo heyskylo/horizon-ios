@@ -2,10 +2,12 @@
 name = "horizon-friends"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 license = "MIT"
 description = "Play with friends: invite codes, the relay protocol, the end-to-end encrypted tunnel between a host's integrated server and its guests"
 
 [dependencies]
+horizon-addresses = { path = "../horizon-addresses" }
 # The key exchange keyed by the code's secret, then the frames.
 spake2 = { version = "0.4", features = ["getrandom"] }
 chacha20poly1305 = "0.10"
@@ -13,9 +15,9 @@ hkdf = "0.12"
 sha2 = "0.10"
 getrandom = "0.3"
 # SO_REUSEADDR/SO_REUSEPORT for the direct socket (TCP simultaneous open).
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 # This machine's addresses (LAN, VPNs such as Tailscale or ZeroTier, IPv6) for the code.
-if-addrs = "0.13"
+if-addrs = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"
 

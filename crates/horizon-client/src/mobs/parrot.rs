@@ -314,17 +314,18 @@ mod tests {
         assert!(m.ai.goals.has("ParrotWander"));
     }
 
-    /// `Parrot.getVoicePitch` is `getPitch(random)`, the plain 1.0 ± 0.2, and
-    /// `getPitch` takes no age into account: a baby parrot does not get the
-    /// 1.5 that `LivingEntity.getVoicePitch` raises every other baby's voice
-    /// by. A baby chicken is the control.
+    /// `Parrot.canBeABaby` is `false`, so a negative `Age` — a `/summon` with
+    /// `Age:-24000`, a save that carried one — leaves a parrot an adult:
+    /// `isBaby()` is `canBeABaby() && getAge() < 0`, and `getVoicePitch` is
+    /// `getPitch(random)`, the plain 1.0 ± 0.2 that an adult gets anyway. A
+    /// chicken with the same age is the control.
     #[test]
-    fn a_baby_parrot_keeps_the_plain_voice_pitch() {
+    fn a_parrot_with_a_negative_age_keeps_the_plain_voice_pitch() {
         let mut parrot = parrot();
         parrot.extra.age = -24_000;
-        assert!(parrot.is_baby());
-        let mut baby = parrot.clone();
-        let pitches: Vec<f32> = (0..64).map(|_| baby.voice_pitch()).collect();
+        assert!(!parrot.is_baby());
+        let mut voice = parrot.clone();
+        let pitches: Vec<f32> = (0..64).map(|_| voice.voice_pitch()).collect();
         assert!(
             pitches.iter().all(|p| (0.8..=1.2).contains(p)),
             "{pitches:?}"

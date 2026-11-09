@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Actual loot-mine pot component boundary; raw snapshots and clocks retained.
 
-Admit fresh Java with --reference-only --work-dir REF; compare each archived
-normal Game against --reference-dir REF with a fresh --work-dir OUT.
+A plain run (tools/parity.py) runs fresh Java and this checkout's game and compares them.
+To compare archived binaries: admit fresh Java with --reference-only --work-dir REF, then
+compare each normal Game against --reference-dir REF with a fresh --work-dir OUT.
 """
 import json
 from pathlib import Path
@@ -92,7 +93,6 @@ def main():
         sys.argv.append("--allow-gaps")
     folder = Path(sys.argv[sys.argv.index("--work-dir") + 1]).resolve()
     if reference is None:
-        assert "--reference-only" in sys.argv, "admit Java before the native pair"
         runner.main()
     else:
         assert "--reference-only" not in sys.argv

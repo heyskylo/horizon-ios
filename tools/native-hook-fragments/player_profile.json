@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_profile",
+      "target": "horizon_client_lib::lan::conn::native_player_profile",
+      "neoforge": "none (Velocity's GameProfileRequestEvent, Paper's PlayerProfile in AsyncPlayerPreLoginEvent)",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a joining player's profile properties on the connection's thread, before `LoginFinished` (`native_player_profile`).",
+  "doc_summary": "`native_player_profile(player, name, properties)` hears a joining player's profile on the connection's own thread, once the server has let them in and before it sends `LoginFinished`: change, add or remove `properties` (a skin's `textures`) and the player's own client and every player list get the new ones. No `Game` and no helper there; the hook may block for a lookup. Bundles need \"hooks\": @API:player_profile@.",
+  "comments": ["crates/horizon-client/src/lan/conn.rs"]
+}

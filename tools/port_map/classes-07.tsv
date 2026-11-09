@@ -16,7 +16,7 @@ structure/StructureCheck.onStructureLoad	inline	crates/horizon-client/src/vanill
 structure/StructureCheck.storeFullResults	skip:other		cache write for the storage check
 structure/StructureCheck.tryLoadFromStorage	skip:other		chunk NBT scan for the storage cache; Horizon places saved starts with use_saved_start
 PiecesContainer.isInsidePiece	inline	crates/horizon-world/src/worldgen/generator_decoration.rs::World::add_entity	start-piece box test that feeds the mob finalize hook
-PiecesContainer.load	port	crates/horizon-world/src/worldgen/generator_structures.rs::StructureState::use_saved_start	gap: minor: only jigsaw pool pieces are read back; legacy piece types are not
+PiecesContainer.load	port	crates/horizon-world/src/worldgen/generator_structures.rs::saved_piece_id	the four ids an old save wrote for a jigsaw piece (`nvi`, `pcp`, `bastionremnant`, `runtime`) are read as `minecraft:jigsaw` (`RENAMES`), the piece itself decoding through `PoolPiece::from_saved`; a piece of another type keeps the start on the generator's rebuild (gap: minor)
 PiecesContainer.save	port	crates/horizon-world/src/worldgen/structure/start.rs::StructureStart::save	writes the Children list of the start
 StructurePieceSerializationContext	skip:java		record bundling server services for piece NBT; Horizon passes its resources explicitly
 StructurePiecesBuilder.moveBelowSeaLevel	inline	crates/horizon-world/src/worldgen/structure/mineshaft.rs::generate	sea-level drop of the pieces; stronghold::generate has the same step

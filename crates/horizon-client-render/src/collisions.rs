@@ -208,7 +208,7 @@ where
         Ok(resolve_world_movement(
             self,
             MovementRequest {
-                entity: EntityIdentity(0),
+                entity: context.entity().unwrap_or(EntityIdentity(0)),
                 context,
                 bounds,
                 movement,
@@ -244,10 +244,23 @@ impl SceneCollisions<'_, '_> {
         on_ground: bool,
         border: Option<(&BorderGeometry, [f64; 2])>,
     ) -> Result<Vec3> {
+        self.resolve_in_border_with(bounds, movement, max_step, on_ground, border, &[])
+    }
+    /// [`Self::resolve_in_border`], also stopped by `entities`: the boxes
+    /// `EntityGetter.getEntityCollisions` gave the moving entity.
+    pub fn resolve_in_border_with(
+        self,
+        bounds: Aabb,
+        movement: Vec3,
+        max_step: f32,
+        on_ground: bool,
+        border: Option<(&BorderGeometry, [f64; 2])>,
+        entities: &[Aabb],
+    ) -> Result<Vec3> {
         let context = self.context(bounds);
         EntityCollisions {
             blocks: self,
-            entities: &[],
+            entities,
             border,
         }
         .resolve_with_context(bounds, movement, max_step, on_ground, context)
@@ -266,7 +279,7 @@ impl SceneCollisions<'_, '_> {
         Ok(resolve_world_movement(
             self,
             MovementRequest {
-                entity: EntityIdentity(0),
+                entity: context.entity().unwrap_or(EntityIdentity(0)),
                 context,
                 bounds,
                 movement,
@@ -287,6 +300,7 @@ impl SceneCollisions<'_, '_> {
         CollisionContext::for_entity(
             CollisionEntity {
                 identity: EntityIdentity(0),
+                kind: horizon_world::collision_context::EntityContextKind::Living,
                 y,
                 descending: false,
                 main_hand: Some(CollisionItem::EMPTY),
@@ -321,6 +335,58 @@ where
     W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
 {
     no_collision_in(world, bounds, true)
+}
+/// `CollisionGetter.noCollision(entity, bounds)`: retain the real entity snapshot.
+pub fn no_collision_with_context<W, E>(
+    world: &mut W,
+    bounds: Aabb,
+    context: CollisionContext<'_>,
+) -> bool
+where
+    W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
+{
+    no_world_collision(
+        world,
+        CollisionCheckRequest {
+            entity: context.entity().unwrap_or(EntityIdentity(0)),
+            context,
+            bounds,
+            candidate_budget: 1_000_000,
+        },
+    )
+    .unwrap_or(false)
+}
+/// `Level.loadedAndEntityCanStandOn(pos, projectile)` with the projectile's
+/// feet at `entity_y` (`loadedAndEntityCanStandOnFace` with `UP`):
+/// `Block.isFaceFull(state.getCollisionShape(level, pos,
+/// CollisionContext.of(projectile)), UP)`. A projectile is not living and never
+/// falls (it moves by `setPos`), so powder snow and liquids hold nothing up
+/// and only scaffolding reads the height. An unloaded or out-of-world block
+/// reads as air.
+pub fn projectile_can_stand_on(
+    world: &World,
+    binding: &BlockCollisionRegistry<'_>,
+    pos: BlockPos,
+    entity_y: f64,
+) -> bool {
+    use horizon_core::geometry::{Direction, ShapeOp};
+    let mut scene = SceneCollisions {
+        world,
+        binding,
+        subject: None,
+    };
+    let state = world.block(pos.x, pos.y, pos.z);
+    let context = CollisionContext::position(entity_y);
+    binding
+        .collision_shape_with_context(&mut scene, state, pos, &context)
+        .is_ok_and(|shape| {
+            shape.is_block()
+                || shape.face_shape(Direction::Up).is_ok_and(|face| {
+                    VoxelShape::block()
+                        .join_is_not_empty(&face, ShapeOp::XOR)
+                        .is_ok_and(|differs| !differs)
+                })
+        })
 }
 fn no_collision_in<W, E>(world: &mut W, bounds: Aabb, fluids: bool) -> bool
 where
@@ -357,54 +423,79 @@ impl SceneCollisions<'_, '_> {
         if lo.x > hi.x || lo.y > hi.y || lo.z > hi.z || cells > 4096 {
             return false;
         }
-        let mut column: Option<((i32, i32), Option<&crate::chunk::Chunk>)> = None;
-        let mut section: Option<((i32, i32), i32, bool)> = None;
-        for z in lo.z..=hi.z {
-            for y in lo.y..=hi.y {
-                for x in lo.x..=hi.x {
-                    let outer = [
-                        x == lo.x || x == hi.x,
-                        y == lo.y || y == hi.y,
-                        z == lo.z || z == hi.z,
-                    ];
-                    let kind = outer.into_iter().filter(|&o| o).count();
-                    if kind == 3 {
+        // A column and section at a time. Most boxes lie in a few sections whose palette says that no
+        // block in them can matter (nothing that collides, nothing that reaches out of its cell), and
+        // then none of their cells is read: a particle's box at speed spans dozens of cells.
+        for cz in (lo.z >> 4)..=(hi.z >> 4) {
+            for cx in (lo.x >> 4)..=(hi.x >> 4) {
+                // The scan passes the cells of a column that is not resident.
+                let Some(chunk) = self.world.chunks.get(&(cx, cz)).map(|c| &**c) else {
+                    continue;
+                };
+                let (x0, x1) = (lo.x.max(cx << 4), hi.x.min((cx << 4) + 15));
+                let (z0, z1) = (lo.z.max(cz << 4), hi.z.min((cz << 4) + 15));
+                for sy in (lo.y >> 4)..=(hi.y >> 4) {
+                    let reaches = self.section_reaches_out(chunk, sy);
+                    if !reaches && self.section_blocks_all_empty(chunk, sy) {
                         continue;
                     }
-                    let at = (x >> 4, z >> 4);
-                    let chunk = match column {
-                        Some((c, chunk)) if c == at => chunk,
-                        _ => {
-                            let chunk = self.world.chunks.get(&at).map(|c| &**c);
-                            column = Some((at, chunk));
-                            chunk
-                        }
-                    };
-                    // The scan passes the cells of a column that is not resident.
-                    let Some(chunk) = chunk else {
-                        continue;
-                    };
-                    if kind != 0 {
-                        let reaches = match section {
-                            Some((c, sy, reaches)) if c == at && sy == y >> 4 => reaches,
-                            _ => {
-                                let reaches = self.section_reaches_out(chunk, y >> 4);
-                                section = Some((at, y >> 4, reaches));
-                                reaches
+                    let (y0, y1) = (lo.y.max(sy << 4), hi.y.min((sy << 4) + 15));
+                    if !reaches {
+                        // Nothing in the section reaches out of its cell: only the inner cells matter.
+                        for z in z0.max(lo.z + 1)..=z1.min(hi.z - 1) {
+                            for y in y0.max(lo.y + 1)..=y1.min(hi.y - 1) {
+                                for x in x0.max(lo.x + 1)..=x1.min(hi.x - 1) {
+                                    if self.binding.may_collide(chunk.block(x, y, z)) {
+                                        return false;
+                                    }
+                                }
                             }
-                        };
-                        if reaches {
-                            return false;
                         }
                         continue;
                     }
-                    if self.binding.may_collide(chunk.block(x, y, z)) {
-                        return false;
+                    for z in z0..=z1 {
+                        let outer_z = z == lo.z || z == hi.z;
+                        for y in y0..=y1 {
+                            let outer_y = y == lo.y || y == hi.y;
+                            for x in x0..=x1 {
+                                let outer = [x == lo.x || x == hi.x, outer_y, outer_z];
+                                let kind = outer.into_iter().filter(|&o| o).count();
+                                if kind == 3 {
+                                    continue;
+                                }
+                                if kind != 0 {
+                                    if reaches {
+                                        return false;
+                                    }
+                                    continue;
+                                }
+                                if self.binding.may_collide(chunk.block(x, y, z)) {
+                                    return false;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         true
+    }
+
+    /// Whether every block a section's palette holds has an empty collision shape (air, plants);
+    /// false for a palette of the whole registry or a section outside the column.
+    fn section_blocks_all_empty(&self, chunk: &crate::chunk::Chunk, section_y: i32) -> bool {
+        let blocks = usize::try_from(section_y - (chunk.min_y() >> 4))
+            .ok()
+            .and_then(|s| chunk.sections.get(s))
+            .map(|section| &section.blocks);
+        blocks.is_some_and(|blocks| {
+            !blocks.is_global()
+                && !blocks.maybe_has(|v| {
+                    self.binding
+                        .collision_block(BlockStateId(v))
+                        .map_or(true, |block| !block.empty_shape)
+                })
+        })
     }
 
     /// `may_reach_out`: whether a section's palette holds a block that reaches out of
@@ -437,18 +528,7 @@ impl<'w> BlockCollisionWorld for SceneCollisions<'w, '_> {
     /// From the section's palette: every block it can hold has an empty shape (air, plants).
     /// A palette of the whole registry, or a section outside the column, is read cell by cell.
     fn section_is_empty(&mut self, chunk: Self::Chunk, section_y: i32) -> io::Result<bool> {
-        let blocks = usize::try_from(section_y - (chunk.min_y() >> 4))
-            .ok()
-            .and_then(|s| chunk.sections.get(s))
-            .map(|section| &section.blocks);
-        Ok(blocks.is_some_and(|blocks| {
-            !blocks.is_global()
-                && !blocks.maybe_has(|v| {
-                    self.binding
-                        .collision_block(BlockStateId(v))
-                        .map_or(true, |block| !block.empty_shape)
-                })
-        }))
+        Ok(self.section_blocks_all_empty(chunk, section_y))
     }
     /// The resident columns do not change while a scan runs, and looking one up changes nothing.
     fn missing_chunks_stay_missing(&self) -> bool {
@@ -933,6 +1013,76 @@ mod shulker_collision_tests {
 mod section_tests {
     use super::*;
 
+    impl SceneCollisions<'_, '_> {
+        /// `cells_without_collision` as it was before it skipped sections: every cell of the box, one at a time.
+        fn cells_without_collision_by_cell(&self, bounds: Aabb) -> bool {
+            let (min, max) = (bounds.min_position(), bounds.max_position());
+            if !min.is_finite() || !max.is_finite() {
+                return false;
+            }
+            // The scan's cells: one past the box on every side (`block_collision_scan::cells`).
+            let lo =
+                BlockPos::containing(Vec3::new(min.x - 1.0e-7, min.y - 1.0e-7, min.z - 1.0e-7))
+                    .offset(-1, -1, -1);
+            let hi =
+                BlockPos::containing(Vec3::new(max.x + 1.0e-7, max.y + 1.0e-7, max.z + 1.0e-7))
+                    .offset(1, 1, 1);
+            let size = |a: i32, b: i32| i64::from(b) - i64::from(a) + 1;
+            let cells = size(lo.x, hi.x) * size(lo.y, hi.y) * size(lo.z, hi.z);
+            if lo.x > hi.x || lo.y > hi.y || lo.z > hi.z || cells > 4096 {
+                return false;
+            }
+            let mut column: Option<((i32, i32), Option<&crate::chunk::Chunk>)> = None;
+            let mut section: Option<((i32, i32), i32, bool)> = None;
+            for z in lo.z..=hi.z {
+                for y in lo.y..=hi.y {
+                    for x in lo.x..=hi.x {
+                        let outer = [
+                            x == lo.x || x == hi.x,
+                            y == lo.y || y == hi.y,
+                            z == lo.z || z == hi.z,
+                        ];
+                        let kind = outer.into_iter().filter(|&o| o).count();
+                        if kind == 3 {
+                            continue;
+                        }
+                        let at = (x >> 4, z >> 4);
+                        let chunk = match column {
+                            Some((c, chunk)) if c == at => chunk,
+                            _ => {
+                                let chunk = self.world.chunks.get(&at).map(|c| &**c);
+                                column = Some((at, chunk));
+                                chunk
+                            }
+                        };
+                        // The scan passes the cells of a column that is not resident.
+                        let Some(chunk) = chunk else {
+                            continue;
+                        };
+                        if kind != 0 {
+                            let reaches = match section {
+                                Some((c, sy, reaches)) if c == at && sy == y >> 4 => reaches,
+                                _ => {
+                                    let reaches = self.section_reaches_out(chunk, y >> 4);
+                                    section = Some((at, y >> 4, reaches));
+                                    reaches
+                                }
+                            };
+                            if reaches {
+                                return false;
+                            }
+                            continue;
+                        }
+                        if self.binding.may_collide(chunk.block(x, y, z)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        }
+    }
+
     /// Boxes swept through air, past torches (no collision shape), a fence (a shape
     /// reaching into the cell above) and the scene's stone: wherever the cells say no
     /// block can collide, the full resolution returns the movement, to the bit; the rest
@@ -990,6 +1140,11 @@ mod section_tests {
                 (next() - 0.5) * reach,
             );
             let fast = scene.cells_without_collision(bb.expand_towards(d));
+            assert_eq!(
+                fast,
+                scene.cells_without_collision_by_cell(bb.expand_towards(d)),
+                "{bb:?} by {d:?}"
+            );
             let mut full = SceneCollisions {
                 world: &world,
                 binding: &binding,

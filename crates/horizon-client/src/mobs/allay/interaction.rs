@@ -43,8 +43,7 @@ pub fn predict(
     {
         given.count = 1;
         mob.extra.set_main_hand_stack(Some(given));
-        mob.extra.tame = true;
-        mob.extra.owner = Some(actor);
+        super::like_player(mob, actor);
         return Some(Interaction::Give);
     }
     if main_hand
@@ -52,8 +51,7 @@ pub fn predict(
         && let Some(held) = held
     {
         mob.extra.set_main_hand(None);
-        mob.extra.tame = false;
-        mob.extra.owner = None;
+        super::forget_liked_player(mob);
         mob.swing();
         return Some(Interaction::Take(held));
     }

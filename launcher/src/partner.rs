@@ -151,7 +151,7 @@ fn headline() -> StyledText {
 }
 
 /// "HORIZON15 · 15% off" in a dashed cyan frame, as on Sculk's banner.
-fn code_chip(size: f32, height: f32) -> Div {
+fn code_chip(size: f32, height: f32, glass: bool) -> Div {
     div()
         .flex()
         .items_center()
@@ -162,7 +162,7 @@ fn code_chip(size: f32, height: f32) -> Div {
         .border_1()
         .border_dashed()
         .border_color(rgba(CYAN, 0.7))
-        .rounded(px(6.))
+        .rounded(px(if glass { 6. } else { 0. }))
         .font_family(crate::theme::MONO)
         .text_size(px(size))
         .whitespace_nowrap()
@@ -203,7 +203,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
         .flex_none()
         .w(px(width))
         .bg(rgb(CARD))
-        .rounded(px(10.))
+        .rounded(px(if t.glass { 10. } else { 0. }))
         .group_hover(id, |s| s.top(px(-2.)));
     let logo = |height: f32| {
         img(LOGO.clone())
@@ -251,7 +251,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
                     .px(px(12.))
                     .pt(px(6.))
                     .pb(px(12.))
-                    .child(code_chip(11., 26.).flex_1()),
+                    .child(code_chip(11., 26., t.glass).flex_1()),
             )
     } else {
         let art_h = width * ART_HEIGHT / ART_WIDTH;
@@ -260,7 +260,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
             .items_center()
             .justify_center()
             .h(px(36.))
-            .rounded(px(8.))
+            .rounded(px(if t.glass { 8. } else { 0. }))
             .bg(rgb(CYAN))
             .group_hover(id, |s| s.bg(rgb(CYAN_HOVER)))
             .text_color(rgb(ON_CYAN))
@@ -304,7 +304,12 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
                             .child(horizon_launcher::i18n::tr("Ready in under a minute")),
                     )
                     .child(div().mt(px(16.)).child(button))
-                    .child(div().mt(px(8.)).flex().child(code_chip(12., 30.).flex_1())),
+                    .child(
+                        div()
+                            .mt(px(8.))
+                            .flex()
+                            .child(code_chip(12., 30., t.glass).flex_1()),
+                    ),
             )
     };
     let el = div()

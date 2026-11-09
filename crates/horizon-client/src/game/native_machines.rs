@@ -17,7 +17,6 @@ use winit::keyboard::KeyCode;
 const FAKE_EYE: f32 = 1.62;
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Breaks the block at `pos` as a machine does, with no player: vanilla's
     /// `Level.destroyBlock(pos, true)` with the loot rolled for `tool`
@@ -440,13 +439,26 @@ pub(crate) mod tests {
 
         let ender = [10, 64, 8];
         let key = (ender[0], ender[1], ender[2]);
+        let diamonds = Some(ItemStack::new("minecraft:diamond", 5));
+        game.ender_items[0] = diamonds.clone();
         assert!(click_new(&mut game, "minecraft:ender_chest", ender).consumed);
         assert!(game.ender_open.is_none());
-        assert!(
-            game.world.block_entities.get(&key).is_none(),
-            "a stand-in chest stayed",
-        );
+        // An ender chest keeps its block entity (`EnderChestBlock.newBlockEntity`), but
+        // `EnderChestBlockEntity` holds no items: the player's own are not left in it.
+        match game.world.block_entities.get(&key) {
+            Some(BlockEntity::Chest(items)) => {
+                assert!(
+                    items.iter().all(Option::is_none),
+                    "the player's items stayed"
+                );
+            }
+            other => panic!("the ender chest lost its block entity: {other:?}"),
+        }
         assert!(!game.lid_openers.contains_key(&key), "its lid stayed open");
+        assert_eq!(
+            game.ender_items[0], diamonds,
+            "the server's own ender items changed"
+        );
     }
 
     /// Each field holds a value the use can't have written, so a swap that

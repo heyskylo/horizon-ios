@@ -124,6 +124,25 @@ fn write(words: &mut [u64], bits: u8, i: usize, value: u32) {
     let (word, shift) = locate(bits, i);
     words[word] = (words[word] & !(mask(bits) << shift)) | (u64::from(value) << shift);
 }
+/// `word + add`, bit by bit: which bits carried out of their position. The
+/// carry out of bit `i` is `a & b | (a | b) & !sum` for `sum = a + b`.
+#[inline]
+fn carry_out(word: u64, add: u64, sum: u64) -> u64 {
+    (word & add) | ((word | add) & !sum)
+}
+/// The first of `count` `bits`-wide fields of `word` that is `len` or more.
+fn first_bad(word: u64, count: usize, bits: usize, len: usize) -> PaletteError {
+    for slot in 0..count {
+        let index = ((word >> (slot * bits)) & ((1 << bits) - 1)) as u32;
+        if index as usize >= len {
+            return PaletteError::BadIndex {
+                index,
+                palette: len,
+            };
+        }
+    }
+    unreachable!("check_indices found no field past the palette")
+}
 /// Values below this are looked up in a table indexed by value once a
 /// palette outgrows the scan: every block state and biome id of 26.3.
 const DENSE_VALUES: u32 = 1 << 16;
@@ -505,7 +524,7 @@ impl PalettedContainer {
         // Four bits a linear palette's usual width: a whole word of them is a
         // row of 16, and immediate shifts for the compiler to unroll.
         if self.bits == 4 {
-            for (row, &word) in out.chunks_exact_mut(16).zip(&self.words) {
+            for (row, &word) in out.as_chunks_mut::<16>().0.iter_mut().zip(&self.words) {
                 for (x, cell) in row.iter_mut().enumerate() {
                     *cell = map[((word >> (x * 4)) & 0xF) as usize];
                 }
@@ -621,28 +640,55 @@ impl PalettedContainer {
             }),
         }
     }
+    /// Rejects a stored index at or past the palette: the same inputs are
+    /// accepted as an entry-by-entry scan accepts, and the same first offending
+    /// entry is named. One whole word is checked at once: adding `2^bits - len`
+    /// to a word lifts every field by that much, so a field carries out of its
+    /// own bits exactly when its index is past the palette. A carry out of a
+    /// field that a previous field's carry reached adds one more, so such a
+    /// field can only look bad where a genuinely bad field precedes it in the
+    /// same word; the word is then rescanned entry by entry for the error.
     fn check_indices(&self) -> Result<(), PaletteError> {
         let Palette::List(list) = &self.palette else {
             return Ok(());
         };
-        if list.len() == 1 << self.bits {
+        let len = list.len();
+        debug_assert!(len >= 1);
+        debug_assert_eq!(
+            self.words.len(),
+            storage_len(self.bits, self.strategy.entries())
+        );
+        let bits = usize::from(self.bits);
+        if len == 1 << bits {
+            // Every field is a palette entry.
             return Ok(());
         }
-        let per = 64 / usize::from(self.bits);
-        let mut remaining = self.strategy.entries();
-        let mask = mask(self.bits);
-        for &word in &self.words {
-            let count = remaining.min(per);
-            for slot in 0..count {
-                let index = ((word >> (slot * usize::from(self.bits))) & mask) as u32;
-                if index as usize >= list.len() {
-                    return Err(PaletteError::BadIndex {
-                        index,
-                        palette: list.len(),
-                    });
-                }
+        let per = 64 / bits;
+        let entries = self.strategy.entries();
+        // One in the low bit of each field of a word, the field's top bit, and
+        // the bias that overflows a field whose index is `len` or more.
+        let ones = (0..per).fold(0u64, |a, field| a | 1 << (field * bits));
+        let bias = ones * ((1u64 << bits) - len as u64);
+        let top = ones << (bits - 1);
+        let full = entries / per;
+        let (whole, tail) = self.words.split_at(full);
+        for &word in whole {
+            let sum = word.wrapping_add(bias);
+            if carry_out(word, bias, sum) & top != 0 {
+                return Err(first_bad(word, per, bits, len));
             }
-            remaining -= count;
+        }
+        // The last word's fields past `entries` are padding: whatever they
+        // hold, the scan never reads them.
+        let rest = entries - full * per;
+        if rest > 0
+            && let Some(&word) = tail.first()
+        {
+            let used = (1u64 << (rest * bits)) - 1;
+            let sum = word.wrapping_add(bias & used);
+            if carry_out(word, bias & used, sum) & top & used != 0 {
+                return Err(first_bad(word, rest, bits, len));
+            }
         }
         Ok(())
     }
@@ -660,6 +706,18 @@ impl PalettedContainer {
     /// re-encoded for the saved bit width.
     pub fn pack(&self) -> Packed {
         let entries = self.strategy.entries();
+        // One value in every cell (air, stone, a filled section): the packed
+        // form is that value and no indices, which `uniform` reads off the
+        // stored words. Unpacking the 4,096 cells first to discover the same
+        // thing is most of a section's save cost, and most sections of a
+        // column hold one value.
+        if let Some(value) = self.uniform() {
+            return Packed {
+                palette: vec![value],
+                bits: 0,
+                data: None,
+            };
+        }
         let mut values = vec![0u32; entries];
         self.unpack(&mut values);
         let (palette, ids) = palette_ids(&values);
@@ -1040,6 +1098,97 @@ mod tests {
         assert!(PalettedContainer::from_wire(BIOMES, 2, vec![1, 2, 3, 4, 5], vec![0; 4]).is_err());
         assert!(PalettedContainer::from_wire(BLOCKS, 0, vec![9], vec![]).is_ok());
     }
+    /// Every word of every width against the entry-at-a-time scan, over
+    /// valid data, a bad entry anywhere in a word, garbage only in a word's
+    /// padding fields, and the last word's padding set to all ones: the same
+    /// verdict, and the first offending entry named as before.
+    #[test]
+    fn index_check_matches_an_entry_by_entry_scan() {
+        fn scan(strategy: Strategy, bits: u8, len: usize, words: &[u64]) -> Result<(), u32> {
+            let per = 64 / usize::from(bits);
+            for i in 0..strategy.entries() {
+                if i / per >= words.len() {
+                    break;
+                }
+                let index = read(words, bits, i);
+                if index as usize >= len {
+                    return Err(index);
+                }
+            }
+            Ok(())
+        }
+        fn compare(strategy: Strategy, bits: u8, len: usize, words: &[u64], what: &str) {
+            let container = PalettedContainer {
+                strategy,
+                bits,
+                palette: Palette::List((0..len as u32).collect()),
+                words: words.to_vec(),
+            };
+            match (container.check_indices(), scan(strategy, bits, len, words)) {
+                (Ok(()), Ok(())) => {}
+                (Err(PaletteError::BadIndex { index, palette }), Err(first)) => {
+                    assert_eq!((index, palette), (first, len), "{what}");
+                }
+                (a, b) => panic!("{what}: {a:?} vs {b:?}"),
+            }
+        }
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for strategy in [BLOCKS, BIOMES] {
+            let entries = strategy.entries();
+            let max_len = match strategy.kind {
+                Kind::Blocks => 256,
+                Kind::Biomes => 8,
+            };
+            for len in 2..=max_len {
+                let bits = match strategy.config(ceil_log2(len)) {
+                    Config::List(bits) => bits,
+                    _ => unreachable!("{len} entries in a single-value palette"),
+                };
+                let per = 64 / usize::from(bits);
+                let words_len = storage_len(bits, entries);
+                let valid = pack_words(bits, entries, (0..entries).map(|i| (i % len) as u32));
+                let name = format!("{len} entries, {bits} bits");
+                compare(strategy, bits, len, &valid, &name);
+                if len == 1 << bits {
+                    // No field can hold an index past the palette.
+                    continue;
+                }
+                let top = mask(bits) as usize;
+                // A bad entry in the first, a middle and the last field of a
+                // word, and in the container's last entry.
+                for at in [0, per / 2, per - 1, entries / 2, entries - 1] {
+                    let mut bad = valid.clone();
+                    let index = (len + (rng(&mut state) % 7) as usize).min(top);
+                    write(&mut bad, bits, at, index as u32);
+                    compare(strategy, bits, len, &bad, &format!("{name}, bad at {at}"));
+                }
+                // Garbage in the last word's padding fields only.
+                let rest = entries - (words_len - 1) * per;
+                if rest < per {
+                    let mut padded = valid.clone();
+                    padded[words_len - 1] |= u64::MAX << (rest * usize::from(bits));
+                    compare(strategy, bits, len, &padded, &format!("{name}, padding"));
+                }
+                // A whole random word, every field drawn from `0..=len`.
+                for _ in 0..64 {
+                    let mut words = valid.clone();
+                    let word = (rng(&mut state) % words_len as u64) as usize;
+                    words[word] = 0;
+                    for field in 0..per {
+                        let index = (rng(&mut state) % (len as u64 + 1)).min(top as u64);
+                        words[word] |= index << (field * usize::from(bits));
+                    }
+                    compare(
+                        strategy,
+                        bits,
+                        len,
+                        &words,
+                        &format!("{name}, random word {word}"),
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn saved_validation_matches_entrywise_reference() {
         // Keep the previous loader as an independent entry-at-a-time reference:
@@ -1273,8 +1422,8 @@ mod tests {
             let y = i >> 8;
             let r = rng(&mut state);
             terrain.push(match y {
-                0..=8 if r % 40 == 0 => 2000 + (r >> 8) as u32 % 6,
-                0..=8 if r % 13 == 0 => 0,
+                0..=8 if r.is_multiple_of(40) => 2000 + (r >> 8) as u32 % 6,
+                0..=8 if r.is_multiple_of(13) => 0,
                 0..=8 => 1,
                 9..=10 => 10,
                 11 => 9,
@@ -1359,6 +1508,130 @@ mod tests {
             let (base, new) = (times[0][times[0].len() / 2], times[1][times[1].len() / 2]);
             println!(
                 "palette_ids {name}: baseline {base:.2} us, new {new:.2} us, {:.2}x",
+                base / new
+            );
+        }
+    }
+    /// `pack` as it was before a section of one value was answered from its
+    /// words: every cell unpacked, then the distinct values found again.
+    fn baseline_pack(c: &PalettedContainer) -> Packed {
+        let entries = c.strategy.entries();
+        let mut values = vec![0u32; entries];
+        c.unpack(&mut values);
+        let (palette, ids) = palette_ids(&values);
+        let bits = match c.strategy.config(ceil_log2(palette.len())) {
+            Config::Single => 0,
+            Config::List(bits) => bits,
+            Config::Global => ceil_log2(palette.len()),
+        };
+        let data = (bits != 0).then(|| pack_words(bits, entries, ids.iter().copied()));
+        Packed {
+            palette,
+            bits,
+            data,
+        }
+    }
+    /// A container holding `value` in every cell while stored in the global
+    /// palette's width, which `set` keeps once a section has used it.
+    fn global_uniform(value: u32) -> PalettedContainer {
+        let bits = BLOCKS.global_bits;
+        let width = usize::from(bits);
+        let per = 64 / width;
+        let pattern = (0..per).fold(0u64, |word, slot| word | u64::from(value) << (slot * width));
+        PalettedContainer {
+            strategy: BLOCKS,
+            bits,
+            palette: Palette::Global,
+            words: vec![pattern; BLOCKS.entries().div_ceil(per)],
+        }
+    }
+    /// Sections saved from a column: one value (a single palette, and a list
+    /// palette whose other entry died), mixed terrain, the global palette
+    /// holding one value, and biomes.
+    fn pack_cases() -> Vec<(&'static str, PalettedContainer)> {
+        let mixed: Vec<u32> = (0..4096).map(|i| (i % 12) as u32).collect();
+        let mut dead = PalettedContainer::new(BLOCKS, 5);
+        dead.set(100, 9);
+        dead.set(100, 5);
+        let biomes: Vec<u32> = (0..64).map(|i| (i % 6) as u32 * 2).collect();
+        vec![
+            ("single", PalettedContainer::new(BLOCKS, 5)),
+            ("dead slot", dead),
+            ("mixed", PalettedContainer::from_values(BLOCKS, &mixed)),
+            (
+                "terrain",
+                PalettedContainer::from_values(BLOCKS, &palette_cases()[0].1),
+            ),
+            ("global uniform", global_uniform(3000)),
+            ("biomes", PalettedContainer::from_values(BIOMES, &biomes)),
+        ]
+    }
+    #[test]
+    fn pack_matches_unpacking_every_section() {
+        for (name, container) in pack_cases() {
+            assert_eq!(container.pack(), baseline_pack(&container), "{name}");
+        }
+    }
+    /// A section of one value saves as that value and no indices, whatever its
+    /// stored palette looks like: a single palette, a list whose other entry was
+    /// overwritten, or the global palette.
+    #[test]
+    fn uniform_sections_pack_as_one_entry() {
+        let mut dead = PalettedContainer::new(BLOCKS, 5);
+        dead.set(100, 9);
+        dead.set(100, 5);
+        for (name, container, value) in [
+            ("single", PalettedContainer::new(BLOCKS, 5), 5),
+            ("dead slot", dead, 5),
+            ("global", global_uniform(3000), 3000),
+        ] {
+            assert_eq!(
+                container.pack(),
+                Packed {
+                    palette: vec![value],
+                    bits: 0,
+                    data: None,
+                },
+                "{name}"
+            );
+        }
+    }
+    /// `pack` against the unpacking implementation, over the cases above. 25
+    /// measured rounds alternate order and report the median microseconds per
+    /// call.
+    #[test]
+    #[ignore = "microbenchmark; run with --ignored --nocapture"]
+    fn benchmark_pack() {
+        use std::{hint::black_box, time::Instant};
+        for (name, container) in pack_cases() {
+            let reps = if container.uniform().is_some() {
+                2000
+            } else {
+                200
+            };
+            let mut times = [Vec::new(), Vec::new()];
+            for round in 0..25 {
+                for optimized in [round % 2 == 0, round % 2 != 0] {
+                    let started = Instant::now();
+                    for _ in 0..reps {
+                        if optimized {
+                            black_box(container.pack());
+                        } else {
+                            black_box(baseline_pack(black_box(&container)));
+                        }
+                    }
+                    if round > 0 {
+                        times[usize::from(optimized)]
+                            .push(started.elapsed().as_secs_f64() * 1e6 / f64::from(reps));
+                    }
+                }
+            }
+            for t in &mut times {
+                t.sort_by(f64::total_cmp);
+            }
+            let (base, new) = (times[0][times[0].len() / 2], times[1][times[1].len() / 2]);
+            println!(
+                "pack {name}: baseline {base:.2} us, new {new:.2} us, {:.2}x",
                 base / new
             );
         }

@@ -21,7 +21,11 @@ fn oit_cloud_color(in: Out, front: bool, fade: bool) -> vec4<f32> {
     return oit_add_transmittance(1.0 - color.a, in.clip.z, in.clip.xy);
 }
 @fragment fn fs_oit_cloud_accumulate(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let color = oit_cloud_color(in, front, true);
+    var color = oit_cloud_color(in, front, true);
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        color = vec4(hdr_written(color.rgb, hdr_scene_alpha(globals.hdr_light.y),
+            globals.hdr_settings, globals.hdr_shares), color.a);
+    }
     let seen = oit_sample_transmittance(vec2<i32>(in.clip.xy),
         oit_normalize_depth(in.clip.z, in.clip.xy), 1.0 - color.a);
     return vec4(color.rgb * color.a, color.a) * seen;

@@ -14,6 +14,7 @@ use super::{
 use horizon_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
+    mod_api::NativePanelStyle,
     ui::EditBox,
 };
 
@@ -23,6 +24,7 @@ const SLOT: f32 = 18.0;
 const COLUMNS: (usize, usize) = (12, 2);
 /// The gap between the window and the panel, and the screen's edges.
 const MARGIN: f32 = 8.0;
+const RECIPES_SETTINGS_WIDTH: f32 = 20.0;
 
 /// Items a panel may hold.
 const ITEMS: usize = 8192;
@@ -62,17 +64,34 @@ pub(super) struct Panel {
     /// The mod's items as stacks; `None` for an item the game doesn't have.
     stacks: Vec<Option<ItemStack>>,
     page: usize,
-    search: Option<EditBox>,
+    pub(super) search: Option<EditBox>,
     /// The search text the mod last heard.
     sent: String,
     /// Only while dispatching Search: an empty reply still needs an editable field.
     searching: bool,
+    pub(super) recipes_settings_return: Option<Screen>,
     /// The recipes shown instead of the items.
     pub(super) recipes: Option<super::native_panel_recipes::Pages>,
+    pub(super) transfer_warning: Option<(&'static str, &'static str)>,
+    /// The mods that asked for the viewer's page buttons and search box.
+    viewer_styled: std::collections::BTreeSet<String>,
     pub(super) fuel_popup: Option<super::native_panel_recipes::FuelPopup>,
 }
 
 impl Panel {
+    /// `native_panel_style`.
+    pub(super) fn set_style(&mut self, mod_id: &str, style: NativePanelStyle) {
+        match style {
+            NativePanelStyle::Viewer => self.viewer_styled.insert(mod_id.to_owned()),
+            _ => self.viewer_styled.remove(mod_id),
+        };
+    }
+    /// Whether `owner`'s panel draws the viewer's page buttons and search box:
+    /// Horizon's own Recipes panel, or a mod that asked for them.
+    fn viewer_style(&self, owner: &Owner) -> bool {
+        let id = owner.native_id();
+        id == "recipes" || self.viewer_styled.contains(id)
+    }
     /// What the panel shows: a native mod's, one `on`.
     pub(super) fn shown(&self, on: impl Fn(&str) -> bool) -> Option<&Shown> {
         self.native.as_ref().filter(|s| on(s.owner.native_id()))
@@ -88,9 +107,11 @@ impl Panel {
     }
     /// `native_panel_recipes`.
     pub(super) fn show_recipes(&mut self, mod_id: &str, page: Option<RecipePage>) {
+        let filtering = mod_id == "recipes" && !self.sent.is_empty();
         if let Some(shown) = self.native_of(mod_id, page.is_some()) {
+            let returning_to_search = filtering && shown.recipes.is_some() && page.is_none();
             shown.recipes = page;
-            self.native_changed(false);
+            self.native_changed(returning_to_search);
         }
     }
     /// Mod `mod_id`'s panel, made when it shows something on another's;
@@ -117,6 +138,7 @@ impl Panel {
     /// nothing, except while filtering the item list with a non-empty query.
     fn native_changed(&mut self, keep_search: bool) {
         self.versions += 1;
+        self.transfer_warning = None;
         self.fuel_popup = None;
         if let Some(shown) = self.native.as_mut() {
             shown.version = self.versions;
@@ -138,8 +160,19 @@ pub(super) struct Layout {
     /// The page arrows' row.
     pub(super) arrows_y: f32,
     pub(super) search: [f32; 4],
+    settings: Option<[f32; 4]>,
 }
 impl Layout {
+    fn browser_arrow_rects(&self, square: bool) -> [[f32; 4]; 2] {
+        if square {
+            return [
+                [self.grid.0, self.arrows_y, 20.0, 20.0],
+                [self.grid.0 + self.width() - 20.0, self.arrows_y, 20.0, 20.0],
+            ];
+        }
+        self.arrows().map(|(x, y)| [x, y, 12.0, 17.0])
+    }
+
     fn per_page(&self) -> usize {
         self.columns * self.rows
     }
@@ -166,6 +199,12 @@ pub(super) fn inside(p: (f32, f32), [x, y, w, h]: [f32; 4]) -> bool {
 }
 
 impl Game<'_> {
+    /// How mod `mod_id`'s panel draws its page buttons and search box from
+    /// now on (`NativePanelStyle`; the recipe book's until it says). Kept for
+    /// the session, whether or not its panel is showing. API @API:panel_style@.
+    pub(super) fn native_panel_style(&mut self, mod_id: &str, style: NativePanelStyle) {
+        self.panel.set_style(mod_id, style);
+    }
     fn browser_batch(&self) -> Option<HudBatch> {
         let r = self.renderer.as_ref()?;
         Some(HudBatch::new([r.config.width, r.config.height]))
@@ -173,7 +212,7 @@ impl Game<'_> {
     /// The mod showing a panel, with its items made into stacks once per
     /// change; none while no mod shows one or no container screen is up.
     fn browser_sync(&mut self) -> Option<Owner> {
-        if self.screen != Screen::Inventory || self.title.is_some() {
+        if !matches!(self.screen, Screen::Inventory | Screen::Creative) || self.title.is_some() {
             return None;
         }
         let disabled = &self.settings.mods.disabled;
@@ -184,6 +223,9 @@ impl Game<'_> {
             return None;
         };
         let of = (shown.owner.clone(), shown.version);
+        if self.screen == Screen::Creative && of.0.native_id() != "recipes" {
+            return None;
+        }
         if self.panel.of.as_ref() != Some(&of) {
             let items = world_items!(self);
             let stacks = shown
@@ -222,24 +264,69 @@ impl Game<'_> {
     /// the search box at its foot. None when the screen has no room for it.
     fn browser_layout(&self, batch: &HudBatch) -> Option<Layout> {
         let image = self.container_image(batch);
-        let left = (image.left + image.width) as f32 + MARGIN;
-        let right = batch.width - MARGIN;
-        let columns = (((right - left) / SLOT).floor().max(0.0) as usize).min(COLUMNS.0);
+        let recipes = self
+            .panel
+            .of
+            .as_ref()
+            .is_some_and(|(owner, _)| owner.native_id() == "recipes");
+        let left = if self.screen == Screen::Creative {
+            Self::creative_origin(batch).0 + 198.0 + MARGIN
+        } else {
+            (image.left + image.width) as f32 + MARGIN
+        };
+        let (width, height) = self.renderer.as_ref().filter(|_| recipes).map_or(
+            (batch.width, batch.height),
+            |renderer| {
+                (
+                    (renderer.config.width as f32 / batch.scale).floor(),
+                    (renderer.config.height as f32 / batch.scale).floor(),
+                )
+            },
+        );
+        let right = width - if recipes { 6.0 } else { MARGIN };
+        let columns = (((right - left) / SLOT).floor().max(0.0) as usize).min(if recipes {
+            9
+        } else {
+            COLUMNS.0
+        });
         if columns < COLUMNS.1 {
             return None;
         }
-        let x = (left + (right - left - columns as f32 * SLOT) / 2.0).floor();
-        let arrows_y = MARGIN;
-        let top = arrows_y + 17.0 + 4.0;
-        let search = [x, batch.height - MARGIN - 16.0, columns as f32 * SLOT, 16.0];
+        let grid_width = columns as f32 * SLOT;
+        let x = if recipes {
+            right - grid_width
+        } else {
+            (left + (right - left - grid_width) / 2.0).floor()
+        };
+        let arrows_y = if recipes { 6.0 } else { MARGIN };
+        let top = arrows_y + if recipes { 22.0 } else { 21.0 };
+        let mut search = if recipes {
+            [x, height - 26.0, grid_width, 20.0]
+        } else {
+            [x, batch.height - MARGIN - 16.0, grid_width, 16.0]
+        };
+        let settings = recipes.then(|| {
+            search[2] -= RECIPES_SETTINGS_WIDTH;
+            [
+                search[0] + search[2],
+                search[1],
+                RECIPES_SETTINGS_WIDTH,
+                search[3],
+            ]
+        });
         let rows = ((search[1] - 4.0 - top) / SLOT).floor().max(0.0) as usize;
         (rows > 0).then_some(Layout {
-            area: [left, 0.0, right - left, batch.height],
+            area: if recipes {
+                [x, 0.0, right - x, batch.height]
+            } else {
+                [left, 0.0, right - left, batch.height]
+            },
             grid: (x, top),
             columns,
-            rows,
+            rows: if recipes { rows.min(16) } else { rows },
             arrows_y,
             search,
+            settings,
         })
     }
     fn browser_pages(&self, layout: &Layout) -> usize {
@@ -285,42 +372,91 @@ impl Game<'_> {
         search
     }
 
-    /// The items' page arrows and grid.
-    fn draw_browser_items(&mut self, batch: &mut HudBatch, layout: &Layout) {
-        let pages = self.browser_pages(layout);
-        self.panel.page = self.panel.page.min(pages - 1);
-        let page = self.panel.page;
-        let cursor = self.cursor;
-        if pages > 1 {
-            let labels = [
-                self.translate("gui.recipebook.previous_page", "Previous Page"),
-                self.translate("gui.recipebook.next_page", "Next Page"),
-            ];
-            let shown = [page > 0, page + 1 < pages];
-            let atlas = &self.gui.atlas;
-            for (((x, y), name), (label, shown)) in layout
-                .arrows()
-                .into_iter()
-                .zip(["page_backward", "page_forward"])
-                .zip(labels.iter().zip(shown))
-            {
-                if !shown {
-                    continue;
-                }
-                let hover = inside(cursor, [x, y, 12.0, 17.0]);
-                let suffix = if hover { "_highlighted" } else { "" };
+    fn draw_item_browser_arrows(
+        &self,
+        batch: &mut HudBatch,
+        rects: [[f32; 4]; 2],
+        labels: &[String; 2],
+        enabled: [bool; 2],
+        square: bool,
+    ) {
+        let atlas = &self.gui.atlas;
+        for (i, (rect @ [x, y, w, h], on)) in rects.into_iter().zip(enabled).enumerate() {
+            let hovered = inside(self.cursor, rect);
+            if square {
+                let background = match (on, hovered) {
+                    (false, _) => "horizon/jei/button_disabled_v2",
+                    (true, false) => "horizon/jei/button_enabled_v2",
+                    (true, true) => "horizon/jei/button_highlight_v2",
+                };
+                horizon_client::ui::nine_slice(batch, atlas, background, x, y, w, h, u32::MAX);
+                let arrow = [
+                    "horizon/jei/icons/arrow_previous_v2",
+                    "horizon/jei/icons/arrow_next_v2",
+                ][i];
+                batch.sprite(atlas, arrow, x + 5.0, y + 6.0);
+            } else if on {
+                let name = ["page_backward", "page_forward"][i];
+                let suffix = if hovered { "_highlighted" } else { "" };
                 batch.sprite(
                     atlas,
                     &format!("gui/sprites/recipe_book/{name}{suffix}"),
                     x,
                     y,
                 );
-                horizon_client::widgets::record(label, [x, y, 12.0, 17.0], true);
+            } else {
+                continue;
             }
+            horizon_client::widgets::record(&labels[i], rect, on);
+        }
+    }
+
+    /// The items' page arrows and grid.
+    fn draw_browser_items(&mut self, batch: &mut HudBatch, layout: &Layout) {
+        let pages = self.browser_pages(layout);
+        self.panel.page = self.panel.page.min(pages - 1);
+        let page = self.panel.page;
+        let cursor = self.cursor;
+        let square = self
+            .panel
+            .of
+            .as_ref()
+            .is_some_and(|(owner, _)| self.panel.viewer_style(owner));
+        if pages > 1 || (square && !self.panel.stacks.is_empty()) {
+            let labels = [
+                self.translate("gui.recipebook.previous_page", "Previous Page"),
+                self.translate("gui.recipebook.next_page", "Next Page"),
+            ];
+            let shown = [page > 0, page + 1 < pages];
+            let atlas = &self.gui.atlas;
+            if square {
+                batch.fill(
+                    atlas,
+                    layout.grid.0,
+                    layout.arrows_y,
+                    layout.width(),
+                    20.0,
+                    rgba(10, 14, 20, 42),
+                );
+            }
+            self.draw_item_browser_arrows(
+                batch,
+                layout.browser_arrow_rects(square),
+                &labels,
+                shown,
+                square,
+            );
             let text = format!("{}/{pages}", page + 1);
             let w = HudBatch::text_width(atlas, &text);
             let x = (layout.grid.0 + (layout.width() - w) / 2.0).floor();
-            batch.text(atlas, &text, x, layout.arrows_y + 5.0, u32::MAX, true);
+            batch.text(
+                atlas,
+                &text,
+                x,
+                layout.arrows_y + if square { 6.0 } else { 5.0 },
+                u32::MAX,
+                true,
+            );
         }
         let first = page * layout.per_page();
         for n in 0..layout.per_page() {
@@ -368,12 +504,43 @@ impl Game<'_> {
             self.draw_browser_items(batch, &layout);
         }
         let hint = self.translate("gui.recipebook.search_hint", "Search...");
+        let skin = self
+            .panel
+            .of
+            .as_ref()
+            .is_some_and(|(owner, _)| self.panel.viewer_style(owner))
+            .then_some("horizon/jei/search_background_v2");
         let search = self.browser_search(&layout);
         // The hint shows in an empty box without focus, as the recipe book's.
         search.suggestion = (search.value.is_empty() && !search.focused).then_some(hint);
         let mut search = search.clone();
-        search.draw(batch, &self.gui.atlas, None);
+        search.draw_with_skin(batch, &self.gui.atlas, None, skin);
         self.panel.search = Some(search);
+        if let Some(rect @ [x, y, width, height]) = layout.settings {
+            let hovered = inside(cursor, rect);
+            let atlas = &self.gui.atlas;
+            let sprite = if hovered {
+                "gui/sprites/widget/button_highlighted"
+            } else {
+                "gui/sprites/widget/button"
+            };
+            horizon_client::ui::nine_slice(batch, atlas, sprite, x, y, width, height, u32::MAX);
+            batch.sprite_scaled(
+                atlas,
+                "horizon/recipes/settings",
+                x + 4.0,
+                y + 2.0,
+                12.0,
+                12.0,
+                u32::MAX,
+            );
+            let label = self.translate("options.title", "Options");
+            horizon_client::widgets::record(&label, rect, true);
+            if hovered && self.carried.is_none() {
+                self.draw_tooltip_lines(batch, &[(label, u32::MAX)], cursor.0, cursor.1);
+                return;
+            }
+        }
         if self.carried.is_none() && self.draw_recipe_fuels(batch, &layout) {
             return;
         }
@@ -403,6 +570,23 @@ impl Game<'_> {
             return true;
         }
         let cursor = self.cursor;
+        if layout.settings.is_some_and(|rect| inside(cursor, rect)) {
+            if !right {
+                self.list_native_mods();
+                if let Some(index) = self
+                    .settings
+                    .mods
+                    .installed
+                    .iter()
+                    .position(|entry| entry.id == "recipes" && entry.native.is_some())
+                {
+                    self.mod_browser_closed();
+                    self.panel.recipes_settings_return = Some(self.screen);
+                    self.open_options_at(false, horizon_client::options_ui::Page::NativeMod(index));
+                }
+            }
+            return true;
+        }
         let shift = self.has_shift_down();
         let atlas = &self.gui.atlas;
         let search = self.panel.search.get_or_insert_with(|| {
@@ -424,13 +608,10 @@ impl Game<'_> {
         }
         let pages = self.browser_pages(&layout);
         let page = self.panel.page;
-        let [back, forward] = layout.arrows();
-        let step = if pages > 1 && page > 0 && inside(cursor, [back.0, back.1, 12.0, 17.0]) {
+        let [back, forward] = layout.browser_arrow_rects(self.panel.viewer_style(&owner));
+        let step = if pages > 1 && page > 0 && inside(cursor, back) {
             Some(page - 1)
-        } else if pages > 1
-            && page + 1 < pages
-            && inside(cursor, [forward.0, forward.1, 12.0, 17.0])
-        {
+        } else if pages > 1 && page + 1 < pages && inside(cursor, forward) {
             Some(page + 1)
         } else {
             None
@@ -454,7 +635,7 @@ impl Game<'_> {
 
     /// Whether keys go to the panel's search box.
     pub(super) fn mod_browser_typing(&self) -> bool {
-        self.screen == Screen::Inventory
+        matches!(self.screen, Screen::Inventory | Screen::Creative)
             && self.panel.of.is_some()
             && self.panel.search.as_ref().is_some_and(|s| s.focused)
     }
@@ -514,9 +695,30 @@ impl Game<'_> {
     }
     /// The container screen closed: the search box lets go of the keys.
     pub(super) fn mod_browser_closed(&mut self) {
+        self.panel.transfer_warning = None;
         self.panel.fuel_popup = None;
         if let Some(search) = self.panel.search.as_mut() {
             search.focused = false;
+        }
+    }
+    pub(super) fn mod_browser_back(&mut self) -> bool {
+        let Some(owner) = self.browser_sync() else {
+            return false;
+        };
+        if owner.native_id() != "recipes" || self.panel.recipes.is_none() {
+            return false;
+        }
+        self.mod_browser_closed();
+        self.panel_event(&owner, BrowserEvent::Back);
+        true
+    }
+    pub(super) fn close_transferred_recipe(&mut self) {
+        if let Some(owner) = self.browser_sync()
+            && owner.native_id() == "recipes"
+            && self.panel.recipes.is_some()
+        {
+            self.mod_browser_closed();
+            self.panel_event(&owner, BrowserEvent::Back);
         }
     }
     /// The item under the pointer on a container screen, for the mods' keys
@@ -545,7 +747,10 @@ impl Game<'_> {
     /// A key `key` (`key.keyboard.r`) went down: over an item on a container
     /// screen, a native mod's panel hears it as a `Key` event.
     pub(super) fn native_panel_key(&mut self, key: &str) {
-        if self.screen != Screen::Inventory || self.title.is_some() || self.mod_browser_typing() {
+        if !matches!(self.screen, Screen::Inventory | Screen::Creative)
+            || self.title.is_some()
+            || self.mod_browser_typing()
+        {
             return;
         }
         let Some(owner) = self.browser_sync() else {
@@ -602,6 +807,28 @@ mod tests {
             note: String::new(),
             action: Some(true),
         }
+    }
+
+    #[test]
+    fn a_mod_chooses_the_viewers_page_buttons_and_keeps_them() {
+        let mut panel = Panel::default();
+        let jei = Owner::Native("jei".into());
+        assert!(
+            !panel.viewer_style(&jei),
+            "the recipe book's arrows by default"
+        );
+        assert!(panel.viewer_style(&Owner::Native("recipes".into())));
+        panel.set_style("jei", super::NativePanelStyle::Viewer);
+        panel.show_items("jei", vec![stack("minecraft:stone")]);
+        assert!(panel.viewer_style(&jei));
+        // Another mod's choice is its own.
+        assert!(!panel.viewer_style(&Owner::Native("other".into())));
+        // It outlasts the panel going away and coming back.
+        panel.show_items("jei", Vec::new());
+        panel.show_items("jei", vec![stack("minecraft:stone")]);
+        assert!(panel.viewer_style(&jei));
+        panel.set_style("jei", super::NativePanelStyle::RecipeBook);
+        assert!(!panel.viewer_style(&jei));
     }
 
     /// A native mod's items and recipe page are what the panel holds, and
@@ -663,6 +890,17 @@ mod tests {
         assert_eq!(empty.owner, Owner::Native("recipes".into()));
         assert!(empty.items.is_empty());
         assert!(panel.shown(|id| id != "recipes").is_none());
+
+        panel.show_recipes(
+            "recipes",
+            RecipePage::new("Oak Planks", Vec::new(), 0, vec![view()]),
+        );
+        panel.show_recipes("recipes", None);
+        let empty = panel
+            .shown(|_| true)
+            .expect("return to the empty search after a recipe");
+        assert!(empty.items.is_empty() && empty.recipes.is_none());
+        assert_eq!(panel.sent, "no_such_item");
 
         panel.show_items("other", Vec::new());
         panel.sent = "pressed_fragment".into();

@@ -18,8 +18,8 @@ pub const ARMOR: [usize; 4] = [HEAD, CHEST, LEGS, FEET];
 pub const KEYS: [&str; 6] = ["mainhand", "offhand", "head", "chest", "legs", "feet"];
 
 pub type Levels = Vec<(Arc<str>, u32)>;
-/// An armour trim: (`trim_material`, `trim_pattern`) ids.
-pub type Trim = (Arc<str>, Arc<str>);
+/// The same named/direct armor-trim holders as the full item stack.
+pub type Trim = crate::item_data::Trim;
 
 /// The enchantments and trims of each equipment slot, and the whole stack of
 /// the ones that have more than an id (a damage value, a name, a count).

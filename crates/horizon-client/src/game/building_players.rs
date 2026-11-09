@@ -2,6 +2,8 @@
 //! game body. Identity keeps borrowed ancestor bodies distinct from hub copies.
 use super::Dim;
 use horizon_core::geometry::Aabb;
+use std::cell::Cell;
+use std::rc::Rc;
 
 #[derive(Clone, Copy)]
 pub(super) struct BuildingPlayer {
@@ -11,8 +13,23 @@ pub(super) struct BuildingPlayer {
     pub(super) borrowed: bool,
 }
 
+/// The hub's bodies, shared by the turns of one tick instead of built for each
+/// turn. A body is refreshed in place when its guest's turn (or anything that
+/// changes it) ends, so every holder sees it where it is now.
+pub(super) type HubBodies = Rc<Vec<Cell<BuildingPlayer>>>;
+
+pub(super) fn shared(players: impl IntoIterator<Item = BuildingPlayer>) -> HubBodies {
+    Rc::new(players.into_iter().map(Cell::new).collect())
+}
+
+/// The players' boxes a guest's turn sees: the borrowed ancestor bodies, and
+/// the hub's bodies but for the actor.
 #[derive(Default)]
-pub(super) struct BuildingPlayers(Vec<BuildingPlayer>);
+pub(super) struct BuildingPlayers {
+    ancestors: Vec<BuildingPlayer>,
+    actor: Option<u32>,
+    hub: HubBodies,
+}
 
 impl BuildingPlayers {
     /// Refresh hub-owned bodies, preserve live ancestor bodies held outside
@@ -21,45 +38,45 @@ impl BuildingPlayers {
         &self,
         actor: u32,
         outer: Option<BuildingPlayer>,
-        current: Vec<BuildingPlayer>,
+        current: HubBodies,
     ) -> Self {
         // The borrowed ancestors are the few nested turns (usually none or
-        // one): only they are searched, so a turn costs O(players), not
-        // O(players²), every guest's turn of every tick.
-        let mut players: Vec<_> = self
-            .0
+        // one): only they are copied, the hub's bodies are shared.
+        let mut ancestors: Vec<_> = self
+            .ancestors
             .iter()
             .copied()
             .filter(|p| {
                 p.borrowed
                     && p.conn != Some(actor)
-                    && (p.conn.is_none() || current.iter().any(|g| g.conn == p.conn))
+                    && (p.conn.is_none() || current.iter().any(|g| g.get().conn == p.conn))
             })
             .collect();
         if let Some(outer) = outer {
-            players.retain(|p| p.conn != outer.conn);
+            ancestors.retain(|p| p.conn != outer.conn);
             if outer.conn != Some(actor)
-                && (outer.conn.is_none() || current.iter().any(|g| g.conn == outer.conn))
+                && (outer.conn.is_none() || current.iter().any(|g| g.get().conn == outer.conn))
             {
-                players.push(outer);
+                ancestors.push(outer);
             }
         }
-        let ancestors = players.len();
-        players.reserve(current.len());
-        for player in current {
-            // Hub conns are unique, so only the ancestors can already hold one.
-            if player.conn != Some(actor)
-                && !players[..ancestors].iter().any(|p| p.conn == player.conn)
-            {
-                players.push(player);
-            }
+        Self {
+            ancestors,
+            actor: Some(actor),
+            hub: current,
         }
-        Self(players)
     }
 
     pub(super) fn boxes(&self, dimension: Dim) -> Vec<([f64; 3], [f64; 3])> {
-        self.0
+        // Hub conns are unique, so only the ancestors can already hold one.
+        let hub =
+            self.hub.iter().map(Cell::get).filter(|p| {
+                p.conn != self.actor && !self.ancestors.iter().any(|a| a.conn == p.conn)
+            });
+        self.ancestors
             .iter()
+            .copied()
+            .chain(hub)
             .filter(|p| p.dimension == dimension)
             .filter_map(|p| p.bounds)
             .map(|bounds| {
@@ -102,11 +119,19 @@ mod tests {
             ]
         };
         let host = player(None, 0.0, Dim::Overworld, true);
-        let first = BuildingPlayers::default().for_turn(1, Some(host), hub());
-        let second = first.for_turn(2, Some(player(Some(1), 11.0, Dim::Overworld, true)), hub());
+        let first = BuildingPlayers::default().for_turn(1, Some(host), shared(hub()));
+        let second = first.for_turn(
+            2,
+            Some(player(Some(1), 11.0, Dim::Overworld, true)),
+            shared(hub()),
+        );
         assert_eq!(xs(&second, Dim::Overworld), [0.0, 11.0]);
         // A further turn in another level keeps each ancestor's own level.
-        let third = second.for_turn(3, Some(player(Some(2), 21.0, Dim::Nether, true)), hub());
+        let third = second.for_turn(
+            3,
+            Some(player(Some(2), 21.0, Dim::Nether, true)),
+            shared(hub()),
+        );
         assert_eq!(xs(&third, Dim::Overworld), [0.0, 11.0]);
         assert_eq!(xs(&third, Dim::Nether), [21.0]);
     }
@@ -117,26 +142,26 @@ mod tests {
         let first = BuildingPlayers::default().for_turn(
             1,
             Some(host),
-            vec![
+            shared(vec![
                 player(Some(1), 10.0, Dim::Overworld, false),
                 player(Some(2), 20.0, Dim::Overworld, false),
-            ],
+            ]),
         );
         // Restore the first turn after player 2 moved across dimensions.
         let restored = first.for_turn(
             1,
             None,
-            vec![
+            shared(vec![
                 player(Some(1), 10.0, Dim::Overworld, false),
                 player(Some(2), 25.0, Dim::Nether, false),
-            ],
+            ]),
         );
         assert_eq!(xs(&restored, Dim::Overworld), [0.0]);
         assert_eq!(xs(&restored, Dim::Nether), [25.0]);
         // Death, spectator mode, and unloaded bodies provide no building box.
         let mut inactive = player(Some(2), 25.0, Dim::Nether, false);
         inactive.bounds = None;
-        let restored = restored.for_turn(1, None, vec![inactive]);
+        let restored = restored.for_turn(1, None, shared(vec![inactive]));
         assert_eq!(xs(&restored, Dim::Overworld), [0.0]);
         assert!(xs(&restored, Dim::Nether).is_empty());
     }
@@ -146,20 +171,20 @@ mod tests {
         let first = BuildingPlayers::default().for_turn(
             2,
             Some(player(Some(1), 10.0, Dim::Overworld, true)),
-            vec![player(Some(1), 1.0, Dim::Overworld, false)],
+            shared(vec![player(Some(1), 1.0, Dim::Overworld, false)]),
         );
-        let disconnected = first.for_turn(3, None, Vec::new());
+        let disconnected = first.for_turn(3, None, shared(Vec::new()));
         assert!(xs(&disconnected, Dim::Overworld).is_empty());
         let disconnected_outer = first.for_turn(
             3,
             Some(player(Some(1), 11.0, Dim::Overworld, true)),
-            Vec::new(),
+            shared(Vec::new()),
         );
         assert!(xs(&disconnected_outer, Dim::Overworld).is_empty());
         let mut outer = player(None, 0.0, Dim::Overworld, true);
-        let first = BuildingPlayers::default().for_turn(1, Some(outer), Vec::new());
+        let first = BuildingPlayers::default().for_turn(1, Some(outer), shared(Vec::new()));
         outer.bounds = None;
-        let second = first.for_turn(2, Some(outer), Vec::new());
+        let second = first.for_turn(2, Some(outer), shared(Vec::new()));
         assert!(xs(&second, Dim::Overworld).is_empty());
     }
 
@@ -252,6 +277,7 @@ mod tests {
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             2,
             [20.5, 64.0, 0.5],

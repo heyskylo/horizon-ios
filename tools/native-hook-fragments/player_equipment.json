@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "held_stack", "target": "horizon_client::game::native_player_reads::Game<'_>::native_held_stack"},
+    {"name": "player_equipment", "target": "horizon_client::game::native_player_reads::Game<'_>::native_player_equipment"}
+  ],
+  "rust_summary": "any player's main-hand stack and equipment slots from any server hook (`native_held_stack`, `native_player_equipment`).",
+  "doc_summary": "`native_held_stack(uuid)` and `native_player_equipment(uuid, slot)` give the whole stack (components included) in a player's main hand or equipment slot, the acting player's or another's, as Bukkit's `getEquipment().getItemInMainHand()` and `getItem(slot)`. Bundles need \"hooks\": @API:player_equipment@.",
+  "comments": ["crates/horizon-client/src/game/native_player_reads.rs"]
+}

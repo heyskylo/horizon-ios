@@ -7,13 +7,23 @@ use super::Game;
 use horizon_client::actions::Action;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Mob, Species, armadillo, equine, llama, nautilus},
+    mobs::{Mob, Species, armadillo, equine, llama, nautilus, panda, villager},
 };
 
 impl Game<'_> {
     /// Whether mob `i` takes a right click with `hand`'s item on this
     /// client (`Mob.interact`'s result consumes the action).
     pub(super) fn remote_mob_takes(&mut self, i: usize, hand: Hand) -> bool {
+        self.remote_mob_answers(i, hand, true)
+    }
+
+    /// The same answer, changing nothing: an allay's and a dyed sheep's answer is the
+    /// interaction itself, and the controller's guide asks every frame.
+    pub(super) fn remote_mob_would_take(&mut self, i: usize, hand: Hand) -> bool {
+        self.remote_mob_answers(i, hand, false)
+    }
+
+    fn remote_mob_answers(&mut self, i: usize, hand: Hand, act: bool) -> bool {
         let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
             return false;
         };
@@ -37,6 +47,21 @@ impl Game<'_> {
         if m.species() == Species::Armadillo && armadillo::client_rejects_food(m, item) {
             return false;
         }
+        // Panda.mobInteract: a scared panda passes and one lying on its back
+        // takes any item (it gets up on the server). Its bamboo is taken on a
+        // client only by a baby that ages up; an adult's breeding and eating
+        // need a ServerLevel, so the click passes to the item.
+        if m.species() == Species::Panda {
+            if panda::scared(m) {
+                return false;
+            }
+            if panda::is_on_back(m) {
+                return true;
+            }
+            if m.kind.food.iter().any(|f| f.as_str() == item) {
+                return baby && !m.extra.age_locked;
+            }
+        }
         // AgeableMob.mobInteract: a golden dandelion on a baby that can be age
         // locked is SUCCESS on a client too (the server sets the lock).
         if self.age_lock_takes(m, item) {
@@ -53,8 +78,11 @@ impl Game<'_> {
         }
         let sneaking = self.keys.held(Action::Sneak);
         match m.species() {
-            // Villager / WanderingTrader.mobInteract: trading, or a baby's head shake.
-            Species::Villager | Species::WanderingTrader => item != "minecraft:villager_spawn_egg",
+            // Villager.mobInteract: trading, or a baby's head shake. A sleeping
+            // villager falls back to super.mobInteract, which passes.
+            Species::Villager => item != "minecraft:villager_spawn_egg" && !villager::sleeping(m),
+            // WanderingTrader.mobInteract: trading.
+            Species::WanderingTrader => item != "minecraft:villager_spawn_egg",
             // AbstractHorse, Camel: ridden (or their inventory opened); a baby only eats.
             s if equine::is_equine(s)
                 || llama::is_llama(s)
@@ -62,13 +90,20 @@ impl Game<'_> {
             {
                 !baby
             }
-            // Pig / Strider.mobInteract: a saddled one is ridden.
-            Species::Pig | Species::Strider => m.extra.saddled && !sneaking,
+            // Pig / Strider.mobInteract: a saddled one nobody rides is ridden
+            // (`!isVehicle()`).
+            Species::Pig | Species::Strider => {
+                m.extra.saddled
+                    && !sneaking
+                    && self.riding != Some(m.id)
+                    && !self.mobs.iter().any(|o| o.extra.mount == Some(m.id))
+            }
             // HappyGhast.mobInteract: a harnessed adult is ridden.
             Species::HappyGhast => !baby && m.extra.body.is_some(),
             // TamableAnimal (wolf, cat, parrot) on a client: CONSUME once tame.
             Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
             // Allay.mobInteract: gives an item or takes it back.
+            Species::Allay if !act => self.allay_would_take(i, hand, stack.cloned()),
             Species::Allay => self.predict_allay_interaction(i, hand, stack.cloned()),
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
@@ -78,6 +113,9 @@ impl Game<'_> {
                         "minecraft:bucket" | "minecraft:bowl" | "minecraft:shears"
                     ) || m.extra.variant == 1
                         && horizon_client::flowers::stew_effect(item).is_some())
+            }
+            Species::Sheep if !act => {
+                item == "minecraft:shears" || self.sheep_would_take_dye(i, hand)
             }
             Species::Sheep => item == "minecraft:shears" || self.interact_sheep_dye(i, hand, true),
             // SnowGolem.mobInteract: shears take the pumpkin off.
@@ -106,6 +144,15 @@ impl Game<'_> {
             | Species::TropicalFish
             | Species::Pufferfish
             | Species::Axolotl => item == "minecraft:water_bucket",
+            // SulfurCube.mobInteract ends in Bucketable.bucketMobPickup, which
+            // also runs on a client: an empty bucket on an unprimed adult
+            // (its swallowable items and shears are answered before that).
+            Species::SulfurCube => {
+                item == "minecraft:bucket"
+                    && !baby
+                    && !horizon_client::mobs::sulfur_cube::primed(m)
+                    && !horizon_client::mobs::sulfur_cube::swallowable(m, item)
+            }
             // Tadpole.mobInteract: frog food (not while age locked), else the bucket.
             Species::Tadpole => {
                 item == "minecraft:water_bucket"
@@ -148,6 +195,11 @@ impl Game<'_> {
             Hand::Off => self.offhand.as_ref(),
         };
         let item = stack.map_or("", |s| &*s.item);
+        // NameTagItem.interactLivingEntity: only a named tag answers (SUCCESS);
+        // an unnamed one passes on to the trader's trading (SUCCESS_SERVER).
+        if m.species() == Species::WanderingTrader && item == "minecraft:name_tag" {
+            return stack.is_some_and(|s| s.custom_name().is_some());
+        }
         mob_swings(m, item)
     }
     /// `AbstractHorse.handleEating` (`Llama`'s and `Camel`'s too) on this
@@ -240,8 +292,15 @@ fn mob_swings(m: &Mob, item: &str) -> bool {
         {
             return false;
         }
-        // Panda.mobInteract: its bamboo answers SUCCESS_SERVER.
+        // Panda.mobInteract: getting up off its back is SUCCESS, and its
+        // bamboo answers SUCCESS_SERVER.
+        Species::Panda if panda::is_on_back(m) => return true,
         Species::Panda if food => return false,
+        // WanderingTrader.mobInteract: trading answers SUCCESS_SERVER, and so
+        // does a spawn egg (Mob.checkAndHandleImportantInteractions). A lead is
+        // CONSUME on the client (Entity.interact: a trader can't be leashed), so
+        // nothing swings; a named name tag is decided by the caller.
+        Species::WanderingTrader if item != "minecraft:name_tag" => return false,
         // Cat.mobInteract: food tames an untamed cat, and heals a hurt
         // tame one: SUCCESS before Animal.mobInteract is reached.
         Species::Cat if food && (!m.extra.tame || hurt) => return true,

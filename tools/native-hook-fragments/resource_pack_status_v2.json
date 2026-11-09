@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "resource_pack_status_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_resource_pack_status_v2",
+      "neoforge": "none (NeoForge has no resource pack answer event; Bukkit's PlayerResourcePackStatusEvent with getID)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a player's answer to a resource pack with the pack's id, the configuration's answers included (`native_resource_pack_status_v2`), leaving `native_resource_pack_status` as it was.",
+  "doc_summary": "`native_resource_pack_status_v2(player, name, pack, status)`: an additive version of `native_resource_pack_status` with the answered pack's id (Bukkit's `PlayerResourcePackStatusEvent.getID`), heard just before v1 in play, and also for the answers to the server's own pack given during the configuration, once the player has logged in. v1 keeps its signature and firing point. Bundles need \"hooks\": @API:resource_pack_status_v2@."
+}

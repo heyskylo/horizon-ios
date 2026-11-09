@@ -71,14 +71,12 @@ pub fn clip_with_interaction<W: RayWorld>(
     state: W::Block,
 ) -> Result<Option<BlockHit>, W::Error> {
     let mut hit = shape.clip(start, end, p);
-    if let Some(hit) = &mut hit {
-        if let Some(interaction) = world.interaction_shape(state, p)?.clip(start, end, p) {
-            if interaction.location.subtract(start).length_squared()
-                < hit.location.subtract(start).length_squared()
-            {
-                hit.direction = interaction.direction;
-            }
-        }
+    if let Some(hit) = &mut hit
+        && let Some(interaction) = world.interaction_shape(state, p)?.clip(start, end, p)
+        && interaction.location.subtract(start).length_squared()
+            < hit.location.subtract(start).length_squared()
+    {
+        hit.direction = interaction.direction;
     }
     Ok(hit)
 }
@@ -175,19 +173,19 @@ pub fn fall_reset_shape<W: FallResetWorld>(
     if world.fall_reset_tag(state)? {
         return Ok(VoxelShape::block());
     }
-    if let Some(entity) = entity {
-        if world.entity_is_player(entity)? {
-            if world.is_portal(state, ResetPortal::EndGateway)?
-                || world.is_portal(state, ResetPortal::EndPortal)?
-            {
-                return Ok(VoxelShape::block());
-            }
-            if world.is_server_level()
-                && world.is_portal(state, ResetPortal::NetherPortal)?
-                && world.players_nether_portal_delay()? == 0
-            {
-                return Ok(VoxelShape::block());
-            }
+    if let Some(entity) = entity
+        && world.entity_is_player(entity)?
+    {
+        if world.is_portal(state, ResetPortal::EndGateway)?
+            || world.is_portal(state, ResetPortal::EndPortal)?
+        {
+            return Ok(VoxelShape::block());
+        }
+        if world.is_server_level()
+            && world.is_portal(state, ResetPortal::NetherPortal)?
+            && world.players_nether_portal_delay()? == 0
+        {
+            return Ok(VoxelShape::block());
         }
     }
     Ok(VoxelShape::empty())

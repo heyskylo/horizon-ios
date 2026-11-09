@@ -193,7 +193,8 @@ impl ArmorStandAssets {
     /// `TrimTextureKey`: the trim texture of `stack` on its humanoid
     /// layer (`humanoid` or `humanoid_leggings`), if it has a trim.
     fn trim_texture(&self, asset: &str, kind: &str, stack: &ItemStack) -> Option<TrimTexture> {
-        let (material, pattern) = stack.extra.as_ref()?.trim.as_ref()?;
+        let (material, pattern) =
+            horizon_client::item_data::trim::named(stack.extra.as_ref()?.trim.as_ref()?)?;
         let overrides = self
             .trim_overrides
             .get(asset)
@@ -267,18 +268,24 @@ impl Game<'_> {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out = Vec::new();
-        for (item, layer) in worn
-            .into_iter()
-            .zip(["helmet", "chestplate", "leggings", "boots"])
-        {
+        for (item, (layer, slot)) in worn.into_iter().zip([
+            ("helmet", "head"),
+            ("chestplate", "chest"),
+            ("leggings", "legs"),
+            ("boots", "feet"),
+        ]) {
             let Some((item, stack)) = item else {
                 continue;
             };
-            let Some(asset) = self
-                .res
-                .items()
-                .get(item)
-                .and_then(|i| i.equip_asset.clone())
+            // HumanoidArmorLayer.renderArmorPiece: the stack's own
+            // `equippable`, drawn when it has an asset and is worn in its slot.
+            let equippable = match stack {
+                Some(s) => horizon_client::item_sync::equippable(s, self.res.items()),
+                None => horizon_client::item_sync::item_equippable(item, self.res.items()),
+            };
+            let Some(asset) = equippable
+                .filter(|e| e.slot == slot)
+                .and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -336,9 +343,8 @@ impl Game<'_> {
     /// `PalettedTextureManager.getOrPrepare` for the trims drawn this frame
     /// (the player's armour and the armour stands'): each generated texture
     /// goes into an atlas trim slot, a free one, else the least recently
-    /// drawn.
+    /// drawn. Reuse the completed preparation while the requests and atlas stay the same.
     pub(super) fn prepare_trims(&mut self) {
-        use horizon_client::hud::TRIM_SLOTS;
         let assets = &self.armor_stand_assets;
         let items = self.items();
         let mut wanted: Vec<TrimTexture> = Vec::new();
@@ -381,9 +387,8 @@ impl Game<'_> {
             let Some(stack) = stack.filter(|s| s.extra.is_some()) else {
                 continue;
             };
-            let Some(asset) = items
-                .get(&stack.item)
-                .and_then(|i| i.equip_asset.as_deref())
+            let Some(asset) =
+                horizon_client::item_sync::equippable(stack, items).and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -392,66 +397,18 @@ impl Game<'_> {
             } else {
                 "humanoid"
             };
-            if let Some(t) = assets.trim_texture(asset, kind, stack)
+            if let Some(t) = assets.trim_texture(&asset, kind, stack)
                 && !wanted.contains(&t)
             {
                 wanted.push(t);
             }
         }
-        for t in wanted {
-            let name = t.sprite();
-            // Entries the atlas no longer has (rebuilt by a resource reload) are free.
-            let sprites = &self.gui.atlas.sprites;
-            self.trim_slots.retain(|(n, _)| sprites.contains_key(n));
-            if let Some(i) = self.trim_slots.iter().position(|e| e.0 == name) {
-                let e = self.trim_slots.remove(i);
-                self.trim_slots.push(e);
-                continue;
-            }
-            let Some((w, h, rgba)) = t.generate(&self.armor_stand_assets.root) else {
-                continue;
-            };
-            let used: Vec<usize> = self.trim_slots.iter().map(|e| e.1).collect();
-            let slot = match (0..TRIM_SLOTS).find(|i| !used.contains(i)) {
-                Some(free) => free,
-                None => {
-                    let (old, slot) = self.trim_slots.remove(0);
-                    self.gui.atlas.sprites.remove(&old);
-                    slot
-                }
-            };
-            let Some(area) = self
-                .gui
-                .atlas
-                .sprites
-                .get(&format!("horizon/trim{slot}"))
-                .copied()
-            else {
-                continue;
-            };
-            if w > area.w || h > area.h {
-                continue;
-            }
-            let (aw, ah) = (self.gui.atlas.width as f32, self.gui.atlas.height as f32);
-            let (x, y) = ((area.u0 * aw).round(), (area.v0 * ah).round());
-            self.map_patches.push(horizon_client::font::Patch {
-                x: x as u32,
-                y: y as u32,
-                width: w,
-                height: h,
-                rgba,
-            });
-            let rect = horizon_client::hud::Rect {
-                u0: area.u0,
-                v0: area.v0,
-                u1: (x + w as f32) / aw,
-                v1: (y + h as f32) / ah,
-                w,
-                h,
-            };
-            self.gui.atlas.sprites.insert(name.clone(), rect);
-            self.trim_slots.push((name, slot));
-        }
+        self.trim_slots.prepare(
+            wanted,
+            &assets.root,
+            &mut self.gui.atlas,
+            &mut self.map_patches,
+        );
     }
     /// `ArmorStandItem.useOn`.
     /// `ArmorStandItem.useOn` up to its `FAIL`s, which a client checks too:
@@ -548,6 +505,8 @@ impl Game<'_> {
         // ArmorStandItem.useOn turns the stand to face the player.
         self.world.random.next_float();
         self.next_entity += 1;
+        let (_, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(stand.id, uuid);
         self.audio.play(
             "minecraft:entity.armor_stand.place",
             Some([foot.x, foot.y, foot.z]),
@@ -847,22 +806,46 @@ impl Game<'_> {
     /// creative player breaks it, otherwise the first hit wobbles it and a
     /// second within five ticks breaks it.
     pub(super) fn punch_armor_stand(&mut self, i: usize) -> bool {
+        self.break_armor_stand_by_hit(
+            i,
+            self.creative,
+            false,
+            Some(super::commands::Target::Player),
+        )
+    }
+    /// The end of `ArmorStand.hurtServer` for a source in
+    /// `#can_break_armor_stand` or `#always_kills_armor_stands`, which returns
+    /// true: a creative causing player breaks the stand at once; otherwise the
+    /// first hit (`always_kills` skips it) wobbles it and posts `entity_damage`,
+    /// and a second hit within five ticks breaks it (`brokenByPlayer`). `by` is
+    /// the causing entity the game events are attributed to.
+    fn break_armor_stand_by_hit(
+        &mut self,
+        i: usize,
+        creative: bool,
+        always_kills: bool,
+        by: Option<super::commands::Target>,
+    ) -> bool {
         let time = self.world.game_time;
         let at = self.armor_stands[i].position;
         let at = [at.x, at.y, at.z];
-        if self.creative {
+        if creative {
             let (width, height) = stand_box(&self.armor_stands[i]);
             self.armor_stands.remove(i);
             self.audio
                 .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
             self.show_breaking_particles(at, f64::from(width), f64::from(height));
+            // ArmorStand.kill(level, the causing entity).
+            self.stand_game_event("minecraft:entity_die", at, by);
             return true;
         }
-        if time - self.armor_stands[i].last_hit > 5 {
-            // First hit: entity event 32, the wobble and the hit sound.
-            self.armor_stands[i].last_hit = time;
+        if time - self.armor_stands[i].last_hit > 5 && !always_kills {
+            // First hit: entity event 32, the wobble and the hit sound, then
+            // gameEvent(ENTITY_DAMAGE, the causing entity).
             self.audio
                 .play("minecraft:entity.armor_stand.hit", Some(at), 0.3, 1.0);
+            self.stand_game_event("minecraft:entity_damage", at, by);
+            self.armor_stands[i].last_hit = time;
             return true;
         }
         // brokenByPlayer: the stand item, then brokenByAnything: the equipment.
@@ -888,15 +871,35 @@ impl Game<'_> {
             ];
             self.spawn_item(stack, center, v, 10);
         }
+        // ArmorStand.kill(level, the causing entity), after the drops.
+        self.stand_game_event("minecraft:entity_die", at, by);
         self.world
             .modified
             .insert(((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4));
         true
     }
+    /// `Entity.gameEvent(event, attributedTo)` for a stand at `at`: the
+    /// causing player (a LAN guest too) or mob, else the stand itself (which
+    /// no listener tells apart from none).
+    fn stand_game_event(
+        &mut self,
+        event: &'static str,
+        at: [f64; 3],
+        by: Option<super::commands::Target>,
+    ) {
+        self.entity_event_by(event, at, by);
+    }
     pub(super) fn tick_armor_stands(&mut self) -> Result<()> {
         let mut dead = Vec::new();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
+        // EntityGetter.getEntityCollisions: the boxes that stop a stand's move
+        // (a living shulker, a boat, a happy ghast held still), gathered when
+        // the first stand travels. A server's stand rides nothing (`vehicle`
+        // is set on a server's client only), but mobs can ride it (`/ride`):
+        // `isPassengerOfSameVehicle` leaves those riders out.
+        let mut obstacles: Option<horizon_client::entities::ObstacleGrid> = None;
+        let mut nearby = Vec::new();
         for i in 0..self.armor_stands.len() {
             let at = self.armor_stands[i].position;
             if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
@@ -905,6 +908,11 @@ impl Game<'_> {
                 continue;
             }
             self.armor_stand_location_effects(i, false);
+            // ArmorStand.travel: a marker or a NoGravity stand does not move.
+            let travels = !self.armor_stands[i].marker && !self.armor_stands[i].no_gravity;
+            if travels && obstacles.is_none() {
+                obstacles = Some(self.stand_entity_collisions());
+            }
             let a = &mut self.armor_stands[i];
             a.previous = a.position;
             a.previous_yaw = a.yaw;
@@ -912,11 +920,36 @@ impl Game<'_> {
             a.first_tick = false;
             // aiStep's freezing step (removeFrost) makes the speed instance.
             a.speed_instance = true;
+            // LivingEntity.aiStep -> EntityEquipment.tick, before movement.
+            // Inspect in slot order, then mutate only each actual owned compass.
+            let clear = self.armor_stands[i].equipment.each_ref().map(|stack| {
+                stack.as_ref().is_some_and(|stack| {
+                    stack.item.as_ref() == "minecraft:compass"
+                        && super::maps::lodestone_target_gone(self, stack, self.dim.id())
+                })
+            });
+            for (stack, clear) in self.armor_stands[i].equipment.iter_mut().zip(clear) {
+                if clear && let Some(stack) = stack {
+                    stack.data_mut().set_other(
+                        "minecraft:lodestone_tracker",
+                        Some(horizon_world::nbt::Tag::Compound(Default::default())),
+                    );
+                }
+            }
+            let a = &mut self.armor_stands[i];
             let (water_height, lava_height) =
                 a.push_by_fluid(&self.world, &self.res.motion().fluids);
             let in_water = water_height > 0.0;
             let medium =
                 horizon_client::entities::StandMedium::from_heights(water_height, lava_height);
+            // Entity.collide asks for the entities meeting the box stretched
+            // by this tick's movement (the fluid push is already in it).
+            nearby.clear();
+            if let Some(grid) = obstacles.as_mut().filter(|_| travels) {
+                let area = a.bounds().expand_towards(a.velocity);
+                let area = area.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
+                grid.near_except(area, Some(a.id), &mut nearby);
+            }
             let (world, registry, facts, collision) = (
                 &self.world,
                 self.pack.assets.registry,
@@ -935,6 +968,7 @@ impl Game<'_> {
                 &self.res.motion().climbing,
                 in_water,
                 Some(self.border.geometry()),
+                &nearby,
             ) {
                 // LivingEntity.aiStep: `travel` first, then the blocks' push.
                 a.tick_settle(medium, step);
@@ -992,6 +1026,84 @@ impl Game<'_> {
             self.break_armor_stand_by_anything(i);
         }
         Ok(())
+    }
+    /// The armor stands' share of `Shulker.onPeekAmountChange`: the opening
+    /// lid of mob `shulker` moves every stand with physics (vanilla's
+    /// `!noPhysics`: not a marker, not `NoGravity`) whose box meets `area` by
+    /// `delta`, through the stand's `shove`. The stand the shulker
+    /// rides is left out (`isPassengerOfSameVehicle`). Stands tick before mobs
+    /// here, while vanilla ticks a stand that joined after the shulker (one
+    /// placed on it) after the shulker: `shove` makes up for the order.
+    pub(super) fn lid_pushes_armor_stands(&mut self, shulker: u32, area: Aabb, delta: [f64; 3]) {
+        if self.armor_stands.is_empty() {
+            return;
+        }
+        let delta = Vec3::new(delta[0], delta[1], delta[2]);
+        let mut obstacles: Option<horizon_client::entities::ObstacleGrid> = None;
+        // (the stand the shulker rides, when it joined), worked out at the first stand it meets.
+        let mut shell: Option<(Option<u32>, horizon_client::join_seq::JoinSeq)> = None;
+        let mut nearby = Vec::new();
+        for i in 0..self.armor_stands.len() {
+            let a = &self.armor_stands[i];
+            if a.marker || a.no_gravity || a.health <= 0.0 || !a.bounds().intersects(area) {
+                continue;
+            }
+            let (ridden, joined) = *shell.get_or_insert_with(|| {
+                let j = self.mobs.iter().position(|m| m.id == shulker);
+                (
+                    j.and_then(|j| self.mob_root_vehicle(j)),
+                    j.map_or(horizon_client::join_seq::JoinSeq::UNJOINED, |j| {
+                        self.mobs[j].join
+                    }),
+                )
+            });
+            if Some(a.id) == ridden {
+                continue;
+            }
+            let grid = obstacles.get_or_insert_with(|| self.stand_entity_collisions());
+            let a = &mut self.armor_stands[i];
+            // Entity.collide: the entities meeting the box stretched by the push.
+            let reach = a.bounds().expand_towards(delta);
+            let reach = reach.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
+            grid.near_except(reach, Some(a.id), &mut nearby);
+            let scene = horizon_client::collisions::SceneCollisions {
+                world: &self.world,
+                binding: self.collision,
+                subject: None,
+            };
+            let travels_after = a.join > joined;
+            a.shove(
+                scene,
+                delta,
+                Some(self.border.geometry()),
+                &nearby,
+                travels_after,
+            );
+        }
+    }
+    /// `Ravager.roar` with `mob_griefing` on: every armor stand in `area` (the
+    /// ravager's box grown by 4) takes `strongKnockback` from the ravager at
+    /// `from`. Its `mobAttack` leaves the stand whole (`ArmorStand.hurtServer`:
+    /// not a damage type that breaks one).
+    pub(super) fn roar_pushes_armor_stands(&mut self, area: Aabb, from: [f64; 3]) {
+        for a in self.armor_stands.iter_mut() {
+            let (width, height) = stand_box(a);
+            let half = f64::from(width) / 2.0;
+            let p = a.position;
+            let bounds = Aabb::new(
+                Vec3::new(p.x - half, p.y, p.z - half),
+                Vec3::new(p.x + half, p.y + f64::from(height), p.z + half),
+            );
+            if a.health <= 0.0 || !bounds.intersects(area) {
+                continue;
+            }
+            let (xd, zd) = (p.x - from[0], p.z - from[2]);
+            let dd = (xd * xd + zd * zd).max(0.001);
+            // Entity.push.
+            a.velocity = a
+                .velocity
+                .add_vector(Vec3::new(xd / dd * 4.0, 0.2, zd / dd * 4.0));
+        }
     }
     /// `ArmorStand.pushEntities`: a plain minecart (`RIDABLE_MINECARTS`,
     /// `AbstractMinecart.isRideable`) whose box meets the stand's is shoved
@@ -1079,15 +1191,167 @@ impl Game<'_> {
     /// breaks a stand: its equipment pops above its block, the stand item does
     /// not drop.
     pub(super) fn break_armor_stand_by_anything(&mut self, i: usize) {
+        self.break_armor_stand_with_source(i, None);
+    }
+    /// `ArmorStand.brokenByAnything`, then `ArmorStand.kill` with attribution.
+    pub(super) fn break_armor_stand_with_source(
+        &mut self,
+        i: usize,
+        source: Option<super::commands::Target>,
+    ) {
         let a = self.armor_stands.remove(i);
         let at = [a.position.x, a.position.y, a.position.z];
+        let a_id = a.id;
+        // brokenByAnything's dropAllDeathLoot, before the equipment.
+        if !a.small && self.ui.rules.bool("mob_drops") {
+            self.armor_stand_death_loot(at, a.fire_ticks > 0);
+        }
         let (pos, drops) = broken_armor_stand_equipment(a);
         for stack in drops {
             self.pop_resource(pos, stack);
         }
         self.audio
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
+        self.entity_killed_event_by(at, source.or(Some(super::commands::Target::Stand(a_id))));
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+    }
+    /// `LivingEntity.dropFromLootTable` for a stand that is not small, with
+    /// `mob_drops` on (`shouldDropLoot`): its type's table
+    /// `minecraft:entities/armor_stand` with seed 0 (`getLootTableSeed`), so
+    /// the table's random sequence or else the level's random, each stack
+    /// spawned at the stand's position. Its view is only the type and whether
+    /// it burns; no damage source, killer or player is known here.
+    fn armor_stand_death_loot(&mut self, at: [f64; 3], on_fire: bool) {
+        const TABLE: &str = "minecraft:entities/armor_stand";
+        let Some(loot) = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        ) else {
+            return;
+        };
+        if !loot.has_table(TABLE) {
+            return;
+        }
+        let params = horizon_world::loot::EntityLootParams {
+            this: horizon_world::loot::LootEntity {
+                on_fire,
+                baby: false,
+                ..horizon_world::loot::LootEntity::new("minecraft:armor_stand")
+            },
+            ..horizon_world::loot::EntityLootParams::default()
+        };
+        let stacks = match loot.random_sequence(TABLE) {
+            Some(id) => {
+                let random = self.rand_sequences.get(id, self.level.seed);
+                loot.roll_entity(TABLE, random, &params)
+            }
+            None => loot.roll_entity(TABLE, &mut self.world.random, &params),
+        };
+        for stack in stacks.iter().filter(|s| !s.is_empty()) {
+            self.spawn_item_own(super::creatures::from_loot(stack), at, 10);
+        }
+    }
+    /// `ArmorStand.hurtServer` for a command's damage of `damage_type` from the
+    /// causing entity `causing`, up to its sources that act and still return
+    /// false: a blast breaks the stand (`brokenByAnything`, `kill`), fire that
+    /// ignites stands lights it (or burns a burning one 0.15), and burning
+    /// takes 4 health, all returning false. A source in
+    /// `#can_break_armor_stand` or `#always_kills_armor_stands` hurts the
+    /// stand as a player's hit does and returns true; every other source is
+    /// refused (false), as `/damage` fails for it in vanilla.
+    pub(super) fn command_damage_stand(
+        &mut self,
+        id: u32,
+        damage_type: &str,
+        causing: Option<super::commands::Target>,
+    ) -> bool {
+        use super::commands::Target;
+        let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
+            return false;
+        };
+        let registry = &self.motion.health.damage;
+        let Some(kind) = registry.id(damage_type) else {
+            return false;
+        };
+        let tagged = |tag: &str| registry.in_tag(kind, tag);
+        if !self.ui.rules.bool("mob_griefing") && matches!(causing, Some(Target::Mob(_))) {
+            return false;
+        }
+        if tagged("minecraft:bypasses_invulnerability") {
+            self.kill_target(Target::Stand(id));
+            return false;
+        }
+        // Entity.isInvulnerableToBase: the flag, unless a creative player hits.
+        let creative = match causing {
+            Some(Target::Player) => self.creative,
+            Some(Target::Guest(conn)) => self.command_guest(conn).is_some_and(|g| g.creative()),
+            _ => false,
+        };
+        let invulnerable = self
+            .persist
+            .raw
+            .get(&id)
+            .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
+        let a = &self.armor_stands[i];
+        if (invulnerable && !creative) || a.invisible || a.marker {
+            return false;
+        }
+        let (explosion, ignites, burns) = (
+            tagged("minecraft:is_explosion"),
+            tagged("minecraft:ignites_armor_stands"),
+            tagged("minecraft:burns_armor_stands"),
+        );
+        let (breaks, always_kills) = (
+            tagged("minecraft:can_break_armor_stand"),
+            tagged("minecraft:always_kills_armor_stands"),
+        );
+        if explosion {
+            self.break_armor_stand_by_anything(i);
+            return false;
+        }
+        if ignites {
+            if self.armor_stands[i].fire_ticks > 0 {
+                self.cause_stand_damage(i, 0.15);
+            } else {
+                // igniteForSeconds(5.0f): at least 100 ticks.
+                let a = &mut self.armor_stands[i];
+                a.fire_ticks = a.fire_ticks.max(100);
+            }
+            return false;
+        }
+        if burns && self.armor_stands[i].health > 0.5 {
+            self.cause_stand_damage(i, 4.0);
+            return false;
+        }
+        if !breaks && !always_kills {
+            return false;
+        }
+        // A causing player who may not build (adventure, spectator) cannot.
+        let may_build = match causing {
+            Some(Target::Player) => self.may_build(),
+            Some(Target::Guest(conn)) => self.command_guest(conn).is_none_or(|g| g.may_build()),
+            _ => true,
+        };
+        if !may_build {
+            return false;
+        }
+        // ArmorStand.hurtServer attributes its game events to the source
+        // entity: the player, a LAN guest or the mob.
+        let by = match causing {
+            Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
+            _ => None,
+        };
+        self.break_armor_stand_by_hit(i, creative, always_kills, by)
+    }
+    /// `ArmorStand.causeDamage`: the health less `amount`, broken by anything
+    /// at 0.5 or less.
+    fn cause_stand_damage(&mut self, i: usize, amount: f32) {
+        let health = self.armor_stands[i].health - amount;
+        if health <= 0.5 {
+            self.break_armor_stand_by_anything(i);
+        } else {
+            self.armor_stands[i].health = health;
+        }
     }
     /// ArmorStandRenderer: the stand with its default pose, then armor layers.
     pub(super) fn armor_stand_geometry(
@@ -1133,6 +1397,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(a.id));
             // EntityRenderer: drawn between last tick's position and this one's.
             let at = a.render_position(alpha);
             let p = super::entity_culling::at(at) - camera;
@@ -1260,20 +1525,20 @@ impl Game<'_> {
         // HumanoidArmorLayer: head, chest, legs, feet. One pose map for every layer
         // (`reset` keeps its capacity).
         let mut layer_poses = Poses::default();
-        for (slot, layer) in [
-            (5usize, "helmet"),
-            (4, "chestplate"),
-            (3, "leggings"),
-            (2, "boots"),
+        for (slot, layer, worn) in [
+            (5usize, "helmet", "head"),
+            (4, "chestplate", "chest"),
+            (3, "leggings", "legs"),
+            (2, "boots", "feet"),
         ] {
             let Some(stack) = &a.equipment[slot] else {
                 continue;
             };
-            let Some(asset) = self
-                .res
-                .items()
-                .get(&stack.item)
-                .and_then(|i| i.equip_asset.clone())
+            // HumanoidArmorLayer.renderArmorPiece: the stack's own
+            // `equippable`, drawn when it has an asset and is worn in its slot.
+            let Some(asset) = horizon_client::item_sync::equippable(stack, self.res.items())
+                .filter(|e| e.slot == worn)
+                .and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -1410,13 +1675,10 @@ impl Game<'_> {
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, 1.0, 0.0))
                 * glam::Mat4::from_rotation_x(0.436_332_32)
                 * glam::Mat4::from_rotation_z(std::f32::consts::PI);
+        let glints = super::perspective::preview_glint_quads(&verts, gui, 0..0, self.glint_frame);
         let quads =
             super::perspective::player_preview_quads(verts, gui, None, &self.gui.atlas.sprites);
-        let start = batch.vertices.len();
-        for (_, p, uv, color) in quads {
-            batch.quad_3d(p, uv, color);
-        }
-        batch.depth_since(start, [x0, y0, x1, y1]);
+        super::perspective::emit_preview(batch, quads, glints, [x0, y0, x1, y1]);
     }
 }
 /// The stand's slot (`ArmorStand::SLOTS` order) for an item whose
@@ -1522,14 +1784,55 @@ impl Game<'_> {
         let Some(info) = self.items().get(&stack.item) else {
             return false;
         };
-        let (index, slot) = match info.equip_slot.as_deref() {
+        let components = self
+            .pack
+            .item_renderer
+            .models
+            .components(&horizon_client::item_render::stack_view(stack));
+        let Some(equippable) = components.get("minecraft:equippable") else {
+            return false;
+        };
+        let actual = stack
+            .data()
+            .and_then(|data| data.other("minecraft:equippable"));
+        // Only adopt the default-allowed shape here. Restricted or otherwise
+        // shaped overrides keep their existing admission until supported.
+        let supported = actual.is_none_or(|tag| {
+            matches!(tag, horizon_world::nbt::Tag::Compound(map)
+                if map.keys().all(|key| matches!(key.to_string_lossy().as_str(), "slot" | "swappable")))
+                && matches!(tag.get("slot"), Some(horizon_world::nbt::Tag::String(_)))
+                && tag.get("swappable").is_none_or(|flag| {
+                    horizon_client::item_data::component_bool(flag).is_some()
+                })
+        });
+        let slot = if supported {
+            equippable.get("slot").and_then(serde_json::Value::as_str)
+        } else {
+            info.equip_slot.as_deref()
+        };
+        let (index, slot) = match slot {
             Some("head") => (0, "head"),
             Some("chest") => (1, "chest"),
             Some("legs") => (2, "legs"),
             Some("feet") => (3, "feet"),
             _ => return false,
         };
-        if !info.swappable {
+        // The component codec replaces the whole value: an override which
+        // omits swappable uses true, rather than its item's prototype flag.
+        let swappable = if !supported {
+            info.swappable
+        } else if let Some(actual) = actual {
+            actual
+                .get("swappable")
+                .and_then(horizon_client::item_data::component_bool)
+                .unwrap_or(true)
+        } else {
+            equippable
+                .get("swappable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true)
+        };
+        if !swappable {
             return false;
         }
         let current = self.armor[index].clone();
@@ -1684,11 +1987,8 @@ impl Game<'_> {
         }
         // A head item that is not worn armour.
         if let Some(stack) = &a.equipment[5]
-            && self
-                .res
-                .items()
-                .get(&stack.item)
-                .is_none_or(|i| i.equip_asset.is_none())
+            && !horizon_client::item_sync::equippable(stack, self.res.items())
+                .is_some_and(|e| e.asset_id.is_some() && e.slot == "head")
             && let Some(head) = part_matrix(model, base, poses, "head", 0.0)
         {
             let pose = head
@@ -1954,5 +2254,479 @@ mod layer_color_tests {
         assert_eq!(layer_color(None, Some(&plain)), 0xFFFF_FFFF);
         // A layer that isn't dyeable stays white even on a dyed stack.
         assert_eq!(layer_color(None, Some(&dyed)), 0xFFFF_FFFF);
+    }
+}
+
+#[cfg(test)]
+mod pumpkin_equippable_use_tests {
+    use super::*;
+    use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::{
+        configuration::ClientInformation,
+        play::{Serverbound, UseItem},
+    };
+    use std::sync::{atomic::AtomicI32, mpsc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h207_connected_use_item_adopts_actual_pumpkin_equippable_and_preserves_controls() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(8, 8));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "pumpkin-use-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 207,
+                name: "PumpkinGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [8.5, 200.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.selected = 0;
+        guest.permission = 2;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let clock = game.world.game_time;
+        let eq = "minecraft:equippable={slot:\"head\"}";
+        let marker = "minecraft:custom_data={h207:207}";
+        let helmet = "minecraft:diamond_helmet[minecraft:custom_data={old:1}]";
+        let mut failures = Vec::new();
+        for (i, (label, mode, component, count, old, changed)) in [
+            ("empty", "survival", Some(eq), 3, None, true),
+            ("swap", "survival", Some(eq), 1, Some(helmet), true),
+            ("creative", "creative", Some(eq), 3, None, true),
+            ("prototype", "survival", None, 3, None, false),
+            ("false", "survival", Some("minecraft:equippable={slot:\"head\",swappable:0b}"), 3, None, false),
+            ("binding", "survival", Some(eq), 3, Some("minecraft:diamond_helmet[minecraft:enchantments={\"minecraft:binding_curse\":1},minecraft:custom_data={old:1}]"), false),
+            ("same", "survival", Some(eq), 3, Some("minecraft:carved_pumpkin[minecraft:equippable={slot:\"head\"},minecraft:custom_data={h207:207}]"), false),
+        ].into_iter().enumerate() {
+            let held = format!("minecraft:carved_pumpkin[{}{}{}]", component.unwrap_or(""), if component.is_some() { "," } else { "" }, marker);
+            let before = game.as_guest(&mut host, 2, |g| {
+                assert_eq!(g.ui.registries.permission, 2);
+                assert!(g.run_command("clear @s") || g.inventory.iter().all(Option::is_none));
+                g.run_command("item replace entity @s armor.head with air");
+                g.run_command(&format!("gamemode {mode}"));
+                assert!(g.run_command(&format!("item replace entity @s weapon.mainhand with {held} {count}")));
+                if let Some(old) = old { assert!(g.run_command(&format!("item replace entity @s armor.head with {old}"))); }
+                assert_eq!(g.player.as_ref().unwrap().position, Vec3::new(8.5, 200.0, 8.5));
+                let hand = g.held().unwrap().clone();
+                assert_eq!(hand.item.as_ref(), "minecraft:carved_pumpkin");
+                assert_eq!(hand.count, count);
+                assert!(hand.data().unwrap().other("minecraft:custom_data").is_some());
+                let actual = hand.data().unwrap().other("minecraft:equippable");
+                assert_eq!(actual.is_some(), component.is_some());
+                if let Some(actual) = actual {
+                    assert_eq!(actual.get("slot"), Some(&horizon_world::nbt::Tag::String("head".into())));
+                    assert_eq!(actual.get("swappable").and_then(horizon_client::item_data::component_bool), if label == "false" { Some(false) } else { None });
+                }
+                if label == "binding" { assert_eq!(g.armor[0].as_ref().unwrap().enchantment_level("minecraft:binding_curse"), 1); }
+                if label == "same" { assert!(g.armor[0].as_ref().unwrap().same_item_same_components(&hand)); }
+                (g.inventory.clone(), g.armor.clone(), hand)
+            }).unwrap();
+            let sequence = 207 + i as i32;
+            game.lan_guest_packet(&mut host, 2, Serverbound::UseItem(UseItem { hand: 0, yaw: 0.0, pitch: 0.0, sequence }));
+            assert!(host.hub.guest(2).unwrap().ack_up_to.get() >= sequence);
+            game.as_guest(&mut host, 2, |g| {
+                let mut expected_inventory = before.0.clone();
+                let mut expected_armor = before.1.clone();
+                if changed {
+                    let mut worn = before.2.clone();
+                    worn.count = 1;
+                    expected_armor[0] = Some(worn);
+                    if label == "swap" { expected_inventory[0] = before.1[0].clone(); }
+                    else if label == "empty" { expected_inventory[0].as_mut().unwrap().count = 2; }
+                }
+                if g.inventory != expected_inventory || g.armor != expected_armor {
+                    failures.push((label, g.inventory.clone(), g.armor.clone()));
+                }
+                assert_eq!(g.world.game_time, clock);
+            }).unwrap();
+        }
+        assert!(
+            failures.is_empty(),
+            "actual connected UseItem Equippable adoption failures: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stand_lodestone_inventory_tick_tests {
+    use horizon_client::motion::PlayerMotion;
+    use horizon_core::{geometry::Vec3, position::BlockPos};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_stand_equipment_compasses_tick_after_loaded_lodestone_removal() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.level.health = 20.0;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(14.5, 200.0, 14.5)).unwrap());
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.run_command("setblock 12 200 12 lodestone"));
+        assert!(game.world.loaded(12, 12));
+        let mut ids = Vec::new();
+        for (n, dim, tracked, target) in [
+            (1, "minecraft:overworld", true, true),
+            (2, "minecraft:overworld", false, true),
+            (3, "minecraft:the_nether", true, true),
+            (4, "minecraft:overworld", true, false),
+        ] {
+            let who = format!("0000a551-0000-0000-0000-{n:012x}");
+            let x = f64::from(n * 2) + 0.5;
+            assert!(game.run_command(&format!("summon armor_stand {x} 200.0 4.5 {{UUID:[I;42321,0,0,{n}],Health:20f,NoGravity:1b}}")));
+            let id = game
+                .armor_stands
+                .iter()
+                .find(|a| game.persist.uuid_of(a.id) == Some([42321, 0, 0, n]))
+                .unwrap()
+                .id;
+            let tracker = format!(
+                "{}tracked:{tracked}",
+                if target {
+                    format!("target:{{dimension:\"{dim}\",pos:[I;12,200,12]}},")
+                } else {
+                    String::new()
+                }
+            );
+            for hand in ["mainhand", "offhand"] {
+                assert!(game.run_command(&format!("item replace entity {who} weapon.{hand} with compass[minecraft:lodestone_tracker={{{tracker}}},minecraft:custom_data={{marker:{n}}}] 1")));
+            }
+            let a = game.armor_stands.iter().find(|a| a.id == id).unwrap();
+            assert_eq!(a.position, Vec3::new(x, 200.0, 4.5));
+            assert!(a.no_gravity);
+            assert!(a.first_tick, "fresh actual stand has not ticked yet");
+            assert_eq!(a.health, 20.0);
+            for stack in a.equipment[..2].iter().flatten() {
+                assert_eq!(&*stack.item, "minecraft:compass");
+                assert_eq!(stack.count, 1);
+                assert_eq!(
+                    stack
+                        .data()
+                        .unwrap()
+                        .other("minecraft:lodestone_tracker")
+                        .unwrap()
+                        .get("target")
+                        .is_some(),
+                    target
+                );
+            }
+            assert!(game.persist.raw.remove(&id).is_some());
+            ids.push((id, n, target));
+        }
+        for hand in ["mainhand", "offhand"] {
+            assert!(game.run_command(&format!("item replace entity @s weapon.{hand} with compass[minecraft:lodestone_tracker={{target:{{dimension:\"minecraft:overworld\",pos:[I;12,200,12]}},tracked:true}}] 1")));
+        }
+        assert!(game.run_command("setblock 12 200 12 air"));
+        assert_eq!(
+            &*game.res.facts().get(game.world.block(12, 200, 12)).name,
+            "minecraft:air"
+        );
+        game.world.game_time += 1;
+        game.tick_lodestone_compasses();
+        for slot in [0, crate::game::shield::OFFHAND_SLOT] {
+            assert!(
+                game.stack_in(slot)
+                    .unwrap()
+                    .data()
+                    .unwrap()
+                    .other("minecraft:lodestone_tracker")
+                    .unwrap()
+                    .get("target")
+                    .is_none(),
+                "actual player tick positive control"
+            );
+        }
+        assert!(
+            game.entity_ticking_area()(2, 4),
+            "actual entity-ticking chunk admission"
+        );
+        game.tick_armor_stands().unwrap();
+        let mut mismatches = Vec::new();
+        for (id, n, target) in ids {
+            let a = game.armor_stands.iter().find(|a| a.id == id).unwrap();
+            assert_eq!(a.position, Vec3::new(f64::from(n * 2) + 0.5, 200.0, 4.5));
+            assert_eq!(a.health, 20.0);
+            assert!(a.no_gravity);
+            for (slot, stack) in a.equipment[..2].iter().enumerate() {
+                let stack = stack.as_ref().unwrap();
+                assert_eq!(stack.count, 1);
+                let data = stack.data().unwrap();
+                assert_eq!(
+                    data.other("minecraft:custom_data").unwrap().get("marker"),
+                    Some(&horizon_world::nbt::Tag::Int(n))
+                );
+                let present = data
+                    .other("minecraft:lodestone_tracker")
+                    .unwrap()
+                    .get("target")
+                    .is_some();
+                if present != (target && n != 1) {
+                    mismatches.push((n, slot, present));
+                }
+            }
+            let saved = horizon_client::entity_nbt::armor_stand_to_nbt(a, [42321, 0, 0, n], None);
+            assert!(
+                saved.get("equipment").is_some(),
+                "actual no-raw model writer"
+            );
+            for slot in 0..2 {
+                let key = horizon_client::entities::ArmorStand::SLOTS[slot];
+                let saved_target = saved
+                    .get("equipment")
+                    .unwrap()
+                    .get(key)
+                    .unwrap()
+                    .get("components")
+                    .unwrap()
+                    .get("minecraft:lodestone_tracker")
+                    .unwrap()
+                    .get("target")
+                    .is_some();
+                let modeled_target = a.equipment[slot]
+                    .as_ref()
+                    .unwrap()
+                    .data()
+                    .unwrap()
+                    .other("minecraft:lodestone_tracker")
+                    .unwrap()
+                    .get("target")
+                    .is_some();
+                assert_eq!(
+                    saved_target, modeled_target,
+                    "no-raw writer preserves actual tracker state"
+                );
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "actual stand equipment inventory tick mismatches: {mismatches:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod postbaseline_lodestone_controls {
+    //! Added after baseline: source-backed slots and preservation, not new runtime breadth.
+    use super::Game;
+    use horizon_client::{chunk::Chunk, entities::ArmorStand, items::ItemStack};
+    use horizon_core::position::BlockPos;
+    use std::sync::Arc;
+
+    fn stack<'g>(game: &'g Game<'_>, id: u32, slot: usize) -> &'g ItemStack {
+        game.armor_stands
+            .iter()
+            .find(|a| a.id == id)
+            .unwrap()
+            .equipment[slot]
+            .as_ref()
+            .unwrap()
+    }
+    fn has_target(stack: &ItemStack) -> bool {
+        stack
+            .data()
+            .unwrap()
+            .other("minecraft:lodestone_tracker")
+            .unwrap()
+            .get("target")
+            .is_some()
+    }
+    fn item(id: &str, tracker: &str, marker: usize, count: usize) -> String {
+        format!(
+            "{{id:\"{id}\",count:{count},components:{{\"minecraft:lodestone_tracker\":{{{tracker}}},\"minecraft:custom_data\":{{marker:{marker}}}}}}}"
+        )
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn postbaseline_six_slots_noncompass_guard_and_dimension_preservation() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.run_command("setblock 12 200 12 lodestone"));
+        let tracked = "target:{dimension:\"minecraft:overworld\",pos:[I;12,200,12]},tracked:true";
+        let slots = ArmorStand::SLOTS
+            .iter()
+            .enumerate()
+            .map(|(slot, key)| format!("{key}:{}", item("minecraft:compass", tracked, slot, 1)))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(game.run_command(&format!("summon armor_stand 4.5 200.0 4.5 {{UUID:[I;42321,0,0,100],Health:20f,NoGravity:1b,equipment:{{{slots}}}}}")));
+        let mixed = format!(
+            "mainhand:{},offhand:{},head:{},feet:{}",
+            item("minecraft:stone", tracked, 66, 3),
+            item(
+                "minecraft:compass",
+                "target:{dimension:\"minecraft:the_nether\",pos:[I;12,200,12]},tracked:true",
+                77,
+                1
+            ),
+            item(
+                "minecraft:compass",
+                "target:{dimension:\"minecraft:overworld\",pos:[I;12,200,12]},tracked:false",
+                88,
+                1
+            ),
+            item("minecraft:compass", "tracked:true", 99, 1)
+        );
+        assert!(game.run_command(&format!("summon armor_stand 8.5 200.0 8.5 {{UUID:[I;42321,0,0,101],Health:20f,NoGravity:1b,equipment:{{{mixed}}}}}")));
+        game.world
+            .chunks
+            .insert((4, 4), Arc::new(Chunk::empty(4, 4)));
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(64, 0, 64).chunk())
+            .unwrap();
+        assert!(game.run_command("fill 64 199 64 79 199 79 stone"));
+        assert!(game.run_command(&format!("summon armor_stand 65.5 200.0 65.5 {{UUID:[I;42321,0,0,102],Health:20f,NoGravity:1b,equipment:{{mainhand:{}}}}}",item("minecraft:compass",tracked,100,1))));
+        let id = |n| {
+            game.armor_stands
+                .iter()
+                .find(|a| game.persist.uuid_of(a.id) == Some([42321, 0, 0, n]))
+                .unwrap()
+                .id
+        };
+        let (all, mixed, inactive) = (id(100), id(101), id(102));
+        // Direct class ticks do not refresh the headless fixture's tickets.
+        // Use the existing ticket model: only chunk zero is forced to tick.
+        game.tickets.update(Some(crate::ticket_levels::Sources {
+            forced: vec![(0, 0)],
+            ..Default::default()
+        }));
+        assert!(game.entity_ticking_area()(4, 4));
+        assert!(!game.entity_ticking_area()(65, 65));
+        assert!(game.world.loaded(65, 65));
+        let before: Vec<_> = (0..6)
+            .map(|slot| {
+                game.armor_stands
+                    .iter()
+                    .find(|a| a.id == mixed)
+                    .unwrap()
+                    .equipment[slot]
+                    .as_ref()
+                    .map(horizon_items::item_nbt::item_to_nbt)
+            })
+            .collect();
+        assert!(has_target(stack(&game, mixed, 0)));
+        assert!(has_target(stack(&game, mixed, 1)));
+        assert!(has_target(stack(&game, mixed, 5)));
+        assert!(!has_target(stack(&game, mixed, 2)));
+        assert!(has_target(stack(&game, inactive, 0)));
+        for slot in 0..6 {
+            assert!(has_target(stack(&game, all, slot)));
+        }
+        let dimension = game.dim;
+        let chunks: std::collections::HashSet<_> = game.world.chunks.keys().copied().collect();
+        assert!(game.run_command("setblock 12 200 12 air"));
+        game.world.game_time += 1;
+        game.tick_armor_stands().unwrap();
+        assert!(
+            !game
+                .armor_stands
+                .iter()
+                .find(|a| a.id == all)
+                .unwrap()
+                .first_tick,
+            "active stand really ticked"
+        );
+        assert!(
+            game.armor_stands
+                .iter()
+                .find(|a| a.id == inactive)
+                .unwrap()
+                .first_tick,
+            "non-ticking guard unchanged"
+        );
+        for slot in 0..6 {
+            let s = stack(&game, all, slot);
+            assert!(!has_target(s), "source-backed equipment slot {slot}");
+            assert_eq!(s.count, 1);
+            assert_eq!(
+                s.data()
+                    .unwrap()
+                    .other("minecraft:custom_data")
+                    .unwrap()
+                    .get("marker"),
+                Some(&horizon_world::nbt::Tag::Int(slot as i32))
+            );
+        }
+        let after: Vec<_> = (0..6)
+            .map(|slot| {
+                game.armor_stands
+                    .iter()
+                    .find(|a| a.id == mixed)
+                    .unwrap()
+                    .equipment[slot]
+                    .as_ref()
+                    .map(horizon_items::item_nbt::item_to_nbt)
+            })
+            .collect();
+        assert_eq!(
+            before, after,
+            "actual non-compass/untracked/other-dimension/targetless stacks preserved"
+        );
+        assert!(has_target(stack(&game, inactive, 0)));
+        assert_eq!(game.dim, dimension);
+        assert_eq!(
+            game.world
+                .chunks
+                .keys()
+                .copied()
+                .collect::<std::collections::HashSet<_>>(),
+            chunks
+        );
     }
 }

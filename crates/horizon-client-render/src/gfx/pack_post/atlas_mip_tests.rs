@@ -99,6 +99,7 @@ fn the_atlas_blends_its_two_nearest_levels() {
             weather: false,
             hand: false,
         },
+        &Default::default(),
     )
     .expect("the pack runs");
     for p in gpu.render(&mut post, [4, 4]) {

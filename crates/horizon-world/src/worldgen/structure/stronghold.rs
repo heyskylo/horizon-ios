@@ -316,10 +316,10 @@ impl Builder {
         if !any {
             return None;
         }
-        if let Some(kind) = self.imposed.take() {
-            if let Some(piece) = self.create(kind, r, foot, d, depth) {
-                return Some(piece);
-            }
+        if let Some(kind) = self.imposed.take()
+            && let Some(piece) = self.create(kind, r, foot, d, depth)
+        {
+            return Some(piece);
         }
         for _ in 0..5 {
             let mut selection = int(r, total);

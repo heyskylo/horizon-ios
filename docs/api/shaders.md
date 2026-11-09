@@ -163,20 +163,24 @@ names an exact filesystem path; `shaders/` packs still use filenames.
 ## Shader API 0.2 (experimental)
 
 0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with
-`api = "0.2"`. `horizon-shader check` and `pack` take it, but **the game refuses 0.2 packs for now and the registry
-doesn't list them**: the game draws 0.2 in a later step, behind `HORIZON_HDR_FRAME=float` at first. What it changes
-from 0.1:
+`api = "0.2"`. `horizon-shader check` and `pack` take it; **the game draws 0.2 packs only with
+`HORIZON_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a 0.2 pack draws the world
+into a float frame where the device can (else the 8-bit one): the frame follows the picked pack,
+rebuilding the renderer and remeshing the world when needed. A refused or missing pack, or one whose owner mod is off,
+uses the no-pack frame. What it changes from 0.1:
 
 - **Linear light.** Every colour a stage reads or returns is linear light, 1.0 at paper white and more brighter. Horizon
   decodes vanilla's values with a 2.2 power and encodes the results the frame stores. Depth, normals, light levels,
   `emission`, the LabPBR maps and `[[textures]]` stay data. `[[lights]]` and `[[particle_lights]]` colours are still
   written in vanilla's gamma, and Horizon decodes them. Alpha is coverage only, and a post pass's alpha is ignored.
 - **The display in `Frame`:** `hdr`, `headroom`, `paper_white`, `peak` and `black_level`, after `shadow_center_texel`.
-  Until HDR output is served for 0.2 packs (a later step), a 0.2 pack sees SDR values with HDR on too (`hdr` 0,
-  `headroom` 1, `paper_white` and `peak` 80, `black_level` 0), and its picture is shown at paper white with nothing
-  lifted.
+  With HDR on, where the device keeps the HUD on a layer of its own, they are the display's, and the pack's picture is
+  shown in HDR, with the HUD laid over it as without a pack. Otherwise they are SDR's (`hdr` 0, `headroom` 1,
+  `paper_white` and `peak` 80, `black_level` 0), and the picture ends on an 8-bit frame before the camera overlays
+  and the HUD. Horizon lifts the shadows onto `black_level` after `[tonemap]`.
 - **`[tonemap]`**, `fn tonemap(input: TonemapInput) -> vec3<f32>`: the post chain's picture in, the picture for the
-  display out, from 0 to `frame.headroom`, once per pixel of the window. Without it a pack gets Horizon's curve.
+  display out, from 0 to `frame.headroom`, once per pixel of the window. Without it a pack gets Horizon's curve, the
+  one HDR uses without a pack; one or the other runs, never both.
 - **`[frame] blend`**: `"gamma"` (the default) or `"linear"`, what the frame stores and so how see-through draws
   blend. `"linear"` passes the check, but the game doesn't serve it yet.
 
@@ -191,7 +195,16 @@ blend = "gamma"            # optional: gamma (default) or linear
 ```
 
 0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]` or `[frame]` is
-refused.
+refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
+
+## Testing a pack frame by frame
+
+`horizon-ctl screenshot-sequence FRAMES STEP_MS PATH`, under `HORIZON_STILL`, starts the running pack over and draws
+its first FRAMES frames on a set clock: frame n has `frame_index` n, `time` (n - 1) × STEP_MS / 1000 and `delta_time`
+STEP_MS / 1000 (0 on frame 1; STEP_MS may be a decimal, `16.666667` for 60 fps), and `history` and the eased values
+start as in a pack just loaded. The last frame is written as a PNG, the same bytes every run on the same build, GPU
+and driver. Packs in the `shaders/` format get the same (`frameCounter`, `frameTimeCounter`, `frameTime`). How to use
+it: [the guide](../shaders.md#testing-a-pack-frame-by-frame).
 
 ## Guide, reference and examples
 
@@ -204,7 +217,7 @@ refused.
 ## Stability
 
 Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md). API
-0.2 is experimental too, and the game doesn't draw it yet.
+0.2 is experimental too, and the game draws it only with `HORIZON_HDR_FRAME=float`.
 While the API is experimental, a line is served until the next one is on by default: 0.1 ends when 0.2 is
 ([hdr-linear-light.md](../design/hdr-linear-light.md), step 5).
 
@@ -215,6 +228,22 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-08: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float` and HDR on, where the device keeps the
+  HUD on a layer of its own, a 0.2 pack is shown in HDR: `Frame`'s display fields are the display's, its `[tonemap]`
+  or else Horizon's no-pack curve maps the light once, the HUD is laid over it as without a pack, and F2 writes the
+  same SDR screenshot and `-hdr.png` as without one. With HDR off or no HUD layer the fields stay SDR's and the
+  picture ends on an 8-bit frame before the camera overlays and the HUD. The reference says Horizon lifts the shadows
+  onto `black_level` after `[tonemap]`. API 0.1 is unchanged.
+- 2026-11-08: API 0.2 (change, experimental): `horizon-shader check` refuses a 0.2 pack that constructs `Frame`, a
+  stage input (`PostInput(...)`) or `SurfaceData`, which may gain fields; reading and passing them along are
+  unchanged, and `Surface` is still constructed. The reference says `[tonemap]` runs once per pixel per output. API
+  0.1 is unchanged.
+- 2026-11-08: API 0.2 (fix, experimental): the world a post pass reads holds coverage in its alpha, as the
+  reference says, instead of Horizon's light-source marks. API 0.1 is unchanged.
+- 2026-11-07: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float`, a 0.2 pack picked or dropped gets its
+  frame at once instead of at the next start. API 0.1 is unchanged.
+- 2026-11-05: API 0.2 (change, experimental): the game draws 0.2 packs with `HORIZON_HDR_FRAME=float` set, on a
+  float frame where the device can; `[frame] blend = "linear"` is still refused. API 0.1 is unchanged.
 - 2026-11-05: API 0.2 (new line, experimental): linear light, `Frame`'s display fields, `[tonemap]` and
   `[frame] blend`, with its own reference. `horizon-shader` checks and packs it; the game and the registry refuse it
   for now. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 32 bytes after the fields 0.1 declares.

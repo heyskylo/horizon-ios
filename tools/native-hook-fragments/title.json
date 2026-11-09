@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "title",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_title"
+    }
+  ],
+  "rust_summary": "a title and subtitle on one player's screen (`native_title`), as Adventure's `showTitle`.",
+  "doc_summary": "`native_title(uuid, title, subtitle, fade_in, stay, fade_out)` (`host.title`) shows a title and subtitle with their times on one player's screen, as `/title` and Adventure's `showTitle`. Bundles need \"hooks\": @API:title@."
+}

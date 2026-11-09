@@ -179,7 +179,7 @@ owner = "levzzz5154"
 issue = "#3911"
 plain = """Mods for Horizon, as one line of work led by the modding team: native mods the launcher builds into your \
 game, mods on servers, mod screens and settings, tools for mod makers, the registry and machines."""
-dev = """One item for all modding work (#3911), led by levzzz5154 with vladislav_hagen; the order between the \
+dev = """One item for all modding work (#3911), led by levzzz5154; the order between the \
 parts is theirs. Native mods on stable hook points (game/native_hooks.rs, #3345, #3346, #3434, #3435) built by the \
 launcher (#3388, #3855); server-side hooks (#3878, #3706); mod-owned screens, input and drawing; tools for mod makers \
 (templates, `native.py check`); the registry (#1634, #1642, #1659); machines with inventories and menus (#1189); mods \
@@ -487,8 +487,8 @@ plain = """Speeding up the code that reads and writes the blocks of the world, w
 goes through: generation, lighting, meshing and ticking."""
 dev = """`PalettedContainer` and `PackedStorage` find an entry's word by multiply and shift instead of an integer \
 division (#1790, #1794); meshing looks up baked models by index, not by name (#1747). Each change keeps the paletted \
-storage harnesses identical and shows its microbenchmark (docs/performance/paletted-container-access-results.md)."""
-links = ["#1790", "#1794", "#1747", "docs/performance/paletted-container-access-results.md"]
+storage harnesses identical and shows its microbenchmark in its pull request."""
+links = ["#1790", "#1794", "#1747"]
 
 [[item]]
 id = "server-clients"
@@ -627,16 +627,6 @@ started: the Convert button and native rewrites come first."""
 dev = """Earlier research (#527, closed) found that Java mods can't simply run, because they call Minecraft's own \
 classes. Option to look at again: a bridge for simple Fabric mods."""
 links = ["#527"]
-
-[[item]]
-id = "alt-accounts"
-title = "Ely.by and other sign-in providers"
-status = "later"
-area = "servers"
-plain = """Sign in with other account providers, such as Ely.by or any Yggdrasil-compatible one, beside Microsoft."""
-dev = """Issue #1270 asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It \
-builds on the Microsoft sign-in (docs/microsoft-account.md)."""
-links = ["#1270", "docs/microsoft-account.md"]
 
 [[item]]
 id = "older-servers"

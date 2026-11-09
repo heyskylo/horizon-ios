@@ -39,6 +39,7 @@ fn pack_with(rows: Vec<Row>) -> Imported {
         portable: 0,
         resourcepacks: 0,
         indexed_resources: 0,
+        datapacks: 0,
     }
 }
 

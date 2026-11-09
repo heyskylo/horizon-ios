@@ -3,7 +3,7 @@ use super::{
     DecodeError,
     anchor::WorldGenerationContext,
     material_condition::{
-        CompiledSurfaceRule, MaterialConditions, MaterialDensitySources, MaterialRule,
+        BandRule, CompiledSurfaceRule, MaterialConditions, MaterialDensitySources, MaterialRule,
         MaterialRuleError, MaterialSurfaceQueries,
     },
     material_extensions::{ExtensionError, MaterialColumn, MaterialExtensions},
@@ -180,6 +180,57 @@ impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
             Some(index) => self.cache.kinds[index],
             None => BlockKind::of(self.chunk, self.chunk.block(self.x, y, self.z)),
         }
+    }
+    /// Whether `state` may be written at a whole run at once (`fill_opaque`):
+    /// it is opaque for every heightmap the current stage keeps, and carries
+    /// no fluid, so `set_block` would have marked no post-processing block.
+    /// The column's bounds must be known: a missing map takes the single-block
+    /// path, which primes it.
+    fn fills_runs(&self, state: BlockStateId) -> bool {
+        self.bounds.is_some() && self.chunk.stage_heightmaps_opaque(state)
+    }
+    /// Write `state` at every y in `low..=high`, high first, all of them solid
+    /// blocks of this column: the top block takes the single-block path, the
+    /// run below it the section fill.
+    ///
+    /// `state` is opaque, so `Heightmap::update` can only raise a map, at the
+    /// y written: the top write raises it once and every lower y is then at or
+    /// below `first_available - 2`, where the single-block path skips it. One
+    /// update at the top therefore leaves the maps (and their bounds, which
+    /// only follow a change) as a write per block leaves them.
+    fn fill_opaque(
+        &mut self,
+        low: i32,
+        high: i32,
+        state: BlockStateId,
+    ) -> Result<(), SurfaceError> {
+        let high = high.min(self.max);
+        let low = low.max(self.min);
+        if high < low {
+            return Ok(());
+        }
+        self.set_block(high, state)?;
+        if high > low {
+            match self.bounds {
+                // A missing map takes the single-block path, which primes it.
+                None => {
+                    for y in (low..high).rev() {
+                        self.set_block(y, state)?;
+                    }
+                    return Ok(());
+                }
+                Some(_) => {
+                    self.chunk
+                        .fill_solid_run(self.x, high - 1, self.z, high - low, state)?;
+                }
+            }
+        }
+        if let (Some(lo), Some(hi)) = (self.cache_index(low), self.cache_index(high)) {
+            let kind = BlockKind::of(self.chunk, state);
+            self.cache.states[lo..=hi].fill(state);
+            self.cache.kinds[lo..=hi].fill(kind);
+        }
+        Ok(())
     }
 }
 impl<B: TerrainBlockStates> MaterialColumn for Column<'_, '_, B> {
@@ -488,7 +539,8 @@ where
                             }
                             // Where the rule gives no block, the block's context
                             // is not needed: each application sets its own first.
-                            if let Some(rule) = worker.surface_variant(&mut variants, band, surface)
+                            if let Some(band_rule) =
+                                worker.surface_variant(&mut variants, band, surface)
                             {
                                 worker.update_y(
                                     above,
@@ -496,8 +548,50 @@ where
                                     water,
                                     y,
                                 );
+                                // A run of blocks the rule gives one state where
+                                // none of its ore veins places one is written
+                                // through the section fill, down to the first y
+                                // where a vein can place a block, the band's
+                                // bottom or the write bounds.
+                                if let BandRule::Fill(_, index) = band_rule {
+                                    let fill = variants.fill(index);
+                                    if column.fills_runs(fill.block)
+                                        && worker.veins_miss(fill, BlockPos::new(x, y, z))?
+                                    {
+                                        // A run above the minimum surface level stops
+                                        // there too: below it the band takes its other
+                                        // variant (`surface` is false).
+                                        let lowest = match minimum {
+                                            Some(level) if surface => {
+                                                band_low.max(write_min_y).max(level)
+                                            }
+                                            _ => band_low.max(write_min_y),
+                                        };
+                                        let mut run_low = y;
+                                        loop {
+                                            let next = run_low.wrapping_sub(1);
+                                            if next < lowest {
+                                                break;
+                                            }
+                                            tick(&mut budget)?;
+                                            if column.kind(next) != BlockKind::Solid
+                                                || !worker
+                                                    .veins_miss(fill, BlockPos::new(x, next, z))?
+                                            {
+                                                break;
+                                            }
+                                            run_low = next;
+                                        }
+                                        column.fill_opaque(run_low, y, fill.block)?;
+                                        above = above.wrapping_add(y.wrapping_sub(run_low));
+                                        // The run's blocks are written: the
+                                        // loop continues below it.
+                                        y = run_low.wrapping_sub(1);
+                                        continue;
+                                    }
+                                }
                                 if let Some(state) =
-                                    worker.try_apply(rule, BlockPos::new(x, y, z))?
+                                    worker.try_apply(band_rule.rule(), BlockPos::new(x, y, z))?
                                 {
                                     column.set_block(y, state)?;
                                 }
@@ -527,4 +621,160 @@ where
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        DATA_VERSION,
+        heightmap::{HeightmapState, HeightmapType},
+        nbt::Tag,
+        registry::{BlockRegistry, BlockStateId},
+        worldgen::terrain::{PreLightChunkStage, TerrainBlockStates},
+    };
+    use horizon_core::position::ChunkPos;
+
+    const STONE: BlockStateId = BlockStateId(2);
+
+    #[derive(Clone, Copy)]
+    struct State(u32);
+    impl HeightmapState for State {
+        fn is_air(self) -> bool {
+            self.0 < 2
+        }
+        fn is_air_block(self) -> bool {
+            self.0 == 0
+        }
+        fn has_fluid(self) -> bool {
+            self.0 == 3
+        }
+        fn blocks_motion_in_heightmap(self) -> bool {
+            self.0 == 2
+        }
+        fn blocks_motion_in_heightmap_no_leaves(self) -> bool {
+            self.0 == 2
+        }
+    }
+    struct Properties;
+    impl TerrainBlockStates for Properties {
+        type State = State;
+        fn heightmap_state(&self, id: BlockStateId) -> State {
+            State(id.0)
+        }
+    }
+    fn registry() -> BlockRegistry {
+        let names = ["minecraft:air", "minecraft:void_air", "minecraft:stone"];
+        let states = names.map(|name| Tag::compound([("id", Tag::String(name.into()))]));
+        let defaults = names
+            .iter()
+            .enumerate()
+            .map(|(id, name)| ((*name).into(), Tag::Int(id as i32)))
+            .collect();
+        BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            ("states", Tag::List(states.to_vec())),
+            ("defaults", Tag::Compound(defaults)),
+        ]))
+        .unwrap()
+    }
+    /// A chunk whose columns are stone up to `top` and air above it, written
+    /// without a stage, so neither heightmap exists yet.
+    fn chunk(registry: &BlockRegistry, top: i32) -> TerrainChunk<'_, Properties> {
+        let mut chunk =
+            TerrainChunk::new(ChunkPos::new(0, 0), -64, 128, registry, Properties).unwrap();
+        chunk.set_generation_stage(PreLightChunkStage::Biomes);
+        for y in -64..=top {
+            for x in 0..16 {
+                for z in 0..16 {
+                    chunk.set_block_raw(x, y, z, STONE).unwrap();
+                }
+            }
+        }
+        chunk
+    }
+    /// The path `fill_opaque` replaces: one `set_block` per y, top down.
+    fn write_per_block(
+        chunk: &mut TerrainChunk<'_, Properties>,
+        x: i32,
+        z: i32,
+        low: i32,
+        high: i32,
+        state: BlockStateId,
+    ) {
+        let mut bounds = chunk.worldgen_column_bounds(x, z);
+        for y in (low..=high).rev() {
+            if chunk.block(x, y, z) != state {
+                chunk
+                    .set_block_worldgen_column(x, y, z, state, &mut bounds)
+                    .unwrap();
+            }
+        }
+    }
+    fn assert_same(a: &TerrainChunk<'_, Properties>, b: &TerrainChunk<'_, Properties>) {
+        for section in 0..a.height() as usize / 16 {
+            assert_eq!(
+                a.section(section).unwrap().to_nbt().unwrap(),
+                b.section(section).unwrap().to_nbt().unwrap(),
+                "section {section}"
+            );
+        }
+        for kind in HeightmapType::ALL {
+            assert_eq!(
+                a.heightmap(kind).map(|map| map.raw_data()),
+                b.heightmap(kind).map(|map| map.raw_data()),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(a.postprocessing(), b.postprocessing());
+        for y in a.min_y()..a.min_y() + a.height() {
+            for x in 0..16 {
+                for z in 0..16 {
+                    assert_eq!(a.block(x, y, z), b.block(x, y, z), "{x} {y} {z}");
+                }
+            }
+        }
+    }
+
+    /// A run fill leaves the chunk and its heightmaps exactly as one write per
+    /// block does, with the maps missing (so the first write primes them) and
+    /// present, over runs that start in air, in stone or on the chunk's floor.
+    #[test]
+    fn fill_opaque_writes_what_a_write_per_block_writes() {
+        let registry = registry();
+        for primed in [false, true] {
+            for (top, low, high) in [
+                (0, -40, 12),
+                (0, -64, 63),
+                (0, -16, -1),
+                (0, 0, 0),
+                (0, 5, 12),
+                (40, -60, 40),
+            ] {
+                let (mut per_block, mut filled) = (chunk(&registry, top), chunk(&registry, top));
+                if primed {
+                    for chunk in [&mut per_block, &mut filled] {
+                        chunk.prime_heightmaps(&HeightmapType::ALL).unwrap();
+                    }
+                }
+                write_per_block(&mut per_block, 3, 5, low, high, STONE);
+                let mut cache = ColumnCache::default();
+                Column::new(&mut filled, 3, 5, -64, 63, 63, &mut cache)
+                    .fill_opaque(low, high, STONE)
+                    .unwrap();
+                assert_same(&per_block, &filled);
+            }
+        }
+        // A write that changes nothing either way, and one the write bounds
+        // clip, leave the same chunk.
+        let (mut per_block, mut filled) = (chunk(&registry, 0), chunk(&registry, 0));
+        write_per_block(&mut per_block, 0, 0, -70, -64, STONE);
+        let mut cache = ColumnCache::default();
+        Column::new(&mut filled, 0, 0, -64, 0, 0, &mut cache)
+            .fill_opaque(-70, -64, STONE)
+            .unwrap();
+        assert_same(&per_block, &filled);
+        // Below the chunk: the run stops at the write bounds.
+        assert_ne!(filled.block(0, -70, 0), STONE);
+    }
 }

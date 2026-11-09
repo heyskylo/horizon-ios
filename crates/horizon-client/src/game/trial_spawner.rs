@@ -119,6 +119,33 @@ impl Game<'_> {
             .put(key, BlockEntity::TrialSpawner(spawner));
         result
     }
+    /// What the LAN encoder builds update tags from beyond the block entity:
+    /// the mods' hook (`native_block_entity_update_tag`), and the block
+    /// states with `trial_spawner_state=active`, the only ones whose tag
+    /// holds `next_mob_spawns_at` (`TrialSpawnerStateData.getUpdateTag`).
+    pub(super) fn lan_update_tag_sources(
+        &self,
+        encoder: &mut horizon_client::lan::chunks::ChunkEncoder,
+    ) {
+        encoder.mod_update_tag = Some(|pos, entity| {
+            let mut tag = None;
+            Game::native_block_entity_update_tag(pos, entity, &mut tag);
+            tag
+        });
+        let registry = self.pack.assets.registry;
+        encoder.trial_active = (0..registry.len() as u32)
+            .filter(|&i| {
+                registry
+                    .state(horizon_world::registry::BlockStateId(i))
+                    .is_some_and(|b| {
+                        b.name == "minecraft:trial_spawner"
+                            && b.properties
+                                .get("trial_spawner_state")
+                                .is_some_and(|s| s == TrialState::Active.name())
+                    })
+            })
+            .collect();
+    }
     /// The trial spawner block at `key`: its state and ominous flag.
     pub(super) fn trial_spawner_block(&self, key: Pos) -> Option<(TrialState, bool)> {
         let block = self
@@ -249,11 +276,23 @@ impl Game<'_> {
                 }
                 TrialEvent::TrialOmen(uuid) => self.bad_omen_to_trial_omen(uuid),
                 TrialEvent::Discard(uuid) => {
-                    let id = self.persist.uuids.iter().find(|(_, u)| **u == uuid);
-                    if let Some((id, _)) = id
-                        && let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id)
-                    {
-                        m.removed = true;
+                    let (at, dropped) = {
+                        let id = self.persist.uuids.iter().find(|(_, u)| **u == uuid);
+                        if let Some((id, _)) = id
+                            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id)
+                        {
+                            let at = m.position;
+                            let dropped = horizon_client::mobs::drops::drop_preserved_equipment(m);
+                            m.removed = true;
+                            (Some(at), dropped)
+                        } else {
+                            (None, Vec::new())
+                        }
+                    };
+                    if let Some(at) = at {
+                        for stack in dropped {
+                            self.spawn_at_location(at, 0.0, stack);
+                        }
                     }
                 }
                 TrialEvent::SoundAt(name, at, pitch) => self.audio.play(
@@ -295,9 +334,13 @@ impl Game<'_> {
     /// minutes per level, with Trial Omen's sound when it is new. `uuid` is
     /// the player found: the one in the game's frame, else a guest.
     fn bad_omen_to_trial_omen(&mut self, uuid: Uuid) {
-        let eye = if self.acting_uuid() == uuid {
-            transform_bad_omen(&mut self.potions.effects)
-                .then(|| self.eye_position().unwrap_or_default())
+        // MobEffect.onEffectAdded plays at the player's feet.
+        let feet = if self.acting_uuid() == uuid {
+            let added = transform_bad_omen(&mut self.potions.effects);
+            self.player
+                .as_ref()
+                .filter(|_| added)
+                .map(|p| [p.position.x, p.position.y, p.position.z])
         } else {
             let acting = self.lan_acting;
             let Some(guest) = self.lan.as_mut().and_then(|h| {
@@ -308,13 +351,12 @@ impl Game<'_> {
             }) else {
                 return;
             };
-            let [x, y, z] = guest.position;
-            let eye = [x, y + guest.eye_height(), z];
-            transform_bad_omen(&mut guest.effects).then_some(eye)
+            let at = guest.position;
+            transform_bad_omen(&mut guest.effects).then_some(at)
         };
-        if let Some(eye) = eye {
+        if let Some(at) = feet {
             self.audio
-                .play("minecraft:event.mob_effect.trial_omen", Some(eye), 1.0, 1.0);
+                .play("minecraft:event.mob_effect.trial_omen", Some(at), 1.0, 1.0);
         }
     }
     /// `sendBlockUpdated` of a block entity: the clients load its new update tag.

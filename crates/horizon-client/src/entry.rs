@@ -13,7 +13,19 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
     horizon_threads::configure_allocator();
+    // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
+    if !cfg!(feature = "horizon-extras") {
+        horizon_client::options_ui::HORIZON_EXTRAS
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
     horizon_client::telemetry::mark_start();
+    // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
+    crash::on_report(horizon_client::telemetry::keep_crash);
+    // The "I'm playing" ping plugs in through the hooks, as a Horizon crate does; the official
+    // executable registers its own before calling this. No hook registers after this point.
+    #[cfg(feature = "heartbeat")]
+    let _ = horizon_hooks::register(&horizon_client::heartbeat::HOOKS);
+    horizon_hooks::engine::seal();
     horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -46,6 +58,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         }
         (logging::game_home(), "client", "Render thread")
     };
+    // Before the log opens, so a mod's injection hears its first lines.
+    logging::set_line_hook(crate::native_client_hooks::native_log_line);
     if !help {
         logging::init(
             logging::player_dir_override().unwrap_or(home.as_path()),
@@ -98,6 +112,35 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     {
         log::warn!("Native data-load hooks already installed; keeping the first callbacks");
     }
+    if horizon_world::worldgen::native_generate::install(
+        horizon_world::worldgen::native_generate::NativeGenerateHooks {
+            chunk_generate: |dimension, chunk, seed, flat, chunk_out, generate| {
+                crate::mod_api::dispatch_chunk_generate(
+                    crate::mod_api::mods(),
+                    dimension,
+                    chunk,
+                    seed,
+                    flat,
+                    chunk_out,
+                    generate,
+                );
+            },
+            lod_column: |dimension, column, seed, flat, column_out| {
+                crate::mod_api::dispatch_lod_column(
+                    crate::mod_api::mods(),
+                    dimension,
+                    column,
+                    seed,
+                    flat,
+                    column_out,
+                );
+            },
+        },
+    )
+    .is_err()
+    {
+        log::warn!("Native generation hooks already installed; keeping the first callbacks");
+    }
     if crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
         menu_slot_rules: |menu, slot, stack, may_place, max_stack| {
             crate::mod_api::dispatch_menu_slot_rules(
@@ -117,6 +160,26 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 message,
                 replies,
                 cancel,
+            );
+        },
+        player_chat_v2: |player, name, level, message, replies, cancel| {
+            crate::mod_api::dispatch_player_chat_v2(
+                crate::mod_api::mods(),
+                player,
+                name,
+                level,
+                message,
+                replies,
+                cancel,
+            );
+        },
+        chat_decorate: |player, name, message, decorated| {
+            crate::mod_api::dispatch_chat_decorate(
+                crate::mod_api::mods(),
+                player,
+                name,
+                message,
+                decorated,
             );
         },
         sound_play: |sound, volume, pitch, cancel| {
@@ -168,6 +231,23 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         register_goals: |mob| {
             crate::mod_api::dispatch_register_goals(crate::mod_api::mods(), mob);
         },
+        player_pre_login: |player, name, address, defer| {
+            crate::mod_api::dispatch_player_pre_login(
+                crate::mod_api::mods(),
+                player,
+                name,
+                address,
+                defer,
+            );
+        },
+        player_profile: |player, name, properties| {
+            crate::mod_api::dispatch_player_profile(
+                crate::mod_api::mods(),
+                player,
+                name,
+                properties,
+            );
+        },
         ingredient: |kind, data, items| {
             crate::mod_api::dispatch_ingredient(crate::mod_api::mods(), kind, data, items);
         },
@@ -178,6 +258,19 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 data,
                 stack,
                 accept,
+            );
+        },
+        log_line: |level, thread, message, line| {
+            crate::mod_api::dispatch_log_line(crate::mod_api::mods(), level, thread, message, line);
+        },
+        handshake: |address, host, intent, cancel, reason| {
+            crate::mod_api::dispatch_handshake(
+                crate::mod_api::mods(),
+                address,
+                host,
+                intent,
+                reason,
+                cancel,
             );
         },
     })
@@ -215,6 +308,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             game::exit_code::ERROR
         });
     }
+    horizon_hooks::engine::shutdown();
     logging::flush();
 }
 

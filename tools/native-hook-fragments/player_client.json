@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_client", "target": "horizon_client::game::native_player_reads::Game<'_>::native_player_client"}
+  ],
+  "rust_summary": "what a player's client told the server and what it was sent (`native_player_client`): brand, language, view distance, chunks and wire bytes.",
+  "doc_summary": "`native_player_client(uuid)` gives a player's `NativeClientInfo`: the client's brand, its `ClientInformation` (language, view distance, chat visibility, main hand, particles), the chunks it was sent and the bytes on its wire, as Paper's `getClientBrandName`, `locale` and `getClientViewDistance`. Bundles need \"hooks\": @API:player_client@.",
+  "comments": ["crates/horizon-client/src/game/native_player_reads.rs"]
+}

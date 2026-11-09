@@ -63,7 +63,7 @@ pub(super) fn decode(m: &Map<String, Value>) -> Result<Value> {
 /// with a matching level. An empty predicate list still needs the component.
 pub(super) fn matches(
     predicate: &Value,
-    components: &Components,
+    components: ComponentsView<'_>,
     env: &dyn ItemEnv,
 ) -> Option<bool> {
     let (id, expected) = predicate.as_object()?.iter().next()?;
@@ -143,13 +143,17 @@ mod tests {
             json!({"minecraft:density":0}),
         )]);
         assert_eq!(
-            matches(&json!({"minecraft:enchantments":[{}]}), &components, &NoEnv),
+            matches(
+                &json!({"minecraft:enchantments":[{}]}),
+                ComponentsView::of(&components),
+                &NoEnv
+            ),
             Some(true)
         );
         assert_eq!(
             matches(
                 &json!({"minecraft:enchantments":[{"enchantments":"minecraft:density"}]}),
-                &components,
+                ComponentsView::of(&components),
                 &NoEnv
             ),
             Some(false)
@@ -166,12 +170,21 @@ mod tests {
             "minecraft:enchantments".into(),
             json!({"minecraft:density":3}),
         )]);
-        assert_eq!(matches(&predicate, &components, &Tags), Some(true));
-        assert_eq!(matches(&predicate, &components, &NoEnv), Some(false));
+        assert_eq!(
+            matches(&predicate, ComponentsView::of(&components), &Tags),
+            Some(true)
+        );
+        assert_eq!(
+            matches(&predicate, ComponentsView::of(&components), &NoEnv),
+            Some(false)
+        );
         components.insert(
             "minecraft:enchantments".into(),
             json!({"minecraft:density":2}),
         );
-        assert_eq!(matches(&predicate, &components, &Tags), Some(false));
+        assert_eq!(
+            matches(&predicate, ComponentsView::of(&components), &Tags),
+            Some(false)
+        );
     }
 }

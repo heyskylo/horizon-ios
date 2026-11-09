@@ -194,10 +194,8 @@ impl StructureAdaptation {
                 continue;
             }
             let rigid = pool.element.projection() == Projection::Rigid;
-            if rigid {
-                if let Some(b) = adaptation.piece_box(b, pool.rotation) {
-                    push_piece(pieces, adaptation, b, &mut include);
-                }
+            if rigid && let Some(b) = adaptation.piece_box(b, pool.rotation) {
+                push_piece(pieces, adaptation, b, &mut include);
             }
             if (rigid && !self.rigid_junctions) || adaptation.band.is_some() {
                 continue;
@@ -248,7 +246,7 @@ fn push_piece(
 mod tests {
     use super::*;
     use crate::worldgen::structure::{
-        StructureTemplate,
+        LazyTemplate, StructureTemplate,
         jigsaw::{Junction, PoolElement, PoolPiece},
     };
     use serde_json::json;
@@ -303,7 +301,7 @@ mod tests {
 
     fn element(projection: Projection, own: Option<Adaptation>) -> Arc<PoolElement> {
         Arc::new(PoolElement::Single {
-            template: Arc::new(StructureTemplate::empty()),
+            template: LazyTemplate::loaded(Arc::new(StructureTemplate::empty())),
             processors: Default::default(),
             processors_source: serde_json::Value::Null,
             legacy: false,
@@ -330,6 +328,7 @@ mod tests {
             structure: 0,
             name: "test".into(),
             chunk: ChunkPos::new(0, 0),
+            references: 0,
             pieces: vec![
                 piece(&rigid, 0, [5, 64, 5]),
                 piece(&matching, 10, [12, 65, 5]),

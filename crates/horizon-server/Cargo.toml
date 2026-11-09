@@ -3,7 +3,7 @@ name = "horizon-server"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 description = "Host a Horizon server: server.toml, the CLI and the supervisor that runs the game headless (docs/server.md)"
 
 [dependencies]

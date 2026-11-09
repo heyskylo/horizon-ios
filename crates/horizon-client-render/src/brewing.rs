@@ -14,7 +14,7 @@ use std::{collections::HashSet, path::Path};
 pub use horizon_client_core::potions::{
     BASE_POTION_COLOR, Category, EFFECTS, EffectDef, POTIONS, PotionDef, all_effects,
     description_id, effect, is_mod_effect, mod_effects, namespaced, potion, potion_color,
-    register_mod_effects,
+    register_mod_effects, set_pack_colors,
 };
 /// `MobEffectUtil.formatDuration` at 20 TPS.
 pub fn format_duration(ticks: i32) -> String {
@@ -36,6 +36,37 @@ pub fn potion_name_key(item: &str, potion: Option<&str>) -> String {
     let prefix = item.trim_start_matches("minecraft:");
     let suffix = potion.and_then(self::potion).map_or("empty", |p| p.name);
     format!("item.minecraft.{prefix}.effect.{suffix}")
+}
+/// `PotionItem.getName` and `TippedArrowItem.getName`: a potion or a tipped
+/// arrow is named by its contents (`PotionContents.getName`: their own
+/// `custom_name`, else the potion's name, else `empty`), whatever its
+/// `item_name`. None for other items, and for a stack whose contents were
+/// taken off (`!minecraft:potion_contents`), which takes the item's name.
+pub fn contents_name_key(stack: &ItemStack) -> Option<String> {
+    use horizon_world::nbt::Tag;
+    let item = &*stack.item;
+    let named = matches!(
+        item,
+        "minecraft:potion"
+            | "minecraft:splash_potion"
+            | "minecraft:lingering_potion"
+            | "minecraft:tipped_arrow"
+    );
+    let data = stack.data();
+    if !named || data.is_some_and(|d| d.other("!minecraft:potion_contents").is_some()) {
+        return None;
+    }
+    let prefix = item.trim_start_matches("minecraft:");
+    let own = data
+        .and_then(|d| d.potion_extra.iter().find(|(k, _)| k == "custom_name"))
+        .and_then(|(_, name)| match name {
+            Tag::String(s) => Some(s.to_string_lossy()),
+            _ => None,
+        });
+    Some(match own {
+        Some(suffix) => format!("item.minecraft.{prefix}.effect.{suffix}"),
+        None => potion_name_key(item, stack.potion()),
+    })
 }
 /// `PotionContents.getAllEffects`: the potion's effects, then the stack's
 /// `custom_effects` (id, duration, amplifier). Unknown effect ids are dropped.
@@ -387,14 +418,71 @@ impl BrewingStand {
         out.brewed = true;
     }
 }
-/// The `minecraft:brewing_fuel` providers of an item: (uses, speed_multiplier).
+/// `ItemStack.get(BREWING_FUEL)`: the stack's providers (uses, speed_multiplier),
+/// respecting component patches before falling back to the item's defaults.
 pub fn brewing_fuel(items: &Items, stack: &ItemStack) -> Option<(Value, Value)> {
+    if let Some(data) = stack.data() {
+        if data.other("!minecraft:brewing_fuel").is_some() {
+            return None;
+        }
+        if let Some(own) = data.other("minecraft:brewing_fuel") {
+            let component = horizon_client_core::scoreboard::tag_to_json(own);
+            return Some((
+                component["uses"].clone(),
+                component["speed_multiplier"].clone(),
+            ));
+        }
+    }
     items.get(&stack.item).and_then(|i| i.brewing_fuel.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_fuel_controls_brew_duration_and_consumption() {
+        let items = Items::for_tests(Default::default());
+        let brewing = Brewing {
+            reagents: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+            inputs: HashSet::new(),
+            recipes: vec![BrewingRecipe {
+                id: "awkward".into(),
+                input: PotionIngredient {
+                    items: ["minecraft:potion".to_owned()].into_iter().collect(),
+                    potions: Some(["minecraft:water".to_owned()].into_iter().collect()),
+                },
+                reagent: PotionIngredient {
+                    items: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+                    potions: None,
+                },
+                output: ItemStack::new("minecraft:potion", 1).with_potion("minecraft:awkward"),
+            }],
+        };
+        let mut fuel = ItemStack::new("minecraft:stone", 2);
+        fuel.data_mut().set_loot_component(
+            "minecraft:brewing_fuel",
+            &serde_json::json!({"uses": 7, "speed_multiplier": 2.5}),
+        );
+        let mut stand = BrewingStand::new();
+        stand.items[0] = Some(ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water"));
+        stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        stand.items[4] = Some(fuel);
+        let providers = Providers::empty();
+        stand.tick(&brewing, &items, &providers);
+        assert_eq!((stand.brew_time, stand.fuel, stand.total_fuel), (160, 6, 7));
+        assert_eq!(stand.items[4].as_ref().unwrap().count, 1);
+        for _ in 1..160 {
+            assert!(!stand.tick(&brewing, &items, &providers).brewed);
+        }
+        assert!(stand.tick(&brewing, &items, &providers).brewed);
+        assert_eq!(
+            stand.items[0].as_ref().unwrap().potion(),
+            Some("minecraft:awkward")
+        );
+        assert_eq!(stand.fuel, 6);
+        assert_eq!(stand.items[4].as_ref().unwrap().count, 1);
+    }
 
     #[test]
     fn potion_colours_and_names() {
@@ -411,6 +499,40 @@ mod tests {
         assert_eq!(
             potion_name_key("minecraft:splash_potion", Some("minecraft:long_swiftness")),
             "item.minecraft.splash_potion.effect.swiftness"
+        );
+        // A potion or a tipped arrow is named by its contents, over its
+        // item_name; one whose contents were taken off is not.
+        use horizon_world::nbt::Tag;
+        let mut swift =
+            ItemStack::new("minecraft:potion", 1).with_potion("minecraft:long_swiftness");
+        swift
+            .data_mut()
+            .set_other("minecraft:item_name", Some(Tag::String("Bottle".into())));
+        assert_eq!(
+            contents_name_key(&swift).as_deref(),
+            Some("item.minecraft.potion.effect.swiftness")
+        );
+        assert_eq!(
+            contents_name_key(&ItemStack::new("minecraft:splash_potion", 1)).as_deref(),
+            Some("item.minecraft.splash_potion.effect.empty")
+        );
+        let mut own = ItemStack::new("minecraft:tipped_arrow", 1).with_potion("minecraft:poison");
+        own.data_mut()
+            .potion_extra
+            .push(("custom_name".into(), Tag::String("luck".into())));
+        assert_eq!(
+            contents_name_key(&own).as_deref(),
+            Some("item.minecraft.tipped_arrow.effect.luck")
+        );
+        let mut taken = ItemStack::new("minecraft:potion", 1);
+        taken.data_mut().set_other(
+            "!minecraft:potion_contents",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(contents_name_key(&taken), None);
+        assert_eq!(
+            contents_name_key(&ItemStack::new("minecraft:stone", 1)),
+            None
         );
         assert_eq!(format_duration(9600), "08:00");
         assert_eq!(format_duration(450), "00:22");

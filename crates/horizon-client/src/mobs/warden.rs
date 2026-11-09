@@ -15,7 +15,10 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 use horizon_protocol::entity_data::PositionSource;
-use std::{collections::HashMap, f32::consts::PI};
+use std::{
+    collections::{BTreeMap, HashMap},
+    f32::consts::PI,
+};
 
 pub const EMERGE_DURATION: i64 = warden_brain::EMERGE_DURATION as i64;
 pub const DIGGING_COOLDOWN: i64 = warden_brain::DIGGING_COOLDOWN;
@@ -161,11 +164,59 @@ impl AngerLevel {
 pub struct AngerManagement {
     suspects: Vec<Who>,
     anger: HashMap<Who, i32>,
+    /// `angerByUuid`: the suspects that are not in the level, kept by UUID so
+    /// their anger goes on calming down while they are away and finds them
+    /// again when they come back. `Who` cannot carry one of those (its mobs are
+    /// live ids), which is why a save writes this half as UUIDs.
+    unloaded: BTreeMap<[i32; 4], i32>,
+    /// `conversionDelay`: the anger ticks left before `unloaded` is looked up
+    /// in the level again. Vanilla draws the first value from a thread-local
+    /// `RandomSource` (0..=2 ticks); a fresh anger starts at 0 here, the fastest
+    /// of those, since the mob layer has no such stream and drawing from the
+    /// mob's own random would shift that stream's parity.
+    conversion_delay: i32,
     highest: i32,
 }
+/// `AngerManagement.CONVERSION_DELAY`: anger ticks between two lookups of the
+/// suspects that are away.
+const CONVERSION_DELAY: i32 = 2;
 impl AngerManagement {
-    /// One second: every suspect calms by one; the invalid are forgotten.
-    pub fn tick(&mut self, valid: impl Fn(Who) -> bool) {
+    /// `new AngerManagement(filter, List<Pair<UUID, Integer>>)`: a saved anger
+    /// starts with every suspect in the UUID map. The live map fills up again as
+    /// the ticks find them in the level (`convertFromUuids`).
+    pub fn from_saved(pairs: impl IntoIterator<Item = ([i32; 4], i32)>) -> Self {
+        Self {
+            unloaded: pairs.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+    /// The suspects that are not in the level, by UUID, angriest first: what a
+    /// save writes after the loaded ones (`createUuidAngerPairs` lists the
+    /// suspects, then this map).
+    pub fn unloaded(&self) -> impl Iterator<Item = ([i32; 4], i32)> + '_ {
+        let mut pairs: Vec<([i32; 4], i32)> = self.unloaded.iter().map(|(u, a)| (*u, *a)).collect();
+        pairs.sort_by_key(|(_, anger)| std::cmp::Reverse(*anger));
+        pairs.into_iter()
+    }
+    /// One anger tick (`Warden.customServerAiStep` runs it every 20 game
+    /// ticks): the UUIDs that are due are looked up in the level, then every
+    /// suspect calms by one - the ones that are away, then the ones in the
+    /// level, whose invalid are forgotten. `by_uuid` is `Level.getEntity(uuid)`
+    /// as a `Who` (`Game::who_by_uuid`); a world that cannot answer resolves
+    /// nothing, so those suspects stay away for another tick.
+    pub fn tick(&mut self, valid: impl Fn(Who) -> bool, by_uuid: impl Fn([i32; 4]) -> Option<Who>) {
+        self.conversion_delay -= 1;
+        if self.conversion_delay <= 0 {
+            self.convert_from_uuids(by_uuid);
+            self.conversion_delay = CONVERSION_DELAY;
+        }
+        self.unloaded.retain(|_, anger| {
+            if *anger <= 1 {
+                return false;
+            }
+            *anger -= 1;
+            true
+        });
         let mut dropped = Vec::new();
         for (who, anger) in self.anger.iter_mut() {
             if *anger > 1 && valid(*who) {
@@ -179,6 +230,29 @@ impl AngerManagement {
             self.suspects.retain(|s| *s != who);
         }
         self.sort_and_update_highest();
+    }
+    /// `AngerManagement.convertFromUuids`: a suspect that is back in the level
+    /// rejoins the live map with the anger it kept while it was away. One that
+    /// is already in the live map was angered again before this lookup: vanilla's
+    /// `increaseAnger` would have added the anger kept under its UUID then
+    /// (`angerByUuid.removeInt`, uncapped), which the mob layer cannot do as it
+    /// knows no UUIDs, so that anger is added here.
+    fn convert_from_uuids(&mut self, by_uuid: impl Fn([i32; 4]) -> Option<Who>) {
+        let away = std::mem::take(&mut self.unloaded);
+        for (uuid, anger) in away {
+            match by_uuid(uuid) {
+                Some(who) if self.anger.contains_key(&who) => {
+                    *self.anger.entry(who).or_default() += anger;
+                }
+                Some(who) => {
+                    self.anger.insert(who, anger);
+                    self.suspects.push(who);
+                }
+                None => {
+                    self.unloaded.insert(uuid, anger);
+                }
+            }
+        }
     }
     fn sort_and_update_highest(&mut self) {
         // AngerManagement.Sorter: the angry first, then players, then the
@@ -545,6 +619,8 @@ pub fn listen(
                 pos,
                 source: ctx.source,
                 owner: ctx.owner,
+                source_uuid: ctx.source_uuid,
+                owner_uuid: ctx.owner_uuid,
             },
             now,
         );
@@ -703,7 +779,8 @@ pub fn server_ai_step(
     if m.age.is_multiple_of(20)
         && let Some(st) = m.extra.warden.as_mut()
     {
-        st.anger.tick(|who| can_target(w, who));
+        st.anger
+            .tick(|who| can_target(w, who), |uuid| w.who_by_uuid(uuid));
         st.client_anger = st.anger.active_anger(st.target());
     }
     if let Some(st) = m.extra.warden.as_mut() {
@@ -764,18 +841,13 @@ pub(super) fn tick_sonic_boom(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEve
         direction: normal,
     });
 }
-/// `Warden.tick` on the client: the heartbeat (pitched by the client's copy
-/// of the warden: a level event sound here), the tendril and heart
-/// animations, digging crumbs, and keyframes that ended.
+/// `Warden.tick` off the window's client: the heart's clock, the tendril and
+/// heart animations, digging crumbs, and keyframes that ended. The heartbeat
+/// sound is `playLocalSound` in the client branch, which a server never runs
+/// or sends, so nothing is played or drawn from the random here: the window's
+/// own `client_tick` plays it.
 pub fn ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
-    if heartbeat(m) {
-        events.push(MobEvent::LevelEventSound {
-            sound: "entity.warden.heartbeat",
-            at: at(m),
-            volume: 5.0,
-            spread: 0.2,
-        });
-    }
+    heartbeat(m);
     animate(m, events);
 }
 /// The heart's beat on its clock, from the client's anger level: whether
@@ -791,13 +863,22 @@ fn heartbeat(m: &mut Mob) -> bool {
     }
     beat
 }
-/// `Warden.tick` on a client that is not the server: the heart and tendril
-/// animations and the keyframes that ended. Its sounds come from the server,
-/// but `Warden.clientDiggingParticles` is the client's own work, so the digging
+/// `Warden.tick` on a client that is not the server: the heartbeat, the heart
+/// and tendril animations and the keyframes that ended. The heartbeat is
+/// `playLocalSound`, so the server never sends it and each client plays its
+/// own; `Warden.clientDiggingParticles` is the client's own work too, so the
 /// events are handed back to the caller.
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.anim.vo = m.anim.v;
-    heartbeat(m);
+    if heartbeat(m) && !m.silent {
+        let pitch = voice_pitch(m);
+        events.push(MobEvent::LocalSound(
+            "entity.warden.heartbeat",
+            at(m),
+            5.0,
+            pitch,
+        ));
+    }
     animate(m, events);
 }
 fn animate(m: &mut Mob, events: &mut Vec<MobEvent>) {
@@ -1012,23 +1093,38 @@ mod tests {
     }
 
     #[test]
+    fn a_suspect_angered_again_before_its_lookup_keeps_its_saved_anger() {
+        // `increaseAnger` on a new suspect adds what `angerByUuid` kept for it:
+        // a reloaded warden angered at the player again before the first lookup
+        // keeps both angers, not only the new one.
+        let player = [5, 5, 5, 5];
+        let mut a = AngerManagement::from_saved([(player, 95)]);
+        assert_eq!(a.increase(Who::Player, 35), 35);
+        a.tick(|_| true, |u| (u == player).then_some(Who::Player));
+        // 35 + 95 = 130, then one anger tick calms it by one.
+        assert_eq!(a.anger_of(Who::Player), 129);
+        assert_eq!(a.unloaded().count(), 0);
+        assert_eq!(a.suspects(), [Who::Player]);
+    }
+
+    #[test]
     fn anger_accumulates_to_a_cap_and_decays_each_second() {
         let mut a = AngerManagement::default();
         assert_eq!(a.increase(Who::Player, 35), 35);
         assert_eq!(a.increase(Who::Player, 35), 70);
         assert_eq!(a.increase(Who::Player, 100), 150);
         assert_eq!(a.active_anger(None), 150);
-        a.tick(|_| true);
+        a.tick(|_| true, |_| None);
         assert_eq!(a.anger_of(Who::Player), 149);
         // An invalid suspect is forgotten.
         a.increase(Who::Mob(3), 10);
-        a.tick(|w| w == Who::Player);
+        a.tick(|w| w == Who::Player, |_| None);
         assert_eq!(a.anger_of(Who::Mob(3)), 0);
         assert_eq!(a.suspects(), &[Who::Player]);
         // Anger of one point is gone after the next second.
         let mut b = AngerManagement::default();
         b.increase(Who::Mob(1), 1);
-        b.tick(|_| true);
+        b.tick(|_| true, |_| None);
         assert!(b.suspects().is_empty());
     }
 
@@ -1115,6 +1211,9 @@ mod digging_tests {
             return;
         };
         let mut out = Vec::new();
+        // The client moves the age on before it ticks (`tickCount++`), so a
+        // warden's first client tick is never at age 0, a heartbeat tick.
+        m.age += 1;
         client_tick(&mut m, &mut out);
         assert!(out.is_empty(), "a standing warden digs nothing: {out:?}");
 

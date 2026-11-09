@@ -3,17 +3,18 @@
 //! here names one (docs/controllers.md, "Adding a screen").
 use super::{Game, Screen};
 use horizon_client::{
-    gamepad::Button,
+    gamepad::{Button, MenuJob},
     hud::HudBatch,
-    lang, pad_glyph,
+    lang,
+    pad_glyph::{self, Glyph},
     widgets::{self, Action, DeclaredAction, Kind, Target},
 };
 
-/// The pad buttons that can do a declared job.
-const ACTION_BUTTONS: [Button; 3] = [Button::West, Button::East, Button::North];
+/// The menu jobs that can do a declared job.
+const ACTION_JOBS: [MenuJob; 3] = [MenuJob::Alternate, MenuJob::Back, MenuJob::Extra];
 
-/// The declared button `button` does on this screen, if any.
-fn action_for_button(button: Button, declared: &[DeclaredAction]) -> Option<DeclaredAction> {
+/// The declared button `job` presses on this screen, if any.
+fn action_for_job(job: MenuJob, declared: &[DeclaredAction]) -> Option<DeclaredAction> {
     let find = |action| {
         declared
             .iter()
@@ -25,11 +26,11 @@ fn action_for_button(button: Button, declared: &[DeclaredAction]) -> Option<Decl
             .or_else(|| find(Action::Cancel))
             .or_else(|| find(Action::Done))
     };
-    match button {
-        Button::West => find(Action::Apply).or_else(|| find(Action::Options)),
-        Button::East => leave().or_else(|| find(Action::Exit)),
+    match job {
+        MenuJob::Alternate => find(Action::Apply).or_else(|| find(Action::Options)),
+        MenuJob::Back => leave().or_else(|| find(Action::Exit)),
         // B is taken by leaving the screen: Y goes to the exit.
-        Button::North => leave().and_then(|_| find(Action::Exit)),
+        MenuJob::Extra => leave().and_then(|_| find(Action::Exit)),
         _ => None,
     }
 }
@@ -80,7 +81,7 @@ impl Game<'_> {
     /// The job `button` does here, on the target that does it. `None` while it isn't on screen,
     /// so B still falls back to Escape.
     pub(super) fn pad_action_target(&self, button: Button) -> Option<(Action, Target)> {
-        let declared = action_for_button(button, &self.pad_actions())?;
+        let declared = action_for_job(MenuJob::of(button)?, &self.pad_actions())?;
         let [x, y, w, h] = declared.rect;
         let at = (x + w / 2.0, y + h / 2.0);
         // A button that registers no focus target (a sign's Done) is still pressed.
@@ -109,57 +110,63 @@ impl Game<'_> {
 
     /// Each pad button's glyph on the button it does, A on an exit the focus is already on: this
     /// player's glyphs in this player's view. One that doesn't fit is left out.
-    fn pad_glyphs(&self, view: (f32, f32)) -> Vec<(Button, f32, f32)> {
+    fn pad_glyphs(&self, view: (f32, f32)) -> Vec<(Glyph, f32, f32)> {
         if !self.pad_action_glyphs_on() {
             return Vec::new();
         }
         let focus = self.pad.menu.focus.filter(|_| self.pad_focus_mode());
-        let (atlas, style) = (&self.gui.atlas, self.ui.options.pad_style);
-        let width = |button: Button| pad_glyph::width(atlas, button, style);
+        let atlas = &self.gui.atlas;
+        let glyph = |job| self.menu_glyph(job);
+        let width = |glyph: Glyph| pad_glyph::width(atlas, glyph);
         let mut glyphs = Vec::new();
-        // A on a text field opens the keyboard: at its right end, its text stays in view.
-        if let Some(focus) = focus.filter(|f| f.kind == Kind::Field)
-            && let Some((x, y)) = glyph_at(focus.rect, width(Button::South), view, true)
+        // A on a text field opens the keyboard, and on a slider takes hold of it: at the right end,
+        // the text stays in view.
+        let confirm = glyph(MenuJob::Confirm);
+        if let Some(focus) = focus.filter(|f| {
+            f.kind == Kind::Field
+                || matches!(f.kind, Kind::Slider { .. }) && self.pad.menu.slider_hold.is_none()
+        }) && let Some((x, y)) = glyph_at(focus.rect, width(confirm), view, true)
         {
-            glyphs.push((Button::South, x, y));
+            glyphs.push((confirm, x, y));
         }
         let declared = self.pad_actions();
-        for button in ACTION_BUTTONS {
-            let Some(d) = action_for_button(button, &declared) else {
+        for job in ACTION_JOBS {
+            let Some(d) = action_for_job(job, &declared) else {
                 continue;
             };
-            let glyph = if d.action == Action::Exit && focus.is_some_and(|f| f.rect == d.rect) {
-                Button::South
+            let shown = if d.action == Action::Exit && focus.is_some_and(|f| f.rect == d.rect) {
+                confirm
             } else {
-                button
+                glyph(job)
             };
-            if let Some((x, y)) = glyph_at(d.rect, width(glyph), view, false) {
-                glyphs.push((glyph, x, y));
+            if let Some((x, y)) = glyph_at(d.rect, width(shown), view, false) {
+                glyphs.push((shown, x, y));
             }
         }
         glyphs
     }
 
     pub(super) fn draw_pad_action_glyphs(&self, batch: &mut HudBatch) {
-        let (atlas, style) = (&self.gui.atlas, self.ui.options.pad_style);
-        for (button, x, y) in self.pad_glyphs((batch.width, batch.height)) {
-            pad_glyph::draw(batch, atlas, button, style, x, y);
+        let atlas = &self.gui.atlas;
+        for (glyph, x, y) in self.pad_glyphs((batch.width, batch.height)) {
+            pad_glyph::draw(batch, atlas, glyph, x, y);
         }
     }
 
-    /// `pad status`: the glyphs drawn now and where: its text's place, what it covers, and its
-    /// sprite (none: the label on a key).
+    /// `pad status`: the glyphs drawn now and where: the part each is for, its label, its text's
+    /// place, what it covers, and its sprite (none: the label on a key).
     pub(super) fn pad_glyphs_status(&self) -> Vec<serde_json::Value> {
         let view = self.gui_scale().map_or((0.0, 0.0), |b| (b.width, b.height));
-        let (atlas, style) = (&self.gui.atlas, self.ui.options.pad_style);
+        let atlas = &self.gui.atlas;
         self.pad_glyphs(view)
             .iter()
-            .map(|&(button, x, y)| {
+            .map(|&(glyph, x, y)| {
                 serde_json::json!({
-                    "button": format!("{button:?}"),
+                    "button": format!("{:?}", glyph.part()),
+                    "label": glyph.label(),
                     "at": [x, y],
-                    "rect": pad_glyph::rect(atlas, button, style, x, y),
-                    "sprite": pad_glyph::art(atlas, button, style),
+                    "rect": pad_glyph::rect(atlas, glyph, x, y),
+                    "sprite": pad_glyph::art(atlas, glyph),
                 })
             })
             .collect()
@@ -210,7 +217,7 @@ mod tests {
     }
 
     fn does(button: Button, on: &[DeclaredAction]) -> Option<Action> {
-        action_for_button(button, on).map(|d| d.action)
+        action_for_job(MenuJob::of(button)?, on).map(|d| d.action)
     }
 
     #[test]
@@ -293,8 +300,8 @@ mod tests {
 
     #[test]
     fn a_screen_that_declares_nothing_keeps_its_buttons() {
-        for button in ACTION_BUTTONS {
-            assert_eq!(does(button, &[]), None);
+        for job in ACTION_JOBS {
+            assert_eq!(does(job.button(), &[]), None);
         }
     }
 }

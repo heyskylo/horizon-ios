@@ -158,11 +158,11 @@ impl PlacementContext {
             return directions;
         }
         let target = self.face.opposite();
-        if let Some(index) = directions.iter().position(|d| *d == target) {
-            if index > 0 {
-                directions.copy_within(0..index, 1);
-                directions[0] = target;
-            }
+        if let Some(index) = directions.iter().position(|d| *d == target)
+            && index > 0
+        {
+            directions.copy_within(0..index, 1);
+            directions[0] = target;
         }
         directions
     }
@@ -735,19 +735,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let mut kind = "single";
                 let mut facing = horizontal.opposite();
                 let face = ctx.face;
-                if is_horizontal(face) && ctx.sneaking {
-                    if let Some(neighbour_facing) =
+                if is_horizontal(face)
+                    && ctx.sneaking
+                    && let Some(neighbour_facing) =
                         self.chest_candidate_partner_facing(default, pos, face.opposite())
-                    {
-                        if axis_of(neighbour_facing) != axis_of(face) {
-                            facing = neighbour_facing;
-                            kind = if counter_clockwise(facing) == face.opposite() {
-                                "right"
-                            } else {
-                                "left"
-                            };
-                        }
-                    }
+                    && axis_of(neighbour_facing) != axis_of(face)
+                {
+                    facing = neighbour_facing;
+                    kind = if counter_clockwise(facing) == face.opposite() {
+                        "right"
+                    } else {
+                        "left"
+                    };
                 }
                 if kind == "single" && !ctx.sneaking {
                     if self.chest_candidate_partner_facing(default, pos, clockwise(facing))

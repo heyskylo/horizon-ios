@@ -40,7 +40,7 @@ plan are in [server.md](server.md).
 
 ## 1. Install
 
-Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
+Linux (x86-64) and macOS (Apple Silicon or Intel):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
@@ -54,7 +54,8 @@ irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server
 
 The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
 the current Horizon Nightly from GitHub (the only build Horizon ships;
-`--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
+`--version` picks another), checks it against the release's signature when OpenSSL 3 is installed (on Windows, Git
+for Windows includes it), else against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
   `current` pointing at the one in use;
@@ -232,8 +233,8 @@ the player's screen. To fill the ring, generate the world ahead of the players w
 
 The far ring goes after everything else: its chunks wait behind the ones inside `view_distance`, are paced
 by how fast each player's game takes them, and aren't read while the world's saves are behind. When the
-average tick goes over 40 ms, the ring pulls in by two chunks a second, never inside `view_distance`; after
-30 s of ticks under 25 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
+average tick goes over 50 ms, the ring pulls in by two chunks a second, never inside `view_distance`; after
+30 s of ticks under 45 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
 minutes (96 MB at most), so a player walking back isn't sent the save again.
 
 Already have a vanilla server? Run `horizon-server init` in its folder, or `horizon-server import
@@ -420,7 +421,9 @@ only. To reach it from your other devices:
 - forward the port over SSH: `ssh -L 8130:127.0.0.1:8130 your-server`, then open the link on your computer.
 
 Any other address, such as `0.0.0.0` or a public IP, is refused unless you set `allow_public = true`, and
-even then the panel warns at every start. It has no passwords to leak: whoever can read the server folder can
+even then the panel warns at every start. With `bind = "0.0.0.0:8130"` it answers on every address of this
+computer, so a LAN whose router hands out a new IP keeps working: open `http://<its LAN IP>:8130`, and the
+login link names that IP. It has no passwords to leak: whoever can read the server folder can
 make a login link, and no one else can. Never put it on the open internet.
 
 ### A bot or a tool of your own
@@ -624,7 +627,7 @@ The service runs `horizon-server run` through the installed `current` release, s
 next restart. `service print` shows what it would install, `service uninstall` removes it and leaves the server
 folder alone.
 
-## Hosting panels (Pterodactyl)
+## Hosting panels (Pterodactyl, AMP)
 
 The egg installs the server build of the current Nightly (nothing of Mojang's) and runs `horizon-server`
 through `packaging/server/panel-start.sh`: the first start writes `server.toml` from the panel's settings, and the
@@ -637,6 +640,13 @@ the world first.
 Import `packaging/server/pterodactyl-egg.json` under Nests. Its Docker image is
 `ghcr.io/ptero-eggs/yolks:debian`. The `HORIZON_VERSION` variable picks the release to install (`nightly`, or a tag);
 it is read at install and reinstall.
+
+**AMP** (CubeCoders): `packaging/server/amp/` is a template for AMP's generic module, the same setup with AMP's
+words. Its update runs the egg's install script (the release named by "Horizon release", checked against its
+SHA-256) and the start runs the same `horizon-start.sh`, with the port from AMP's "Server Port". AMP reads templates
+from the root of a configuration repository: put the five files at the root of a repository of yours (a fork of
+CubeCoders/AMPTemplates, for example), add it under Configuration → Instance Deployment → Configuration Repositories,
+then Fetch latest, and "Horizon" is in the list of applications for a new instance. Linux only, x86-64.
 
 ## 9. Docker (build it yourself)
 
@@ -671,9 +681,8 @@ docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
 The latest bot benchmark compares Horizon with vanilla 26.3, Paper and Fabric + Lithium:
 [benchmarks/server-four-way-2026-10-19](https://github.com/horizon-rust/horizon/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
 It ran release v2026.10.19 on a 4-thread laptop CPU (i7-7500U), with 1 to 50 players walking, exploring and
-standing around spawn, the bots on another machine. All four servers did the same work. Earlier
-measurements are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/docs/server.md). In
-short:
+standing around spawn, the bots on another machine. All four servers did the same work. Against
+Pumpkin: [performance/server-vs-pumpkin.md](performance/server-vs-pumpkin.md). In short:
 
 - **Memory:** 0.7 GB with one player and 1.1 GB with 50, against 3.4 to 4.5 GB for the Java servers
   (each with a 4 GB heap): 3.8 to 4.8 times less.

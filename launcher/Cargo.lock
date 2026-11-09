@@ -2641,6 +2641,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-addresses"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-bench"
 version = "0.1.0"
 dependencies = [
@@ -2662,6 +2666,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "glam",
+ "horizon-addresses",
  "png 0.18.1",
  "serde",
  "serde_json",
@@ -2675,13 +2680,18 @@ dependencies = [
  "chacha20poly1305",
  "getrandom 0.3.4",
  "hkdf",
+ "horizon-addresses",
  "if-addrs",
  "serde",
  "serde_json",
  "sha2",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "spake2",
 ]
+
+[[package]]
+name = "horizon-hooks"
+version = "0.1.0"
 
 [[package]]
 name = "horizon-launcher"
@@ -2696,6 +2706,7 @@ dependencies = [
  "flate2",
  "futures-lite",
  "getrandom 0.3.4",
+ "glam",
  "gpui-fast",
  "gpui-fast-platform",
  "horizon-bench",
@@ -2709,6 +2720,7 @@ dependencies = [
  "horizon-prepare",
  "horizon-protocol",
  "horizon-release-sign",
+ "horizon-shader-api",
  "horizon-telemetry",
  "horizon-theme",
  "horizon-world",
@@ -2776,6 +2788,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-platform"
+version = "0.1.0"
+dependencies = [
+ "horizon-hooks",
+ "horizon-system",
+]
+
+[[package]]
 name = "horizon-port-pack"
 version = "0.1.0"
 dependencies = [
@@ -2814,6 +2834,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "socket2 0.5.10",
 ]
 
 [[package]]
@@ -2839,10 +2860,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-system"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-telemetry"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "horizon-addresses",
+ "horizon-platform",
  "ruzstd",
  "serde",
  "serde_json",
@@ -3065,12 +3092,12 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.13.4"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5723,7 +5750,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5865,9 +5892,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "pin-project-lite",
 ]
@@ -7015,15 +7042,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

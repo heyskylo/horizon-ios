@@ -212,6 +212,54 @@ impl VoxelShape {
     pub fn boxes(&self) -> &[Aabb] {
         &self.boxes
     }
+    /// `DiscreteVoxelShape.forAllEdges`: merged boundary edges, in axis-cycle order.
+    pub fn edges(&self) -> Vec<[f64; 6]> {
+        let sizes = self.sizes();
+        let mut result = Vec::new();
+        for axis in [2, 1, 0] {
+            let a = (axis + 1) % 3;
+            let b = (axis + 2) % 3;
+            for u in 0..=sizes[a] {
+                for v in 0..=sizes[b] {
+                    let mut start = None;
+                    for t in 0..=sizes[axis] {
+                        let mut count = 0;
+                        let mut odd = 0;
+                        for du in 0..=1 {
+                            for dv in 0..=1 {
+                                let mut p = [0i32; 3];
+                                p[axis] = t as i32;
+                                p[a] = u as i32 + du - 1;
+                                p[b] = v as i32 + dv - 1;
+                                if self.is_full(p[0], p[1], p[2]) {
+                                    count += 1;
+                                    odd ^= du ^ dv;
+                                }
+                            }
+                        }
+                        let edge = count == 1 || count == 3 || (count == 2 && odd == 0);
+                        if edge {
+                            if start.is_none() {
+                                start = Some(t);
+                            }
+                        } else if let Some(first) = start.take() {
+                            let mut from = [0.0; 3];
+                            let mut to = [0.0; 3];
+                            from[a] = self.coordinates(Axis::ALL[a])[u];
+                            from[b] = self.coordinates(Axis::ALL[b])[v];
+                            to[a] = from[a];
+                            to[b] = from[b];
+                            from[axis] = self.coordinates(Axis::ALL[axis])[first];
+                            to[axis] = self.coordinates(Axis::ALL[axis])[t];
+                            result.push([from[0], from[1], from[2], to[0], to[1], to[2]]);
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
     pub fn coordinates(&self, axis: Axis) -> &[f64] {
         &self.coords[axis as usize]
     }
@@ -483,6 +531,29 @@ impl VoxelShape {
             })
         } else {
             Aabb::clip_boxes(self.boxes.iter().copied(), start, end, block)
+        }
+    }
+    /// `VoxelShape.clip` over an already decomposed union, without rebuilding its grid.
+    /// Uses half-open box containment for the same nudged inside test as the grid query.
+    pub fn clip_boxes<I>(boxes: I, start: Vec3, end: Vec3, block: BlockPos) -> Option<BlockHit>
+    where
+        I: Iterator<Item = Aabb> + Clone,
+    {
+        let delta = end.subtract(start);
+        if delta.length_squared() < COLLISION_EPSILON {
+            return None;
+        }
+        let nudged = start.add_vector(delta.scale(0.001));
+        let local = nudged.subtract(Vec3::from_block(block));
+        if boxes.clone().any(|b| b.contains(local)) {
+            Some(BlockHit {
+                location: nudged,
+                direction: Direction::approximate_nearest(delta).opposite(),
+                block,
+                inside: true,
+            })
+        } else {
+            Aabb::clip_boxes(boxes, start, end, block)
         }
     }
     pub fn closest_point(&self, point: Vec3) -> Option<Vec3> {

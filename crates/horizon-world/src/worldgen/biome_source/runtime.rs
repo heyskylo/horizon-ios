@@ -160,10 +160,10 @@ impl<'a> BiomeSourceResolver<'a> {
         volume: Option<&ClimateVolume>,
         quart: [i32; 3],
     ) -> Result<&'a str, BiomeSourceError> {
-        if let Self::MultiNoise(source) = self {
-            if let Some(volume) = volume {
-                return Ok(source.sample_prepared(volume, quart)?);
-            }
+        if let Self::MultiNoise(source) = self
+            && let Some(volume) = volume
+        {
+            return Ok(source.sample_prepared(volume, quart)?);
         }
         self.sample(context, quart)
     }

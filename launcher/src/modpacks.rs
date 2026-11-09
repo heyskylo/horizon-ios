@@ -8,7 +8,10 @@
 //! often All Rights Reserved, so the ports stay on the player's machine.
 use crate::backend;
 use crate::browser::horizon::pack as horizon_pack;
+use crate::other_launchers::{self, Found};
+use crate::sources::{Folders, Os};
 use horizon_port_pack::{
+    datapacks,
     fetch::{Fetched, How},
     import::Pack,
     pipeline::{self, Log},
@@ -56,11 +59,13 @@ pub struct Imported {
     pub resourcepacks: usize,
     /// Index-listed resource packs the port step can obtain (separate from Java mods).
     pub indexed_resources: usize,
+    /// Data packs from jars that hold nothing else; new worlds in the profile start with them.
+    pub datapacks: usize,
 }
 
 impl Imported {
     pub fn can_play(&self) -> bool {
-        !self.mods.is_empty() || self.resourcepacks > 0
+        !self.mods.is_empty() || self.resourcepacks > 0 || self.datapacks > 0
     }
     pub fn can_port(&self) -> bool {
         self.portable > 0 || self.indexed_resources > 0
@@ -249,6 +254,7 @@ pub fn load(work: &Path) -> Result<Imported, String> {
     Ok(Imported {
         resourcepacks,
         indexed_resources,
+        datapacks: datapacks::installed(work),
         slug: work
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -347,9 +353,9 @@ pub fn outcome(pack: &Imported) -> String {
     let not = pack.count(Status::NotYet);
     format!(
         "{} is imported{}: {} of its {} files carried over ({} ported, {} partly), {} don't \
-         yet, {} aren't needed{}. {} resource packs available; enable them in Resource Packs. Its list says why.",
+         yet, {} aren't needed{}. {} resource packs available; enable them in Resource Packs. {} data packs on in new worlds. Its list says why.",
         pack.title(),
-        if pack.mods.is_empty() {
+        if pack.mods.is_empty() && pack.datapacks == 0 {
             ""
         } else {
             " and ported"
@@ -365,6 +371,7 @@ pub fn outcome(pack: &Imported) -> String {
             n => format!("; {n} are left off (listed under the pack)"),
         },
         pack.resourcepacks,
+        pack.datapacks,
     )
 }
 
@@ -393,8 +400,14 @@ pub fn apply_profile(cmd: &mut Command, work: &Path) -> Result<(), String> {
     }
     // Only mods that load together: the game would refuse the later of two sharing a namespace.
     let (mods, _) = pipeline::loadable(&carried(work));
-    if mods.is_empty() && resourcepacks::available(work).is_empty() {
-        return Err("No content mods or resource packs are available: port the pack first.".into());
+    if mods.is_empty()
+        && resourcepacks::available(work).is_empty()
+        && datapacks::installed(work) == 0
+    {
+        return Err(
+            "No content mods, data packs or resource packs are available: port the pack first."
+                .into(),
+        );
     }
     prepare_resourcepacks(work);
     let home = profile_home(work);
@@ -421,9 +434,111 @@ fn prepare_resourcepacks(work: &Path) {
     }
 }
 
+/// The modpacks other launchers keep on this computer, for the Modpacks page to offer: each
+/// instance with a `mods` folder of its own. A profile of the official launcher that plays in the
+/// launcher's own folder is the player's everyday game, not a pack, and is left out.
+pub fn found_on_this_computer(os: Os, folders: &Folders) -> Vec<Found> {
+    other_launchers::scan(os, folders)
+        .into_iter()
+        .filter(|f| !f.shared && f.game.join("mods").is_dir())
+        .collect()
+}
+
+/// The folder "Import an instance folder…" takes for `found`: a Prism or MultiMC instance's own
+/// folder, whose `mmc-pack.json` names its versions, else its game folder.
+pub fn found_folder(found: &Found) -> PathBuf {
+    match found.game.parent() {
+        Some(dir) if dir.join("mmc-pack.json").is_file() => dir.to_path_buf(),
+        _ => found.game.clone(),
+    }
+}
+
+/// The slug [`import`] gives `found`: imported once, the page opens it instead.
+pub fn found_slug(found: &Found) -> String {
+    let folder = found_folder(found);
+    slug(&folder.file_name().unwrap_or_default().to_string_lossy())
+}
+
+/// One line on `found`, in the order of [`Imported::summary`]: the app it came from, then its
+/// Minecraft version and loader when its launcher records them.
+pub fn found_summary(found: &Found) -> String {
+    let mut parts = vec![other_launchers::app_name(found.launcher).to_string()];
+    if let Some(minecraft) = &found.minecraft {
+        parts.push(format!("Minecraft {minecraft}"));
+    }
+    if let Some(l) = &found.loader {
+        parts.push(format!("{} {}", l.name, l.version));
+    }
+    parts.join("  ·  ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn found_packs_are_other_launchers_instances_with_mods() {
+        let root = std::env::temp_dir().join(format!("horizon-found-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let write = |path: &Path, text: &str| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        let folders = Folders {
+            home: root.join("home"),
+            data: root.join("data"),
+            config: root.join("config"),
+        };
+        let cf = root.join("home/Documents/curseforge/minecraft/Instances");
+        write(
+            &cf.join("All the Mods 10/minecraftinstance.json"),
+            r#"{"gameVersion": "1.21.1", "baseModLoader": {"name": "neoforge-21.1.133"}}"#,
+        );
+        write(&cf.join("All the Mods 10/mods/a.jar"), "jar");
+        // Resource packs only: not a modpack.
+        write(&cf.join("Packs only/resourcepacks/p.zip"), "zip");
+        let prism = root.join("data/PrismLauncher/instances/fabric-1.21");
+        write(
+            &prism.join("mmc-pack.json"),
+            r#"{"components": [{"uid": "net.minecraft", "version": "1.21.1"}]}"#,
+        );
+        write(
+            &prism.join("instance.cfg"),
+            "name=My Fabric
+",
+        );
+        write(&prism.join("minecraft/mods/b.jar"), "jar");
+        // The official launcher's default profile plays in its own folder, mods and all.
+        let official = root.join("data/minecraft");
+        write(
+            &official.join("launcher_profiles.json"),
+            r#"{"profiles": {"a": {"type": "latest-release"}}}"#,
+        );
+        write(&official.join("mods/c.jar"), "jar");
+
+        let found = found_on_this_computer(Os::MacOs, &folders);
+        let names: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["My Fabric", "All the Mods 10"]);
+        // A Prism instance imports from its own folder, which names its version.
+        assert_eq!(found_folder(&found[0]), prism);
+        assert_eq!(found_slug(&found[0]), "fabric-1-21");
+        assert_eq!(found_folder(&found[1]), cf.join("All the Mods 10"));
+        assert_eq!(found_slug(&found[1]), "all-the-mods-10");
+        // The slug is the one importing it gives.
+        for f in &found {
+            let pack = horizon_port_pack::import::import(&found_folder(f)).unwrap();
+            assert_eq!(found_slug(f), slug(&pack.name));
+        }
+        assert_eq!(
+            found_summary(&found[0]),
+            "Prism Launcher  ·  Minecraft 1.21.1"
+        );
+        assert_eq!(
+            found_summary(&found[1]),
+            "CurseForge  ·  Minecraft 1.21.1  ·  neoforge 21.1.133"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn slugs() {
@@ -541,6 +656,34 @@ mod tests {
             .any(|l| l.contains("Conflict") && l.contains("look.zip")));
         assert!(outcome(&pack).contains("2 resource packs available"));
         apply_profile(&mut Command::new("true"), &work).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_profile_with_only_data_packs_plays_and_its_game_folder_holds_them() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-launcher-datapack-profile-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let work = root.join("ports/sky");
+        fs::create_dir_all(&work).unwrap();
+        pipeline::write_json(&work.join("pack.json"), &Pack::default()).unwrap();
+        assert!(!load(&work).unwrap().can_play());
+        let pack = datapacks::folder(&work).join("void");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("pack.mcmeta"), b"{}").unwrap();
+        let p = load(&work).unwrap();
+        assert!(p.can_play());
+        assert_eq!(p.datapacks, 1);
+        assert!(outcome(&p).contains("1 data packs on in new worlds"));
+        let mut cmd = Command::new("true");
+        apply_profile(&mut cmd, &work).unwrap();
+        assert_eq!(cmd.get_args().count(), 0);
+        // The game finds them in its game folder, the profile's home.
+        let home = profile_home(&work);
+        assert_eq!(cmd.get_current_dir(), Some(home.as_path()));
+        assert!(pack.starts_with(&home));
         fs::remove_dir_all(root).unwrap();
     }
 

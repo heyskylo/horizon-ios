@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "player_died_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_died_v2",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a player's death with its rendered message (`native_player_died_v2`).",
+  "doc_summary": "`native_player_died_v2(player, name, message)` hears a player's death with the message the game rendered for them, whether or not death messages are shown (`ServerPlayer.die`). It only hears. Bundles need \"hooks\": @API:player_died_v2@.",
+  "comments": []
+}

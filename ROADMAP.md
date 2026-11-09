@@ -76,7 +76,7 @@ Owner: [levzzz5154](https://github.com/levzzz5154) · Tracking: [#3911](https://
 
 <details><summary>Technical</summary>
 
-One item for all modding work ([#3911](https://github.com/horizon-rust/horizon/issues/3911)), led by levzzz5154 with vladislav_hagen; the order between the parts is theirs. Native mods on stable hook points (game/native_hooks.rs, [#3345](https://github.com/horizon-rust/horizon/issues/3345), [#3346](https://github.com/horizon-rust/horizon/issues/3346), [#3434](https://github.com/horizon-rust/horizon/issues/3434), [#3435](https://github.com/horizon-rust/horizon/issues/3435)) built by the launcher ([#3388](https://github.com/horizon-rust/horizon/issues/3388), [#3855](https://github.com/horizon-rust/horizon/issues/3855)); server-side hooks ([#3878](https://github.com/horizon-rust/horizon/issues/3878), [#3706](https://github.com/horizon-rust/horizon/issues/3706)); mod-owned screens, input and drawing; tools for mod makers (templates, `native.py check`); the registry ([#1634](https://github.com/horizon-rust/horizon/issues/1634), [#1642](https://github.com/horizon-rust/horizon/issues/1642), [#1659](https://github.com/horizon-rust/horizon/issues/1659)); machines with inventories and menus ([#1189](https://github.com/horizon-rust/horizon/issues/1189)); mods that read and change the world through the server. [docs/native-mods.md](docs/native-mods.md).
+One item for all modding work ([#3911](https://github.com/horizon-rust/horizon/issues/3911)), led by levzzz5154; the order between the parts is theirs. Native mods on stable hook points (game/native_hooks.rs, [#3345](https://github.com/horizon-rust/horizon/issues/3345), [#3346](https://github.com/horizon-rust/horizon/issues/3346), [#3434](https://github.com/horizon-rust/horizon/issues/3434), [#3435](https://github.com/horizon-rust/horizon/issues/3435)) built by the launcher ([#3388](https://github.com/horizon-rust/horizon/issues/3388), [#3855](https://github.com/horizon-rust/horizon/issues/3855)); server-side hooks ([#3878](https://github.com/horizon-rust/horizon/issues/3878), [#3706](https://github.com/horizon-rust/horizon/issues/3706)); mod-owned screens, input and drawing; tools for mod makers (templates, `native.py check`); the registry ([#1634](https://github.com/horizon-rust/horizon/issues/1634), [#1642](https://github.com/horizon-rust/horizon/issues/1642), [#1659](https://github.com/horizon-rust/horizon/issues/1659)); machines with inventories and menus ([#1189](https://github.com/horizon-rust/horizon/issues/1189)); mods that read and change the world through the server. [docs/native-mods.md](docs/native-mods.md).
 
 More: [#3351](https://github.com/horizon-rust/horizon/issues/3351) · [#3353](https://github.com/horizon-rust/horizon/issues/3353) · [#3360](https://github.com/horizon-rust/horizon/issues/3360) · [#1596](https://github.com/horizon-rust/horizon/issues/1596) · [#1635](https://github.com/horizon-rust/horizon/issues/1635)
 
@@ -194,7 +194,7 @@ Speeding up the code that reads and writes the blocks of the world, which almost
 
 <details><summary>Technical</summary>
 
-`PalettedContainer` and `PackedStorage` find an entry's word by multiply and shift instead of an integer division ([#1790](https://github.com/horizon-rust/horizon/issues/1790), [#1794](https://github.com/horizon-rust/horizon/issues/1794)); meshing looks up baked models by index, not by name ([#1747](https://github.com/horizon-rust/horizon/issues/1747)). Each change keeps the paletted storage harnesses identical and shows its microbenchmark ([docs/performance/paletted-container-access-results.md](docs/performance/paletted-container-access-results.md)).
+`PalettedContainer` and `PackedStorage` find an entry's word by multiply and shift instead of an integer division ([#1790](https://github.com/horizon-rust/horizon/issues/1790), [#1794](https://github.com/horizon-rust/horizon/issues/1794)); meshing looks up baked models by index, not by name ([#1747](https://github.com/horizon-rust/horizon/issues/1747)). Each change keeps the paletted storage harnesses identical and shows its microbenchmark in its pull request.
 
 </details>
 
@@ -407,16 +407,6 @@ More of a server managed from its web panel (bans, worlds, logs and crash report
 <details><summary>Technical</summary>
 
 The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so vanilla's tools can manage a Horizon server. Split from server-admin. [docs/server.md](docs/server.md), [docs/api/server.md](docs/api/server.md).
-
-</details>
-
-#### Ely.by and other sign-in providers
-
-Sign in with other account providers, such as Ely.by or any Yggdrasil-compatible one, beside Microsoft.
-
-<details><summary>Technical</summary>
-
-Issue [#1270](https://github.com/horizon-rust/horizon/issues/1270) asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It builds on the Microsoft sign-in ([docs/microsoft-account.md](docs/microsoft-account.md)).
 
 </details>
 

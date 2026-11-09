@@ -10,10 +10,16 @@ use horizon_client::{
     mobs::{
         MobTypes,
         data::MobData,
-        spawn_rules::{self, Dimension, Reason, SpawnLevel},
+        spawn_rules::{self, Reason, SpawnLevel},
+        spawn_selection::{
+            self, Heightmap, MobType as SelectionMobType, NaturalLevel, SpawnCost, StructureAt,
+            StructureSpawns, spawn_aabb,
+        },
     },
 };
+use horizon_core::LevelKey;
 use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_world::dimension_type::DimensionFacts;
 use horizon_world::loot::PackOverlay;
 use horizon_world::{chunk::BlockState, registry::BlockStateId};
 use std::{
@@ -24,6 +30,7 @@ use std::{
 };
 
 struct Column<'a> {
+    border: horizon_core::geometry::border::BorderGeometry,
     facts: &'a BlockFacts,
     data: &'a MobData,
     block_tags: &'a HashMap<String, HashSet<String>>,
@@ -39,13 +46,20 @@ struct Column<'a> {
     surface: i32,
     seed: i64,
     peaceful: bool,
-    dimension: Dimension,
+    dimension: &'static DimensionFacts,
     biome: String,
     slime: f32,
     /// A player position and whether it is survival or adventure.
     player: Option<([f64; 3], bool)>,
+    /// `LevelReader.isUnobstructed` for the obstruction family.
+    unobstructed: bool,
+    structure_spawns: StructureSpawns,
 }
 impl SpawnLevel for Column<'_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.border
+            .is_within_bounds(f64::from(x), f64::from(z), 0.0)
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         if x != self.x0 || z != self.z0 {
             return self.air;
@@ -88,7 +102,7 @@ impl SpawnLevel for Column<'_> {
     fn peaceful(&self) -> bool {
         self.peaceful
     }
-    fn dimension(&self) -> Dimension {
+    fn dimension_type(&self) -> &DimensionFacts {
         self.dimension
     }
     fn surface_slime_chance(&self, _: i32, _: i32, _: i32) -> f32 {
@@ -102,6 +116,73 @@ impl SpawnLevel for Column<'_> {
             let d = (p[0] - x).powi(2) + (p[1] - y).powi(2) + (p[2] - z).powi(2);
             targetable && d < distance * distance
         })
+    }
+}
+impl NaturalLevel for Column<'_> {
+    fn min_y(&self) -> i32 {
+        -64
+    }
+    fn max_y(&self) -> i32 {
+        320
+    }
+    fn ambient_light(&self) -> f32 {
+        0.0
+    }
+    fn has_ceiling(&self) -> bool {
+        false
+    }
+    fn mob_type(&self, _entity: &str) -> Option<SelectionMobType> {
+        None
+    }
+    fn biome_spawns(
+        &self,
+        _x: i32,
+        _y: i32,
+        _z: i32,
+    ) -> Option<&HashMap<String, Vec<horizon_client::biome::SpawnEntry>>> {
+        None
+    }
+    fn spawn_cost(&self, _entity: &str, _x: i32, _y: i32, _z: i32) -> Option<SpawnCost> {
+        None
+    }
+    fn creature_probability(&self, _x: i32, _y: i32, _z: i32) -> f32 {
+        0.0
+    }
+    fn structures_at(
+        &self,
+        _x: i32,
+        _y: i32,
+        _z: i32,
+        _wanted: &dyn Fn(&str) -> bool,
+    ) -> Vec<StructureAt> {
+        Vec::new()
+    }
+    fn structure_spawns(&self) -> &StructureSpawns {
+        &self.structure_spawns
+    }
+    fn nearest_player_positions(&self) -> &[[f64; 3]] {
+        &[]
+    }
+    fn respawn(&self) -> Option<[i32; 3]> {
+        None
+    }
+    fn can_spawn_in_chunk(&self, _cx: i32, _cz: i32) -> bool {
+        true
+    }
+    fn no_collision(&self, _bounds: horizon_core::geometry::Aabb) -> bool {
+        true
+    }
+    fn unobstructed(&self, _bounds: horizon_core::geometry::Aabb) -> bool {
+        self.unobstructed
+    }
+    fn spawn_mobs(&self) -> bool {
+        true
+    }
+    fn heightmap(&self, _kind: Heightmap, _x: i32, _z: i32) -> i32 {
+        self.surface
+    }
+    fn pathfindable_land(&self, _x: i32, _y: i32, _z: i32) -> bool {
+        false
     }
 }
 
@@ -190,6 +271,11 @@ pub fn main() -> horizon_client::Result<()> {
             )
         });
         let level = Column {
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [get("borderx", "0").parse()?, get("borderz", "0").parse()?],
+                get("bordersize", "59999968").parse()?,
+                29_999_984,
+            )?,
             facts: &facts,
             data: &data,
             block_tags: &items.block_tags,
@@ -205,15 +291,31 @@ pub fn main() -> horizon_client::Result<()> {
             surface: get("surface", "0").parse()?,
             seed: get("wseed", "0").parse()?,
             peaceful: get("difficulty", "normal") == "peaceful",
-            dimension: match get("dim", "minecraft:overworld").as_str() {
-                "minecraft:the_nether" => Dimension::Nether,
-                "minecraft:the_end" => Dimension::End,
-                _ => Dimension::Overworld,
-            },
+            dimension: DimensionFacts::of_builtin_level(LevelKey::builtin_or_overworld(&get(
+                "dim",
+                "minecraft:overworld",
+            ))),
             biome: get("biome", "minecraft:plains"),
             slime: get("slime", "0.0").parse()?,
             player,
+            unobstructed: !get("unobstructed", "1").eq("0"),
+            structure_spawns: StructureSpawns::default(),
         };
+        if c.get("mode") == Some(&"obstruction") {
+            let s = kind.species;
+            let bounds = spawn_aabb(
+                s,
+                f64::from(x0) + 0.5,
+                f64::from(y),
+                f64::from(z0) + 0.5,
+                kind.width as f32,
+                kind.height as f32,
+            );
+            let obstruction =
+                spawn_selection::spawn_obstruction(s, &level, bounds, Some(&[]), x0, y, z0);
+            let _ = writeln!(out, "{name} {obstruction}");
+            continue;
+        }
         let mut random = LegacyRandom::new(get("seed", "0").parse()?);
         let s = kind.species;
         let ok = spawn_rules::is_spawn_position_ok(s, &level, x0, y, z0);

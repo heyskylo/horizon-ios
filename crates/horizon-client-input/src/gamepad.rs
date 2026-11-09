@@ -82,49 +82,6 @@ impl Button {
     fn bit(self) -> u32 {
         1 << self as u32
     }
-    /// What is printed on the button for a pad family (`Auto` reads as Xbox).
-    pub fn label(self, style: GlyphStyle) -> &'static str {
-        let i = self as usize;
-        match style {
-            GlyphStyle::PlayStation => [
-                "×", "○", "□", "△", "L1", "R1", "L2", "R2", "Create", "Options", "L3", "R3", "↑",
-                "↓", "←", "→",
-            ][i],
-            GlyphStyle::Nintendo => [
-                "B", "A", "Y", "X", "L", "R", "ZL", "ZR", "−", "+", "LS", "RS", "↑", "↓", "←", "→",
-            ][i],
-            GlyphStyle::Xbox | GlyphStyle::Auto => [
-                "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "View", "Menu", "LS", "RS", "↑", "↓",
-                "←", "→",
-            ][i],
-        }
-    }
-    /// The glyph's colour (RGB): face buttons in their family's colours,
-    /// the rest white.
-    pub fn color(self, style: GlyphStyle) -> [u8; 3] {
-        let face = match self {
-            Button::South => 0,
-            Button::East => 1,
-            Button::West => 2,
-            Button::North => 3,
-            _ => return [255, 255, 255],
-        };
-        match style {
-            GlyphStyle::PlayStation => [
-                [124, 178, 232],
-                [235, 110, 110],
-                [222, 145, 205],
-                [92, 205, 170],
-            ][face],
-            GlyphStyle::Nintendo => [255, 255, 255],
-            GlyphStyle::Xbox | GlyphStyle::Auto => [
-                [110, 200, 90],
-                [235, 90, 80],
-                [80, 150, 240],
-                [240, 200, 60],
-            ][face],
-        }
-    }
     /// The face button that plays this one's part on a Nintendo pad going by its letters
     /// (`PadSettings::nintendo_letters`): the A it prints on the right is South, which confirms
     /// and jumps as A does on a Switch; B (bottom) is East, X (top) West, Y (left) North. It is
@@ -427,6 +384,101 @@ impl HeldDrop {
     }
 }
 
+/// A job a menu's fixed buttons do. Menus aren't rebindable: this is the one map from a job to
+/// its button, and a glyph for a menu asks for the job (`GlyphOf::Menu`), never the button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuJob {
+    /// A: press, take, type.
+    Confirm,
+    /// B: back, close.
+    Back,
+    /// X: the screen's second job (Apply, Options, half a stack, delete a letter).
+    Alternate,
+    /// Y: the screen's third job (the exit, a quick move, a space).
+    Extra,
+    /// LB: the page or tab before.
+    PagePrev,
+    /// RB: the page or tab after.
+    PageNext,
+    /// LT: the group before; held, the modifier (shift, direct craft).
+    GroupPrev,
+    /// RT: the group after.
+    GroupNext,
+    /// View: throw.
+    View,
+    /// Menu (Start): done, and cancelling a binding.
+    Start,
+    /// The left stick pressed in.
+    LeftStick,
+}
+impl MenuJob {
+    pub const ALL: [MenuJob; 11] = [
+        MenuJob::Confirm,
+        MenuJob::Back,
+        MenuJob::Alternate,
+        MenuJob::Extra,
+        MenuJob::PagePrev,
+        MenuJob::PageNext,
+        MenuJob::GroupPrev,
+        MenuJob::GroupNext,
+        MenuJob::View,
+        MenuJob::Start,
+        MenuJob::LeftStick,
+    ];
+    /// The part that does the job (by place; a pad going by its letters is read so the part
+    /// still lands: `PadState::by_letter`).
+    pub const fn button(self) -> Button {
+        match self {
+            MenuJob::Confirm => Button::South,
+            MenuJob::Back => Button::East,
+            MenuJob::Alternate => Button::West,
+            MenuJob::Extra => Button::North,
+            MenuJob::PagePrev => Button::LeftBumper,
+            MenuJob::PageNext => Button::RightBumper,
+            MenuJob::GroupPrev => Button::LeftTrigger,
+            MenuJob::GroupNext => Button::RightTrigger,
+            MenuJob::View => Button::Select,
+            MenuJob::Start => Button::Start,
+            MenuJob::LeftStick => Button::LeftStick,
+        }
+    }
+    /// The job a part does in menus.
+    pub fn of(button: Button) -> Option<MenuJob> {
+        Self::ALL.into_iter().find(|job| job.button() == button)
+    }
+}
+
+/// What a glyph stands for: what the button does, never the button. `pad_glyph::Glyph` is built
+/// from one, so a rebinding or a pad's letters reach every glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlyphOf {
+    /// A gameplay action (`key.jump`...), on the player's binding.
+    Bound(&'static str),
+    /// A menu's fixed job.
+    Menu(MenuJob),
+}
+impl From<MenuJob> for GlyphOf {
+    fn from(job: MenuJob) -> Self {
+        GlyphOf::Menu(job)
+    }
+}
+impl GlyphOf {
+    /// The part that does it under these settings; none while the action is unbound.
+    pub fn button(self, settings: &PadSettings) -> Option<Button> {
+        match self {
+            GlyphOf::Bound(action) => {
+                // A misspelt action would quietly have no glyph.
+                debug_assert!(
+                    ACTIONS.iter().any(|a| a.0 == action),
+                    "no pad action {action}"
+                );
+                settings.binding(action)
+            }
+            GlyphOf::Menu(job) => Some(job.button()),
+        }
+    }
+}
+
 /// Which button pictures prompts use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum GlyphStyle {
@@ -490,6 +542,37 @@ impl GlyphStyle {
     }
 }
 
+/// How much the gameplay guide says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GuideDetail {
+    #[default]
+    Full,
+    /// Only what can be done to what's in front of the player or under the crosshair.
+    Basic,
+    Off,
+}
+impl GuideDetail {
+    pub const ALL: [GuideDetail; 3] = [GuideDetail::Full, GuideDetail::Basic, GuideDetail::Off];
+
+    /// The name in `horizon-controller.txt`.
+    pub fn name(self) -> &'static str {
+        match self {
+            GuideDetail::Full => "full",
+            GuideDetail::Basic => "basic",
+            GuideDetail::Off => "off",
+        }
+    }
+
+    /// Reads a name, or the `true` and `false` this option first saved. Anything else is full.
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "basic" => GuideDetail::Basic,
+            "off" | "false" => GuideDetail::Off,
+            _ => GuideDetail::Full,
+        }
+    }
+}
+
 /// The on-screen keyboard A opens on a text field in focus mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextKeyboard {
@@ -537,6 +620,8 @@ pub fn steam_keyboard(choice: TextKeyboard) -> bool {
 pub struct PadSettings {
     pub enabled: bool,
     pub vibration: bool,
+    /// The pad keeps driving the game while its window has no focus.
+    pub play_in_background: bool,
     /// A DualSense's triggers push back (Horizon's; docs/controllers.md).
     pub adaptive_triggers: bool,
     pub lightbar: Lightbar,
@@ -550,12 +635,18 @@ pub struct PadSettings {
     /// The sneak button flips sneaking (Bedrock's default) instead of
     /// holding it, unless vanilla's toggle crouch is on already.
     pub toggle_sneak: bool,
+    /// LT + A on a recipe crafts on every server, not only in single player and on LAN worlds
+    /// found in the server list. Off by default: a server's rules may count a repeated craft as a
+    /// macro.
+    pub craft_on_servers: bool,
     pub glyphs: GlyphStyle,
     /// A Nintendo pad's face buttons go by their letters (A confirms and jumps, as on the
     /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
     /// by default on the Switch only.
     pub nintendo_letters: bool,
     pub keyboard: TextKeyboard,
+    /// The gameplay guide: what the buttons do now, in the HUD's corners while the pad plays.
+    pub guide_detail: GuideDetail,
     /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
     pub pointer_speed: f32,
     pub scroll_speed: f32,
@@ -569,6 +660,7 @@ impl Default for PadSettings {
         Self {
             enabled: true,
             vibration: true,
+            play_in_background: false,
             adaptive_triggers: true,
             lightbar: Lightbar::Health,
             look_sensitivity: 0.5,
@@ -578,9 +670,11 @@ impl Default for PadSettings {
             look_deadzone: 0.12,
             trigger_threshold: 0.4,
             toggle_sneak: true,
+            craft_on_servers: false,
             glyphs: GlyphStyle::Auto,
             nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
+            guide_detail: GuideDetail::Full,
             pointer_speed: 1.0,
             scroll_speed: 12.0,
             repeat_delay: 0.35,
@@ -593,6 +687,10 @@ fn bool_text(v: bool) -> &'static str {
     if v { "true" } else { "false" }
 }
 impl PadSettings {
+    /// A pad of `family` goes by its letters: only a Nintendo pad has letters to go by.
+    pub fn by_letter(&self, family: GlyphStyle) -> bool {
+        self.nintendo_letters && family == GlyphStyle::Nintendo
+    }
     pub fn load(dir: &Path) -> Self {
         fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
@@ -635,6 +733,7 @@ impl PadSettings {
             match key.trim() {
                 "enabled" => s.enabled = flag(s.enabled),
                 "vibration" => s.vibration = flag(s.vibration),
+                "playInBackground" => s.play_in_background = flag(s.play_in_background),
                 "adaptiveTriggers" => s.adaptive_triggers = flag(s.adaptive_triggers),
                 "lightbar" => s.lightbar = Lightbar::parse(value),
                 "lookSensitivity" => s.look_sensitivity = unit(s.look_sensitivity),
@@ -646,9 +745,11 @@ impl PadSettings {
                     s.trigger_threshold = unit(s.trigger_threshold).clamp(0.1, 0.9)
                 }
                 "toggleSneak" => s.toggle_sneak = flag(s.toggle_sneak),
+                "craftOnServers" => s.craft_on_servers = flag(s.craft_on_servers),
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
                 "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
+                "gameplayGuide" => s.guide_detail = GuideDetail::parse(value),
                 "pointerSpeed" => s.pointer_speed = bounded(s.pointer_speed, 0.25, 3.0),
                 "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
                 "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
@@ -706,7 +807,9 @@ impl PadSettings {
             self.keyboard.name(),
         );
         text.push_str(&format!(
-            "pointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            "craftOnServers:{}\ngameplayGuide:{}\npointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            bool_text(self.craft_on_servers),
+            self.guide_detail.name(),
             self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
         ));
         for (action, button) in &self.bindings {
@@ -715,6 +818,10 @@ impl PadSettings {
                 button.map_or("none", Button::name)
             ));
         }
+        text.push_str(&format!(
+            "playInBackground:{}\n",
+            bool_text(self.play_in_background)
+        ));
         text.push_str("bindLayout:1\n");
         text
     }
@@ -786,7 +893,8 @@ pub fn stick_axes(
     {
         // Default map: RightStickX is the stick's Y, LeftZ its X; RightStickY
         // is the right trigger and must not drive look.
-        (left, [left_z, right[0]])
+        // gilrs turns over only the axes it calls Y, and this Y is on one it doesn't.
+        (left, [left_z, -right[0]])
     } else {
         (left, right)
     }
@@ -1415,9 +1523,8 @@ impl Rumble {
     }
 }
 
-/// What a trigger feels like on a DualSense, from what its action is doing (docs/controllers.md
-/// "Adaptive triggers" for the choices). Only the pad's official modes: Nielk1's notes warn the
-/// others may leave the firmware.
+/// What a trigger feels like, from what its action is doing (docs/controllers.md "Adaptive
+/// triggers"); the controller code turns it into a DualSense trigger effect.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TriggerFeel {
     Free,
@@ -1435,66 +1542,6 @@ pub enum TriggerFeel {
     Locked,
     /// Mining a block of this hardness: a buzz, stronger and slower on harder blocks.
     Texture(f32),
-}
-#[cfg(feature = "controllers")]
-impl TriggerFeel {
-    /// The effect, for a trigger that presses its action at `threshold` (0..1) of its travel.
-    pub fn effect(self, threshold: f32) -> horizon_dualsense::TriggerEffect {
-        use horizon_dualsense::trigger;
-        // The zone (of ten along the travel) where the action presses: a catch gives way there,
-        // so the click and the shot coincide.
-        let press = ((threshold.clamp(0.0, 1.0) * 10.0) as u8).clamp(3, 8);
-        match self {
-            TriggerFeel::Free => horizon_dualsense::TRIGGER_OFF,
-            // From the third zone, so the press itself stays light; at most 6 of 8, as the
-            // draw is held.
-            TriggerFeel::Draw(charge) => {
-                trigger::feedback(2, 1 + (5.0 * charge.clamp(0.0, 1.0)).round() as u8)
-            }
-            TriggerFeel::Click => trigger::weapon((press - 2).max(2), press, 8),
-            TriggerFeel::Boost => trigger::weapon((press - 2).max(2), press, 5),
-            TriggerFeel::Brace => trigger::feedback(2, 3),
-            TriggerFeel::Locked => trigger::feedback(1, 8),
-            TriggerFeel::Texture(hardness) if hardness > 0.0 => {
-                // Dirt 2, stone 3, deepslate 4, obsidian 5 of 8.
-                let amplitude = (1.0 + 1.6 * hardness.sqrt()).round().clamp(1.0, 5.0);
-                // Sand and dirt a fine 40 Hz grit; stone 30; wood, deepslate and ores 20;
-                // obsidian a 10 Hz chisel.
-                let hertz = match hardness {
-                    h if h < 1.0 => 40,
-                    h if h < 2.0 => 30,
-                    h if h < 5.0 => 20,
-                    _ => 10,
-                };
-                trigger::vibration(1, amplitude as u8, hertz)
-            }
-            TriggerFeel::Texture(_) => horizon_dualsense::TRIGGER_OFF,
-        }
-    }
-}
-#[cfg(feature = "controllers")]
-impl PadSettings {
-    /// The left and right triggers' effects: each feels the action bound to it, `key.use` or
-    /// `key.attack`.
-    pub fn trigger_effects(
-        &self,
-        using: TriggerFeel,
-        attacking: TriggerFeel,
-    ) -> [horizon_dualsense::TriggerEffect; 2] {
-        [Button::LeftTrigger, Button::RightTrigger].map(|trigger| {
-            let actions = self.actions_of(trigger);
-            let feel = if !self.adaptive_triggers {
-                TriggerFeel::Free
-            } else if actions.contains(&"key.use") {
-                using
-            } else if actions.contains(&"key.attack") {
-                attacking
-            } else {
-                TriggerFeel::Free
-            };
-            feel.effect(self.trigger_threshold)
-        })
-    }
 }
 /// What a DualSense's lightbar shows (`lightbar:`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1753,6 +1800,15 @@ bind_key.hotbar.2:north
     }
 
     #[test]
+    fn playing_in_the_background_is_off_until_saved_on() {
+        assert!(!PadSettings::parse("vibration:false\n").play_in_background);
+        let mut on = PadSettings::default();
+        assert!(!on.play_in_background);
+        on.play_in_background = true;
+        assert!(PadSettings::parse(&on.serialize()).play_in_background);
+    }
+
+    #[test]
     fn a_file_from_before_these_defaults_keeps_its_buttons() {
         // Saved settings that never bound D-pad down: it stays on the advancements.
         let s = PadSettings::parse("vibration:false\nbind_key.chat:up\n");
@@ -1793,6 +1849,7 @@ bind_key.hotbar.2:north
         s.look_sensitivity = 0.75;
         s.glyphs = GlyphStyle::PlayStation;
         s.nintendo_letters = !s.nintendo_letters;
+        s.guide_detail = GuideDetail::Basic;
         let text = s.serialize();
         assert!(text.contains(&format!("nintendoLetters:{}\n", s.nintendo_letters)));
         assert!(text.contains("bind_key.jump:east\n"));
@@ -1820,7 +1877,11 @@ bind_key.hotbar.2:north
             false,
         );
         assert_eq!(left, [0.2, 0.3]);
-        assert_eq!(right, [-0.5, 0.7], "X from LeftZ, Y from RightStickX");
+        assert_eq!(
+            right,
+            [-0.5, -0.7],
+            "X from LeftZ, Y from RightStickX, turned over"
+        );
         let kept = stick_axes(
             [0.2, 0.3],
             [0.7, -0.9],
@@ -1855,11 +1916,6 @@ bind_key.hotbar.2:north
         assert!(parts.held(Button::LeftBumper));
         assert_eq!(parts.left, [0.5, -0.25]);
         assert_eq!(parts.by_letter(), pad);
-        // A part's glyph is the letter of the button playing it.
-        assert_eq!(Button::South.by_letter().label(GlyphStyle::Nintendo), "A");
-        assert_eq!(Button::East.by_letter().label(GlyphStyle::Nintendo), "B");
-        assert_eq!(Button::West.by_letter().label(GlyphStyle::Nintendo), "X");
-        assert_eq!(Button::North.by_letter().label(GlyphStyle::Nintendo), "Y");
     }
 
     #[test]
@@ -2287,12 +2343,7 @@ bind_key.hotbar.2:north
     }
 
     #[test]
-    fn labels_and_conflicts() {
-        assert_eq!(Button::South.label(GlyphStyle::Xbox), "A");
-        assert_eq!(Button::South.label(GlyphStyle::PlayStation), "×");
-        assert_eq!(Button::South.label(GlyphStyle::Nintendo), "B");
-        assert_eq!(Button::RightTrigger.label(GlyphStyle::PlayStation), "R2");
-        assert_eq!(Button::DPadLeft.label(GlyphStyle::Xbox), "←");
+    fn styles_resolve_and_conflicts() {
         assert_eq!(
             GlyphStyle::Auto.resolve(GlyphStyle::PlayStation),
             GlyphStyle::PlayStation
@@ -2324,52 +2375,6 @@ bind_key.hotbar.2:north
         assert_eq!(w.observe(None), None);
         assert_eq!(w.observe(Some(2.0)), None);
         assert_eq!(w.observe(Some(1.0)), Some(1.0));
-    }
-
-    #[cfg(feature = "controllers")]
-    #[test]
-    fn triggers_feel_their_action() {
-        use horizon_dualsense::{TRIGGER_OFF, trigger};
-        let mut s = PadSettings::default();
-        // Use is LT, attack RT by default.
-        let [left, right] = s.trigger_effects(TriggerFeel::Draw(1.0), TriggerFeel::Texture(1.5));
-        assert_eq!(left, trigger::feedback(2, 6));
-        assert_eq!(right, trigger::vibration(1, 3, 30));
-        assert_eq!(
-            s.trigger_effects(TriggerFeel::Draw(0.0), TriggerFeel::Free),
-            [trigger::feedback(2, 1), TRIGGER_OFF]
-        );
-        // The catch gives way in the zone where the default threshold (0.4) presses: weapon
-        // 0x25, zones 2 and 4, strength 8 (stored 7) or 5 (stored 4).
-        let catch = |strength| [0x25, 0x14, 0x00, strength, 0, 0, 0, 0, 0, 0, 0];
-        assert_eq!(TriggerFeel::Click.effect(0.4), catch(7));
-        assert_eq!(TriggerFeel::Boost.effect(0.4), catch(4));
-        // A deeper threshold moves it: zones 5 and 7.
-        assert_eq!(TriggerFeel::Click.effect(0.7)[1..3], [0xa0, 0x00]);
-        assert_eq!(TriggerFeel::Click.effect(0.1), trigger::weapon(2, 3, 8));
-        assert_eq!(TriggerFeel::Brace.effect(0.4), trigger::feedback(2, 3));
-        assert_eq!(TriggerFeel::Locked.effect(0.4), trigger::feedback(1, 8));
-        // Harder blocks buzz harder and slower; instant-break blocks don't.
-        assert_eq!(
-            TriggerFeel::Texture(0.5).effect(0.4),
-            trigger::vibration(1, 2, 40)
-        );
-        assert_eq!(
-            TriggerFeel::Texture(3.0).effect(0.4),
-            trigger::vibration(1, 4, 20)
-        );
-        assert_eq!(
-            TriggerFeel::Texture(50.0).effect(0.4),
-            trigger::vibration(1, 5, 10)
-        );
-        assert_eq!(TriggerFeel::Texture(0.0).effect(0.4), TRIGGER_OFF);
-        assert_eq!(TriggerFeel::Texture(-1.0).effect(0.4), TRIGGER_OFF);
-        s.adaptive_triggers = false;
-        assert_eq!(
-            s.trigger_effects(TriggerFeel::Click, TriggerFeel::Boost),
-            [TRIGGER_OFF; 2]
-        );
-        assert!(!PadSettings::parse(&s.serialize()).adaptive_triggers);
     }
 
     #[test]

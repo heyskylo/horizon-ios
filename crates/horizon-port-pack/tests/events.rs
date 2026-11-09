@@ -99,6 +99,8 @@ const LABELS: &str = r#"{"hooks": [
     {"name": "block_entity_container", "neoforge": "Capabilities.Item.BLOCK"},
     {"name": "recipes_received", "neoforge": "RecipesReceivedEvent"},
     {"name": "standalone_models", "neoforge": "ModelEvent.RegisterStandalone"},
+    {"name": "render_tooltip_texture", "neoforge": "RenderTooltipEvent.Texture"},
+    {"name": "anvil_craft_pre", "neoforge": "AnvilCraftEvent.Pre"},
     {"name": "hud"}
 ]}"#;
 
@@ -157,6 +159,20 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
             Some("ModelEvent.RegisterStandalone".to_owned())
         )
     );
+    assert_eq!(
+        c.status("RenderTooltipEvent.Color"),
+        (
+            Status::Hooked(hooks(&["render_tooltip_texture"])),
+            Some("RenderTooltipEvent.Texture".to_owned())
+        )
+    );
+    assert_eq!(
+        c.status("AnvilRepairEvent"),
+        (
+            Status::Hooked(hooks(&["anvil_craft_pre"])),
+            Some("AnvilCraftEvent.Pre".to_owned())
+        )
+    );
     for missing in [
         "ModConfigEvent.Unloading",
         "RegisterPayloadHandlersEvent",
@@ -164,6 +180,33 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
     ] {
         assert_eq!(c.status(missing), (Status::Missing, None), "{missing}");
     }
+}
+
+#[test]
+fn trade_events_are_answered_by_the_trade_registries() {
+    let c = Catalog::parse(LABELS).unwrap();
+    let data = (
+        Status::Data(vec!["trade_set".to_owned(), "villager_trade".to_owned()]),
+        None,
+    );
+    assert_eq!(c.status("VillagerTradesEvent"), data);
+    assert_eq!(c.status("WandererTradesEvent"), data);
+    let mut mods = BTreeMap::new();
+    mods.insert(
+        "trader".to_owned(),
+        BTreeSet::from(["VillagerTradesEvent".to_owned()]),
+    );
+    let report = events::table(&mods, &c);
+    assert!(
+        report.contains("1 names: 0 with a hook, 0 with another phase's, 0 noted as not quite one, 1 made data, 0 with none."),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "| 1 | `VillagerTradesEvent` | data: `trade_set`, `villager_trade` | trader |"
+        ),
+        "{report}"
+    );
 }
 
 #[test]
