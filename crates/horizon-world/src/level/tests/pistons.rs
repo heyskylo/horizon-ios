@@ -191,3 +191,59 @@ fn replacing_a_moving_piston_leaves_its_extended_base() {
         "destroyBlock over the head leaves a headless extended piston"
     );
 }
+
+/// Runs the scheduled ticks and block events a piston's move needs: the event
+/// fires on the tick after the neighbour change, and the head is placed when it
+/// runs.
+fn settle(w: &mut World) {
+    for _ in 0..8 {
+        w.full_tick();
+    }
+}
+
+/// `PistonStructureResolver.addBlockLine` refuses once `toPush` would hold more
+/// than 12 blocks: a line of twelve moves, and a thirteenth makes the whole
+/// push fail (the piston stays retracted), not move twelve of them.
+#[test]
+fn a_piston_moves_twelve_blocks_and_refuses_a_thirteenth() {
+    for (count, moves) in [(11, true), (12, true), (13, false)] {
+        let mut w = world!();
+        let piston = w.id("piston", &[("facing", "east")]);
+        let dirt = w.id("dirt", &[]);
+        let air = w.b().air();
+        for x in 1..=count {
+            w.set(BlockPos::new(x, 5, 0), dirt);
+        }
+        w.set(BlockPos::new(0, 5, 0), piston);
+        w.set(BlockPos::new(-1, 5, 0), w.id("redstone_block", &[]));
+        settle(&mut w);
+        let origin = BlockPos::new(0, 5, 0);
+        assert_eq!(
+            w.prop(origin, "extended"),
+            if moves { "true" } else { "false" },
+            "{count} blocks in a line"
+        );
+        if moves {
+            assert!(
+                w.name(BlockPos::new(1, 5, 0)).starts_with("piston_head"),
+                "{count} blocks: the head stands where the first block was"
+            );
+            for x in 2..=count + 1 {
+                assert_eq!(
+                    w.get(BlockPos::new(x, 5, 0)),
+                    dirt,
+                    "{count} blocks: every one moved a block along, to x = {x}"
+                );
+            }
+            assert_eq!(w.get(BlockPos::new(count + 2, 5, 0)), air);
+        } else {
+            for x in 1..=count {
+                assert_eq!(
+                    w.get(BlockPos::new(x, 5, 0)),
+                    dirt,
+                    "{count} blocks: a refused push moves none of them"
+                );
+            }
+        }
+    }
+}
