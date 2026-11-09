@@ -6466,6 +6466,37 @@ def primed_tnt_fall():
     return ops
 
 
+def loaded_dead_mob():
+    """#13199: `LivingEntity.readAdditionalSaveData` reads `Health` through `setHealth`, which
+    clamps a negative value to 0 and keeps the body: a mob summoned dead is there, `/data` reads
+    it, and `tickDeath` removes it once `DeathTime` reaches 20."""
+    x0, y0, z0 = 3712, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    subjects = [('ocelot', 'Health:0.0f,PersistenceRequired:1b'), ('mannequin', 'Health:-1.0f'),
+                ('zombie', 'Health:0.0f,DeathTime:5s')]
+    uuids = []
+    for n, (kind, fields) in enumerate(subjects, 1):
+        uuid = f'000033cf-0000-0000-0000-{n:04x}00000001'
+        uuids.append(uuid)
+        ops.append(cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13263,0,{n},1],{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        for uuid in uuids:
+            ops.append(cmd(f'/execute if entity {uuid}'))
+            ops.append(cmd(f'/data get entity {uuid} Health'))
+            ops.append(cmd(f'/data get entity {uuid} DeathTime'))
+
+    reads()
+    for ticks in (1, 13, 5, 1):
+        ops.append({'op': 'tick', 'n': ticks})
+        reads()
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7044,6 +7075,7 @@ def groups():
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('loaded dead mob', loaded_dead_mob()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),

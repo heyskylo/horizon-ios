@@ -2850,9 +2850,9 @@ pub fn mob_from_nbt_with_random(
         m.extra.left_handed = false;
         m.no_ai = false;
     }
-    // A mob saved mid-death finishes dying; one saved dead is dropped.
-    if m.health <= 0.0 && m.death_time == 0 {
-        return None;
+    // setHealth clamps a negative health to 0; a dead mob keeps its body (tickDeath).
+    if m.health < 0.0 {
+        m.health = 0.0;
     }
     Some(m)
 }
