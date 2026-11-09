@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "has_played_before", "target": "horizon_client::game::native_server::Game<'_>::native_has_played_before"},
+    {"name": "motd", "target": "horizon_client::game::native_server::Game<'_>::native_motd"},
+    {"name": "broadcast_quiet", "target": "horizon_client::game::native_server::Game<'_>::native_broadcast_quiet"}
+  ],
+  "rust_summary": "whether a player has played on the world before, the motd, and a system line not logged (`native_has_played_before`, `native_motd`, `native_broadcast_quiet`).",
+  "doc_summary": "`native_has_played_before(uuid)` is true when the player's data file is in the open world's `players/data`; `native_motd()` is the server's motd (empty with no server); `native_broadcast_quiet(text)` sends a system line to every player like `broadcast`, without the server's log and without the `broadcast_message` hook. API @API:join_leave_helpers@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

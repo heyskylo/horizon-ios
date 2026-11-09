@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "player_join_message",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_join_message",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the host chat's \"joined the game\" line (`native_player_join_message`).",
+  "doc_summary": "`native_player_join_message(player, name, line)` is asked for the \"joined the game\" line the host's chat shows: set `line` to `None` to show none, or replace it. A dedicated server sends no such line. Bundles need \"hooks\": @API:player_join_message@.",
+  "comments": []
+}
