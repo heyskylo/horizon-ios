@@ -1142,3 +1142,57 @@ fn lava_flowing_down_onto_water_makes_stone_and_stays_lava() {
         w.name(water_at)
     );
 }
+
+/// `FallingBlock.isFree` is `state.isAir() || state.is(BlockTags.FIRE) || state.liquid()
+/// || state.canBeReplaced()`: sand falls through air, either kind of fire, any liquid
+/// and the blocks flagged replaceable (grass, vines, dead bushes, snow), and rests on
+/// everything else, torches, carpets, slabs, saplings and cobwebs included.
+#[test]
+fn sand_falls_through_what_is_free_and_rests_on_what_is_not() {
+    let cases: [(&str, &[(&str, &str)], bool); 18] = [
+        ("air", &[], true),
+        ("water", &[], true),
+        ("lava", &[], true),
+        ("fire", &[], true),
+        ("soul_fire", &[], true),
+        ("short_grass", &[], true),
+        ("tall_grass", &[("half", "lower")], true),
+        ("dead_bush", &[], true),
+        ("vine", &[("up", "true")], true),
+        ("snow", &[("layers", "1")], true),
+        ("stone", &[], false),
+        ("oak_slab", &[("type", "bottom")], false),
+        ("torch", &[], false),
+        ("white_carpet", &[], false),
+        ("oak_sapling", &[], false),
+        ("cobweb", &[], false),
+        ("glass", &[], false),
+        ("lily_pad", &[], false),
+    ];
+    for (name, props, falls) in cases {
+        let mut w = world!();
+        let sand = w.id("sand", &[]);
+        // Written raw, so the block below does nothing of its own before the sand looks.
+        // Each stands on what it needs: placing the sand above is a neighbour update,
+        // and a carpet, sapling or lily pad with nothing to stand on is removed by it,
+        // which would free the sand for a reason that is not the rule under test.
+        w.put(BlockPos::new(0, 4, 0), w.id(name, props));
+        let support = if name == "lily_pad" { "water" } else { "dirt" };
+        w.put(BlockPos::new(0, 3, 0), w.id(support, &[]));
+        w.set(BlockPos::new(0, 5, 0), sand);
+        w.tick();
+        w.tick();
+        let fell = w
+            .level
+            .events
+            .iter()
+            .any(|e| matches!(e, LevelEvent::FallingBlock { state, .. } if *state == sand));
+        assert_eq!(fell, falls, "sand over {name} {props:?}");
+        assert_eq!(
+            w.get(BlockPos::new(0, 5, 0)) == w.b().air(),
+            falls,
+            "and the block {} its place: {name}",
+            if falls { "leaves" } else { "keeps" }
+        );
+    }
+}
