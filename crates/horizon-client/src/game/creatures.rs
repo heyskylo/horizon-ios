@@ -1272,7 +1272,10 @@ impl Game<'_> {
             let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
-            let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
+            let mut index = horizon_client::fast_hash::FxHashMap::with_capacity_and_hasher(
+                snapshot.len(),
+                Default::default(),
+            );
             let mut villager_slots = Vec::new();
             let mut solid_slots = Vec::new();
             for (i, s) in snapshot.iter().enumerate() {
@@ -1285,6 +1288,10 @@ impl Game<'_> {
                 }
             }
             laps.lap("creature_prepare");
+            let single_player = horizon_client::mobs::single_player_pos(
+                players.iter().map(|p| (p.position, p.spectator)),
+            );
+            let mut despawn_w = base.despawn_view();
             let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
                 let m = &mut mobs[i];
@@ -1308,26 +1315,18 @@ impl Game<'_> {
                     keep.push(!m.hostile() || m.persistent);
                     continue;
                 }
-                let nearest_player = nearest
-                    .nearest(m.position.x, m.position.y, m.position.z)
-                    .map(|p| p.position);
+                let nearest_player = single_player.unwrap_or_else(|| {
+                    nearest
+                        .nearest(m.position.x, m.position.y, m.position.z)
+                        .map(|p| p.position)
+                });
                 // ServerLevel.tick: every loaded entity checks despawning, but
                 // only those in entity-ticking chunks (within the simulation
                 // distance) tick. The despawn check reads the nearest player
                 // and the difficulty, not the player the mob sees.
                 if !ticking(bx, bz) {
-                    let w = MobWorld {
-                        others: &snapshot,
-                        others_grid: Some(&grid),
-                        others_index: Some(&index),
-                        others_villagers: Some(&villager_slots),
-                        others_solid: Some(&solid_slots),
-                        nearest_player,
-                        player: None,
-                        teams: std::sync::Arc::clone(&base.teams),
-                        ..base
-                    };
-                    let kept = horizon_client::mobs::ai::despawn_check(m, &w);
+                    despawn_w.nearest_player = nearest_player;
+                    let kept = horizon_client::mobs::ai::despawn_check(m, &despawn_w);
                     if !kept {
                         died.remove(&m.id);
                         snapshot[i].alive = false;

@@ -30,6 +30,105 @@ pub struct TargetInfo {
     /// `isPassenger`.
     pub passenger: bool,
 }
+/// Chunk and section cache for raycast block traversals.
+/// Caches the current section to avoid section index checks and hashmap lookups
+/// for consecutive voxels in the same 16x16x16 section.
+#[derive(Default)]
+struct RaycastBlockCache<'b> {
+    chunks: [Option<((i32, i32), Option<&'b crate::chunk::Chunk>)>; 4],
+    section_key: (i32, i32, i32),
+    section: Option<&'b crate::chunk::Section>,
+    section_uniform_air: bool,
+}
+
+impl<'a> MobWorld<'a> {
+    /// Creates a lightweight view for creature despawn evaluation without entity collections.
+    pub fn despawn_view(&self) -> MobWorld<'a> {
+        MobWorld {
+            others: &[],
+            others_grid: None,
+            others_index: None,
+            others_villagers: None,
+            others_solid: None,
+            player: None,
+            teams: std::sync::Arc::clone(&self.teams),
+            ..self.clone()
+        }
+    }
+}
+
+/// Single non-spectator player position helper for creature ticking despawn checks.
+pub fn single_player_pos(players: impl IntoIterator<Item = (Vec3, bool)>) -> Option<Option<Vec3>> {
+    let mut non_spec = players.into_iter().filter(|(_, spec)| !*spec);
+    match (non_spec.next(), non_spec.next()) {
+        (Some((pos, _)), None) => Some(Some(pos)),
+        (None, _) => Some(None),
+        _ => None,
+    }
+}
+
+impl<'b> RaycastBlockCache<'b> {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            chunks: [None, None, None, None],
+            section_key: (i32::MIN, i32::MIN, i32::MIN),
+            section: None,
+            section_uniform_air: false,
+        }
+    }
+
+    #[inline]
+    fn block(&mut self, world: &'b crate::world::World, x: i32, y: i32, z: i32) -> BlockStateId {
+        let (cx, cy, cz) = (x >> 4, y >> 4, z >> 4);
+        if (cx, cy, cz) == self.section_key {
+            if self.section_uniform_air {
+                return world.air;
+            }
+            if let Some(sec) = self.section {
+                return BlockStateId(sec.get(crate::chunk::index(x & 15, y, z & 15)));
+            }
+            return world.air;
+        }
+
+        self.section_key = (cx, cy, cz);
+        let slot = ((cx as usize).wrapping_mul(5) ^ (cz as usize)) & 3;
+        let chunk = match self.chunks[slot] {
+            Some(((ccx, ccz), c)) if ccx == cx && ccz == cz => c,
+            _ => {
+                let c = world.chunks.get(&(cx, cz)).map(|c| c.as_ref());
+                self.chunks[slot] = Some(((cx, cz), c));
+                c
+            }
+        };
+
+        match chunk {
+            Some(c) => match c.section_index(y) {
+                Some(s) => {
+                    let sec = c.sections[s].as_ref();
+                    self.section = Some(sec);
+                    self.section_uniform_air = sec.is_uniform(world.air.0);
+                    if self.section_uniform_air {
+                        world.air
+                    } else {
+                        BlockStateId(sec.get(crate::chunk::index(x & 15, y, z & 15)))
+                    }
+                }
+                None => {
+                    self.section = None;
+                    self.section_uniform_air = true;
+                    world.air
+                }
+            },
+            None => {
+                self.section = None;
+                self.section_uniform_air = true;
+                world.air
+            }
+        }
+    }
+}
+
 impl MobWorld<'_> {
     /// `Level.getEntity(uuid)`: the entity a UUID a mob stored names, while it
     /// is in the level. Nothing when this world keeps no entity UUIDs, or when
@@ -171,25 +270,6 @@ impl MobWorld<'_> {
         self.clear_between_for(None, from, to, fluids_block)
     }
     /// The same for an entity whose `getY()` is `feet_y`: `ClipContext` hands
-    #[inline]
-    fn cached_block<'b>(
-        &'b self,
-        cached: &mut Option<((i32, i32), Option<&'b crate::chunk::Chunk>)>,
-        x: i32,
-        y: i32,
-        z: i32,
-    ) -> BlockStateId {
-        let (cx, cz) = (x >> 4, z >> 4);
-        let chunk = match *cached {
-            Some(((ccx, ccz), c)) if ccx == cx && ccz == cz => c,
-            _ => {
-                let c = self.world.chunks.get(&(cx, cz)).map(|c| c.as_ref());
-                *cached = Some(((cx, cz), c));
-                c
-            }
-        };
-        chunk.map_or(self.world.air, |c| c.block(x & 15, y, z & 15))
-    }
     /// its `CollisionContext.of(entity)` to every block, so scaffolding is
     /// solid for a viewer above it and open for one below.
     fn clear_between_for(
@@ -205,14 +285,26 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
-        let mut cached = None;
+        let mut cache = RaycastBlockCache::new();
         let result = traverse_blocks(from, to, 512, |p: BlockPos| {
-            let state = self.cached_block(&mut cached, p.x, p.y, p.z);
+            let state = cache.block(self.world, p.x, p.y, p.z);
             if fluids_block && self.facts.get(state).fluid != Fluid::None {
                 return Some(());
             }
-            if self.facts.is_air(state) {
+            if cache.section_uniform_air || self.facts.is_air(state) {
                 return None;
+            }
+            if !self.collision.may_collide(state) {
+                return None;
+            }
+            let is_contextual = context.is_some() && {
+                let name = &self.facts.get(state).name;
+                name.ends_with("scaffolding") || name.ends_with("powder_snow")
+            };
+            if !is_contextual
+                && let Ok(Some(shape)) = self.collision.cached_shapes().cached_shape(state)
+            {
+                return shape.clip(from, to, p).map(|_| ());
             }
             let shape = match &context {
                 Some(context) => self
@@ -242,19 +334,8 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
-        let cached = std::cell::Cell::new(None);
-        let state = |x, y, z| {
-            let (cx, cz) = (x >> 4, z >> 4);
-            let chunk = match cached.get() {
-                Some(((ccx, ccz), c)) if ccx == cx && ccz == cz => c,
-                _ => {
-                    let c = self.world.chunks.get(&(cx, cz)).map(|c| c.as_ref());
-                    cached.set(Some(((cx, cz), c)));
-                    c
-                }
-            };
-            chunk.map_or(self.world.air, |c| c.block(x & 15, y, z & 15))
-        };
+        let cache = std::cell::RefCell::new(RaycastBlockCache::new());
+        let state = |x, y, z| cache.borrow_mut().block(self.world, x, y, z);
         visual_clip(self.facts, self.collision, &mut scene, &state, from, to)
     }
     /// Level.clip with COLLIDER shapes and no fluids: where the segment
@@ -265,11 +346,17 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
-        let mut cached = None;
+        let mut cache = RaycastBlockCache::new();
         let result = traverse_blocks(from, to, 512, |p: BlockPos| {
-            let state = self.cached_block(&mut cached, p.x, p.y, p.z);
-            if self.facts.is_air(state) {
+            let state = cache.block(self.world, p.x, p.y, p.z);
+            if cache.section_uniform_air || self.facts.is_air(state) {
                 return None;
+            }
+            if !self.collision.may_collide(state) {
+                return None;
+            }
+            if let Ok(Some(shape)) = self.collision.cached_shapes().cached_shape(state) {
+                return shape.clip(from, to, p).map(|hit| hit.location);
             }
             let shape = self
                 .collision
@@ -287,11 +374,17 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
-        let mut cached = None;
+        let mut cache = RaycastBlockCache::new();
         let result = traverse_blocks(from, to, 512, |p: BlockPos| {
-            let state = self.cached_block(&mut cached, p.x, p.y, p.z);
-            if self.facts.is_air(state) {
+            let state = cache.block(self.world, p.x, p.y, p.z);
+            if cache.section_uniform_air || self.facts.is_air(state) {
                 return None;
+            }
+            if !self.collision.may_collide(state) {
+                return None;
+            }
+            if let Ok(Some(shape)) = self.collision.cached_shapes().cached_shape(state) {
+                return shape.clip(from, to, p).map(|_| [p.x, p.y, p.z]);
             }
             let shape = self
                 .collision
@@ -453,7 +546,7 @@ impl MobWorld<'_> {
             Vec3::new(from.x - r, from.y - r, from.z - r),
             Vec3::new(from.x + r, from.y + r, from.z + r),
         );
-        let mut v: Vec<&Seen> = self
+        let mut v: Vec<(f64, &Seen)> = self
             .others_near(area)
             .filter(|s| {
                 s.alive
@@ -462,17 +555,15 @@ impl MobWorld<'_> {
                     && (s.position.z - from.z).abs() <= range
             })
             .filter(move |s| pred(s))
+            .map(|s| {
+                let d = (s.position.x - from.x).powi(2)
+                    + (s.position.y - from.y).powi(2)
+                    + (s.position.z - from.z).powi(2);
+                (d, s)
+            })
             .collect();
-        v.sort_by(|a, b| {
-            let da = (a.position.x - from.x).powi(2)
-                + (a.position.y - from.y).powi(2)
-                + (a.position.z - from.z).powi(2);
-            let db = (b.position.x - from.x).powi(2)
-                + (b.position.y - from.y).powi(2)
-                + (b.position.z - from.z).powi(2);
-            da.total_cmp(&db)
-        });
-        v.into_iter()
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        v.into_iter().map(|(_, s)| s)
     }
 }
 
@@ -508,6 +599,9 @@ pub fn visual_clip<W: DynamicCollisionWorld>(
                 .move_by(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)))
                 .clip(from, to)
                 .map(|_| [p.x, p.y, p.z]);
+        }
+        if let Ok(Some(shape)) = collision.cached_shapes().cached_shape(id) {
+            return shape.clip(from, to, p).map(|_| [p.x, p.y, p.z]);
         }
         let shape = collision.collision_shape(scene, id, [p.x, p.y, p.z]).ok()?;
         shape.clip(from, to, p).map(|_| [p.x, p.y, p.z])
