@@ -169,7 +169,6 @@ impl Rocket {
         self.explosions = loaded.explosions;
         self.item = loaded.item;
         self.angled = loaded.angled;
-        self.owner = loaded.owner;
         self.left_owner = loaded.left_owner;
         self.on_ground = loaded.on_ground;
     }
