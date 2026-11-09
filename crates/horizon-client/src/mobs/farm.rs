@@ -150,6 +150,17 @@ pub fn sheep_color(climate: Climate, random: &mut impl RandomSource) -> u8 {
     }
 }
 
+/// `Sheep.readAdditionalSaveData`'s `Color`: `DyeColor.LEGACY_ID_CODEC`
+/// (`ByIdMap.continuous` with `OutOfBoundsStrategy.ZERO`) gives white for an
+/// id outside 0..=15; the old `& 15` wrapped the id instead.
+pub fn saved_color(value: Option<&horizon_world::nbt::Tag>) -> u8 {
+    value
+        .and_then(crate::save::number)
+        .and_then(|id| u8::try_from(id).ok())
+        .filter(|id| *id < 16)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

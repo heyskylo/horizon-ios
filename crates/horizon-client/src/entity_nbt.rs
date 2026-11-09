@@ -2643,7 +2643,7 @@ pub fn mob_from_nbt_with_random(
     }
     // Sheep.readAdditionalSaveData: white and unsheared when absent.
     if m.species() == crate::mobs::Species::Sheep {
-        m.extra.color = number(tag.get("Color")).map_or(0, |c| (c as u8) & 15);
+        m.extra.color = crate::mobs::farm::saved_color(tag.get("Color"));
         m.extra.sheared = flag(tag, "Sheared");
     }
     // GlowSquid.readAdditionalSaveData: not dimmed when absent.
