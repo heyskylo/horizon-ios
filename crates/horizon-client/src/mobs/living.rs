@@ -830,6 +830,12 @@ impl Mob {
         let length = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z;
         let wanted_length = wanted.x * wanted.x + wanted.y * wanted.y + wanted.z * wanted.z;
         if length > 1.0e-7 || wanted_length - length < 1.0e-7 {
+            // A move of a block or more through water or a reset block (a
+            // vine, a ladder) resets the fall before the move's drop counts.
+            if self.fall_distance != 0.0 && length >= 1.0 && fall_reset_hit(w, self.position, moved)
+            {
+                self.fall_distance = 0.0;
+            }
             self.position = Vec3::new(
                 self.position.x + moved.x,
                 self.position.y + moved.y,
@@ -843,7 +849,6 @@ impl Mob {
         self.horizontal_collision = x_hit || z_hit;
         // A server's mobs are authoritative (`isLocalInstanceAuthoritative`):
         // the vertical flags update even without vertical movement.
-        let moved_vertically = wanted.y.abs() > 0.0;
         let vertical = wanted.y != moved.y;
         self.vertical_collision_below = vertical && wanted.y < 0.0;
         self.on_ground = self.vertical_collision_below;
@@ -851,42 +856,51 @@ impl Mob {
         // checkFallDamage reads the landing block (getOnPosLegacy).
         self.supporting = self.supporting_block(w, moved);
         self.species_check_fall_damage(w, moved, events);
-        // Entity.restituteMovementAfterCollisions: the colliding components
-        // bounce back by the entity's bounciness or the block's (a slime
-        // block, a bed), whichever is larger. A mob never sneaks, so nothing
-        // suppresses its bounce there.
-        if moved_vertically && vertical || self.horizontal_collision {
-            // Entity.getOnPos(0.2F): the block whose bounce this move sees.
+        self.restitute_movement(w.world, w.movement, wanted, moved);
+        self.movement_emission(w, moved, events);
+        // Entity.move's last step: soul sand, honey and the like slow the
+        // horizontal speed of whatever the mob stands in or on.
+        let factor = self.block_speed_factor(w);
+        self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
+    }
+    /// `Entity.restituteMovementAfterCollisions`, shared by travel and piston pushes.
+    pub fn restitute_movement(
+        &mut self,
+        world: &crate::world::World,
+        movement: &horizon_world::movement_properties::BoundMovementProperties,
+        wanted: Vec3,
+        moved: Vec3,
+    ) {
+        let differs = |a: f64, b: f64| (b - a).abs() >= f64::from(1.0e-5_f32);
+        let x_hit = differs(wanted.x, moved.x);
+        let z_hit = differs(wanted.z, moved.z);
+        let vertical = wanted.y != moved.y;
+        if wanted.y.abs() > 0.0 && vertical || x_hit || z_hit {
             let on = (
                 self.position.x.floor() as i32,
                 (self.position.y - f64::from(0.2_f32)).floor() as i32,
                 self.position.z.floor() as i32,
             );
             let input = RestitutionInput {
-                block: w.world.block(on.0, on.1, on.2),
+                block: world.block(on.0, on.1, on.2),
                 collided_x: x_hit,
                 collided_z: z_hit,
                 vertical_collision: vertical,
-                collision_below: self.vertical_collision_below,
+                collision_below: vertical && wanted.y < 0.0,
                 living: true,
                 resolved_movement: moved,
                 fall_distance: self.fall_distance,
             };
-            // The port's phases cannot fail for a mob: a block outside the
-            // registry reads as one with no bounce, never as an error.
+            // Unknown block states have no bounce; the provider cannot fail.
             let _ = restitute_movement(
                 &mut MobRestitution {
                     mob: self,
-                    world: w,
+                    world,
+                    movement,
                 },
                 input,
             );
         }
-        self.movement_emission(w, moved, events);
-        // Entity.move's last step: soul sand, honey and the like slow the
-        // horizontal speed of whatever the mob stands in or on.
-        let factor = self.block_speed_factor(w);
-        self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
     }
     /// `Entity.getBlockSpeedFactor` at the mob's feet.
     fn block_speed_factor(&self, w: &MobWorld) -> f32 {
@@ -2097,20 +2111,21 @@ pub fn client_water_splash(mob: &mut Mob, out: &mut Vec<MobEvent>) {
 /// mob that never sneaks. The phases themselves are
 /// `movement_restitution::restitute_movement`, the same port the player and
 /// dropped items use.
-struct MobRestitution<'a, 'w> {
+struct MobRestitution<'a> {
     mob: &'a mut Mob,
-    world: &'a MobWorld<'w>,
+    world: &'a crate::world::World,
+    movement: &'a horizon_world::movement_properties::BoundMovementProperties,
 }
-impl<'a, 'w> MobRestitution<'a, 'w> {
+impl<'a> MobRestitution<'a> {
     /// The block's movement data: its coefficients and its bounce tag.
     fn movement(
         &self,
         state: BlockStateId,
     ) -> Result<horizon_world::movement_properties::MovementBlock, ()> {
-        self.world.movement.get(state).map_err(|_| ())
+        self.movement.get(state).map_err(|_| ())
     }
 }
-impl RestitutionWorld for MobRestitution<'_, '_> {
+impl RestitutionWorld for MobRestitution<'_> {
     // The block data cannot fail here: a state the registry does not know
     // reads as a block with no bounce, never as an error.
     type Error = ();
@@ -2156,7 +2171,7 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
                 position.z.floor() as i32,
             ));
         };
-        let state = self.world.world.block(support[0], support[1], support[2]);
+        let state = self.world.block(support[0], support[1], support[2]);
         let keeps_column = self
             .movement(state)
             .is_ok_and(|b| b.wall || b.coefficients.fence_gate);
@@ -2189,3 +2204,18 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 #[path = "living_tests.rs"]
 mod tests;
+/// `Entity.move`'s fall-reset ray for a mob, with the world's
+/// `minecraft:fall_damage_resetting` blocks.
+fn fall_reset_hit(w: &MobWorld, from: Vec3, moved: Vec3) -> bool {
+    let reset = w.block_tags.get("minecraft:fall_damage_resetting");
+    crate::entities::fall_reset_hit(
+        w.world,
+        w.fluid_tables,
+        |p| {
+            let name = &w.facts.get(w.world.block(p.x, p.y, p.z)).name;
+            reset.is_some_and(|t| t.contains(&**name))
+        },
+        from,
+        moved,
+    )
+}

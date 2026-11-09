@@ -633,6 +633,26 @@ impl Game<'_> {
                 }
                 ok()
             }
+            // The real event, so focus loss reaches all that a window's does (the radial menu
+            // cancels, held keys go).
+            "pad" if words.get(1) == Some(&"focus") => {
+                let focused = match arg(2)? {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("pad focus true|false".into()),
+                };
+                let id = self
+                    .window
+                    .as_ref()
+                    .map_or_else(winit::window::WindowId::dummy, |w| w.id());
+                self.handle_window_event(
+                    event_loop,
+                    id,
+                    winit::event::WindowEvent::Focused(focused),
+                    super::input_trace::InputOrigin::Agent,
+                );
+                ok()
+            }
             "pad" => Ok(Some(self.pad_command(&words)?)),
             "key" => {
                 let key = key_code(arg(1)?).ok_or_else(|| format!("unknown key {}", words[1]))?;
@@ -644,7 +664,9 @@ impl Game<'_> {
                     .into());
                 }
                 if arg(2)? != "up" {
-                    self.pad.keyboard_took_over = true;
+                    self.input_keyboard_used();
+                    // As a window's key press: the radial menu closes, and the key goes on.
+                    self.pad_radial_cancel();
                 }
                 // The command confirmation takes the keys; none go past it.
                 if self.command_prompt.is_some() {
@@ -800,7 +822,7 @@ impl Game<'_> {
                 // controller still holding one keeps it.
                 let options = [self.settings.toggle_crouch, self.settings.toggle_sprint];
                 for (slot, name) in [(0, "key.sneak"), (1, "key.sprint")] {
-                    if !self.pad.holds_action(&self.settings.controller, name) {
+                    if !self.input_holds(name) {
                         self.toggles.key(
                             slot,
                             horizon_client::keymapping::KeyAction::Release,
@@ -828,6 +850,10 @@ impl Game<'_> {
                         self.screen_name()
                     )
                     .into());
+                }
+                // As a window's click: the radial menu closes, and the click goes on.
+                if arg(2)? != "up" {
+                    self.pad_radial_cancel();
                 }
                 match arg(2)? {
                     "down" => {
@@ -1039,6 +1065,7 @@ impl Game<'_> {
                     path: path.trim().into(),
                     size: None,
                     scaled: false,
+                    background: false,
                 });
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
@@ -1102,6 +1129,7 @@ impl Game<'_> {
                     "keybinds" => Page::KeyBinds,
                     "controller" => Page::Controller,
                     "controller-binds" => Page::PadBinds,
+                    "controller-radial" => Page::ControllerRadial,
                     "mouse" => Page::Mouse,
                     "chat" => Page::Chat,
                     "accessibility" => Page::Accessibility,
@@ -1567,11 +1595,11 @@ impl Game<'_> {
             "streaming": self.streaming.stages().into_iter().map(|(k, v)| (k.to_string(), v.into())).collect::<serde_json::Map<_, _>>(),
             "dirty_light": self.world.dirty_light.len(),
             "renderer": renderer,
-            "display": self.window.as_deref().and_then(horizon_client::telemetry::monitor).map(|m| json!({
-                "width": m.size().width,
-                "height": m.size().height,
-                "scale": m.scale_factor(),
-                "refresh_hz": m.refresh_rate_millihertz().map(|r| r.div_ceil(1000)),
+            "display": self.window.as_deref().and_then(horizon_client::window::display).map(|d| json!({
+                "width": d.width,
+                "height": d.height,
+                "scale": d.scale,
+                "refresh_hz": d.refresh_hz,
             })),
             "uptime_seconds": self.started.elapsed().as_secs_f64(),
             "server": self.remote_status(),

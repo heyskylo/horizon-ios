@@ -1,6 +1,7 @@
 //! Optional, texture-matched overlays drawn full bright over their base texture in the same
-//! terrain fragment: native mods' (`<ns>:emissive/...`) and OptiFine's emissive block textures
-//! (`block/stone_e.png` beside `block/stone.png`). No extra draw calls or world light changes.
+//! terrain fragment: native mods' (`<ns>:emissive/...`) and a pack's emissive block textures
+//! (OptiFine's `block/stone_e.png` beside `block/stone.png`, the suffix from the pack formats,
+//! [`crate::pack_hooks`]). No extra draw calls or world light changes.
 use crate::sprites::Sprites;
 use std::{collections::BTreeMap, path::Path};
 
@@ -35,14 +36,12 @@ fn tile_file(name: &str) -> Option<&str> {
     name.strip_suffix(".png")
 }
 
-/// OptiFine's emissive overlays of the block sprites already loaded (what the terrain draws;
-/// items draw from the HUD atlas): for each
-/// `<ns>:block/<name>`, or connected-texture tile `assets/<ns>/.../<name>.png`, whose
-/// `<name><suffix>.png` sits beside it, the overlay is loaded too and paired with it, blocks
-/// first, then tiles, each by name, at most [`MAX`] - [`NATIVE`] (native mods keep their share of
-/// the table). A pack without such files adds nothing.
-pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)> {
-    let suffix = horizon_optifine::emissive::suffix(root);
+/// A pack's emissive overlays of the block sprites already loaded (what the terrain draws;
+/// items draw from the HUD atlas): for each `<ns>:block/<name>`, or connected-texture tile
+/// `assets/<ns>/.../<name>.png`, whose `<name><suffix>.png` sits beside it, the overlay is loaded
+/// too and paired with it, blocks first, then tiles, each by name, at most [`MAX`] - [`NATIVE`]
+/// (native mods keep their share of the table). A pack without such files adds nothing.
+pub fn load_overlays(root: &Path, suffix: &str, sprites: &mut Sprites) -> Vec<(String, String)> {
     // Blocks with identical pixels share a layer (and the shader pairs by layer): a shared
     // base would glow on every block that shares it, so it gets no overlay.
     let mut sharing: BTreeMap<u32, usize> = BTreeMap::new();
@@ -56,8 +55,8 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
             sharing[layer] == 1
                 && (name
                     .split_once(':')
-                    .is_some_and(|(_, p)| p.starts_with("block/") && !p.ends_with(&suffix))
-                    || tile_file(name).is_some_and(|stem| !stem.ends_with(&suffix)))
+                    .is_some_and(|(_, p)| p.starts_with("block/") && !p.ends_with(suffix))
+                    || tile_file(name).is_some_and(|stem| !stem.ends_with(suffix)))
         })
         .map(|(name, _)| name.clone())
         .collect();
@@ -110,7 +109,7 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
 pub const CUTOUT: u32 = 1 << 31;
 
 /// The frame's overlay table: native mods' pairs (at most [`NATIVE`] requested), then the packs'
-/// OptiFine pairs flagged [`CUTOUT`] (at most [`MAX`] - [`NATIVE`], as [`load_optifine`] loads),
+/// OptiFine pairs flagged [`CUTOUT`] (at most [`MAX`] - [`NATIVE`], as [`load_overlays`] loads),
 /// one per base layer with native mods' first, sorted by base layer for the shader's early exit.
 pub fn table<'a>(
     layers: &BTreeMap<String, u32>,
@@ -204,7 +203,7 @@ mod tests {
         // Items draw from the HUD atlas, not the terrain: no pair.
         sprites.insert(&root, "minecraft:item/stick").unwrap();
         // glowstone isn't loaded: its overlay pairs with nothing.
-        let pairs = load_optifine(&root, &mut sprites);
+        let pairs = load_overlays(&root, "_e", &mut sprites);
         assert_eq!(
             pairs,
             [(
@@ -215,9 +214,6 @@ mod tests {
         assert!(sprites.layers.contains_key("minecraft:block/stone_e"));
         assert!(!sprites.layers.contains_key("minecraft:block/granite_e"));
         // The pack's own suffix.
-        let props = root.join("assets/minecraft/optifine/emissive.properties");
-        std::fs::create_dir_all(props.parent().unwrap()).unwrap();
-        std::fs::write(&props, "suffix.emissive=_glow").unwrap();
         // Connected-texture tiles pair with the overlay beside them.
         let tiles = root.join("assets/minecraft/optifine/ctm/lamp");
         png(&tiles.join("0.png"), 230);
@@ -234,7 +230,7 @@ mod tests {
                 .insert_file(&root, &format!("assets/minecraft/optifine/{tile}.png"))
                 .unwrap();
         }
-        let pairs = load_optifine(&root, &mut sprites);
+        let pairs = load_overlays(&root, "_glow", &mut sprites);
         assert_eq!(
             pairs,
             // Blocks first, then tiles.

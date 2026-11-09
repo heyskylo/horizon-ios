@@ -362,6 +362,7 @@ impl Game<'_> {
             path,
             size: Some([64, 64]),
             scaled: false,
+            background: true,
         });
     }
 }

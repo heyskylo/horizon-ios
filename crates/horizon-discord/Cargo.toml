@@ -1,0 +1,15 @@
+[package]
+name = "horizon-discord"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Discord Rich Presence: \"Playing Horizon\" on the player's Discord profile (docs/native-client.md)"
+
+[dependencies]
+horizon-platform = { path = "../horizon-platform" }
+log = "0.4"
+serde_json = "1.0.151"
+
+[lints]
+workspace = true

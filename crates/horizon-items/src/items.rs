@@ -1298,6 +1298,44 @@ impl Items {
         }
         self.get(&stack.item)?.weapon_damage
     }
+    /// `ItemAttributeModifiers` from the stack's component, else the item's
+    /// prototype: (attribute, id, amount, operation, slot group).
+    pub fn attribute_modifiers(
+        &self,
+        stack: &ItemStack,
+    ) -> Vec<(String, String, f64, String, String)> {
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:attribute_modifiers").is_some())
+        {
+            return Vec::new();
+        }
+        if let Some(horizon_world::nbt::Tag::List(entries)) = stack
+            .data()
+            .and_then(|d| d.other("minecraft:attribute_modifiers"))
+        {
+            return entries
+                .iter()
+                .filter_map(|entry| {
+                    let string = |key: &str| match entry.get(key) {
+                        Some(horizon_world::nbt::Tag::String(s)) => Some(s.to_string_lossy()),
+                        _ => None,
+                    };
+                    Some((
+                        string("type")?,
+                        string("id")?,
+                        horizon_world::datafix::dynamic::as_number(entry.get("amount")?)?
+                            .double_value(),
+                        string("operation").unwrap_or_else(|| "add_value".into()),
+                        string("slot").unwrap_or_else(|| "any".into()),
+                    ))
+                })
+                .collect();
+        }
+        self.get(&stack.item)
+            .map(|i| i.modifiers.clone())
+            .unwrap_or_default()
+    }
     /// Mining wear on an already durable item prototype. Custom durability on
     /// non-durable items needs item-aware DAMAGE-presence decoding first.
     pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
@@ -2897,6 +2935,28 @@ mod tests {
     /// The ids `/loot ... loot <id>` takes: a content mod's table in the
     /// root and a world pack's table over it.
     #[test]
+    fn weapon_damage_comes_from_the_stack() {
+        let items = Items::for_tests(HashMap::new());
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        sword.data_mut().set_other(
+            "minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound([(
+                "item_damage_per_attack",
+                horizon_world::nbt::Tag::Int(3),
+            )])),
+        );
+        assert_eq!(items.weapon_damage(&sword), Some(3));
+        sword.data_mut().set_other(
+            "!minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(items.weapon_damage(&sword), None);
+    }
+
+    #[test]
     fn loot_table_ids_list_the_roots_and_the_packs_tables() {
         let root = std::env::temp_dir().join(format!("horizon-loot-ids-{}", std::process::id()));
         fs::create_dir_all(root.join("data/mymod/loot_table/rooms")).unwrap();
@@ -2954,25 +3014,42 @@ mod tests {
     }
 
     #[test]
-    fn weapon_damage_comes_from_the_stack() {
+    fn attribute_modifiers_come_from_the_stack() {
         let items = Items::for_tests(HashMap::new());
         let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        let attack = horizon_world::nbt::Tag::compound([
+            (
+                "type",
+                horizon_world::nbt::Tag::String("minecraft:attack_damage".into()),
+            ),
+            (
+                "id",
+                horizon_world::nbt::Tag::String("minecraft:test".into()),
+            ),
+            ("amount", horizon_world::nbt::Tag::Double(0.1f64.to_bits())),
+            (
+                "operation",
+                horizon_world::nbt::Tag::String("add_value".into()),
+            ),
+            ("slot", horizon_world::nbt::Tag::String("mainhand".into())),
+        ]);
         sword.data_mut().set_other(
-            "minecraft:weapon",
-            Some(horizon_world::nbt::Tag::compound([(
-                "item_damage_per_attack",
-                horizon_world::nbt::Tag::Int(3),
-            )])),
+            "minecraft:attribute_modifiers",
+            Some(horizon_world::nbt::Tag::List(vec![attack])),
         );
-        assert_eq!(items.weapon_damage(&sword), Some(3));
+        let modifiers = items.attribute_modifiers(&sword);
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(modifiers[0].0, "minecraft:attack_damage");
+        // A double, as `AttributeModifier.amount`: not rounded through a float.
+        assert_eq!(modifiers[0].2, 0.1);
         sword.data_mut().set_other(
-            "!minecraft:weapon",
+            "!minecraft:attribute_modifiers",
             Some(horizon_world::nbt::Tag::compound(Vec::<(
                 &str,
                 horizon_world::nbt::Tag,
             )>::new())),
         );
-        assert_eq!(items.weapon_damage(&sword), None);
+        assert!(items.attribute_modifiers(&sword).is_empty());
     }
 
     #[test]
