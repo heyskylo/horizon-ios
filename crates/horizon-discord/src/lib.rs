@@ -89,11 +89,14 @@ const KEY: &str = "discordPresence";
 const LABEL: &str = "horizon.extras.discord_presence";
 const ABOUT: &str = "horizon.extras.discord_presence.tooltip";
 
-/// The switch (on by default): the player's own settings' line, the game's first player's. A
-/// splitscreen player's settings file loads after the first player's and keeps it.
+/// The switch (on by default). One presence per computer: the first splitscreen player's
+/// switch, in their settings, on their Extras page; the other players have none.
 static ON: AtomicBool = AtomicBool::new(true);
-/// Whether the player's settings were loaded once: the later loads are splitscreen players'.
-static LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the player whose turn it is owns the switch: the first one.
+fn first_player() -> bool {
+    hooks::seat() == 0
+}
 
 /// Turns the presence on or off; off clears the activity at once.
 pub fn set_enabled(on: bool) {
@@ -129,8 +132,7 @@ impl Store for Setting {
         key == KEY
     }
     fn load(&self, _key: &str, value: &str) {
-        // The first player's settings load first; the first load is theirs.
-        if LOADED.swap(true, Ordering::Relaxed) {
+        if !first_player() {
             return;
         }
         match value {
@@ -140,10 +142,12 @@ impl Store for Setting {
         }
     }
     fn save(&self, line: &mut dyn FnMut(&str, &str)) {
-        line(KEY, if enabled() { "true" } else { "false" });
+        if first_player() {
+            line(KEY, if enabled() { "true" } else { "false" });
+        }
     }
     fn is_default(&self) -> bool {
-        enabled()
+        enabled() || !first_player()
     }
 }
 
@@ -164,13 +168,16 @@ impl Page for Section {
         Place::Extras
     }
     fn rows(&self, rows: &mut Vec<Row>) {
+        if !first_player() {
+            return;
+        }
         rows.push(Row::Toggle {
             label: LABEL,
             on: enabled(),
         });
     }
     fn act(&self, row: usize, act: Act) {
-        if row == 0 && matches!(act, Act::Press | Act::PressBack) {
+        if row == 0 && first_player() && matches!(act, Act::Press | Act::PressBack) {
             set_enabled(!enabled());
         }
     }
@@ -707,11 +714,9 @@ mod tests {
     /// The switch as the player's settings and the Extras page see it. The only test that
     /// touches the presence's statics.
     #[test]
-    fn the_switch_clears_the_activity_and_keeps_the_first_players_line() {
+    fn the_switch_clears_the_activity_at_once() {
         let wanted = || lock().wanted.status;
         Setting.load(KEY, "false");
-        // A splitscreen player's settings file loads later and keeps the first player's.
-        Setting.load(KEY, "true");
         set(Status::Menus);
         assert!(!enabled());
         assert_eq!(wanted(), Status::Off);
