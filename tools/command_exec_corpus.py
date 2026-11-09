@@ -6724,7 +6724,9 @@ def zombie_villager_summoned_data():
 def projectile_fall_distance():
     """#13702: `Entity.load` reads `fall_distance` for every entity and `saveWithoutId` writes it; a projectile
     moves by `setPos`, never through `Entity.move`, so in the air it keeps what it was given."""
-    x0, y0, z0 = 4096 - 96, 280, 3648
+    # Away from the cases at z 3648: unloading this chunk at the end would keep vanilla's chunks two
+    # columns away from entity ticking for a few ticks (the explosion and falling block cases next).
+    x0, y0, z0 = 4096 - 96, 280, 3392
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
            cmd('/tick freeze', False)]
     kinds = [('fireball', ''), ('wither_skull', ''), ('small_fireball', ''), ('snowball', ''),
