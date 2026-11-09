@@ -1,8 +1,8 @@
 //! `FollowMobGoal` skips an invisible mob: the flag or the invisibility effect.
 use super::goals::{Cx, FollowMob};
 use super::{Mob, Species};
-use crate::mobs::world::with_test_world;
 use crate::mobs::LegacyRandom;
+use crate::mobs::world::with_test_world;
 use horizon_core::geometry::Vec3;
 use std::sync::Arc;
 

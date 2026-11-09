@@ -73,6 +73,7 @@ pub mod random_textures;
 pub mod ravager;
 pub mod render;
 pub mod riders;
+mod seen;
 pub mod seen_grid;
 pub mod sheep_dye;
 pub mod shulker;
@@ -103,7 +104,6 @@ pub mod warden;
 pub mod warden_brain;
 pub mod witch;
 pub mod wither;
-mod seen;
 
 #[cfg(test)]
 mod invisible_follow_tests;

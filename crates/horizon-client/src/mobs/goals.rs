@@ -3271,7 +3271,6 @@ mod avoid_entity_targeting_tests {
             "a survival player tempts; a spectator does not"
         );
     }
-
 }
 
 #[cfg(test)]
