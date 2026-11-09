@@ -2022,6 +2022,8 @@ pub struct PackResources {
     polytone_particles: Option<Arc<horizon_client::particles::polytone::Registry>>,
     /// The packs' Polytone post chains (#11486), when a pack has some.
     polytone_post: Option<Arc<horizon_client::polytone_post::PolytonePost>>,
+    /// The packs' Polytone custom colours (`polytone/colors.json`).
+    polytone_colors: Arc<horizon_client::polytone_colors::PackColors>,
 }
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
@@ -6661,8 +6663,7 @@ impl Game<'_> {
                     self.audio.capture = capture;
                 }
             }
-            // After the health rows (Hud.extractHotbarAndDecorations), the one bar above the hotbar:
-            // the jump bar, the locator bar or the experience bar, with the level number.
+            // After the health rows (Hud.extractHotbarAndDecorations): jump, locator or XP bar.
             self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
                 if contextual == ContextualBar::JumpableVehicle {
                     g.draw_jump_bar(batch, wi, hi);
@@ -6683,7 +6684,8 @@ impl Game<'_> {
                 if has_experience && g.player.is_some() {
                     let atlas = &g.gui.atlas;
                     let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
-                    let draws = hud_layout::experience(
+                    let draws = hud_layout::experience_colored(
+                        g.pack.polytone_colors.xp_bar(),
                         wi,
                         hi,
                         g.experience.progress,
@@ -7431,8 +7433,7 @@ impl Game<'_> {
             self.clock.camera_fraction()
         };
         self.player_model_geometry(camera, player_alpha, &mut out);
-        // A native pack has no per-entity draws to hide it with: its shadow pass alone gets
-        // the first-person model.
+        // A native pack's shadow pass alone gets the first-person model (no per-entity draws).
         if self.pack_ids.is_none() && !self.own_body_in_view() {
             self.shadow_only_vertices
                 .borrow_mut()
@@ -7453,14 +7454,13 @@ impl Game<'_> {
         self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
         self.see_through_vertices = see_through;
         laps.lap("eg_name_tags");
-        // Entity shadows (EntityRenderer.extractShadow).
+        // Entity shadows (EntityRenderer.extractShadow); a native pack's sun shadows replace them.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
-        // A native shader pack's sun shadows already fall under the entities in the Overworld:
-        // the round blob would be a second one. The Nether and the End have no sun to cast them.
         let pack_shadows = self.renderer.as_ref().is_some_and(|r| {
             r.pack_entity_shadows() || (self.dim == Dim::Overworld && r.native_shadow())
         });
-        let shadow_sprite = (self.settings.entity_shadows && !pack_shadows)
+        let shadows = self.settings.entity_shadows && self.pack.polytone_colors.entity_shadows();
+        let shadow_sprite = (shadows && !pack_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
             .flatten();
         if let Some(sprite) = shadow_sprite {
