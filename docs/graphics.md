@@ -2,7 +2,7 @@
 
 ## Settings
 
-Horizon's graphics settings are one screen, and **Options → Video Settings...** opens it, as Sodium's video screen replaces vanilla's: it holds every row of vanilla's Video Settings (with vanilla's names and values, kept in `options.txt` under vanilla's keys), Horizon's own graphics settings, the extras that change the picture (fullbright, dynamic lights, hiding block-break particles) and the shader packs. Each setting is in one place: FOV stays on the Options screen and View Bobbing in Accessibility, where vanilla has them; vanilla's Graphics API button is Advanced's Graphics API. The HDR shortcut key opens it at HDR. `horizon-ctl options video-vanilla` still shows vanilla's own Video Settings layout, which no menu opens.
+Horizon's graphics settings are one screen, and **Options → Video Settings...** opens it, as Sodium's video screen replaces vanilla's: it holds every row of vanilla's Video Settings (with vanilla's names and values, kept in `options.txt` under vanilla's keys), Horizon's own graphics settings, the extras that change the picture (fullbright, dynamic lights, hiding block-break particles) and the shader packs. Each setting is in one place: FOV stays on the Options screen and View Bobbing in Accessibility, where vanilla has them; vanilla's Graphics API button is Advanced's Graphics API. `horizon-ctl options video-vanilla` still shows vanilla's own Video Settings layout, which no menu opens.
 
 The screen holds vanilla's video options and Horizon's own together, built from Minecraft's own screen patterns in the design system's Blocks palette (`docs/design-system.md`), on see-through panels so the world stays in view:
 
@@ -29,7 +29,7 @@ Every setting applies at once, except worker threads, the graphics API and trans
 | | chunk updates and upload budget per frame, worker threads, cave culling, GPU culling, entity and particle culling modes, leaf culling, battery mode, and the block-entity caches (shulker boxes, signs, decorated pots, bells, chests, banners, copper golem statues) | `horizon-graphics.txt` |
 | Shaders | **Shader Packs...**: the list of shader packs, Horizon's `.hshader` ones and `shaders/` folder ones ([shaders.md](shaders.md)), and the picked pack's options; shadow cache | `horizon-graphics.txt`, the pack's own options file |
 | Advanced | present mode, frame pacing, graphics API, translucent batching, performance overlay (FPS, frame/CPU/GPU times, frame-time graph) | `horizon-graphics.txt` |
-| HDR | HDR, calibration, black level, peak brightness, paper white, UI brightness, a shortcut key to the page | `horizon-graphics.txt` |
+| HDR | HDR, calibration, black level, peak brightness, paper white, UI brightness | `horizon-graphics.txt` |
 
 `options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, GPU, entity, particle and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, and paces frames on a fixed grid of slots (vanilla starts each slot when the thread wakes up, so every late wake-up lengthens a frame), which changes timing, not pixels.
 

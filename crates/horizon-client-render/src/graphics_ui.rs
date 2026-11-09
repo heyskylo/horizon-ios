@@ -14,7 +14,7 @@ use crate::{
     lang,
     options_ui::{Event, Page as OptionsPage},
     settings::{Opt, Settings},
-    settings_shell::{self as shell, Binding, Group, Output, Row, Screen, Sheet, Value},
+    settings_shell::{self as shell, Group, Output, Row, Screen, Sheet, Value},
     text::Text,
 };
 
@@ -106,8 +106,6 @@ pub enum H {
     FrameGeneration,
     Hdr,
     HdrBlackLevel,
-    /// Binds `Graphics::hdr_key`.
-    HdrKey,
     /// Starts HDR calibration (`crate::hdr_calibration`).
     HdrCalibrate,
     HdrPeak,
@@ -623,14 +621,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         ),
                     ],
                 ),
-                (
-                    "Shortcut",
-                    vec![h(
-                        H::HdrKey,
-                        None,
-                        "A key that opens this screen from the game. Not bound at first.",
-                    )],
-                ),
             ],
         ),
     ];
@@ -957,9 +947,6 @@ impl H {
             H::HdrBlackLevel => labelled("Black Level", format!("{:.2}", g.black_level_nits())),
             H::HdrUiBrightness => labelled_percent("UI Brightness", g.hdr_ui_brightness),
             H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
-            H::HdrKey => {
-                Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
-            }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             // A press across the row, as Calibrate...: the list it opens shows the pick.
@@ -1178,10 +1165,7 @@ impl Item {
     fn steps(self, s: &Settings, out: &EffectiveOutput) -> bool {
         self.switch(s, out).is_none()
             && self.slider(s).is_none()
-            && !matches!(
-                self,
-                Item::Horizon(H::HdrKey | H::HdrCalibrate | H::ShaderPacks)
-            )
+            && !matches!(self, Item::Horizon(H::HdrCalibrate | H::ShaderPacks))
     }
     /// On/off settings and their value.
     pub fn switch(self, s: &Settings, out: &EffectiveOutput) -> Option<bool> {
@@ -1336,12 +1320,6 @@ fn shown(item: Item, s: &Settings) -> bool {
 }
 /// A control's label as its name and its value ("Render Distance" and "12 chunks").
 fn parts(item: Item, s: &Settings, out: &EffectiveOutput) -> (String, Option<String>) {
-    // The shortcut's label is one translated "Shortcut: %s"; the row shows its key apart, as
-    // KeyBindsScreen does ("> key <" while it waits, `settings_shell::Value::Binding`).
-    if item == Item::Horizon(H::HdrKey) {
-        let key = crate::keybinds::display_name(&s.horizon.hdr_key).plain();
-        return (lang::get("Shortcut"), Some(key));
-    }
     shell::name_and_value(&item.label(s, out).plain())
 }
 
@@ -1350,13 +1328,9 @@ fn parts(item: Item, s: &Settings, out: &EffectiveOutput) -> (String, Option<Str
 fn row(setting: Setting, s: &Settings, out: &EffectiveOutput) -> Row<Item> {
     let item = setting.item;
     let (name, value) = parts(item, s, out);
-    let value = match (item, item.switch(s, out), item.slider(s)) {
-        (Item::Horizon(H::HdrKey), ..) => Value::Binding(Binding::key(
-            crate::graphics::HDR_KEY,
-            value.unwrap_or_default(),
-        )),
-        (_, Some(on), _) => Value::Switch(on),
-        (_, None, Some(position)) => Value::Slider {
+    let value = match (item.switch(s, out), item.slider(s)) {
+        (Some(on), _) => Value::Switch(on),
+        (None, Some(position)) => Value::Slider {
             position,
             steps: item.slider_steps(),
             text: value.unwrap_or_default(),
@@ -1572,7 +1546,7 @@ mod tests {
     use super::*;
     use crate::{
         graphics_style as style,
-        settings_shell::{Capture, Columns, Hosted, Shell, Target},
+        settings_shell::{Columns, Hosted, Shell, Target},
     };
     use winit::keyboard::KeyCode as K;
 
@@ -2038,10 +2012,6 @@ mod tests {
             precheck.why.as_deref(),
             Some("Only applies to asynchronous entity culling.")
         );
-        let key = find(&s, Item::Horizon(H::HdrKey));
-        assert_eq!(key.name, "Shortcut");
-        let waits = Capture::Key(crate::graphics::HDR_KEY);
-        assert!(matches!(key.value, Value::Binding(ref b) if b.capture == waits));
         let calibrate = find(&s, Item::Horizon(H::HdrCalibrate));
         assert_eq!(calibrate.value, Value::Press);
     }

@@ -2914,8 +2914,6 @@ struct Game<'a> {
     world_options: Option<lan_screen::WorldOptions>,
     /// Chat Settings opened from RestrictionsScreen: Done returns to World Options.
     options_to_world_options: bool,
-    /// HDR's settings opened with their key from the game: Done returns to the game.
-    options_to_game: bool,
     command_block_screen: Option<command_blocks::CommandBlockScreen>,
     block_editor: Option<block_editor::BlockEditScreen>,
     /// `StructureTemplateManager.structureRepository`: the templates in memory
@@ -11919,7 +11917,6 @@ impl Game<'_> {
                     }
                     if pressed
                         && (self.sort_mouse_press(button)
-                            || self.hdr_mouse_press(button)
                             || self.hud_editor_key_press(&horizon_client::keybinds::mouse_name(
                                 button,
                             )))
@@ -13190,7 +13187,6 @@ impl<'a> Game<'a> {
             serving: None,
             world_options: None,
             options_to_world_options: false,
-            options_to_game: false,
             command_block_screen: None,
             block_editor: None,
             structure_templates: HashMap::new(),

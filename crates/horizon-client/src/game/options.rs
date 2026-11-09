@@ -123,7 +123,6 @@ impl Game<'_> {
         self.keys.clear();
         self.screen = Screen::Options;
         self.options_from_title = from_title;
-        self.options_to_game = false;
         let minecart_improvements = self.minecart_improvements();
         let mods_live = self.mods_live_now();
         let ui = &mut self.ui.options;
@@ -382,19 +381,15 @@ impl Game<'_> {
                 Event::Close if self.ui.options.resource_error.is_some() => {}
                 Event::Close => {
                     self.settings.save(&Self::options_path());
-                    let to_game = std::mem::take(&mut self.options_to_game);
                     self.screen = if let Some(screen) = self.panel.recipes_settings_return.take() {
                         screen
                     } else if std::mem::take(&mut self.options_to_world_options) {
                         Screen::WorldOptions
-                    } else if self.options_from_title || to_game {
+                    } else if self.options_from_title {
                         Screen::Playing
                     } else {
                         Screen::Paused
                     };
-                    if to_game {
-                        self.capture(true);
-                    }
                     self.dragging = false;
                     // Closed from calibration (horizon-ctl, a lost window): out of it.
                     self.show_calibration(0.0);

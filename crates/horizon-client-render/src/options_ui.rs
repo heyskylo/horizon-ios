@@ -4793,7 +4793,7 @@ impl OptionsUi {
             keys.insert(key.clone(), value);
             return vec![Event::Changed];
         }
-        if !s.extras.set_key(name, value.clone()) && !s.horizon.set_key(name, value.clone()) {
+        if !s.extras.set_key(name, value.clone()) {
             s.keys.set(name, &value);
         }
         vec![Event::Changed]
@@ -7348,7 +7348,7 @@ mod tests {
             MouseButton::Back,
             MouseButton::Forward,
         ] {
-            for name in [SORT_KEY, crate::graphics::HDR_KEY, "key.jump"] {
+            for name in [SORT_KEY, "key.jump"] {
                 let mut ui = OptionsUi::default();
                 let mut s = Settings::default();
                 ui.selected_key = Some(name);
@@ -7357,7 +7357,6 @@ mod tests {
                 let value = keybinds::mouse_name(button);
                 match name {
                     SORT_KEY => assert_eq!(s.extras.sort_key, value),
-                    crate::graphics::HDR_KEY => assert_eq!(s.horizon.hdr_key, value),
                     _ => assert_eq!(s.keys.get(name), value),
                 }
                 assert_eq!(Extras::parse(&s.extras.serialize()), s.extras);

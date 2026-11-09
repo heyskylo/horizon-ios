@@ -2,7 +2,7 @@
 //! reports.
 use super::tests::{CHANGED, CLICK, DRAGGED, FB, NONE, SIZE, Ui, offering, press, row, ui};
 use super::*;
-use crate::settings_shell::{Capture, Columns, Hosted};
+use crate::settings_shell::{Columns, Hosted};
 use winit::keyboard::KeyCode as K;
 
 #[test]
@@ -64,16 +64,11 @@ fn hdr_auto_can_be_selected_before_querying_and_brightness_waits_for_output() {
     let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
     assert_eq!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)), [DRAGGED]);
     ui.release();
-    // Calibrate starts the calibration; the shortcut row waits for a key.
+    // Calibrate starts the calibration.
     let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
     assert_eq!(
         press(&mut ui, &mut s, at(calibrate)),
         [CLICK, Output::Push(OptionsPage::HdrCalibration)]
-    );
-    let key = row(&mut ui, &s, Item::Horizon(H::HdrKey));
-    assert_eq!(
-        press(&mut ui, &mut s, at(key)),
-        [CLICK, Output::Bind(Capture::Key(crate::graphics::HDR_KEY))]
     );
     assert!(ui.changed());
 }
