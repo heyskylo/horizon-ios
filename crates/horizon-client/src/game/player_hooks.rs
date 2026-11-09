@@ -8,7 +8,7 @@ use horizon_client::join_seq::JoinList;
 use horizon_client::mobs::Mob;
 use horizon_client::mobs::anim::BodyPose;
 use horizon_hooks::engine;
-use horizon_hooks::players::{Frame, Kind, PlayerModel, PlayerModels};
+use horizon_hooks::players::{Frame, Gear, Kind, PlayerModel, PlayerModels, SpriteStore};
 use std::sync::Arc;
 
 /// Registers the hooks of the Horizon parts still in this crate (cosmetics: spec #14091 step 5
@@ -49,9 +49,20 @@ fn kind(m: &Mob) -> Option<Kind> {
     }
 }
 
+/// What `m` wears where a crate may draw: a helmet or head item, a chestplate, a cape or elytra.
+pub(super) fn gear(m: &Mob) -> Gear {
+    let elytra = m.extra.chest.as_deref() == Some("minecraft:elytra");
+    Gear::new(
+        m.extra.head.is_some(),
+        m.extra.chest.is_some() && !elytra,
+        m.cape.is_some() || elytra,
+    )
+}
+
 fn model(m: &Mob, kind: Kind, uuid: Option<u128>) -> PlayerModel {
     let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
     PlayerModel::new(m.id, kind, uuid, m.age, dx * dx + dz * dz > 1e-4)
+        .looks(gear(m), horizon_client::mobs::trader::is_invisible(m))
 }
 
 impl PlayerModels for Models<'_> {
@@ -61,7 +72,7 @@ impl PlayerModels for Models<'_> {
 
     fn for_each(&self, f: &mut dyn FnMut(PlayerModel)) {
         if let Some(m) = self.own.as_deref() {
-            f(model(m, Kind::Own, None));
+            f(model(m, Kind::Own, Some(self.remote.profile())));
         }
         for m in self.mobs.iter() {
             if let Some(kind) = kind(m) {
@@ -92,6 +103,33 @@ impl PlayerModels for Models<'_> {
     }
 }
 
+/// Sprite `id`'s place in the atlas's names (`hooks/<hex>`), written into `buf`: no allocation.
+fn location(id: u64, buf: &mut [u8; 22]) -> &str {
+    use std::io::Write;
+    let mut out = std::io::Cursor::new(&mut buf[..]);
+    let _ = write!(out, "hooks/{id:x}");
+    let len = out.position() as usize;
+    std::str::from_utf8(&buf[..len]).unwrap_or_default()
+}
+
+/// Where a crate's frame hook puts its sprites.
+struct HookStore<'a, 'g>(&'a mut Game<'g>);
+
+impl SpriteStore for HookStore<'_, '_> {
+    fn has(&self, id: u64) -> bool {
+        self.0
+            .gui
+            .atlas
+            .sprites
+            .contains_key(location(id, &mut [0; 22]))
+    }
+
+    fn put(&mut self, id: u64, rgba: Vec<u8>) {
+        let at = location(id, &mut [0; 22]).to_owned();
+        self.0.store_skin(at, rgba);
+    }
+}
+
 impl Game<'_> {
     /// Once a frame, before drawing.
     pub(super) fn client_hooks_frame(&mut self) {
@@ -104,7 +142,8 @@ impl Game<'_> {
         }
         self.cosmetics_say();
         let connection = self.remote.as_ref().map_or(0, |r| r.session.serial());
-        engine::frame(&Frame::new(connection));
+        let frame = Frame::new(connection, self.integrated.is_some());
+        engine::frame(&frame, &mut HookStore(self));
         self.cosmetics_frame();
     }
 
@@ -127,5 +166,18 @@ impl Game<'_> {
             mobs: &mut self.mobs,
             remote,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sprite_locations_fit_the_buffer_and_differ_by_id() {
+        let mut a = [0; 22];
+        let mut b = [0; 22];
+        assert_eq!(location(u64::MAX, &mut a), "hooks/ffffffffffffffff");
+        assert_eq!(location(10, &mut b), "hooks/a");
     }
 }
