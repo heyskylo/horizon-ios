@@ -1932,6 +1932,24 @@ def entity_landing_sensors():
             y = 203 if no_gravity else 200
             ops += [cmd(f'/execute if entity {target[:-1]},nbt={{Pos:[6.5d,{y}d,10.5d]}}]', expect_result=1),
                     cmd('/data get block 9 200 10 last_vibration_frequency', expect_result=0 if no_gravity else 2)]
+    # #14440: primed TNT and a falling block land through Entity.move too, so checkFallDamage posts
+    # HIT_GROUND after a fall.
+    for kind, nbt in (('tnt', 'fuse:80'), ('falling_block', 'BlockState:{Name:"minecraft:sand"},Time:1')):
+        target = f'@e[tag=landing_{kind},limit=1]'
+        ops += setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]', '/tick step 25')
+        ops += [{'op': 'tick', 'n': 25}]
+        ops += setup('/fill 0 200 0 31 206 31 air', '/fill 0 199 0 31 199 31 stone', '/tp @s 6.5 200 28.5',
+                     '/setblock 9 200 10 sculk_sensor strict', '/tick step 2')
+        ops += [{'op': 'tick', 'n': 2}]
+        ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]', expect_result=1)]
+        ops += setup(f'/summon {kind} 6.5 203 10.5 {{Tags:["landing_actor","landing_{kind}"],{nbt}}}')
+        for _ in range(20):
+            ops += setup('/tick step 1')
+            ops += [{'op': 'tick', 'n': 1}]
+            ops += [cmd(f'/execute if entity {target[:-1]},nbt={{OnGround:1b}}]'),
+                    cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=active]')]
+        ops += [cmd('/data get block 9 200 10 last_vibration_frequency')]
+    ops += setup('/fill 0 200 0 31 206 31 air', '/tp @s 6.5 200 7.5')
     return ops + setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
                        '/scoreboard objectives remove landing_probe',
                        '/tick unfreeze', '/gamerule random_tick_speed 3')

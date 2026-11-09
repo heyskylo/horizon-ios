@@ -134,7 +134,12 @@ impl Game<'_> {
             f.velocity.z = 0.0;
         }
         if on_ground {
+            // fallOn (causeFallDamage), then HIT_GROUND after a fall.
             self.falling_block_impact(f);
+            if f.fall_distance > 0.0 {
+                let bounds = horizon_client::falling_block::bounds(f.position);
+                self.post_landing_event(f.position, bounds, false);
+            }
             f.fall_distance = 0.0;
         }
         // applyEffectsFromBlocks: WebBlock.entityInside makes it stuck

@@ -102,14 +102,17 @@ impl PrimedTnt {
     }
     /// Entity.checkFallDamage after a move that stepped `moved_y`: out of
     /// water, each step down is narrowed to a float before it adds to the
-    /// fall; landing forgets it.
-    pub(super) fn check_fall_damage(&mut self, moved_y: f64) {
+    /// fall; landing forgets it. Returns whether it landed after a fall, when
+    /// the caller posts HIT_GROUND.
+    pub(super) fn check_fall_damage(&mut self, moved_y: f64) -> bool {
         if !self.in_water && moved_y < 0.0 {
             self.fall_distance -= f64::from(moved_y as f32);
         }
+        let landed = self.on_ground && self.fall_distance > 0.0;
         if self.on_ground {
             self.fall_distance = 0.0;
         }
+        landed
     }
     /// Entity.applyEffectsFromBlocks for a move from `from` to here
     /// (`original` the step it asked for, when the move was recorded): powder
@@ -174,9 +177,11 @@ impl PrimedTnt {
         blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
     ) -> Result<Vec<BlockPos>> {
         self.tick_among(world, collision, assets, facts, fluids, border, blocks, &[])
+            .map(|(tops, _)| tops)
     }
     /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
     /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    /// Also says whether it landed after a fall.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn tick_among(
         &mut self,
@@ -188,7 +193,7 @@ impl PrimedTnt {
         border: Option<&horizon_core::geometry::border::BorderGeometry>,
         blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
         entities: &[Aabb],
-    ) -> Result<Vec<BlockPos>> {
+    ) -> Result<(Vec<BlockPos>, bool)> {
         self.previous = self.position;
         self.velocity.y -= self.get_gravity();
         let mut wanted = self.velocity;
@@ -226,7 +231,7 @@ impl PrimedTnt {
             );
         }
         self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
-        self.check_fall_damage(moved.y);
+        let landed = self.check_fall_damage(moved.y);
         if moved.x != wanted.x {
             self.velocity.x = 0.0;
         }
@@ -283,7 +288,7 @@ impl PrimedTnt {
                 self.fall_distance = 0.0;
             }
         }
-        Ok(tops)
+        Ok((tops, landed))
     }
 }
 
@@ -401,7 +406,11 @@ impl Game<'_> {
     /// so powder snow it was pushed into makes it stuck.
     pub(super) fn finish_tnt_piston_move(&mut self, i: usize, from: Vec3, moved: Vec3) {
         let t = &mut self.tnts[i];
-        t.check_fall_damage(moved.y);
+        if t.check_fall_damage(moved.y) {
+            let (position, bounds) = (t.position, t.bounds());
+            self.post_landing_event(position, bounds, false);
+        }
+        let t = &mut self.tnts[i];
         let factor = horizon_client::motion::block_speed_factor_at(
             &self.world,
             &self.res.motion().blocks,
@@ -438,7 +447,7 @@ impl Game<'_> {
     /// `entities` are the boxes that stop its move (`Game::item_entity_collisions`).
     pub(super) fn tick_one_tnt(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
         let t = &mut self.tnts[i];
-        let tops = t.tick_among(
+        let (tops, landed) = t.tick_among(
             &self.world,
             self.collision,
             &self.pack.assets,
@@ -449,6 +458,10 @@ impl Game<'_> {
             entities,
         )?;
         let snow = (t.previous, t.position, t.bounds(), t.velocity);
+        // Entity.checkFallDamage: HIT_GROUND after a fall, during the move.
+        if landed {
+            self.post_landing_event(snow.1, snow.2, false);
+        }
         self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
         for pos in tops {
             self.bubble_column_particles(pos);
