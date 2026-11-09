@@ -1280,3 +1280,47 @@ fn a_note_block_cycles_through_25_notes_and_follows_its_power() {
     w.set(source, w.b().air());
     assert_eq!(w.prop(at, "powered"), "false", "and not without it");
 }
+
+/// `FenceBlock.connectsTo`: `!isExceptionForConnection(state) && faceSolid || sameFence
+/// || gate`. A fence joins any block with a full face towards it (glass and stone
+/// included) except leaves, barriers, pumpkins, melons and carved pumpkins; another
+/// fence only of its own family (wooden or not, `isSameFence`); and a gate only when
+/// the gate's facing lies across the line (`connectsToDirection`).
+#[test]
+fn a_fence_connects_by_vanillas_rules() {
+    // (the fence, what stands east of it, whether it connects)
+    let cases: [(&str, &str, &[(&str, &str)], bool); 18] = [
+        ("oak_fence", "oak_fence", &[], true),
+        ("oak_fence", "spruce_fence", &[], true),
+        ("oak_fence", "bamboo_fence", &[], true),
+        ("oak_fence", "nether_brick_fence", &[], false),
+        ("nether_brick_fence", "nether_brick_fence", &[], true),
+        ("nether_brick_fence", "oak_fence", &[], false),
+        ("oak_fence", "stone", &[], true),
+        ("nether_brick_fence", "stone", &[], true),
+        ("oak_fence", "dirt", &[], true),
+        ("oak_fence", "glass", &[], true),
+        ("oak_fence", "oak_leaves", &[], false),
+        ("oak_fence", "pumpkin", &[], false),
+        ("oak_fence", "melon", &[], false),
+        ("oak_fence", "barrier", &[], false),
+        ("oak_fence", "torch", &[], false),
+        ("oak_fence", "oak_fence_gate", &[("facing", "north")], true),
+        ("oak_fence", "oak_fence_gate", &[("facing", "east")], false),
+        ("oak_fence", "air", &[], false),
+    ];
+    for (fence, neighbour, props, connects) in cases {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.set(at, w.id(fence, &[]));
+        w.set(BlockPos::new(1, 5, 0), w.id(neighbour, props));
+        assert_eq!(
+            w.prop(at, "east"),
+            if connects { "true" } else { "false" },
+            "a {fence} beside a {neighbour} {props:?}"
+        );
+        for other in ["north", "south", "west"] {
+            assert_eq!(w.prop(at, other), "false", "{other}: nothing there");
+        }
+    }
+}
