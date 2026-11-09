@@ -1192,4 +1192,34 @@ mod tests {
             );
         }
     }
+
+    /// `DeathScreen.mouseClicked`'s `ClickableStyleFinder`: the cause line's
+    /// glyph under the pointer decides the link, and the line's edges are no
+    /// link.
+    #[test]
+    fn a_death_causes_link_is_the_glyph_under_the_pointer() {
+        use horizon_client::text::{ClickEvent, Style, Text};
+        let link = Style {
+            click: Some(ClickEvent::OpenUrl("https://example.com".into())),
+            ..Style::default()
+        };
+        let cause = Text::literal("ab").append(Text::styled("cd", link));
+        let advance = |_: char, _: &Style| 6.0;
+        let at = |x: f32, y: f32| {
+            super::death_style_at(&advance, &cause, 427.0, (x, y)).and_then(|s| s.click)
+        };
+        // Four 6-pixel glyphs centred in 427: the line starts at 201.
+        assert_eq!(at(203.0, 86.0), None);
+        assert_eq!(at(209.0, 86.0), None);
+        assert_eq!(
+            at(215.0, 86.0),
+            Some(ClickEvent::OpenUrl("https://example.com".into()))
+        );
+        assert_eq!(
+            at(221.0, 86.0),
+            Some(ClickEvent::OpenUrl("https://example.com".into()))
+        );
+        assert_eq!(at(227.0, 86.0), None);
+        assert_eq!(at(215.0, 84.0), None);
+    }
 }
