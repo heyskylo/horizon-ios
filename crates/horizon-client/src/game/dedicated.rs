@@ -2429,6 +2429,7 @@ impl Game<'_> {
         // Only a successful final save closes the epoch; storage is still held.
         self.native_lifecycle_world_closed();
         self.lan_close(false);
+        self.native_server_stopped(true);
         Ok(())
     }
 }
@@ -2670,7 +2671,7 @@ mod tests {
     #[test]
     fn a_temporarily_banned_player_is_refused_with_the_end_until_it_has_passed() {
         use super::{BanEntry, BanList, Lists, NameAndId};
-        use horizon_chat_filter::now_millis;
+        use horizon_server_files::duration::now_millis;
         let dir = std::env::temp_dir().join(format!("horizon-can-login-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let mut lists = Lists {

@@ -490,6 +490,11 @@ pub struct Post {
     /// translucent terrain (`shadow_water` or `shadow`), into the shadow buffers (2.4).
     pub shadow: Option<PostProgram>,
     pub shadow_water: Option<PostProgram>,
+    /// `shadow_water` without the boats' water patches (`GbuffersInputs::water_patches`), for a
+    /// GPU that refuses it with them: their vertex output is one more than a pack writing as
+    /// many as the GPU takes has room for. The water's light then shows in the boats, as before
+    /// the patches, and the rest of the shadow pass stays.
+    pub shadow_water_plain: Option<PostProgram>,
     /// What draws entities (`shadow_entities` or `shadow`) and block entities (`shadow_block` or
     /// `shadow`) from the light, unless `shadowEntities`/`shadowBlockEntities` is false.
     pub shadow_entities: Option<PostProgram>,
@@ -692,6 +697,7 @@ pub fn load_post(
         shadow_pass: false,
         shadow: None,
         shadow_water: None,
+        shadow_water_plain: None,
         shadow_entities: None,
         shadow_block: None,
         shadow_only_player: false,
@@ -992,7 +998,15 @@ pub fn load_post(
             },
         };
         // gbuffers_water falls back to gbuffers_terrain's chain (2.3).
-        let water = gbuffers(&WATER, Group::Translucent, terrain);
+        // Water discards what lies behind the boats' water patches (`GbuffersInputs::water_mask`).
+        let water = gbuffers(
+            &WATER,
+            Group::Translucent,
+            &GbuffersInputs {
+                water_mask: true,
+                ..terrain.clone()
+            },
+        );
         loader.post.notes.extend(lone);
         loader.post.terrain_undrawn = !has_solid && !has_cutout;
         loader.post.water_undrawn = !WATER.iter().any(|n| loader.has(n));
@@ -1174,8 +1188,20 @@ fn load_shadow(
     let shadow = keep("shadowTerrain")
         .then(|| load(&["shadow"], terrain, true, true))
         .flatten();
+    // Its water keeps out of the boats' water patches (`GbuffersInputs::water_patches`).
+    let water_inputs = terrain.map(|t| GbuffersInputs {
+        water_patches: true,
+        ..t.clone()
+    });
     let water = keep("shadowTranslucent")
-        .then(|| load(&["shadow_water", "shadow"], terrain, true, false))
+        .then(|| {
+            load(
+                &["shadow_water", "shadow"],
+                water_inputs.as_ref(),
+                true,
+                false,
+            )
+        })
         .flatten();
     let shadow_entities = (keep("shadowEntities") || only_player)
         .then(|| load(&["shadow_entities", "shadow"], entities, false, true))
@@ -1183,6 +1209,12 @@ fn load_shadow(
     let shadow_block = (keep("shadowBlockEntities") || only_lit)
         .then(|| load(&["shadow_block", "shadow"], entities, false, true))
         .flatten();
+    let water_plain = water
+        .as_ref()
+        .and_then(|_| load(&["shadow_water", "shadow"], terrain, true, false));
+    // The plain one's notes are the patched one's again: each once.
+    let mut seen = std::collections::HashSet::new();
+    loader.post.notes.retain(|n| seen.insert(n.clone()));
     if shadow.is_none() && terrain.is_some() {
         loader
             .post
@@ -1192,6 +1224,7 @@ fn load_shadow(
     loader.geometry = None;
     loader.post.shadow = shadow;
     loader.post.shadow_water = water;
+    loader.post.shadow_water_plain = water_plain;
     loader.post.shadow_entities = shadow_entities;
     loader.post.shadow_block = shadow_block;
     loader.post.shadow_only_player = only_player;
@@ -2506,6 +2539,11 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             post.shadow_water.as_ref().map(|p| p.name.as_str()),
             Some("shadow")
         );
+        // ...with the boats' water patches, and once more without them.
+        assert_eq!(
+            post.shadow_water_plain.as_ref().map(|p| p.name.as_str()),
+            Some("shadow")
+        );
         // Entities fall back to shadow; block entities have their own program.
         let name = |p: &Option<PostProgram>| p.as_ref().map(|p| p.name.clone());
         assert_eq!(
@@ -3328,63 +3366,10 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
 }
 
 #[cfg(test)]
-mod lifecycle_tests {
-    use super::*;
-    #[test]
-    fn setup_and_begin_compute_load_before_prepare_even_with_only_a_suffix() {
-        let compute = "#version 430\nlayout(local_size_x=1) in; void main(){}";
-        let zip = crate::pack::tests::zip(&[
-            ("shaders/setup.csh", compute),
-            ("shaders/begin_a.csh", compute),
-            ("shaders/prepare.csh", compute),
-        ]);
-        let pack = Pack::from_zip_bytes("lifecycle.zip", zip).unwrap();
-        let post = load_post(
-            &pack,
-            "",
-            &Properties::default(),
-            &Macros::standard(),
-            &GameInputs::default(),
-        );
-        assert!(post.notes.is_empty(), "{:?}", post.notes);
-        assert_eq!(
-            post.programs
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect::<Vec<_>>(),
-            ["setup", "begin", "prepare"]
-        );
-    }
-}
+mod lifecycle_tests;
 
 #[cfg(test)]
-mod buffer_blend_tests {
-    use super::*;
-    #[test]
-    fn buffer_blends_use_colortex_numbers_and_preserve_explicit_off() {
-        let props = Properties::parse(
-            "blend.gbuffers_water=off\nblend.gbuffers_water.colortex13=ONE ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA\nblend.gbuffers_water.colortex2=off\n",
-            &Macros::standard(),
-        );
-        let overrides = buffer_blends(&props, "gbuffers_water");
-        assert_eq!(blend(&props, "gbuffers_water"), Some(None));
-        assert_eq!(
-            overrides,
-            vec![
-                (
-                    13,
-                    Some([
-                        Factor::One,
-                        Factor::OneMinusSrcAlpha,
-                        Factor::One,
-                        Factor::OneMinusSrcAlpha
-                    ])
-                ),
-                (2, None)
-            ]
-        );
-    }
-}
+mod buffer_blend_tests;
 
 #[cfg(test)]
 mod material_variant_tests;

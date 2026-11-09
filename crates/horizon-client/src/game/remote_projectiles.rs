@@ -344,6 +344,7 @@ impl Game<'_> {
                 portal: Default::default(),
                 drop_item: false,
                 fall_distance: 0.0,
+                on_ground: false,
                 stuck: Vec3::ZERO,
                 damage: Default::default(),
                 saved: None,
@@ -539,8 +540,11 @@ impl Game<'_> {
                     (_, 0, Value::Byte(flags)) => {
                         if let Some(a) = p.arrow.as_mut() {
                             a.synced_fire = flags & 1 != 0;
+                        } else {
+                            p.synced_fire = flags & 1 != 0;
                         }
                     }
+                    (_, 1, Value::Int(air_supply)) => p.air_supply = *air_supply,
                     // AbstractArrow.ID_FLAGS (critical) and IN_GROUND.
                     (ProjectileKind::Arrow { critical, .. }, 8, Value::Byte(flags)) => {
                         *critical = flags & 1 != 0;
@@ -789,13 +793,17 @@ impl Game<'_> {
     }
 
     pub(super) fn remove_remote_projectile(&mut self, id: u32) {
-        self.fangs.list.retain(|f| f.id != id);
         self.tnts.retain(|t| t.id != id);
         self.falling.retain(|f| f.id != id);
+        self.crystals.retain(|c| c.id != id);
+        self.remove_remote_small_projectiles(id);
+    }
+
+    pub(super) fn remove_remote_small_projectiles(&mut self, id: u32) {
+        self.fangs.list.retain(|f| f.id != id);
         self.creatures.projectiles.retain(|p| p.id != id);
         self.tridents.retain(|t| t.id != id);
         self.rockets.retain(|r| r.id != id);
-        self.crystals.retain(|c| c.id != id);
         self.potions.remove_remote_thrown(id);
         self.potions.clouds.retain(|c| c.id != id);
         self.end.remove_remote_eye(id);

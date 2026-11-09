@@ -52,20 +52,20 @@ ShaderManager.PostChainCache.getOrLoadPostChain	inline	crates/horizon-client-ren
 ShaderManager.PostChainCache.loadPostChain	port	crates/horizon-client-render/src/post_chain.rs::PostEffects::load	targets, passes and pipelines are built from the config; a pass whose GLSL does not translate falls back to `post_chain.wgsl`, and a chain that still fails is skipped
 ShaderManager.PostChainCache.close	skip:other		releases post chains; Horizon has none
 Sheets.chooseSprite	port	crates/horizon-client-render/src/block_entity_render.rs::classify	gap: minor: the Christmas chest texture is picked outside this fn (block_entity_render.rs extended_christmas)
-SkyRenderer.<init>	inline	crates/horizon-client-render/src/gfx/pack_sky.rs::PackSky::new	gap: minor: builds the disc, sunset fan, stars and void up front; sun and moon quads are built per frame in game.rs celestial_geometry
+SkyRenderer.<init>	inline	crates/horizon-client-render/src/gfx/pack_sky.rs::PackSky::new	gap: minor: builds the disc, sunset fan, stars and void up front; sun and moon quads are built per frame in game/frame_geometry.rs::celestial_geometry
 SkyRenderer.extractRenderState	port	crates/horizon-client-render/src/environment.rs::Environment::sample	gap: minor: the End flash state is read in game/end.rs (end_flash_sky)
 SkyRenderer.render	port	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	sky pass; the frame's sky and dark-disc flags come from Game::render
 SkyRenderer.renderSkyDisc	port	crates/horizon-client-render/src/gfx/pack_sky.rs::disc	top sky disc fan, sky colour from PackSky::prepare
 SkyRenderer.renderDarkDisc	inline	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	dark disc pipeline (fs_dark_disc) drawn when frame.dark_disc is set
-SkyRenderer.renderSun	port	crates/horizon-client/src/game.rs::Game::celestial_geometry	sun quad 100 blocks out, half-size 30, faded by rain
-SkyRenderer.renderMoon	port	crates/horizon-client/src/game.rs::Game::celestial_geometry	moon quad 100 blocks out, half-size 20, faded by rain
-SkyRenderer.applyCelestialBodyTransform	inline	crates/horizon-client/src/game.rs::Game::celestial_geometry	the body frame: rotate Y -90, then X by the body's angle
+SkyRenderer.renderSun	port	crates/horizon-client/src/game/frame_geometry.rs::Game::celestial_geometry	sun quad 100 blocks out, half-size 30, faded by rain
+SkyRenderer.renderMoon	port	crates/horizon-client/src/game/frame_geometry.rs::Game::celestial_geometry	moon quad 100 blocks out, half-size 20, faded by rain
+SkyRenderer.applyCelestialBodyTransform	inline	crates/horizon-client/src/game/frame_geometry.rs::Game::celestial_geometry	the body frame: rotate Y -90, then X by the body's angle
 SkyRenderer.drawCelestialBody	inline	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	draws the body quads with the celestial pipeline
 SkyRenderer.renderSunriseAndSunset	port	crates/horizon-client-render/src/gfx/pack_sky.rs::PackSky::prepare	sunset fan turned to the sun's horizon and its alpha uploaded as sunrise
 SkyRenderer.renderEndSky	port	crates/horizon-client-render/src/gfx/end_sky.rs::EndSky::draw	End sky cube
 SkyRenderer.buildSunriseFan	port	crates/horizon-client-render/src/gfx/pack_sky.rs::PackSky::new	gap: minor: a unit 16-segment fan; the 120 and -40 block shape is not built here
-SkyRenderer.buildCelestialQuad	port	crates/horizon-client/src/game.rs::Game::celestial_geometry	sprite quad for the sun and moon (body closure)
-SkyRenderer.buildMoonPhases	port	crates/horizon-client/src/game.rs::Game::celestial_geometry	gap: minor: picks the phase from day time (day_time / 24000), not from the environment's moon phase value
+SkyRenderer.buildCelestialQuad	port	crates/horizon-client/src/game/frame_geometry.rs::Game::celestial_geometry	sprite quad for the sun and moon (body closure)
+SkyRenderer.buildMoonPhases	port	crates/horizon-client/src/game/frame_geometry.rs::Game::celestial_geometry	gap: minor: picks the phase from day time (day_time / 24000), not from the environment's moon phase value
 SkyRenderer.buildSkyDisc	port	crates/horizon-client-render/src/gfx/pack_sky.rs::disc	16-block disc fan (top and bottom)
 SkyRenderer.close	skip:other		releases sky buffers; Rust drops the wgpu buffers
 SpriteCoordinateExpander.addVertex	skip:other		no callers in this vanilla tree; UV wrapper for sprite quads
@@ -101,11 +101,11 @@ SubmitNodeCollection.submitTextPart	inline	crates/horizon-client/src/game/text_d
 SubmitNodeCollection.submitFlame	port	crates/horizon-client/src/fire_render.rs::flames	entity fire flames
 SubmitNodeCollection.submitLeash	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	lead rope from a leashed mob to its holder
 SubmitNodeCollection.submitModel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	mob models
-SubmitNodeCollection.submitCrumblingOverlay	port	crates/horizon-client/src/game.rs::Game::cracks	block break cracks (destroy_stage sprites) over a block
+SubmitNodeCollection.submitCrumblingOverlay	port	crates/horizon-client/src/game/frame_geometry.rs::Game::cracks	block break cracks (destroy_stage sprites) over a block
 SubmitNodeCollection.submitMovingBlock	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	moving piston blocks
 SubmitNodeCollection.submitBlockModel	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_block	gap: minor: block models driven by block entities only
 SubmitNodeCollection.getOutlineRenderType	inline	crates/horizon-client-render/src/gfx.rs::Renderer::draw_outline	one outline pass; the render type choice is folded into it
-SubmitNodeCollection.submitBreakingBlockModel	port	crates/horizon-client/src/game.rs::Game::cracks	gap: minor: drawn as cracks; the block model itself is not redrawn
+SubmitNodeCollection.submitBreakingBlockModel	port	crates/horizon-client/src/game/frame_geometry.rs::Game::cracks	gap: minor: drawn as cracks; the block model itself is not redrawn
 SubmitNodeCollection.submitShapeOutline	port	crates/horizon-client-render/src/gfx.rs::Renderer::draw_outline	block shape outline (selection box)
 SubmitNodeCollection.submitItem	port	crates/horizon-client/src/game/item_draw.rs::Game::dropped_item_geometry	dropped item entities
 SubmitNodeCollection.submitCustomGeometry	port	crates/horizon-client/src/mobs/guardian.rs::beam_geometry	gap: minor: the guardian beam only; screen overlay quads are built in ScreenEffects::build

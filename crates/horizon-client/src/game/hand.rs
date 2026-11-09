@@ -12,6 +12,13 @@ use horizon_client::{
 };
 use horizon_core::geometry::{Aabb, Vec3};
 
+/// The point a `ServerboundInteractPacket` carries: `EntityHitResult.getLocation()
+/// - entity.position()`, measured from the entity's feet, as
+/// `MultiPlayerGameMode.interact` computes it.
+pub(super) fn interact_location(point: Vec3, feet: Vec3) -> [f64; 3] {
+    [point.x - feet.x, point.y - feet.y, point.z - feet.z]
+}
+
 /// The off hand's place in `visible_hands` (the main hand uses its hotbar slot).
 const OFFHAND: usize = usize::MAX;
 
@@ -313,7 +320,7 @@ impl Game<'_> {
                 (
                     i,
                     eye.distance_squared(at).sqrt(),
-                    super::interact_location(at, feet),
+                    interact_location(at, feet),
                 )
             })
             .reduce(|a, b| if b.1 < a.1 { b } else { a });
@@ -529,13 +536,19 @@ impl Game<'_> {
         }
         self.swing.tick();
         let main = self.inventory[self.selected].clone();
-        // Player.tick: a different item resets the attack strength, and
-        // detectEquipmentUpdates gives the player its modifiers.
-        if self.hand_strength.tick(main.as_ref().map(|s| HeldStack {
+        // Player.tick: a different item resets the attack strength; any change
+        // of the stack (`!ItemStack.matches`, e.g. another Efficiency level on
+        // the same tool) is what detectEquipmentUpdates gives the player its
+        // modifiers for.
+        let held = main.as_ref().map(|s| HeldStack {
             item: s.item.to_string(),
             rest: format!("{} {} {:?}", s.count, s.damage, s.extra),
-        })) {
+        });
+        let changed = self.hand_strength.main_hand_changed(&held);
+        if self.hand_strength.tick(held) {
             self.attack_ticks = 0;
+        }
+        if changed {
             self.apply_equipment();
         }
         self.attack_item = main.as_ref().map(|s| s.item.clone());

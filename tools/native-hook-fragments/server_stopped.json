@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "server_stopped",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_server_stopped",
+      "neoforge": "ServerStoppedEvent",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the server has stopped, after its players were disconnected and its worlds closed (`native_server_stopped`).",
+  "doc_summary": "`native_server_stopped(dedicated)` fires at the end of a dedicated server's stop, after the players were disconnected and the worlds saved and closed, after `server_stopping`. Server-side. Bundles need \"hooks\": @API:server_stopped@."
+}

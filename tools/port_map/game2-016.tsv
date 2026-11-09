@@ -118,7 +118,7 @@ AbstractFurnaceBlockEntity.getSlotsForFace	port	crates/horizon-client/src/game/m
 AbstractFurnaceBlockEntity.canTakeItemThroughFace	port	crates/horizon-client/src/game/machines.rs::Containers::can_take	
 AbstractFurnaceBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_place	Furnace arm: output refused, fuel slot takes fuel or a bucket.
 AbstractFurnaceBlockEntity.setRecipeUsed	inline	crates/horizon-client/src/furnace.rs::Furnace::tick	The recipe count goes up at each finished smelt.
-AbstractFurnaceBlockEntity.awardUsedRecipesAndPopExperience	port	crates/horizon-client/src/game.rs::Game::award_furnace_recipes	gap: minor: pays the experience and clears the used recipes; the recipe unlock and recipe-crafted trigger are not in this fn.
+AbstractFurnaceBlockEntity.awardUsedRecipesAndPopExperience	port	crates/horizon-client/src/game/item_entities.rs::Game::award_furnace_recipes	gap: minor: pays the experience and clears the used recipes; the recipe unlock and recipe-crafted trigger are not in this fn.
 AbstractFurnaceBlockEntity.getRecipesToAwardAndPopExperience	port	crates/horizon-client/src/furnace.rs::Furnace::recipe_experience	gap: minor: returns counts and experience, not the recipe list.
 AbstractFurnaceBlockEntity.fillStackedContents	port	crates/horizon-client/src/menu/place.rs::Menu::stacked_contents	Furnace arm counts all three slots.
 BannerBlockEntity.saveAdditional	port	crates/horizon-client-core/src/block_entity_nbt.rs::canonical	banner arm of the saved NBT form

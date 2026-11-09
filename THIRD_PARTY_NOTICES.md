@@ -129,8 +129,9 @@ ports to WGSL of the optical flow and frame interpolation shaders of the
 [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4
 (`sdk/include/FidelityFX/gpu/{opticalflow,frameinterpolation}`, at commit
 [c6efa6bf7f20](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55)),
-and `optical_flow.rs` follows the SDK's `sdk/src/components/opticalflow/ffx_opticalflow.cpp`
-(its passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
+and `optical_flow.rs` and `interpolation.rs` follow the SDK's
+`sdk/src/components/{opticalflow/ffx_opticalflow.cpp,frameinterpolation/ffx_frameinterpolation.cpp}`
+(their passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
 Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are AMD's
 trademarks; Horizon is not affiliated with AMD.
 
@@ -338,8 +339,22 @@ is preserved.
 
 ## Starling
 
-`crates/horizon-client-render/src/touch/layout.rs` is adapted from the touch layout of
+`crates/horizon-client-render/src/touch/layout.rs` and `crates/horizon-client-render/src/touch/aim.rs`
+are adapted from the touch layout and touch helpers of
 [Starling](https://github.com/starling-client/starling), an Android port of Horizon, at commit
 [150a414b09a1](https://github.com/starling-client/starling/tree/150a414b09a18c900489d9462a7fc035dae744b7)
 (`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
 Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
+
+`crates/horizon-client-render/src/keypad.rs` is adapted from Starling's keypad profile
+(`crates/horizon-client-render/src/keypad.rs`) at the same commit.
+
+`crates/horizon-client-render/src/android_gamepad.rs` is adapted from Starling's controller decoder
+(`crates/horizon-client-render/src/android_gamepad.rs`) and the input-mode part of its
+`android_runtime.rs`, at the same commit.
+
+`crates/horizon-client-render/src/touch.rs` and `touch/tests/` are adapted from the touch input
+state of Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+
+`crates/horizon-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
+input part of Starling's `crates/horizon-client-render/src/android_runtime.rs` at the same commit.

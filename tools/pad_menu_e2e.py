@@ -61,6 +61,9 @@ Cases:
   turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
 - shell_choice_step: on Graphics, Left and Right on a focused choice (Preset) step it back and on, from the D-pad
   and the arrow keys alike, and the focus stays; up and down leave the row, and LB goes to the page list.
+- shader_screens: Shaders, on the settings shell, with a pack of more screens than its page list has rows for: they
+  collapse into one `‹ Name ›` strip, RB walks every one and round to the pack list, LB from the first goes back to
+  it, and Undo shows once the pack is picked.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
@@ -1822,6 +1825,58 @@ def extras_shell_edges(args, name):
     return check.failures
 
 
+# A shader pack with more screens than Shaders' page list has rows for in a 427x240 GUI view.
+MANY_SCREENS = [f'S{i:02}' for i in range(12)]
+
+
+def seed_many_screens(game_home):
+    pack = game_home / 'shaderpacks' / 'ManyScreens' / 'shaders'
+    pack.mkdir(parents=True)
+    options = [f'O_{name}' for name in MANY_SCREENS]
+    (pack / 'final.fsh').write_text('#version 120\n' + ''.join(f'#define {o}\n#ifdef {o}\n#endif\n' for o in options)
+                                    + 'void main() { gl_FragColor = vec4(1.0); }\n')
+    (pack / 'shaders.properties').write_text(
+        'screen = ' + ' '.join(f'[{name}]' for name in MANY_SCREENS) + '\n'
+        + ''.join(f'screen.{name} = {o}\n' for name, o in zip(MANY_SCREENS, options)))
+
+
+def open_tab(game):
+    """The label of the page list's lit tab."""
+    lit = [tuple(t['rect']) for t in game.menu()['targets'] if t['kind'] == 'tab*']
+    return next((w.get('label') for w in game.widgets() if tuple(w['bounds']) in lit), None)
+
+
+def shader_screens(args, name):
+    game = Game(args, name, seed=seed_many_screens)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'shader-packs')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # On the settings shell a pack is a tick box: "ManyScreens: Off".
+        pack = next((w for w in game.widgets() if (w.get('label') or '').startswith('ManyScreens')), None)
+        check(pack is not None, f'no ManyScreens pack: {labels(game)}')
+        game.ctl('click', pack['id'])
+        time.sleep(SETTLE)
+        # RB from the pack list through every screen, none left out, and round to the pack list.
+        walked = []
+        for _ in range(len(MANY_SCREENS) + 2):
+            game.pad('rb')
+            walked.append(open_tab(game))
+        packs = walked[-1]
+        check(walked[1:-1] == MANY_SCREENS, f'RB walked {walked}')
+        # LB back from the first screen leaves the strip for the pack list.
+        game.pad('rb')
+        game.pad('lb')
+        check(open_tab(game) == packs, f'LB from {walked[0]} went to {open_tab(game)}')
+        # Picking the pack is a change the shell's Undo puts back.
+        check(has_label(game, 'Undo'), f'no Undo after picking a pack: {labels(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def check_has_targets(game, check, screen):
     """A focus-mode screen draws a target soon after it opens; pointer screens (packs) use the crosshair by design."""
     end = time.time() + TARGETS_WAIT
@@ -3247,6 +3302,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
          'shell_choice_step': shell_choice_step,
+         'shader_screens': shader_screens,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'nintendo_letters': nintendo_letters,

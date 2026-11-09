@@ -556,6 +556,37 @@ fn list_operation<T: Clone>(
     }
 }
 
+/// `CompoundTag.merge`: a nested compound on both sides merges key by key,
+/// any other value replaces the one the target had.
+/// A compound as `TagParser.LENIENT_CODEC` reads it: a JSON object, or the
+/// SNBT text of a compound. `None` for anything else.
+fn compound_json(v: &Value) -> Option<Value> {
+    match v {
+        Value::Object(_) => Some(v.clone()),
+        Value::String(text) => match crate::nbt::parse_snbt(text) {
+            Ok((tag @ crate::nbt::Tag::Compound(_), _)) => Some(crate::worldgen::tag_json(&tag)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn merge_json(into: &mut Value, from: &Value) {
+    let (Value::Object(target), Value::Object(source)) = (into, from) else {
+        return;
+    };
+    for (key, value) in source {
+        if matches!(value, Value::Object(_))
+            && matches!(target.get(key), Some(Value::Object(_)))
+            && let Some(existing) = target.get_mut(key)
+        {
+            merge_json(existing, value);
+        } else {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 /// A JSON number read by an int codec (`Number.intValue`): `3.0`, which
 /// 1.21.1 mods write for rolls and counts, is 3.
 fn int_value(v: &Value) -> Option<i64> {
@@ -576,6 +607,9 @@ fn overlay_map(overlay: &PackOverlay, kind: &str, out: &mut HashMap<String, Valu
         out.insert(id.to_owned(), v);
     }
 }
+
+mod odds;
+pub use odds::LootOdds;
 
 /// Loot tables by id. Each is kept as its JSON text and read into a [`Value`]
 /// the first time it is rolled: of vanilla's ~1,450 tables a game rolls a
@@ -1670,6 +1704,28 @@ impl<R: RandomSource> Context<'_, R> {
                 stack = self.modify(branch, stack);
             }
             "minecraft:discard" => stack.count = 0,
+            // SetCustomDataFunction: the function's compound merges into the
+            // `minecraft:custom_data` component the stack already has, a
+            // nested compound key by key and any other value replaced. The
+            // item layer keeps the component in `other`, where the spawn egg,
+            // bucket and block entity code read it.
+            "minecraft:set_custom_data" => {
+                let id = "minecraft:custom_data";
+                // `TagParser.LENIENT_CODEC`: the tag, and the component, may
+                // be a compound or its SNBT text ("tag": "{a:1b}").
+                let Some(tag) = compound_json(&f["tag"]) else {
+                    return stack;
+                };
+                let mut data = stack
+                    .components
+                    .iter()
+                    .find(|(k, _)| k == id)
+                    .and_then(|(_, v)| compound_json(v))
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                merge_json(&mut data, &tag);
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), data));
+            }
             "minecraft:enchanted_count_increase" => {
                 if let Some(attacker) = self.living_attacker() {
                     let level =
@@ -2593,7 +2649,6 @@ mod namespace_tests {
         assert!(!data.in_tag("item", "minecraft:food", "minecraft:kelp"));
         let _ = fs::remove_dir_all(&root);
     }
-
     /// `ToggleTooltips`: a loot table's toggles show the components an earlier
     /// display hid and hide the ones it shows; the item layer reads the
     /// `minecraft:tooltip_display` component back for its tooltip.
@@ -2628,6 +2683,45 @@ mod namespace_tests {
         assert_eq!(
             display[0].1,
             serde_json::json!({"hidden_components": ["minecraft:lore"]})
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `SetCustomDataFunction`: a loot table's compound merges into the
+    /// `minecraft:custom_data` component an earlier function wrote, a nested
+    /// compound key by key and a plain value replaced, the tag given as an
+    /// object or as SNBT text; the item layer reads the component from `other`.
+    #[test]
+    fn set_custom_data_merges_into_the_component() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-data-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:stick",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:custom_data": {"a": {"b": 1}, "c": 1}}},
+                {"type": "minecraft:set_custom_data", "tag": {"a": {"d": 2}, "c": 2}},
+                {"type": "minecraft:set_custom_data", "tag": "{a:{e:3b},f:\"x\"}"}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:stick": {}}"#),
+            ("data/minecraft/loot_table/chests/data.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/data", 17, 27, None);
+        let stack = filled.iter().flatten().next().expect("a stick");
+        let component: Vec<_> = stack
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:custom_data")
+            .collect();
+        assert_eq!(component.len(), 1, "{:?}", stack.components);
+        assert_eq!(
+            component[0].1,
+            serde_json::json!({"a": {"b": 1, "d": 2, "e": 3}, "c": 2, "f": "x"})
         );
         let _ = fs::remove_dir_all(&root);
     }
@@ -2825,30 +2919,8 @@ mod native_kinds_tests {
 }
 
 #[cfg(test)]
-mod recipe_result_tests {
-    use super::*;
-
-    /// `ItemStackTemplate.CODEC` reads a stack's fields or a bare item id.
-    #[test]
-    fn a_result_is_an_object_with_an_id_or_a_bare_item_id() {
-        let id = |json: &str| {
-            let v: Value = serde_json::from_str(json).unwrap();
-            recipe_result_id(&v).map(str::to_owned)
-        };
-        assert_eq!(
-            id(r#"{"id": "ruby:ruby", "count": 3}"#).as_deref(),
-            Some("ruby:ruby")
-        );
-        assert_eq!(id(r#""ruby:ruby""#).as_deref(), Some("ruby:ruby"));
-        // No `id` (a transmuting recipe keeps its input's item), the `item` key of older
-        // versions and anything that is neither an object nor a string name no item.
-        assert_eq!(id(r#"{"count": 2}"#), None);
-        assert_eq!(id(r#"{"item": "minecraft:stick"}"#), None);
-        assert_eq!(id(r#"{"id": 7}"#), None);
-        assert_eq!(id("null"), None);
-        assert_eq!(id("[]"), None);
-    }
-}
+#[path = "recipe_result_tests.rs"]
+mod recipe_result_tests;
 
 #[cfg(test)]
 mod location_check_biome_tests {

@@ -92,7 +92,7 @@ DriedGhastBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.r
 DriedGhastBlock.getFluidState	skip:data		waterlogged water source comes from the per-state fluid facts table (Level::fluid)
 DriedGhastBlock.placeLiquid	port	crates/horizon-world/src/level/fluids.rs::Sim::place_liquid	waterlogged through the generic path, then its own block.dried_ghast.place_in_water sound
 DriedGhastBlock.setPlacedBy	port	crates/horizon-world/src/level/place.rs::Sim::set_placed_by	
-EndGatewayBlock.getPortalDestination	port	crates/horizon-client/src/game/end.rs::Game::gateway_job	gap: minor: the thrown ender pearl branch (no relative flags) is not read, only the player travels through gateways here
+EndGatewayBlock.getPortalDestination	inline	crates/horizon-client/src/game/end.rs::Game::handle_end_gateway_portals	the arrival transition: a live entity keeps its motion through teleport_to_in_level, a pearl is placed at the exit with no motion or rotation (end_gateway.rs::place_pearl), and both place a portal ticket
 EndPortalFrameBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	EndPortalFrame arm: facing opposite the player and eye set to false
 EndPortalFrameBlock.rotate	skip:data		rotation results come from the exported BlockState rotate table (worldgen/structure.rs)
 EndPortalFrameBlock.createBlockStateDefinition	skip:data		facing and eye properties come from the block state tables

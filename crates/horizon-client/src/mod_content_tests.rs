@@ -484,6 +484,7 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
         items: Vec::new(),
         vanilla_items: tab.items.iter().cloned().collect(),
         effects: Vec::new(),
+        fluids: Vec::new(),
         entity_types: Vec::new(),
         menu_types: Vec::new(),
         states: 0,
@@ -639,6 +640,9 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             "minecraft:iron_block":{"protocol_id":11}}},
             "minecraft:mob_effect":{"entries":{"minecraft:speed":{"protocol_id":0},
             "minecraft:luck":{"protocol_id":25}}},
+            "minecraft:fluid":{"entries":{"minecraft:empty":{"protocol_id":0},
+            "minecraft:flowing_water":{"protocol_id":1},"minecraft:water":{"protocol_id":2},
+            "minecraft:flowing_lava":{"protocol_id":3},"minecraft:lava":{"protocol_id":4}}},
             "minecraft:block_entity_type":{"entries":{"minecraft:chest":{"protocol_id":1}}}}"#,
     )
     .unwrap();
@@ -665,6 +669,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
                 "data/ruby/horizon/mob_effect/glow.json",
                 r#"{"category":"beneficial","color":16711680}"#,
             ),
+            (
+                "data/ruby/horizon/fluid/honey.json",
+                r#"{"template":"minecraft:water","still":"ruby:block/h","flowing":"ruby:block/f"}"#,
+            ),
         ],
     );
     let alpha = folder_mod(
@@ -686,6 +694,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             (
                 "data/alpha/horizon/mob_effect/dull.json",
                 r#"{"category":"neutral","color":0}"#,
+            ),
+            (
+                "data/alpha/horizon/fluid/molten/tin.json",
+                r#"{"template":"minecraft:lava","still":"alpha:block/s","flowing":"alpha:block/f"}"#,
             ),
         ],
     );
@@ -722,6 +734,9 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
                 "minecraft:iron_block":{"protocol_id":11}}},
                 "minecraft:mob_effect":{"entries":{"minecraft:speed":{"protocol_id":0},
                 "minecraft:luck":{"protocol_id":25}}},
+                "minecraft:fluid":{"entries":{"minecraft:empty":{"protocol_id":0},
+                "minecraft:flowing_water":{"protocol_id":1},"minecraft:water":{"protocol_id":2},
+                "minecraft:flowing_lava":{"protocol_id":3},"minecraft:lava":{"protocol_id":4}}},
                 "minecraft:block_entity_type":{"entries":{"minecraft:chest":{"protocol_id":1}}}}"#,
         )
         .unwrap();
@@ -752,11 +767,18 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         assert_eq!(id("minecraft:mob_effect", "alpha:dull"), 26);
         assert_eq!(id("minecraft:mob_effect", "alpha:zap"), 27);
         assert_eq!(id("minecraft:mob_effect", "ruby:glow"), 28);
+        // Each mod fluid after vanilla's, by id: its source, then its flowing form.
+        assert_eq!(id("minecraft:fluid", "minecraft:lava"), 4);
+        assert_eq!(id("minecraft:fluid", "alpha:molten/tin"), 5);
+        assert_eq!(id("minecraft:fluid", "alpha:molten/flowing_tin"), 6);
+        assert_eq!(id("minecraft:fluid", "ruby:honey"), 7);
+        assert_eq!(id("minecraft:fluid", "ruby:flowing_honey"), 8);
 
         // `/effect` and the mob_effect arguments check ids against this table.
         let mut commands: J = serde_json::from_str(
             r#"{"blocks":[],"items":[],"effects":["minecraft:speed"],
-                "by_registry":{"minecraft:mob_effect":{"ids":["minecraft:speed"]}}}"#,
+                "by_registry":{"minecraft:mob_effect":{"ids":["minecraft:speed"]},
+                "minecraft:fluid":{"ids":["minecraft:water"]}}}"#,
         )
         .unwrap();
         plan.json("command-registries.json", &mut commands).unwrap();
@@ -767,6 +789,17 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         assert_eq!(
             commands["by_registry"]["minecraft:mob_effect"]["ids"],
             serde_json::json!(want)
+        );
+        // Fluid tag files and fluid arguments check ids against this table.
+        assert_eq!(
+            commands["by_registry"]["minecraft:fluid"]["ids"],
+            serde_json::json!([
+                "minecraft:water",
+                "alpha:molten/tin",
+                "alpha:molten/flowing_tin",
+                "ruby:honey",
+                "ruby:flowing_honey"
+            ])
         );
         drop(plan);
 
@@ -2332,6 +2365,56 @@ fn exploration_maps_skip_the_starts_a_chunk_saved_as_referenced() {
     );
 }
 
+/// A skip check reads each saved chunk's record once: the session keeps every
+/// answer (as vanilla's `StructureCheck` does), so a second map searching past
+/// the same chunks asks the save nothing it asked before (#10255: a chest with
+/// exploration maps took a growing second per open reading them again).
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_saved_chunks_record_is_read_once_across_map_searches() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let names = ["minecraft:buried_treasure".to_owned()];
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let reads = std::sync::Arc::new(AtomicUsize::new(0));
+    let asked: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, i32, i32)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Default::default()));
+    let (reads_of, asked_of) = (reads.clone(), asked.clone());
+    terrain.set_saved_references(std::sync::Arc::new(move |n, x, z| {
+        reads_of.fetch_add(1, Ordering::Relaxed);
+        asked_of.lock().unwrap().insert((n.to_owned(), x, z));
+        0
+    }));
+    terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    // The same search again, now skipping the start the first pointed at:
+    // it passes every chunk the first search read and may reach new ones,
+    // but no chunk's record is read a second time.
+    terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert!(
+        reads.load(Ordering::Relaxed) > 0,
+        "the searches asked the save at all"
+    );
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        asked.lock().unwrap().len(),
+        "no saved chunk's record is read twice"
+    );
+}
+
 /// `ChunkGenerator.findNearestMapStructure` with `createReference`: an
 /// exploration map that skips known structures points at a start no map
 /// pointed at before, and a reopened world remembers which.
@@ -2458,7 +2541,7 @@ fn content_shapes_drive_outline_and_collision() {
     let facts = BlockFacts::load(&root, registry).unwrap();
     let (named, _) = nbt::read_named(
         &fs::read(root.join("cached-collision.nbt")).unwrap(),
-        Limits::tables(),
+        nbt::Limits::tables(),
     )
     .unwrap();
     let collision = CachedCollisionRegistry::from_nbt(&named.tag, registry).unwrap();

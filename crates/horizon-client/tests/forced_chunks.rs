@@ -79,22 +79,26 @@ impl ChunkGenerator for Plain {
     }
 }
 
+fn context(root: &Path) -> Arc<WorkerContext> {
+    let assets = Arc::new(Assets::load(root).unwrap());
+    let render = Arc::new(assets.reload(root).unwrap());
+    let facts = BlockFacts::load(root, assets.registry).unwrap();
+    let visibility = models::load_visibility(root, assets.registry).unwrap();
+    Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+        light: Arc::new(LightTables::load(root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(Biomes::load(root).unwrap()),
+        assets,
+        render: render.clone(),
+    })
+}
+
 #[test]
 fn forced_chunks_reach_vanillas_rings() {
     let Some(root) = resources() else {
         return;
     };
-    let assets = Arc::new(Assets::load(&root).unwrap());
-    let render = Arc::new(assets.reload(&root).unwrap());
-    let facts = BlockFacts::load(&root, assets.registry).unwrap();
-    let visibility = models::load_visibility(&root, assets.registry).unwrap();
-    let context = Arc::new(WorkerContext {
-        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
-        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
-        biomes: Arc::new(Biomes::load(&root).unwrap()),
-        assets,
-        render: render.clone(),
-    });
+    let context = context(&root);
     let mut streaming = Streaming::new(Arc::new(Plain), context, 2);
     // The player stands far away: only the forced chunk's own rings are
     // generated.
@@ -140,4 +144,39 @@ fn forced_chunks_reach_vanillas_rings() {
             assert_eq!(proto, None, "({x}, {z})");
         }
     }
+}
+
+/// A mod that writes sections raw lights them again at once: a roof of stone
+/// put over a lit, open column takes the sky light from under it, without
+/// waiting for the workers (`Streaming::relight_now`).
+#[test]
+fn relight_now_lights_chunks_written_raw() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let mut streaming = Streaming::new(Arc::new(Plain), context(&root), 1);
+    let mut world = World::new(BlockStateId(0), 0);
+    for z in 0..3 {
+        for x in 0..3 {
+            world.chunks.insert((x, z), Arc::new(Chunk::empty(x, z)));
+        }
+    }
+    let all: Vec<(i32, i32)> = world.chunks.keys().copied().collect();
+    // Only the middle column has all eight neighbours.
+    assert_eq!(streaming.relight_now(&mut world, &all), 1);
+    let sky = |world: &World| world.chunks[&(1, 1)].light(8, 50, 8) >> 4;
+    assert_eq!(sky(&world), 15, "open sky");
+    assert!(streaming.is_lit(1, 1));
+    // A roof over the three-by-three chunks, written without any light work.
+    for key in &all {
+        let chunk = Arc::make_mut(world.chunks.get_mut(key).unwrap());
+        for i in 0..256 {
+            chunk.set(i & 15, 100, i >> 4, 1);
+        }
+    }
+    assert_eq!(sky(&world), 15, "the write alone leaves the old light");
+    world.dirty_light.insert((1, 1));
+    assert_eq!(streaming.relight_now(&mut world, &[(1, 1), (7, 7)]), 1);
+    assert!(sky(&world) < 15, "light under the roof is {}", sky(&world));
+    assert!(!world.dirty_light.contains(&(1, 1)));
 }

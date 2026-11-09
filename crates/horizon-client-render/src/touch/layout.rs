@@ -168,6 +168,31 @@ pub struct Settings {
     pub button_visibility: [u8; CONTROLS],
     /// One row of placements per [`Mode`], indexed by [`Control`].
     pub layouts: [[Placement; CONTROLS]; 3],
+    /// Camera turn speed for look drags; scales both axes.
+    pub sensitivity: f32,
+    /// Extra scale on the yaw (left and right) turn.
+    pub sensitivity_horizontal: f32,
+    /// Extra scale on the pitch (up and down) turn.
+    pub sensitivity_vertical: f32,
+    /// The sprint button toggles sprinting instead of holding it.
+    pub sprint_toggle: bool,
+    /// In the crosshair schemes, taps and holds on the world also attack and
+    /// use (at the crosshair), as in the tap schemes.
+    pub crosshair_gestures: bool,
+    /// In the crosshair schemes, dragging the attack button turns the camera.
+    pub attack_button_look: bool,
+    /// In the tap schemes, the use button shows while it would act on what
+    /// the crosshair points at.
+    pub contextual_interact: bool,
+    /// The joystick appears where the finger lands, within the dynamic area.
+    pub dynamic_joystick: bool,
+    /// The dynamic area's width: a fraction of the surface, from the
+    /// joystick's edge inwards.
+    pub dynamic_area_x: f32,
+    /// The dynamic area's height, centred on the joystick (1 is the whole height).
+    pub dynamic_area_y: f32,
+    /// Scales every control without changing the saved sizes (0.5-2).
+    pub button_scale: f32,
 }
 
 impl Default for Settings {
@@ -203,6 +228,17 @@ impl Default for Settings {
             shield_button: true,
             button_visibility: [FOLLOW_SCHEME; CONTROLS],
             layouts,
+            sensitivity: 1.0,
+            sensitivity_horizontal: 1.0,
+            sensitivity_vertical: 1.0,
+            sprint_toggle: false,
+            crosshair_gestures: false,
+            attack_button_look: true,
+            contextual_interact: false,
+            dynamic_joystick: false,
+            dynamic_area_x: 0.25,
+            dynamic_area_y: 1.0,
+            button_scale: 1.0,
         }
     }
 }
@@ -238,6 +274,16 @@ impl Settings {
         for p in self.layouts.iter_mut().flatten() {
             p.sanitize();
         }
+        for v in [
+            &mut self.sensitivity,
+            &mut self.sensitivity_horizontal,
+            &mut self.sensitivity_vertical,
+        ] {
+            *v = finite_or(*v, 1.0).clamp(0.1, 3.0);
+        }
+        self.button_scale = finite_or(self.button_scale, 1.0).clamp(0.5, 2.0);
+        self.dynamic_area_x = finite_or(self.dynamic_area_x, 0.25).clamp(0.0, 1.0);
+        self.dynamic_area_y = finite_or(self.dynamic_area_y, 1.0).clamp(0.0, 1.0);
     }
 
     /// Whether attack and use act on the crosshair rather than on a tap.
@@ -383,6 +429,49 @@ mod tests {
         assert_eq!(p.center, [0.5, 0.975]);
         assert_eq!(p.size, 0.045);
         assert_eq!(p.opacity, 0.65);
+    }
+
+    #[test]
+    fn sensitivity_stays_finite_and_in_range() {
+        let mut s = Settings {
+            sensitivity: f32::INFINITY,
+            sensitivity_horizontal: 9.0,
+            sensitivity_vertical: 0.0,
+            ..Settings::default()
+        };
+        s.sanitize();
+        assert_eq!(
+            [
+                s.sensitivity,
+                s.sensitivity_horizontal,
+                s.sensitivity_vertical
+            ],
+            [1.0, 3.0, 0.1]
+        );
+        // Files saved before these options existed keep the defaults.
+        let read: Settings = serde_json::from_str(r#"{"mode":"tap"}"#).unwrap();
+        assert_eq!(read.sensitivity, 1.0);
+    }
+
+    #[test]
+    fn control_options_default_safely_and_stay_in_range() {
+        let read: Settings = serde_json::from_str(r#"{"mode":"tap"}"#).unwrap();
+        assert!(read.attack_button_look && !read.sprint_toggle && !read.dynamic_joystick);
+        assert_eq!([read.dynamic_area_x, read.dynamic_area_y], [0.25, 1.0]);
+        let mut s = Settings {
+            button_scale: f32::NAN,
+            dynamic_area_x: -1.0,
+            dynamic_area_y: f32::INFINITY,
+            ..Settings::default()
+        };
+        s.sanitize();
+        assert_eq!(
+            [s.button_scale, s.dynamic_area_x, s.dynamic_area_y],
+            [1.0, 0.0, 1.0]
+        );
+        s.button_scale = 9.0;
+        s.sanitize();
+        assert_eq!(s.button_scale, 2.0);
     }
 
     #[test]

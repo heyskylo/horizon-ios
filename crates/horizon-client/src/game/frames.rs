@@ -149,6 +149,8 @@ impl Game<'_> {
         };
         let mut cancel = false;
         self.native_hanging_break(player, kind, pos, &mut cancel);
+        let dimension = self.dim.id();
+        self.native_hanging_break_v2(player, dimension, kind, pos, &mut cancel);
         cancel
     }
     /// `ItemFrameItem.useOn`.
@@ -486,7 +488,7 @@ impl Game<'_> {
                 continue;
             }
             let mut f = self.item_frames.remove(i);
-            self.entity_killed_event(center(&f), false);
+            self.entity_killed_event_by(center(&f), self.explosion_kill_credit());
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
             self.drop_frame_items(&mut f, true, false);

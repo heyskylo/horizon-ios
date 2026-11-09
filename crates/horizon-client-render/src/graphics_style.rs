@@ -136,20 +136,9 @@ pub fn scroller(batch: &mut HudBatch, atlas: &HudAtlas, track: [f32; 4], thumb: 
     fill(batch, atlas, track, ROW_RULE);
     fill(batch, atlas, thumb, TRACK);
 }
-/// `text` cut to `width` with an ellipsis, as a long name gives way to its control.
-pub fn fit(atlas: &HudAtlas, text: &str, width: f32) -> String {
-    if atlas.font.width(text) <= width {
-        return text.to_owned();
-    }
-    let mut out = String::new();
-    for c in text.chars() {
-        if atlas.font.width(&format!("{out}{c}...")) > width {
-            break;
-        }
-        out.push(c);
-    }
-    format!("{}...", out.trim_end())
-}
+/// `text` cut to `width` with an ellipsis, as a long name gives way to its control: the HUD
+/// kit's `fit::ellipsize`.
+pub use crate::hud_kit::fit::ellipsize as fit;
 /// A 12 px tick box ending at `right`, centred in the row at `y`: its edge in the accent when on.
 pub fn checkbox(batch: &mut HudBatch, atlas: &HudAtlas, right: f32, y: f32, on: bool, live: bool) {
     let rect = [right - 12.0, y + 4.0, 12.0, 12.0];
@@ -193,7 +182,19 @@ pub fn button(
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
+    flags: (bool, bool, bool),
+) {
+    button_with_room(batch, atlas, rect, label, flags, 0.0);
+}
+/// A button whose label leaves `room` at its left, for a controller's glyph drawn there
+/// (`widgets::action_glyph_room`).
+pub fn button_with_room(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
     (hover, live, primary): (bool, bool, bool),
+    room: f32,
 ) {
     let [x, y, w, h] = rect;
     let face = match (live, primary, hover) {
@@ -209,7 +210,15 @@ pub fn button(
     }
     let color = if live { WHITE } else { MUTED };
     let ty = y + ((h - 8.0) / 2.0).floor();
-    scrolling_label(batch, atlas, label, [x + 2.0, ty, w - 4.0], (y, h), color);
+    let left = x + 2.0 + room;
+    scrolling_label(
+        batch,
+        atlas,
+        label,
+        [left, ty, w - 4.0 - room],
+        (y, h),
+        color,
+    );
 }
 /// A widget label of `[left, y, width]` inside the widget's `(top, height)`: centred when it fits,
 /// else slid (vanilla `AbstractWidget.extractScrollingStringOverContents`) and clipped to the box.

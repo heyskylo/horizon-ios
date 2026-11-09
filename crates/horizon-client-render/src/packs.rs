@@ -522,7 +522,84 @@ pub fn polytone_configs(source: &Source) -> horizon_polytone::pack::Configs {
             }
         }
     }
+    for (id, value) in polytone_choices() {
+        if configs.entries().contains_key(&id) {
+            configs.set(&id, value);
+        }
+    }
     configs
+}
+
+/// A pack's Polytone config entries and one's value, for the game's Pack Options.
+pub use horizon_polytone::pack::{ConfigValue, Configs};
+
+/// The player's Polytone config choices (#11486): what they changed from the packs' defaults,
+/// by entry id, for every pack. `polytone_configs` lays them over each pack's defaults.
+static POLYTONE_CHOICES: std::sync::RwLock<BTreeMap<String, horizon_polytone::pack::ConfigValue>> =
+    std::sync::RwLock::new(BTreeMap::new());
+
+pub fn polytone_choices() -> BTreeMap<String, horizon_polytone::pack::ConfigValue> {
+    POLYTONE_CHOICES
+        .read()
+        .map(|c| c.clone())
+        .unwrap_or_default()
+}
+
+/// Replaces the player's Polytone config choices (packs read them when they load again).
+pub fn set_polytone_choices(choices: BTreeMap<String, horizon_polytone::pack::ConfigValue>) {
+    if let Ok(mut c) = POLYTONE_CHOICES.write() {
+        *c = choices;
+    }
+}
+
+/// Where the choices are kept: `polytone-configs.json` beside `options.txt`.
+pub fn polytone_choices_file() -> std::path::PathBuf {
+    crate::logging::player_dir().join("polytone-configs.json")
+}
+
+/// Reads the choices from `path` (none when it is missing or broken).
+pub fn load_polytone_choices(path: &Path) -> BTreeMap<String, horizon_polytone::pack::ConfigValue> {
+    use horizon_polytone::pack::ConfigValue;
+    let Ok(bytes) = fs::read(path) else {
+        return BTreeMap::new();
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(&bytes) else {
+        log::warn!("{}: not a JSON object", path.display());
+        return BTreeMap::new();
+    };
+    map.into_iter()
+        .filter_map(|(id, v)| {
+            let value = match v {
+                serde_json::Value::Number(n) => ConfigValue::Number(n.as_f64()?),
+                serde_json::Value::String(s) => ConfigValue::Text(s),
+                serde_json::Value::Bool(b) => ConfigValue::Bool(b),
+                _ => return None,
+            };
+            Some((id, value))
+        })
+        .collect()
+}
+
+/// Writes the choices to `path`.
+pub fn save_polytone_choices(
+    path: &Path,
+    choices: &BTreeMap<String, horizon_polytone::pack::ConfigValue>,
+) -> std::io::Result<()> {
+    use horizon_polytone::pack::ConfigValue;
+    let map: serde_json::Map<String, serde_json::Value> = choices
+        .iter()
+        .map(|(id, v)| {
+            let json = match v {
+                ConfigValue::Number(n) => serde_json::json!(n),
+                ConfigValue::Text(s) => serde_json::json!(s),
+                ConfigValue::Bool(b) => serde_json::json!(b),
+            };
+            (id.clone(), json)
+        })
+        .collect();
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .map_err(std::io::Error::other)?;
+    fs::write(path, text)
 }
 fn pack(id: String, title: Text, source: Source) -> Option<Pack> {
     pack_for(id, title, source, RESOURCE_FORMAT)
@@ -772,6 +849,18 @@ fn build_overlay_uncached(
                     .get(*owner)
                     .and_then(Option::as_ref)
                     .and_then(|z| z.read(inner).ok()),
+            };
+            // Polytone: a pack's sound entries whose `polytone_condition` doesn't hold.
+            let bytes = match (bytes, merge_kind(name)) {
+                (Some(b), Some(Merge::Sounds)) => Some(
+                    packs
+                        .get(*owner)
+                        .and_then(|p| {
+                            horizon_polytone::pack::sounds_without_unmet(&b, &p.polytone_configs)
+                        })
+                        .unwrap_or(b),
+                ),
+                (b, _) => b,
             };
             layers.extend(bytes);
         }
@@ -1514,6 +1603,49 @@ mod tests {
             component(&v(r#"["a",{"text":"b","color":"red"}]"#)).plain(),
             "ab"
         );
+    }
+    #[test]
+    fn a_sound_entry_whose_polytone_condition_fails_is_left_out() {
+        let base =
+            std::env::temp_dir().join(format!("horizon-packs-sound-cond-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (vanilla, dir, out) = (base.join("vanilla"), base.join("pack"), base.join("out"));
+        fs::create_dir_all(vanilla.join("assets/minecraft")).unwrap();
+        fs::write(
+            vanilla.join("assets/minecraft/sounds.json"),
+            r#"{"block.anvil.land":{"sounds":["vanilla"]}}"#,
+        )
+        .unwrap();
+        let configs = dir.join("assets/mypack/polytone/config_entries");
+        fs::create_dir_all(&configs).unwrap();
+        fs::create_dir_all(dir.join("assets/minecraft")).unwrap();
+        fs::write(configs.join("quiet.json"), r#"{"default_value": "OFF"}"#).unwrap();
+        fs::write(
+            dir.join("pack.mcmeta"),
+            r#"{"pack":{"description":"p","pack_format":97}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("assets/minecraft/sounds.json"),
+            r#"{"block.anvil.land":{"replace":true,"polytone_condition":"config('mypack:quiet') == 'ON'","sounds":["soft"]},
+                "block.anvil.use":{"sounds":["kept"]}}"#,
+        )
+        .unwrap();
+        let pack = pack("file/p".into(), Text::literal("p"), Source::Dir(dir)).unwrap();
+        build_overlay(&vanilla, &[pack], &out).unwrap();
+        let merged: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("assets/minecraft/sounds.json")).unwrap())
+                .unwrap();
+        // The condition is false: the pack's entry doesn't replace vanilla's.
+        assert_eq!(
+            merged["block.anvil.land"]["sounds"],
+            serde_json::json!(["vanilla"])
+        );
+        assert_eq!(
+            merged["block.anvil.use"]["sounds"],
+            serde_json::json!(["kept"])
+        );
+        let _ = fs::remove_dir_all(base);
     }
     #[test]
     fn stacked_resources_merge_like_vanilla() {

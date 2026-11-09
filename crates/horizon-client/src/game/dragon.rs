@@ -22,6 +22,7 @@ use horizon_client::{
     random_source,
     text::Text,
 };
+use horizon_client_core::nbt_value;
 use horizon_core::position::BlockPos;
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
@@ -573,6 +574,10 @@ const ADJACENCY: [u32; 24] = [
     8257536,
 ];
 impl Dragon {
+    /// `Entity.teleportSetPosition` with a transition of no motion (`/tp`).
+    pub(super) fn stop(&mut self) {
+        self.velocity = Vec3::ZERO;
+    }
     /// `EnderDragon`'s constructor: full health, hovering (`EnderDragonPhase.HOVERING`). Only
     /// `EnderDragonFight.createNewDragon` sets the holding pattern; a dragon from `/summon`, a
     /// spawn egg or a save without `DragonPhase` keeps hovering where it was put.
@@ -1118,8 +1123,15 @@ impl Game<'_> {
         }
     }
     /// The player acting now: the guest whose turn it is, else the host.
-    fn acting_player(&self) -> FightWho {
+    pub(super) fn acting_player(&self) -> FightWho {
         self.lan_acting.map_or(FightWho::Host, FightWho::Guest)
+    }
+    /// The causing player shared by the crystal/deflected-fireball blast.
+    pub(super) fn crystal_blast_player(&self) -> Option<super::commands::Target> {
+        self.fight.blast_by.map(|who| match who {
+            FightWho::Host => super::commands::Target::Player,
+            FightWho::Guest(conn) => super::commands::Target::Guest(conn),
+        })
     }
     /// Names the acting player behind the blast about to go off (a large
     /// fireball they shot), or no one, for the dragon's kill credit.
@@ -1358,11 +1370,23 @@ impl Game<'_> {
                 6.0,
                 interaction,
                 false,
-                super::explosion::ExplosionSource::default().with_silence(self.entity_silent(c.id)),
+                super::explosion::ExplosionSource::default()
+                    .with_silence(self.entity_silent(c.id))
+                    .with_entity(c.id, "minecraft:end_crystal"),
             );
             self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
         }
+        self.crystal_destroyed(index, &c, by, respawn_crystal);
+    }
+    /// `EndCrystal.onDestroyedBy`: also called before removal by EndCrystal.kill.
+    fn crystal_destroyed(
+        &mut self,
+        index: usize,
+        c: &Crystal,
+        by: Option<FightWho>,
+        respawn_crystal: bool,
+    ) {
         if respawn_crystal {
             self.abort_respawn();
             return;
@@ -3657,16 +3681,17 @@ impl Dragon {
         let (position, velocity, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
         let mut d = Self::new(position, yaw, seed);
         d.velocity = velocity;
-        if let Some(Tag::Float(h)) = tag.get("Health") {
-            d.health = f32::from_bits(*h);
+        // Vanilla getFloatOr/getIntOr accept any numeric tag type.
+        if let Some(h) = nbt_value::float(tag.get("Health")) {
+            d.health = h as f32;
         }
-        if let Some(Tag::Int(p)) = tag.get("DragonPhase") {
-            d.phase = Phase::from_id(*p);
+        if let Some(p) = nbt_value::number(tag.get("DragonPhase")) {
+            d.phase = Phase::from_id(p as i32);
         }
-        if let Some(Tag::Int(t)) = tag.get("DragonDeathTime") {
-            d.death_time = *t;
+        if let Some(t) = nbt_value::number(tag.get("DragonDeathTime")) {
+            d.death_time = t as i32;
         }
-        d.no_ai = matches!(tag.get("NoAI"), Some(Tag::Byte(b)) if *b != 0);
+        d.no_ai = horizon_client::entity_nbt::flag(tag, "NoAI");
         Some(d)
     }
 }
@@ -3698,17 +3723,46 @@ impl Crystal {
         Some(Self {
             id: 0,
             position,
-            show_bottom: !matches!(tag.get("ShowBottom"), Some(Tag::Byte(0))),
+            show_bottom: horizon_client::entity_nbt::flag_or(tag, "ShowBottom", true),
             time,
             beam: match tag.get("beam_target") {
                 Some(Tag::IntArray(v)) if v.len() == 3 => Some([v[0], v[1], v[2]]),
                 _ => None,
             },
-            invulnerable: matches!(tag.get("Invulnerable"), Some(Tag::Byte(1))),
+            invulnerable: horizon_client::entity_nbt::flag(tag, "Invulnerable"),
         })
     }
 }
 impl Game<'_> {
+    /// `FireworkRocketEntity.dealExplosionDamage` on the dragon: a living
+    /// entity in the rocket's `inflate(5)` box and within 5 blocks, seen at its
+    /// feet or middle, takes `EnderDragon.hurtServer` (`hurt(body, ...)`).
+    pub(super) fn rocket_blast_dragon(
+        &mut self,
+        from: Vec3,
+        damage: f32,
+        reach: Aabb,
+        by: Option<FightWho>,
+    ) {
+        let Some(d) = self.dragon.as_ref() else {
+            return;
+        };
+        let p = d.position;
+        let d2 = (p.x - from.x).powi(2) + (p.y - from.y).powi(2) + (p.z - from.z).powi(2);
+        if d2 > 25.0 || !d.whole_box().intersects(reach) {
+            return;
+        }
+        let world = self.mob_world_base(&[]);
+        let sees = (0..2).any(|step| {
+            let to = Vec3::new(p.x, p.y + 8.0 * 0.5 * f64::from(step), p.z);
+            world.clear_between(from, to, false)
+        });
+        if !sees {
+            return;
+        }
+        let amount = super::fireworks::blast_damage(damage, from, p);
+        self.hurt_dragon(2, amount, true, by, DamageKind::Fireworks);
+    }
     /// `ServerExplosion.hurtEntities`: crystals in reach are removed without
     /// another blast; explosions always hurt dragons.
     pub(super) fn explosion_hits_special(
@@ -3924,7 +3978,16 @@ impl Game<'_> {
     /// (`Entity.kill` does not hurt it).
     pub(super) fn kill_crystal(&mut self, id: u32) {
         if let Some(i) = self.crystals.iter().position(|c| c.id == id) {
-            self.destroy_crystal(i, None, CrystalDamage::Explosion);
+            let c = self.crystals[i].clone();
+            let respawn = self.fight.respawn.is_some()
+                && self
+                    .fight
+                    .respawn_crystals
+                    .iter()
+                    .any(|p| p.distance_squared(c.position) < 0.01);
+            self.crystal_destroyed(i, &c, None, respawn);
+            self.crystals.retain(|crystal| crystal.id != id);
+            self.entity_killed_event([c.position.x, c.position.y, c.position.z], false);
         }
     }
     /// `EnderDragon.kill` (`/kill`): `Entity.kill` removes the entity, it
@@ -4332,7 +4395,8 @@ impl Game<'_> {
                     super::explosion::BlockInteraction::Keep,
                     false,
                     super::explosion::ExplosionSource::default()
-                        .with_silence(self.entity_silent(c.id)),
+                        .with_silence(self.entity_silent(c.id))
+                        .with_entity(c.id, "minecraft:end_crystal"),
                 );
             }
         }
@@ -4741,74 +4805,8 @@ impl Game<'_> {
     }
 }
 
-/// The dying model's colour, `ARGB.white(1 - deathTime / 200)`: `Mth.floor` of the alpha
-/// shifted as a Java int, so past 200 it wraps as vanilla's does.
-fn dissolve_color(death: f32) -> u32 {
-    let alpha = ((1.0 - death / 200.0) * 255.0).floor() as i32;
-    (alpha << 24) as u32 | 0x00FF_FFFF
-}
-/// `DissolveMaskSampler` at the vertex's `UV0`: the same place in the mask's sprite as in the
-/// skin's, as the dissolve overlay reads it from `glint_uv` (entity.wgsl).
-fn dissolve_mask(quads: &mut [Vertex], skin: [f32; 4], mask: [f32; 4]) {
-    for v in quads {
-        let u = (v.uv[0] - skin[0]) / (skin[2] - skin[0]);
-        let w = (v.uv[1] - skin[1]) / (skin[3] - skin[1]);
-        v.glint_uv = [
-            mask[0] + (mask[2] - mask[0]) * u,
-            mask[1] + (mask[3] - mask[1]) * w,
-        ];
-    }
-}
-/// `submitRays`: the death rays from a fixed seed, fading in white to magenta.
-fn dragon_rays(base: glam::Mat4, t: f32, white: horizon_client::hud::Rect, out: &mut Vec<Vertex>) {
-    // Vanilla's dragonRays has no texture. Sample inside the white sprite:
-    // its border can round into transparent neighbours during interpolation.
-    let uv = [(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0];
-    let over = if t > 0.8 {
-        ((t - 0.8) / 0.2).min(1.0)
-    } else {
-        0.0
-    };
-    let inner = (((1.0 - over) * 255.0) as u32) << 24 | 0x00FF_FFFF;
-    let outer = 0x00FF_00FF;
-    let mut random = LegacyRandom::new(432);
-    let mut m = base;
-    let count = ((t + t * t) / 2.0 * 60.0).floor() as i32;
-    let half_sqrt3 = 3f32.sqrt() / 2.0;
-    let tau = std::f32::consts::TAU;
-    for _ in 0..count {
-        let mut f = || random.next_float() * tau;
-        let q1 = glam::Quat::from_rotation_x(f())
-            * glam::Quat::from_rotation_y(f())
-            * glam::Quat::from_rotation_z(f());
-        let (a, b, c) = (f(), f(), f());
-        let q2 = glam::Quat::from_rotation_x(a)
-            * glam::Quat::from_rotation_y(b)
-            * glam::Quat::from_rotation_z(c + t * std::f32::consts::FRAC_PI_2);
-        m *= glam::Mat4::from_quat(q1 * q2);
-        let length = random.next_float() * 20.0 + 5.0 + over * 10.0;
-        let width = random.next_float() * 2.0 + 1.0 + over * 2.0;
-        let o = glam::Vec3::ZERO;
-        let left = glam::Vec3::new(-half_sqrt3 * width, length, -0.5 * width);
-        let right = glam::Vec3::new(half_sqrt3 * width, length, -0.5 * width);
-        let bottom = glam::Vec3::new(0.0, length, width);
-        for (p1, p2) in [(left, right), (right, bottom), (bottom, left)] {
-            // A triangle as a quad with its last corner repeated.
-            for (p, c) in [(o, inner), (p1, outer), (p2, outer), (p2, outer)] {
-                out.push(Vertex {
-                    normal: [0; 4],
-                    pos: m.transform_point3(p).to_array(),
-                    uv,
-                    layer: horizon_client::gfx::DRAGON_RAYS_OVERLAY,
-                    color: c,
-                    light: 0,
-
-                    glint_uv: [0.0, 0.0],
-                });
-            }
-        }
-    }
-}
+mod death_render;
+use death_render::{dissolve_color, dissolve_mask, dragon_rays};
 
 /// `Entity.push` on the server's copy of a player, then `hurt`. A player's
 /// own client hears of its velocity only when a hurt marks it
@@ -4844,6 +4842,25 @@ mod tests {
             ),
             Vec3::new(feet[0], feet[1], feet[2]),
         )
+    }
+
+    /// `Entity.load` and `EndCrystal.readAdditionalSaveData` read their booleans with
+    /// `getBooleanOr`: any number, `ShowBottom` true when absent.
+    #[test]
+    fn a_crystal_reads_its_flags_from_any_number() {
+        let crystal = |fields: Vec<(&str, Tag)>| {
+            let pos = [0.5f64, 64.0, 0.5].map(|v| Tag::Double(v.to_bits()));
+            let mut all = vec![("Pos", Tag::List(pos.to_vec()))];
+            all.extend(fields);
+            Crystal::from_nbt(&Tag::compound(all), 0).unwrap()
+        };
+        let c = crystal(vec![
+            ("Invulnerable", Tag::Byte(2)),
+            ("ShowBottom", Tag::Int(0)),
+        ]);
+        assert!(c.invulnerable && !c.show_bottom);
+        let c = crystal(Vec::new());
+        assert!(!c.invulnerable && c.show_bottom);
     }
 
     /// Under `HORIZON_STILL` a crystal's spin and bob start from its position, whichever order

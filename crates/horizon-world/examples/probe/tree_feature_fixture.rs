@@ -125,7 +125,7 @@ struct World<'a, 'r, W> {
     seed: i64,
     chest: BlockStateId,
     world_random: LegacyRandom,
-    water_mask: u8,
+    water_mask: horizon_world::fluid::FluidMask,
     /// A vine without faces and air: the only fixture obstacle that changes
     /// under a shape update (VineBlock.updateShape).
     faceless_vine: Option<BlockStateId>,

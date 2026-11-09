@@ -293,6 +293,13 @@ impl Game<'_> {
     pub(super) fn tnt_prime_allowed(&mut self, pos: BlockPos) -> bool {
         let mut cancel = false;
         self.native_tnt_primed(self.lan_acting_uuid, [pos.x, pos.y, pos.z], &mut cancel);
+        let dimension = self.dim.id();
+        self.native_tnt_primed_v2(
+            self.lan_acting_uuid,
+            dimension,
+            [pos.x, pos.y, pos.z],
+            &mut cancel,
+        );
         // `TntBlock.prime` leaves the block alone with `tnt_explodes` off, for
         // redstone, fire and an unstable block breaking alike.
         !cancel && self.ui.rules.bool("tnt_explodes")
@@ -489,7 +496,9 @@ impl Game<'_> {
                     power,
                     interaction,
                     false,
-                    super::explosion::ExplosionSource::default().with_silence(silent),
+                    super::explosion::ExplosionSource::default()
+                        .with_silence(silent)
+                        .with_entity(id, "minecraft:tnt"),
                 )
             });
             self.combat.blast_owner = None;
@@ -1329,10 +1338,16 @@ mod tests {
         )
         .unwrap();
         game.options.dedicated = Some(Vec::new());
-        game.world.chunks.insert(
-            (0, 0),
-            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
-        );
+        // Entity ticking waits for every chunk within 2 columns
+        // (`ChunkMap.prepareEntityTickingChunk`).
+        for z in -2..=2 {
+            for x in -2..=2 {
+                game.world.chunks.insert(
+                    (x, z),
+                    std::sync::Arc::new(horizon_client::chunk::Chunk::empty(x, z)),
+                );
+            }
+        }
         game.streaming.forced.insert((0, 0));
         Some(game)
     }
@@ -1794,6 +1809,30 @@ mod tests {
 
     fn particle_count(game: &Game<'_>) -> usize {
         game.particles.requested.as_ref().unwrap().len()
+    }
+
+    /// #13852: a chunk enters entity ticking only once every chunk within 2
+    /// columns is loaded (`ChunkMap.prepareEntityTickingChunk`), so TNT beside
+    /// a missing chunk keeps its fuse until the neighbourhood is whole.
+    #[test]
+    fn tnt_waits_while_a_chunk_two_columns_away_is_missing() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        game.world.chunks.remove(&(2, 0));
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 80, None, None);
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        for _ in 0..3 {
+            game.tick_world(true).unwrap();
+        }
+        assert_eq!(game.tnts[0].fuse, 80, "no entity ticking yet");
+        game.world.chunks.insert(
+            (2, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(2, 0)),
+        );
+        game.tick_world(true).unwrap();
+        assert!(game.tnts[0].fuse < 80, "ticks once the chunk is back");
     }
 
     /// #10063: TNT lit between level ticks (flint and steel, a command) has its
