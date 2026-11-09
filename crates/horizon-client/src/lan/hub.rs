@@ -3567,6 +3567,7 @@ impl Hub {
         g.sleeping = false;
         g.sleep_timer = 100;
         if g.sent_bed.take().is_some() {
+            g.sent_pose = crate::pose::Pose::Standing;
             g.send(&C::SetEntityData(play::SetEntityData {
                 id: g.entity_id,
                 values: vec![
@@ -3595,6 +3596,11 @@ impl Hub {
         if g.bed != g.sent_bed {
             g.sent_bed = g.bed;
             let pose = if g.bed.is_some() { 2 } else { 0 };
+            g.sent_pose = if g.bed.is_some() {
+                crate::pose::Pose::Sleeping
+            } else {
+                crate::pose::Pose::Standing
+            };
             g.send(&C::SetEntityData(play::SetEntityData {
                 id: g.entity_id,
                 values: vec![
@@ -3700,6 +3706,21 @@ impl Hub {
             g.send(&C::SetEntityData(play::SetEntityData {
                 id: g.entity_id,
                 values: vec![(0, serializer::BYTE, Value::Byte(shared))],
+            }));
+        }
+        // ServerEntity.sendDirtyEntityData reaches the player itself too.
+        // Keep the normal standing/crouching pose separate from the shared flags;
+        // the existing sleep/wake publishers share this wire-state bookkeeping.
+        let pose = g.pose();
+        if matches!(
+            pose,
+            crate::pose::Pose::Standing | crate::pose::Pose::Crouching
+        ) && pose != g.sent_pose
+        {
+            g.sent_pose = pose;
+            g.send(&C::SetEntityData(play::SetEntityData {
+                id: g.entity_id,
+                values: vec![(6, serializer::POSE, Value::Id(pose.id()))],
             }));
         }
         // ServerEntity.sendDirtyEntityData: the parrots on the player's
@@ -4989,6 +5010,7 @@ impl Hub {
             spawn: info,
             keep: 0,
         }));
+        g.sent_pose = crate::pose::Pose::Standing;
         // ClientPacketListener.handleRespawn without KEEP_ENTITY_DATA: the client's new player
         // starts with wasSprinting false. (A level change keeps it: the new player sprints on, or
         // says STOP.)
@@ -5389,6 +5411,147 @@ mod tests {
         bob.dimension = "minecraft:overworld".into();
         hub.guests.push(bob);
         (hub, rx)
+    }
+
+    // Added after the old connected/Game pair: sender lifecycle controls only.
+    #[test]
+    fn self_pose_wire_lifecycle_preserves_existing_publishers() {
+        use crate::pose::Pose;
+        fn drain(
+            rx: &std::sync::mpsc::Receiver<crate::lan::Out>,
+        ) -> (Vec<Vec<(u8, i32, Value)>>, Vec<i32>) {
+            let mut frames = Vec::new();
+            let mut keeps = Vec::new();
+            while let Ok(out) = rx.try_recv() {
+                let crate::lan::Out::Packet(body) = out else {
+                    continue;
+                };
+                let mut r = horizon_protocol::buf::Reader::new(&body);
+                let id = r.varint().unwrap();
+                match C::decode(id, r.rest()).unwrap() {
+                    C::SetEntityData(p) if p.values.iter().any(|(i, _, _)| *i == 0 || *i == 6) => {
+                        assert_eq!(p.id, 1, "actual self recipient");
+                        frames.push(p.values);
+                    }
+                    C::Respawn(p) => keeps.push(p.keep as i32),
+                    _ => {}
+                }
+            }
+            (frames, keeps)
+        }
+        let pose = |p: Pose| vec![(6, serializer::POSE, Value::Id(p.id()))];
+        let flags = |f| vec![(0, serializer::BYTE, Value::Byte(f))];
+        let (mut hub, rx) = hub_with_a_guest();
+        hub.sync_player_state(0);
+        assert!(drain(&rx).0.is_empty(), "default Standing is not dirty");
+        hub.guests[0].sneaking = true;
+        hub.sync_player_state(0);
+        assert_eq!(drain(&rx).0, [flags(2), pose(Pose::Crouching)]);
+        hub.sync_player_state(0);
+        assert!(drain(&rx).0.is_empty());
+        // The existing refused-glide force-flags marker never forces Pose.
+        hub.guests[0].sent_shared ^= -128;
+        hub.sync_player_state(0);
+        assert_eq!(drain(&rx).0, [flags(2)]);
+        hub.guests[0].sneaking = false;
+        hub.sync_player_state(0);
+        assert_eq!(drain(&rx).0, [flags(0), pose(Pose::Standing)]);
+        hub.sync_player_state(0);
+        assert!(drain(&rx).0.is_empty());
+        hub.guests[0].bed = Some([1, 64, 2]);
+        hub.guests[0].sleeping = true;
+        hub.sync_player_state(0);
+        assert_eq!(
+            drain(&rx).0,
+            [vec![
+                (6, serializer::POSE, Value::Id(2)),
+                (
+                    14,
+                    serializer::OPTIONAL_BLOCK_POS,
+                    Value::OptPos(Some([1, 64, 2]))
+                ),
+            ]]
+        );
+        assert_eq!(hub.guests[0].sent_pose, Pose::Sleeping);
+        hub.wake(0);
+        assert_eq!(
+            drain(&rx).0,
+            [vec![
+                (6, serializer::POSE, Value::Id(0)),
+                (14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(None)),
+            ]]
+        );
+        hub.sync_player_state(0);
+        assert!(drain(&rx).0.is_empty(), "wake already sent Standing");
+        // The non-wake bed-delta publisher also owns its exact existing frame.
+        hub.guests[0].bed = Some([1, 64, 2]);
+        hub.guests[0].sleeping = true;
+        hub.sync_player_state(0);
+        drain(&rx);
+        hub.guests[0].bed = None;
+        hub.guests[0].sleeping = false;
+        hub.sync_player_state(0);
+        assert_eq!(
+            drain(&rx).0,
+            [vec![
+                (6, serializer::POSE, Value::Id(0)),
+                (14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(None)),
+            ]]
+        );
+        hub.guests[0].fall_flying = true;
+        hub.sync_player_state(0);
+        assert!(
+            drain(&rx)
+                .0
+                .iter()
+                .all(|v| !v.iter().any(|(i, _, _)| *i == 6)),
+            "other normal poses stay outside this sender"
+        );
+        hub.guests[0].fall_flying = false;
+        hub.guests[0].sneaking = true;
+        hub.sync_player_state(0);
+        drain(&rx);
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut next_entity = 2;
+        let border = crate::worldborder::WorldBorder::default();
+        let ctx = TickCtx {
+            world: &mut world,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        hub.change_level(0, [100.5, 49.0, 0.5], 0.0, None, false, 0, &ctx);
+        assert_eq!(drain(&rx).1, [3]);
+        assert_eq!(hub.guests[0].sent_pose, Pose::Crouching);
+        hub.sync_player_state(0);
+        assert!(drain(&rx).0.is_empty(), "KEEP_ALL_DATA retains crouch");
+        hub.guests[0].sneaking = false;
+        hub.sync_player_state(0);
+        assert_eq!(drain(&rx).0, [flags(0), pose(Pose::Standing)]);
+        hub.guests[0].sneaking = true;
+        hub.sync_player_state(0);
+        drain(&rx);
+        hub.respawn(0, [0.5, 64.0, 0.5], [0.0; 2], &ctx);
+        assert_eq!(drain(&rx).1, [0]);
+        assert_eq!(hub.guests[0].sent_pose, Pose::Standing);
+        hub.sync_player_state(0);
+        assert_eq!(
+            drain(&rx).0,
+            [pose(Pose::Crouching)],
+            "KEEP_NONE reset makes the actual crouch dirty again"
+        );
+        hub.sync_player_state(0);
+        assert!(drain(&rx).0.is_empty());
     }
 
     #[test]

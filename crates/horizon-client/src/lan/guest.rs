@@ -329,6 +329,8 @@ pub struct Guest {
     /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
     /// last sent about itself.
     pub sent_shared: i8,
+    /// Pose last delivered to this player's own entity data, initially Standing.
+    pub sent_pose: Pose,
     /// The shoulder parrots (Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT) the
     /// player's client was last sent about itself.
     pub sent_shoulders: [Option<i32>; 2],
@@ -559,6 +561,7 @@ impl Guest {
             sent_air: (300, 0.0),
             sent_frozen: 0,
             sent_shared: 0,
+            sent_pose: Pose::Standing,
             sent_shoulders: [None; 2],
             last_death: None,
             ack_up_to: std::cell::Cell::new(-1),

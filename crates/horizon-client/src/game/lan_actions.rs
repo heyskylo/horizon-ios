@@ -7259,3 +7259,248 @@ mod guest_close_listener_tests {
         drop(receivers);
     }
 }
+
+#[cfg(test)]
+mod connected_self_pose_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{
+        chunk::Chunk,
+        lan::{
+            Joined, NetConfig, Out, PlayerSender,
+            guest::Guest,
+            hub::{Hub, HubConfig, TickCtx},
+        },
+        motion::PlayerMotion,
+        pose::Pose,
+    };
+    use horizon_core::{geometry::Vec3, position::ChunkPos};
+    use horizon_protocol::{
+        buf::Reader,
+        entity_data::{Value, serializer},
+        packets::{
+            configuration::ClientInformation,
+            play::{self, Clientbound as C, Serverbound as S},
+        },
+    };
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn hub_pass(game: &mut Game<'_>, hub: &mut Hub, drain: bool) {
+        let mut ctx = TickCtx {
+            world: &mut game.world,
+            entities: &[],
+            next_entity: &mut game.next_entity,
+            spawn: [0.5, 200.0, 0.5],
+            spawn_angle: [0.0; 2],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: true,
+            tick_steps: Default::default(),
+            collision: Some(game.collision),
+            border: &game.border,
+            streaming: None,
+        };
+        if drain {
+            let _ = hub.drain_packets(&mut ctx);
+        } else {
+            let _ = hub.tick_level(&mut ctx);
+        }
+    }
+
+    fn metadata(rx: &mpsc::Receiver<Out>, own: i32) -> (Vec<i32>, Vec<i8>) {
+        let (mut poses, mut flags) = (Vec::new(), Vec::new());
+        while let Ok(out) = rx.try_recv() {
+            let Out::Packet(bytes) = out else {
+                continue;
+            };
+            let mut reader = Reader::new(&bytes);
+            let id = reader.varint().unwrap();
+            let packet = C::decode(id, reader.rest()).unwrap();
+            if let C::SetEntityData(data) = packet {
+                assert_eq!(data.id, own, "self receiver must get its own entity id");
+                println!(
+                    "actual self metadata bytes={bytes:02x?} values={:?}",
+                    data.values
+                );
+                for (index, kind, value) in data.values {
+                    match (index, kind, value) {
+                        (6, serializer::POSE, Value::Id(pose)) => poses.push(pose),
+                        (0, serializer::BYTE, Value::Byte(flag)) => flags.push(flag),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (poses, flags)
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn actual_guest_input_model_pose_reaches_self_metadata() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join("self-pose-unit"),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::DedicatedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.lit = true;
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "self-pose-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let position = Vec3::new(6.5, 200.0, 4.5);
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 13002,
+                name: "SelfPoseGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            102,
+            [position.x, position.y, position.z],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.loading = false;
+        guest.load_timeout = 0;
+        guest.on_ground = true;
+        guest.game_mode = 0;
+        guest.motion = Some(Box::new(PlayerMotion::new(game.motion, position).unwrap()));
+        assert_eq!(guest.health, 20.0);
+        assert!(guest.client_loaded());
+        let own = guest.entity_id;
+        game.player = None;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let start = game.world.game_time;
+        let mut actual = Vec::new();
+        for (stage, key, expected) in [
+            ("initial", None, Pose::Standing),
+            ("crouch", Some(32), Pose::Crouching),
+            ("crouch-repeat", Some(32), Pose::Crouching),
+            ("stand", Some(0), Pose::Standing),
+            ("stand-repeat", Some(0), Pose::Standing),
+        ] {
+            if let Some(flags) = key {
+                host.hub.guests[0]
+                    .inbox
+                    .push_back((S::PlayerInput(play::PlayerInput { flags }), 0));
+                game.world.game_time += 1;
+            }
+            hub_pass(&mut game, &mut host.hub, true);
+            game.tick_guests(&mut host);
+            let guest = &host.hub.guests[0];
+            assert_eq!(guest.uuid, 13002);
+            assert_eq!(guest.entity_id, own);
+            assert!(guest.loaded && !guest.dead && guest.client_loaded());
+            assert_eq!(guest.health, 20.0);
+            assert_eq!(guest.position, [position.x, position.y, position.z]);
+            assert_eq!(
+                guest.pose(),
+                expected,
+                "actual model must change before checking packets: {stage}"
+            );
+            assert_eq!(guest.motion.as_ref().unwrap().pose, expected);
+            assert_eq!(guest.motion.as_ref().unwrap().scale, 1.0);
+            hub_pass(&mut game, &mut host.hub, false);
+            let data = metadata(&rx, own);
+            println!(
+                "stage={stage} actual_model={expected:?} packet_poses={:?} packet_flags={:?}",
+                data.0, data.1
+            );
+            if stage == "crouch" {
+                assert_eq!(data.1, [2]);
+            }
+            if stage == "stand" {
+                assert_eq!(data.1, [0]);
+            }
+            actual.push(data.0);
+            assert!(game.player.is_none(), "guest context must restore");
+        }
+        assert_eq!(game.world.game_time - start, 4);
+        // Initial delivery remains observational, not proof from an absent field.
+        let failures: Vec<_> = [
+            (1, vec![Pose::Crouching.id()]),
+            (2, vec![]),
+            (3, vec![Pose::Standing.id()]),
+            (4, vec![]),
+        ]
+        .into_iter()
+        .filter_map(|(index, expected)| {
+            (actual[index] != expected).then_some((index, actual[index].clone(), expected))
+        })
+        .collect();
+        assert!(
+            failures.is_empty(),
+            "actual model reached the pose but self packets differ: {failures:?}"
+        );
+    }
+}
