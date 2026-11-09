@@ -680,7 +680,9 @@ pub fn tick(
     if m.species() == Species::Rabbit {
         super::rabbit::base_tick(m);
     }
-    if m.death_time >= super::creaking::death_limit(m) {
+    // LivingEntity.tick runs tickDeath only while isDeadOrDying, so a
+    // loaded DeathTime on a living mob never removes it.
+    if !m.alive() && m.death_time >= super::creaking::death_limit(m) {
         // Creaking.tickDeath: a heart's creaking crumbles away.
         if super::creaking::is_creaking(m) && super::creaking::tearing_down(m) {
             super::creaking::tear_down(m, events);
