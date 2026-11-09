@@ -335,6 +335,7 @@ mod tests {
             block_entity: false,
             tints: [super::super::Tint::None; 2],
             tint_count: 0,
+            colormap: None,
             offset: None,
             legacy_solid: false,
             overlay: leaves,

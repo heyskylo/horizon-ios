@@ -39,7 +39,7 @@ DeathScreen.visitText	port	crates/horizon-client/src/game/screens.rs::Game::draw
 DeathScreen.mouseClicked	port	crates/horizon-client/src/game/screens.rs::Game::death_click	buttons and the title confirm; gap: minor: a click on a link in the death text does nothing
 DeathScreen.tick	inline	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	the 20-tick delay is checked as 1000 ms since death, on draw and on click
 DeathScreen.setButtonsActive	inline	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	buttons are active once the 1000 ms delay has passed
-DirectJoinServerScreen.keyPressed	port	crates/horizon-client/src/game/startup_menu.rs::StartupMenu::title_key	gap: player: Enter in the Direct Connection field does not join; title_key only confirms a rename
+DirectJoinServerScreen.keyPressed	port	crates/horizon-client/src/multiplayer.rs::Screen::confirm	Enter joins the typed address when it parses (direct_address, friend invite codes included); on the server list it joins the selected server or LAN game
 DirectJoinServerScreen.init	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	Direct Connection field with Join and Cancel (Screen::Direct arm)
 DirectJoinServerScreen.resize	skip:ui		layout only; Screen::Direct keeps the typed address
 DirectJoinServerScreen.onSelect	port	crates/horizon-client/src/multiplayer.rs::Screen::click	Join returns the typed address as Outcome::Connect

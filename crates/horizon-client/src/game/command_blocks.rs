@@ -308,6 +308,25 @@ impl Game<'_> {
         let at = BlockPos::new(pos.0, pos.1, pos.2);
         self.with_level(|b, level, ticks| b.schedule_tick(level, ticks, at, 1));
     }
+    /// `isAutomatic` of the command block at `pos`, before new data loads.
+    pub(super) fn command_block_auto(&self, pos: Pos) -> bool {
+        self.command_block(pos).is_some_and(|c| c.auto)
+    }
+    /// `CommandBlockEntity.loadAdditional` with a level (`/setblock`, `/fill`,
+    /// `/data`) ends with `setAutomatic`: a block that turned automatic, is
+    /// not powered and is no chain block schedules its first tick.
+    pub(super) fn command_block_loaded(&mut self, pos: Pos, was_auto: bool) {
+        let Some(c) = self.command_block(pos) else {
+            return;
+        };
+        let (auto, powered) = (c.auto, c.powered);
+        let mode = self
+            .block_state_at(pos)
+            .and_then(|s| Mode::of_block(&s.name));
+        if !was_auto && auto && !powered && mode.is_some_and(|m| m != Mode::Sequence) {
+            self.schedule_command_block_tick(pos);
+        }
+    }
     /// `CommandBlockEntity.scheduleTick`.
     fn schedule_command_block_tick(&mut self, pos: Pos) {
         mark_condition_met(&mut self.world, self.pack.assets.registry, pos);

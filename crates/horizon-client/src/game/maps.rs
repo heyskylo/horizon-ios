@@ -14,6 +14,36 @@ use horizon_client::{
 use horizon_world::nbt::{JavaString, Tag};
 use std::collections::HashMap;
 
+/// `LodestoneTracker.tick`: existing native eligibility/loaded-block predicate.
+/// The POI/unloaded boundary is unchanged; callers mutate their actual stacks.
+pub(super) fn lodestone_target_gone(game: &Game<'_>, stack: &ItemStack, dim: &str) -> bool {
+    let Some(tracker) = stack
+        .data()
+        .and_then(|d| d.other("minecraft:lodestone_tracker"))
+    else {
+        return false;
+    };
+    let (Some(target), true) = (
+        tracker.get("target"),
+        horizon_client::save::number(tracker.get("tracked")).is_none_or(|v| v != 0),
+    ) else {
+        return false;
+    };
+    let Some(Tag::IntArray(pos)) = target.get("pos") else {
+        return false;
+    };
+    let [x, y, z] = [pos[0], pos[1], pos[2]];
+    horizon_client::save::text(target.get("dimension")).as_deref() == Some(dim)
+        && game.world.chunks.contains_key(&(x >> 4, z >> 4))
+        && game
+            .res
+            .facts()
+            .get(game.world.block(x, y, z))
+            .name
+            .as_ref()
+            != "minecraft:lodestone"
+}
+
 /// What a decoration is filed under in `MapItemSavedData.decorations` (a
 /// `LinkedHashMap<String, MapDecoration>`): a player's marker by their
 /// connection, the banner at a position (`MapBanner.getId`), a framed map's
@@ -1007,6 +1037,15 @@ impl Game<'_> {
         let Some(map) = horizon_client::structure_blocks::take_pending_map(item) else {
             return true;
         };
+        self.materialize_exploration_map(item, &map, origin)
+    }
+    /// The existing exploration-map materialization, shared with command modifiers.
+    pub(super) fn materialize_exploration_map(
+        &mut self,
+        item: &mut ItemStack,
+        map: &horizon_world::loot::ExplorationMap,
+        origin: [f64; 3],
+    ) -> bool {
         let names = self.structure_tag(&map.destination);
         let from = origin.map(|v| v.floor() as i32);
         let found = self
@@ -1283,38 +1322,28 @@ impl Game<'_> {
     /// lodestone is gone loses its target. A target in an unloaded chunk waits.
     pub(super) fn tick_lodestone_compasses(&mut self) {
         let dim = self.dimension_id();
-        let gone = |game: &Self, stack: &ItemStack| -> bool {
-            let Some(tracker) = stack
-                .data()
-                .and_then(|d| d.other("minecraft:lodestone_tracker"))
-            else {
-                return false;
-            };
-            let (Some(target), true) = (
-                tracker.get("target"),
-                horizon_client::save::number(tracker.get("tracked")).is_none_or(|v| v != 0),
-            ) else {
-                return false;
-            };
-            let Some(Tag::IntArray(pos)) = target.get("pos") else {
-                return false;
-            };
-            let [x, y, z] = [pos[0], pos[1], pos[2]];
-            horizon_client::save::text(target.get("dimension")).as_deref() == Some(dim)
-                && game.world.chunks.contains_key(&(x >> 4, z >> 4))
-                && game
-                    .res
-                    .facts()
-                    .get(game.world.block(x, y, z))
-                    .name
-                    .as_ref()
-                    != "minecraft:lodestone"
-        };
         for slot in (0..self.inventory.len()).chain([super::shield::OFFHAND_SLOT]) {
-            if self.stack_in(slot).is_some_and(|s| gone(self, s))
+            if self
+                .stack_in(slot)
+                .is_some_and(|s| lodestone_target_gone(self, s, dim))
                 && let Some(s) = self.stack_in_mut(slot)
             {
                 s.data_mut().set_other(
+                    "minecraft:lodestone_tracker",
+                    Some(Tag::Compound(Default::default())),
+                );
+            }
+        }
+        // `LivingEntity.tick` ticks `EntityEquipment` (the armour slots) as
+        // well as the inventory, so a compass worn there loses its target too.
+        let gone = self.armor.each_ref().map(|stack| {
+            stack
+                .as_ref()
+                .is_some_and(|s| lodestone_target_gone(self, s, dim))
+        });
+        for (stack, gone) in self.armor.iter_mut().zip(gone) {
+            if gone && let Some(stack) = stack {
+                stack.data_mut().set_other(
                     "minecraft:lodestone_tracker",
                     Some(Tag::Compound(Default::default())),
                 );
@@ -2157,3 +2186,6 @@ mod tests {
         assert!(game.map(map_id).unwrap().banners.is_empty());
     }
 }
+
+#[cfg(test)]
+mod command_exploration_map_test_file;

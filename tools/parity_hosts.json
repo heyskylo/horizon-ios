@@ -64,6 +64,7 @@
   "jukebox_saved_clock": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "local_coordinate_rotation": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "loot_kill_sheep_state": "capture-preserving harness: writes .local/h036/capture and asserts it is new, so it fails at startup on any checkout that ran it before (the Mac mini runner)",
+  "loot_mine_location_block": "capture-preserving harness: writes .local/h079/capture and asserts it is new, so it fails at startup on any checkout that ran it before (the Mac mini runner)",
   "mob_equipment_custom_data": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "nautilus_memory": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "passenger_relation": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
@@ -71,6 +72,7 @@
   "run_coordinate_feedback": "capture-preserving harness: needs --binary, --work-dir (a new capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "selector_global_order": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "shrieker_local_capture": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
+  "unused_feature_startup": "capture-preserving harness: needs --kind, --output (a new capture folder) and --binary, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "warden_owned_memories": "capture-preserving harness: writes .local/h029/capture and asserts it is new, so it fails at startup on any checkout that ran it before (the Mac mini runner)"
  },
  "known_flaky": {

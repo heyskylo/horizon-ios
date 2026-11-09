@@ -125,6 +125,9 @@ pub(super) struct Minecart {
     /// a landing of three blocks or more and taken by the cart's next tick
     /// step (vanilla explodes inside the move itself).
     fall_blast: Option<f64>,
+    /// `Entity.stuckSpeedMultiplier`: set by a cobweb the cart's box is in,
+    /// scaled into its next move.
+    stuck: Vec3,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
@@ -489,6 +492,7 @@ impl Minecart {
             horizontal_collision: false,
             fall_distance: 0.0,
             fall_blast: None,
+            stuck: Vec3::ZERO,
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
@@ -727,7 +731,13 @@ impl Game<'_> {
     }
     /// Entity.move for a cart: collisions zero the blocked components, the world border's walls
     /// among them (`CollisionGetter.borderCollision`, asked for every entity).
-    fn move_cart(&self, c: &mut Minecart, delta: Vec3) {
+    fn move_cart(&self, c: &mut Minecart, mut delta: Vec3) {
+        // Entity.move: a stuck multiplier scales this move and zeroes the velocity.
+        if c.stuck.length_squared() > 1.0e-7 {
+            delta = delta.multiply(c.stuck);
+            c.stuck = Vec3::ZERO;
+            c.velocity = Vec3::ZERO;
+        }
         let scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
@@ -747,6 +757,7 @@ impl Game<'_> {
             border: Some((self.border.geometry(), [c.position.x, c.position.z])),
         };
         if let Ok(moved) = scene.resolve(c.bounds(), delta, 0.0, c.on_ground) {
+            c.fall_distance = self.vehicle_fall_reset(c.fall_distance, c.position, moved);
             c.position = Vec3::new(
                 c.position.x + moved.x,
                 c.position.y + moved.y,
@@ -771,13 +782,12 @@ impl Game<'_> {
             if moved.y < 0.0 && !c.in_water {
                 c.fall_distance -= f64::from(moved.y as f32);
             }
+            // A move up or none leaves the fall as it is (a saved one too).
             if c.on_ground {
                 if c.kind == CartKind::Tnt && c.fall_distance >= 3.0 {
                     let power = c.fall_distance / 10.0;
                     c.fall_blast = Some(power * power);
                 }
-                c.fall_distance = 0.0;
-            } else if moved.y >= 0.0 {
                 c.fall_distance = 0.0;
             }
         }
@@ -840,7 +850,13 @@ impl Game<'_> {
                 .any(|m| !m.removed && m.extra.mount == Some(id))
     }
     /// `OldMinecartBehavior.moveAlongTrack`.
-    fn move_along_track(&mut self, c: &mut Minecart, pos: [i32; 3], rail: &Rail, intent: [f64; 2]) {
+    fn move_along_track(
+        &mut self,
+        c: &mut Minecart,
+        pos: [i32; 3],
+        rail: &Rail,
+        intent: [f64; 2],
+    ) -> (Vec3, Vec3) {
         c.fall_distance = 0.0;
         let ridden = self.cart_is_vehicle(c.id);
         let (x, z) = (c.position.x, c.position.z);
@@ -911,7 +927,11 @@ impl Game<'_> {
             0.0,
             (scale * c.velocity.z).clamp(-max, max),
         );
+        // Entity.move records this step at the rail's top height; the tick's
+        // applyEffectsFromBlocks sweeps it, whatever the cart does after.
+        let step_from = c.position;
         self.move_cart(c, delta);
+        let step = (step_from, c.position);
         let at = |e: [i32; 3], c: &Minecart| {
             c.position.x.floor() as i32 - pos[0] == e[0]
                 && c.position.z.floor() as i32 - pos[2] == e[2]
@@ -961,6 +981,51 @@ impl Game<'_> {
                 }
             }
         }
+        step
+    }
+    /// `Entity.checkInsideBlocks` for a recorded move of the cart from `from`
+    /// to `to`: the entity-sensing blocks (plates, buttons, tripwires, detector
+    /// rails) on the path run `entityInside` now, with the cart where the tick
+    /// left it. `slot` is where the cart is stored.
+    fn cart_inside_blocks(&mut self, c: &mut Minecart, slot: usize, from: Vec3, to: Vec3) {
+        let shrink = f64::from(1.0e-5f32);
+        let half = WIDTH / 2.0;
+        let bounds = Aabb::new(
+            Vec3::new(to.x - half, to.y, to.z - half),
+            Vec3::new(to.x + half, to.y + HEIGHT, to.z + half),
+        )
+        .deflate(Vec3::new(shrink, shrink, shrink));
+        let mut hits = Vec::new();
+        let behaviours = self.res.behaviours();
+        let world = &self.world;
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            from,
+            to,
+            bounds,
+            1_000_000,
+            |p, _| {
+                if behaviours.senses_entities(world.block(p.x, p.y, p.z)) {
+                    hits.push(p);
+                }
+                true
+            },
+        );
+        if hits.is_empty() {
+            return;
+        }
+        let Some(i) = cart_at(&self.carts, c.id, slot) else {
+            return;
+        };
+        // The stored cart is the one a plate counts: it takes the moved cart
+        // for the walk and hands back what the walk left.
+        std::mem::swap(&mut self.carts[i], c);
+        self.with_level(|b, level, ticks| {
+            for p in hits {
+                b.entity_inside(level, ticks, p);
+            }
+        });
+        std::mem::swap(&mut self.carts[i], c);
+        let _ = self.process_level_events();
     }
     /// `AbstractMinecart`: `minecart_improvements` picks the smoother
     /// physics.
@@ -1368,6 +1433,21 @@ impl Game<'_> {
         ) {
             c.fall_distance = 0.0;
         }
+        // WebBlock.entityInside: makeStuckInBlock(0.25, 0.05, 0.25) for every
+        // cobweb the box (deflated by 1.0E-5) is in; it resets the fall distance.
+        let b = c.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
+        let (lo, hi) = (b.min_position(), b.max_position());
+        let facts = self.res.facts();
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    if &*facts.get(self.world.block(x, y, z)).name == "minecraft:cobweb" {
+                        c.fall_distance = 0.0;
+                        c.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
+                    }
+                }
+            }
+        }
     }
     /// Runs `push_from_cart` for the cart being ticked (`c` is a copy of the
     /// stored one, kept at `slot`): the stored cart is replaced by `c` for the
@@ -1429,10 +1509,11 @@ impl Game<'_> {
         // applyGravity
         c.velocity.y -= c.get_gravity();
         let pos = self.rail_block(c.position);
+        let mut step = None;
         if self.minecart_improvements() {
             self.move_along_track_new(c, intent);
         } else if let Some(rail) = self.rail(pos[0], pos[1], pos[2]) {
-            self.move_along_track(c, pos, &rail, intent);
+            step = Some(self.move_along_track(c, pos, &rail, intent));
             if &*rail.name == "minecraft:activator_rail" {
                 self.activate_cart(c, rail.powered);
             }
@@ -1445,7 +1526,7 @@ impl Game<'_> {
         if !self.minecart_improvements() {
             let (xd, zd) = (c.previous.x - c.position.x, c.previous.z - c.position.z);
             if xd * xd + zd * zd > 0.001 {
-                c.yaw = zd.atan2(xd).to_degrees() as f32;
+                c.yaw = horizon_core::geometry::trig::atan2_degrees_double(zd, xd);
                 if c.flipped {
                     c.yaw += 180.0;
                 }
@@ -1459,6 +1540,10 @@ impl Game<'_> {
         }
         if !self.minecart_improvements() {
             self.cart_block_effects(c);
+            // applyEffectsFromBlocks over the step moveAlongTrack recorded.
+            if let Some((from, to)) = step {
+                self.cart_inside_blocks(c, slot, from, to);
+            }
         }
         // OldMinecartBehavior.tick ends with pushAndPickupEntities, before
         // AbstractMinecart.tick's updateFluidInteraction. The experiment still
@@ -1626,7 +1711,9 @@ impl Game<'_> {
                 power,
                 interaction,
                 false,
-                super::explosion::ExplosionSource::default().with_silence(silent),
+                super::explosion::ExplosionSource::default()
+                    .with_silence(silent)
+                    .with_entity(c.id, "minecraft:tnt_minecart"),
             )
         });
         self.combat.explosion_in_water = false;
@@ -1859,6 +1946,7 @@ impl Game<'_> {
                     && self.native_mob_may_ride(mob, id, true)
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob)
                 {
+                    horizon_client::mobs::shulker::on_start_riding(m);
                     m.extra.mount = Some(id);
                     m.extra.passenger = true;
                     m.ai.nav.stop();
@@ -1866,6 +1954,7 @@ impl Game<'_> {
                     occupied = true;
                     self.break_leash(mob, true, false);
                     self.note_started_riding(id);
+                    self.vehicle_picked_up();
                 }
                 continue;
             }
@@ -2803,8 +2892,10 @@ impl Game<'_> {
             if new_render {
                 (yaw, pitch) = lerp.map_or((c.yaw, c.pitch), |(_, yaw, pitch)| (yaw, pitch));
             } else if let Some(on) = self.rail_pos(x, y, z) {
-                let front = self.rail_pos_offs(x, y, z, 0.3).unwrap_or(on);
-                let back = self.rail_pos_offs(x, y, z, -0.3).unwrap_or(on);
+                // getPosOffs(..., 0.3F): the float widened.
+                let half = f64::from(0.3_f32);
+                let front = self.rail_pos_offs(x, y, z, half).unwrap_or(on);
+                let back = self.rail_pos_offs(x, y, z, -half).unwrap_or(on);
                 offset = glam::DVec3::new(on[0] - x, (front[1] + back[1]) / 2.0 - y, on[2] - z);
                 let d =
                     glam::DVec3::new(back[0] - front[0], back[1] - front[1], back[2] - front[2]);
@@ -2956,9 +3047,11 @@ impl Minecart {
             self.position,
             self.velocity,
             [self.yaw, self.pitch],
+            (self.on_ground, self.fall_distance),
             uuid,
             raw,
         );
+        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             // ContainerEntity.addChestVehicleSaveData belongs only to the
             // container subclasses, never to a plain or specialized cart.
@@ -3057,6 +3150,7 @@ impl Minecart {
         c.yaw = yaw;
         c.previous_yaw = yaw;
         c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
+        c.on_ground = horizon_client::entity_nbt::flag(tag, "OnGround");
         c.pitch = horizon_client::entity_nbt::rotation(tag)[1];
         c.previous_pitch = c.pitch;
         // ValueInput's numeric getters take any NumericTag: getIntOr is its
@@ -3076,6 +3170,8 @@ impl Minecart {
             Some(Tag::Double(v)) => f64::from_bits(*v),
             _ => 0.0,
         };
+        // Entity.load: OnGround and fall_distance, as saved.
+        (c.on_ground, c.fall_distance) = horizon_client::entity_nbt::ground_from_nbt(tag);
         c.flipped = flag("FlippedRotation", false);
         c.first_tick = flag("HasTicked", false);
         if kind.slots() > 0 {
@@ -3740,6 +3836,50 @@ mod tnt_impact_tests {
             Vec3::new(8.3, 64.0, 4.5),
             Vec3::new(0.4, 0.0, 0.4)
         ));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_on_a_slope_presses_a_plate_at_its_temporary_position() {
+        // OldMinecartBehavior.moveAlongTrack places the cart at the rail's top
+        // height, moves it horizontally (Entity.move records the step) and settles
+        // it on the slope; the tick's applyEffectsFromBlocks still sweeps the step.
+        let mut game = server_game();
+        let registry = game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let plate = registry
+            .default_state("minecraft:oak_pressure_plate")
+            .unwrap();
+        let rail = registry.default_state("minecraft:rail").unwrap();
+        let mut slope = registry.state(rail).unwrap().clone();
+        slope
+            .properties
+            .insert("shape".into(), "ascending_east".into());
+        let rail = registry.id(&slope).unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                game.world.set(x, 63, z, stone).unwrap();
+            }
+        }
+        game.world.set(5, 64, 8, rail).unwrap();
+        game.world.set(6, 64, 8, stone).unwrap();
+        game.world.set(6, 65, 8, plate).unwrap();
+        let mut cart = Minecart::new(1, CartKind::Rideable, Vec3::new(5.5, 64.5, 8.5));
+        cart.velocity = Vec3::new(0.4, 0.0, 0.0);
+        game.carts.push(cart.clone());
+        assert!(game.tick_cart(&mut cart, [0.0; 2], 0, &mut super::CartIndex::default()));
+        let powered = registry
+            .state(game.world.block(6, 65, 8))
+            .unwrap()
+            .properties
+            .get("powered")
+            .cloned();
+        assert_eq!(
+            powered.as_deref(),
+            Some("true"),
+            "{:?}",
+            registry.state(game.world.block(6, 65, 8))
+        );
     }
 }
 

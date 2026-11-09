@@ -601,13 +601,13 @@ impl Game<'_> {
                 let Some(i) = self.armor_stands.iter().position(|s| s.id == id) else {
                     continue;
                 };
-                // knockback(0.4, ..) follows a hurtServer that landed, on a
+                // knockback(0.4F, ..) follows a hurtServer that landed, on a
                 // stand that is still there (LivingEntity.knockback).
                 if !self.punch_armor_stand(i) {
                     continue;
                 }
                 let mut knock = horizon_client::health::Knock {
-                    strength: 0.4,
+                    strength: f64::from(0.4_f32),
                     x: xd,
                     z: zd,
                 };
@@ -657,7 +657,7 @@ impl Game<'_> {
                 if old_health > 0.0 && !self.mobs[i].alive() {
                     self.native_kill_event(i);
                 }
-                self.mobs[i].knockback(0.4, xd, zd, &source);
+                self.mobs[i].knockback(f64::from(0.4_f32), xd, zd, &source);
                 self.last_hurt_by_player
                     .insert(self.mobs[i].id, self.lan_acting);
                 self.post_attack(i);

@@ -165,10 +165,13 @@ once and the screens click exactly as vanilla's (`tools/test_menu_click_parity.p
 and the container screen tests are unchanged).
 
 ### Sorting (`sort`, default off; `sortKey`, unbound)
-- A small button right of the container's title (chests, barrels, ender
-  chests, shulker boxes) and one right of the "Inventory" line (the main
-  inventory; the hotbar is left alone). The key, when bound on the Extras
-  page, sorts the part under the cursor (the container when over no slot).
+- On every menu screen, by its slots' roles (`native_slot_roles`): a small
+  button over the top right of its storage slots (chests, barrels, ender
+  chests, shulker boxes, hoppers, dispensers, a mount's chest, a mod menu
+  type's linked slots) and one right of the "Inventory" line (the main
+  inventory; the hotbar is left alone), crafting tables and workstations
+  included. The key, when bound on the Extras page, sorts the part under the
+  cursor (the storage when over no slot).
 - Partial stacks of one item merge, then the stacks go in creative tab order
   (the search tab's), then by name; full stacks before the partial one,
   empty slots last. It needs an empty hand.

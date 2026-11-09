@@ -2,11 +2,7 @@
 //! `horizon-graphics.txt` next to `options.txt` so that file stays exactly
 //! vanilla's. Every default reproduces vanilla's rendering; only choices the
 //! player makes here depart from it.
-use std::{
-    fs,
-    path::Path,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::{fs, path::Path};
 
 pub const FILE: &str = "horizon-graphics.txt";
 /// Written beside it before HDR output is switched on and removed once the first HDR frame is
@@ -14,33 +10,33 @@ pub const FILE: &str = "horizon-graphics.txt";
 pub const HDR_MARKER: &str = "horizon-hdr-pending";
 
 /// What the system reports for the display HDR output goes to, in nits in HDR output's
-/// scale: where its SDR white sits (the desktop's white) and the peak.
+/// scale: where its SDR white sits (the desktop's white) and the peak. Each renderer keeps its
+/// own display's (`gfx::DisplayReading`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reported {
     pub paper_white: u32,
     pub peak: u32,
-    /// The display's darkest black, in hundredths of a nit.
-    pub black: u32,
 }
 
-static REPORTED: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
-
-/// Sets what the system reports (the renderer, when it opens its surface).
-pub fn report(reported: Option<Reported>) {
-    let (paper_white, peak, black) =
-        reported.map_or((0, 0, 0), |r| (r.paper_white, r.peak, r.black));
-    REPORTED[0].store(paper_white, Ordering::Relaxed);
-    REPORTED[1].store(peak, Ordering::Relaxed);
-    REPORTED[2].store(black, Ordering::Relaxed);
+/// The top of Peak Brightness's scale: `peak_nits_at(PEAK_STEPS)` is PQ's 10 000 nits.
+pub const PEAK_STEPS: u32 = 52;
+/// Peak Brightness's value at `step` of its scale, the slider's and calibration's: 200 to
+/// 2000 nits by 50, where most displays' peaks are, then up to PQ's 10 000 by 500.
+pub fn peak_nits_at(step: u32) -> u32 {
+    match step.min(PEAK_STEPS) {
+        s @ 0..=36 => 200 + s * 50,
+        s => 2000 + (s - 36) * 500,
+    }
 }
-/// What the system reports, if it does.
-pub fn reported() -> Option<Reported> {
-    let [paper_white, peak, black] = REPORTED.each_ref().map(|n| n.load(Ordering::Relaxed));
-    (peak > 0).then_some(Reported {
-        paper_white,
-        peak,
-        black,
-    })
+/// Where `nits` sits on Peak Brightness's scale ([`peak_nits_at`]), between steps for a value
+/// off it.
+pub fn peak_step_of(nits: f32) -> f32 {
+    let step = if nits <= 2000.0 {
+        (nits - 200.0) / 50.0
+    } else {
+        36.0 + (nits - 2000.0) / 500.0
+    };
+    step.clamp(0.0, PEAK_STEPS as f32)
 }
 
 /// Simple-level presets. `Custom` leaves every option as the player set it.
@@ -498,14 +494,37 @@ pub fn reduced_far_detail_suggested() -> bool {
 pub const HDR_KEY: &str = "horizon.hdrSettings";
 /// The Screenshot Quality choices, times the game's resolution.
 pub const SCREENSHOT_QUALITIES: [u32; 4] = [1, 2, 4, 8];
-static HDR_OFFERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Whether the display path offers HDR output (HDR10 or scRGB): set when the renderer
-/// opens its surface; the settings open HDR's screen only then.
-pub fn offer_hdr(on: bool) {
-    HDR_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HdrMode {
+    #[default]
+    Off,
+    On,
+    Auto,
 }
-pub fn hdr_offered() -> bool {
-    HDR_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
+impl HdrMode {
+    pub const ALL: [Self; 3] = [Self::Off, Self::On, Self::Auto];
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Off => "false",
+            Self::On => "true",
+            Self::Auto => "auto",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::On => "On",
+            Self::Auto => "Auto",
+        }
+    }
+    fn parse(value: &str, default: Self) -> Self {
+        match value {
+            "false" | "off" => Self::Off,
+            "true" | "on" => Self::On,
+            "auto" => Self::Auto,
+            _ => default,
+        }
+    }
 }
 
 static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
@@ -519,17 +538,6 @@ pub fn offer_translucent_batching(on: bool) {
 }
 pub fn translucent_batching_offered() -> bool {
     TRANSLUCENT_BATCHING_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-static SMOOTH_GRADIENTS_OFFERED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-/// Whether the device can draw, blend and filter the 16-bit frame (`Graphics::hdr_smooth_gradients`):
-/// set when the renderer starts. Where it can't, the settings grey its switch out.
-pub fn offer_smooth_gradients(on: bool) {
-    SMOOTH_GRADIENTS_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-pub fn smooth_gradients_offered() -> bool {
-    SMOOTH_GRADIENTS_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// GPU Culling's setting: off, on where it is offered, or Auto, which has it on only where the
@@ -783,16 +791,15 @@ pub struct Graphics {
     /// Frame generation (Horizon setting), off by default.
     pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
-    pub hdr: bool,
+    pub hdr: HdrMode,
     /// HDR paper white (where SDR white sits), in nits; 0 is Auto: the desktop's SDR
     /// white, as the system reports it ([`Graphics::paper_white_nits`]).
     pub hdr_paper_white: u32,
-    /// HDR peak brightness the world's highlights reach, in nits; 0 is Auto:
+    /// HDR peak brightness the world's highlights reach, in nits (200..=10 000); 0 is Auto:
     /// what the system reports for the display ([`Graphics::peak_nits`]).
     pub hdr_peak: u32,
-    /// HDR black level: the display's darkest black, in hundredths of a nit; 0 is Auto:
-    /// what the system reports, else true black. Shadows are lifted onto it, and the HDR
-    /// metadata says it.
+    /// HDR black level: the display's darkest black, in hundredths of a nit; 0, the default,
+    /// lifts nothing. Shadows are lifted onto it, and the HDR metadata says it.
     pub hdr_black_level: u32,
     /// HDR brightness of the HUD and menus, in percent of paper white (25..=100); the
     /// first-person hand stays at the world's.
@@ -821,8 +828,8 @@ pub struct Graphics {
     pub translucent_batching: bool,
     /// Smooth Gradients (HDR page, on by default): with HDR output on, the frame is drawn in
     /// 16 bits, so dark gradients don't band (`Renderer::frame_format`). Read when a renderer
-    /// is made (start, resource-pack reload), like `translucent_batching`, where it is offered
-    /// (`smooth_gradients_offered`).
+    /// is made (start, resource-pack reload), like `translucent_batching`, where the renderer's
+    /// device draws it (`EffectiveOutput::wide_frame_supported`).
     pub hdr_smooth_gradients: bool,
     /// The native `horizon:<manifest-id>` or classic filename picked in `shaderpacks/`; empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
@@ -870,7 +877,7 @@ impl Default for Graphics {
             upscaling_sharpness: 85,
             screenshot_quality: 1,
             frame_generation: FrameGeneration::Off,
-            hdr: false,
+            hdr: HdrMode::Off,
             hdr_paper_white: 0,
             hdr_peak: 0,
             hdr_black_level: 0,
@@ -902,8 +909,8 @@ impl Graphics {
                 Vec::new()
             }
         };
-        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr {
-            g.hdr = false;
+        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr != HdrMode::Off {
+            g.hdr = HdrMode::Off;
             g.save(dir);
             log::warn!(
                 "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
@@ -1000,7 +1007,7 @@ impl Graphics {
                         .unwrap_or(1)
                 }
                 "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
-                "hdr" => g.hdr = flag(g.hdr),
+                "hdr" => g.hdr = HdrMode::parse(value, g.hdr),
                 "hdrLighting" => g.hdr_lighting = flag(g.hdr_lighting),
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
@@ -1011,7 +1018,7 @@ impl Graphics {
                 "hdrPeak" => {
                     g.hdr_peak = match number(g.hdr_peak) {
                         0 => 0,
-                        n => n.clamp(200, 2000),
+                        n => n.clamp(200, 10_000),
                     }
                 }
                 "hdrBlackLevel" => g.hdr_black_level = number(g.hdr_black_level).min(100),
@@ -1082,7 +1089,7 @@ impl Graphics {
             self.upscaling_sharpness,
             self.screenshot_quality,
             self.frame_generation.name(),
-            bool_text(self.hdr),
+            self.hdr.key(),
             self.hdr_paper_white,
             self.hdr_peak,
             self.hdr_black_level,
@@ -1111,34 +1118,26 @@ impl Graphics {
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
     }
-    /// Whether a renderer made now draws its frame in 16 bits (`Renderer::new`'s `wide_frame`):
-    /// HDR on, with Smooth Gradients.
-    pub fn wide_frame(&self) -> bool {
-        self.hdr && self.hdr_smooth_gradients
-    }
     /// Paper white, in nits: the player's, or on Auto the desktop's SDR white as the
-    /// system reports it, else 203 (BT.2408's reference white).
-    pub fn paper_white_nits(&self) -> u32 {
+    /// system `reported` it for the renderer's display, else 203 (BT.2408's reference white).
+    pub fn paper_white_nits(&self, reported: Option<Reported>) -> u32 {
         match self.hdr_paper_white {
-            0 => reported().map_or(203, |r| r.paper_white),
+            0 => reported.map_or(203, |r| r.paper_white),
             n => n,
         }
     }
     /// The peak the world's highlights reach, in nits: the player's, or on Auto
-    /// what the system reports, else 1000.
-    pub fn peak_nits(&self) -> u32 {
+    /// what the system `reported`, else 1000.
+    pub fn peak_nits(&self, reported: Option<Reported>) -> u32 {
         match self.hdr_peak {
-            0 => reported().map_or(1000, |r| r.peak),
+            0 => reported.map_or(1000, |r| r.peak),
             n => n,
         }
     }
-    /// The black level, in nits: the player's, or on Auto what the system reports, else 0.
+    /// The black level, in nits. Not the system's: files from before saved 0 for that
+    /// (Auto), and a reported black would lift every display's shadows by default.
     pub fn black_level_nits(&self) -> f32 {
-        let hundredths = match self.hdr_black_level {
-            0 => reported().map_or(0, |r| r.black),
-            n => n,
-        };
-        hundredths as f32 / 100.0
+        self.hdr_black_level as f32 / 100.0
     }
     /// Worker threads for chunk generation and meshing.
     pub fn worker_threads(&self) -> usize {
@@ -1208,6 +1207,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hdr_modes_keep_boolean_files_and_round_trip_auto() {
+        assert_eq!(Graphics::parse("").hdr, HdrMode::Off);
+        for (value, expected) in [
+            ("true", HdrMode::On),
+            ("false", HdrMode::Off),
+            ("on", HdrMode::On),
+            ("off", HdrMode::Off),
+            ("auto", HdrMode::Auto),
+            ("unknown", HdrMode::Off),
+        ] {
+            let g = Graphics::parse(&format!("hdr:{value}\n"));
+            assert_eq!(g.hdr, expected, "{value}");
+            assert_eq!(Graphics::parse(&g.serialize()).hdr, expected);
+            let saved = g.serialize();
+            let value = saved.lines().find_map(|l| l.strip_prefix("hdr:")).unwrap();
+            // The old boolean parser keeps its Off default for an unknown value.
+            assert_eq!(value == "true", expected == HdrMode::On);
+        }
+        assert_eq!(Graphics::parse("hdr:true\nhdr:unknown\n").hdr, HdrMode::On);
+    }
+
+    #[test]
     fn the_api_choice_matches_the_system() {
         let choices = GraphicsApi::choices();
         if cfg!(windows) {
@@ -1267,7 +1288,7 @@ mod tests {
             upscaling_sharpness: 40,
             screenshot_quality: 4,
             frame_generation: FrameGeneration::Fsr31,
-            hdr: true,
+            hdr: HdrMode::On,
             hdr_paper_white: 240,
             hdr_peak: 1400,
             hdr_black_level: 12,
@@ -1320,10 +1341,9 @@ mod tests {
         // off by default, not a choice.
         assert!(Graphics::default().translucent_batching);
         assert!(!Graphics::parse("batchTranslucent:false\n").translucent_batching);
-        // Smooth Gradients is on, and draws a 16-bit frame only with HDR on.
-        assert!(Graphics::default().hdr_smooth_gradients && !Graphics::default().wide_frame());
-        assert!(Graphics::parse("hdr:true\n").wide_frame());
-        assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").wide_frame());
+        // Smooth Gradients is on; its 16-bit frame needs HDR on too (`output::resolve_frame`).
+        assert!(Graphics::default().hdr_smooth_gradients);
+        assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").hdr_smooth_gradients);
         assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
         // GPU Culling is opt-in: only the file or its switch turns it on.
         assert_eq!(Graphics::default().gpu_culling, GpuCullingMode::Off);
@@ -1352,9 +1372,36 @@ mod tests {
             };
             assert_eq!(Graphics::parse(&g.serialize()).gpu_culling, mode);
         }
-        // 0 is Auto; anything else is a peak the slider reaches.
-        assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
-        assert_eq!(Graphics::parse("hdrPeak:50\n").hdr_peak, 200);
+        // 0 is Auto; anything else is a peak, up to PQ's 10 000 nits. Older files' values
+        // (up to 2000) read as they were saved.
+        for (file, peak) in [
+            ("hdrPeak:0\n", 0),
+            ("hdrPeak:50\n", 200),
+            ("hdrPeak:1234\n", 1234),
+            ("hdrPeak:2000\n", 2000),
+            ("hdrPeak:3000\n", 3000),
+            ("hdrPeak:10000\n", 10_000),
+            ("hdrPeak:25000\n", 10_000),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_peak, peak, "{file}");
+            assert_eq!(Graphics::parse(&g.serialize()).hdr_peak, peak, "{file}");
+        }
+        assert_eq!(Graphics::parse("hdrPeak:3000\n").peak_nits(None), 3000);
+        // The black level is what's saved, in hundredths of a nit: 0 (Auto in older files)
+        // lifts nothing, and the most is a nit.
+        for (file, hundredths, nits) in [
+            ("", 0, 0.0),
+            ("hdrBlackLevel:0\n", 0, 0.0),
+            ("hdrBlackLevel:5\n", 5, 0.05),
+            ("hdrBlackLevel:100\n", 100, 1.0),
+            ("hdrBlackLevel:250\n", 100, 1.0),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_black_level, hundredths, "{file}");
+            assert_eq!(g.black_level_nits(), nits, "{file}");
+            assert_eq!(Graphics::parse(&g.serialize()), g, "{file}");
+        }
         assert_eq!(Graphics::parse("hdrPaperWhite:0\n").hdr_paper_white, 0);
         assert_eq!(Graphics::parse("hdrPaperWhite:5\n").hdr_paper_white, 10);
         // Only the button's choices.
@@ -1383,6 +1430,22 @@ mod tests {
             ),
             Graphics::default()
         );
+    }
+
+    #[test]
+    fn peak_scale_steps_by_50_to_2000_then_by_500_to_10000() {
+        let scale: Vec<u32> = (0..=PEAK_STEPS).map(peak_nits_at).collect();
+        let fine: Vec<u32> = (200..=2000).step_by(50).collect();
+        let coarse: Vec<u32> = (2500..=10_000).step_by(500).collect();
+        assert_eq!(scale, [fine, coarse].concat());
+        for (step, &nits) in scale.iter().enumerate() {
+            assert_eq!(peak_step_of(nits as f32), step as f32);
+        }
+        // Off the scale, between its neighbours; beyond it, at its ends.
+        assert_eq!(peak_step_of(1225.0), 20.5);
+        assert_eq!(peak_step_of(3250.0), 38.5);
+        assert_eq!(peak_step_of(100.0), 0.0);
+        assert_eq!(peak_step_of(20_000.0), PEAK_STEPS as f32);
     }
 
     #[test]

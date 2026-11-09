@@ -252,6 +252,9 @@ pub struct UiState {
     pub show_hand_when_hidden: bool,
     /// Death message key set by the cause of death (e.g. /kill).
     pub death_cause: Option<String>,
+    /// What this frame's HUD shows that Horizon's overlays keep clear of (`Game::hud_room`),
+    /// set by `hud_layers` before anything draws.
+    pub room: horizon_client::hud_kit::room::Room,
     /// Path of an F2 screenshot waiting for its frame.
     pub screenshot_message: Option<std::path::PathBuf>,
     /// The options screens.
@@ -1820,7 +1823,12 @@ impl Game<'_> {
     /// Advance the overworld clock (ServerClockManager.tick) when
     /// `advance_time` allows it.
     pub(super) fn advance_clock(&mut self) {
-        if !self.ui.rules.bool("advance_time") || self.ui.clock.paused {
+        if !self.ui.rules.bool("advance_time") {
+            return;
+        }
+        // The End's clock: one tick a tick, not paused or sped up by `/time` on the overworld's.
+        self.world.end_clock += 1;
+        if self.ui.clock.paused {
             return;
         }
         let c = &mut self.ui.clock;

@@ -1,6 +1,13 @@
 //! The player's `CombatTracker`: the damage taken lately, who dealt it and
 //! where the player fell from, turned into the vanilla death message.
 use super::{Game, commands::Target};
+
+// The test names `super::commands`, as it did when game.rs held it.
+#[cfg(test)]
+use super::commands;
+#[cfg(test)]
+#[path = "revenge_home_tests.rs"]
+mod revenge_home_tests;
 use horizon_client::{
     health::HealthEvent,
     mobs::{Mob, Species},
@@ -165,6 +172,17 @@ pub(super) struct CombatTracker {
     fall_before: f64,
 }
 impl CombatTracker {
+    /// The newest damage of this fight for `events`: when it landed (game
+    /// time), its damage type, the amount and the name of what dealt it.
+    pub(super) fn last_hit(&self) -> Option<(i64, String, Option<f32>, Option<String>)> {
+        let e = self.entries.last()?;
+        let by = e
+            .attacker
+            .as_ref()
+            .map(|(_, t)| t.plain())
+            .or_else(|| e.direct.as_ref().map(Text::plain));
+        Some((self.last_damage, e.damage_type.clone(), Some(e.damage), by))
+    }
     /// The last blow taken: its damage type and the causing entity's id (0
     /// for none), for `LivingDeathEvent`.
     pub(super) fn last_blow(&self) -> Option<(&str, u32)> {

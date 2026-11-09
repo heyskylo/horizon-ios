@@ -11,7 +11,7 @@ use horizon_core::{
     position::BlockPos,
 };
 use horizon_world::{
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidState, FluidTemplate},
     fluid_flow::{FluidFlowWorld, flow_at},
 };
 use std::{convert::Infallible, sync::OnceLock};
@@ -251,7 +251,8 @@ pub(super) fn tesselate(
     if !render_up && !render_down && !sides.iter().any(|&s| s) {
         return;
     }
-    let water = matches!(kind, FluidKind::Water | FluidKind::FlowingWater);
+    // A mod fluid looks like its template until it has its own model (#6301 step 6).
+    let water = kind.template() == FluidTemplate::Water;
     let tint = if water {
         water_color & 0xFF_FFFF
     } else {
@@ -340,12 +341,11 @@ pub(super) fn tesselate(
     } else {
         (tables.lava_still, tables.lava_flow, None)
     };
-    let target = if water {
-        &mut out.translucent
+    let (target, sprite_layers) = if water {
+        (&mut out.translucent, &mut out.sprite_layers)
     } else {
-        &mut out.solid
+        (&mut out.solid, &mut out.sprite_layers)
     };
-    let mut sprite_layers = Vec::new();
     let mut quad = |v: [([f32; 3], [f32; 2]); 4],
                     layer: u16,
                     color: u32,
@@ -497,7 +497,6 @@ pub(super) fn tesselate(
             d as usize,
         );
     }
-    out.sprite_layers.extend(sprite_layers);
 }
 
 #[cfg(test)]

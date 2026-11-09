@@ -37,12 +37,15 @@ pub(super) struct Context<'a> {
     pub(super) generated: BTreeMap<String, Value>,
     /// Material rules the upgrade adds (one per noise settings), by id.
     pub(super) rules: BTreeMap<String, Value>,
+    /// The biomes the pack defines, by id.
+    pub(super) biomes: BTreeSet<String>,
 }
 
 impl<'a> Context<'a> {
     pub(super) fn new(files: &'a BTreeMap<String, Value>) -> Self {
         let mut functions = BTreeMap::new();
         let mut settings = Vec::new();
+        let mut biomes = BTreeSet::new();
         for (path, v) in files {
             let Some(f) = PackFile::parse(path) else {
                 continue;
@@ -52,6 +55,9 @@ impl<'a> Context<'a> {
                     functions.insert(f.id(), v);
                 }
                 "worldgen/noise_settings" => settings.push(v),
+                "worldgen/biome" => {
+                    biomes.insert(f.id());
+                }
                 _ => {}
             }
         }
@@ -62,6 +68,7 @@ impl<'a> Context<'a> {
             all_cells: BTreeSet::new(),
             generated: BTreeMap::new(),
             rules: BTreeMap::new(),
+            biomes,
         };
         for s in settings {
             let cell = cell_of(s.get("noise").unwrap_or(&Value::Null));

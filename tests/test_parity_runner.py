@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tools import parity
+from tools import parity, parity_shard
 
 
 class ParityRunnerTests(unittest.TestCase):
@@ -364,6 +364,19 @@ class RustScopeTests(unittest.TestCase):
 
 
 class ShardTests(unittest.TestCase):
+    def test_invalid_shards_are_rejected(self):
+        for spec in ("0/8", "9/8", "1/0", "1/-8"):
+            with self.subTest(spec=spec), mock.patch.dict(os.environ, {"PARITY_SHARD": spec}):
+                with self.assertRaisesRegex(ValueError, "PARITY_SHARD"):
+                    parity_shard.shard(list(range(8)))
+                with self.assertRaisesRegex(ValueError, "PARITY_SHARD"):
+                    parity_shard.label()
+
+    def test_valid_shard_selects_every_nth_case(self):
+        with mock.patch.dict(os.environ, {"PARITY_SHARD": "2/3"}):
+            self.assertEqual(parity_shard.shard(list(range(7))), [1, 4])
+            self.assertEqual(parity_shard.label(), "2-3")
+
     def test_a_sharded_harness_runs_as_numbered_entries(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)):
             (Path(temp) / "tools").mkdir()

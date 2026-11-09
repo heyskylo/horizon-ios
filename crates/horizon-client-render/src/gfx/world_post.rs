@@ -79,7 +79,7 @@ pub struct Post {
     /// The last TAA frame's unjittered `view_proj` and camera, `None` once a frame ran without it.
     taa_previous: Option<(DMat4, DVec3)>,
     taa_this_frame: TaaUniform,
-    light_key: Option<([f32; 4], [f32; 4], [[f32; 4]; 2])>,
+    light_key: Option<(bool, [f32; 4], [f32; 4], [[f32; 4]; 2])>,
 }
 
 impl Post {
@@ -263,12 +263,21 @@ impl Post {
         }
     }
 
-    // History stores the baked gain as well as the picture. Reject it before jitter records
-    // the next frame whenever that gain or the frame's representation changes.
-    pub(super) fn light_representation(
+    // History stores baked light, so a change must reject it before jitter records the next frame.
+    pub(super) fn baked_light(
         &mut self,
-        key: Option<([f32; 4], [f32; 4], [[f32; 4]; 2])>,
+        gain: bool,
+        settings: [f32; 4],
+        shares: [f32; 4],
+        windows: [[f32; 4]; 2],
     ) {
+        // These uniforms do not change baked colour without gain. Keep compatibility
+        // history stable when only its final display settings change.
+        let key = Some(if gain {
+            (true, settings, shares, windows)
+        } else {
+            (false, [0.0; 4], [0.0; 4], [[0.0; 4]; 2])
+        });
         if self.light_key != key {
             self.taa_previous = None;
             self.light_key = key;
@@ -745,13 +754,15 @@ mod tests {
     }
 
     #[test]
-    fn written_light_changes_reject_history_before_the_next_jitter() {
+    fn baked_light_changes_and_returning_from_a_pack_reject_taa_history() {
         let Some((device, _)) = test_device() else {
+            eprintln!("TAA baked-light GPU skipped: no test device");
             return;
         };
         let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float);
         post.taa = true;
         if !post.supports_taa() {
+            eprintln!("TAA baked-light GPU skipped: TAA unsupported");
             return;
         }
         let key = (
@@ -759,11 +770,11 @@ mod tests {
             [0.2, 0.5, 0.6, 1.0],
             [[0.1; 4], [0.4; 4]],
         );
-        for key in [Some(key), None, Some(key)] {
-            post.light_representation(key);
+        for gain in [true, false, true] {
+            post.baked_light(gain, key.0, key.1, key.2);
             post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
             assert_eq!(post.taa_this_frame.jitter[2], 1.0);
-            post.light_representation(key);
+            post.baked_light(gain, key.0, key.1, key.2);
             post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
             assert_eq!(post.taa_this_frame.jitter[2], 0.0);
         }
@@ -774,10 +785,26 @@ mod tests {
                 4..=7 => changed.1[field - 4] += 0.01,
                 _ => changed.2[(field - 8) / 4][(field - 8) % 4] += 0.01,
             }
-            post.light_representation(Some(changed));
+            post.baked_light(true, changed.0, changed.1, changed.2);
             post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
             assert_eq!(post.taa_this_frame.jitter[2], 1.0);
         }
+        post.baked_light(false, key.0, key.1, key.2);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 1.0);
+        post.baked_light(false, [0.0; 4], [0.0; 4], [[0.0; 4]; 2]);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 0.0);
+        // A pack disables TAA even when the light settings stay the same. Its first
+        // world frame after the pack is dropped must not reuse the pre-pack history.
+        post.jitter([32, 32], false, Mat4::IDENTITY, DVec3::ZERO);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 1.0);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 0.0);
+        eprintln!(
+            "TAA baked-light GPU checked gain, all settings/shares/windows and the first frame after a pack"
+        );
     }
 
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {

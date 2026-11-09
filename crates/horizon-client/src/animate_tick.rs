@@ -8,7 +8,7 @@ use crate::{
     blocks::{BlockFacts, Fluid},
     command::args::GameMode,
     items::ItemStack,
-    particles::{ParticleEngine, ParticleOptions, ParticleType as T, along_axis},
+    particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleType as T, along_axis},
     world::World,
 };
 use horizon_core::{
@@ -276,8 +276,11 @@ fn concrete_powder_color(dye: &str) -> u32 {
         _ => 0x191919,
     }
 }
-/// `RedstoneWireBlock.COLORS`.
+/// `RedstoneWireBlock.COLORS`, or a pack's.
 fn redstone_color(power: u8) -> [f32; 3] {
+    if let Some(c) = crate::pack_palette::redstone(power) {
+        return [16, 8, 0].map(|shift| ((c >> shift) & 255) as f32 / 255.0);
+    }
     let f = f32::from(power) / 15.0;
     let r = f * 0.6 + if f > 0.0 { 0.4 } else { 0.3 };
     let g = (f * f * 0.7 - 0.5).clamp(0.0, 1.0);
@@ -599,7 +602,18 @@ fn do_animate_tick(
         return;
     }
     let state = ctx.state(pos);
-    block_animate_tick(tables, engine, ctx, state, pos, center);
+    // A Polytone block modifier's `disable_particles` stops the block's own animate tick.
+    if !engine.polytone_disables_particles(state) {
+        block_animate_tick(tables, engine, ctx, state, pos, center);
+    }
+    // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
+    let level = ParticleLevel {
+        world: ctx.world,
+        facts: ctx.facts,
+        collision: ctx.collision,
+        player: None,
+    };
+    engine.polytone_animate(&level, pos);
     let facts = ctx.facts.get(state);
     if facts.fluid != Fluid::None {
         fluid_animate_tick(

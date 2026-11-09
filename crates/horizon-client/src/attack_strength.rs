@@ -26,6 +26,13 @@ pub fn delay(attack_speed: f64) -> f32 {
     (1.0 / attack_speed * 20.0) as f32
 }
 impl AttackStrength {
+    /// Whether `tick(main_hand)` would see a changed stack (`!ItemStack.matches`:
+    /// item, count or components), the signal `LivingEntity.detectEquipmentUpdates`
+    /// re-applies the equipment's attribute modifiers on. Unlike the attack-strength
+    /// reset, it does not need a different item.
+    pub fn main_hand_changed(&self, main_hand: &Option<HeldStack>) -> bool {
+        self.last_item != *main_hand
+    }
     /// The attack-strength part of `Player.tick`: both tickers advance, and a
     /// main-hand change to a different item resets them
     /// (`!ItemStack.matches` and `!ItemStack.isSameItem`).
@@ -142,6 +149,17 @@ mod tests {
         s.tick(held("minecraft:diamond_sword", ""));
         s.reset_attack();
         assert_eq!((s.ticker, s.swap_ticker), (0, 1));
+    }
+    #[test]
+    fn a_stack_change_of_the_same_item_is_seen_but_does_not_reset() {
+        let mut s = AttackStrength::default();
+        s.tick(held("minecraft:diamond_shovel", "1 0 None"));
+        s.tick(held("minecraft:diamond_shovel", "1 0 None"));
+        let enchanted = held("minecraft:diamond_shovel", "1 0 Some(efficiency 3)");
+        assert!(!s.main_hand_changed(&held("minecraft:diamond_shovel", "1 0 None")));
+        assert!(s.main_hand_changed(&enchanted));
+        assert!(!s.tick(enchanted));
+        assert_eq!(s.ticker, 2, "same item: the attack charge goes on");
     }
     /// A client's own ATTACK_DAMAGE: Player's base value, as no item or effect
     /// changes it there.
