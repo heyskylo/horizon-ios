@@ -40,6 +40,7 @@ impl Game<'_> {
     /// Number keys, F and Q over a slot of the open menu: SWAP with a hotbar
     /// slot or the off hand, THROW one or the whole stack.
     pub(super) fn inventory_hotkey(&mut self, key: KeyCode) -> bool {
+        use horizon_client::container_screen::{HotbarKey, hotbar_swap};
         use horizon_client::menu::Input;
         let Some(size) = self
             .renderer
@@ -52,15 +53,21 @@ impl Game<'_> {
         let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1) else {
             return false;
         };
-        let digit = HOTBAR_DIGITS.iter().position(|k| *k == key);
-        let done = match (digit, key) {
-            (Some(n), _) => self.menu_click(Some(slot), n as i32, Input::Swap),
-            (None, KeyCode::KeyF) => self.menu_click(Some(slot), 40, Input::Swap),
-            (None, KeyCode::KeyQ) => {
-                let all = drop_whole_stack(self.modifiers);
-                self.menu_click(Some(slot), i32::from(all), Input::Throw)
-            }
-            _ => false,
+        let hotbar = HOTBAR_DIGITS
+            .iter()
+            .position(|k| *k == key)
+            .map(HotbarKey::Slot)
+            .or((key == KeyCode::KeyF).then_some(HotbarKey::Offhand));
+        // checkHotbarKeyPressed refuses the swap while the cursor carries a
+        // stack; the drop below is the next arm of keyPressed, which the menu
+        // itself leaves to an empty hand.
+        let done = if let Some(button) = hotbar_swap(hotbar, self.carried.is_none()) {
+            self.menu_click(Some(slot), button, Input::Swap)
+        } else if key == KeyCode::KeyQ {
+            let all = drop_whole_stack(self.modifiers);
+            self.menu_click(Some(slot), i32::from(all), Input::Throw)
+        } else {
+            false
         };
         if done && let Some(key) = self.container {
             self.container_changed(key);

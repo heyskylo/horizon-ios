@@ -1,9 +1,11 @@
-//! The mouse handling every survival and container screen shares
+//! The input handling every survival and container screen shares
 //! (`AbstractContainerScreen.mouseClicked` / `mouseReleased`): which slot id
 //! a click targets (-999 outside the window, `hasClickedOutside` with the
 //! recipe book's own rule) and which `ContainerInput` it sends. Shift is
 //! the event's own modifiers (`InputWithModifiers.hasShiftDown`: the
-//! physical Shift keys, never the remapped or toggled sneak key).
+//! physical Shift keys, never the remapped or toggled sneak key). The
+//! keyboard's hotbar and off-hand keys are the same screen's
+//! (`checkHotbarKeyPressed`).
 
 use crate::menu::Input;
 
@@ -206,6 +208,32 @@ impl Clicks {
     }
 }
 
+/// A key `AbstractContainerScreen.checkHotbarKeyPressed` acts on: one of the
+/// nine hotbar slots (`keyHotbarSlots`) or the off hand (`keySwapOffhand`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HotbarKey {
+    /// `key.hotbar.N`, in `0..9`.
+    Slot(usize),
+    /// `key.swapOffhand`, the menu's button 40.
+    Offhand,
+}
+
+/// What `AbstractContainerScreen.checkHotbarKeyPressed` answers: the menu
+/// button of the SWAP click, or `None` when the screen refuses it. The whole
+/// method is gated on `this.menu.getCarried().isEmpty() && this.hoveredSlot
+/// != null`, so a carried stack sends nothing; without that guard the
+/// server's SWAP would move the hotbar slot into the slot under the cursor
+/// while the stack stays on the cursor.
+pub fn hotbar_swap(hovered: Option<HotbarKey>, carried_empty: bool) -> Option<i32> {
+    if !carried_empty {
+        return None;
+    }
+    Some(match hovered? {
+        HotbarKey::Slot(slot) => i32::try_from(slot).ok()?,
+        HotbarKey::Offhand => 40,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,5 +408,30 @@ mod tests {
             clicks.press(&slot, Button::Left, true, false, false),
             Some(Input::Pickup)
         );
+    }
+
+    /// `AbstractContainerScreen.checkHotbarKeyPressed`:
+    /// `this.menu.getCarried().isEmpty() && this.hoveredSlot != null` gates
+    /// the off hand and the nine hotbar slots alike. A stack on the cursor
+    /// refuses the key (the menu's SWAP does not look at the carried stack
+    /// and would move the hotbar slot into the hovered one); so does no
+    /// hovered slot.
+    #[test]
+    fn a_carried_stack_refuses_the_container_hotbar_keys() {
+        for carried_empty in [false, true] {
+            for slot in 0..9 {
+                let key = HotbarKey::Slot(slot);
+                assert_eq!(
+                    hotbar_swap(Some(key), carried_empty),
+                    carried_empty.then_some(slot as i32)
+                );
+            }
+            assert_eq!(
+                hotbar_swap(Some(HotbarKey::Offhand), carried_empty),
+                carried_empty.then_some(40)
+            );
+        }
+        assert_eq!(hotbar_swap(None, true), None);
+        assert_eq!(hotbar_swap(None, false), None);
     }
 }
