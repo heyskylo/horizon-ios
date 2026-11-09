@@ -189,26 +189,9 @@ impl GoalSelector {
 
 // --- random positions (DefaultRandomPos / LandRandomPos / RandomPos) -------
 
-/// RandomPos.moveUpToAboveSolid: out of the solid blocks, then up to
-/// `above` more blocks of air.
-fn move_up_to_above_solid(w: &MobWorld, mut p: [i32; 3], above: i32) -> [i32; 3] {
-    if !w.solid(p[0], p[1], p[2]) {
-        return p;
-    }
-    p[1] += 1;
-    while p[1] < w.world.top_y() && w.solid(p[0], p[1], p[2]) {
-        p[1] += 1;
-    }
-    let first = p[1];
-    while p[1] < w.world.top_y() && p[1] - first < above {
-        p[1] += 1;
-        if w.solid(p[0], p[1], p[2]) {
-            p[1] -= 1;
-            break;
-        }
-    }
-    p
-}
+#[path = "random_pos.rs"]
+mod random_pos;
+use random_pos::move_up_to_above_solid;
 #[path = "home.rs"]
 mod home;
 pub use home::within_home;
