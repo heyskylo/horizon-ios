@@ -504,8 +504,6 @@ pub fn reduced_far_detail_suggested() -> bool {
     REDUCED_SUGGESTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The name the options screen waits on to bind `Graphics::hdr_key`.
-pub const HDR_KEY: &str = "horizon.hdrSettings";
 /// The Screenshot Quality choices, times the game's resolution.
 pub const SCREENSHOT_QUALITIES: [u32; 4] = [1, 2, 4, 8];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -821,8 +819,6 @@ pub struct Graphics {
     /// HDR Lighting: Horizon's own HDR look, light sources, the sun and sunlight above paper
     /// white. Off, HDR output shows the same picture as SDR, for shader packs or the vanilla look.
     pub hdr_lighting: bool,
-    /// A vanilla key name (`HDR_KEY`): opens HDR's settings from the game. Unbound by default.
-    pub hdr_key: String,
     /// The graphics driver whose last start ended before HDR output showed a frame (the
     /// marker found, [`HDR_MARKER`]): a window on it stays SDR whatever the mode, until the
     /// mode is changed or the window starts on another driver ([`Graphics::hdr_held`]).
@@ -902,7 +898,6 @@ impl Default for Graphics {
             hdr_black_level: 0,
             hdr_ui_brightness: 100,
             hdr_lighting: true,
-            hdr_key: "key.keyboard.unknown".into(),
             hdr_failed_start: None,
             battery: false,
             shadow_cache: false,
@@ -1080,7 +1075,6 @@ impl Graphics {
                 "hdrUiBrightness" => {
                     g.hdr_ui_brightness = number(g.hdr_ui_brightness).clamp(25, 100)
                 }
-                "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
                 "hdrFailedStart" => g.hdr_failed_start = Some(value.to_owned()),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
@@ -1102,7 +1096,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1151,7 +1145,6 @@ impl Graphics {
             self.hdr_black_level,
             self.hdr_ui_brightness,
             bool_text(self.hdr_lighting),
-            self.hdr_key,
             bool_text(self.battery),
             bool_text(self.shadow_cache),
             self.api.name(),
@@ -1165,14 +1158,6 @@ impl Graphics {
         }
         text += &self.blue_map.serialize();
         text
-    }
-    /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
-    pub fn set_key(&mut self, name: &str, value: String) -> bool {
-        match name {
-            HDR_KEY => self.hdr_key = value,
-            _ => return false,
-        }
-        true
     }
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
@@ -1432,7 +1417,6 @@ mod tests {
             hdr_black_level: 12,
             hdr_ui_brightness: 60,
             hdr_lighting: false,
-            hdr_key: "key.keyboard.h".into(),
             hdr_failed_start: Some(
                 "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57".into(),
             ),
@@ -1574,6 +1558,10 @@ mod tests {
             Graphics::parse("shaderPack:Pack.zip\n"),
             Graphics::default()
         );
+        // The HDR page's old shortcut key loads as nothing, and the next save drops it.
+        let old = Graphics::parse("hdr:true\nhdrKey:key.keyboard.h\nhdrPeak:1000\n");
+        assert_eq!((old.hdr, old.hdr_peak), (HdrMode::On, 1000));
+        assert!(!old.serialize().contains("hdrKey"));
         assert_eq!(
             Graphics::parse(
                 "workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\nleafCulling:maybe\n"
