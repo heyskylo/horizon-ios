@@ -2,6 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod projectile_world;
 mod pufferfish_player;
 
 use super::{
@@ -148,92 +149,6 @@ pub(super) struct ProjWorld<'a, 'w> {
     /// block would (`clipIncludingBorder`); None: no border.
     pub border: Option<[f64; 4]>,
 }
-impl ProjectileWorld for ProjWorld<'_, '_> {
-    fn block_contacts(&self, entity: i32, kind: &str, from: Vec3, to: Vec3, bounds: Aabb) {
-        horizon_client::block_contact::swept_inside(entity, kind, from, to, bounds, |p| {
-            let state = self.w.world.block(p.x, p.y, p.z);
-            (state, &self.w.facts.get(state).name)
-        });
-    }
-    fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
-        let mut scene = SceneCollisions {
-            world: self.w.world,
-            binding: self.w.collision,
-            subject: None,
-        };
-        let context = horizon_world::collision_context::CollisionContext::position(from.y);
-        let r = traverse_blocks(from, to, 256, |p: BlockPos| {
-            let state = self.w.world.block(p.x, p.y, p.z);
-            if self.w.facts.is_air(state) {
-                return None;
-            }
-            // ClipContext hands CollisionContext.of(projectile): scaffolding
-            // is open for a projectile below it.
-            let shape = self
-                .w
-                .collision
-                .collision_shape_with_context(&mut scene, state, p, &context)
-                .ok()?;
-            shape.clip(from, to, p)
-        });
-        let hit = r.ok().flatten().map(|hit| {
-            (
-                hit.location,
-                [hit.block.x, hit.block.y, hit.block.z],
-                hit.direction.normal(),
-            )
-        });
-        match self.border {
-            Some(bounds) => clip_including_border(hit, from, to, bounds),
-            None => hit,
-        }
-    }
-    /// Entity.updateFluidInteraction over the projectile's box, not the
-    /// block at its feet (#3072).
-    fn in_water(&self, bounds: Aabb) -> bool {
-        self.w.fluids(bounds, bounds.max_position().y).in_water
-    }
-    fn targets(&self) -> &[(Who, Aabb)] {
-        &self.targets
-    }
-    /// `BaseFireBlock.entityInside` for a thrown projectile: fire and soul
-    /// fire set it alight for 160 ticks.
-    fn ignites(&self, p: [i32; 3]) -> bool {
-        let state = self.w.world.block(p[0], p[1], p[2]);
-        matches!(
-            &*self.w.facts.get(state).name,
-            "minecraft:fire" | "minecraft:soul_fire"
-        )
-    }
-    fn empty(&self, p: [i32; 3]) -> bool {
-        self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
-    }
-    /// `WebBlock.entityInside` and `PowderSnowBlock.entityInside`.
-    fn stuck_speed(&self, p: [i32; 3]) -> Option<Vec3> {
-        horizon_client::projectiles::stuck_speed_of(
-            &self.w.facts.get(self.w.world.block(p[0], p[1], p[2])).name,
-        )
-    }
-    fn bubble_column(&self, p: [i32; 3]) -> Option<(bool, bool)> {
-        horizon_client::motion::bubble_column_at(
-            self.w.world,
-            self.w.registry,
-            self.w.facts,
-            self.w.collision,
-            BlockPos::new(p[0], p[1], p[2]),
-        )
-        .map(|c| (c.drag, c.surface))
-    }
-    fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
-        horizon_client::collisions::projectile_can_stand_on(
-            self.w.world,
-            self.w.collision,
-            BlockPos::new(p[0], p[1], p[2]),
-            entity_y,
-        )
-    }
-}
-
 /// `Projectile.isPickable`: a projectile in `#minecraft:redirectable_projectile`
 /// (a ghast's fireball and both wind charges) is pickable, so another
 /// projectile's `ProjectileUtil.getEntityHitResult` can strike it
@@ -1351,7 +1266,10 @@ impl Game<'_> {
             let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
-            let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
+            let mut index = horizon_client::fast_hash::FxHashMap::with_capacity_and_hasher(
+                snapshot.len(),
+                Default::default(),
+            );
             let mut villager_slots = Vec::new();
             let mut solid_slots = Vec::new();
             for (i, s) in snapshot.iter().enumerate() {
@@ -1364,6 +1282,10 @@ impl Game<'_> {
                 }
             }
             laps.lap("creature_prepare");
+            let single_player = horizon_client::mobs::single_player_pos(
+                players.iter().map(|p| (p.position, p.spectator)),
+            );
+            let mut despawn_w = base.despawn_view();
             let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
                 let m = &mut mobs[i];
@@ -1387,26 +1309,18 @@ impl Game<'_> {
                     keep.push(!m.hostile() || m.persistent);
                     continue;
                 }
-                let nearest_player = nearest
-                    .nearest(m.position.x, m.position.y, m.position.z)
-                    .map(|p| p.position);
+                let nearest_player = single_player.unwrap_or_else(|| {
+                    nearest
+                        .nearest(m.position.x, m.position.y, m.position.z)
+                        .map(|p| p.position)
+                });
                 // ServerLevel.tick: every loaded entity checks despawning, but
                 // only those in entity-ticking chunks (within the simulation
                 // distance) tick. The despawn check reads the nearest player
                 // and the difficulty, not the player the mob sees.
                 if !ticking(bx, bz) {
-                    let w = MobWorld {
-                        others: &snapshot,
-                        others_grid: Some(&grid),
-                        others_index: Some(&index),
-                        others_villagers: Some(&villager_slots),
-                        others_solid: Some(&solid_slots),
-                        nearest_player,
-                        player: None,
-                        teams: std::sync::Arc::clone(&base.teams),
-                        ..base
-                    };
-                    let kept = horizon_client::mobs::ai::despawn_check(m, &w);
+                    despawn_w.nearest_player = nearest_player;
+                    let kept = horizon_client::mobs::ai::despawn_check(m, &despawn_w);
                     if !kept {
                         died.remove(&m.id);
                         snapshot[i].alive = false;

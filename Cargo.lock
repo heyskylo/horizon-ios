@@ -1528,7 +1528,6 @@ dependencies = [
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
- "horizon-cosmetics",
  "horizon-friends",
  "horizon-hdr",
  "horizon-hooks",
@@ -1587,11 +1586,13 @@ dependencies = [
  "horizon-core",
  "horizon-cosmetics",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-narrator",
  "horizon-optifine",
  "horizon-polytone",
  "horizon-protocol",
+ "horizon-render-pipeline",
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
@@ -1813,8 +1814,13 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-core",
  "horizon-hooks",
+ "horizon-prepare",
+ "horizon-protocol",
+ "horizon-server-files",
  "horizon-system",
+ "horizon-world",
 ]
 
 [[package]]
@@ -1886,6 +1892,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-render-pipeline"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
@@ -1896,11 +1906,9 @@ dependencies = [
  "horizon-anticheat",
  "horizon-bench",
  "horizon-chat-filter",
- "horizon-core",
  "horizon-mcp",
+ "horizon-platform",
  "horizon-release-sign",
- "horizon-server-files",
- "horizon-world",
  "libc",
  "p12-keystore",
  "png",
@@ -1949,6 +1957,7 @@ version = "0.1.0"
 dependencies = [
  "half",
  "horizon-core",
+ "horizon-render-pipeline",
  "naga",
  "png",
  "zip",

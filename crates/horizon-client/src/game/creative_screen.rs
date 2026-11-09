@@ -28,6 +28,9 @@ impl Game<'_> {
     /// `itemGroup.<mod>.<name>`, else its `title` as a lang key (a mod's own
     /// `itemGroup.<mod>`), else `title` as English text.
     pub(super) fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
+        if let Some((name, _)) = &tab.name {
+            return name.clone();
+        }
         match horizon_client::creative::item_group_key(&tab.id) {
             Some(key) => self.translate(key, &tab.title),
             None => {
@@ -144,7 +147,12 @@ impl Game<'_> {
                 &title,
                 ox + 8.0,
                 oy + 6.0,
-                rgba(64, 64, 64, 255),
+                tab.name
+                    .as_ref()
+                    .and_then(|n| n.1)
+                    .map_or(rgba(64, 64, 64, 255), |c| {
+                        rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, 255)
+                    }),
                 false,
             );
         }
