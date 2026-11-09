@@ -120,6 +120,12 @@ struct Remote;
 struct StudioFreecam { active: bool }
 #[derive(Default)]
 struct Studio { replay: Option<()>, freecam: StudioFreecam, rmb_down: bool }
+#[allow(dead_code)]
+impl Studio {
+    fn replaying(&self) -> bool { self.replay.is_some() }
+    fn flying(&self) -> bool { self.freecam.active }
+    fn active(&self) -> bool { self.replaying() || self.flying() }
+}
 #[derive(Default)]
 struct Options { offscreen: bool }
 #[derive(Default)]
