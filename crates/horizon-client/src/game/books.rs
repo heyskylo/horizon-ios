@@ -1726,3 +1726,57 @@ mod lectern_signal_tests {
         assert_eq!(signal(&mut game, Some(written), 1), 15, "last page");
     }
 }
+impl BookScreen {
+    /// `BookViewScreen.isPauseScreen`: the class inherits `Screen`'s true, so
+    /// a book read in hand stops a single-player world. `LecternScreen`
+    /// overrides it false, so the same pages read on a lectern leave the
+    /// world ticking (its menu is an `AbstractContainerScreen`, which does
+    /// not pause either).
+    pub(super) fn pauses_world(&self) -> bool {
+        !matches!(
+            self,
+            Self::View {
+                lectern: Some(_),
+                ..
+            }
+        )
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::BookScreen;
+    use horizon_client::{text::Text, ui};
+
+    fn view(lectern: Option<(i32, i32, i32)>) -> BookScreen {
+        BookScreen::View {
+            pages: Vec::<Text>::new(),
+            page: 0,
+            lectern,
+        }
+    }
+
+    #[test]
+    fn a_lecterns_book_does_not_pause_the_world() {
+        // BookViewScreen keeps Screen.isPauseScreen's true; LecternScreen
+        // overrides it false although both read the same pages.
+        assert!(view(None).pauses_world());
+        assert!(!view(Some((10, 64, -3))).pauses_world());
+    }
+
+    #[test]
+    fn a_book_being_edited_or_signed_pauses() {
+        // BookEditScreen and BookSignScreen do not override isPauseScreen.
+        let edit = |signing| BookScreen::Edit {
+            slot: 0,
+            pages: Vec::new(),
+            page: 0,
+            signing,
+            title: String::new(),
+            title_edit: ui::EditBox::new(0.0, 0.0, 0.0, 0.0),
+            page_edit: ui::EditBox::new(0.0, 0.0, 0.0, 0.0),
+        };
+        assert!(edit(false).pauses_world());
+        assert!(edit(true).pauses_world());
+    }
+}
