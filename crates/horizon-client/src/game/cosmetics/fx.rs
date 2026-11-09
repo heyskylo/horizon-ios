@@ -195,7 +195,7 @@ impl Seat {
         particles.clear();
         particles.extend(
             e.quads(t, *now, camera, right, up)
-                .map(|q| Particle::new(q.corners.map(Vec3::to_array), q.uv, q.alpha)),
+                .map(|q| Particle::new(q.corners.map(|c| c.to_array()), q.uv, q.alpha)),
         );
         draw.particles(uv, particles, glowing(t.glow, Light::Model));
     }
