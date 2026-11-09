@@ -605,6 +605,9 @@ pub struct Streaming {
     /// Set while `update` runs, after it refreshed `cover`: nothing else can
     /// change `extra` meanwhile, so `cover` answers without comparing them.
     cover_current: bool,
+    /// `forced` and `mod_forced` as each column's distance to the nearest one, made again when
+    /// they change; read like `cover`, while `cover_current`.
+    forced_cover: Option<ForcedCover>,
     /// Mesh the sections for drawing (false on a server thread).
     pub mesh: bool,
     /// The pregeneration band (`set_band`).
@@ -806,6 +809,7 @@ impl GenerationScan {
                 forced: input.ranges.forced,
                 mod_forced: input.ranges.mod_forced,
                 cover: input.ranges.cover,
+                forced_cover: None,
                 band: input.ranges.band,
             };
             self.remember(ranges, input.world);
@@ -1176,6 +1180,7 @@ impl Streaming {
             extra: Vec::new(),
             cover: None,
             cover_current: false,
+            forced_cover: None,
             mesh: true,
             band: None,
             band_ranked: None,
@@ -1691,6 +1696,7 @@ impl Streaming {
         let mut columns = std::mem::take(&mut self.mesh_columns_scratch);
         columns.clear();
         ExtraCover::refresh(&mut self.cover, &self.extra);
+        ForcedCover::refresh(&mut self.forced_cover, &self.forced, &self.mod_forced);
         self.cover_current = true;
         // The sweeps below walk every loaded column and proto chunk. Run them
         // at once when the view moves and every eighth tick otherwise: a
@@ -1870,6 +1876,7 @@ impl Streaming {
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
                 cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
+                forced_cover: self.forced_cover.as_ref().filter(|_| self.cover_current),
                 band: self.band.as_ref(),
             };
             let (protos, generating) = (&self.protos, &self.generating);
@@ -2040,6 +2047,7 @@ impl Streaming {
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
                 cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
+                forced_cover: self.forced_cover.as_ref().filter(|_| self.cover_current),
                 band: self.band.as_ref(),
             };
             self.waiting.retain(|&(x, sy, z)| {
@@ -2145,6 +2153,7 @@ impl Streaming {
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
                 cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
+                forced_cover: self.forced_cover.as_ref().filter(|_| self.cover_current),
                 band: self.band.as_ref(),
             },
             world,
@@ -2283,6 +2292,7 @@ impl Streaming {
             forced: &self.forced,
             mod_forced: &self.mod_forced,
             cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
+            forced_cover: self.forced_cover.as_ref().filter(|_| self.cover_current),
             band: self.band.as_ref(),
         }
     }
@@ -2563,6 +2573,8 @@ struct Ranges<'a> {
     /// `extra` indexed by a grid or buckets: coverage queries without a
     /// scan of every area.
     cover: Option<&'a ExtraCover>,
+    /// `forced` and `mod_forced` by distance (`Streaming::forced_cover`), while they match it.
+    forced_cover: Option<&'a ForcedCover>,
     band: Option<&'a Band>,
 }
 /// The chunks a pregeneration task (`/pregen`) wants lit now: rows `z0..=z1`
@@ -2609,6 +2621,61 @@ impl Band {
         AFTER_PLAYERS
             + (i64::from(z - self.z0 + 8).max(0) << 20)
             + i64::from(x - self.x0 + 8).max(0)
+    }
+}
+
+/// `Streaming::forced` and `mod_forced` as the Chebyshev distance from each column within
+/// `REACH` of one to the nearest: `Ranges::in_main_range` answers by one lookup instead of going
+/// through every forced chunk (it is asked for every column, several times a tick).
+struct ForcedCover {
+    forced: HashSet<(i32, i32)>,
+    mod_forced: HashSet<(i32, i32)>,
+    near: FxHashMap<(i32, i32), u8>,
+}
+impl ForcedCover {
+    /// The widest ring `in_main_range` asks of a forced chunk (margins 1 to 4).
+    const REACH: i32 = FORCED_TERRAIN_RING + 1;
+    /// Past this many forced chunks the cover is not made: the scan answers.
+    const MOST: usize = 4096;
+    fn refresh(
+        cover: &mut Option<Self>,
+        forced: &HashSet<(i32, i32)>,
+        mod_forced: &HashSet<(i32, i32)>,
+    ) {
+        if cover
+            .as_ref()
+            .is_some_and(|c| c.forced == *forced && c.mod_forced == *mod_forced)
+        {
+            return;
+        }
+        if forced.len() + mod_forced.len() > Self::MOST {
+            *cover = None;
+            return;
+        }
+        let mut near = FxHashMap::default();
+        for &(fx, fz) in forced.iter().chain(mod_forced) {
+            for dx in -Self::REACH..=Self::REACH {
+                for dz in -Self::REACH..=Self::REACH {
+                    let d = dx.abs().max(dz.abs()) as u8;
+                    near.entry((fx + dx, fz + dz))
+                        .and_modify(|e: &mut u8| *e = (*e).min(d))
+                        .or_insert(d);
+                }
+            }
+        }
+        *cover = Some(Self {
+            forced: forced.clone(),
+            mod_forced: mod_forced.clone(),
+            near,
+        });
+    }
+    /// Whether a forced chunk lies within `reach` of `(x, z)`, or `None` past `REACH`.
+    fn within(&self, x: i32, z: i32, reach: i32) -> Option<bool> {
+        (reach <= Self::REACH).then(|| {
+            self.near
+                .get(&(x, z))
+                .is_some_and(|&d| i32::from(d) <= reach)
+        })
     }
 }
 /// For every column near the extra areas, how far it lies outside the
@@ -2949,6 +3016,9 @@ impl Ranges<'_> {
             3 => FORCED_TERRAIN_RING,
             _ => margin + 1,
         };
+        if let Some(hit) = self.forced_cover.and_then(|c| c.within(x, z, reach)) {
+            return hit;
+        }
         self.forced_chunks()
             .any(|f| (x - f.0).abs() <= reach && (z - f.1).abs() <= reach)
     }
@@ -3484,6 +3554,7 @@ mod tests {
             forced: &forced,
             mod_forced: &NO_CHUNKS,
             cover: None,
+            forced_cover: None,
             band: None,
         };
         let generate = |x, z, priority, order| Queued {
@@ -3724,6 +3795,7 @@ mod tests {
                     forced: &self.forced,
                     mod_forced: &NO_CHUNKS,
                     cover: None,
+                    forced_cover: None,
                     band: None,
                 },
                 world: &self.world,
@@ -4107,6 +4179,7 @@ mod tests {
                     forced: &forced,
                     mod_forced: &NO_CHUNKS,
                     cover: None,
+                    forced_cover: None,
                     band: None,
                 };
                 let square = |x: i32, z: i32, n: i32| {
@@ -4164,6 +4237,7 @@ mod tests {
                     forced: &forced,
                     mod_forced: &NO_CHUNKS,
                     cover: None,
+                    forced_cover: None,
                     band: None,
                 };
                 let span = radius * 3 + 20;
@@ -4201,6 +4275,7 @@ mod tests {
             forced: &forced,
             mod_forced: &NO_CHUNKS,
             cover: None,
+            forced_cover: None,
             band: None,
         };
         for x in -5i32..=15 {
@@ -4235,6 +4310,7 @@ mod tests {
                 forced: &forced,
                 mod_forced: &NO_CHUNKS,
                 cover: None,
+                forced_cover: None,
                 band: None,
             };
             let level = |x: i32, z: i32| 31 + ((x - 40).abs().max((z + 9).abs()) - view).max(0);
@@ -4290,6 +4366,7 @@ mod tests {
             forced: &forced,
             mod_forced: &NO_CHUNKS,
             cover: None,
+            forced_cover: None,
             band: None,
         };
         let level = |x: i32, z: i32| 31 + (x - 40).abs().max((z + 40).abs());
@@ -4430,6 +4507,7 @@ mod cover_tests {
                 forced: &forced,
                 mod_forced: &NO_CHUNKS,
                 cover,
+                forced_cover: None,
                 band: None,
             };
             let (scan, grid) = (ranges(None), ranges(Some(&cover)));
@@ -4473,6 +4551,7 @@ mod cover_tests {
                 forced: &forced,
                 mod_forced: &NO_CHUNKS,
                 cover,
+                forced_cover: None,
                 band: None,
             };
             let (scan, buckets) = (ranges(None), ranges(Some(&cover)));
@@ -4539,6 +4618,7 @@ mod cover_tests {
                 forced: &forced,
                 mod_forced: &NO_CHUNKS,
                 cover,
+                forced_cover: None,
                 band: None,
             };
             // The columns streaming asks about: everything kept, and the
