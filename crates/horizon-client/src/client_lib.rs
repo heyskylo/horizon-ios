@@ -21,7 +21,7 @@ pub use horizon_client_render::{
     mipmap, mod_browser, mod_list, model_library, models, multiline_edit, native_emissive,
     options_file, options_fixes, options_ui, overlay, pack_browser, pack_formats, pack_hooks,
     pack_palette, pack_screen, packs, pad_cursor, pad_glyph, par, particles, poi_sections,
-    polytone_colors, polytone_post, post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud,
+    polytone_post, post_chain, potent_sulfur, preedit, providers, pvp, pvp_hud,
     random_source, screen_draw, screen_effects, sculk, section_mask, server_terrain, settings,
     shader_options, shader_pack_list, signs, skins, social, sound_engine, sound_events,
     sound_preview, spans, split_layout, split_map, split_profiles, sprites, streaming,

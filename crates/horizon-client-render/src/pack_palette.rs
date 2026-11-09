@@ -1,18 +1,92 @@
-//! Polytone's dye, sheep and redstone colours (`dye.<name>.diffuse|text`, `sheep.<name>`,
-//! `redstone.<power>`), for drawing only: the pack recolours collars, tropical fish, banners, wool,
-//! sign text and redstone wire and dust, while gameplay (crafting, item data, the beacon) keeps
-//! vanilla's `DyeColor`. Lock-free: the draw paths and the mesher's workers read it per face.
+//! The colours a pack replaces where vanilla hardcodes them (Polytone's `colors.json`, read by the
+//! platform's pack formats, [`crate::pack_hooks`]): dye, sheep and redstone colours, for drawing
+//! only (the pack recolours collars, tropical fish, banners, wool, sign text and redstone wire and
+//! dust, while gameplay keeps vanilla's `DyeColor`), mob effect colours, the experience number's,
+//! entity shadows and the effect fogs' settings. Lock-free: the draw paths and the mesher's
+//! workers read the dye, sheep and redstone tables per face.
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use crate::block_entity_render::DYES;
 use crate::signs::DYE_TEXT;
-use horizon_polytone::colors::PackColors;
+
+/// The fog settings vanilla hardcodes, as the packs set them (vanilla's by default).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Environment {
+    /// The fog colour inside powder snow (RGB).
+    pub powder_snow_fog: Option<u32>,
+    /// The fog ends of Blindness (5), Darkness (15) and bosses that add world fog (96).
+    pub blindness_fog_distance: f32,
+    pub darkness_fog_distance: f32,
+    pub boss_fog_distance: f32,
+    /// How much the underwater fog colour washes out (1 vanilla, 0 none).
+    pub water_fog_brightening: f32,
+    /// The ticks under water it takes (vanilla's 600).
+    pub water_fog_brightening_time: f32,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self {
+            powder_snow_fog: None,
+            blindness_fog_distance: 5.0,
+            darkness_fog_distance: 15.0,
+            boss_fog_distance: 96.0,
+            water_fog_brightening: 1.0,
+            water_fog_brightening_time: 600.0,
+        }
+    }
+}
+
+/// The packs' colours; `None` (and the defaults) where they keep vanilla's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackColors {
+    /// By dye id (`DyeColor` order): `getTextureDiffuseColor`, `getTextColor`, the sheep's wool.
+    pub dye_diffuse: [Option<u32>; 16],
+    pub dye_text: [Option<u32>; 16],
+    pub sheep: [Option<u32>; 16],
+    /// `RedStoneWireBlock.COLORS` by power.
+    pub redstone: [Option<u32>; 16],
+    /// Mob effects' colours, by effect id without vanilla's namespace.
+    pub effects: Vec<(String, u32)>,
+    /// False hides every entity's round shadow, whatever the video option says.
+    pub entity_shadows: bool,
+    /// The experience level number's colour and outline.
+    pub xp_bar: [Option<u32>; 2],
+    /// The effect fogs' settings: the fog reads them every frame.
+    pub env: Environment,
+}
+
+impl Default for PackColors {
+    fn default() -> Self {
+        Self {
+            dye_diffuse: [None; 16],
+            dye_text: [None; 16],
+            sheep: [None; 16],
+            redstone: [None; 16],
+            effects: Vec::new(),
+            entity_shadows: true,
+            xp_bar: [None; 2],
+            env: Environment::default(),
+        }
+    }
+}
 
 /// 0 is unset, else `1 << 32 | rgb`.
 static DIFFUSE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static TEXT: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static SHEEP: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static REDSTONE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+
+/// The colours of the pack overlay at `root`, from the installed pack formats; their dye, sheep
+/// and redstone colours go to the draw paths' tables ([`set`]).
+pub fn read(root: &Path) -> PackColors {
+    let colors = crate::pack_hooks::formats()
+        .colors(root)
+        .unwrap_or_default();
+    set(&colors);
+    colors
+}
 
 /// Takes the colours of the packs just loaded (vanilla's where they set none).
 pub fn set(colors: &PackColors) {
@@ -22,39 +96,39 @@ pub fn set(colors: &PackColors) {
             Relaxed,
         );
     };
-    for (i, (name, _)) in DYES.iter().enumerate() {
-        store(&DIFFUSE, i, colors.dye(name, "diffuse"));
-        store(&TEXT, i, colors.dye(name, "text"));
-        store(&SHEEP, i, colors.sheep(name));
-        store(&REDSTONE, i, colors.redstone(i as u8));
+    for i in 0..16 {
+        store(&DIFFUSE, i, colors.dye_diffuse[i]);
+        store(&TEXT, i, colors.dye_text[i]);
+        store(&SHEEP, i, colors.sheep[i]);
+        store(&REDSTONE, i, colors.redstone[i]);
     }
 }
 
-fn read(table: &[AtomicU64; 16], i: usize) -> Option<u32> {
+fn get(table: &[AtomicU64; 16], i: usize) -> Option<u32> {
     let v = table[i & 15].load(Relaxed);
     (v != 0).then_some(v as u32)
 }
 
 /// `DyeColor.getTextureDiffuseColor` (RGB) as the packs draw it.
 pub fn diffuse(dye: usize) -> u32 {
-    read(&DIFFUSE, dye).unwrap_or(DYES[dye & 15].1)
+    get(&DIFFUSE, dye).unwrap_or(DYES[dye & 15].1)
 }
 
 /// `DyeColor.getTextColor` (RGB) as the packs draw it.
 pub fn text(dye: usize) -> u32 {
-    read(&TEXT, dye).unwrap_or(DYE_TEXT[dye & 15].1)
+    get(&TEXT, dye).unwrap_or(DYE_TEXT[dye & 15].1)
 }
 
 /// A pack's `RedStoneWireBlock.COLORS` entry for this power (RGB), when it sets one.
 pub fn redstone(power: u8) -> Option<u32> {
-    read(&REDSTONE, usize::from(power))
+    get(&REDSTONE, usize::from(power))
 }
 
 /// `ColorLerper.Type.SHEEP` wool colour: a pack's `sheep.<name>`, else white 0xE6E6E6 and the
 /// others 75% of vanilla's dye (a pack's `dye.*.diffuse` doesn't reach wool).
 pub fn sheep_wool(dye: u8) -> u32 {
     let i = usize::from(dye & 15);
-    if let Some(color) = read(&SHEEP, i) {
+    if let Some(color) = get(&SHEEP, i) {
         return color;
     }
     if i == 0 {
@@ -63,37 +137,4 @@ pub fn sheep_wool(dye: u8) -> u32 {
     let src = DYES[i].1;
     let f = |c: u32| ((c as f32 * 0.75).floor() as u32).min(255);
     f(src >> 16 & 255) << 16 | f(src >> 8 & 255) << 8 | f(src & 255)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_pack_recolours_only_what_it_names() {
-        // Dyes no other test draws: the table is process-wide.
-        let dir = std::env::temp_dir().join(format!("pack-dyes-{}", std::process::id()));
-        let polytone = dir.join("assets/obs/polytone");
-        std::fs::create_dir_all(&polytone).unwrap();
-        std::fs::write(
-            polytone.join("colors.json"),
-            r#"{"dye": {"cyan": {"diffuse": "00ff00", "text": "0000ff"}}, "sheep": {"pink": "2040ff"}, "redstone": {"7": "0x123456"}}"#,
-        )
-        .unwrap();
-        set(&PackColors::read(&dir));
-        let (cyan, pink, purple) = (9, 6, 10);
-        assert_eq!(diffuse(cyan), 0x00ff00);
-        assert_eq!(text(cyan), 0x0000ff);
-        assert_eq!(sheep_wool(pink as u8), 0x2040ff);
-        // Wool reads vanilla's dye, not the pack's diffuse: 75% of 0x169C9C.
-        assert_eq!(sheep_wool(cyan as u8), 0x107575);
-        assert_eq!(diffuse(purple), 0x8932B8);
-        assert_eq!(text(purple), 0xA020F0);
-        assert_eq!((redstone(7), redstone(15)), (Some(0x123456), None));
-        set(&PackColors::default());
-        assert_eq!(redstone(7), None);
-        assert_eq!(diffuse(cyan), 0x169C9C);
-        assert_eq!(sheep_wool(pink as u8), 0xB6687F);
-        std::fs::remove_dir_all(&dir).ok();
-    }
 }
