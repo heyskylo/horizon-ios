@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "whitelist_add", "target": "horizon_client::game::native_server::Game<'_>::native_whitelist_add"},
+    {"name": "whitelist_remove", "target": "horizon_client::game::native_server::Game<'_>::native_whitelist_remove"}
+  ],
+  "rust_summary": "adding and removing whitelist entries as the console's `whitelist add|remove` does (`native_whitelist_add`, `native_whitelist_remove`).",
+  "doc_summary": "`native_whitelist_add(uuid, name)` and `native_whitelist_remove(uuid, name)` change the dedicated server's whitelist file as `whitelist add` and `whitelist remove` do, and return whether it changed; removing disconnects the players no longer listed while the whitelist is on. False with no dedicated server. API @API:whitelist_edit@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

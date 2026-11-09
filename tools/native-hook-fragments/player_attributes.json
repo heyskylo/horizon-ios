@@ -1,11 +1,26 @@
 {
   "hooks": [],
   "helpers": [
-    {"name": "attribute", "target": "horizon_client::game::native_player_state::Game<'_>::native_attribute"},
-    {"name": "set_attribute_base", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_attribute_base"},
-    {"name": "set_attributes", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_attributes"}
+    {
+      "name": "attribute",
+      "target": "horizon_client::game::native_player_state::Game<'_>::native_attribute"
+    },
+    {
+      "name": "set_attribute_base",
+      "target": "horizon_client::game::native_player_state::Game<'_>::native_set_attribute_base"
+    },
+    {
+      "name": "set_attributes",
+      "target": "horizon_client::game::native_player_state::Game<'_>::native_set_attributes"
+    },
+    {
+      "name": "attribute_modifiers",
+      "target": "horizon_client::game::native_player_state::Game<'_>::native_attribute_modifiers"
+    }
   ],
-  "rust_summary": "a player's attribute read, its base set, or a saved `attributes` list loaded (`native_attribute`, `native_set_attribute_base`, `native_set_attributes`), as Bukkit's `AttributeInstance` and vanilla's `AttributeMap.load`.",
-  "doc_summary": "`native_attribute(uuid, attribute)` gives an attribute's base and full value (Bukkit's `AttributeInstance.getBaseValue`/`getValue`); `native_set_attribute_base(uuid, attribute, base)` sets the base as `/attribute .. base set`; `native_set_attributes(uuid, saved)` loads a saved `attributes` list as `AttributeMap.load`. Bundles need \"hooks\": @API:player_attributes@.",
-  "comments": ["crates/horizon-client/src/game/native_player_state.rs"]
+  "rust_summary": "a player's attribute read, its base set, a saved `attributes` list loaded, or their transient modifiers listed (`native_attribute`, `native_set_attribute_base`, `native_set_attributes`, `native_attribute_modifiers`), as Bukkit's `AttributeInstance` and vanilla's `AttributeMap.load`.",
+  "doc_summary": "`native_attribute(uuid, attribute)` gives an attribute's base and full value (Bukkit's `AttributeInstance.getBaseValue`/`getValue`); `native_set_attribute_base(uuid, attribute, base)` sets the base as `/attribute .. base set`; `native_set_attributes(uuid, saved)` loads a saved `attributes` list as `AttributeMap.load`; `native_attribute_modifiers(uuid)` lists the player's transient modifiers (not permanent ones) as `NativeAttributeModifier { attribute, id, amount, operation }`, operation 0 add, 1 add multiplied base, 2 add multiplied total. Bundles need \"hooks\": @API:player_attributes@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_player_state.rs"
+  ]
 }
