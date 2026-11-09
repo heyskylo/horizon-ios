@@ -8,10 +8,41 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
+/// The `environment` fog settings vanilla hardcodes, as the packs set them (vanilla's by default).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Environment {
+    /// `powder_snow_fog`: the fog colour inside powder snow (RGB).
+    pub powder_snow_fog: Option<u32>,
+    /// `blindness_fog_distance`, `darkness_fog_distance`, `boss_fog_distance`: the fog ends of
+    /// Blindness (5), Darkness (15) and bosses that add world fog (96).
+    pub blindness_fog_distance: f32,
+    pub darkness_fog_distance: f32,
+    pub boss_fog_distance: f32,
+    /// `water_fog_brightening`: how much the underwater fog colour washes out (1 vanilla, 0 none).
+    pub water_fog_brightening: f32,
+    /// `water_fog_brightening_time`: the ticks under water it takes (vanilla's 600).
+    pub water_fog_brightening_time: f32,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Self {
+            powder_snow_fog: None,
+            blindness_fog_distance: 5.0,
+            darkness_fog_distance: 15.0,
+            boss_fog_distance: 96.0,
+            water_fog_brightening: 1.0,
+            water_fog_brightening_time: 600.0,
+        }
+    }
+}
+
 /// Every pack's custom colours, by dotted key.
 #[derive(Clone, Debug, Default)]
 pub struct PackColors {
     entries: BTreeMap<String, Json>,
+    /// [`Self::environment`], read once with the packs: the fog reads it every frame.
+    pub env: Environment,
 }
 
 impl PackColors {
@@ -38,6 +69,7 @@ impl PackColors {
                 }
             }
         }
+        colors.env = colors.environment();
         colors
     }
 
@@ -148,6 +180,36 @@ impl PackColors {
             .collect()
     }
 
+    /// `environment.*`: the fog settings a pack replaces.
+    pub fn environment(&self) -> Environment {
+        let number = |key: &str, default: f32| {
+            match self.entries.get(&format!("environment.{key}")) {
+                Some(Json::Number(n)) => n.as_f64().map(|v| v as f32),
+                Some(Json::String(s)) => s.trim().parse().ok(),
+                _ => None,
+            }
+            .unwrap_or(default)
+        };
+        let vanilla = Environment::default();
+        Environment {
+            powder_snow_fog: self
+                .color("environment.powder_snow_fog")
+                .map(|c| c & 0xFF_FFFF),
+            blindness_fog_distance: number(
+                "blindness_fog_distance",
+                vanilla.blindness_fog_distance,
+            ),
+            darkness_fog_distance: number("darkness_fog_distance", vanilla.darkness_fog_distance),
+            boss_fog_distance: number("boss_fog_distance", vanilla.boss_fog_distance),
+            water_fog_brightening: number("water_fog_brightening", vanilla.water_fog_brightening),
+            water_fog_brightening_time: number(
+                "water_fog_brightening_time",
+                vanilla.water_fog_brightening_time,
+            )
+            .max(1.0),
+        }
+    }
+
     /// `entity_shadows`: false hides every entity's round shadow, whatever the video option says.
     pub fn entity_shadows(&self) -> bool {
         match self.entries.get("entity_shadows") {
@@ -243,6 +305,26 @@ mod tests {
             ]
         );
         assert_eq!((c.redstone(15), c.redstone(0)), (Some(0x00ff00), None));
+    }
+
+    #[test]
+    fn environment_keeps_vanillas_where_unset() {
+        let mut c = PackColors::default();
+        assert_eq!(c.environment(), Environment::default());
+        c.add_json(
+            "",
+            &json!({"environment": {"powder_snow_fog": "#c0c0d0", "blindness_fog_distance": 40, "water_fog_brightening_time": "200"}}),
+        );
+        let e = c.environment();
+        assert_eq!(e.powder_snow_fog, Some(0xc0c0d0));
+        assert_eq!(
+            (e.blindness_fog_distance, e.darkness_fog_distance),
+            (40.0, 15.0)
+        );
+        assert_eq!(
+            (e.water_fog_brightening, e.water_fog_brightening_time),
+            (1.0, 200.0)
+        );
     }
 
     #[test]
