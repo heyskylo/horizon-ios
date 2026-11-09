@@ -20,6 +20,11 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   is the GitHub account the PR is opened from (`gh api user --jq .login`). Issues say "Filed by", reviews
   "Review by". Every comment starts with `🤖 Agent:`. Write only as the person you work for: the lines on
   this page that name Ludovic are for his own agents (account `ludovic111`), never for anyone else's.
+- **Review only when asked, and post only findings.** Review or comment on a pull request only when its author
+  or a maintainer asks for that pull request; never sweep the open pull requests. Post what someone can act on,
+  with the file and line, as a real review: Request changes for what must be fixed, Approve once you checked the
+  change. A review that found nothing isn't posted. A maintainer's own agents may run wider passes when that
+  maintainer asks ([who merges](docs/release-flow.md#merging)).
 - **Attribution.** Commits end with a `Co-Authored-By:` line for the agent that wrote them, and PR bodies
   with that agent's own "Generated with" line. Example, Ludovic's agents (Claude Code on `ludovic111`):
   first line `> 🤖 Opened by Ludovic's AI agent (Claude), not by Ludovic himself.`, commits
