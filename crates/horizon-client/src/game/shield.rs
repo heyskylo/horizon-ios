@@ -171,7 +171,9 @@ impl Game<'_> {
             && !self.creative
             && let Some(max) = blocking_item_max_damage(
                 &stack,
-                self.items().get(&stack.item).map_or(0, |i| i.max_damage),
+                self.items()
+                    .get(&stack.item)
+                    .map_or(0, |item| item.max_damage),
             )
         {
             let loss = self.wear(&stack, item_damage as u32);
@@ -319,22 +321,27 @@ impl Game<'_> {
     }
 }
 
-/// Built-in damageable blocking items' max damage, with component overrides
-/// checked before enchantment RNG and hooks. Nondamageable prototypes stay
-/// excluded: MAX_DAMAGE alone does not supply the required DAMAGE component.
-fn blocking_item_max_damage(stack: &ItemStack, default: u32) -> Option<u32> {
-    let component = |id| stack.data().and_then(|data| data.other(id));
+/// `ItemStack.isDamageableItem` and `getMaxDamage` for the blocking stack.
+fn blocking_item_max_damage(stack: &ItemStack, prototype_max: u32) -> Option<u32> {
+    let data = stack.data();
+    let component = |id| data.and_then(|data| data.other(id));
     if stack.count == 0
-        || default == 0
         || component("minecraft:unbreakable").is_some()
         || component("!minecraft:max_damage").is_some()
         || component("!minecraft:damage").is_some()
     {
         return None;
     }
+    // A non-damageable prototype supplies neither MAX_DAMAGE nor DAMAGE.
+    if prototype_max == 0
+        && stack.damage == 0
+        && !data.is_some_and(|data| data.explicit_zero_damage)
+    {
+        return None;
+    }
     let max = match component("minecraft:max_damage") {
-        Some(horizon_world::nbt::Tag::Int(value)) => u32::try_from(*value).ok()?,
-        _ => default,
+        Some(value) => horizon_world::datafix::dynamic::as_int(Some(value), 0).max(0) as u32,
+        None => prototype_max,
     };
     (max > 0).then_some(max)
 }
