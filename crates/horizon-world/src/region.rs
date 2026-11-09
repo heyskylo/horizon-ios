@@ -577,7 +577,9 @@ mod tests {
     fn naive_first_fit(used: &[bool], count: usize) -> usize {
         let mut current = 0;
         loop {
-            let start = (current..used.len()).find(|&s| !used[s]).unwrap_or(used.len());
+            let start = (current..used.len())
+                .find(|&s| !used[s])
+                .unwrap_or(used.len());
             let end = (start..used.len()).find(|&s| used[s]);
             if end.is_none_or(|end| end - start >= count) {
                 return start;
@@ -588,14 +590,17 @@ mod tests {
 
     #[test]
     fn allocation_matches_first_fit_from_zero() {
-        let dir = std::env::temp_dir().join(format!("horizon-region-first-free-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("horizon-region-first-free-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("r.0.0.mca");
         let mut region = RegionFile::open_writable(&path, true).unwrap();
 
         let mut seed = 0x1234_5678u64;
         let mut next = move || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) as usize
         };
         for op in 0..120 {
@@ -632,6 +637,6 @@ mod tests {
             assert_eq!(region.used, naive);
             assert_eq!(region.first_free, naive_first_fit(&naive, 1));
         }
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
