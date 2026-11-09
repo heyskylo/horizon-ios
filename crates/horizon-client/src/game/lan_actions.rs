@@ -2178,11 +2178,7 @@ impl Game<'_> {
         // takes those) is for the mods, from a dead player too: vanilla's handleCustomPayload doesn't
         // look at health.
         let packet = match packet {
-            S::CustomPayload(p)
-                if p.channel != horizon_protocol::quiet::CHANNEL
-                    && p.channel != horizon_protocol::mod_net::CHANNEL
-                    && p.channel != horizon_client::lod_net::CHANNEL =>
-            {
+            S::CustomPayload(p) if !horizon_channel(&p.channel) => {
                 self.guest_custom_payload(host, conn, p.channel, p.data);
                 return;
             }
@@ -6512,39 +6508,8 @@ fn first_spin_target(
 }
 
 #[cfg(test)]
-mod spin_target_tests {
-    use super::first_spin_target;
-    use horizon_core::geometry::{Aabb, Vec3};
-
-    fn cube(x: f64) -> Aabb {
-        Aabb::new(Vec3::new(x, 0.0, 0.0), Vec3::new(x + 1.0, 1.0, 1.0))
-    }
-
-    /// The spin hits the first mob in the swept box, not a removed one, the
-    /// vehicle, or one out of reach.
-    #[test]
-    fn the_spin_picks_the_first_live_mob_in_the_sweep() {
-        let swept = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 1.0, 1.0));
-        let targets = [
-            (1, false, cube(10.0)),
-            (2, true, cube(1.0)),
-            (3, false, cube(1.5)),
-            (4, false, cube(2.0)),
-        ];
-        assert_eq!(
-            first_spin_target(swept, None, targets.iter().copied()),
-            Some(2)
-        );
-        assert_eq!(
-            first_spin_target(swept, Some(3), targets.iter().copied()),
-            Some(3)
-        );
-        assert_eq!(
-            first_spin_target(swept, None, targets[..2].iter().copied()),
-            None
-        );
-    }
-}
+#[path = "spin_target_tests.rs"]
+mod spin_target_tests;
 
 #[cfg(test)]
 mod respawn_world_point_tests {
@@ -7237,6 +7202,37 @@ mod guest_close_listener_tests {
             "actual ordinary guest final close must be heard: {missing:?}"
         );
         drop(receivers);
+    }
+}
+
+/// Whether a guest's plugin channel message is for one of Horizon's own handlers in
+/// `lan_guest_packet` (its `CustomPayload` arms), not for the mods.
+fn horizon_channel(channel: &str) -> bool {
+    [
+        horizon_protocol::quiet::CHANNEL,
+        horizon_protocol::mod_net::CHANNEL,
+        horizon_client::lod_net::CHANNEL,
+        horizon_client::lan::recipes::TRANSFER_CHANNEL,
+    ]
+    .contains(&channel)
+}
+
+#[cfg(test)]
+mod horizon_channel_tests {
+    use super::horizon_channel;
+
+    #[test]
+    fn horizon_channels_reach_their_handlers_and_others_go_to_the_mods() {
+        // The recipe viewer's transfer (`native_transfer_recipe`) was handed to the mods
+        // before its own arm could run, so a viewer's "+" never reached the server.
+        assert!(horizon_channel(
+            horizon_client::lan::recipes::TRANSFER_CHANNEL
+        ));
+        assert!(horizon_channel(horizon_protocol::quiet::CHANNEL));
+        assert!(horizon_channel(horizon_protocol::mod_net::CHANNEL));
+        assert!(horizon_channel(horizon_client::lod_net::CHANNEL));
+        assert!(!horizon_channel("mymod:hello"));
+        assert!(!horizon_channel("minecraft:brand"));
     }
 }
 
