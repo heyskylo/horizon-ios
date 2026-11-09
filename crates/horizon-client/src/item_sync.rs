@@ -138,6 +138,17 @@ pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
     out
 }
 
+/// `Consumable.consumeSeconds` from the stack's `consumable` component.
+pub fn consumable_seconds(stack: &ItemStack) -> Option<f32> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    data.and_then(|d| d.other("minecraft:consumable"))
+        .map(|consumable| {
+            horizon_world::datafix::dynamic::as_float(consumable.get("consume_seconds"), 1.6)
+        })
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
