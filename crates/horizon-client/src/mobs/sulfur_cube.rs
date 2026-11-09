@@ -1330,11 +1330,12 @@ impl Goal for SulfurTempt {
                 }
             })
         };
-        // Attributes.TEMPT_RANGE 8.
+        // Attributes.TEMPT_RANGE 8, scaled by visibility (floor 2).
+        let range = (8.0 * p.visibility_percent(Some(m.kind.id.as_str()), cx.w.items)).max(2.0);
         let ok = p.alive
             && !p.spectator
             && (wants(&p.main_hand) || wants(&p.off_hand))
-            && m.distance_sqr(p.position) <= 64.0;
+            && m.distance_sqr(p.position) <= range * range;
         self.player = ok.then_some(p.eye);
         ok
     }
