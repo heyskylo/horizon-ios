@@ -21,7 +21,7 @@ use horizon_cosmetics::prefs::{self, Others};
 use horizon_cosmetics::trail::{Budget, Emitter};
 use horizon_cosmetics::{Item, Slot};
 use horizon_hooks::players::{
-    Badge, Bone, CameraOverride, CameraView, Frame, Gear, Kind, Mark, Mesh, NameDecoration,
+    Badge, Bone, CameraOverride, CameraView, Frame, Gear, Kind, Look, Mark, Mesh, NameDecoration,
     PlayerDraw, PlayerModel, PlayerModels, Quad, SpriteStore, Sprites,
 };
 use std::cell::{Cell, RefCell};
@@ -831,7 +831,7 @@ impl Seat {
                         matrix
                     }
                 };
-                draw.draw(&mesh, matrix, uv, &mut |p| {
+                draw.draw(&mesh, matrix, Look::new(uv), &mut |p| {
                     item.animate(ticks, |name, pose| *p.pose(name) = pose);
                     if let (Some((t, w)), Some(e)) = (emoting, &item.emote) {
                         e.pose_props(t, |n| item.rest(n), |n, pose| *p.pose(n) = pose);
@@ -1480,6 +1480,22 @@ mod tests {
         fn ticks(&self) -> f32 {
             102.0
         }
+        fn base(&self) -> [[f32; 4]; 4] {
+            LEFT_ARM
+        }
+        fn motion(&self) -> horizon_hooks::players::Motion {
+            Default::default()
+        }
+        fn view(&self) -> horizon_hooks::players::View {
+            Default::default()
+        }
+        fn particles(
+            &mut self,
+            _: [f32; 4],
+            _: &[horizon_hooks::players::Particle],
+            _: horizon_hooks::players::Light,
+        ) {
+        }
         fn bone(&mut self, bone: Bone) -> Option<[[f32; 4]; 4]> {
             (bone == Bone::LeftArm).then_some(LEFT_ARM)
         }
@@ -1493,7 +1509,7 @@ mod tests {
             &mut self,
             mesh: &Arc<Mesh>,
             matrix: [[f32; 4]; 4],
-            uv: [f32; 4],
+            look: Look,
             pose: &mut dyn FnMut(&mut dyn horizon_hooks::players::PartPoses),
         ) {
             struct Rest(std::collections::HashMap<String, [f32; 9]>);
@@ -1505,8 +1521,12 @@ mod tests {
             let mut rest = Rest([(mesh.name.clone(), mesh.pose)].into());
             pose(&mut rest);
             let root = rest.0[&mesh.name];
-            self.drawn
-                .push((mesh.name.clone(), matrix, uv, [root[6], root[7], root[8]]));
+            self.drawn.push((
+                mesh.name.clone(),
+                matrix,
+                look.uv,
+                [root[6], root[7], root[8]],
+            ));
         }
     }
 
