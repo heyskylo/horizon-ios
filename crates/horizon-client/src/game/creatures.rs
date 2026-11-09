@@ -4546,13 +4546,7 @@ impl Game<'_> {
         // The impacts the mods may cancel (`native_projectile_impact`), on a server.
         let hear = self.native_hears_impacts();
         let mut impacts: Vec<Impact> = Vec::new();
-        // The wind charges that met a boat or a minecart, as they were before
-        // this tick: one whose vehicle an earlier charge of the tick breaks
-        // ticks again without it (`broken_vehicle_retick`).
-        let vehicles: Vec<u32> = (self.boats.iter().map(|b| b.id))
-            .chain(self.carts.iter().map(|c| c.id))
-            .collect();
-        let mut vehicle_winds: Vec<Projectile> = Vec::new();
+        let mut vehicle_winds = self.vehicle_winds();
         {
             let targets = self.projectile_targets();
             let breezes: Vec<u32> = self
@@ -4660,13 +4654,7 @@ impl Game<'_> {
                 };
                 // The projectile as it was, to fly on if a mod cancels its impact.
                 let before = (hear && !p.stuck).then(|| p.clone());
-                let wind_before = (!vehicles.is_empty()
-                    && p.guest.is_none()
-                    && matches!(
-                        p.kind,
-                        ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
-                    ))
-                .then(|| p.clone());
+                let wind_before = vehicle_winds.before(p);
                 let mob_shot = !matches!(p.owner, Some(Who::Player));
                 // A player's arrows, snowballs and eggs meet every player; a
                 // guest's flies from that guest (Projectile.getOwner), not
@@ -4801,14 +4789,7 @@ impl Game<'_> {
                     keep_flags[i] = false;
                     continue;
                 }
-                if let Hit::Entity {
-                    who: Who::Mob(id), ..
-                } = hit
-                    && vehicles.contains(&id)
-                    && let Some(wind_before) = wind_before
-                {
-                    vehicle_winds.push(wind_before);
-                }
+                vehicle_winds.met(wind_before, hit);
                 if hit != Hit::None {
                     if let Some(before) = before {
                         impacts.push(Impact {
@@ -4910,62 +4891,6 @@ impl Game<'_> {
         self.flush_lan_explosions();
         self.flush_wind_bursts()
     }
-    /// The hit to resolve for `p`. Vanilla ticks its entities one after the
-    /// other, so a wind charge never meets a boat or a minecart that an earlier
-    /// charge of the same tick broke (`Entity.canBeHitByProjectile`: alive):
-    /// it flies on to the next one in its way, or past. Here the tick's hits
-    /// were all found first, so such a charge (`winds` holds it as it was
-    /// before the tick) ticks again now, without the broken vehicle. None: it
-    /// met nothing this time and flies on.
-    fn broken_vehicle_retick(
-        &mut self,
-        p: Projectile,
-        hit: Hit,
-        winds: &mut Vec<Projectile>,
-    ) -> Option<(Projectile, Hit)> {
-        let Hit::Entity {
-            who: Who::Mob(id), ..
-        } = hit
-        else {
-            return Some((p, hit));
-        };
-        let Some(k) = winds.iter().position(|w| w.id == p.id) else {
-            return Some((p, hit));
-        };
-        let mut again = winds.swap_remove(k);
-        if self.boats.iter().any(|b| b.id == id) || self.carts.iter().any(|c| c.id == id) {
-            return Some((p, hit));
-        }
-        let mut targets = self.projectile_targets();
-        if again.owner != Some(Who::Player) || super::lan_pvp::meets_players(&again.kind) {
-            targets.extend(self.lan_projectile_targets());
-        }
-        let border = Some(self.border.bounds());
-        let (mut keep, mut hit) = {
-            let w = self.mob_world_base(&[]);
-            again.tick(&ProjWorld {
-                w: &w,
-                targets,
-                border,
-            })
-        };
-        // The first run of this tick already gave these.
-        again.take_shoot_event();
-        again.bubble_surfaces.clear();
-        // AbstractWindCharge.tick: out of the world's top it bursts.
-        if keep && again.position.y > 350.0 {
-            keep = false;
-            hit = Hit::Block {
-                pos: [0; 3],
-                at: again.position,
-                face: [0; 3],
-            };
-        }
-        if keep {
-            self.add_projectile(again.clone());
-        }
-        (hit != Hit::None).then_some((again, hit))
-    }
     /// `LivingEntity.hurtServer`'s `setLastHurtByPlayer` for a projectile a
     /// player owns (a fireball they turned back): the kill is theirs, so a
     /// guest's (the host on its server thread too) reaches their statistics
@@ -5053,17 +4978,6 @@ impl Game<'_> {
             &mut self.world.random,
             8.0,
         )
-    }
-    /// A projectile's hurt of `amount` on the boat or minecart `id`
-    /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
-    /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
-    pub(super) fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
-        let creative = p.owner == Some(Who::Player) && self.creative;
-        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-            self.hurt_boat(i, amount, creative);
-        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            self.hurt_cart(i, amount, creative, false);
-        }
     }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
     /// rings it, and a player's shot counts as the player's ring.
