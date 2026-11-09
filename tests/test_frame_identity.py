@@ -117,8 +117,9 @@ class SessionCheckTests(unittest.TestCase):
 
     def test_a_pack_that_changes_nothing_and_hdr_that_stays_off_are_reported(self):
         scenes = identity.SESSIONS['golden_hour'][2]
-        for scene in scenes:
+        for scene in identity.SESSIONS['vanilla'][2]:
             self.shot(f'vanilla.{scene}.png')
+        for scene in scenes:
             self.shot(f'golden_hour.{scene}.png')
         for scene in identity.SESSIONS['hdr_toggle'][2]:
             self.shot(f'hdr_toggle.{scene}.png')
@@ -137,8 +138,9 @@ class SessionCheckTests(unittest.TestCase):
 
     def test_sessions_that_did_their_job_pass(self):
         other = [bytes(255 - v for v in r) for r in self.rows]
-        for scene in identity.SESSIONS['golden_hour'][2]:
+        for scene in identity.SESSIONS['vanilla'][2]:
             self.shot(f'vanilla.{scene}.png')
+        for scene in identity.SESSIONS['golden_hour'][2]:
             self.shot(f'golden_hour.{scene}.png', other)
         for scene in identity.SESSIONS['golden_hour_hdr'][2]:
             self.shot(f'golden_hour_hdr.{scene}.png', other)
@@ -169,6 +171,53 @@ class SessionCheckTests(unittest.TestCase):
                          ["float_visbuffer: the visibility buffer didn't run"])
         (self.dir / 'float_visbuffer.log').write_text('drawing through a visibility buffer')
         self.assertEqual(identity.session_checks(self.dir, ['float_visbuffer']), [])
+
+
+class HdrGateTests(unittest.TestCase):
+    """The HDR gates' arithmetic, against the standards and the shader's own checkpoints, and what they report."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_pq_is_st_2084(self):
+        # 🤖 Agent: SMPTE ST 2084's signal at 0, 100, 203 (ITU-R BT.2408's reference white, 58%), 1000 and 10 000 nits.
+        for nits, signal in ((0, 0.0), (100, 0.5081), (203, 0.5807), (1000, 0.7518), (10000, 1.0)):
+            self.assertAlmostEqual(identity.pq(nits), signal, places=4)
+
+    def test_unshoulder_inverts_the_screenshot_shoulder(self):
+        # 🤖 Agent: hdr.rs sdr_screenshots_roll_off_the_world_and_keep_the_hud_as_drawn's checkpoints, light to shot.
+        for light, shot in ((0.5, 0.5), (1.0, 0.8), (2.0, 0.9111111), (4.0, 0.9578947), (8.0, 0.9794872)):
+            for got, want in zip(identity.unshoulder([shot, shot / 2, 0.0]), (light, light / 2, 0.0)):
+                self.assertAlmostEqual(got, want, places=4)
+
+    def unlit(self, sdr, hdr):
+        """Every float_unlit scene shot as `sdr` with its HDR shot `hdr`, and HDR off's as `self.vanilla`."""
+        for scene in identity.SESSIONS['float_unlit'][2]:
+            encode(self.dir / f'vanilla.{scene}.png', 4, 4, 8, self.vanilla, 0)
+            encode(self.dir / f'float_unlit.{scene}.png', 4, 4, 8, sdr, 0)
+            encode(self.dir / f'float_unlit.{scene}-hdr.png', 4, 4, 16, hdr, 0)
+        return identity.hdr_gates(self.dir, ['vanilla', 'float_unlit'])
+
+    def hdr(self, rows, darker=0):
+        """The HDR10 shot of SDR `rows` at 203 nits, as the game writes it (10 bits in 16), `darker` codes down."""
+        def word(code):
+            code = max(round(code) - darker, 0)
+            return (code << 6 | code >> 4).to_bytes(2, 'big')
+        return [b''.join(word(c) for x in range(4) for c in identity.hdr10(
+            [(v / 255) ** 2.2 for v in row[3 * x:3 * x + 3]], 203)) for row in rows]
+
+    def test_hdr_lighting_off_must_be_sdr(self):
+        self.vanilla = picture(4, 4, 8)
+        self.assertEqual(self.unlit(self.vanilla, self.hdr(self.vanilla)), [])
+        # 🤖 Agent: A step of rounding apart is the float frame's; HDR off's picture is no longer the oracle for hud_sun.
+        stepped = [bytes(min(v + 1, 255) for v in r) for r in self.vanilla]
+        self.assertEqual(self.unlit(stepped, self.hdr(stepped)), [])
+        darker = self.unlit(self.vanilla, self.hdr(self.vanilla, darker=8))
+        self.assertEqual(len(darker), len(identity.SESSIONS['float_unlit'][2]))
+        self.assertIn('the HDR shot isn\'t its SDR screenshot\'s picture: 16 pixels', darker[0])
+        moved = [bytes(min(v + 3, 255) for v in r) for r in self.vanilla]
+        self.assertEqual([p for p in self.unlit(moved, self.hdr(moved)) if 'hud_sun' in p], [])
+        self.assertIn('the SDR screenshot isn\'t HDR off\'s within rounding', self.unlit(moved, self.hdr(moved))[0])
 
 
 class BaseTests(unittest.TestCase):
