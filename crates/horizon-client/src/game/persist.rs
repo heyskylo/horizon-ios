@@ -163,22 +163,27 @@ fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
 }
 /// The loaded compound underneath the fields Horizon models: what the entity was
 /// loaded with, with every key of `modelled` replacing its loaded value.
-pub(super) fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
-    let (Some(Tag::Compound(raw)), Tag::Compound(modelled)) = (raw, &modelled) else {
-        return modelled;
-    };
-    let mut out = raw.clone();
-    for (k, v) in modelled {
-        // Defaults Horizon invents for fields it does not simulate give way to the save.
-        let invented = matches!(
-            k.to_string_lossy().as_str(),
-            "Fire" | "Air" | "Invulnerable" | "PortalCooldown" | "HasBeenShot"
-        );
-        if !(invented && out.contains_key(k)) {
-            out.insert(k.clone(), v.clone());
+pub(super) fn with_raw(mut modelled: Tag, raw: Option<&Tag>) -> Tag {
+    if let (Some(Tag::Compound(raw)), Tag::Compound(fields)) = (raw, &modelled) {
+        let mut out = raw.clone();
+        for (key, value) in fields {
+            // Defaults Horizon invents for fields it does not simulate give way to the save.
+            let invented = matches!(
+                key.to_string_lossy().as_str(),
+                "Fire" | "Air" | "Invulnerable" | "PortalCooldown" | "HasBeenShot"
+            );
+            if !(invented && out.contains_key(key)) {
+                out.insert(key.clone(), value.clone());
+            }
         }
+        modelled = Tag::Compound(out);
     }
-    Tag::Compound(out)
+    // The overlay may restore raw bytes for fields whose false value the
+    // live writer omitted. Entity.saveWithoutId always writes booleans.
+    let on_ground = entity_nbt::flag(&modelled, "OnGround");
+    let no_gravity = entity_nbt::flag(&modelled, "NoGravity");
+    entity_nbt::write_saved_flags(&mut modelled, on_ground, no_gravity);
+    modelled
 }
 
 fn read_attachments(
@@ -695,13 +700,20 @@ impl Game<'_> {
     }
 
     /// A saved llama spit or shulker bullet.
-    pub(super) fn load_spit_or_bullet(&mut self, tag: Tag, player_uuid: Option<[i32; 4]>) {
+    pub(super) fn load_spit_or_bullet(
+        &mut self,
+        tag: Tag,
+        uuid: Option<[i32; 4]>,
+        player_uuid: Option<[i32; 4]>,
+    ) {
         let target = self.bullet_target(&tag);
         if let Some(mut p) = entity_nbt::spit_or_bullet_from_nbt(&tag, player_uuid, target) {
             self.claim_owner(&mut p);
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
+            // Entity.load: the saved or summoned UUID, as the other projectiles keep theirs.
+            self.remember_uuid(p.id, uuid, &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }
@@ -783,6 +795,7 @@ impl Game<'_> {
                 },
                 drop_item,
                 fall_distance,
+                on_ground: entity_nbt::flag(&tag, "OnGround"),
                 stuck: Vec3::ZERO,
                 damage: horizon_client::falling_block::Damage::from_nbt(
                     &tag,
@@ -892,6 +905,7 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+            b.on_ground = entity_nbt::flag(&tag, "OnGround");
             b.fire_ticks = super::boats::saved_fire(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
             // Entity.load: OnGround and fall_distance, as saved.
@@ -1688,6 +1702,7 @@ impl Game<'_> {
         for key in [
             "Silent",
             "Glowing",
+            "HasVisualFire",
             "Invulnerable",
             "CustomName",
             "CustomNameVisible",
@@ -2287,6 +2302,7 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
+            f.on_ground,
             f.rotation,
             uuid,
         );

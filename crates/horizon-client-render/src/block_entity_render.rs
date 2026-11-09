@@ -1459,27 +1459,37 @@ impl BlockEntityRenderer {
         registry: &BlockRegistry,
         visibility: FaceVisibility,
     ) -> Result<Self> {
-        Self::load_with_visibility_inner(root, registry, visibility, None)
+        Self::load_with_visibility_inner(root, registry, visibility, None, None)
     }
 
-    /// Load with item defaults already decoded by the resource bootstrap.
-    /// Passing them avoids a second `items.json` decode and native-hook pass.
-    pub fn load_with_visibility_and_defaults(
+    /// Load from what the client startup batch already decoded: its entity-model
+    /// document (none reads `entity-models.json`) and the item defaults, avoiding a
+    /// second read and decode of either.
+    pub fn load_with_visibility_models_and_defaults(
         root: &Path,
         registry: &BlockRegistry,
         visibility: FaceVisibility,
+        models: Option<&Value>,
         defaults: &horizon_world::item_defaults::Defaults,
     ) -> Result<Self> {
-        Self::load_with_visibility_inner(root, registry, visibility, Some(defaults))
+        Self::load_with_visibility_inner(root, registry, visibility, models, Some(defaults))
     }
 
     fn load_with_visibility_inner(
         root: &Path,
         registry: &BlockRegistry,
         visibility: FaceVisibility,
+        models: Option<&Value>,
         defaults: Option<&horizon_world::item_defaults::Defaults>,
     ) -> Result<Self> {
-        let all: Value = serde_json::from_slice(&std::fs::read(root.join("entity-models.json"))?)?;
+        let owned_models = if models.is_none() {
+            Some(serde_json::from_slice(&std::fs::read(
+                root.join("entity-models.json"),
+            )?)?)
+        } else {
+            None
+        };
+        let all = models.or(owned_models.as_ref()).expect("entity models");
         let models = MODELS
             .iter()
             .filter_map(|(key, layer)| all.get(*layer).map(|v| (*key, ModelPart::parse(v))))

@@ -104,7 +104,7 @@ fn early_registration_keeps_saved_ticks_and_ticks_nothing() {
     let key = (80, 80);
     assert!(game.run_command("forceload add 1280 1280"));
     let saved = SavedTick {
-        kind: TickTypeId(horizon_world::fluid::FluidKind::Water as u32),
+        kind: TickTypeId(horizon_world::fluid::FluidKind::Water.index() as u32),
         pos: horizon_core::position::BlockPos::new(1285, 101, 1285),
         delay: 3,
         priority: TickPriority::Normal,
@@ -163,7 +163,7 @@ fn saved_block_and_fluid_ticks_unpack_when_the_chunk_starts_ticking() {
         priority: TickPriority::Normal,
     };
     let fluid = SavedTick {
-        kind: TickTypeId(horizon_world::fluid::FluidKind::Water as u32),
+        kind: TickTypeId(horizon_world::fluid::FluidKind::Water.index() as u32),
         pos: at(101),
         delay: 3,
         priority: TickPriority::Normal,

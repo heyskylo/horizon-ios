@@ -36,9 +36,9 @@ ChunkMap.onLevelChange	port	crates/horizon-client-render/src/streaming.rs::Strea
 ChunkMap.close	port	crates/horizon-client-render/src/streaming.rs::Streaming::drop	waits for saves in flight
 ChunkMap.saveAllChunks	port	crates/horizon-client/src/game.rs::Game::save_level	modified chunks only; wait picks the flushing form
 ChunkMap.hasWork	port	crates/horizon-client-render/src/streaming.rs::Streaming::busy	
-ChunkMap.processUnloads	inline	crates/horizon-client/src/game.rs::Game::update_world	unloaded columns: modified ones saved, entities and block entities dropped
+ChunkMap.processUnloads	inline	crates/horizon-client/src/game/world_update.rs::Game::update_world	unloaded columns: modified ones saved, entities and block entities dropped
 ChunkMap.saveChunksEagerly	port	crates/horizon-client/src/game.rs::Game::save_chunks_eagerly	ordered dirty queue; per-level cooldown, tick-time and active chunk write gates
-ChunkMap.scheduleUnload	inline	crates/horizon-client/src/game.rs::Game::update_world	save if modified, unload entities and block entities
+ChunkMap.scheduleUnload	inline	crates/horizon-client/src/game/world_update.rs::Game::update_world	save if modified, unload entities and block entities
 ChunkMap.promoteChunkMap	skip:java		copy of the holder map for the main thread; Horizon has one chunk map
 ChunkMap.scheduleChunkLoad	port	crates/horizon-client-render/src/streaming.rs::ChunkGenerator::load	the Generate job loads a saved final chunk, else a proto is made
 ChunkMap.handleChunkLoadFailure	inline	crates/horizon-client/src/save.rs::SaveDir::load	gap: minor: an unreadable record gives None and the column is generated again with no failure report
