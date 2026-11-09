@@ -47,7 +47,7 @@ pub trait Hooks: Sync {
     /// Once a frame, before drawing: `sprites` takes the pictures the crate's
     /// [`players::Sprites`] lacked. Only a window's game calls it (each splitscreen player in
     /// turn, [`seat`]), never the integrated server's thread or a dedicated server; so are the
-    /// methods below.
+    /// player methods below (not [`Hooks::tunnel`]).
     fn frame(&self, _frame: &players::Frame, _sprites: &mut dyn players::SpriteStore) {}
 
     /// Once a client tick while a world is shown: the player models in view.
