@@ -30,6 +30,9 @@ PRODUCTION = [
     'crates/horizon-client/src/game/potions.rs',
     'crates/horizon-client/src/game/splash_water.rs',
 ]
+EXTRA_SOURCE_GUARDS = [
+    'crates/horizon-client/src/game/potions/sound_on_added_tests.rs',
+]
 REGISTRATION = '\n#[cfg(test)]\n#[path = "potion_contents_fixture.rs"]\nmod contents_fixture;\n'
 
 
@@ -156,6 +159,7 @@ def main():
         def native_run(label):
             (build/(label+'.log')).unlink(missing_ok=True)
             provenance['production_source_sha256']={path:sha((root/path).read_bytes()) for path in PRODUCTION}
+            provenance['additional_source_sha256']={path:sha((root/path).read_bytes()) for path in EXTRA_SOURCE_GUARDS}
             command=['cargo','test','-p','horizon-client','--lib','--no-run','--message-format=json']
             run(command,label+'-build',env)
             artifacts=[]
@@ -168,6 +172,8 @@ def main():
                     artifacts.append(Path(message['executable']).resolve())
             assert len(set(artifacts))==1, ('expected exactly one gameplay library test artifact',artifacts)
             binary=artifacts[0]
+            provenance['native_binary_path']=str(binary)
+            provenance['native_binary_sha256']=lab.digest(binary,'sha256')
             run([binary,'--list'],label+'-list',env,cwd=scratch,timeout=30)
             assert TEST+': test' in (build/(label+'-list.log')).read_text(), 'exact fixture not registered'
             result=build/(a.phase+'.json'); result.unlink(missing_ok=True)
@@ -178,7 +184,9 @@ def main():
             observed=json.loads(result.read_text())
             assert len(observed)==len(rows), 'native row count changed'
             assert observed==json.loads(expected.read_text()), 'native output differs from pinned methods'
+            assert provenance['native_binary_sha256']==lab.digest(binary,'sha256'), 'native binary changed during run'
             assert provenance['production_source_sha256']=={path:sha((root/path).read_bytes()) for path in PRODUCTION}, 'production source changed during run'
+            assert provenance['additional_source_sha256']=={path:sha((root/path).read_bytes()) for path in EXTRA_SOURCE_GUARDS}, 'additional guarded source changed during run'
         if a.phase=='baseline':
             before={path:sha((root/path).read_bytes()) for path in PRODUCTION}
             try:
