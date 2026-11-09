@@ -47,9 +47,11 @@ pub use horizon_server_files as server_files;
 /// in"). The engine's dispatch side is not part of the API.
 pub mod hooks {
     /// The players the game shows (`horizon_hooks::players`): the views [`Hooks::frame`] and
-    /// [`Hooks::tick`] get, and the pose a crate lays over a player's body.
+    /// [`Hooks::tick`] get, the pose a crate lays over a player's body, what goes by their names,
+    /// the crate's sprites and the camera.
     pub use horizon_hooks::players::{
-        BODY_PARTS, BodyPose, Frame, Kind, PlayerModel, PlayerModels,
+        BODY_PARTS, Badge, BodyPose, CameraOverride, CameraView, Frame, Gear, Kind, Mark,
+        NameDecoration, PlayerModel, PlayerModels, SpriteStore, Sprites,
     };
     pub use horizon_hooks::{Hooks, Started, TooLate, register, seat, tunnel};
 }

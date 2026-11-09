@@ -20,7 +20,7 @@ use horizon_cosmetics::follow::Follow;
 use horizon_cosmetics::prefs::{self, Others};
 use horizon_cosmetics::trail::{Budget, Emitter};
 use horizon_cosmetics::{Item, Slot};
-use horizon_hooks::players::{Frame, Kind, PlayerModel, PlayerModels};
+use horizon_hooks::players::{Frame, Kind, PlayerModel, PlayerModels, SpriteStore};
 use std::cell::{Cell, RefCell};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -496,7 +496,7 @@ pub(super) struct Hooks;
 pub(super) static HOOKS: Hooks = Hooks;
 
 impl horizon_hooks::Hooks for Hooks {
-    fn frame(&self, _frame: &Frame) {
+    fn frame(&self, _frame: &Frame, _sprites: &mut dyn SpriteStore) {
         service(Seat::frame);
     }
 
