@@ -66,7 +66,7 @@ KeyboardHandler.charTyped	port	crates/horizon-client/src/game/window_handler.rs:
 KeyboardHandler.textInput	port	crates/horizon-client/src/game/window_handler.rs::Game::window_event	typed text routed to the open screen
 KeyboardHandler.textEditing	port	crates/horizon-client/src/game/ime.rs::Game::ime_preedit	WindowEvent::Ime(Preedit) draws the composition in the focused field
 KeyboardHandler.submitPreeditEvent	inline	crates/horizon-client-render/src/preedit.rs::set_preedit	the preedit reaches the screen's field directly, and Commit types the text
-Minecraft.<init>	inline	crates/horizon-client/src/game.rs::run_loading	the last start's startedCleanly is read by unclean_start_recovery (fullscreen dropped when it is false), then this start is marked unfinished until the handoff
+Minecraft.<init>	inline	crates/horizon-client/src/game/resource_loader.rs::run_loading	the last start's startedCleanly is read by unclean_start_recovery (fullscreen dropped when it is false), then this start is marked unfinished until the handoff
 Minecraft.onGameLoadFinished	inline	crates/horizon-client/src/game/loading_screen.rs::Loading::finish	the handoff's last two steps: startedCleanly set true and the options saved; the initial screens come from the menu handoff and there is no load-time telemetry
 Minecraft.createTitle	missing		minor: the window title is always Horizon (with_title in game.rs), no version or world type
 Minecraft.createUserApiService	skip:service		

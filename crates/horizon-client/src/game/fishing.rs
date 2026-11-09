@@ -25,6 +25,9 @@ use std::{collections::HashMap, sync::Arc};
 use super::lan_actions::GuestPlay;
 
 #[cfg(test)]
+#[path = "fishing_block_hit_tests.rs"]
+mod block_hit_tests;
+#[cfg(test)]
 #[path = "fishing_medium_tests.rs"]
 mod medium_tests;
 
@@ -1057,7 +1060,12 @@ impl Game<'_> {
                 } else if let Some(hit) = block_hit {
                     landed = block_hit_at
                         .map(|at| ([at.block.x, at.block.y, at.block.z], at.direction.normal()));
-                    // Projectile.onHit on a block: PROJECTILE_LAND.
+                    // Projectile.onHit on a block: onHitBlock first, whose super call
+                    // runs the block's onProjectileHit, then the rebound.
+                    if let Some((pos, face)) = landed {
+                        self.fishing_hook_block_hit(h.position, pos, hit, face);
+                    }
+                    // Then PROJECTILE_LAND.
                     self.projectile_event(
                         "minecraft:projectile_land",
                         Some(horizon_client::mobs::Who::Player),
@@ -2168,6 +2176,7 @@ mod tests {
     #[test]
     fn reeling_an_item_requests_an_immediate_motion_update() {
         let mut item = ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -2183,6 +2192,7 @@ mod tests {
             on_ground: true,
             vertical_collision: false,
             horizontal_collision: false,
+            fall_distance: 0.0,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,

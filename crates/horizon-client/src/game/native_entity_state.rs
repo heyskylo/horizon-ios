@@ -118,6 +118,137 @@ impl Game<'_> {
             Body::Other(_) => None,
         }
     }
+    /// Swings the arm of the mob `entity` (`LivingEntity.swing(hand)`: its
+    /// swing animation from its own tick on, the off hand when `off_hand`).
+    /// False for a player (its arm swing is its client's packet), another
+    /// kind, and a mob not in the level. API @API:living_helpers@.
+    pub(super) fn native_entity_swing(&mut self, entity: EntityRef, off_hand: bool) -> bool {
+        let Some(Target::Mob(id)) = self.native_entity_target(entity) else {
+            return false;
+        };
+        let Some(m) = self
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id && !m.removed && m.alive())
+        else {
+            return false;
+        };
+        m.swing_hand(off_hand, 6);
+        m.needs_sync = true;
+        true
+    }
+    /// Sets how many ticks the entity burns for (`Entity.setRemainingFireTicks`;
+    /// 0 puts the fire out). Players (the one acting, not a guest) and mobs.
+    /// False for a negative count, another kind, and an entity not in the
+    /// level. API @API:living_helpers@.
+    pub(super) fn native_entity_set_fire(&mut self, entity: EntityRef, ticks: i32) -> bool {
+        if ticks < 0 {
+            return false;
+        }
+        match self.native_entity_target(entity) {
+            Some(Target::Player) => match self.player.as_mut() {
+                Some(p) => {
+                    p.fire_ticks = ticks;
+                    true
+                }
+                None => false,
+            },
+            Some(Target::Mob(id)) => {
+                let Some(m) = self
+                    .mobs
+                    .iter_mut()
+                    .find(|m| m.id == id && !m.removed && m.alive())
+                else {
+                    return false;
+                };
+                m.fire_ticks = ticks;
+                m.needs_sync = true;
+                true
+            }
+            _ => false,
+        }
+    }
+    /// The status effects of the mob `entity` as (effect id, ticks left,
+    /// amplifier), as `LivingEntity.getActiveEffects` lists them. None for a
+    /// player (`native_effects` reads those by UUID), another kind, and a mob
+    /// not in the level. API @API:living_helpers@.
+    pub(super) fn native_entity_effects(
+        &self,
+        entity: EntityRef,
+    ) -> Option<Vec<(String, i32, i32)>> {
+        let Target::Mob(id) = self.native_entity_target(entity)? else {
+            return None;
+        };
+        let m = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+        Some(
+            m.extra
+                .effects
+                .iter()
+                .map(|(name, ticks, amplifier)| ((*name).to_owned(), *ticks, *amplifier))
+                .collect(),
+        )
+    }
+    /// Sets the base value of the mob `entity`'s attribute `attribute` (a name
+    /// like `max_health` or `minecraft:max_health`), as
+    /// `AttributeInstance.setBaseValue`. False for an attribute mobs don't
+    /// have, a value that isn't finite, a player and another kind. API
+    /// @API:living_helpers@.
+    pub(super) fn native_entity_set_attribute_base(
+        &mut self,
+        entity: EntityRef,
+        attribute: &str,
+        base: f64,
+    ) -> bool {
+        if !base.is_finite() {
+            return false;
+        }
+        let Some(Target::Mob(id)) = self.native_entity_target(entity) else {
+            return false;
+        };
+        let name = attribute.strip_prefix("minecraft:").unwrap_or(attribute);
+        let Some(attr) = horizon_client::mobs::finalize::Attr::ALL
+            .into_iter()
+            .find(|a| a.name() == name)
+        else {
+            return false;
+        };
+        let Some(m) = self
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id && !m.removed && m.alive())
+        else {
+            return false;
+        };
+        horizon_client::mobs::finalize::set_base(m, attr, base);
+        m.needs_sync = true;
+        true
+    }
+    /// Starts (`using`) or stops the mob `entity`'s use of an item in its
+    /// off hand or main hand, as `LivingEntity.startUsingItem` and
+    /// `stopUsingItem` set the living flags: the shield pose a mod shows
+    /// without the mob's own use running. False for a player, another kind,
+    /// and a mob not in the level. API @API:living_helpers@.
+    pub(super) fn native_entity_use_item(
+        &mut self,
+        entity: EntityRef,
+        off_hand: bool,
+        using: bool,
+    ) -> bool {
+        let Some(Target::Mob(id)) = self.native_entity_target(entity) else {
+            return false;
+        };
+        let Some(m) = self
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id && !m.removed && m.alive())
+        else {
+            return false;
+        };
+        m.extra.using_item = i32::from(using);
+        m.extra.using_off_hand = off_hand;
+        m.needs_sync = true;
+        true
+    }
     /// The ticks the entity burns for (`Entity.getRemainingFireTicks`):
     /// players, mobs, armor stands and items. API @API:entity_state@.
     pub(super) fn native_entity_fire_ticks(&self, entity: EntityRef) -> Option<i32> {
@@ -233,5 +364,29 @@ mod tests {
         assert_eq!(max_air(Some(Species::Dolphin)), 4800);
         assert_eq!(max_air(Some(Species::Axolotl)), 6000);
         assert_eq!(max_air(Some(Species::Zombie)), 300);
+    }
+
+    /// The helpers act on the mob they name: `entity_set_fire` sets its fire
+    /// ticks, a negative count is refused, and `entities_in` finds it inside
+    /// a box around it and not in one beside it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn the_living_helpers_act_on_the_mob() {
+        let mut game = super::super::native_machines::tests::server_game();
+        // A world open, so entity handles have an epoch.
+        game.native_lifecycle_open_started();
+        let id = game
+            .spawn_mob("minecraft:pig", [8.5, 65.0, 8.5], true)
+            .expect("a pig");
+        let pig = game.native_entity(id).expect("a handle");
+        assert!(game.native_entity_set_fire(pig, 80));
+        assert_eq!(game.native_entity_fire_ticks(pig), Some(80));
+        assert!(!game.native_entity_set_fire(pig, -1));
+        assert_eq!(game.native_entity_fire_ticks(pig), Some(80));
+        let dim = game.dim.id();
+        let around = game.native_entities_in(dim, [0.0, 60.0, 0.0], [16.0, 70.0, 16.0]);
+        assert!(around.contains(&id));
+        let beside = game.native_entities_in(dim, [20.0, 60.0, 0.0], [36.0, 70.0, 16.0]);
+        assert!(!beside.contains(&id));
     }
 }

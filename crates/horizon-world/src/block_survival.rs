@@ -157,6 +157,27 @@ impl<E: std::fmt::Display> std::fmt::Display for SurvivalError<E> {
     }
 }
 impl<E: std::error::Error + 'static> std::error::Error for SurvivalError<E> {}
+/// A content mod's block whose states can't take the rule its template gave
+/// it (a growing-plant family vanilla doesn't have, a property it lacks) gets
+/// no rule, named once in the log, as a condition vanilla doesn't know: one
+/// block doesn't stop every world from starting (#12428). Vanilla's own rules
+/// stay strict.
+fn rule_or_skip(
+    name: &str,
+    built: io::Result<Rule>,
+    skipped: &mut BTreeSet<String>,
+) -> io::Result<Option<Rule>> {
+    match built {
+        Ok(rule) => Ok(Some(rule)),
+        Err(e) if !name.starts_with("minecraft:") => {
+            if skipped.insert(name.to_owned()) {
+                log::warn!("{name} has no block survival rule: {e}");
+            }
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
 pub struct BlockSurvivalRegistry<'r> {
     registry: &'r BlockRegistry,
     support: Arc<BlockSupportRegistry<'r>>,
@@ -191,7 +212,7 @@ pub struct BlockSurvivalRegistry<'r> {
     small_dripleaf: BTreeSet<BlockStateId>,
     sugar_cane: BTreeSet<BlockStateId>,
     sugar_cane_adjacent: BTreeSet<BlockStateId>,
-    fluid_tags: [u8; 5],
+    fluid_tags: [crate::fluid::FluidMask; 5],
     bubble_up: BTreeSet<BlockStateId>,
     bubble_down: BTreeSet<BlockStateId>,
 }
@@ -222,6 +243,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
             }
         }
         let mut rules = Vec::with_capacity(registry.len());
+        let mut skipped = BTreeSet::new();
         let mut tag_names = Vec::<String>::new();
         let mut tag_indices = BTreeMap::<String, usize>::new();
         for id in 0..registry.len() {
@@ -278,155 +300,158 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 }
                 Ok(mask)
             };
-            rules.push(Some(match rule {
-                SurvivalRule::Fire => Rule::Fire,
-                SurvivalRule::Cactus => Rule::Cactus,
-                SurvivalRule::Path => Rule::Path,
-                SurvivalRule::Mushroom => Rule::Mushroom,
-                SurvivalRule::Multiface => Rule::Multiface(faces()?),
-                SurvivalRule::Vine => Rule::Vine(faces()?),
-                SurvivalRule::HangingMoss => Rule::HangingMoss,
-                SurvivalRule::SnowLayer => Rule::SnowLayer,
-                SurvivalRule::SeaPickle => Rule::SeaPickle,
-                SurvivalRule::Bell => {
-                    let (face, kind, center_restriction) = match property("attachment")? {
-                        "floor" => (Direction::Up, SupportType::Full, false),
-                        "ceiling" => (Direction::Down, SupportType::Center, true),
-                        "single_wall" | "double_wall" => {
-                            (facing()?.opposite(), SupportType::Full, false)
+            let built = (|| -> io::Result<Rule> {
+                Ok(match rule {
+                    SurvivalRule::Fire => Rule::Fire,
+                    SurvivalRule::Cactus => Rule::Cactus,
+                    SurvivalRule::Path => Rule::Path,
+                    SurvivalRule::Mushroom => Rule::Mushroom,
+                    SurvivalRule::Multiface => Rule::Multiface(faces()?),
+                    SurvivalRule::Vine => Rule::Vine(faces()?),
+                    SurvivalRule::HangingMoss => Rule::HangingMoss,
+                    SurvivalRule::SnowLayer => Rule::SnowLayer,
+                    SurvivalRule::SeaPickle => Rule::SeaPickle,
+                    SurvivalRule::Bell => {
+                        let (face, kind, center_restriction) = match property("attachment")? {
+                            "floor" => (Direction::Up, SupportType::Full, false),
+                            "ceiling" => (Direction::Down, SupportType::Center, true),
+                            "single_wall" | "double_wall" => {
+                                (facing()?.opposite(), SupportType::Full, false)
+                            }
+                            _ => return Err(invalid("invalid bell attachment")),
+                        };
+                        Rule::Support {
+                            face,
+                            kind,
+                            center_restriction,
                         }
-                        _ => return Err(invalid("invalid bell attachment")),
-                    };
-                    Rule::Support {
-                        face,
-                        kind,
-                        center_restriction,
                     }
-                }
-                SurvivalRule::GrowingPlant => {
-                    let (head, body, direction, kelp) = match state.name.as_str() {
-                        "minecraft:kelp" | "minecraft:kelp_plant" => (
-                            "minecraft:kelp",
-                            "minecraft:kelp_plant",
-                            Direction::Up,
-                            true,
-                        ),
-                        "minecraft:cave_vines" | "minecraft:cave_vines_plant" => (
-                            "minecraft:cave_vines",
-                            "minecraft:cave_vines_plant",
-                            Direction::Down,
-                            false,
-                        ),
-                        "minecraft:twisting_vines" | "minecraft:twisting_vines_plant" => (
-                            "minecraft:twisting_vines",
-                            "minecraft:twisting_vines_plant",
-                            Direction::Up,
-                            false,
-                        ),
-                        "minecraft:weeping_vines" | "minecraft:weeping_vines_plant" => (
-                            "minecraft:weeping_vines",
-                            "minecraft:weeping_vines_plant",
-                            Direction::Down,
-                            false,
-                        ),
-                        _ => return Err(invalid("unknown growing plant family")),
-                    };
-                    Rule::GrowingPlant {
-                        head: registry
-                            .default_state(head)
-                            .ok_or_else(|| invalid("missing growing plant head"))?,
-                        body: registry
-                            .default_state(body)
-                            .ok_or_else(|| invalid("missing growing plant body"))?,
-                        direction,
-                        kelp,
+                    SurvivalRule::GrowingPlant => {
+                        let (head, body, direction, kelp) = match state.name.as_str() {
+                            "minecraft:kelp" | "minecraft:kelp_plant" => (
+                                "minecraft:kelp",
+                                "minecraft:kelp_plant",
+                                Direction::Up,
+                                true,
+                            ),
+                            "minecraft:cave_vines" | "minecraft:cave_vines_plant" => (
+                                "minecraft:cave_vines",
+                                "minecraft:cave_vines_plant",
+                                Direction::Down,
+                                false,
+                            ),
+                            "minecraft:twisting_vines" | "minecraft:twisting_vines_plant" => (
+                                "minecraft:twisting_vines",
+                                "minecraft:twisting_vines_plant",
+                                Direction::Up,
+                                false,
+                            ),
+                            "minecraft:weeping_vines" | "minecraft:weeping_vines_plant" => (
+                                "minecraft:weeping_vines",
+                                "minecraft:weeping_vines_plant",
+                                Direction::Down,
+                                false,
+                            ),
+                            _ => return Err(invalid("unknown growing plant family")),
+                        };
+                        Rule::GrowingPlant {
+                            head: registry
+                                .default_state(head)
+                                .ok_or_else(|| invalid("missing growing plant head"))?,
+                            body: registry
+                                .default_state(body)
+                                .ok_or_else(|| invalid("missing growing plant body"))?,
+                            direction,
+                            kelp,
+                        }
                     }
-                }
-                SurvivalRule::MangrovePropagule => Rule::MangrovePropagule(boolean("hanging")?),
-                SurvivalRule::Speleothem => {
-                    Rule::Speleothem(match property("vertical_direction")? {
-                        "up" => Direction::Up,
-                        "down" => Direction::Down,
-                        _ => return Err(invalid("invalid speleothem direction")),
-                    })
-                }
-                SurvivalRule::Scaffolding => Rule::Scaffolding,
-                SurvivalRule::PistonHead => Rule::PistonHead {
-                    direction: facing()?,
-                    sticky: match property("type")? {
-                        "normal" => false,
-                        "sticky" => true,
-                        _ => return Err(invalid("invalid piston head type")),
+                    SurvivalRule::MangrovePropagule => Rule::MangrovePropagule(boolean("hanging")?),
+                    SurvivalRule::Speleothem => {
+                        Rule::Speleothem(match property("vertical_direction")? {
+                            "up" => Direction::Up,
+                            "down" => Direction::Down,
+                            _ => return Err(invalid("invalid speleothem direction")),
+                        })
+                    }
+                    SurvivalRule::Scaffolding => Rule::Scaffolding,
+                    SurvivalRule::PistonHead => Rule::PistonHead {
+                        direction: facing()?,
+                        sticky: match property("type")? {
+                            "normal" => false,
+                            "sticky" => true,
+                            _ => return Err(invalid("invalid piston head type")),
+                        },
                     },
-                },
-                SurvivalRule::ChorusPlant => Rule::ChorusPlant,
-                SurvivalRule::ChorusFlower => Rule::ChorusFlower,
-                SurvivalRule::PitcherCrop => Rule::PitcherCrop(upper_half()?),
-                SurvivalRule::SugarCane => Rule::SugarCane,
-                SurvivalRule::LilyPad => Rule::LilyPad,
-                SurvivalRule::Frogspawn => Rule::Frogspawn,
-                SurvivalRule::SporeBlossom => Rule::SporeBlossom,
-                SurvivalRule::SmallDripleaf => Rule::SmallDripleaf(upper_half()?),
-                SurvivalRule::TallSeagrass => Rule::TallSeagrass(upper_half()?),
-                SurvivalRule::BigDripleaf => Rule::BigDripleaf,
-                SurvivalRule::BigDripleafStem => Rule::BigDripleafStem,
-                SurvivalRule::Farmland => Rule::Farmland,
-                SurvivalRule::Cocoa => Rule::Cocoa(facing()?),
-                SurvivalRule::Crop => Rule::Crop,
-                SurvivalRule::DoublePlant => Rule::DoublePlant(upper_half()?),
-                SurvivalRule::Door => Rule::Door(upper_half()?),
-                SurvivalRule::TagBelow(name) => {
-                    Rule::TagBelow(*tag_indices.entry(name.clone()).or_insert_with(|| {
-                        let index = tag_names.len();
-                        tag_names.push(name.clone());
-                        index
-                    }))
-                }
-                SurvivalRule::CactusFlower => Rule::CactusFlower,
-                SurvivalRule::Seagrass => Rule::Seagrass,
-                SurvivalRule::BubbleColumn => Rule::BubbleColumn,
-                SurvivalRule::RedstoneWire => Rule::RedstoneWire,
-                SurvivalRule::Always => Rule::Always,
-                SurvivalRule::SolidBelow => Rule::Solid(Direction::Down),
-                SurvivalRule::SolidBehind => Rule::Solid(facing()?.opposite()),
-                SurvivalRule::NonAirBelow => Rule::NonAirBelow,
-                SurvivalRule::MossCarpet => Rule::MossCarpet(boolean("bottom")?),
-                SurvivalRule::CenterBelow => Rule::Support {
-                    face: Direction::Up,
-                    kind: SupportType::Center,
-                    center_restriction: true,
-                },
-                SurvivalRule::Lantern => Rule::Support {
-                    face: if boolean("hanging")? {
-                        Direction::Down
-                    } else {
-                        Direction::Up
+                    SurvivalRule::ChorusPlant => Rule::ChorusPlant,
+                    SurvivalRule::ChorusFlower => Rule::ChorusFlower,
+                    SurvivalRule::PitcherCrop => Rule::PitcherCrop(upper_half()?),
+                    SurvivalRule::SugarCane => Rule::SugarCane,
+                    SurvivalRule::LilyPad => Rule::LilyPad,
+                    SurvivalRule::Frogspawn => Rule::Frogspawn,
+                    SurvivalRule::SporeBlossom => Rule::SporeBlossom,
+                    SurvivalRule::SmallDripleaf => Rule::SmallDripleaf(upper_half()?),
+                    SurvivalRule::TallSeagrass => Rule::TallSeagrass(upper_half()?),
+                    SurvivalRule::BigDripleaf => Rule::BigDripleaf,
+                    SurvivalRule::BigDripleafStem => Rule::BigDripleafStem,
+                    SurvivalRule::Farmland => Rule::Farmland,
+                    SurvivalRule::Cocoa => Rule::Cocoa(facing()?),
+                    SurvivalRule::Crop => Rule::Crop,
+                    SurvivalRule::DoublePlant => Rule::DoublePlant(upper_half()?),
+                    SurvivalRule::Door => Rule::Door(upper_half()?),
+                    SurvivalRule::TagBelow(name) => {
+                        Rule::TagBelow(*tag_indices.entry(name.clone()).or_insert_with(|| {
+                            let index = tag_names.len();
+                            tag_names.push(name.clone());
+                            index
+                        }))
+                    }
+                    SurvivalRule::CactusFlower => Rule::CactusFlower,
+                    SurvivalRule::Seagrass => Rule::Seagrass,
+                    SurvivalRule::BubbleColumn => Rule::BubbleColumn,
+                    SurvivalRule::RedstoneWire => Rule::RedstoneWire,
+                    SurvivalRule::Always => Rule::Always,
+                    SurvivalRule::SolidBelow => Rule::Solid(Direction::Down),
+                    SurvivalRule::SolidBehind => Rule::Solid(facing()?.opposite()),
+                    SurvivalRule::NonAirBelow => Rule::NonAirBelow,
+                    SurvivalRule::MossCarpet => Rule::MossCarpet(boolean("bottom")?),
+                    SurvivalRule::CenterBelow => Rule::Support {
+                        face: Direction::Up,
+                        kind: SupportType::Center,
+                        center_restriction: true,
                     },
-                    kind: SupportType::Center,
-                    center_restriction: true,
-                },
-                SurvivalRule::FullAbove => full(Direction::Down),
-                SurvivalRule::FullBehind => full(facing()?),
-                SurvivalRule::RigidOrCenterBelow => Rule::RigidOrCenterBelow,
-                SurvivalRule::RigidBelow => Rule::Support {
-                    face: Direction::Up,
-                    kind: SupportType::Rigid,
-                    center_restriction: false,
-                },
-                SurvivalRule::FullBelow => full(Direction::Up),
-                SurvivalRule::CenterAbove => Rule::Support {
-                    face: Direction::Down,
-                    kind: SupportType::Center,
-                    center_restriction: false,
-                },
-                SurvivalRule::FaceAttached => full(match property("face")? {
-                    "floor" => Direction::Up,
-                    "ceiling" => Direction::Down,
-                    "wall" => facing()?,
-                    _ => return Err(invalid("invalid attachment face")),
-                }),
-                SurvivalRule::SupportsBamboo => Rule::SupportsBamboo,
-            }));
+                    SurvivalRule::Lantern => Rule::Support {
+                        face: if boolean("hanging")? {
+                            Direction::Down
+                        } else {
+                            Direction::Up
+                        },
+                        kind: SupportType::Center,
+                        center_restriction: true,
+                    },
+                    SurvivalRule::FullAbove => full(Direction::Down),
+                    SurvivalRule::FullBehind => full(facing()?),
+                    SurvivalRule::RigidOrCenterBelow => Rule::RigidOrCenterBelow,
+                    SurvivalRule::RigidBelow => Rule::Support {
+                        face: Direction::Up,
+                        kind: SupportType::Rigid,
+                        center_restriction: false,
+                    },
+                    SurvivalRule::FullBelow => full(Direction::Up),
+                    SurvivalRule::CenterAbove => Rule::Support {
+                        face: Direction::Down,
+                        kind: SupportType::Center,
+                        center_restriction: false,
+                    },
+                    SurvivalRule::FaceAttached => full(match property("face")? {
+                        "floor" => Direction::Up,
+                        "ceiling" => Direction::Down,
+                        "wall" => facing()?,
+                        _ => return Err(invalid("invalid attachment face")),
+                    }),
+                    SurvivalRule::SupportsBamboo => Rule::SupportsBamboo,
+                })
+            })();
+            rules.push(rule_or_skip(&state.name, built, &mut skipped)?);
         }
         let tag_states = |name: &str| -> io::Result<BTreeSet<BlockStateId>> {
             let names = tags
@@ -444,7 +469,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 .filter(|id| names.contains(&registry.state(*id).unwrap().name))
                 .collect())
         };
-        let fluid_tag = |name: &str| -> io::Result<u8> {
+        let fluid_tag = |name: &str| -> io::Result<crate::fluid::FluidMask> {
             fluid_tags
                 .get(name)
                 .into_iter()
@@ -1216,5 +1241,27 @@ fn direction_name(direction: Direction) -> &'static str {
         Direction::South => "south",
         Direction::West => "west",
         Direction::East => "east",
+    }
+}
+
+#[cfg(test)]
+mod rule_or_skip_tests {
+    use super::{Rule, invalid, rule_or_skip};
+    use std::collections::BTreeSet;
+
+    /// A content block's unusable rule leaves it without one, counted once
+    /// for all its states; a vanilla block's still fails the load.
+    #[test]
+    fn only_a_content_blocks_bad_rule_is_skipped() {
+        let mut skipped = BTreeSet::new();
+        let bad = || Err(invalid("unknown growing plant family"));
+        for _ in 0..3 {
+            let rule = rule_or_skip("biomesoplenty:spanish_moss", bad(), &mut skipped);
+            assert!(rule.unwrap().is_none());
+        }
+        assert_eq!(skipped.len(), 1);
+        assert!(rule_or_skip("minecraft:kelp", bad(), &mut skipped).is_err());
+        let good = rule_or_skip("biomesoplenty:high_grass", Ok(Rule::Always), &mut skipped);
+        assert!(matches!(good.unwrap(), Some(Rule::Always)));
     }
 }

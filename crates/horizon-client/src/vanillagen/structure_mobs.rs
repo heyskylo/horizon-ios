@@ -178,7 +178,7 @@ fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
     ] {
         c.remove(&key.into());
     }
-    entity_nbt::put_brain(&mut c, m, dimension);
+    crate::mobs::brain::put_brain(&mut c, m, dimension);
     let riders: Vec<Tag> = (0..mobs.len())
         .filter(|&j| mobs[j].0.extra.mount == Some(m.id))
         .map(|j| Tag::Compound(tree(mobs, j, dimension)))
@@ -405,6 +405,25 @@ mod tests {
             _ => "-".into(),
         }
     }
+    /// `Mob.finalizeSpawn`'s follow range bonus in the saved attributes.
+    fn spawn_bonus(mob: &Tag) -> Option<f64> {
+        let named = |t: &Tag, want: &str| matches!(t.get("id"), Some(Tag::String(s)) if s.to_string_lossy() == want);
+        let Some(Tag::List(attrs)) = mob.get("attributes") else {
+            return None;
+        };
+        let range = attrs.iter().find(|a| named(a, "minecraft:follow_range"))?;
+        let Some(Tag::List(modifiers)) = range.get("modifiers") else {
+            return None;
+        };
+        let bonus = modifiers
+            .iter()
+            .find(|m| named(m, "minecraft:random_spawn_bonus"))?;
+        match bonus.get("amount") {
+            Some(Tag::Double(v)) => Some(f64::from_bits(*v)),
+            Some(Tag::Float(v)) => Some(f32::from_bits(*v) as f64),
+            _ => None,
+        }
+    }
     /// What a vanilla world saves of a structure mob that finalizeSpawn decides.
     fn describe(mob: &Tag) -> String {
         let eq = mob.get("equipment");
@@ -421,7 +440,7 @@ mod tests {
             Some(Tag::Long(t)) => t.to_string(),
             _ => "-".into(),
         };
-        let bonus = crate::entity_nbt::spawn_bonus(mob).unwrap_or(f64::NAN);
+        let bonus = spawn_bonus(mob).unwrap_or(f64::NAN);
         let flag = |k: &str| matches!(mob.get(k), Some(Tag::Byte(1)));
         let riders = match mob.get("Passengers") {
             Some(Tag::List(p)) => format!(

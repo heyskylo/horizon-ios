@@ -147,14 +147,14 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   sunset) behind the hero. Light and dark follow the system, with a toggle. A giant wordmark in
   pixels sits in the footer.
 - **Game**: vanilla's screens. The on-screen keyboard is a rounded plate of keys in the page
-  colour, the focused key in the accent. Horizon's graphics, controller and Extras settings
-  screens take the Blocks palette below in a lighter form (`graphics_style.rs`; Extras through
+  colour, the focused key in the accent. Horizon's graphics, controller, Extras and Shaders
+  settings screens take the Blocks palette below in a lighter form (`graphics_style.rs`, through
   the shared `settings_shell.rs`).
 
 ## Blocks
 
 A blocky, Minecraft-like look in Horizon's purple, for the website, the redesigned launcher and
-the game's graphics, controller and Extras settings screens:
+the game's graphics, controller, Extras and Shaders settings screens:
 Minecraft's inventory rather than a document. Its colours are `horizon_theme::Blocks`
 (`BLOCKS_LIGHT`, `BLOCKS_DARK`), which `tokens.css` carries under the same names as before plus
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`

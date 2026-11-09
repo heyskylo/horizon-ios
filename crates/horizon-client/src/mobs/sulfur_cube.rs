@@ -561,6 +561,15 @@ pub(crate) mod adopt_body_tests {
 pub fn archetype(m: &Mob) -> Option<&'static Archetype> {
     m.extra.body.as_deref().and_then(archetype_of)
 }
+/// The explosion data `SulfurCube.explosionData` caches: the adopted body's,
+/// as `collectEquipmentChanges` last took it.
+pub fn adopted_explosion(m: &Mob) -> Option<(i32, f32, bool)> {
+    m.extra
+        .adopted_body
+        .as_deref()
+        .and_then(archetype_of)
+        .and_then(|a| a.explosion)
+}
 /// The archetype whose bounciness, friction and air drag attributes a
 /// sulfur cube's physics use (no other mob has those modifiers).
 pub fn physics(m: &Mob) -> Option<&'static Archetype> {
@@ -819,6 +828,12 @@ pub fn prime(m: &mut Mob, imminent: bool) -> bool {
     let Some((fuse, _, _)) = archetype(m).and_then(|a| a.explosion) else {
         return false;
     };
+    prime_with_fuse(m, imminent, fuse)
+}
+/// `primeTime` with the fuse of the cached `explosionData` (the body
+/// `collectEquipmentChanges` last adopted), which is not the live body's
+/// when the body changed since.
+pub fn prime_with_fuse(m: &mut Mob, imminent: bool, fuse: i32) -> bool {
     if !m.alive() || !TNT_EXPLODES.get() || primed(m) {
         return false;
     }
@@ -1182,7 +1197,7 @@ pub fn mob_contacts(m: &Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             && other.bounds.intersects(bounds)
             && crate::scoreboard::pushable_by(own_team, w.teams.of(super::Who::Mob(other.id)), true)
         {
-            events.push(MobEvent::AttackMob {
+            events.push(MobEvent::DamageMob {
                 target: other.id,
                 amount,
                 source: Damage::of(DamageKind::SulfurCubeHot),
@@ -1781,7 +1796,7 @@ mod mob_contact_tests {
                     let hits: Vec<_> = events
                         .iter()
                         .filter_map(|event| match event {
-                            MobEvent::AttackMob {
+                            MobEvent::DamageMob {
                                 target,
                                 amount,
                                 source,

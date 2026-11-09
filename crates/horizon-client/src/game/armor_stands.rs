@@ -505,6 +505,8 @@ impl Game<'_> {
         // ArmorStandItem.useOn turns the stand to face the player.
         self.world.random.next_float();
         self.next_entity += 1;
+        let (_, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(stand.id, uuid);
         self.audio.play(
             "minecraft:entity.armor_stand.place",
             Some([foot.x, foot.y, foot.z]),
@@ -804,24 +806,46 @@ impl Game<'_> {
     /// creative player breaks it, otherwise the first hit wobbles it and a
     /// second within five ticks breaks it.
     pub(super) fn punch_armor_stand(&mut self, i: usize) -> bool {
+        self.break_armor_stand_by_hit(
+            i,
+            self.creative,
+            false,
+            Some(super::commands::Target::Player),
+        )
+    }
+    /// The end of `ArmorStand.hurtServer` for a source in
+    /// `#can_break_armor_stand` or `#always_kills_armor_stands`, which returns
+    /// true: a creative causing player breaks the stand at once; otherwise the
+    /// first hit (`always_kills` skips it) wobbles it and posts `entity_damage`,
+    /// and a second hit within five ticks breaks it (`brokenByPlayer`). `by` is
+    /// the causing entity the game events are attributed to.
+    fn break_armor_stand_by_hit(
+        &mut self,
+        i: usize,
+        creative: bool,
+        always_kills: bool,
+        by: Option<super::commands::Target>,
+    ) -> bool {
         let time = self.world.game_time;
         let at = self.armor_stands[i].position;
         let at = [at.x, at.y, at.z];
-        if self.creative {
+        if creative {
             let (width, height) = stand_box(&self.armor_stands[i]);
             self.armor_stands.remove(i);
             self.audio
                 .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
             self.show_breaking_particles(at, f64::from(width), f64::from(height));
-            // ArmorStand.kill(level, player).
-            self.entity_killed_event(at, true);
+            // ArmorStand.kill(level, the causing entity).
+            self.stand_game_event("minecraft:entity_die", at, by);
             return true;
         }
-        if time - self.armor_stands[i].last_hit > 5 {
-            // First hit: entity event 32, the wobble and the hit sound.
-            self.armor_stands[i].last_hit = time;
+        if time - self.armor_stands[i].last_hit > 5 && !always_kills {
+            // First hit: entity event 32, the wobble and the hit sound, then
+            // gameEvent(ENTITY_DAMAGE, the causing entity).
             self.audio
                 .play("minecraft:entity.armor_stand.hit", Some(at), 0.3, 1.0);
+            self.stand_game_event("minecraft:entity_damage", at, by);
+            self.armor_stands[i].last_hit = time;
             return true;
         }
         // brokenByPlayer: the stand item, then brokenByAnything: the equipment.
@@ -847,12 +871,23 @@ impl Game<'_> {
             ];
             self.spawn_item(stack, center, v, 10);
         }
-        // ArmorStand.kill(level, player), after the drops.
-        self.entity_killed_event(at, true);
+        // ArmorStand.kill(level, the causing entity), after the drops.
+        self.stand_game_event("minecraft:entity_die", at, by);
         self.world
             .modified
             .insert(((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4));
         true
+    }
+    /// `Entity.gameEvent(event, attributedTo)` for a stand at `at`: the
+    /// causing player (a LAN guest too) or mob, else the stand itself (which
+    /// no listener tells apart from none).
+    fn stand_game_event(
+        &mut self,
+        event: &'static str,
+        at: [f64; 3],
+        by: Option<super::commands::Target>,
+    ) {
+        self.entity_event_by(event, at, by);
     }
     pub(super) fn tick_armor_stands(&mut self) -> Result<()> {
         let mut dead = Vec::new();
@@ -1156,23 +1191,74 @@ impl Game<'_> {
     /// breaks a stand: its equipment pops above its block, the stand item does
     /// not drop.
     pub(super) fn break_armor_stand_by_anything(&mut self, i: usize) {
+        self.break_armor_stand_with_source(i, None);
+    }
+    /// `ArmorStand.brokenByAnything`, then `ArmorStand.kill` with attribution.
+    pub(super) fn break_armor_stand_with_source(
+        &mut self,
+        i: usize,
+        source: Option<super::commands::Target>,
+    ) {
         let a = self.armor_stands.remove(i);
         let at = [a.position.x, a.position.y, a.position.z];
+        let a_id = a.id;
+        // brokenByAnything's dropAllDeathLoot, before the equipment.
+        if !a.small && self.ui.rules.bool("mob_drops") {
+            self.armor_stand_death_loot(at, a.fire_ticks > 0);
+        }
         let (pos, drops) = broken_armor_stand_equipment(a);
         for stack in drops {
             self.pop_resource(pos, stack);
         }
         self.audio
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
-        self.entity_killed_event(at, false);
+        self.entity_killed_event_by(at, source.or(Some(super::commands::Target::Stand(a_id))));
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+    }
+    /// `LivingEntity.dropFromLootTable` for a stand that is not small, with
+    /// `mob_drops` on (`shouldDropLoot`): its type's table
+    /// `minecraft:entities/armor_stand` with seed 0 (`getLootTableSeed`), so
+    /// the table's random sequence or else the level's random, each stack
+    /// spawned at the stand's position. Its view is only the type and whether
+    /// it burns; no damage source, killer or player is known here.
+    fn armor_stand_death_loot(&mut self, at: [f64; 3], on_fire: bool) {
+        const TABLE: &str = "minecraft:entities/armor_stand";
+        let Some(loot) = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        ) else {
+            return;
+        };
+        if !loot.has_table(TABLE) {
+            return;
+        }
+        let params = horizon_world::loot::EntityLootParams {
+            this: horizon_world::loot::LootEntity {
+                on_fire,
+                baby: false,
+                ..horizon_world::loot::LootEntity::new("minecraft:armor_stand")
+            },
+            ..horizon_world::loot::EntityLootParams::default()
+        };
+        let stacks = match loot.random_sequence(TABLE) {
+            Some(id) => {
+                let random = self.rand_sequences.get(id, self.level.seed);
+                loot.roll_entity(TABLE, random, &params)
+            }
+            None => loot.roll_entity(TABLE, &mut self.world.random, &params),
+        };
+        for stack in stacks.iter().filter(|s| !s.is_empty()) {
+            self.spawn_item_own(super::creatures::from_loot(stack), at, 10);
+        }
     }
     /// `ArmorStand.hurtServer` for a command's damage of `damage_type` from the
     /// causing entity `causing`, up to its sources that act and still return
     /// false: a blast breaks the stand (`brokenByAnything`, `kill`), fire that
     /// ignites stands lights it (or burns a burning one 0.15), and burning
-    /// takes 4 health. Every other source is refused here, so this is always
-    /// false and `/damage` fails as vanilla's does.
+    /// takes 4 health, all returning false. A source in
+    /// `#can_break_armor_stand` or `#always_kills_armor_stands` hurts the
+    /// stand as a player's hit does and returns true; every other source is
+    /// refused (false), as `/damage` fails for it in vanilla.
     pub(super) fn command_damage_stand(
         &mut self,
         id: u32,
@@ -1215,9 +1301,15 @@ impl Game<'_> {
             tagged("minecraft:ignites_armor_stands"),
             tagged("minecraft:burns_armor_stands"),
         );
+        let (breaks, always_kills) = (
+            tagged("minecraft:can_break_armor_stand"),
+            tagged("minecraft:always_kills_armor_stands"),
+        );
         if explosion {
             self.break_armor_stand_by_anything(i);
-        } else if ignites {
+            return false;
+        }
+        if ignites {
             if self.armor_stands[i].fire_ticks > 0 {
                 self.cause_stand_damage(i, 0.15);
             } else {
@@ -1225,10 +1317,31 @@ impl Game<'_> {
                 let a = &mut self.armor_stands[i];
                 a.fire_ticks = a.fire_ticks.max(100);
             }
-        } else if burns && self.armor_stands[i].health > 0.5 {
-            self.cause_stand_damage(i, 4.0);
+            return false;
         }
-        false
+        if burns && self.armor_stands[i].health > 0.5 {
+            self.cause_stand_damage(i, 4.0);
+            return false;
+        }
+        if !breaks && !always_kills {
+            return false;
+        }
+        // A causing player who may not build (adventure, spectator) cannot.
+        let may_build = match causing {
+            Some(Target::Player) => self.may_build(),
+            Some(Target::Guest(conn)) => self.command_guest(conn).is_none_or(|g| g.may_build()),
+            _ => true,
+        };
+        if !may_build {
+            return false;
+        }
+        // ArmorStand.hurtServer attributes its game events to the source
+        // entity: the player, a LAN guest or the mob.
+        let by = match causing {
+            Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
+            _ => None,
+        };
+        self.break_armor_stand_by_hit(i, creative, always_kills, by)
     }
     /// `ArmorStand.causeDamage`: the health less `amount`, broken by anything
     /// at 0.5 or less.
@@ -1562,13 +1675,10 @@ impl Game<'_> {
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, 1.0, 0.0))
                 * glam::Mat4::from_rotation_x(0.436_332_32)
                 * glam::Mat4::from_rotation_z(std::f32::consts::PI);
+        let glints = super::perspective::preview_glint_quads(&verts, gui, 0..0, self.glint_frame);
         let quads =
             super::perspective::player_preview_quads(verts, gui, None, &self.gui.atlas.sprites);
-        let start = batch.vertices.len();
-        for (_, p, uv, color) in quads {
-            batch.quad_3d(p, uv, color);
-        }
-        batch.depth_since(start, [x0, y0, x1, y1]);
+        super::perspective::emit_preview(batch, quads, glints, [x0, y0, x1, y1]);
     }
 }
 /// The stand's slot (`ArmorStand::SLOTS` order) for an item whose

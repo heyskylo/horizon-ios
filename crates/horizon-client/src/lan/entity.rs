@@ -952,7 +952,7 @@ pub struct Entities {
     /// moves. One the entities' own ticks added waits for the next pass, as
     /// vanilla's waits for the next tick.
     pub synced: Vec<(i32, i32)>,
-    states: crate::fast_hash::FxHashMap<i32, ServerEntity>,
+    states: slab::ServerEntities,
     /// The level tick, stamped on every entity still in the level.
     tick: u32,
     /// This tick's entities as the range checks read them, the chunks they
@@ -965,7 +965,6 @@ pub struct Entities {
     /// The entities in each of `chunks` (indices into `probes`): a client
     /// that moved checks only the chunks within its view distance.
     chunk_members: Vec<Vec<u32>>,
-    held: Vec<u8>,
     flags: Vec<Vec<u8>>,
     /// Whether a client starts tracking each entity this tick.
     pairs: Vec<bool>,
@@ -974,6 +973,11 @@ pub struct Entities {
     /// flag per entity.
     moved: Vec<usize>,
     is_moved: Vec<bool>,
+    /// The entities with nothing to send this tick (idle, not moved, no sync
+    /// asked, leash as sent, paired before): unless a client starts tracking
+    /// them, the send pass skips them without looking their state up again.
+    /// Thousands of items frozen past the simulation distance cost a flag each.
+    quiet: Vec<bool>,
     /// One entity's packets and their bodies, kept between entities.
     packets: Vec<play::Clientbound>,
     bodies: Vec<Vec<u8>>,
@@ -1068,7 +1072,7 @@ impl Entities {
         self.states.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.states.is_empty()
+        self.states.len() == 0
     }
 
     /// How many passes the level's tracking has run.
@@ -1152,12 +1156,36 @@ impl Entities {
         self.moved.clear();
         self.is_moved.clear();
         self.is_moved.resize(entities.len(), false);
+        self.quiet.clear();
+        self.quiet.resize(entities.len(), false);
+        // The states stamped this tick: when that is all of them, none left.
+        let mut stamped = 0;
+        self.states.begin();
         for (index, e) in entities.iter().enumerate() {
             let mut added = false;
-            let s = self.states.entry(e.id).or_insert_with(|| {
-                added = true;
-                ServerEntity::new(e, kind(&e.kind), riding)
-            });
+            let s = match self.states.meet(e.id) {
+                Some((slot, by_id)) => {
+                    let s = self.states.at(slot);
+                    // Found out of order: the next one is looked for after
+                    // where this one was in the last tick's order.
+                    if by_id && s.seen == now.wrapping_sub(1) {
+                        let last = s.index;
+                        self.states.resume_after(last);
+                    }
+                    self.states.at_mut(slot)
+                }
+                None => {
+                    added = true;
+                    let slot = self
+                        .states
+                        .insert(e.id, ServerEntity::new(e, kind(&e.kind), riding));
+                    self.states.met_new(e.id, slot);
+                    self.states.at_mut(slot)
+                }
+            };
+            if s.seen != now {
+                stamped += 1;
+            }
             s.seen = now;
             s.index = index;
             // ChunkMap.addEntity, ChunkMap.tick's section change, and a
@@ -1178,6 +1206,8 @@ impl Entities {
                 self.moved.push(index);
                 self.is_moved[index] = true;
             }
+            self.quiet[index] =
+                !self.is_moved[index] && !s.added && e.idle && !e.needs_sync && e.leash == s.leash;
             let at = (
                 (e.position[0].floor() as i32) >> 4,
                 (e.position[2].floor() as i32) >> 4,
@@ -1204,6 +1234,7 @@ impl Entities {
                 hidden: e.hidden,
             });
         }
+        self.states.end();
         // TrackedEntity.getEffectiveRange: a vehicle is tracked as far as its
         // widest indirect passenger, so a rider never leaves before its mount.
         for (&vehicle, passengers) in &riding.passengers {
@@ -1222,129 +1253,162 @@ impl Entities {
                 .range_percent
                 .map_or(range * 16, |p| p * (range * 16) / 100);
         }
-        self.flags.resize_with(viewers.len(), Vec::new);
         self.pairs.clear();
         self.pairs.resize(entities.len(), false);
-        for (v, flags) in viewers.iter_mut().zip(&mut self.flags) {
-            flags.clear();
-            self.held.clear();
-            self.held.resize(self.chunks.len(), 0);
-            let (chunks, held, pairs) = (&self.chunks, &mut self.held, &mut self.pairs);
-            let members = &self.chunk_members;
-            let mut kept = 0;
-            // A client that moved (ChunkMap.move), or whose own entity
-            // appeared or changed section (ChunkMap.tick's movedPlayers), has
-            // every pair checked again.
-            let all = v.moved
-                || self
-                    .states
-                    .get(&v.entity_id)
-                    .is_none_or(|s| s.seen != now || self.is_moved[s.index]);
-            if all {
-                // `sees` caps the range at its view distance, so only the
-                // entities in chunks that far from its own can be seen; the
-                // rest stay 0, as checking each of them gave.
-                flags.resize(self.probes.len(), 0);
-                let reach = v.view_distance + 1;
-                let (vx, vz) = (
-                    (v.position[0].floor() as i32) >> 4,
-                    (v.position[2].floor() as i32) >> 4,
-                );
-                for (&(cx, cz), members) in chunks.iter().zip(members) {
-                    if (cx - vx).abs() > reach || (cz - vz).abs() > reach {
-                        continue;
+        // The per-player sweep runs shared out (#8158): every player's flags,
+        // tracker and packets are its own, and the entities' state is only
+        // read, so one player's sweep never depends on another's. What the
+        // players start tracking meets the pairs after, in their order; each
+        // player's packets keep their order, as vanilla's do.
+        let mut flags = std::mem::take(&mut self.flags);
+        flags.resize_with(viewers.len(), Vec::new);
+        let mut starts: Vec<Vec<usize>> = vec![Vec::new(); viewers.len()];
+        let mut players: Vec<(&mut Viewer, &mut Vec<u8>, &mut Vec<usize>)> = viewers
+            .iter_mut()
+            .zip(&mut flags)
+            .zip(&mut starts)
+            .map(|((viewer, flags), starts)| (viewer, flags, starts))
+            .collect();
+        {
+            let (probes, chunks, members, states, is_moved, moved) = (
+                &self.probes,
+                &self.chunks,
+                &self.chunk_members,
+                &self.states,
+                &self.is_moved,
+                &self.moved,
+            );
+            horizon_threads::par_chunks_mut(&mut players, 16, |players| {
+                for (v, flags, starts) in players {
+                    flags.clear();
+                    let mut held = vec![0; chunks.len()];
+                    let (chunks, held) = (&**chunks, &mut held);
+                    let mut kept = 0;
+                    // A client that moved (ChunkMap.move), or whose own entity
+                    // appeared or changed section (ChunkMap.tick's movedPlayers), has
+                    // every pair checked again.
+                    let all = v.moved
+                        || states
+                            .get(&v.entity_id)
+                            .is_none_or(|s| s.seen != now || is_moved[s.index]);
+                    if all {
+                        // `sees` caps the range at its view distance, so only the
+                        // entities in chunks that far from its own can be seen; the
+                        // rest stay 0, as checking each of them gave.
+                        flags.resize(probes.len(), 0);
+                        let reach = v.view_distance + 1;
+                        let (vx, vz) = (
+                            (v.position[0].floor() as i32) >> 4,
+                            (v.position[2].floor() as i32) >> 4,
+                        );
+                        for (&(cx, cz), members) in chunks.iter().zip(members) {
+                            if (cx - vx).abs() > reach || (cz - vz).abs() > reach {
+                                continue;
+                            }
+                            for &index in members {
+                                let index = index as usize;
+                                let p = &probes[index];
+                                if p.id == v.entity_id || !sees(v, p, chunks, held) {
+                                    continue;
+                                }
+                                if v.tracker.seen.contains_key(&p.id) {
+                                    flags[index] = SEES | TRACKS;
+                                    kept += 1;
+                                } else {
+                                    flags[index] = SEES;
+                                    starts.push(index);
+                                }
+                            }
+                        }
+                    } else if v.tracker.seen.len() * 4 > probes.len() {
+                        // Otherwise its pairs stay as they were, but for the
+                        // entities that appeared or changed section; a client
+                        // tracking much of the level goes through it in order.
+                        flags.reserve(probes.len());
+                        for (index, (p, &entity_moved)) in probes.iter().zip(is_moved).enumerate() {
+                            let tracks = v.tracker.seen.contains_key(&p.id);
+                            let flag = if p.id == v.entity_id
+                                || (entity_moved && !sees(v, p, chunks, held))
+                            {
+                                0
+                            } else if tracks {
+                                kept += 1;
+                                SEES | TRACKS
+                            } else if entity_moved {
+                                starts.push(index);
+                                SEES
+                            } else {
+                                0
+                            };
+                            flags.push(flag);
+                        }
+                    } else {
+                        // One tracking little of it, from what it tracks.
+                        flags.resize(probes.len(), 0);
+                        for id in v.tracker.seen.keys() {
+                            if let Some(s) = states.get(id).filter(|s| s.seen == now) {
+                                flags[s.index] = SEES | TRACKS;
+                                kept += 1;
+                            }
+                        }
+                        for &index in moved {
+                            let p = &probes[index];
+                            let tracks = flags[index] & TRACKS != 0;
+                            if p.id != v.entity_id && sees(v, p, chunks, held) {
+                                if !tracks {
+                                    flags[index] = SEES;
+                                    starts.push(index);
+                                }
+                            } else if tracks {
+                                flags[index] = 0;
+                                kept -= 1;
+                            }
+                        }
                     }
-                    for &index in members {
-                        let index = index as usize;
-                        let p = &self.probes[index];
-                        if p.id == v.entity_id || !sees(v, p, chunks, held) {
-                            continue;
-                        }
-                        if v.tracker.seen.contains_key(&p.id) {
-                            flags[index] = SEES | TRACKS;
-                            kept += 1;
-                        } else {
-                            flags[index] = SEES;
-                            pairs[index] = true;
-                        }
-                    }
-                }
-            } else if v.tracker.seen.len() * 4 > self.probes.len() {
-                // Otherwise its pairs stay as they were, but for the entities
-                // that appeared or changed section; a client tracking much
-                // of the level goes through it in order.
-                let is_moved = &self.is_moved;
-                flags.extend(self.probes.iter().zip(pairs.iter_mut()).zip(is_moved).map(
-                    |((p, pairs), &moved)| {
-                        let tracks = v.tracker.seen.contains_key(&p.id);
-                        if p.id == v.entity_id || (moved && !sees(v, p, chunks, held)) {
-                            0
-                        } else if tracks {
-                            kept += 1;
-                            SEES | TRACKS
-                        } else if moved {
-                            *pairs = true;
-                            SEES
-                        } else {
-                            0
-                        }
-                    },
-                ));
-            } else {
-                // One tracking little of it, from what it tracks.
-                flags.resize(self.probes.len(), 0);
-                for id in v.tracker.seen.keys() {
-                    if let Some(s) = self.states.get(id).filter(|s| s.seen == now) {
-                        flags[s.index] = SEES | TRACKS;
-                        kept += 1;
-                    }
-                }
-                for &index in &self.moved {
-                    let p = &self.probes[index];
-                    let tracks = flags[index] & TRACKS != 0;
-                    if p.id != v.entity_id && sees(v, p, chunks, held) {
-                        if !tracks {
-                            flags[index] = SEES;
-                            pairs[index] = true;
-                        }
-                    } else if tracks {
-                        flags[index] = 0;
-                        kept -= 1;
-                    }
-                }
-            }
-            // Usually the client still sees all it tracks.
-            let mut removed = Vec::new();
-            if kept != v.tracker.seen.len() {
-                let states = &self.states;
-                let Tracker { seen, events, .. } = &mut *v.tracker;
-                seen.retain(|id, tracked| match states.get(id) {
-                    Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
-                    other => {
-                        if let (Some(gone), Some(s)) = (v.gone.as_deref_mut(), other) {
-                            gone.push(s.base);
-                        }
-                        removed.push(*id);
-                        events.push(TrackEvent {
-                            start: false,
-                            entity: *id,
-                            tracked: Arc::clone(tracked),
+                    // Usually the client still sees all it tracks.
+                    let mut removed = Vec::new();
+                    if kept != v.tracker.seen.len() {
+                        let Tracker { seen, events, .. } = &mut *v.tracker;
+                        seen.retain(|id, tracked| match states.get(id) {
+                            Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
+                            other => {
+                                if let (Some(gone), Some(s)) = (v.gone.as_deref_mut(), other) {
+                                    gone.push(s.base);
+                                }
+                                removed.push(*id);
+                                events.push(TrackEvent {
+                                    start: false,
+                                    entity: *id,
+                                    tracked: Arc::clone(tracked),
+                                });
+                                false
+                            }
                         });
-                        false
                     }
-                });
-            }
-            if !removed.is_empty() {
-                v.out.push(
-                    play::Clientbound::RemoveEntities(play::RemoveEntities { ids: removed })
-                        .encode(),
-                );
+                    if !removed.is_empty() {
+                        v.out.push(
+                            play::Clientbound::RemoveEntities(play::RemoveEntities {
+                                ids: removed,
+                            })
+                            .encode(),
+                        );
+                    }
+                }
+            });
+        }
+        self.flags = flags;
+        for starts in &starts {
+            for &index in starts {
+                self.pairs[index] = true;
             }
         }
         for (index, e) in entities.iter().enumerate() {
-            let Some(s) = self.states.get_mut(&e.id) else {
+            // Nothing to send and nobody to pair with: what the pass below
+            // would do with it (an unchanged leash) is nothing.
+            if self.quiet[index] && !self.pairs[index] {
                 continue;
-            };
+            }
+            let s = self.states.at_mut(self.states.slot_of_index(index));
             self.packets.clear();
             // Paired as it joined, then its first changes go to everyone
             // tracking it, those just paired with it included. Arrows wait for the
@@ -1416,12 +1480,16 @@ impl Entities {
                 }
             }
         }
-        self.states.retain(|_, s| s.seen == now);
+        // ChunkMap.removeEntity for the ones no longer in the level.
+        if self.states.len() > stamped {
+            self.states.retain(|s| s.seen == now);
+        }
     }
 }
 
 #[cfg(test)]
 mod late_pair_tests;
+mod slab;
 
 #[cfg(test)]
 mod tests {
