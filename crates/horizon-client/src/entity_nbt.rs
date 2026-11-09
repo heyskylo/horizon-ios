@@ -22,6 +22,8 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{collections::HashMap, sync::Arc};
+mod projectile_fields;
+use projectile_fields::{load_projectile_entity_fields, put_projectile_entity_fields};
 mod saved_attributes;
 
 /// Saved data carried by `ConversionType.convertCommon` outside the modelled
@@ -1344,14 +1346,7 @@ pub fn mob_to_nbt(
             map.insert("StunTick".into(), Tag::Int(m.extra.counter2));
             map.insert("RoarTick".into(), Tag::Int(m.extra.anim_ticks));
         }
-        "minecraft:vex" => {
-            if let Some(h) = m.extra.home {
-                map.insert("bound_pos".into(), Tag::IntArray(h.to_vec()));
-            }
-            if m.extra.egg_time > 0 {
-                map.insert("life_ticks".into(), Tag::Int(m.extra.egg_time));
-            }
-        }
+        "minecraft:vex" => crate::mobs::vex::write_nbt(m, map, &mut uuid_of),
         "minecraft:endermite" => {
             map.insert("Lifetime".into(), Tag::Int(m.extra.counter));
         }
@@ -1544,11 +1539,9 @@ pub fn mob_to_nbt(
             .iter_mut()
             .find(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
         {
-            // The model owns these bases: a ravager's speed, a wolf's health.
-            if matches!(
-                (species, attr),
-                (S::Ravager, Attr::MovementSpeed) | (S::Wolf, Attr::MaxHealth)
-            ) && let Tag::Compound(c) = existing
+            // The model owns a wolf's health base.
+            if (species, attr) == (S::Wolf, Attr::MaxHealth)
+                && let Tag::Compound(c) = existing
             {
                 c.insert("base".into(), Tag::Double(base.to_bits()));
             }
@@ -2624,22 +2617,12 @@ pub fn mob_from_nbt_with_random(
         m.extra.counter = number(tag.get("AttackTick")).unwrap_or(0) as i32;
         m.extra.counter2 = number(tag.get("StunTick")).unwrap_or(0) as i32;
         m.extra.anim_ticks = number(tag.get("RoarTick")).unwrap_or(0) as i32;
-        if crate::mobs::ravager::immobile(&m)
-            && !matches!(tag.get("attributes"), Some(Tag::List(l)) if l.iter().any(|a| text(a.get("id")).as_deref() == Some("minecraft:movement_speed")))
-        {
-            m.attrs.speed = 0.0;
-        }
     }
     if m.species() == crate::mobs::Species::Endermite {
         m.extra.counter = number(tag.get("Lifetime")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Vex {
-        if let Some(Tag::IntArray(v)) = tag.get("bound_pos")
-            && v.len() == 3
-        {
-            m.extra.home = Some([v[0], v[1], v[2]]);
-        }
-        m.extra.egg_time = number(tag.get("life_ticks")).map_or(-1, |v| v as i32);
+        crate::mobs::vex::read_nbt(&mut m, tag);
     }
     // Bogged.readAdditionalSaveData: unsheared when absent.
     if m.species() == crate::mobs::Species::Bogged {
@@ -3271,7 +3254,7 @@ pub fn fireball_to_nbt(
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
         on_ground: p.on_ground,
-        fall_distance: 0.0,
+        fall_distance: p.fall_distance,
     };
     let mut tag = base.tag(raw);
     put(
@@ -3296,27 +3279,6 @@ pub fn fireball_to_nbt(
         put(&mut tag, "Item", item_to_nbt(item));
     }
     Some(tag)
-}
-
-/// `Entity.load`: fire is read as a short, air as an int and the visual
-/// fire flag as a byte-valued boolean. Portal state lives on the level.
-fn load_projectile_entity_fields(p: &mut Projectile, tag: &Tag) {
-    p.fire_ticks = i32::from(tag.get("Fire").and_then(int_value).unwrap_or(0) as i16);
-    p.air_supply = tag.get("Air").and_then(int_value).unwrap_or(p.air_supply);
-    p.has_visual_fire = flag(tag, "HasVisualFire");
-}
-
-/// `Entity.saveWithoutId`: save the current fire and air as shorts, and
-/// only write the optional visual fire flag when it is true.
-fn put_projectile_entity_fields(tag: &mut Tag, p: &Projectile) {
-    put(tag, "Fire", Tag::Short(p.fire_ticks as i16));
-    put(tag, "Air", Tag::Short(p.air_supply as i16));
-    if let Tag::Compound(map) = tag {
-        map.remove(&"HasVisualFire".into());
-    }
-    if p.has_visual_fire {
-        put(tag, "HasVisualFire", Tag::Byte(1));
-    }
 }
 
 /// `Projectile.addAdditionalSaveData`: Owner, LeftOwner only when set, and
@@ -3422,7 +3384,7 @@ pub fn throwable_to_nbt(
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
         on_ground: p.on_ground,
-        fall_distance: 0.0,
+        fall_distance: p.fall_distance,
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
@@ -3608,6 +3570,7 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
         load_projectile_entity_fields(&mut p, tag);
     }
     p.on_ground = flag(tag, "OnGround");
+    p.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
         p.set_item(item);
@@ -10422,25 +10385,21 @@ mod equine_temper_preservation_tests {
         );
         Arc::make_mut(&mut kind).species = Species::Ravager;
         let types = [("minecraft:ravager".into(), kind)].into();
-        let mut ravager = mob_from_nbt(
-            &Tag::compound([
-                ("id", string("minecraft:ravager")),
-                ("Pos", doubles(&[0.0, 0.0, 0.0])),
-                ("RoarTick", Tag::Int(10)),
-            ]),
-            &types,
-            2,
-            None,
-        )
-        .unwrap();
-        ravager.age = 1;
-        let saved = mob_to_nbt(&ravager, [0; 4], None, None, |_| None);
-        assert_eq!(
-            saved.get("attributes"),
-            Some(&Tag::List(vec![Tag::compound([
-                ("id", string("minecraft:movement_speed")),
-                ("base", Tag::Double(0.0f64.to_bits()))
-            ])]))
-        );
+        // Before its first aiStep a roaring ravager has no movement_speed
+        // instance; a saved base (mid-ramp after a roar) loads back as is.
+        let speed = Tag::List(vec![Tag::compound([
+            ("id", string("minecraft:movement_speed")),
+            ("base", Tag::Double(0.10317f64.to_bits())),
+        ])]);
+        for (key, value, saved) in [
+            ("RoarTick", Tag::Int(10), Tag::List(vec![])),
+            ("attributes", speed.clone(), speed),
+        ] {
+            let pos = ("Pos", doubles(&[0.0, 0.0, 0.0]));
+            let tag = Tag::compound([("id", string("minecraft:ravager")), pos, (key, value)]);
+            let ravager = mob_from_nbt(&tag, &types, 2, None).unwrap();
+            let nbt = mob_to_nbt(&ravager, [0; 4], None, None, |_| None);
+            assert_eq!(nbt.get("attributes"), Some(&saved));
+        }
     }
 }
