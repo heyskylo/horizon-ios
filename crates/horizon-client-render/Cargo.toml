@@ -24,7 +24,6 @@ horizon-narrator = { path = "../horizon-narrator" }
 horizon-optifine = { path = "../horizon-optifine" }
 horizon-polytone = { path = "../horizon-polytone" }
 horizon-protocol = { path = "../horizon-protocol" }
-horizon-render-pipeline = { path = "../horizon-render-pipeline" }
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-shaders = { path = "../horizon-shaders" }
 horizon-system = { path = "../horizon-system" }
