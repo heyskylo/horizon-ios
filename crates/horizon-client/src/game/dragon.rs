@@ -2321,6 +2321,7 @@ impl Game<'_> {
                     self.breath_clouds.push(Breath {
                         id,
                         at: [x, y.floor() + 1.0, z],
+                        motion: [0.0; 3],
                         radius: 5.0,
                         age: 0,
                         duration: 200,
@@ -2977,6 +2978,7 @@ impl Game<'_> {
         self.breath_clouds.push(Breath {
             id,
             at,
+            motion: [0.0; 3],
             radius: 3.0,
             age: 0,
             duration: 600,
@@ -3281,6 +3283,7 @@ pub(super) struct Breath {
     /// Its entity id once a server's players track it (0 until then).
     pub(super) id: u32,
     pub(super) at: [f64; 3],
+    pub(super) motion: [f64; 3],
     pub(super) radius: f32,
     pub(super) age: i32,
     pub(super) duration: i32,

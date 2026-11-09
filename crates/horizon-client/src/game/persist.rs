@@ -3083,6 +3083,14 @@ mod tests {
                     Tag::Double(4.5f64.to_bits()),
                 ]),
             ),
+            (
+                "Motion",
+                Tag::List(vec![
+                    Tag::Double(0.6f64.to_bits()),
+                    Tag::Double(0.0f64.to_bits()),
+                    Tag::Double(0.0f64.to_bits()),
+                ]),
+            ),
             ("UUID", Tag::IntArray(vec![5, 6, 7, 8])),
             ("Duration", Tag::Int(600)),
             (
@@ -3099,13 +3107,19 @@ mod tests {
         game.world.loaded_entities.push(((0, 0), vec![cloud]));
         game.spawn_loaded_entities();
         assert_eq!(clouds(&game), 1, "the cloud loads");
+        assert_eq!(game.breath_clouds[0].motion, [0.6, 0.0, 0.0]);
         let unloaded = game.entity_chunks(&HashSet::from([(0, 0)]), true);
         let written: Vec<Tag> = unloaded.into_iter().flat_map(|(_, tags)| tags).collect();
         assert_eq!(written.len(), 1, "the unload writes the cloud");
+        assert_eq!(
+            entity_nbt::loaded_motion(&written[0]),
+            Vec3::new(0.6, 0.0, 0.0)
+        );
         assert_eq!(clouds(&game), 0, "and takes it out of the level");
         game.world.loaded_entities.push(((0, 0), written));
         game.spawn_loaded_entities();
         assert_eq!(clouds(&game), 1, "loading the chunk again gives one cloud");
+        assert_eq!(game.breath_clouds[0].motion, [0.6, 0.0, 0.0]);
     }
 
     #[test]
