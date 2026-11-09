@@ -693,6 +693,12 @@ fn a_hopper_is_disabled_by_power_on_any_of_its_six_sides_and_nothing_else() {
         w.set(at, w.id("hopper", &[("facing", "down")]));
         assert_eq!(w.prop(at, "enabled"), "true", "unpowered hopper");
         w.set(source, w.id("redstone_block", &[]));
+        if dx.abs() + dy.abs() + dz.abs() > 1 {
+            // A source that is not beside the hopper sends it no block update, so
+            // it never looks. Poke it with a block on a side no case uses, or this
+            // case would pass for any implementation, quasi-connected or not.
+            w.set(BlockPos::new(-1, 5, 0), w.id("stone", &[]));
+        }
         assert_eq!(
             w.prop(at, "enabled"),
             if enabled { "true" } else { "false" },
