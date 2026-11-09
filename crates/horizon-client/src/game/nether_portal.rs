@@ -9,7 +9,7 @@
 //! A server keeps one level per dimension. Entity portal processes and
 //! cooldowns follow their level; shared `Arrival`s hold each traveller's
 //! saved compound until its destination chunks are loaded.
-use super::entity::{Entity as _, entity_lists_of, for_each_entity};
+use super::entity::{Entity as _, entity_lists_of, for_each_entity, with_entity};
 use super::{Dim, Game, Result, Screen, level_flags};
 use horizon_client::fast_hash::FxHashMap;
 use horizon_client::nether_portal::{ENTITY_DELAY, PortalState};
@@ -739,6 +739,16 @@ impl Game<'_> {
             );
         }
     }
+    /// The live entity's `getDimensionChangingDelay`; unknown ids use Entity's default.
+    pub(super) fn entity_portal_delay(&self, id: u32) -> i32 {
+        self.entity_handles()
+            .find_map(|handle| {
+                with_entity!(self, handle, entity => {
+                    (entity.id() == id).then(|| entity.dimension_changing_delay())
+                })
+            })
+            .unwrap_or(ENTITY_DELAY)
+    }
     /// `Entity.saveWithoutId`: the modeled non-arrow projectile codecs
     /// share the live cooldown between command reads and chunk writes.
     pub(super) fn save_projectile_portal_cooldown(
@@ -760,21 +770,23 @@ impl Game<'_> {
     /// `Entity.setAsInsidePortal` on an entity that is still on its portal
     /// cooldown, whatever the portal: the cooldown restarts and it stays.
     pub(super) fn restart_portal_cooldown(&mut self, id: u32) -> bool {
+        let delay = self.entity_portal_delay(id);
         match self.portals.entities.get_mut(&id) {
             Some(state) if state.cooldown > 0 => {
-                state.cooldown = ENTITY_DELAY;
+                state.cooldown = delay;
                 true
             }
             _ => false,
         }
     }
     /// `Entity.setPortalCooldown` on an entity that has just spawned in a
-    /// portal: it stands in the portal for 300 ticks without going through.
+    /// portal: it waits for its entity-specific cooldown without going through.
     pub(super) fn set_portal_cooldown(&mut self, id: u32) {
+        let delay = self.entity_portal_delay(id);
         self.portals.entities.insert(
             id,
             PortalState {
-                cooldown: ENTITY_DELAY,
+                cooldown: delay,
                 process: None,
             },
         );
