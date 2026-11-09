@@ -1139,6 +1139,15 @@ impl Game<'_> {
         if !is_tnt && name.starts_with("minecraft:infested_") {
             self.spawn_infestation(pos);
         }
+        // Its dropExperience is whether the blast's indirect source is a
+        // player (a primed TNT's owner): ores, sculk and spawners sample their
+        // experience then, and pop it while blocks drop.
+        if !is_tnt && self.combat.blast_owner.is_some() {
+            let xp = self.block_experience(&name);
+            if xp > 0 && self.ui.rules.bool("block_drops") {
+                self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), xp);
+            }
+        }
         if !is_tnt {
             let dynamic = self.pending.dynamic(pos);
             // LootContextParams.EXPLOSION_RADIUS under DESTROY_WITH_DECAY: the
