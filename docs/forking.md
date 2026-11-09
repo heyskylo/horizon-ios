@@ -26,7 +26,7 @@ What changes in that build:
 | Horizon Settings (Extras, PvP & HUD, Splitscreen, Studio, AI Agent, Discord) and Mods (with the registry browser) | `options_ui.rs` (`Page::Horizon` and below), `extras_ui.rs`, `extras.rs`, `pvp.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_hud.rs` | the Options screen shows vanilla's greyed Telemetry Data instead (`options_ui::HORIZON_EXTRAS`, set in `entry.rs`) |
 | Discord Rich Presence | `discord_presence.rs`, `game/discord.rs` | the `discord` feature, which `horizon-extras` turns on |
 | Play with Friends | `game/friends.rs`, `friends_screen.rs`, crate `horizon-friends` | the `friends` feature (`game/friends_off.rs` stands in) |
-| The anonymous "I'm playing" ping | `heartbeat.rs` | the `heartbeat` feature |
+| The anonymous "I'm playing" ping | crate `horizon-heartbeat` | not in horizon-client at all: only the official executable (`horizon-official`) registers it ([layers.md](layers.md#how-a-horizon-crate-plugs-in)) |
 
 Credits & Attribution then says where the official build is (`horizon.plain.official`).
 

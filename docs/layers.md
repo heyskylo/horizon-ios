@@ -155,9 +155,10 @@ Horizon's own extras and its product, and every built-in address of an outside s
   and partner servers in the list, Play with Friends and its relay, Discord, the "I'm playing" ping, telemetry and
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
-  `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `launcher/`. Still in engine
-  crates today: `game/cosmetics.rs`, `game/emotes.rs`, `game/discord.rs`, `game/extras.rs`, `game/tweaks.rs`,
-  `heartbeat.rs`, `multiplayer.rs` (`add_official_server`), `extras_ui.rs`, `pvp.rs`.
+  `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
+  `horizon-official`, `launcher/`. Still in engine crates today: `game/cosmetics.rs`, `game/emotes.rs`,
+  `game/discord.rs`, `game/extras.rs`, `game/tweaks.rs`, `multiplayer.rs` (`add_official_server`), `extras_ui.rs`,
+  `pvp.rs`.
 - **Rules:**
   - It uses the platform's public API only, never the engine.
   - Until it moves, every Horizon feature in the game sits behind the `horizon-extras` feature
@@ -294,9 +295,13 @@ context for HUD and chat overlays, a settings page) comes with that type's platf
 that belongs to one subsystem (an input source, the compositor) lives in the engine crate that owns it, with the
 same shape: registered before the game runs, read-only after.
 
-Until the official executable is what players get, horizon-client's own executable still registers the "I'm
-playing" ping (`heartbeat.rs`) through the same hooks, and nothing leaves the shipped game: a part moves to a
-Horizon crate registered by `horizon-official` once the release builds ship that executable under the game's name.
+**What players get.** The release builds (`game-build.yml`, so the nightly and the release; `tools/ci/build-musl.sh`)
+build `horizon-official` and ship it as `horizon-client`, the name the launcher and players know. The launcher's
+native-mod builds of the game do the same, and its generated executable for trait mods calls
+`horizon_official::register()` (`launcher/src/native_mods/api.rs`). The dedicated server build (`horizon-engine`)
+stays horizon-client's, with no Horizon part. horizon-client's own executable, the one `cargo run -p
+horizon-client`, the harnesses and horizon-plain build, has none either. The first part that moved this way is the
+"I'm playing" ping (`horizon-heartbeat`).
 
 ## Extras that may leave the game
 

@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, ReadConfig};
 use crate::custom::Custom;
 use crate::{
     ComputeProgram, eval_condition, preprocess, translate_composite, translate_compute,

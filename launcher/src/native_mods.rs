@@ -33,6 +33,12 @@ mod diagnostics;
 mod inject;
 mod inject_cache;
 mod isolate;
+mod source;
+
+use source::{
+    api_target, build_files, bundle_files, files, files_with_api, install_content,
+    installed_mods_into, mod_hash, source_digest,
+};
 
 pub use isolate::LeftOut;
 
@@ -386,21 +392,6 @@ fn save_record(target: Target, profile: Profile, platform: Option<&str>, record:
     }
 }
 
-/// The hash of a bundle's files.
-fn mod_hash(b: &Bundle) -> Result<String, String> {
-    let mut hash = Sha256::new();
-    for (name, path) in bundle_files(b)? {
-        let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        hash.update(name.as_bytes());
-        hash.update((bytes.len() as u64).to_le_bytes());
-        hash.update(&bytes);
-    }
-    Ok(hash.finalize()[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
-}
-
 /// What a cargo output line says about the compile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cargo {
@@ -613,35 +604,7 @@ pub const INSTALLED: &str = "horizon-native-mods";
 /// Each `.hnmod` is checked again as the registry checks it (Rust and TOML under
 /// `mixins/<id>/`, plus files under its `data/`, nothing run).
 pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
-    let out = root().join("installed.incoming");
-    let _ = fs::remove_dir_all(&out);
-    let mut paths: Vec<PathBuf> = fs::read_dir(home.join(INSTALLED))
-        .map(|dir| dir.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
-    paths.retain(|p| p.extension().is_some_and(|e| e == "hnmod"));
-    paths.sort();
-    let mut count = 0;
-    for path in paths {
-        let bundle = horizon_mods::index::native::Bundle::read(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        if !crate::browser::java::is_enabled(home, &bundle.manifest.id) {
-            continue;
-        }
-        let dir = out.join(&bundle.manifest.id);
-        for (name, bytes) in &bundle.files {
-            let to = dir.join(name);
-            fs::create_dir_all(to.parent().unwrap_or(&dir)).map_err(|e| e.to_string())?;
-            fs::write(&to, bytes).map_err(|e| format!("{}: {e}", to.display()))?;
-        }
-        count += 1;
-    }
-    if count == 0 {
-        return Err(format!(
-            "No native mod is turned on in {}: install one from the Mods page first.",
-            home.join(INSTALLED).display()
-        ));
-    }
-    Ok(out)
+    installed_mods_into(home, &root().join("installed.incoming"))
 }
 
 /// A mixin bundle: a folder with a `horizon-mixin.toml`, and the revisions it pins.
@@ -1445,59 +1408,6 @@ pub fn newer_than(base: &str, installed: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// Every file under `dir`, by its path relative to `dir` (with `/`), sorted. A symlink is refused:
-/// horizon-mixins refuses them too.
-fn files(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
-    files_with_api(dir, None)
-}
-
-/// Bundle files omit only the API package's Cargo build output.
-fn bundle_files(bundle: &Bundle) -> Result<Vec<(String, PathBuf)>, String> {
-    files_with_api(&bundle.dir, bundle.api.as_deref())
-}
-
-/// The API package's target folder in a canonical bundle root.
-fn api_target(root: &Path, api: Option<&str>) -> Result<Option<PathBuf>, String> {
-    api.map(|path| root.join(path).canonicalize().map(|p| p.join("target")))
-        .transpose()
-        .map_err(|e| e.to_string())
-}
-
-fn files_with_api(dir: &Path, api: Option<&str>) -> Result<Vec<(String, PathBuf)>, String> {
-    fn walk(
-        root: &Path,
-        dir: &Path,
-        skip: Option<&Path>,
-        out: &mut Vec<(String, PathBuf)>,
-    ) -> Result<(), String> {
-        for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
-            let (path, kind) = (entry.path(), entry.file_type().map_err(|e| e.to_string())?);
-            if kind.is_symlink() {
-                return Err(format!(
-                    "{} is a link: copy the file instead.",
-                    path.display()
-                ));
-            } else if kind.is_dir() {
-                if Some(path.as_path()) != skip {
-                    walk(root, &path, skip, out)?;
-                }
-            } else {
-                let relative = path.strip_prefix(root).unwrap_or(&path);
-                out.push((relative.to_string_lossy().replace('\\', "/"), path));
-            }
-        }
-        Ok(())
-    }
-    let root = dir
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", dir.display()))?;
-    let skip = api_target(&root, api)?;
-    let mut out = Vec::new();
-    walk(&root, &root, skip.as_deref(), &mut out)?;
-    out.sort();
-    Ok(out)
-}
-
 /// The installed version `bundles` built on Horizon `revision` with horizon-mixins `mixins`
 /// become: `native-<7 digits of the revision>-<12 hex digits>`. The two targets' keys never mix:
 /// a server build salts its hash, so it is another version than the client build of the same
@@ -1530,7 +1440,7 @@ pub fn version_for(
     for b in bundles {
         hash.update(b.id.as_bytes());
         hash.update([0]);
-        for (name, path) in bundle_files(b)? {
+        for (name, path) in build_files(b)? {
             let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             hash.update(name.as_bytes());
             hash.update((bytes.len() as u64).to_le_bytes());
@@ -1554,33 +1464,6 @@ pub fn digest<'a>(files: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
         hash.update(bytes);
     }
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// The digest of a bundle's files as the Mods page reads it (`native_status::enabled`): an
-/// unpacked `.hnmod`'s whole folder, its `horizon-native.json` included, else the bundle's own
-/// folder. A build records it, so a build of the mods turned on reads as up to date.
-fn source_digest(bundle: &Bundle) -> Option<String> {
-    let root = bundle
-        .dir
-        .parent()
-        .and_then(Path::parent)
-        .filter(|root| {
-            root.join(NATIVE_MANIFEST).is_file()
-                && bundle.dir == root.join("mixins").join(&bundle.id)
-        })
-        .unwrap_or(&bundle.dir);
-    // An installed .hnmod keeps its archive digest for the Mods page.
-    let paths = if root == bundle.dir {
-        bundle_files(bundle)
-    } else {
-        files(root)
-    };
-    let read: Vec<_> = paths
-        .ok()?
-        .into_iter()
-        .map(|(name, path)| Some((name, fs::read(path).ok()?)))
-        .collect::<Option<_>>()?;
-    Some(digest(read.iter().map(|(n, b)| (n.as_str(), b.as_slice()))))
 }
 
 /// Where a build is.
@@ -1923,7 +1806,7 @@ fn compile(
     if has_mods_feature(stage) {
         cmd.args(["--features", FEATURES]);
     }
-    cmd.args(["-p", package, "--bin", "horizon-client"]);
+    cmd.args(["-p", package, "--bin", api::executable(package)]);
     cmd
 }
 
@@ -2495,11 +2378,7 @@ fn pipeline(
                 target,
                 &target_dir,
                 compiled,
-                if has_api {
-                    api::PACKAGE
-                } else {
-                    "horizon-client"
-                },
+                api::game_package(&stage, target, has_api),
             ),
             "Compiling the game",
             |line| {
@@ -2541,6 +2420,8 @@ fn pipeline(
                 _ => Failed::Other(error),
             }
         })?;
+        let out = target_dir.join(compiled.cargo().0);
+        api::as_client(&stage, target, has_api, &out)?;
         if let Some(expected) = platform.machine {
             let executable = target_dir.join(compiled.cargo().0).join(backend::CLIENT);
             let actual = pe_machine(&executable).map_err(|error| {
@@ -2596,6 +2477,7 @@ fn pipeline(
             "left_out": left_out.iter().map(LeftOut::to_json).collect::<Vec<_>>(),
         });
         install(base, &version, target, &binary, &about, |dir| {
+            install_content(&mods, dir)?;
             for (step, program) in &post {
                 progress(Step::PostBuild(step.mod_id.clone()));
                 let cmd = crates::post_build(program, step, dir, &real.join("cache"), &stage)?;
@@ -2981,10 +2863,15 @@ pub(crate) fn copy_base(from: &Path, to: &Path, target: Target) -> Result<(), St
 /// data behind. A server build is the headless engine: it keeps neither the game's own binary
 /// nor any `horizon-engine` the base shipped, which would run unmodded beside its own.
 fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
-    let mut own: Vec<String> = ["Horizon.app", "native-mods.json", "native-data"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut own: Vec<String> = [
+        "Horizon.app",
+        "native-mods.json",
+        "native-data",
+        "native-content",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     own.push(backend::CLIENT.to_string());
     own.push(".installed".to_string());
     if target == Target::Server {
