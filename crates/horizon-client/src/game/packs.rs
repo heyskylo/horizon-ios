@@ -762,16 +762,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(wait(&mut quick).0, ReloadKind::Selection);
-        let hold = Duration::from_millis(80);
+        // A hold no test machine outlasts, however loaded: the worker is done long
+        // before the overlay has had its time.
+        let hold = Duration::from_secs(3600);
         let mut held =
             PackReload::spawn_holding(ReloadKind::Selection, hold, |_| Err("staged".into()))
                 .unwrap();
-        // The worker is done long before the overlay has had its time.
-        for _ in 0..50 {
-            std::thread::sleep(Duration::from_millis(1));
+        for _ in 0..500 {
+            if held.handle.as_ref().is_some_and(|h| h.is_finished()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
+        assert!(held.handle.as_ref().is_some_and(|h| h.is_finished()));
         assert!(held.finished().is_none(), "the overlay is still up");
-        std::thread::sleep(hold);
+        // Once the hold has passed, the staged pack is handed over.
+        held.hold = Duration::ZERO;
         assert_eq!(wait(&mut held).0, ReloadKind::Selection);
     }
 
