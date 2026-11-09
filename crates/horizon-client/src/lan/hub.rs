@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex, atomic::Ordering};
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
 pub mod chat_filter;
+mod spawn_info;
 
 pub mod game_event {
     pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
@@ -1389,30 +1390,6 @@ impl Hub {
     const INFO_ACTIONS: u8 = 0xFF;
 
     // ---- joining -------------------------------------------------------
-
-    /// `CommonPlayerSpawnInfo`, with the player's `portalCooldown`.
-    fn spawn_info(&self, i: usize, portal_cooldown: i32, sea_level: i32) -> play::SpawnInfo {
-        let g = &self.guests[i];
-        play::SpawnInfo {
-            dimension_type: self.dimension_type,
-            dimension: self.config.dimension.clone(),
-            seed: horizon_core::biome::obfuscate_seed(self.config.seed),
-            game_type: g.game_mode,
-            previous_game_type: None,
-            debug: self.debug_world,
-            flat: self.flat_world,
-            // Player.getLastDeathLocation.
-            last_death: g
-                .last_death
-                .as_ref()
-                .map(|(dimension, pos)| play::GlobalPos {
-                    dimension: dimension.clone(),
-                    pos: *pos,
-                }),
-            portal_cooldown,
-            sea_level,
-        }
-    }
 
     fn admit(&mut self, j: super::Joined, ctx: &mut TickCtx) -> u32 {
         // The game's ids are taken by incrementing first: the current value
