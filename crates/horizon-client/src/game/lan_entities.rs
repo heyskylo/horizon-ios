@@ -485,10 +485,86 @@ impl Game<'_> {
             e.pitch = o.pitch;
             e.head_yaw = o.yaw;
             if let Some(tag) = self.persist.raw.get(&o.id) {
-                self.lan_display_data(tag, hub, e);
+                self.lan_display_data_kept(o.id, tag, hub, e);
             }
         }
+        KEPT_DISPLAYS.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            if kept.len() > self.others.len() + 64 {
+                let ids: horizon_client::fast_hash::FxHashSet<u32> =
+                    self.others.iter().map(|o| o.id).collect();
+                kept.retain(|id, _| ids.contains(id));
+            }
+        });
     }
+    /// [`Self::lan_display_data`] for the display `id`, built again only when
+    /// its compound changed: a server's holograms and menus are text displays
+    /// whose text, item and transformation were parsed again every tick.
+    fn lan_display_data_kept(&self, id: u32, tag: &Tag, hub: &mut Hub, e: &mut EntityState) {
+        if !matches!(
+            e.kind.as_str(),
+            "minecraft:text_display" | "minecraft:block_display" | "minecraft:item_display"
+        ) {
+            return self.lan_display_data(tag, hub, e);
+        }
+        // Block states are read through the pack's registry: a kept build is
+        // only the same for the same one.
+        let registry = std::ptr::from_ref(self.pack.assets.registry) as usize;
+        KEPT_DISPLAYS.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            let same =
+                |k: &KeptDisplay| k.registry == registry && k.kind == e.kind && k.tag == *tag;
+            if let Some(k) = kept.get(&id).filter(|k| same(k)) {
+                e.meta.clone_from(&k.meta);
+                e.defaults.clone_from(&k.defaults);
+                // The stack's ids are the hub's: asked each time, as a build does.
+                if let Some((at, item)) = &k.item
+                    && let Some(slot) = e.meta.get_mut(*at)
+                {
+                    slot.2 = Value::Item(hub.stack(item));
+                }
+                return;
+            }
+            self.lan_display_data(tag, hub, e);
+            let item = (e.kind == "minecraft:item_display").then(|| {
+                let at = e
+                    .meta
+                    .iter()
+                    .position(|m| m.0 == 23 && m.1 == serializer::ITEM_STACK);
+                let item = tag
+                    .get("item")
+                    .and_then(horizon_client::save::item_from_nbt);
+                (at.unwrap_or(usize::MAX), item)
+            });
+            kept.insert(
+                id,
+                KeptDisplay {
+                    registry,
+                    kind: e.kind.clone(),
+                    tag: tag.clone(),
+                    meta: e.meta.clone(),
+                    defaults: e.defaults.clone(),
+                    item,
+                },
+            );
+        });
+    }
+}
+
+/// A display's synched data as [`Game::lan_display_data`] built it from
+/// `tag`, kept for the display's id on the thread that tracks entities.
+struct KeptDisplay {
+    registry: usize,
+    kind: String,
+    tag: Tag,
+    meta: Vec<(u8, i32, Value)>,
+    defaults: Vec<(u8, i32, Value)>,
+    /// An item display's item and the index in `meta` its stack goes in.
+    item: Option<(usize, Option<horizon_client::items::ItemStack>)>,
+}
+thread_local! {
+    static KEPT_DISPLAYS: std::cell::RefCell<horizon_client::fast_hash::FxHashMap<u32, KeptDisplay>> =
+        Default::default();
 }
 
 impl Game<'_> {
@@ -952,6 +1028,85 @@ fn push_arrow_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn kept_display_data_is_what_a_build_gives() {
+        let game = crate::game::native_machines::tests::server_game();
+        let sync = std::sync::Arc::new(horizon_client::lan::data::SyncData::empty());
+        let net = horizon_client::lan::NetConfig {
+            listen: false,
+            ..horizon_client::lan::NetConfig::loopback(0, String::new(), 2)
+        };
+        let lan = horizon_client::lan::Lan::start_with(sync.clone(), net).unwrap();
+        let encoder = horizon_client::lan::chunks::ChunkEncoder::new(
+            [] as [(std::sync::Arc<str>, bool); 0],
+            &horizon_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+        );
+        let config = horizon_client::lan::hub::HubConfig {
+            default_game_mode: 0,
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: false,
+            view_distance: 10,
+            simulation_distance: 10,
+            dimension: "minecraft:overworld".into(),
+            allow_flight: false,
+            seed: 0,
+            max_players: 20,
+            integrated: true,
+            levels: Default::default(),
+        };
+        let mut hub = Hub::new(lan, sync, encoder, config);
+        let snbt = |s: &str| horizon_client::command::snbt::parse_fully(s).unwrap();
+        let displays: [(&str, Tag, Tag); 3] = [
+            (
+                "minecraft:text_display",
+                snbt(r#"{text:{text:"Shop",color:"gold"},billboard:"center",line_width:120}"#),
+                snbt(r#"{text:{text:"Sold out",bold:1b},billboard:"center",background:0}"#),
+            ),
+            (
+                "minecraft:block_display",
+                snbt(r#"{block_state:{Name:"minecraft:oak_stairs",Properties:{facing:"east"}}}"#),
+                snbt(r#"{block_state:{Name:"minecraft:glass"},brightness:{sky:15,block:3}}"#),
+            ),
+            (
+                "minecraft:item_display",
+                snbt(r#"{item:{id:"minecraft:diamond",count:3},item_display:"gui"}"#),
+                snbt(
+                    r#"{item:{id:"minecraft:apple",count:1},item_display:"head",glow_color_override:255}"#,
+                ),
+            ),
+        ];
+        let state = |kind: &str| EntityState {
+            kind: kind.into(),
+            ..Default::default()
+        };
+        for (id, (kind, first, second)) in displays.iter().enumerate() {
+            let id = 900 + id as u32;
+            // Ticks with the first compound, then the second, then the first
+            // again: each answer is a fresh build's.
+            for tag in [first, first, first, second, second, first] {
+                let mut built = state(kind);
+                game.lan_display_data(tag, &mut hub, &mut built);
+                assert!(!built.meta.is_empty(), "{kind}");
+                let mut kept = state(kind);
+                game.lan_display_data_kept(id, tag, &mut hub, &mut kept);
+                assert_eq!(
+                    format!("{:?}", kept.meta),
+                    format!("{:?}", built.meta),
+                    "{kind}"
+                );
+                assert_eq!(
+                    format!("{:?}", kept.defaults),
+                    format!("{:?}", built.defaults),
+                    "{kind}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn summoned_ids_are_unique_and_survive_the_tracking_pass() {
