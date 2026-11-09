@@ -42,6 +42,18 @@ fn picker_rows_max_height(window_height: f32) -> f32 {
     (window_height - PICKER_ABOVE - PICKER_CHROME).clamp(PICKER_ROWS_MIN, PICKER_ROWS_MAX)
 }
 
+/// The Version menu's state (Home's picker).
+#[derive(Default)]
+pub(super) struct PickerState {
+    /// The menu is open.
+    pub(super) open: bool,
+    /// Its rows scroll.
+    pub(super) scroll: Scrollbar,
+    /// The window's height when the menu opened: its rows are as tall as the room under the
+    /// button.
+    pub(super) window_height: f32,
+}
+
 /// Which of Home's menus is open.
 #[derive(Clone, Copy, PartialEq, Default)]
 pub(super) enum HomeMenu {
@@ -443,14 +455,14 @@ impl Launcher {
                     })),
                     (None, PlayPress::Play) => {
                         main.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.picker_open = false;
+                            this.picker.open = false;
                             this.play();
                             cx.notify();
                         }))
                     }
                     (None, PlayPress::PrepareThenPlay) => {
                         main.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.picker_open = false;
+                            this.picker.open = false;
                             this.play_when_prepared = this.selected().cloned();
                             this.prepare(backend::MinecraftFrom::Install);
                             cx.notify();
@@ -585,7 +597,7 @@ impl Launcher {
                     .unwrap_or_else(|| tag.clone())
             },
         );
-        let open = self.picker_open;
+        let open = self.picker.open;
         let chevron = ui::icon("arrow-down-01", 18., white(ink::NOTE)).when(open, |s| {
             s.with_transformation(gpui::Transformation::rotate(gpui::radians(
                 std::f32::consts::PI,
@@ -626,11 +638,13 @@ impl Launcher {
                         ),
                 )
                 .child(chevron)
-                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                     if !this.closed_by_this_press(event) {
-                        this.picker_open = !this.picker_open;
+                        this.picker.open = !this.picker.open;
+                        this.picker.window_height = f32::from(window.viewport_size().height);
                         // Opens at the top of the list, not where it was left.
-                        this.picker_scroll
+                        this.picker
+                            .scroll
                             .handle
                             .set_offset(gpui::point(px(0.), px(0.)));
                     }
@@ -653,7 +667,7 @@ impl Launcher {
                 .id("picker-menu")
                 .occlude()
                 .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.picker_open = false;
+                    this.picker.open = false;
                     this.menu_closed_at = Some(event.position);
                     cx.notify();
                 }));
@@ -662,7 +676,7 @@ impl Launcher {
                 .id("picker-list")
                 .flex()
                 .flex_col()
-                .max_h(px(picker_rows_max_height(self.window_height)))
+                .max_h(px(picker_rows_max_height(self.picker.window_height)))
                 .overflow_y_scroll();
             for tag in &self.installed {
                 let chosen = self.selected() == Some(tag);
@@ -683,13 +697,13 @@ impl Launcher {
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pin_version((!latest).then(|| pick.clone()));
-                            this.picker_open = false;
+                            this.picker.open = false;
                             cx.notify();
                         })),
                 );
             }
             // The wheel moves the list while it can, and goes on to the page at its ends.
-            menu = menu.child(self.picker_scroll.wrap(rows, &t)).child(
+            menu = menu.child(self.picker.scroll.wrap(rows, &t)).child(
                 ui::menu_item(
                     "manage",
                     tr("Manage versions").into(),
@@ -699,7 +713,7 @@ impl Launcher {
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.go(Page::Versions);
-                    this.picker_open = false;
+                    this.picker.open = false;
                     cx.notify();
                 })),
             );
