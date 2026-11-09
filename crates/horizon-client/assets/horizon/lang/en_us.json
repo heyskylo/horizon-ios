@@ -310,7 +310,7 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Lifts shadows onto your display's darkest black. 0: true black, no lift.",
   "How bright highlights get. Auto: the peak your system reports.": "How bright highlights get. Auto: the peak your system reports.",
   "How bright white looks in the world. Auto: your desktop's white.": "How bright white looks in the world. Auto: your desktop's white.",
-  "How bright the HUD and menus are, against paper white.": "How bright the HUD and menus are, against paper white.",
+  "How bright the HUD and menus are. Auto: at paper white.": "How bright the HUD and menus are. Auto: at paper white.",
   "How far mobs, crops and machines keep working. CPU time.": "How far mobs, crops and machines keep working. CPU time.",
   "How far away mobs and items are drawn, as a share of normal.": "How far away mobs and items are drawn, as a share of normal.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Skips terrain hidden behind closed sections. Off costs a lot.",

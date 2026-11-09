@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Soyalarni displeyingizning eng qorong'i qora darajasiga ko'taradi. 0: haqiqiy qora, ko'tarilishsiz.",
   "How bright highlights get. Auto: the peak your system reports.": "Yorqin nuqtalar qanchalik yorqin bo'ladi. Avtomatik: tizimingiz hisobotlarining eng yuqori nuqtasi.",
   "How bright white looks in the world. Auto: your desktop's white.": "Dunyoda oq qanchalik yorqin ko'rinadi. Avtomatik: ish stolingizning oq darajasi.",
-  "How bright the HUD and menus are, against paper white.": "HUD va menyular oq qog'ozga nisbatan qanchalik yorqin.",
   "How far mobs, crops and machines keep working. CPU time.": "To'dalar, ekinlar va mashinalar qanchalik uzoqda ishlaydi. CPU vaqti.",
   "How far away mobs and items are drawn, as a share of normal.": "Qanchalik uzoq to'dalar va ob'ektlar chizilgan, oddiy ulushi sifatida.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Yopiq qismlar orqasida yashiringan erlarni o'tkazib yuboradi. O'chirish juda qimmatga tushadi.",

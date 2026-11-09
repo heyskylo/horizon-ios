@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Ανεβάζει τις σκιές στο πιο σκοτεινό μαύρο της οθόνης σας. 0: αληθινό μαύρο, χωρίς ανύψωση.",
   "How bright highlights get. Auto: the peak your system reports.": "Πόσο φωτεινά σημεία αποκτούν. Auto: η κορύφωση που αναφέρει το σύστημά σας.",
   "How bright white looks in the world. Auto: your desktop's white.": "Πόσο φωτεινό φαίνεται το λευκό στον κόσμο. Αυτόματο: το λευκό της επιφάνειας εργασίας σας.",
-  "How bright the HUD and menus are, against paper white.": "Πόσο φωτεινά είναι τα HUD και τα μενού, σε σχέση με το λευκό χαρτί.",
   "How far mobs, crops and machines keep working. CPU time.": "Πόσο μακριά συνεχίζουν να λειτουργούν όχλοι, καλλιέργειες και μηχανές. Χρόνος CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "Πόσο μακριά κληρώνονται όχλοι και αντικείμενα, ως ποσοστό του κανονικού.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Παρακάμπτει το έδαφος που κρύβεται πίσω από κλειστά τμήματα. Το off κοστίζει πολύ.",

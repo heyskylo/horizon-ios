@@ -612,7 +612,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::HdrUiBrightness,
                             None,
-                            "How bright the HUD and menus are, against paper white.",
+                            "How bright the HUD and menus are. Auto: at paper white.",
                         ),
                         h(
                             H::HdrLighting,
@@ -809,14 +809,14 @@ impl H {
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
             H::UpscalingSharpness => Some(g.upscaling_sharpness as f32 / 100.0),
             // Auto, then 10..480 by 10.
-            H::HdrPaperWhite => Some(g.hdr_paper_white as f32 / 480.0),
+            H::HdrPaperWhite => Some(crate::graphics::nits_position(g.hdr_paper_white)),
+            H::HdrUiBrightness => Some(crate::graphics::nits_position(g.hdr_ui_nits)),
             // Auto, then the peak's scale.
             H::HdrPeak => Some(match g.hdr_peak {
                 0 => 0.0,
                 n => (1.0 + crate::graphics::peak_step_of(n as f32)) / PEAK_POSITIONS as f32,
             }),
             H::HdrBlackLevel => Some(g.hdr_black_level as f32 / 100.0),
-            H::HdrUiBrightness => Some((g.hdr_ui_brightness as f32 - 25.0) / 75.0),
             _ => None,
         }
     }
@@ -828,11 +828,24 @@ impl H {
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
             H::UpscalingSharpness => Some(20),
-            H::HdrPaperWhite => Some(48),
+            H::HdrPaperWhite | H::HdrUiBrightness => Some(crate::graphics::NITS_STEPS),
             H::HdrPeak => Some(PEAK_POSITIONS),
             H::HdrBlackLevel => Some(100),
-            H::HdrUiBrightness => Some(15),
             _ => None,
+        }
+    }
+    /// "Paper White: Auto (203)" or "Paper White: 160": a setting in nits, 0 for Auto, which
+    /// shows the nits Auto gives.
+    fn nits_label(self, s: &Settings, out: &EffectiveOutput) -> Text {
+        let (g, r) = (&s.horizon, out.reported);
+        let (caption, set, auto) = match self {
+            H::HdrPaperWhite => ("Paper White", g.hdr_paper_white, g.paper_white_nits(r)),
+            H::HdrPeak => ("Peak Brightness", g.hdr_peak, g.peak_nits(r)),
+            _ => ("UI Brightness", g.hdr_ui_nits, g.ui_nits(r)),
+        };
+        match set {
+            0 => labelled(caption, lang::tr("Auto (%s)", &[&auto])),
+            n => labelled(caption, n),
         }
     }
     fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
@@ -935,22 +948,8 @@ impl H {
                 Setup::Automatic => "Calibrate Anyway...",
                 Setup::Changed => "Use Automatic Setup",
             })),
-            H::HdrPaperWhite => match g.hdr_paper_white {
-                0 => labelled(
-                    "Paper White",
-                    lang::tr("Auto (%s)", &[&g.paper_white_nits(out.reported)]),
-                ),
-                n => labelled("Paper White", n.to_string()),
-            },
-            H::HdrPeak => match g.hdr_peak {
-                0 => labelled(
-                    "Peak Brightness",
-                    lang::tr("Auto (%s)", &[&g.peak_nits(out.reported)]),
-                ),
-                n => labelled("Peak Brightness", n.to_string()),
-            },
+            H::HdrPaperWhite | H::HdrPeak | H::HdrUiBrightness => self.nits_label(s, out),
             H::HdrBlackLevel => labelled("Black Level", format!("{:.2}", g.black_level_nits())),
-            H::HdrUiBrightness => labelled_percent("UI Brightness", g.hdr_ui_brightness),
             H::HdrLighting => labelled("HDR Lighting", on_off(g.hdr_lighting)),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
@@ -992,7 +991,8 @@ impl H {
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
             H::UpscalingSharpness => g.upscaling_sharpness = (v * 20.0).round() as u32 * 5,
-            H::HdrPaperWhite => g.hdr_paper_white = (v * 48.0).round() as u32 * 10,
+            H::HdrPaperWhite => g.hdr_paper_white = crate::graphics::nits_at(v),
+            H::HdrUiBrightness => g.hdr_ui_nits = crate::graphics::nits_at(v),
             H::HdrPeak => {
                 g.hdr_peak = match (v * PEAK_POSITIONS as f32).round() as u32 {
                     0 => 0,
@@ -1000,7 +1000,6 @@ impl H {
                 }
             }
             H::HdrBlackLevel => g.hdr_black_level = (v * 100.0).round() as u32,
-            H::HdrUiBrightness => g.hdr_ui_brightness = (25.0 + (v * 15.0).round() * 5.0) as u32,
             _ => {}
         }
     }
@@ -2707,7 +2706,7 @@ mod tests {
             H::HdrPaperWhite => s.horizon.hdr_paper_white,
             H::HdrPeak => s.horizon.hdr_peak,
             H::HdrBlackLevel => s.horizon.hdr_black_level,
-            H::HdrUiBrightness => s.horizon.hdr_ui_brightness,
+            H::HdrUiBrightness => s.horizon.hdr_ui_nits,
             _ => unreachable!(),
         };
         let fresh = || {

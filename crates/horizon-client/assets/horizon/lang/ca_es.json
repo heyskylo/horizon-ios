@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Puja les ombres fins al negre més fosc de la teva pantalla. 0: negre pur, sense pujar.",
   "How bright highlights get. Auto: the peak your system reports.": "Com es fan els reflexos brillants. Automàtic: el pic que informa el vostre sistema.",
   "How bright white looks in the world. Auto: your desktop's white.": "Com de brillant es veu el blanc al món. Automàtic: el blanc de l'escriptori.",
-  "How bright the HUD and menus are, against paper white.": "Què brillants són l'HUD i els menús, contra el paper blanc.",
   "How far mobs, crops and machines keep working. CPU time.": "Fins on segueixen treballant les turbes, els conreus i les màquines. Temps de CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "A quina distància es dibuixen les turbes i els articles, com a part de la normalitat.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Salta el terreny amagat darrere de seccions tancades. Off costa molt.",

@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "परछाइयों को आपके डिस्प्ले के सबसे गहरे काले तक उठाता है। 0: शुद्ध काला, कोई उठाव नहीं।",
   "How bright highlights get. Auto: the peak your system reports.": "हाइटलाइट्स कितने चमकीले होते हैं। ऑटो: आपका सिस्टम जो शिखर रिपोर्ट करता है।",
   "How bright white looks in the world. Auto: your desktop's white.": "दुनिया में सफेद कितना चमकीला दिखता है। ऑटो: आपके डेस्कटॉप का सफेद।",
-  "How bright the HUD and menus are, against paper white.": "पेपर व्हाइट की तुलना में HUD और मेनू कितने चमकीले हैं।",
   "How far mobs, crops and machines keep working. CPU time.": "मॉब्स, फसलें और मशीनें कितनी दूर तक काम करती रहती हैं। CPU समय।",
   "How far away mobs and items are drawn, as a share of normal.": "सामान्य के हिस्से के रूप में, मॉब्स और आइटम कितनी दूर खींचे जाते हैं।",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "बंद खंडों के पीछे छिपा भू-भाग छोड़ देता है। बंद करने पर अधिक लागत आती है।",

@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Көлөкөлөрдү дисплейиңиздин эң кара карасына көтөрөт. 0: чыныгы кара, көтөрүү жок.",
   "How bright highlights get. Auto: the peak your system reports.": "Кандай гана жаркыраган жерлер. Авто: тутумуңуздун эң жогорку көрсөткүчү.",
   "How bright white looks in the world. Auto: your desktop's white.": "Дүйнөдө ак кандай жарык көрүнөт. Авто: иш тактаңыздын актыгы.",
-  "How bright the HUD and menus are, against paper white.": "Ак кагазга каршы HUD жана менюлар канчалык жарык.",
   "How far mobs, crops and machines keep working. CPU time.": "Канчалык мобу, эгиндер жана машиналар иштей беришет. CPU убактысы.",
   "How far away mobs and items are drawn, as a share of normal.": "Кадимкидей үлүшү катары, канча аралыкта мобдор жана буюмдар тартылат.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Жабык бөлүмдөрдүн артына жашырылган жерди өткөрүп жиберет. Чечим көп чыгымдалат.",

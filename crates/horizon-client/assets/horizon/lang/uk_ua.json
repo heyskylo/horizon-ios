@@ -227,7 +227,6 @@
   "Sets the options below together. Changing one makes it Custom.": "Задає параметри нижче разом. Зміна одного дає «Власний».",
   "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "Лава, вогонь і сонце світліші за білий. Потрібен HDR.",
   "How bright highlights get. Auto: the peak your system reports.": "Наскільки яскравими бувають відблиски. Авто: пік, який повідомляє система.",
-  "How bright the HUD and menus are, against paper white.": "Наскільки яскраві HUD і меню відносно білого паперу.",
   "How far mobs, crops and machines keep working. CPU time.": "Як далеко працюють моби, посіви й механізми. Витрачає CPU.",
   "How far away mobs and items are drawn, as a share of normal.": "Відстань малювання мобів і предметів, у частці від норми.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Пропускає приховану місцевість. Вимкнення коштує дорого.",

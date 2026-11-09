@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "ჩრდილებს ასწევს თქვენი ეკრანის ყველაზე ბნელ შავამდე. 0: ნამდვილი შავი, აწევის გარეშე.",
   "How bright highlights get. Auto: the peak your system reports.": "რამდენად ნათელი ხაზგასმა ხდება. ავტომატური: თქვენი სისტემის ანგარიშების პიკი.",
   "How bright white looks in the world. Auto: your desktop's white.": "რამდენად ნათელია თეთრი სამყაროში. ავტო: თქვენი სამუშაო მაგიდის თეთრი.",
-  "How bright the HUD and menus are, against paper white.": "რამდენად ნათელია HUD და მენიუები, ქაღალდის თეთრის წინააღმდეგ.",
   "How far mobs, crops and machines keep working. CPU time.": "რამდენად შორს მუშაობენ ბრბოები, ნათესები და მანქანები. CPU დრო.",
   "How far away mobs and items are drawn, as a share of normal.": "რამდენად შორს არის დახატული ბრბო და ნივთები, როგორც ნორმალური წილი.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "გამოტოვებს დახურულ მონაკვეთებს მიღმა დამალულ რელიეფს. გამორთვა ბევრი ღირს.",

@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Lyfter skuggor till skärmens mörkaste svart. 0: äkta svart, ingen lyftning.",
   "How bright highlights get. Auto: the peak your system reports.": "Hur ljusa höjdpunkter blir. Auto: den topp som ditt system rapporterar.",
   "How bright white looks in the world. Auto: your desktop's white.": "Hur ljust vitt ser ut i världen. Auto: skrivbordets vitt.",
-  "How bright the HUD and menus are, against paper white.": "Hur ljusa HUD och menyer är, mot pappersvitt.",
   "How far mobs, crops and machines keep working. CPU time.": "Hur långt hopar, grödor och maskiner fortsätter att arbeta. CPU-tid.",
   "How far away mobs and items are drawn, as a share of normal.": "Hur långt bort mobs och föremål dras, som andel av normala.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Hoppar över terräng gömd bakom stängda sektioner. Off kostar mycket.",

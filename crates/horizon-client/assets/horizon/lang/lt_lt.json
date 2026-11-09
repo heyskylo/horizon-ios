@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Pakelia šešėlius iki tamsiausios jūsų ekrano juodos. 0: tikra juoda, be pakėlimo.",
   "How bright highlights get. Auto: the peak your system reports.": "Kaip ryškūs akcentai. Automatinis: didžiausias jūsų sistemos pranešimas.",
   "How bright white looks in the world. Auto: your desktop's white.": "Koks ryškus baltas atrodo pasaulyje. Automatinis: jūsų darbalaukio baltas.",
-  "How bright the HUD and menus are, against paper white.": "Koks ryškus yra HUD ir meniu, palyginti su popieriaus baltumu.",
   "How far mobs, crops and machines keep working. CPU time.": "Kiek toliau dirba minios, javai ir mašinos. CPU laikas.",
   "How far away mobs and items are drawn, as a share of normal.": "Kaip toli minios ir daiktai nupiešti, kaip įprasta dalis.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Praleidžia reljefą, paslėptą už uždarų atkarpų. Išjungti kainuoja daug.",

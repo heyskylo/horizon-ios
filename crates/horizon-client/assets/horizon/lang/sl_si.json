@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Dvigne sence na najtemnejšo črno vašega zaslona. 0: prava črna, brez dviga.",
   "How bright highlights get. Auto: the peak your system reports.": "Kako svetli so poudarki. Samodejno: najvišja vrednost, o kateri poroča vaš sistem.",
   "How bright white looks in the world. Auto: your desktop's white.": "Kako svetla je bela v svetu. Avto: bela vašega namizja.",
-  "How bright the HUD and menus are, against paper white.": "Kako svetli so HUD in meniji glede na bel papir.",
   "How far mobs, crops and machines keep working. CPU time.": "Kako daleč delajo množice, pridelki in stroji. procesorski čas.",
   "How far away mobs and items are drawn, as a share of normal.": "Kako daleč so narisane mafije in predmeti, kot delež običajnega.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Preskoči teren, skrit za zaprtimi odseki. Off stane veliko.",

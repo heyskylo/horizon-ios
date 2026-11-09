@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "Мӗлкесене дисплейӑн чи тӗттӗм хури ҫине ҫӗклет. 0: чӑн хура, ҫӗклевсӗр.",
   "How bright highlights get. Auto: the peak your system reports.": "Мӗнле ҫутӑ ҫутӑсем пулаҫҫӗ. Авто: сирӗн системӑн пӗлтерекен пикӗ.",
   "How bright white looks in the world. Auto: your desktop's white.": "Тӗнчере шурӑ мӗнле ҫутӑ курӑнать. Авто: эсир рабочий столӑн шурри.",
-  "How bright the HUD and menus are, against paper white.": "HUD тата менюсем мӗнле ҫутӑ, хут ҫинчи шурӑ тӗспе танлаштарсан.",
   "How far mobs, crops and machines keep working. CPU time.": "Мобсем, культурӑсем тата машинӑсем мӗн таран ӗҫлеҫҫӗ. Процессор вӑхӑчӗ.",
   "How far away mobs and items are drawn, as a share of normal.": "Мобсемпе япаласем мӗн чухлӗ аяккалла туртӑнаҫҫӗ, йӗркеллӗ пай пек.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Хупӑ участоксем хыҫӗнче пытаннӑ ҫӗре сиктерсе хӑварать. Офф нумай тӑкакланать.",

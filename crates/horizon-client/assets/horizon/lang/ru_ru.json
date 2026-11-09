@@ -549,7 +549,6 @@
   "Sets the options below together. Changing one makes it Custom.": "Задаёт настройки ниже разом. Изменишь одну — станет «Свои».",
   "Lava, fire and sunlight shine brighter than white. Needs an HDR display.": "Лава, огонь и солнце светятся ярче белого. Нужен HDR-экран.",
   "How bright highlights get. Auto: the peak your system reports.": "Насколько яркими будут блики. Авто: пик, который сообщает система.",
-  "How bright the HUD and menus are, against paper white.": "Яркость интерфейса и меню относительно белой точки.",
   "How far mobs, crops and machines keep working. CPU time.": "Как далеко мобы, посевы и механизмы продолжают работать. Нагрузка на процессор.",
   "How far away mobs and items are drawn, as a share of normal.": "С какой дистанции рисуются мобы и предметы, в долях от обычной.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Пропускает рельеф, скрытый за закрытыми секциями. Выключено — дорого.",

@@ -310,7 +310,6 @@
   "Lifts shadows onto your display's darkest black. 0: true black, no lift.": "מרים צללים אל השחור הכהה ביותר של הצג שלך. 0: שחור אמיתי, ללא הרמה.",
   "How bright highlights get. Auto: the peak your system reports.": "כמה מדגישים בהירים מקבלים. אוטומטי: השיא שהמערכת שלך מדווחת עליו.",
   "How bright white looks in the world. Auto: your desktop's white.": "כמה בהיר נראה לבן בעולם. אוטומטי: הלבן של שולחן העבודה שלך.",
-  "How bright the HUD and menus are, against paper white.": "כמה בהירים ה-HUD והתפריטים, מול נייר לבן.",
   "How far mobs, crops and machines keep working. CPU time.": "עד כמה המון, יבולים ומכונות ממשיכים לעבוד. זמן מעבד.",
   "How far away mobs and items are drawn, as a share of normal.": "כמה רחוק נמשכים אספסוף ופריטים, כחלק מהרגיל.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "מדלג על שטח מוסתר מאחורי קטעים סגורים. חופש עולה הרבה.",
