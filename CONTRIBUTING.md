@@ -13,6 +13,14 @@ else (videos, Discord and other community material) lives elsewhere.
 suggest something. A pull request for a roadmap item carries its `roadmap:<id>` label; ideas go to the suggestion
 queue (the hub, or `/suggest` on Discord) rather than to issues, which are for bugs.
 
+**Mod-related pull requests go to [arismoko/horizon](https://github.com/arismoko/horizon)**, the fork that carries the
+mod API and reviews and merges that work. That covers the mod API, native hooks and events for mods, native mods,
+content mods (`.hmod`), mixins, wasm mods, `cargo horizon-mod`, `horizon-mods`, mod builds and the registry, and
+their docs ([mods](docs/mods.md), [native mods](docs/native-mods.md)). Open the pull request there from your usual
+branch. Mod-related pull requests opened here are closed with a pointer to it. Engine extension points that Horizon's
+own crates register (the [layer split](docs/layers.md)), resource and shader pack formats, and gameplay fixes stay
+here.
+
 ## Build it
 
 - **Prerequisites:** Rust (stable), Python 3.10+, JDK 25, and on Linux the ALSA and udev headers
@@ -190,3 +198,5 @@ new pushes, we add it again.
 
 [Discord](https://discord.gg/playhorizon) for questions and ideas, [issues](https://github.com/horizon-rust/horizon/issues)
 for bugs. To take something on, `/claim` its issue ([above](#claim-before-you-start)).
+
+How Horizon is run, and how people join the Team or lead a group: [GOVERNANCE.md](GOVERNANCE.md).

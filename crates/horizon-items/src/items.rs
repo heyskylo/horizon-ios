@@ -2898,6 +2898,28 @@ mod tests {
     /// The ids `/loot ... loot <id>` takes: a content mod's table in the
     /// root and a world pack's table over it.
     #[test]
+    fn weapon_disable_blocking_comes_from_the_stack() {
+        let items = Items::for_tests(HashMap::new());
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        sword.data_mut().set_other(
+            "minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound([(
+                "disable_blocking_for_seconds",
+                horizon_world::nbt::Tag::Float(1.5f32.to_bits()),
+            )])),
+        );
+        assert_eq!(items.weapon_disable_blocking(&sword), 1.5);
+        sword.data_mut().set_other(
+            "!minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(items.weapon_disable_blocking(&sword), 0.0);
+    }
+
+    #[test]
     fn loot_table_ids_list_the_roots_and_the_packs_tables() {
         let root = std::env::temp_dir().join(format!("horizon-loot-ids-{}", std::process::id()));
         fs::create_dir_all(root.join("data/mymod/loot_table/rooms")).unwrap();
@@ -2952,28 +2974,6 @@ mod tests {
         assert!(items.songs.contains_key("minecraft:cat"));
         assert!(!items.songs.contains_key("minecraft:tune"));
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn weapon_disable_blocking_comes_from_the_stack() {
-        let items = Items::for_tests(HashMap::new());
-        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
-        sword.data_mut().set_other(
-            "minecraft:weapon",
-            Some(horizon_world::nbt::Tag::compound([(
-                "disable_blocking_for_seconds",
-                horizon_world::nbt::Tag::Float(1.5f32.to_bits()),
-            )])),
-        );
-        assert_eq!(items.weapon_disable_blocking(&sword), 1.5);
-        sword.data_mut().set_other(
-            "!minecraft:weapon",
-            Some(horizon_world::nbt::Tag::compound(Vec::<(
-                &str,
-                horizon_world::nbt::Tag,
-            )>::new())),
-        );
-        assert_eq!(items.weapon_disable_blocking(&sword), 0.0);
     }
 
     #[test]
