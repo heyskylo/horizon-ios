@@ -38,9 +38,11 @@ use horizon_world::{
 };
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
+mod acknowledgements;
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
 pub mod chat_filter;
+mod spawn_info;
 
 pub mod game_event {
     pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
@@ -124,6 +126,8 @@ pub fn teleport_cause(cause: Option<&'static str>) -> Option<&'static str> {
 
 /// Everything the hub needs from the game for one tick.
 pub struct TickCtx<'a> {
+    /// The active level's generator sea level (`CommonPlayerSpawnInfo`).
+    pub sea_level: i32,
     pub world: &'a mut World,
     pub entities: &'a [EntityState],
     pub next_entity: &'a mut u32,
@@ -1388,30 +1392,6 @@ impl Hub {
 
     // ---- joining -------------------------------------------------------
 
-    /// `CommonPlayerSpawnInfo`, with the player's `portalCooldown`.
-    fn spawn_info(&self, i: usize, portal_cooldown: i32) -> play::SpawnInfo {
-        let g = &self.guests[i];
-        play::SpawnInfo {
-            dimension_type: self.dimension_type,
-            dimension: self.config.dimension.clone(),
-            seed: horizon_core::biome::obfuscate_seed(self.config.seed),
-            game_type: g.game_mode,
-            previous_game_type: None,
-            debug: self.debug_world,
-            flat: self.flat_world,
-            // Player.getLastDeathLocation.
-            last_death: g
-                .last_death
-                .as_ref()
-                .map(|(dimension, pos)| play::GlobalPos {
-                    dimension: dimension.clone(),
-                    pos: *pos,
-                }),
-            portal_cooldown,
-            sea_level: 63,
-        }
-    }
-
     fn admit(&mut self, j: super::Joined, ctx: &mut TickCtx) -> u32 {
         // The game's ids are taken by incrementing first: the current value
         // is the last id in use (the host's own, right after opening to LAN).
@@ -1493,7 +1473,7 @@ impl Hub {
             reduced_debug_info: self.reduced_debug_info,
             show_death_screen: !self.immediate_respawn,
             limited_crafting: self.limited_crafting,
-            spawn: self.spawn_info(i, 0),
+            spawn: self.spawn_info(i, 0, ctx.sea_level),
             // MinecraftServer.usesAuthentication, enforceSecureProfile.
             online_mode: self.lan.shared.config.online.is_some(),
             enforces_secure_chat: self.enforces_secure_chat(),
@@ -2435,41 +2415,6 @@ impl Hub {
             }
         }
         events
-    }
-
-    /// Keeps, in a frozen player's inbox, the packets that answer the server
-    /// (teleport, chunk batch, loaded, keep-alive, ping, tick end, client
-    /// information) and drops the rest. A chat message or signed command is
-    /// dropped too, but the messages it says the client has seen are taken
-    /// first (`unpackAndApplyLastSeen`), and a chat acknowledgement is handled
-    /// here, in the order they came: the client counts them as acknowledged,
-    /// and its next message after the freeze would not validate otherwise.
-    pub(crate) fn keep_acknowledgements(&mut self, i: usize, events: &mut Vec<HostEvent>) {
-        let inbox = std::mem::take(&mut self.guests[i].inbox);
-        let mut bytes = 0;
-        for (packet, size) in inbox {
-            match &packet {
-                S::Chat(c) => {
-                    self.apply_last_seen(i, &c.last_seen, events);
-                }
-                S::ChatCommandSigned(c) => {
-                    self.apply_last_seen(i, &c.last_seen, events);
-                }
-                S::ChatAck(c) => self.chat_ack(i, c.offset, events),
-                S::AcceptTeleportation(_)
-                | S::PlayerLoaded(_)
-                | S::ChunkBatchReceived(_)
-                | S::ClientInformation(_)
-                | S::ClientTickEnd(_)
-                | S::KeepAlive(_)
-                | S::Pong(_) => {
-                    bytes += size;
-                    self.guests[i].inbox.push_back((packet, size));
-                }
-                _ => {}
-            }
-        }
-        self.guests[i].inbox_bytes = bytes;
     }
 
     /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
@@ -4090,7 +4035,8 @@ impl Hub {
                 | S::RecipeBookSeenRecipe(_)
                 | S::ClientTickEnd(_)
                 | S::KeepAlive(_)
-                | S::Pong(_) => false,
+                | S::Pong(_)
+                | S::PingRequest(_) => false,
                 S::MovePlayerPos(p) => self.moved_far(i, [p.x, p.y, p.z]),
                 S::MovePlayerPosRot(p) => self.moved_far(i, [p.x, p.y, p.z]),
                 S::PlayerInput(_) => self.guests[i].client_loaded(),
@@ -4188,6 +4134,8 @@ impl Hub {
                     g.max_unacknowledged = 10;
                 }
                 S::Pong(p) => self.anticheat_pong(i, p.id),
+                // ServerGamePacketListenerImpl.handlePingRequest: echo on this connection.
+                S::PingRequest(p) => self.send_to(conn, &C::PongResponse(p)),
                 // handleAttack is the game's too: a move queued behind an attack would move
                 // the player (or land them on the ground, losing a falling attack's critical
                 // hit) before the game checks their reach and state.
@@ -5075,7 +5023,7 @@ impl Hub {
     /// start" event and the chunk under the player, so the packets follow vanilla's order.
     /// `rotation` is the yaw and pitch they face (vanilla's 0, 0 unless a mod chose others).
     pub fn respawn(&mut self, i: usize, at: [f64; 3], rotation: [f32; 2], ctx: &TickCtx) {
-        let info = self.spawn_info(i, 0);
+        let info = self.spawn_info(i, 0, ctx.sea_level);
         self.close_container_for(i);
         let g = &mut self.guests[i];
         // PlayerList.respawn: into the level in place (the respawn level).
@@ -5210,7 +5158,7 @@ impl Hub {
         portal_cooldown: i32,
         ctx: &TickCtx,
     ) {
-        let info = self.spawn_info(i, portal_cooldown);
+        let info = self.spawn_info(i, portal_cooldown, ctx.sea_level);
         self.close_container_for(i);
         let g = &mut self.guests[i];
         g.dimension = self.config.dimension.clone();

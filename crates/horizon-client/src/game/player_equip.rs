@@ -2,7 +2,7 @@
 //! game event when an armour or off-hand slot takes a different item, from
 //! every path that calls it (use, the inventory menu, the creative screen,
 //! the swap-hands key, dispensers), for the host and for LAN guests.
-use super::Game;
+use super::{Game, equipment_modifier_applies};
 use horizon_client::items::ItemStack;
 
 /// The equipment slots `onEquipItem` can act on, as `EquipmentSlot` names:
@@ -91,5 +91,44 @@ impl Game<'_> {
             let ctx = self.player_context(None);
             self.post_game_event(event, at, ctx);
         }
+    }
+
+    /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
+    pub(super) fn apply_equipment(&mut self) {
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        for (attribute, id) in std::mem::take(&mut self.applied_modifiers) {
+            let _ = player.set_modifier_unclamped(&attribute, &id, 0.0, "add_value", false);
+        }
+        let slots = ["head", "chest", "legs", "feet"];
+        let mut equipped: Vec<(Option<&ItemStack>, &str)> = self
+            .armor
+            .iter()
+            .zip(slots)
+            .map(|(s, n)| (s.as_ref(), n))
+            .collect();
+        equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
+        equipped.push((self.offhand.as_ref(), "offhand"));
+        for (stack, slot) in equipped {
+            let Some(info) = stack.and_then(|s| world_items!(self).get(&s.item)) else {
+                continue;
+            };
+            for (attribute, id, amount, op, group) in &info.modifiers {
+                // The attack code still reads the held item's attack damage and
+                // speed directly; the map copy is what `/attribute` reports.
+                if !equipment_modifier_applies(group, slot) {
+                    continue;
+                }
+                if player
+                    .set_modifier_unclamped(attribute, id, *amount, op, true)
+                    .is_ok()
+                {
+                    self.applied_modifiers.push((attribute.clone(), id.clone()));
+                }
+            }
+        }
+        let _ = player.clamp_health_to_max();
+        self.apply_enchantment_attributes();
     }
 }
