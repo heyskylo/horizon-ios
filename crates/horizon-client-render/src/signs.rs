@@ -312,6 +312,8 @@ pub fn editor_sprite(folder: &str, wood: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `SignText.CODEC` reads messages as a list: a string field fails the
+    /// whole side, taking its colour and glow with it.
     #[test]
     fn messages_that_are_not_a_list_load_an_empty_side() {
         let tag = Tag::compound([(
