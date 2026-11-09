@@ -1536,7 +1536,7 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
-    /// The graphics driver this window's HDR output starts on (`output::driver_fingerprint`):
+    /// The graphics driver this window's HDR output starts on (`output::window_driver`):
     /// what the marker names, and what a failed start holds HDR output back on. `None`
     /// offscreen, which never writes the marker or holds HDR back.
     hdr_driver: Option<String>,
@@ -3037,7 +3037,7 @@ impl Renderer {
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),
         );
-        let hdr_driver = surface.is_some().then(|| output::driver_fingerprint(&info));
+        let hdr_driver = surface.is_some().then(|| output::window_driver(&info));
         let output_caps = output::OutputCapabilities {
             hdr: hdr_output,
             wide_frame: wide_ok,
@@ -7229,7 +7229,7 @@ impl Renderer {
             ..self.output_caps
         }
     }
-    /// The graphics driver this window's HDR output starts on (`output::driver_fingerprint`);
+    /// The graphics driver this window's HDR output starts on (`output::window_driver`);
     /// `None` offscreen.
     pub fn hdr_driver(&self) -> Option<&str> {
         self.hdr_driver.as_deref()

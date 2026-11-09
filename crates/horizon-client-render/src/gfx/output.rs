@@ -29,19 +29,32 @@ pub(crate) fn held(settings: &Graphics, driver: Option<&str>) -> bool {
     driver.is_some_and(|driver| settings.hdr_held(driver))
 }
 
+/// The graphics driver this window's HDR output starts on ([`driver_fingerprint`]), with the
+/// system's version as crash reports name it (`crash::operating_system`), read once a run.
+pub(crate) fn window_driver(info: &wgpu::AdapterInfo) -> String {
+    static OS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    driver_fingerprint(info, OS.get_or_init(crate::crash::operating_system))
+}
+
 /// The graphics driver a window's HDR output starts on, in one line: the backend, the
-/// adapter's vendor and device IDs and its name, the driver's name and its version. Another
-/// GPU or a driver update reads differently.
-pub fn driver_fingerprint(info: &wgpu::AdapterInfo) -> String {
-    let line = format!(
-        "{:?} {:04x}:{:04x} {}; {}; {}",
-        info.backend, info.vendor, info.device, info.name, info.driver, info.driver_info
+/// adapter's vendor and device IDs and its name, the driver's name and its version, and the
+/// system's version `os`. Another GPU, a driver update or a system update reads differently:
+/// Metal names no driver, so on macOS the driver updates with the system.
+pub fn driver_fingerprint(info: &wgpu::AdapterInfo, os: &str) -> String {
+    let adapter = format!(
+        "{:?} {:04x}:{:04x} {}",
+        info.backend, info.vendor, info.device, info.name
     );
-    line.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect::<String>()
-        .trim()
-        .to_owned()
+    [adapter.as_str(), &info.driver, &info.driver_info, os]
+        .map(|field| {
+            field
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .join("; ")
 }
 
 /// What the system last reported for a renderer's display: its luminance, and whether it
@@ -457,9 +470,11 @@ pub(crate) mod tests {
         assert!(!held(&legacy, None));
     }
 
-    /// The fingerprint tells another GPU, backend or driver version apart, in one line.
+    /// The fingerprint tells another GPU, backend, driver version or system version apart, in
+    /// one line.
     #[test]
     fn the_driver_fingerprint_is_one_line_that_changes_with_the_driver() {
+        let os = "windows (x86_64) version Windows 11 (26200.7019)";
         let info = wgpu::AdapterInfo {
             name: "NVIDIA GeForce RTX 4090".into(),
             vendor: 0x10de,
@@ -474,10 +489,34 @@ pub(crate) mod tests {
             transient_saves_memory: None,
             limit_bucket: None,
         };
-        let fingerprint = driver_fingerprint(&info);
+        let fingerprint = driver_fingerprint(&info, os);
         assert_eq!(
             fingerprint,
-            "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57"
+            "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57; \
+             windows (x86_64) version Windows 11 (26200.7019)"
+        );
+        assert_ne!(
+            driver_fingerprint(&info, "windows (x86_64) version Windows 11 (26200.7171)"),
+            fingerprint
+        );
+        // Metal names no driver: a macOS update is what changes it.
+        let metal = wgpu::AdapterInfo {
+            name: "Apple M3".into(),
+            vendor: 0,
+            device: 0,
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Metal,
+            ..info.clone()
+        };
+        let sonoma = driver_fingerprint(&metal, "macos (aarch64) version macOS 14.6");
+        assert_eq!(
+            sonoma,
+            "Metal 0000:0000 Apple M3; ; ; macos (aarch64) version macOS 14.6"
+        );
+        assert_ne!(
+            driver_fingerprint(&metal, "macos (aarch64) version macOS 15.1"),
+            sonoma
         );
         let other = [
             wgpu::AdapterInfo {
@@ -494,7 +533,7 @@ pub(crate) mod tests {
             },
         ];
         for other in other {
-            assert_ne!(driver_fingerprint(&other), fingerprint, "{other:?}");
+            assert_ne!(driver_fingerprint(&other, os), fingerprint, "{other:?}");
         }
     }
 

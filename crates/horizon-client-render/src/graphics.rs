@@ -11,7 +11,7 @@ pub const FILE: &str = "horizon-graphics.txt";
 /// that driver ([`Graphics::hdr_failed_start`]), and the mode stays as the player chose it.
 pub const HDR_MARKER: &str = "horizon-hdr-pending";
 /// The marker's text for a window whose HDR output starts on `driver`
-/// (`gfx::output::driver_fingerprint`).
+/// (`gfx::output::window_driver`).
 pub fn hdr_marker_text(driver: &str) -> String {
     format!("driver:{driver}\n")
 }
@@ -943,7 +943,7 @@ impl Graphics {
         g
     }
     /// Whether HDR output is held back on a window whose graphics driver is `driver`
-    /// (`gfx::output::driver_fingerprint`): the last start on it ended before HDR output
+    /// (`gfx::output::window_driver`): the last start on it ended before HDR output
     /// showed a frame ([`Graphics::hdr_failed_start`]).
     pub fn hdr_held(&self, driver: &str) -> bool {
         self.hdr_failed_start
