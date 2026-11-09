@@ -206,8 +206,9 @@ fn display(light: vec3<f32>) -> vec4<f32> {
     let shows = params.world > 0.5 && params.peak > 1.0
         && (hand || (!covered && shows_world(f.rgb, w.rgb)));
     var light = lit(f.rgb, w.a, shows, true).light;
-    // The HUD and menus at their own brightness, by how much they cover.
-    light *= mix(1.0, params.ui, ui);
+    // The HUD and menus at their own brightness, by how much they cover, no brighter than the
+    // peak (as `fs_hdr_layered`): UI Brightness can pass paper white.
+    light = min(light * mix(1.0, params.ui, ui), vec3(params.peak));
     return display(light);
 }
 
@@ -275,8 +276,8 @@ fn backdrop(w: vec3<f32>) -> vec3<f32> {
 
 // The HUD over the world in gamma, the space the HUD blends in: its own part, what its backdrop
 // B doesn't explain (H = P - (1 - c) B, exact for the layering blends), at UI Brightness, over
-// (1 - c) of the world, light above white included. Where the world is at or below white, at
-// 100%, that is the HUD's picture as drawn.
+// (1 - c) of the world, light above white included. Where the world is at or below white, with
+// UI Brightness at paper white, that is the HUD's picture as drawn.
 fn layered(at: vec2<i32>) -> vec3<f32> {
     let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
     let p = textureLoad(hud, at, 0).rgb;
