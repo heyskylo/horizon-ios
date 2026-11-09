@@ -34,9 +34,9 @@ CreditsAndAttributionScreen.openCreditsScreen	port	crates/horizon-client/src/gam
 DatapackLoadFailureScreen.init	missing		gap: minor: no datapack failure screen; a pack that fails to install is logged (game.rs:12109-12111) and the world opens with the packs it has
 DatapackLoadFailureScreen.extractRenderState	missing		gap: minor: same as init, there is no failure screen to draw; a failed pack install only reaches the log
 DeathScreen.exitToTitleScreen	port	crates/horizon-client/src/game/screens.rs::Game::death_confirm_answer	Yes leaves the world; gap: minor: the leave and title hand-off is one close_world call
-DeathScreen.extractRenderState	port	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	gap: minor: no draft-report badge on the title button (reporting service)
+DeathScreen.extractRenderState	port	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	gap: minor: no draft-report badge on the title button (reporting service); the cause line is visited with hover tooltips and a link cursor
 DeathScreen.visitText	port	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	title at double size, cause and score lines
-DeathScreen.mouseClicked	port	crates/horizon-client/src/game/screens.rs::Game::death_click	buttons and the title confirm; gap: minor: a click on a link in the death text does nothing
+DeathScreen.mouseClicked	port	crates/horizon-client/src/game/screens.rs::Game::death_click	buttons, the title confirm and the cause line's open_url links (ClickableStyleFinder, Game::click_url)
 DeathScreen.tick	inline	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	the 20-tick delay is checked as 1000 ms since death, on draw and on click
 DeathScreen.setButtonsActive	inline	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	buttons are active once the 1000 ms delay has passed
 DirectJoinServerScreen.keyPressed	port	crates/horizon-client/src/multiplayer.rs::Screen::confirm	Enter joins the typed address when it parses (direct_address, friend invite codes included); on the server list it joins the selected server or LAN game
