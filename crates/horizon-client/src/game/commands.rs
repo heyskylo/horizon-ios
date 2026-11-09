@@ -129,6 +129,8 @@ pub(in crate::game) struct OtherEntity {
     pub interaction: Option<super::interactions::InteractionState>,
     /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.
     pub knot_check: Option<u8>,
+    /// A summoned or loaded `minecraft:eye_of_ender`'s flight; None for every other kind.
+    pub eye: Option<super::end::SummonedEye>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
@@ -849,6 +851,17 @@ impl Game<'_> {
             .map(|(t, _)| t)
             .collect()
     }
+    /// `type=`: every positive must match, no negative may match.
+    fn selector_types_match(&self, s: &Selector, ty: &str) -> bool {
+        s.types.iter().all(|(want, neg)| {
+            let matches = if let Some(tag) = want.strip_prefix('#') {
+                self.entity_tag_matches(tag, ty)
+            } else {
+                want == ty
+            };
+            matches != *neg
+        })
+    }
     /// The candidates of the level in place that pass the selector
     /// (EntitySelector.getPredicate).
     fn select_in_level(
@@ -859,22 +872,27 @@ impl Game<'_> {
     ) -> Vec<(Target, f64)> {
         let level = self.experience.level;
         let creative = self.creative;
+        // EntitySelector tests the type before any predicate. With no scores=
+        // or team= (whose holders may be made as they are read), the rest of
+        // the extra filter is a pure test of each candidate, so the ones of
+        // another type leave first: `@e[type=marker,tag=…]` no longer reads
+        // the tags of every falling block and item in the level.
+        let candidates = if !s.types.is_empty() && s.scores.is_empty() && s.teams.is_empty() {
+            candidates
+                .into_iter()
+                .filter(|&t| self.selector_types_match(s, &self.target_type(t)))
+                .collect()
+        } else {
+            candidates
+        };
         let passing = self.selector_extra_filter(&candidates, s);
         candidates
             .into_iter()
             .filter_map(|t| {
                 let p = self.target_position(t)?;
                 let ty = self.target_type(t);
-                // type=: every positive must match, no negative may match.
-                for (want, neg) in &s.types {
-                    let matches = if let Some(tag) = want.strip_prefix('#') {
-                        self.entity_tag_matches(tag, &ty)
-                    } else {
-                        *want == ty
-                    };
-                    if matches == *neg {
-                        return None;
-                    }
+                if !self.selector_types_match(s, &ty) {
+                    return None;
                 }
                 if !s.include_entities
                     && !t.is_player()
@@ -2604,7 +2622,9 @@ impl Game<'_> {
         }
         let name;
         if self.res.mob_types().contains_key(&kind) {
-            self.spawn_mob_spawned(&short, pos)
+            // SummonCommand.createEntity loads the mob from `{id:..}`: its yaw
+            // is the compound's (none, so 0), with no level-random draw.
+            self.spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
             name = Text::translate(&entity_name_key(&kind), &[]);
         } else {
@@ -3184,7 +3204,8 @@ impl Game<'_> {
         // of states, and matching a tag is a name lookup.
         let mut matched: std::collections::HashMap<BlockStateId, bool> =
             std::collections::HashMap::new();
-        let plain = !(destroy || hollow || outline);
+        // A tag can change a block entity whose block is already in place.
+        let plain = !(destroy || hollow || outline) && block.nbt.is_none();
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
@@ -3227,7 +3248,8 @@ impl Game<'_> {
                         self.destroy_block_dropping([x, y, z])?;
                         affected = true;
                     }
-                    let target = if (outline || hollow) && !edge {
+                    let core = (outline || hollow) && !edge;
+                    let target = if core {
                         if outline {
                             if affected {
                                 count += 1;
@@ -3244,7 +3266,16 @@ impl Game<'_> {
                         target
                     };
                     let previous = self.world.block(x, y, z);
-                    if self.place_state([x, y, z], target, strict, true)? {
+                    let placed = self.place_state([x, y, z], target, strict, true)?;
+                    // BlockInput.place loads the tag into the block entity now
+                    // there; a tag that changed it counts the block as placed.
+                    // A hollow fill's core is plain air.
+                    let loaded = !core
+                        && block
+                            .nbt
+                            .as_deref()
+                            .is_some_and(|nbt| self.load_block_entity_nbt([x, y, z], nbt));
+                    if placed || loaded {
                         count += 1;
                         if !strict {
                             updated.push(([x, y, z], previous));

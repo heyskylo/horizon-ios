@@ -19,6 +19,24 @@ use super::Game;
 const LOOK_EVERY: Duration = Duration::from_millis(500);
 const RED: u32 = 0xFF5555;
 
+thread_local! {
+    // Loader outcomes survive renderer replacement; rejected files must not cause a rebuild loop.
+    static OUTCOMES: std::cell::RefCell<std::collections::HashMap<PathBuf, (Option<u64>, Option<Api>)>> =
+        std::cell::RefCell::default();
+}
+
+pub(super) fn outcome(path: &Path) -> Option<Option<Api>> {
+    OUTCOMES.with_borrow(|packs| packs.get(path).map(|(_, api)| *api))
+}
+
+pub(super) fn remember(path: &Path, stamp: Option<u64>, api: Option<Api>) {
+    OUTCOMES.with_borrow_mut(|packs| packs.insert(path.to_owned(), (stamp, api)));
+}
+
+pub(super) fn refused(path: &Path, stamp: Option<u64>) -> bool {
+    OUTCOMES.with_borrow(|packs| packs.get(path) == Some(&(stamp, None)))
+}
+
 #[derive(Default)]
 pub(super) struct NativeShaders {
     /// The resolved pack path, of either kind (`game/shader_packs.rs`); empty: none.
@@ -84,7 +102,7 @@ impl Game<'_> {
         }
         state.looked = Some(now);
         let stamp = fingerprint(path);
-        if stamp == state.stamp {
+        if stamp == state.stamp || (linear_frame_switch() && refused(path, stamp)) {
             return;
         }
         let reload = state.stamp.is_some();
@@ -144,6 +162,7 @@ impl Game<'_> {
                 .map_err(|e| vec![e])?;
             Ok((pack.manifest, labels, translucent))
         });
+        remember(path, stamp, result.as_ref().ok().map(|(m, _, _)| m.api));
         // The resources were loaded without a native pack, so without the resource packs'
         // LabPBR maps its material stage reads: load them once, now that one runs.
         if result.as_ref().is_ok_and(|(m, _, _)| m.material.is_some())
@@ -198,14 +217,14 @@ fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
 }
 
 /// `HORIZON_HDR_FRAME=float`: shader API 0.2 packs are drawn, on a float frame where the
-/// renderer is made with one picked, as HDR without a pack is (`PickedPack::hdr_float`).
+/// renderer is made with one picked and not refused, as HDR without a pack is (`PickedPack::hdr_float`).
 pub(super) fn linear_frame_switch() -> bool {
     std::env::var("HORIZON_HDR_FRAME").is_ok_and(|v| v == "float")
 }
 
 /// A hash of the names, sizes and modification times of the pack's files and of its saved
 /// option values (`None` when the pack is unreadable).
-fn fingerprint(path: &Path) -> Option<u64> {
+pub(super) fn fingerprint(path: &Path) -> Option<u64> {
     fn walk(path: &Path, hasher: &mut std::hash::DefaultHasher) -> Option<()> {
         let meta = std::fs::metadata(path).ok()?;
         path.hash(hasher);
@@ -240,6 +259,34 @@ fn fingerprint(path: &Path) -> Option<u64> {
 mod tests {
     use super::not_drawn;
     use horizon_shader_api::Manifest;
+
+    #[test]
+    fn outcomes_and_refusals_survive_renderer_resets() {
+        use super::{Api, NativeShaders, fingerprint, outcome, refused, remember};
+        let root = std::env::temp_dir().join(format!("horizon-acceptance-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("post.wgsl");
+        std::fs::write(&file, "first files").unwrap();
+        let stamp = fingerprint(&root);
+        assert_eq!(outcome(&root), None);
+        remember(&root, stamp, Some(Api::V0_1));
+        assert_eq!(outcome(&root), Some(Some(Api::V0_1)));
+        remember(&root, stamp, Some(Api::V0_2));
+        assert_eq!(outcome(&root), Some(Some(Api::V0_2)));
+        // Policy, SDK and GPU refusals all reach this same outcome before any resource reload.
+        remember(&root, stamp, None);
+        for _ in 0..3 {
+            let mut reset = NativeShaders::picking(&root.to_string_lossy());
+            reset.select(&root.to_string_lossy());
+            assert_eq!(outcome(&root), Some(None));
+            assert!(refused(&root, fingerprint(&root)));
+        }
+        std::fs::write(&file, "repaired files with a different size").unwrap();
+        assert!(!refused(&root, fingerprint(&root)));
+        remember(&root, fingerprint(&root), Some(Api::V0_2));
+        assert_eq!(outcome(&root), Some(Some(Api::V0_2)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn manifest(api: &str, extra: &str) -> Manifest {
         Manifest::parse(&format!(

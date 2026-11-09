@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "potion_splash_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_potion_splash_v2",
+      "neoforge": "PotionSplashEvent (cancellable there too)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a thrown potion's say before it applies its effects (`native_potion_splash_v2`).",
+  "doc_summary": "`native_potion_splash_v2(item, pos, cancel)` is asked before a thrown splash or lingering potion applies its hit effects at `pos`. Set `cancel` and no effect and no cloud is made; `native_potion_splash` is not told then. Experience bottles are not asked. Bundles need \"hooks\": @API:potion_splash_v2@.",
+  "comments": []
+}
