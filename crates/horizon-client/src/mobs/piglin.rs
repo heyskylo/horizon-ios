@@ -168,7 +168,7 @@ impl Memories {
                 _ => self.seen_admire = 0,
             }
         }
-        if !holding && absent && loved && self.admire_disabled == 0 && self.walk_off == 0 {
+        if absent && loved && self.admire_disabled == 0 && self.walk_off == 0 {
             self.seen_admire = ADMIRE;
         }
     }
@@ -862,9 +862,6 @@ pub fn receive_attack_target(m: &mut Mob, target: Who, position: impl Fn(Who) ->
 /// ingot is not bartered and is gone; anything else ends its admiring next
 /// tick, as if the time ran out, and the game side puts it away.
 pub fn stop_admiring(m: &mut Mob) {
-    if m.extra.off_hand.as_deref() == Some("minecraft:shield") {
-        return;
-    }
     if m.extra.off_hand.as_deref() == Some("minecraft:gold_ingot") {
         m.extra.off_hand = None;
         m.extra.using_item = 0;

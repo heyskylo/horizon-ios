@@ -28,31 +28,27 @@ impl Game<'_> {
     fn piglin_loved(&self, item: &str) -> bool {
         self.item_in_tag("minecraft:piglin_loved", item)
     }
+    /// `ItemStack.has(DataComponents.BLOCKS_ATTACKS)` for an item id.
     fn item_blocks_attacks(&self, item: &str) -> bool {
-        item == "minecraft:shield"
-            || self
-                .res
-                .items()
-                .get(item)
-                .is_some_and(|i| i.blocks_attacks.is_some())
+        self.res
+            .items()
+            .get(item)
+            .is_some_and(|i| i.blocks_attacks.is_some())
     }
     /// `PiglinAi.isLovedItem` or a preferred weapon (`Piglin.canReplaceCurrentItem`).
     fn piglin_wanted(&self, m: &Mob, item: &str) -> bool {
         self.piglin_loved(item)
             || !m.is_baby() && self.item_in_tag("minecraft:piglin_preferred_weapons", item)
     }
-    /// The `SLOT_NAMES` index `getEquipmentSlotForItem` picks: armour goes
-    /// to its slot, shields to offhand, anything else to the main hand.
+    /// The `SLOT_NAMES` index `getEquipmentSlotForItem` picks: the
+    /// `equippable` slot (armour, a shield's off hand), else the main hand.
     fn piglin_slot(&self, item: &str) -> usize {
-        if self.item_blocks_attacks(item) {
-            return OFFHAND;
-        }
         let slot = self
             .res
             .items()
             .get(item)
             .and_then(|i| i.equip_slot.as_deref())
-            .filter(|s| matches!(*s, "head" | "chest" | "legs" | "feet"))
+            .filter(|s| matches!(*s, "head" | "chest" | "legs" | "feet" | "offhand"))
             .unwrap_or("mainhand");
         SLOT_NAMES.iter().position(|n| *n == slot).unwrap_or(0)
     }
@@ -328,11 +324,20 @@ impl Game<'_> {
     fn admire_seen_item(&mut self, index: usize, nearest: Option<f64>, loved: bool) {
         let m = &mut self.mobs[index];
         let holding = m.extra.off_hand.is_some();
+        // ADMIRING_ITEM is present while it admires what its off hand holds.
+        if holding && m.extra.using_item > 0 {
+            return;
+        }
         m.extra.piglin.admire_seen(holding, nearest, loved);
     }
     fn start_admiring(&mut self, index: usize, item: std::sync::Arc<str>) {
-        if let Some(old) = self.mobs[index].extra.off_hand.take() {
-            self.piglin_stash(index, ItemStack::new(&old, 1));
+        // PiglinAi.holdInOffhand: what the off hand held is dropped, whole.
+        if let Some(old) = item_stack(&self.mobs[index], OFFHAND) {
+            let m = &mut self.mobs[index];
+            m.extra.off_hand = None;
+            set_slot_enchantments(m, OFFHAND, Vec::new());
+            let at = [m.position.x, m.position.y, m.position.z];
+            self.spawn_item_own(old, at, 10);
         }
         let m = &mut self.mobs[index];
         // The memory is set again, for the item it holds now.
@@ -377,11 +382,7 @@ impl Game<'_> {
         };
         if self.mobs[i].is_baby() {
             let stack = ItemStack::new(&item, 1);
-            if self.item_blocks_attacks(&item) {
-                if !self.piglin_equip(i, &stack) {
-                    self.piglin_stash(i, stack);
-                }
-            } else if !self.piglin_equip(i, &stack) {
+            if !self.piglin_equip(i, &stack) {
                 if let Some(old) = item_stack(&self.mobs[i], 0) {
                     if self.piglin_loved(&old.item) {
                         self.piglin_stash(i, old);
