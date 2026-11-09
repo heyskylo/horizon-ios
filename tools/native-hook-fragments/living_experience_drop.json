@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "living_experience_drop",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_living_experience_drop",
+      "neoforge": "LivingExperienceDropEvent",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a mob's experience before its orbs spawn (`native_living_experience_drop`).",
+  "doc_summary": "`native_living_experience_drop(entity, kind, xp)` is asked when a mob killed by a player is about to drop its experience: `xp` is the total the vanilla rule gives, and a mod may change it (`LivingEntity.dropExperience`). Zero or less spawns no orbs; the mob is not asked when it drops none. Bundles need \"hooks\": @API:living_experience_drop@.",
+  "comments": []
+}

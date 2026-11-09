@@ -125,6 +125,8 @@ enum Source {
     ShadowDepth(usize, bool),
     /// `shadowcolor0/1` read outside the shadow programs (in them they are `Color`).
     ShadowColor(usize),
+    /// The boats' water patches' depth (`horizon_shaders::WATER_MASK`), for translucent terrain.
+    WaterMask,
 }
 
 #[derive(Clone)]
@@ -160,9 +162,11 @@ impl SamplerKind {
             Source::Color(_) | Source::ShadowColor(_) | Source::Dummy if !filtering => {
                 Self::Nearest
             }
-            Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(_, false) => {
-                Self::Nearest
-            }
+            Source::Depth
+            | Source::Depth1
+            | Source::Depth2
+            | Source::ShadowDepth(_, false)
+            | Source::WaterMask => Self::Nearest,
             Source::Noise => Self::Repeat,
             Source::Shadow | Source::ShadowDepth(_, true) => Self::Comparison,
             // Blocks look as the game draws them: nearest texels. Between levels, Iris 1.11.7
@@ -406,6 +410,9 @@ struct Pass {
     /// The same program as vanilla blends the sky's parts (`PostProgram::vanilla_sky_blends`):
     /// without blending for the disc and the void, then with `STARS_BLEND` for the stars.
     sky_parts: Option<[Slot<wgpu::RenderPipeline>; 2]>,
+    /// The entity program without colour writes, for the boats' water patches
+    /// (`RenderTypes.waterMask`: depth only, so no water shows inside a hull).
+    water_mask: Option<Slot<wgpu::RenderPipeline>>,
     layout: wgpu::BindGroupLayout,
     ubo: wgpu::Buffer,
     block: Vec<u8>,
@@ -511,6 +518,8 @@ struct Targets {
     depth1: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// `depthtex2`, when a program after the hand reads it without the hand.
     depth2: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The boats' water patches' depth, when translucent terrain reads it (`Source::WaterMask`).
+    water_mask: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Both sides' mip chains of the buffers with mipmaps (`color` is their first level).
     mips: [Option<[Mips; 2]>; BUFFERS],
     /// Where a pass that both samples and stores a buffer samples it from.
@@ -648,6 +657,11 @@ pub struct PackPost {
     depth1: bool,
     /// A program after the hand reads `depthtex2`: it is copied before the hand.
     depth2: bool,
+    /// Translucent terrain reads the boats' water patches (`Targets::water_mask`).
+    water_mask: bool,
+    /// The water patches' depth holds patches (or was never cleared): cleared before the next
+    /// frame's are drawn.
+    water_mask_dirty: bool,
     /// The shadow buffers, when the shadow pass runs (2.5), and the `shadowcomp` programs.
     shadow_targets: Option<super::pack_shadow::ShadowTargets>,
     /// What draws terrain from the light (`shadow`), and translucent terrain (`shadow_water`).
@@ -907,6 +921,7 @@ fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) 
         "lightmap" => Source::Lightmap,
         "normals" => Source::Normals,
         "specular" => Source::Specular,
+        horizon_shaders::WATER_MASK => Source::WaterMask,
         n => horizon_shaders::buffer_index(n).map_or(Source::Dummy, Source::Color),
     }
 }
@@ -1647,9 +1662,11 @@ fn bindings(
                     Source::ShadowColor(n) => shadow
                         .and_then(|f| f[n].sample_type(None, Some(features)))
                         .unwrap_or(float),
-                    Source::Depth | Source::Depth1 | Source::Depth2 | Source::ShadowDepth(..) => {
-                        wgpu::TextureSampleType::Float { filterable: false }
-                    }
+                    Source::Depth
+                    | Source::Depth1
+                    | Source::Depth2
+                    | Source::ShadowDepth(..)
+                    | Source::WaterMask => wgpu::TextureSampleType::Float { filterable: false },
                     // Unfilterable on WebGPU-level devices; the lightmap is sampled at texel centres.
                     Source::Lightmap => float,
                     _ => float,
@@ -1933,6 +1950,7 @@ fn build_pass(
     custom: &[(String, String)],
     draws: &wgpu::BindGroupLayout,
     pack: &Resources<'_>,
+    water_mask: bool,
 ) -> Option<Pass> {
     let features = device.features();
     // The frame's uniforms, then the pack's custom ones.
@@ -2147,9 +2165,32 @@ fn build_pass(
                 )
             })
         });
-        (layout, pack.render_pipeline(device, job), sky_parts)
+        // The water patches' pipeline: the same program, depth only.
+        let water_mask = water_mask.then(|| {
+            let targets = (job.targets.iter())
+                .map(|t| {
+                    t.clone().map(|t| wgpu::ColorTargetState {
+                        write_mask: wgpu::ColorWrites::empty(),
+                        ..t
+                    })
+                })
+                .collect();
+            pack.render_pipeline(
+                device,
+                RenderJob {
+                    targets,
+                    ..job.clone()
+                },
+            )
+        });
+        (
+            layout,
+            pack.render_pipeline(device, job),
+            sky_parts,
+            water_mask,
+        )
     });
-    let (layout, pipeline, sky_parts) = match created {
+    let (layout, pipeline, sky_parts, water_mask) = match created {
         Ok(created) => created,
         Err(e) => {
             notes.push(format!("{}: skipped: {e}", p.name));
@@ -2189,6 +2230,7 @@ fn build_pass(
         group: p.group,
         pipeline: Pipeline::Render(pipeline),
         sky_parts,
+        water_mask,
         layout,
         samplers,
         writes,
@@ -2328,6 +2370,7 @@ fn build_compute(
             local,
         },
         sky_parts: None,
+        water_mask: None,
         layout,
         samplers,
         writes: Vec::new(),
@@ -2610,6 +2653,8 @@ impl PackPost {
                 })
             })
             .transpose()?;
+        // The next pass built also gets a depth-only pipeline for the boats' water patches.
+        let water_mask_next = std::cell::Cell::new(false);
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
             // Not wanted any more: the rest is skipped and the build refused below.
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2660,6 +2705,7 @@ impl PackPost {
                     &custom_names,
                     &draws.layout,
                     &pack,
+                    water_mask_next.get(),
                 )?
             };
             pass.compute.append(&mut computes);
@@ -2835,7 +2881,11 @@ impl PackPost {
                 pass
             })
         };
+        let mut kind = 0;
         let entity_passes = programs.map(|p| {
+            // The entity program draws the boats, and their water patches (`Draw::water_mask`).
+            water_mask_next.set(kind == super::pack_entities::ENTITY);
+            kind += 1;
             p.zip(entity_geometry.as_ref()).and_then(|(p, g)| {
                 if p.name == "gbuffers_damagedblock" {
                     let decal = Geometry {
@@ -2858,6 +2908,7 @@ impl PackPost {
         if entity_passes[super::pack_entities::PARTICLE_TRANSLUCENT].is_some() {
             late[super::pack_entities::PARTICLE] = false;
         }
+        water_mask_next.set(false);
         let shadow_entities = shadow_programs.map(|p| {
             p.zip(entity_geometry.as_ref())
                 .and_then(|(p, g)| paged(build(p, Some(g))))
@@ -2881,10 +2932,12 @@ impl PackPost {
             cull: false,
         });
         let hides_clouds = post.clouds_off || post.clouds.is_some() && cloud_geometry.is_some();
+        // Rain and snow test depth but never write it: Iris 1.11.7 left none of either in
+        // `depthtex0`, whatever `rain.depth` said (probe packs of ours, #10492).
         let weather_geometry = world.weather.then(|| Geometry {
             buffers: &entity_buffers,
             table: None,
-            depth_write: post.rain_depth,
+            depth_write: false,
             atlas: None,
             material_maps: false,
             ids: None,
@@ -3083,6 +3136,9 @@ impl PackPost {
         let depth1 = (water.is_some() || hand.is_some())
             && (reads_depth(Source::Depth1) || (hand.is_none() && reads_depth2));
         let depth2 = hand.is_some() && reads_depth2;
+        let water_mask = (water.iter())
+            .flat_map(|p| &p.samplers)
+            .any(|s| s.source == Source::WaterMask);
         let every_pass = || {
             (passes
                 .iter()
@@ -3338,6 +3394,8 @@ impl PackPost {
             hand_water,
             depth1,
             depth2,
+            water_mask,
+            water_mask_dirty: true,
             shadow_targets,
             shadow_terrain,
             portal_rect: [0.0; 4],
@@ -3669,6 +3727,7 @@ impl PackPost {
                         }
                     }
                     Source::Depth => &targets.depth,
+                    Source::WaterMask => targets.water_mask.as_ref().map_or(&self.dummy, |m| &m.1),
                     // Before translucent terrain the two are the same.
                     Source::Depth1 => match &targets.depth1 {
                         Some(d)
@@ -3863,6 +3922,16 @@ impl PackPost {
         encoder: &'e mut wgpu::CommandEncoder,
         pass: &Pass,
     ) -> wgpu::RenderPass<'e> {
+        self.begin_with(encoder, pass, false)
+    }
+
+    /// `begin`, or with `water_mask` into the water patches' depth instead of the frame's.
+    fn begin_with<'e>(
+        &mut self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        pass: &Pass,
+        water_mask: bool,
+    ) -> wgpu::RenderPass<'e> {
         let targets = self.targets.as_ref().expect("resized");
         let load = wgpu::Operations {
             load: wgpu::LoadOp::Load,
@@ -3896,7 +3965,10 @@ impl PackPost {
             color_attachments: &attachments,
             timestamp_writes,
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: shadow.map_or(&targets.depth, |s| &s.depth.1),
+                view: match &targets.water_mask {
+                    Some((_, view)) if water_mask => view,
+                    _ => shadow.map_or(&targets.depth, |s| &s.depth.1),
+                },
                 depth_ops: Some(depth_ops),
                 stencil_ops: None,
             }),
@@ -4079,8 +4151,11 @@ impl PackPost {
             let mut draws = geometry
                 .draws
                 .iter()
-                .filter(|d| d.pack && d.program == program)
+                .filter(|d| d.pack && d.program == program && !d.water_mask)
                 .peekable();
+            let masks: Vec<_> = (geometry.draws.iter())
+                .filter(|d| d.pack && d.program == program && d.water_mask)
+                .collect();
             if draws.peek().is_none() {
                 continue;
             }
@@ -4121,6 +4196,35 @@ impl PackPost {
                     }
                     rp.draw_indexed(0..d.quads * 6, d.base as i32, 0..1);
                 }
+            }
+            // The boats' water patches, depth only, into their own depth: translucent terrain
+            // discards what lies behind them, and the frame's depth stays the pack's.
+            if let Some(mask) = pass.water_mask.as_ref().and_then(|m| m.get())
+                && !masks.is_empty()
+                && self
+                    .targets
+                    .as_ref()
+                    .is_some_and(|t| t.water_mask.is_some())
+            {
+                let mut rp = self.begin_with(encoder, pass, true);
+                rp.set_pipeline(mask);
+                rp.set_bind_group(0, &group, &[]);
+                if pass.buffers
+                    && let Some(g) = &self.buffers.group
+                {
+                    rp.set_bind_group(4, g, &[]);
+                }
+                rp.set_bind_group(1, &geometry.table_group, &[]);
+                rp.set_vertex_buffer(0, geometry.vertices());
+                rp.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
+                for d in &masks {
+                    if pass.draw {
+                        rp.set_bind_group(2, &geometry.group, &[geometry.offset(d.slot)]);
+                    }
+                    rp.draw_indexed(0..d.quads * 6, d.base as i32, 0..1);
+                }
+                drop(rp);
+                self.water_mask_dirty = true;
             }
             self.mips_valid &= !pass.written;
         }
@@ -4903,6 +5007,16 @@ impl PackPost {
             let view = t.create_view(&Default::default());
             (t, view)
         });
+        let water_mask = self.water_mask.then(|| {
+            let t = texture(
+                "Shader pack water patches",
+                depth32,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            );
+            let view = t.create_view(&Default::default());
+            (t, view)
+        });
+        self.water_mask_dirty = true;
         let scratch = std::array::from_fn(|i| {
             (self.copied & 1 << i != 0).then(|| {
                 // A copy also read as an image before a dispatch.
@@ -4937,6 +5051,7 @@ impl PackPost {
             depth_texture,
             depth1,
             depth2,
+            water_mask,
             mips,
         });
         self.forget_groups();
@@ -5191,6 +5306,24 @@ impl PackPost {
         terrain: &mut TerrainDraw<'_>,
     ) {
         self.resize(device, size);
+        // Last frame's water patches (or a new texture's zeros) out: depth 1 is no patch.
+        if self.water_mask_dirty
+            && let Some((_, view)) = self.targets.as_ref().and_then(|t| t.water_mask.as_ref())
+        {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shader pack water patches clear"),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            self.water_mask_dirty = false;
+        }
         // A resolution scale leaves the picture smaller (or larger) than the window: the pack's
         // `final` draws it at the picture's size, and one copy takes it to the window (#9291).
         let final_view = if size != window && self.passes.iter().any(|p| p.group == Group::Final) {
@@ -6210,6 +6343,7 @@ mod tests {
             &[],
             &draws.layout,
             &pack,
+            false,
         )
         .unwrap_or_else(|| panic!("the pass builds: {notes:?}"));
         // colortex3 holds (0.75, 0.5, 0.25, 0.5) before the pass.

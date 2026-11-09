@@ -5,6 +5,13 @@ pub use crate::chunk::block_entity::{SavedLine, SignData, SignText};
 use crate::{scoreboard, text::Text};
 use horizon_world::nbt::Tag;
 
+/// `getBooleanOr(key, false)` and `Codec.BOOL`: any numeric tag's nonzero byte.
+fn nbt_flag(tag: &Tag, key: &str) -> bool {
+    tag.get(key)
+        .and_then(horizon_client_core::nbt_path::int_value)
+        .is_some_and(|value| value as i8 != 0)
+}
+
 /// `DyeColor` names and `getTextColor` values by id.
 pub const DYE_TEXT: [(&str, u32); 16] = [
     ("white", 0xFFFFFF),
@@ -201,12 +208,12 @@ impl SignData {
                     out.color = i as u8;
                 }
             }
-            out.glowing = matches!(t.get("has_glowing_text"), Some(Tag::Byte(b)) if *b != 0);
+            out.glowing = nbt_flag(t, "has_glowing_text");
             out
         };
         self.front = side(tag.get("front_text"));
         self.back = side(tag.get("back_text"));
-        self.waxed = matches!(tag.get("is_waxed"), Some(Tag::Byte(b)) if *b != 0);
+        self.waxed = nbt_flag(tag, "is_waxed");
         self.allow_op_features =
             matches!(tag.get("allow_op_features"), Some(Tag::Byte(b)) if *b != 0);
     }
@@ -300,6 +307,19 @@ pub fn editor_sprite(folder: &str, wood: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn waxed_and_glowing_text_take_any_number() {
+        let tag = Tag::compound([
+            ("is_waxed", Tag::Int(1)),
+            (
+                "front_text",
+                Tag::compound([("has_glowing_text", Tag::Short(1))]),
+            ),
+        ]);
+        let mut decoded = SignData::default();
+        decoded.decode(&tag);
+        assert!(decoded.waxed && decoded.front.glowing);
+    }
     #[test]
     fn round_trips_nbt() {
         let mut data = SignData {

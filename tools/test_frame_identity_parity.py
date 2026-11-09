@@ -333,15 +333,19 @@ def shoot(game, out, scene):
 def set_hdr(game, on):
     """Turn HDR output on or off from its settings page, as a player does."""
     game.ctl('options', 'graphics-hdr')
-    widgets = game.ctl('ui')
-    widgets = widgets.get('widgets', widgets) if isinstance(widgets, dict) else widgets
-    # 🤖 Agent: The page's tab is labelled HDR too: the switch is the button reading "HDR: On" or "HDR: Off".
-    switch = next((w for w in widgets if w.get('kind') == 'button' and str(w.get('label', '')).startswith('HDR: ')),
-                  None)
-    if switch is None:
-        raise RuntimeError(f'no HDR switch on the HDR page: {json.dumps(widgets)[:600]}')
-    if switch['label'].endswith(': On') != on:
-        game.ctl('click', switch['id'])
+    # 🤖 Agent: Both the base's switch and the three-state choice reach an explicit On or Off.
+    for _ in range(3):
+        widgets = game.ctl('ui')
+        widgets = widgets.get('widgets', widgets) if isinstance(widgets, dict) else widgets
+        choice = next((w for w in widgets if w.get('kind') == 'button'
+                       and str(w.get('label', '')).startswith('HDR: ')), None)
+        if choice is None:
+            raise RuntimeError(f'no HDR control on the HDR page: {json.dumps(widgets)[:600]}')
+        if choice['label'].endswith(': On' if on else ': Off'):
+            break
+        game.ctl('click', choice['id'])
+    else:
+        raise RuntimeError('HDR control did not reach the requested setting')
     game.ctl('close')
     game.ctl('close', check=False)
     game.settle(60)
@@ -350,6 +354,8 @@ def set_hdr(game, on):
 SESSIONS = {
     # 🤖 Agent: name: (horizon-graphics.txt, extra environment, scenes, HDR turned off after the first shots)
     'vanilla': ('', {}, list(SCENES), False),
+    # 🤖 Agent: An offered HDR output without a system report must leave Auto in SDR.
+    'auto_unknown': ('hdr:auto\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
     'golden_hour': ('', {'HORIZON_SHADER_PACK': 'golden_hour'}, list(SCENES), False),
     'golden_hour_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour', 'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),

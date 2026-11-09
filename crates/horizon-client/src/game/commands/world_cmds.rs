@@ -2073,6 +2073,8 @@ impl Game<'_> {
                 None,
                 false,
             );
+            // teleportTo(..., Set.of(), ...): a transition with no motion.
+            self.teleport_stops(t);
             let closest = points
                 .iter()
                 .enumerate()
