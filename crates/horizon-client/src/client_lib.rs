@@ -77,8 +77,6 @@ pub mod game_rules_screen;
 pub mod gizmos;
 pub mod gossip;
 pub mod health;
-#[cfg(feature = "heartbeat")]
-pub mod heartbeat;
 pub mod hotbar;
 pub mod hunger;
 pub mod inv_sort;

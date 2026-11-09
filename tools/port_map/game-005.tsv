@@ -109,7 +109,7 @@ EntityDimensions.withEyeHeight	skip:data		eye heights come from entity-types.jso
 EntityDimensions.withAttachments	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	attachments are a per species table, not part of a dimensions value
 EntityEquipment.isEmpty	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::is_empty	
 EntityEquipment.tick	port	crates/horizon-world/src/inventory_tick.rs::tick_equipment	gap: minor: the player's worn items only; items on mobs never tick
-EntityEquipment.dropAll	port	crates/horizon-client/src/game.rs::Game::drop_inventory	the main inventory, armour and off hand are thrown in random directions on death (Inventory.dropAll)
+EntityEquipment.dropAll	port	crates/horizon-client/src/game/item_entities.rs::Game::drop_inventory	the main inventory, armour and off hand are thrown in random directions on death (Inventory.dropAll)
 EntityFluidInteraction.getOrCreateTrackerFor	inline	crates/horizon-world/src/entity_fluid.rs::EntityFluidInteraction::update	a tracker is found or pushed while scanning the box
 EntityFluidInteraction.getCurrentAccumulatorFor	inline	crates/horizon-world/src/entity_fluid.rs::EntityFluidInteraction::new	one accumulator is made per fluid tag up front
 EntityFluidInteraction.CurrentAccumulator.accumulate	port	crates/horizon-world/src/entity_fluid.rs::CurrentAccumulator::accumulate	

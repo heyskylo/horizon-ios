@@ -69,6 +69,7 @@ GuiGraphicsExtractor.ScissorStack.containsPoint	missing		minor: hover ignores th
 Hud.extractHotbarAndDecorations	port	crates/horizon-client-render/src/hud_layout.rs::hotbar	items and decorations are drawn by Game::draw_item
 Hud.<init>	skip:java		constructor state setup
 Hud.extractSubtitleOverlay	port	crates/horizon-client-render/src/hud_overlays.rs::SubtitleOverlay::extract	
+Hud.extractDeferredSubtitles	inline	crates/horizon-client/src/game.rs::Game::hud_layers	with a `Screen.isInGameUi` screen open the subtitles draw just before the screen (Screen.extractBackground runs them), under its slots and tooltips; F1 keeps them
 Hud.extractSelectedItemName	port	crates/horizon-client-render/src/hud_overlays.rs::ToolHighlight::draw	59 pixels above the bottom edge, 14 lower in a mode that cannot hurt the player
 Hud.extractOverlayMessage	port	crates/horizon-client-render/src/hud_overlays.rs::Titles::overlay_message	guiHeight - 68 and the text four pixels under that, whatever the bars above the hotbar are
 Hud.extractChat	port	crates/horizon-client-render/src/chat.rs::Chat::layout	
