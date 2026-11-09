@@ -3109,28 +3109,7 @@ impl Game<'_> {
             self.note_dragon_attacker("minecraft:mob_attack");
         }
         let id = self.health_resources.damage.id("minecraft:mob_attack");
-        let mut canceled = false;
-        // Same sequence as `push_seen_with_hurt`, but the hurt goes through the
-        // host's equipment path so the armor wears (`LivingEntity.doHurtEquipment`).
-        let before = self.player.as_ref().map(|p| p.velocity);
-        let mut marked_before = false;
-        if let Some(p) = self.player.as_mut() {
-            marked_before = std::mem::take(&mut p.health.sync_velocity);
-            p.velocity = p.velocity.add_vector(push);
-        }
-        if let Some(id) = id.filter(|_| hurts)
-            && let Ok((o, _)) = self.hurt_player_equipment(id, 5.0, None, false, 0)
-        {
-            canceled = o.canceled;
-        }
-        if let Some(p) = self.player.as_mut() {
-            if !p.health.sync_velocity
-                && let Some(before) = before
-            {
-                p.velocity = before;
-            }
-            p.health.sync_velocity |= marked_before;
-        }
+        let canceled = self.push_seen_with_equipment_hurt(push, id.filter(|_| hurts), 5.0);
         self.combat.forget_noted(canceled);
         if !sitting
             && !hurt_lately
@@ -4826,6 +4805,7 @@ use death_render::{dissolve_color, dissolve_mask, dragon_rays};
 /// reaches the players tracking them, not them. So the push moves the player
 /// only together with a hurt that lands outside the hurt cooldown, and is
 /// dropped otherwise.
+#[cfg(test)]
 fn push_seen_with_hurt(
     p: &mut horizon_client::motion::PlayerMotion,
     push: Vec3,
