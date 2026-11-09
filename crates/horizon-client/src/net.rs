@@ -30,6 +30,8 @@ use std::{
     time::Duration,
 };
 
+use horizon_hooks::tunnel;
+
 /// `CommonListenerCookie.serverCookies`: cookies the server asked the client
 /// to store (`ClientboundStoreCookiePacket`), answered to
 /// `ClientboundCookieRequestPacket`. A `transfer` carries them to the next
@@ -496,62 +498,36 @@ impl Drop for Session {
 }
 
 /// An address of the form `friend:K7QM-3XPD` joins a friend's world through
-/// its invite code (horizon-friends): the session goes through a tunnel the
-/// client reaches on a loopback port, so everything after is a plain join.
-#[cfg(feature = "friends")]
-pub const FRIEND: &str = horizon_friends::ADDRESS_PREFIX;
-/// Without the `friends` feature such an address is refused (`join_friend`).
-#[cfg(not(feature = "friends"))]
-pub const FRIEND: &str = "friend:";
+/// its invite code (Play with Friends, through a hook's [`tunnel::Resolver`]):
+/// the session goes through a tunnel the client reaches on a loopback port, so
+/// everything after is a plain join.
+pub const FRIEND: &str = tunnel::PREFIX;
 
 /// Whether `code` is an invite code; with `full`, only a full one (a short
-/// relay code could also be a host name).
-#[cfg(feature = "friends")]
+/// relay code could also be a host name). Without a resolver nothing is one.
 pub fn is_invite(code: &str, full: bool) -> bool {
-    use horizon_friends::invite::{Parsed, parse};
-    match parse(code) {
-        Some(Parsed::Long(_)) => true,
-        Some(Parsed::Short(_)) => !full,
-        None => false,
-    }
-}
-/// Without the `friends` feature nothing is one.
-#[cfg(not(feature = "friends"))]
-pub fn is_invite(_code: &str, _full: bool) -> bool {
-    false
+    horizon_hooks::engine::tunnel().is_some_and(|r| r.is_code(code, full))
 }
 
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
     match address.strip_prefix(FRIEND) {
-        #[cfg(feature = "friends")]
-        Some(code) => match horizon_friends::invite::parse(code) {
-            Some(horizon_friends::invite::Parsed::Short(c)) => {
-                format!("Friend's world ({}-****)", c.nameplate)
-            }
-            _ => "Friend's world".to_owned(),
+        Some(code) => match horizon_hooks::engine::tunnel().and_then(|r| r.nameplate(code)) {
+            Some(nameplate) => format!("Friend's world ({nameplate}-****)"),
+            None => "Friend's world".to_owned(),
         },
-        #[cfg(not(feature = "friends"))]
-        Some(_) => "Friend's world".to_owned(),
         None => address.to_owned(),
     }
 }
 
 /// The relay the player set (`friendsRelay` in horizon.txt, beside
-/// options.txt), else `HORIZON_RELAY_URL`. None by default.
+/// options.txt), else the resolver's (`HORIZON_RELAY_URL`). None by default.
 pub fn friends_relay_setting() -> Option<String> {
     let dir = std::env::current_dir().ok()?;
     crate::ui_theme::preference(&dir, "friendsRelay")
         .filter(|r| !r.is_empty())
-        .or_else(relay_from_env)
-}
-#[cfg(feature = "friends")]
-use horizon_friends::relay_url as relay_from_env;
-/// `HORIZON_RELAY_URL` is the friends feature's: none without it.
-#[cfg(not(feature = "friends"))]
-fn relay_from_env() -> Option<String> {
-    None
+        .or_else(|| horizon_hooks::engine::tunnel().and_then(|r| r.relay_from_env()))
 }
 /// Remember the relay typed on Join a friend (empty forgets it).
 pub fn save_friends_relay(relay: &str) {
@@ -562,55 +538,35 @@ pub fn save_friends_relay(relay: &str) {
 
 /// Reach the friend's world from the code (directly, or through a relay)
 /// and open the tunnel: the loopback address to connect to, and the token to send on it first.
-#[cfg(feature = "friends")]
+/// Without a resolver (a build without Play with Friends) the address is refused, never retried.
 fn join_friend(
     code: &str,
     lang: &Language,
     send: &Sender<Event>,
 ) -> Result<(String, u16, Vec<u8>), Reason> {
-    use horizon_friends::{
-        PathMode,
-        guest::{self, GuestConfig},
+    let Some(resolver) = horizon_hooks::engine::tunnel() else {
+        return Err(Reason::keyed_arg(
+            "horizon.multiplayer.invalid_address",
+            lang,
+            &shown_address(&format!("{FRIEND}{code}")),
+        ));
     };
-    status(send, &tr(lang, "horizon.multiplayer.finding_friend"));
-    let tunnel = guest::join(&GuestConfig {
-        code: code.to_owned(),
-        relay: friends_relay_setting(),
-        protocol: PROTOCOL_VERSION,
-        game: horizon_protocol::GAME_VERSION.to_owned(),
-        path: PathMode::from_env(),
-    })
-    .map_err(|e| Reason::plain(e.to_string()))?;
-    status(
-        send,
-        &if tunnel.direct {
-            tr(lang, "horizon.multiplayer.connected_friend_direct")
-        } else {
-            tr(lang, "horizon.multiplayer.connected_friend_relay")
-        },
-    );
-    let loopback = tunnel
-        .serve_loopback()
-        .map_err(|e| Reason::plain(e.to_string()))?;
-    Ok((
-        "127.0.0.1".to_owned(),
-        loopback.port,
-        loopback.token.to_vec(),
-    ))
-}
-
-/// A build without Play with Friends: the address is refused, never retried.
-#[cfg(not(feature = "friends"))]
-fn join_friend(
-    code: &str,
-    lang: &Language,
-    _: &Sender<Event>,
-) -> Result<(String, u16, Vec<u8>), Reason> {
-    Err(Reason::keyed_arg(
-        "horizon.multiplayer.invalid_address",
-        lang,
-        &shown_address(&format!("{FRIEND}{code}")),
-    ))
+    let mut progress = |p: tunnel::Progress| {
+        let key = match p {
+            tunnel::Progress::Finding => "horizon.multiplayer.finding_friend",
+            tunnel::Progress::Connected { direct: true } => {
+                "horizon.multiplayer.connected_friend_direct"
+            }
+            tunnel::Progress::Connected { direct: false } => {
+                "horizon.multiplayer.connected_friend_relay"
+            }
+        };
+        status(send, &tr(lang, key));
+    };
+    let opened = resolver
+        .open(code, friends_relay_setting(), &mut progress)
+        .map_err(Reason::plain)?;
+    Ok(("127.0.0.1".to_owned(), opened.port, opened.token))
 }
 
 fn status(send: &Sender<Event>, text: &str) {

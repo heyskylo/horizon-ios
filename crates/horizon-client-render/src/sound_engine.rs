@@ -913,6 +913,20 @@ pub trait Backend {
     fn unpause(&mut self, channel: ChannelId);
     /// `Channel.stopped`.
     fn stopped(&mut self, channel: ChannelId) -> bool;
+    /// Update volume, pitch, and position in a single backend call.
+    fn update_channel(&mut self, channel: ChannelId, volume: f32, pitch: f32, position: [f64; 3]) {
+        self.set_volume(channel, volume);
+        self.set_pitch(channel, pitch);
+        self.set_position(channel, position);
+    }
+    /// Filter which handles have stopped playing in a single pass.
+    fn filter_stopped(&mut self, live: &[(u64, ChannelId)], stopped: &mut Vec<u64>) {
+        for &(h, c) in live {
+            if self.stopped(c) {
+                stopped.push(h);
+            }
+        }
+    }
     /// Whether the channel plays clearly through a mod's muffle (`Audio::muffle`): its sound
     /// event is one the mod exempted. A backend without a muffle ignores it.
     fn set_unmuffled(&mut self, _channel: ChannelId, _unmuffled: bool) {}
@@ -1494,13 +1508,14 @@ impl SoundEngine {
                 .iter()
                 .filter_map(|(h, handle)| handle.channel.map(|c| (*h, c))),
         );
-        for (h, c) in live.drain(..) {
-            if backend.stopped(c) {
-                self.release_handle(h, backend);
-            }
+        let mut stopped = std::mem::take(&mut self.mapped_scratch);
+        stopped.clear();
+        backend.filter_stopped(&live, &mut stopped);
+        for h in stopped.drain(..) {
+            self.release_handle(h, backend);
         }
         // Released handles nobody maps any more.
-        let mut mapped = std::mem::take(&mut self.mapped_scratch);
+        let mut mapped = stopped;
         mapped.clear();
         mapped.extend(self.instance_to_channel.iter().map(|(_, h)| *h));
         self.handles
@@ -1550,9 +1565,7 @@ impl SoundEngine {
                 h.pitch_edited = pitch_edited;
             }
             if let Some(c) = self.handles.get(&handle).and_then(handle_channel) {
-                backend.set_volume(c, volume);
-                backend.set_pitch(c, pitch);
-                backend.set_position(c, position);
+                backend.update_channel(c, volume, pitch, position);
             }
             let instance = self.instances.get_mut(&id).expect("present");
             if instance.looping

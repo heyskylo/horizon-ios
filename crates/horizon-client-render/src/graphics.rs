@@ -30,6 +30,22 @@ fn marker_driver(text: &str) -> &str {
 pub struct Reported {
     pub paper_white: u32,
     pub peak: u32,
+    /// The peak is the display's own claim (DXGI's `MaxLuminance`, mostly its EDID figure),
+    /// which often runs high: Auto still uses it, but the HDR page asks to calibrate.
+    pub peak_guessed: bool,
+}
+
+/// Whether HDR is set up for the display, and whether the player kept the system's setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdrSetup {
+    /// The system says nothing: the player calibrates.
+    Unknown,
+    /// The system says, but only guesses the peak: the player calibrates.
+    Guessed,
+    /// Peak Brightness and Paper White follow the system.
+    Automatic,
+    /// The system said, and the player changed them anyway.
+    Changed,
 }
 
 /// The top of Peak Brightness's scale: `peak_nits_at(PEAK_STEPS)` is PQ's 10 000 nits.
@@ -1207,6 +1223,15 @@ impl Graphics {
             n => n,
         }
     }
+    /// How HDR is set up for the display the system `reported`.
+    pub fn hdr_setup(&self, reported: Option<Reported>) -> HdrSetup {
+        match reported {
+            None => HdrSetup::Unknown,
+            Some(_) if self.hdr_peak != 0 || self.hdr_paper_white != 0 => HdrSetup::Changed,
+            Some(r) if r.peak_guessed => HdrSetup::Guessed,
+            Some(_) => HdrSetup::Automatic,
+        }
+    }
     /// The black level, in nits. Not the system's: files from before saved 0 for that
     /// (Auto), and a reported black would lift every display's shadows by default.
     pub fn black_level_nits(&self) -> f32 {
@@ -1320,12 +1345,40 @@ mod tests {
         let reported = Some(Reported {
             paper_white: 300,
             peak: 1000,
+            peak_guessed: false,
         });
         assert_eq!(g.ui_nits(reported), 300);
         g.hdr_paper_white = 120;
         assert_eq!(g.ui_nits(reported), 120);
         g.hdr_ui_nits = 400;
         assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
+
+    #[test]
+    fn hdr_setup_asks_to_calibrate_where_the_peak_is_guessed() {
+        let wayland = Reported {
+            paper_white: 203,
+            peak: 1015,
+            peak_guessed: false,
+        };
+        let windows = Reported {
+            paper_white: 400,
+            peak: 1000,
+            peak_guessed: true,
+        };
+        let mut g = Graphics::default();
+        assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
+        assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Automatic);
+        assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Guessed);
+        // Auto still takes the guess, over the 1000-nit default.
+        assert_eq!(g.peak_nits(Some(windows)), 1000);
+        assert_eq!(g.paper_white_nits(Some(windows)), 400);
+        for (peak, paper_white) in [(800, 0), (0, 240)] {
+            (g.hdr_peak, g.hdr_paper_white) = (peak, paper_white);
+            assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Changed);
+            assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Changed);
+            assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
+        }
     }
 
     #[test]
