@@ -1105,6 +1105,41 @@ def vehicle_saved_ground_and_fall():
                        f'/forceload remove {x0} {z0}')
 
 
+def ravager_saved_movement_speed():
+    """Ravager.aiStep sets the movement_speed base to 0.0 while biting, stunned or roaring, then lerps it back
+    toward 0.3. The instance exists only from that first aiStep (AttributeMap.getInstance makes it lazily), and
+    AttributeMap.pack saves it with the current base, so a reloaded ravager keeps its speed. Read after
+    summoning, after one and five ticks, after an unload and reload (frozen), and two ticks later.
+    """
+    x0, y0, z0 = 3904, 300, 3904
+    chunk = [[x0 >> 4, z0 >> 4]]
+    subjects = ['RoarTick:7', 'RoarTick:1', 'StunTick:3', 'AttackTick:5', 'AttackTick:0']
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    for n, body in enumerate(subjects):
+        ops.append(cmd(f'/summon ravager {x0 + 2 + 3 * n}.5 {y0} {z0 + 8}.5 '
+                       f'{{Tags:["rav_speed_{n}"],PersistenceRequired:1b,{body}}}', expect_result=1))
+
+    def reads():
+        for n in range(len(subjects)):
+            ops.append(cmd(f'/data get entity @e[tag=rav_speed_{n},limit=1] attributes'))
+
+    reads()
+    ops.append({'op': 'tick', 'n': 1})
+    reads()
+    ops.append({'op': 'tick', 'n': 4})
+    reads()
+    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    reads()
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}]
+    reads()
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def vehicle_ground_and_fall():
     """Entity.load reads OnGround (getBooleanOr) and fall_distance (getDoubleOr) for every entity,
     and Entity.saveWithoutId writes the live values: boats, rafts and minecarts keep both. Frozen
@@ -7424,6 +7459,7 @@ def groups():
         ('rocket data merge', rocket_data_merge()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
+        ('ravager saved movement speed', ravager_saved_movement_speed()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]

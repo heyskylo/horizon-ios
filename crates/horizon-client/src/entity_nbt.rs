@@ -1564,11 +1564,9 @@ pub fn mob_to_nbt(
             .iter_mut()
             .find(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
         {
-            // The model owns these bases: a ravager's speed, a wolf's health.
-            if matches!(
-                (species, attr),
-                (S::Ravager, Attr::MovementSpeed) | (S::Wolf, Attr::MaxHealth)
-            ) && let Tag::Compound(c) = existing
+            // The model owns a wolf's health base.
+            if (species, attr) == (S::Wolf, Attr::MaxHealth)
+                && let Tag::Compound(c) = existing
             {
                 c.insert("base".into(), Tag::Double(base.to_bits()));
             }
@@ -2644,11 +2642,6 @@ pub fn mob_from_nbt_with_random(
         m.extra.counter = number(tag.get("AttackTick")).unwrap_or(0) as i32;
         m.extra.counter2 = number(tag.get("StunTick")).unwrap_or(0) as i32;
         m.extra.anim_ticks = number(tag.get("RoarTick")).unwrap_or(0) as i32;
-        if crate::mobs::ravager::immobile(&m)
-            && !matches!(tag.get("attributes"), Some(Tag::List(l)) if l.iter().any(|a| text(a.get("id")).as_deref() == Some("minecraft:movement_speed")))
-        {
-            m.attrs.speed = 0.0;
-        }
     }
     if m.species() == crate::mobs::Species::Endermite {
         m.extra.counter = number(tag.get("Lifetime")).unwrap_or(0) as i32;
@@ -10422,25 +10415,21 @@ mod equine_temper_preservation_tests {
         );
         Arc::make_mut(&mut kind).species = Species::Ravager;
         let types = [("minecraft:ravager".into(), kind)].into();
-        let mut ravager = mob_from_nbt(
-            &Tag::compound([
-                ("id", string("minecraft:ravager")),
-                ("Pos", doubles(&[0.0, 0.0, 0.0])),
-                ("RoarTick", Tag::Int(10)),
-            ]),
-            &types,
-            2,
-            None,
-        )
-        .unwrap();
-        ravager.age = 1;
-        let saved = mob_to_nbt(&ravager, [0; 4], None, None, |_| None);
-        assert_eq!(
-            saved.get("attributes"),
-            Some(&Tag::List(vec![Tag::compound([
-                ("id", string("minecraft:movement_speed")),
-                ("base", Tag::Double(0.0f64.to_bits()))
-            ])]))
-        );
+        // Before its first aiStep a roaring ravager has no movement_speed
+        // instance; a saved base (mid-ramp after a roar) loads back as is.
+        let speed = Tag::List(vec![Tag::compound([
+            ("id", string("minecraft:movement_speed")),
+            ("base", Tag::Double(0.10317f64.to_bits())),
+        ])]);
+        for (key, value, saved) in [
+            ("RoarTick", Tag::Int(10), Tag::List(vec![])),
+            ("attributes", speed.clone(), speed),
+        ] {
+            let pos = ("Pos", doubles(&[0.0, 0.0, 0.0]));
+            let tag = Tag::compound([("id", string("minecraft:ravager")), pos, (key, value)]);
+            let ravager = mob_from_nbt(&tag, &types, 2, None).unwrap();
+            let nbt = mob_to_nbt(&ravager, [0; 4], None, None, |_| None);
+            assert_eq!(nbt.get("attributes"), Some(&saved));
+        }
     }
 }
