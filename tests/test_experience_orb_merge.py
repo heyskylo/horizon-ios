@@ -121,7 +121,7 @@ fn tick_merge_is_vanilla_unless_a_mod_decides() {
 class ExperienceOrbMergeTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_spawn_and_tick_merge_hooks(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = (ROOT / "crates/horizon-client/src/game/item_entities.rs").read_text(encoding="utf-8")
         fixture = (FIXTURE.replace("ORB_MERGES", method(source, "orb_merges"))
                    .replace("AWARD_ORB", method(source, "award_orb"))
                    .replace("MERGE_NEW_ORB", method(source, "merge_new_orb"))
