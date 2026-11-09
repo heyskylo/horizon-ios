@@ -22,21 +22,8 @@ const CRASH_DETAILS: [&str; 3] = ["Horizon Version", "Graphics Adapter", "Render
 static STARTED: OnceLock<Instant> = OnceLock::new();
 static CORE_READY_MS: AtomicU32 = AtomicU32::new(u32::MAX);
 static REST_READY_MS: AtomicU32 = AtomicU32::new(u32::MAX);
-/// The GPU, once the renderer has its adapter: name, maker, kind, driver, backend, its own memory.
-static GPU: Mutex<Option<Gpu>> = Mutex::new(None);
 /// The screen the window opened on.
 static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
-
-/// The adapter as the renderer found it.
-#[derive(Clone, Debug, Default)]
-pub struct Gpu {
-    pub name: String,
-    pub vendor: String,
-    /// `integrated`, `discrete`, `virtual`, `cpu` or `other`.
-    pub kind: String,
-    pub driver: String,
-    pub backend: String,
-}
 
 /// When the game started, for the time to the title screen. Call first thing in `main`.
 pub fn mark_start() {
@@ -61,10 +48,6 @@ fn mark_ready(mark: &AtomicU32) {
 fn readiness_ms(mark: &AtomicU32) -> Option<u32> {
     let ms = mark.load(Ordering::Relaxed);
     (ms != u32::MAX).then_some(ms)
-}
-
-pub fn set_gpu(gpu: Gpu) {
-    *GPU.lock().unwrap_or_else(|e| e.into_inner()) = Some(gpu);
 }
 
 /// The screen the window is on: size in physical pixels, refresh rate, scale.
@@ -102,23 +85,12 @@ pub fn note_display(window: &winit::window::Window) {
     }
 }
 
-/// wgpu's device type in the words items use.
-pub fn gpu_kind(device_type: &str) -> &'static str {
-    match device_type {
-        "IntegratedGpu" => "integrated",
-        "DiscreteGpu" => "discrete",
-        "VirtualGpu" => "virtual",
-        "Cpu" => "cpu",
-        _ => "other",
-    }
-}
-
 /// This machine, with the GPU and the screen once the renderer knows them. The drive is the one
 /// under the game folder (the current folder).
 pub fn system() -> System {
     let home = std::env::current_dir().ok();
     let mut system = System::detect_in(home.as_deref());
-    if let Some(gpu) = GPU.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+    if let Some(gpu) = crate::gfx::adapter() {
         system.vram_mb = match gpu.kind.as_str() {
             "discrete" => horizon_telemetry::system::vram_mb(&gpu.vendor).unwrap_or(0),
             _ => 0,
