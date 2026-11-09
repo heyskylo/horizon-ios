@@ -2,10 +2,11 @@
 //! platform's pack formats, [`crate::pack_hooks`]): dye, sheep and redstone colours, for drawing
 //! only (the pack recolours collars, tropical fish, banners, wool, sign text and redstone wire and
 //! dust, while gameplay keeps vanilla's `DyeColor`), mob effect colours, the experience number's,
-//! entity shadows and the effect fogs' settings. Lock-free: the draw paths and the mesher's
-//! workers read the dye, sheep and redstone tables per face.
+//! entity shadows, the effect fogs' settings and durability bar colours. Lock-free: the draw paths
+//! and the mesher's workers read the dye, sheep and redstone tables per face.
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, RwLock};
 
 use crate::block_entity_render::DYES;
 use crate::signs::DYE_TEXT;
@@ -23,6 +24,8 @@ pub struct Environment {
     pub water_fog_brightening: f32,
     /// The ticks under water it takes (vanilla's 600).
     pub water_fog_brightening_time: f32,
+    /// Below it the sky draws its dark disc (vanilla's 63; flat worlds keep their floor).
+    pub horizon_height: f32,
 }
 
 impl Default for Environment {
@@ -34,6 +37,7 @@ impl Default for Environment {
             boss_fog_distance: 96.0,
             water_fog_brightening: 1.0,
             water_fog_brightening_time: 600.0,
+            horizon_height: 63.0,
         }
     }
 }
@@ -88,11 +92,25 @@ static REDSTONE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 /// The colours of the pack overlay at `root`, from the installed pack formats; their dye, sheep
 /// and redstone colours go to the draw paths' tables ([`set`]).
 pub fn read(root: &Path) -> PackColors {
-    let colors = crate::pack_hooks::formats()
-        .colors(root)
-        .unwrap_or_default();
+    let formats = crate::pack_hooks::formats();
+    let colors = formats.colors(root).unwrap_or_default();
     set(&colors);
+    *ITEM_BARS.write().unwrap_or_else(|e| e.into_inner()) = formats.item_bars(root);
     colors
+}
+
+/// The packs' durability bar colours by item (Polytone's item modifiers' `bar_color`).
+pub trait ItemBars: Send + Sync {
+    /// The bar colour (RGB) of `item` at this damage (0 to 1), when a pack sets one.
+    fn color(&self, item: &str, damage: f32) -> Option<u32>;
+}
+
+static ITEM_BARS: RwLock<Option<Arc<dyn ItemBars>>> = RwLock::new(None);
+
+/// A pack's durability bar colour (RGB) for an item at this damage (0 to 1).
+pub fn item_bar_color(item: &str, damage: f32) -> Option<u32> {
+    let bars = ITEM_BARS.read().unwrap_or_else(|e| e.into_inner());
+    bars.as_ref()?.color(item, damage)
 }
 
 /// Takes the colours of the packs just loaded (vanilla's where they set none).

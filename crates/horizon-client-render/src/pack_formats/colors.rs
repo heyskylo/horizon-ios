@@ -27,6 +27,7 @@ pub fn read(root: &Path) -> pack_palette::PackColors {
             boss_fog_distance: env.boss_fog_distance,
             water_fog_brightening: env.water_fog_brightening,
             water_fog_brightening_time: env.water_fog_brightening_time,
+            horizon_height: env.horizon_height,
         },
     }
 }
