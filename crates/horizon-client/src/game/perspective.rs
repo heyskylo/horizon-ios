@@ -289,9 +289,9 @@ impl Game<'_> {
         }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
-        let (entity, descending, entity_kind) = match self.camera_mob() {
-            Some(m) => (
-                super::remote_camera::mob_camera_entity(m),
+        let (entity, descending, entity_kind) = match self.camera_entity() {
+            Some(e) => (
+                e,
                 false,
                 horizon_world::collision_context::EntityContextKind::Living,
             ),
