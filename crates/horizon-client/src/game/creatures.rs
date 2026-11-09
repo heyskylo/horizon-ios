@@ -4210,19 +4210,9 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
-        self.hurt_player_with_pierce(amount, from, damage_type, known, false)
-    }
-    /// The direct arrow's piercing bypasses item blocking, independently of its owner.
-    pub(super) fn hurt_player_with_pierce(
-        &mut self,
-        amount: f32,
-        from: Option<[f64; 3]>,
-        damage_type: &str,
-        known: Option<Option<u32>>,
-        pierce: bool,
-    ) -> bool {
         let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
+        let pierce = std::mem::take(&mut self.combat.piercing_hit);
         let melee = self.combat.melee_mob.take();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
@@ -5584,13 +5574,7 @@ impl Game<'_> {
                 }
                 let hurt = match who {
                     Who::Player => {
-                        let hurt = self.hurt_player_with_pierce(
-                            amount,
-                            Some([p.previous.x, p.previous.y, p.previous.z]),
-                            "minecraft:arrow",
-                            None,
-                            p.arrow.as_ref().is_some_and(|a| a.pierce > 0),
-                        );
+                        let hurt = self.arrow_hits_player(amount, p);
                         // AbstractArrow.onHitEntity: a hit that hurt leaves a
                         // non-piercing arrow stuck in the body.
                         if hurt && p.arrow.as_ref().is_some_and(|a| a.pierce == 0) {
