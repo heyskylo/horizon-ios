@@ -71,9 +71,11 @@ impl Game<'_> {
     /// Starts or ends a stretch of vehicle ticks (`tick_boats`, `tick_carts`): while one runs,
     /// a vehicle's box query tests the mobs' positions against their [`BoxReach`] first.
     /// A mob joining or leaving works it out again, and so does [`Self::vehicle_picked_up`].
+    /// The first query works it out (a count no list has), so a level without boats or
+    /// carts never walks its mobs for it.
     pub(super) fn vehicles_ticking(&self, on: bool) {
         self.vehicle_mob_reach
-            .set(on.then(|| (self.mobs.len(), BoxReach::of(&self.mobs))));
+            .set(on.then(|| (usize::MAX, BoxReach::default())));
     }
     /// A vehicle picked a mob up: a shulker turns its lid up (`Shulker.startRiding`), which
     /// changes its box, so the next query works the [`BoxReach`] out again.
@@ -91,6 +93,22 @@ impl Game<'_> {
         let reach = BoxReach::of(&self.mobs);
         self.vehicle_mob_reach.set(Some((self.mobs.len(), reach)));
         Some(reach)
+    }
+    /// Whether mob `m`, whose box `reach` bounds, may touch a cart: the carts' grid (`cells`)
+    /// names the carts near it, or every cart when the grid cannot (a superset either way).
+    pub(super) fn mob_may_meet_cart(
+        &self,
+        reach: BoxReach,
+        m: &Mob,
+        cells: &horizon_client::mobs::seen_grid::SeenGrid,
+        near: &mut Vec<u32>,
+    ) -> bool {
+        if !cells.candidates(reach.around(m.position), near) {
+            near.clear();
+            near.extend(0..self.carts.len() as u32);
+        }
+        near.iter()
+            .any(|&k| reach.may_meet(m, self.carts[k as usize].bounds()))
     }
     pub(super) fn boat_players(&self, id: u32) -> usize {
         let guests = self.lan.as_ref().map_or(0, |h| {
@@ -530,5 +548,32 @@ mod tests {
         assert!(!boat_pushes(boat, at(64.1), false));
         assert!(boat_pushes(boat, at(64.5), true));
         assert!(!boat_pushes(boat, at(64.5625), true));
+    }
+
+    /// A mob pushes the cart its box touches, found through the carts' grid (four carts in
+    /// four of its columns), while a mob far from every cart pushes none and is not pushed.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn only_the_mob_touching_a_cart_pushes_it() {
+        use super::super::minecarts::{CartKind, Minecart};
+        let mut game = super::super::native_machines::tests::server_game();
+        let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        for (i, (x, z)) in [(0.5, 0.5), (20.5, 0.5), (0.5, 20.5), (20.5, 20.5)]
+            .into_iter()
+            .enumerate()
+        {
+            let at = Vec3::new(x, 64.0, z);
+            game.carts
+                .push(Minecart::new(100 + i as u32, CartKind::Chest, at));
+        }
+        // 0.5 west of the second cart (boxes 0.9 and 0.98 wide), and in the middle of them all.
+        game.mobs
+            .push(Mob::new(1, pig.clone(), Vec3::new(20.0, 64.0, 0.5), 0.0));
+        game.mobs
+            .push(Mob::new(2, pig, Vec3::new(10.5, 64.0, 10.5), 0.0));
+        game.tick_carts();
+        let velocity = |id| game.mobs.iter().find(|m| m.id == id).unwrap().velocity;
+        assert!(velocity(1).x < 0.0, "pushed back west: {:?}", velocity(1));
+        assert_eq!(velocity(2), Vec3::ZERO);
     }
 }
