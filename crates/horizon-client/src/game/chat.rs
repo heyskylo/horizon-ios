@@ -255,8 +255,8 @@ pub struct UiState {
     /// What this frame's HUD shows that Horizon's overlays keep clear of (`Game::hud_room`),
     /// set by `hud_layers` before anything draws.
     pub room: horizon_client::hud_kit::room::Room,
-    /// Path of an F2 screenshot waiting for its frame.
-    pub screenshot_message: Option<std::path::PathBuf>,
+    /// F2 screenshots not written yet: each reports in chat once its PNG is.
+    pub screenshot_messages: Vec<std::path::PathBuf>,
     /// The options screens.
     pub options: horizon_client::options_ui::OptionsUi,
     /// The prepared resources before resource packs are layered on.
@@ -1989,8 +1989,9 @@ impl Game<'_> {
             path: path.clone(),
             size: None,
             scaled: true,
+            background: true,
         });
-        self.ui.screenshot_message = Some(path.clone());
+        self.ui.screenshot_messages.push(path.clone());
         Some(path)
     }
     /// `Minecraft.handleGlobalKeyPress`'s screenshot branch: the
@@ -2014,12 +2015,23 @@ impl Game<'_> {
         self.take_screenshot();
         true
     }
-    /// After a frame: report a finished F2 screenshot in chat.
-    pub(super) fn finish_screenshot(&mut self, result: &std::result::Result<[u32; 2], String>) {
-        let Some(path) = self.ui.screenshot_message.take() else {
+    /// A screenshot written on its thread: F2's reports in chat. Any other was the world
+    /// icon's (`tick_world_icon`): a failure tries again a second later, as
+    /// `tryTakeScreenshotIfNeeded` does.
+    pub(super) fn finish_screenshot(&mut self, saved: horizon_client::gfx::SavedScreenshot) {
+        let Some(at) = self
+            .ui
+            .screenshot_messages
+            .iter()
+            .position(|p| *p == saved.path)
+        else {
+            if let Err(error) = saved.result {
+                log::warn!("Horizon: couldn't save the world icon: {error}");
+            }
             return;
         };
-        let message = match result {
+        let path = self.ui.screenshot_messages.remove(at);
+        let message = match &saved.result {
             Ok(_) => {
                 log::info!("Saved screenshot to {}", path.display());
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
