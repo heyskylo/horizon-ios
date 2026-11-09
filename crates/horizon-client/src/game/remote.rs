@@ -2712,7 +2712,7 @@ impl Game<'_> {
     /// view centre, `calculateStorageRange` (the server's radius, at least
     /// two, plus three) chunks each way.
     pub(super) fn remote_chunk_in_range(&self, x: i32, z: i32) -> bool {
-        if self.studio_replay.is_some() {
+        if self.studio.replay.is_some() {
             return true;
         }
         self.remote
@@ -6464,7 +6464,7 @@ impl Game<'_> {
                 self.apply_remote_abilities();
             }
         }
-        if self.studio_replay.is_none() {
+        if self.studio.replay.is_none() {
             self.previous_position = position;
         }
         self.yaw = yaw;
@@ -6800,7 +6800,7 @@ impl Game<'_> {
             return Ok(());
         };
         player.fluids.boat = boat;
-        if !riding && self.studio_replay.is_none() {
+        if !riding && self.studio.replay.is_none() {
             self.previous_position = player.position;
         }
         let before = (
@@ -7007,7 +7007,7 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         // The player's own model (third person, the inventory's preview).
-        if self.studio_replay.is_none() {
+        if self.studio.replay.is_none() {
             self.tick_player_model();
         }
         self.tick_emotes();
@@ -10807,7 +10807,7 @@ impl Game<'_> {
     /// A connection's screen is over the world: connecting, reconfiguring, or
     /// the level loading screen, a portal's included (`remote_overlay`).
     pub(super) fn remote_screen_up(&self) -> bool {
-        self.studio_replay.is_none()
+        self.studio.replay.is_none()
             && self
                 .remote
                 .as_ref()
@@ -10891,7 +10891,7 @@ impl Game<'_> {
     /// Connected or connecting with no player yet: `ConnectScreen`, then
     /// `LevelLoadingScreen`, over the panorama with its blur.
     pub(super) fn remote_loading(&self) -> bool {
-        if self.studio_replay.is_some() {
+        if self.studio.replay.is_some() {
             return false;
         }
         use horizon_client::level_loading::Reason;
