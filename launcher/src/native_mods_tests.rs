@@ -16,11 +16,9 @@ fn pe_machine_reads_the_architecture_after_validating_both_headers() {
 
     image[64] = b'X';
     fs::write(&executable, image).unwrap();
-    assert!(
-        pe_machine(&executable)
-            .unwrap_err()
-            .contains("missing PE signature")
-    );
+    assert!(pe_machine(&executable)
+        .unwrap_err()
+        .contains("missing PE signature"));
     let _ = fs::remove_dir_all(dir);
 }
 
@@ -47,20 +45,16 @@ fn windows_build_platform_follows_the_selected_games_pe_machine() {
         Some(rust_toolchain::WINDOWS_ARM64_TARGET)
     );
 
-    assert!(
-        windows_build_platform(
-            rust_toolchain::WINDOWS_X64_MACHINE,
-            rust_toolchain::WINDOWS_ARM64_TARGET,
-        )
-        .is_err()
-    );
-    assert!(
-        windows_build_platform(
-            rust_toolchain::WINDOWS_ARM64_MACHINE,
-            rust_toolchain::WINDOWS_X64_TARGET,
-        )
-        .is_err()
-    );
+    assert!(windows_build_platform(
+        rust_toolchain::WINDOWS_X64_MACHINE,
+        rust_toolchain::WINDOWS_ARM64_TARGET,
+    )
+    .is_err());
+    assert!(windows_build_platform(
+        rust_toolchain::WINDOWS_ARM64_MACHINE,
+        rust_toolchain::WINDOWS_X64_TARGET,
+    )
+    .is_err());
     assert!(windows_build_platform(0xa641, rust_toolchain::WINDOWS_ARM64_TARGET).is_err());
 }
 
@@ -499,12 +493,10 @@ fn mixin_input_excludes_trait_only_bundles_but_keeps_trait_injections() {
     stage_mixins(&mods, &input).unwrap();
     assert!(!input.join("plain").exists());
     assert!(input.join("ordinary").join(MANIFEST).is_file());
-    assert!(
-        input
-            .join("trait_injection")
-            .join("horizon-trait-injection-0.rs")
-            .is_file()
-    );
+    assert!(input
+        .join("trait_injection")
+        .join("horizon-trait-injection-0.rs")
+        .is_file());
     let manifest = fs::read_to_string(input.join("trait_injection").join(MANIFEST)).unwrap();
     assert!(manifest.contains("horizon-trait-injection-0.rs"));
     assert!(!manifest.contains("trait_method"));
