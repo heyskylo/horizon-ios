@@ -1427,58 +1427,7 @@ impl HudAtlas {
         }
         if full {
             // Official Recipes artwork from Just Enough Items, under MIT.
-            for (name, png) in [
-                (
-                    "button_enabled_v2",
-                    include_bytes!("jei_recipes/button_enabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_disabled_v2",
-                    include_bytes!("jei_recipes/button_disabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_highlight_v2",
-                    include_bytes!("jei_recipes/button_highlight_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_previous_v2",
-                    include_bytes!("jei_recipes/icons/arrow_previous_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_next_v2",
-                    include_bytes!("jei_recipes/icons/arrow_next_v2.png").as_slice(),
-                ),
-                (
-                    "search_background_v2",
-                    include_bytes!("jei_recipes/search_background_v2.png").as_slice(),
-                ),
-                ("slot", include_bytes!("jei_recipes/slot.png").as_slice()),
-                (
-                    "icons/list_badge",
-                    include_bytes!("jei_recipes/icons/list_badge.png").as_slice(),
-                ),
-                (
-                    "interactive_ingredient_tooltip_background",
-                    include_bytes!("jei_recipes/interactive_ingredient_tooltip_background.png")
-                        .as_slice(),
-                ),
-                (
-                    "recipe_preview_background_v2",
-                    include_bytes!("jei_recipes/recipe_preview_background_v2.png").as_slice(),
-                ),
-                (
-                    "ingredient_list_slot_background_v2",
-                    include_bytes!("jei_recipes/ingredient_list_slot_background_v2.png").as_slice(),
-                ),
-                (
-                    "scrollbar_background_v2",
-                    include_bytes!("jei_recipes/scrollbar_background_v2.png").as_slice(),
-                ),
-                (
-                    "scrollbar_marker_v2",
-                    include_bytes!("jei_recipes/scrollbar_marker_v2.png").as_slice(),
-                ),
-            ] {
+            for (name, png) in crate::jei_sprites::SPRITES {
                 let (width, height, rgba) = decode_bytes(png)?;
                 images.push((format!("horizon/jei/{name}"), width, height, rgba));
             }
