@@ -1,6 +1,6 @@
 # Parity workflow
 
-How parity work is run, checked and merged. The harnesses themselves are described in [Rust rewrite status](rust-parity.md).
+How parity work is run, checked and merged. What is ported and where it is checked: [Rust rewrite status](rust-parity.md).
 
 ## Running the vanilla harnesses
 
@@ -159,7 +159,28 @@ python3 tools/parity_fuzz.py --replay scenarios.json                            
 
 ## Reading vanilla
 
-Besides the Vineflower sources in `.local/minecraft/<version>/sources/`, `tools/rea_vanilla.py` queries the shipped bytecode through REA (callers through lambdas, overloads, a second decompiler); see [decompilation status](decompilation-status.md#querying-the-shipped-bytecode-with-rea).
+Game jars, decompiled sources and reports live in the gitignored `.local/`, rebuilt from your own copy of the game;
+nothing of Mojang's is committed or downloaded by the tools ([README](../README.md#build-from-source)):
+
+```sh
+python3 tools/lab.py prepare --server-jar ~/Downloads/server.jar   # checks the pinned jars (research-lock.json)
+python3 tools/lab.py decompile    # Vineflower: .local/minecraft/26.3/sources/{client,server}/
+python3 tools/lab.py status       # coverage reports under .local/minecraft/26.3/reports/
+```
+
+`tools/rea_vanilla.py` queries the shipped bytecode through [REA](https://github.com/morluto/rea) (a headless JADX)
+for what text search misses: every caller of a method including lambdas and bridges, every overload, or a second
+decompiler's view of a method whose Vineflower output looks wrong:
+
+```sh
+python3 tools/rea_vanilla.py class net.minecraft.world.level.block.DispenserBlock
+python3 tools/rea_vanilla.py method net.minecraft.world.level.block.DispenserBlock dispenseFrom
+python3 tools/rea_vanilla.py callers net.minecraft.server.level.ServerLevel tickChunk
+python3 tools/rea_vanilla.py --jar server-game classes DedicatedServer
+```
+
+REA and JADX are pinned in `research-lock.json` and downloaded into `.local/tools/` on first use; each query takes
+about five seconds. Decompiled bodies are a reading aid: the bytecode and the oracle harnesses are the reference.
 
 ## Player-facing integration and deterministic fixtures
 

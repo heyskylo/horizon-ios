@@ -415,9 +415,12 @@ impl Menu {
         post
     }
 
-    /// Move one set of ingredients from the player's real inventory and grid.
+    /// Move one set of ingredients from the player's real inventory and grid,
+    /// or with `all` as many as they allow (`useMaxItems`: the largest count
+    /// every grid slot can take, alternatives shared out by
+    /// `StackedItemContents`, capped at the ingredients' stack size).
     /// The viewer leaves both alone on failure, including in creative mode.
-    pub fn transfer_recipe(&mut self, env: &Env, id: &str) -> Result<(), TransferError> {
+    pub fn transfer_recipe(&mut self, env: &Env, id: &str, all: bool) -> Result<(), TransferError> {
         if !(matches!(self.kind, Kind::Inventory | Kind::Crafting) || self.mod_crafting().is_some())
             || self.carried.is_some()
         {
@@ -447,7 +450,7 @@ impl Menu {
         let previous = self.containers.clone();
         let sources = self.sources.clone();
         let (drops, dropped) = (self.drops.len(), self.dropped.len());
-        self.place(env, &grid, &placement, &mut stacked, false, false);
+        self.place(env, &grid, &placement, &mut stacked, all, false);
         let no_room = self.dropped.len() != dropped;
         if no_room || !self.recipe_in_grid(env, id) {
             self.containers = previous;
@@ -713,6 +716,9 @@ impl Menu {
         true
     }
 }
+
+#[cfg(test)]
+mod transfer_all_tests;
 
 #[cfg(test)]
 mod tests {

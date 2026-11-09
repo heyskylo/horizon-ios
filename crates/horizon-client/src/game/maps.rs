@@ -1037,6 +1037,15 @@ impl Game<'_> {
         let Some(map) = horizon_client::structure_blocks::take_pending_map(item) else {
             return true;
         };
+        self.materialize_exploration_map(item, &map, origin)
+    }
+    /// The existing exploration-map materialization, shared with command modifiers.
+    pub(super) fn materialize_exploration_map(
+        &mut self,
+        item: &mut ItemStack,
+        map: &horizon_world::loot::ExplorationMap,
+        origin: [f64; 3],
+    ) -> bool {
         let names = self.structure_tag(&map.destination);
         let from = origin.map(|v| v.floor() as i32);
         let found = self
@@ -2162,3 +2171,6 @@ mod tests {
         assert!(game.map(map_id).unwrap().banners.is_empty());
     }
 }
+
+#[cfg(test)]
+mod command_exploration_map_test_file;

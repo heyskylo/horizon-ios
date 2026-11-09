@@ -501,9 +501,13 @@ impl Split<'_> {
             None,
             host.settings.horizon.api,
             host.settings.horizon.translucent_batching,
-            host.settings.horizon.wide_frame(),
+            &host.settings.horizon,
             // The pack its own game loads, from its profile.
             crate::game::shader_packs::picked_pack_shape(&guest.settings),
+            host.renderer
+                .as_ref()
+                .map(|r| r.display_reading())
+                .unwrap_or_default(),
             (
                 guest.settings.file.int("textureFiltering"),
                 guest.settings.file.int("maxAnisotropyBit"),
