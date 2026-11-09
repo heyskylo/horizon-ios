@@ -968,6 +968,25 @@ mod tests {
     /// A chestplate a server made a glider: its patch adds `glider` and an
     /// `equippable` for the chest, or takes `glider` away again.
     #[test]
+    fn food_can_always_eat_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:food",
+            Some(Tag::compound([("can_always_eat", Tag::Byte(1))])),
+        );
+        assert!(can_always_eat(&stack, false));
+        assert!(!can_always_eat(
+            &ItemStack::new("minecraft:apple", 1),
+            false
+        ));
+        stack.data_mut().set_other(
+            "!minecraft:food",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(!can_always_eat(&stack, true));
+    }
+
+    #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
             let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
