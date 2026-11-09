@@ -204,10 +204,15 @@ impl Game<'_> {
                 let raw = self.persist.raw.get(&id);
                 // Projectile.addAdditionalSaveData stores the retained EntityReference,
                 // including an owner that is not currently resolved to a live entity.
-                entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
-                    .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw))?
+                let mut tag =
+                    entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
+                        .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
+                        .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
+                        .or_else(|| {
+                            entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw)
+                        })?;
+                self.save_projectile_portal_cooldown(p, &mut tag);
+                tag
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
@@ -331,6 +336,29 @@ impl Game<'_> {
                     s.raw.as_deref(),
                 )
             }
+            // LeashFenceKnotEntity saves nothing of its own: the common
+            // entity fields, as an explicitly summoned knot's.
+            Target::Knot(id) => {
+                let fence = self.natural_knot(id)?;
+                let uuid = *self.persist.uuids.get(&id)?;
+                let knot = super::OtherEntity {
+                    id,
+                    kind: "minecraft:leash_knot".into(),
+                    position: horizon_client::mobs::leash::knot_state(fence).position,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    item_transformation: None,
+                    interaction: None,
+                    knot_check: None,
+                    eye: None,
+                };
+                let mut tag = self.other_to_nbt(&knot, uuid);
+                // Entity.saveWithoutId writes `remainingFireTicks` always; the
+                // knot's never changes (BlockAttachedEntity.tick has no
+                // baseTick).
+                set_key(&mut tag, "Fire", Tag::Short(0));
+                tag
+            }
         })
     }
     /// `Entity.load` of new data (`EntityDataAccessor.setData`): the entity is
@@ -387,6 +415,10 @@ impl Game<'_> {
                     // entity keeps its place in the level's join order.
                     let old = std::mem::replace(slot, new);
                     slot.join = old.join;
+                    // Entity.load fills in the entity that is there: its own
+                    // random (Entity.random) goes on, as a spawn egg's entity
+                    // data finds it.
+                    slot.random = old.random.clone();
                     if keep_liked_player {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
@@ -561,11 +593,7 @@ impl Game<'_> {
                 tnt.previous = position;
                 tnt.velocity = entity_nbt::motion(&tag);
                 tnt.rotation = entity_nbt::rotation(&tag);
-                // Keep the existing loaded-fuse conversion policy (H090 is separate).
-                tnt.fuse = match tag.get("fuse") {
-                    Some(Tag::Short(fuse)) => i32::from(*fuse),
-                    _ => 80,
-                };
+                tnt.fuse = super::super::persist::tnt_fuse(&tag);
                 tnt.on_ground = entity_nbt::flag(&tag, "OnGround");
                 tnt.fall_distance =
                     horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0);
@@ -1267,6 +1295,12 @@ impl Game<'_> {
             name: String::new(),
             text: g.target_name(t),
             display: None,
+        };
+        // A natural knot is listed but keeps no tags yet: `tag add`/`remove` leave it out.
+        let targets = if matches!(id, "tag.add" | "tag.remove") {
+            super::without_knots(targets)?
+        } else {
+            targets
         };
         let mut all: Vec<String> = Vec::new();
         for &t in &targets {

@@ -569,28 +569,10 @@ impl Game<'_> {
     /// Gives the entities Horizon keeps without an id one (`Entity.id`, from
     /// the same counter as the rest) before they are first tracked.
     pub(super) fn lan_assign_ids(&mut self) {
-        // LeashFenceKnotEntity: one per fence post with a lead on it
-        // (`notifyLeasheeRemoved` discards it once the last lead is gone).
-        let knots: Vec<[i32; 3]> = self
-            .mobs
-            .iter()
-            .filter(|m| !m.removed)
-            .filter_map(|m| match m.extra.leash {
-                Some(horizon_client::mobs::leash::Holder::Knot(p)) => Some(p),
-                _ => None,
-            })
-            .chain(self.boats.iter().filter_map(|b| match b.leash {
-                Some(horizon_client::mobs::leash::Holder::Knot(p)) => Some(p),
-                _ => None,
-            }))
-            .collect();
-        self.knot_ids.retain(|p, _| knots.contains(p));
-        for p in knots {
-            self.knot_ids.entry(p).or_insert_with(|| {
-                self.next_entity += 1;
-                self.next_entity
-            });
-        }
+        // LeashFenceKnotEntity: the tie made the knot of a fence post
+        // (game/leads.rs `tie_knot`); the tracker shows that same entity.
+        // `notifyLeasheeRemoved` discards it once the last lead is gone.
+        self.forget_untied_knots();
         let next = &mut self.next_entity;
         let mut give = |id: &mut u32| {
             assign_entity_id(next, id);
@@ -676,8 +658,12 @@ impl Game<'_> {
             // Entity.DATA_SHARED_FLAGS_ID's FLAG_ONFIRE: Entity.baseTick's
             // `setSharedFlagOnFire(remainingFireTicks > 0)`, which a client's
             // isOnFire reads to draw the flames (a Flame bow's arrow).
-            if p.arrow.as_ref().is_some_and(|a| a.on_fire()) {
+            let fire = p.arrow.as_ref().map_or(p.synced_fire, |a| a.on_fire());
+            if fire {
                 e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
+            if p.air_supply != 300 {
+                e.meta.push((1, serializer::INT, Value::Int(p.air_supply)));
             }
             match &p.kind {
                 K::Arrow { critical, .. } => {
