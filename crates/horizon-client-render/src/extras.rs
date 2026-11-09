@@ -482,13 +482,16 @@ impl Extras {
         true
     }
     /// Written only once something differs from the defaults, so a vanilla
-    /// setup gains no file.
+    /// setup gains no file. The settings stores of this file follow these lines
+    /// (`horizon_hooks::settings`).
     pub fn save(&self, dir: &Path) {
         let path = dir.join(FILE);
-        if *self == Self::default() && !path.exists() {
+        let mut text = self.serialize();
+        let stores_default = horizon_hooks::settings::engine::append(FILE, &mut text);
+        if *self == Self::default() && stores_default && !path.exists() {
             return;
         }
-        let _ = fs::write(path, self.serialize());
+        let _ = fs::write(path, text);
     }
 }
 

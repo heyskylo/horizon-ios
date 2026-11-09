@@ -16,3 +16,9 @@ pub use horizon_system as system;
 pub mod hooks {
     pub use horizon_hooks::{Hooks, Started, TooLate, register};
 }
+
+/// The settings store (`horizon_hooks::settings`): a crate's own `key:value` lines in the game
+/// folder, loaded and saved with the player's settings (docs/layers.md, "Platform registries").
+pub mod settings {
+    pub use horizon_hooks::settings::{Store, register};
+}
