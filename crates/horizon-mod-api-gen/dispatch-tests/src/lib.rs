@@ -77,6 +77,9 @@ mod tests {
         pub(super) struct NativeMod;
         pub(super) struct NativePanelEvent;
         pub(super) struct NativeScreen;
+        pub(super) struct NativeStack;
+        pub(super) struct NativeRecipeLookup;
+        pub(super) struct NativeRecipeCategory;
         pub(super) struct ModBlockEntity;
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;

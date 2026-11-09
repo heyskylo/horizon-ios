@@ -736,6 +736,42 @@ fn wind_burst_filter_preserves_order_and_context() {
 }
 
 #[test]
+fn a_protection_hook_can_deny_a_build() {
+    use horizon_client::mod_api::{CanBuildEvent, Flow, dispatch_can_build};
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Spawn;
+    impl Hooks for Spawn {
+        fn can_build(&self, _host: &dyn Host, event: &mut CanBuildEvent<'_>) -> Flow {
+            if event.pos[0].abs() < 16 && event.action == "break" {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+    let ask = |mods: &[Box<dyn Hooks>], pos, action| {
+        let mut cancel = false;
+        dispatch_can_build(
+            &TestHost,
+            mods,
+            1,
+            "Alex",
+            "minecraft:overworld",
+            pos,
+            action,
+            &mut cancel,
+        );
+        !cancel
+    };
+    assert!(ask(&[], [0, 64, 0], "break"), "no mod allows it");
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Spawn)];
+    assert!(!ask(&mods, [0, 64, 0], "break"), "the mod denies it");
+    assert!(ask(&mods, [0, 64, 0], "place"), "it only denies breaking");
+    assert!(ask(&mods, [100, 64, 0], "break"), "it allows elsewhere");
+}
+
+#[test]
 fn a_physical_trigger_hook_cancels_for_the_player_it_names() {
     use horizon_client::mod_api::{
         Flow, LevelHost, PlayerPhysicalTriggerEvent, dispatch_player_physical_trigger,
