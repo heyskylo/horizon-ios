@@ -1003,7 +1003,7 @@ impl Game<'_> {
                     title,
                     ..
                 }) if !title.trim().is_empty() => self.save_book(true),
-                Some(book) => book.begin_signing(),
+                Some(book @ BookScreen::Edit { .. }) => book.begin_signing(),
                 _ => return Err("not a book and quill".into()),
             },
             Some("done") => match self.book.as_mut() {
