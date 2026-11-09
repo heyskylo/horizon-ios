@@ -1225,6 +1225,7 @@ dependencies = [
  "ab_glyph",
  "bytemuck",
  "chrono",
+ "crc32fast",
  "flate2",
  "fs4",
  "getrandom 0.3.4",
@@ -1239,7 +1240,6 @@ dependencies = [
  "horizon-command",
  "horizon-core",
  "horizon-cosmetics",
- "horizon-friends",
  "horizon-hdr",
  "horizon-ios-launcher",
  "horizon-items",
@@ -1305,6 +1305,7 @@ dependencies = [
  "horizon-mod-api-gen",
  "horizon-narrator",
  "horizon-optifine",
+ "horizon-polytone",
  "horizon-protocol",
  "horizon-shader-api",
  "horizon-shaders",
@@ -1392,7 +1393,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "spake2",
 ]
 
@@ -1492,6 +1493,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-polytone"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
 name = "horizon-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1506,6 +1516,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "socket2 0.5.10",
 ]
 
 [[package]]
@@ -1716,12 +1727,12 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.13.4"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
