@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "transfer_recipe_all",
+      "target": "horizon_client::game::native_recipes::Game<'_>::native_transfer_recipe_all"
+    }
+  ],
+  "rust_summary": "a recipe viewer's transfer of as many sets as the items allow (`native_transfer_recipe_all`), as Shift on the recipe book.",
+  "doc_summary": "`native_transfer_recipe_all(book_id, all)` (client) is `native_transfer_recipe` with Shift: with `all` it moves as many sets of ingredients into the open crafting grid (the inventory's, a crafting table's or a mod menu type's, with its `native_recipe_sources`) as the items allow, as the recipe book's Shift placement does (`useMaxItems`): every grid slot gets the same count, capped at its ingredient's stack size, the alternatives of a tag shared out as vanilla's `StackedItemContents` does; what's left stays where it was. The request carries a trailing flag that a server from before it ignores, so it moves nothing there. Bundles need \"hooks\": @API:transfer_recipe_all@.",
+  "comments": []
+}

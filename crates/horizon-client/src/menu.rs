@@ -3444,7 +3444,7 @@ pub(crate) mod tests {
     use crate::{banner::Banners, brewing::Brewing, crafting::Recipes};
     use horizon_world::loot::PackOverlay;
 
-    fn stack(item: &str, count: u32) -> Option<ItemStack> {
+    pub(crate) fn stack(item: &str, count: u32) -> Option<ItemStack> {
         Some(ItemStack {
             item: format!("minecraft:{item}").into(),
             count,
@@ -4098,7 +4098,7 @@ pub(crate) mod tests {
 
     /// A mod menu type laid out as `CraftingMenu`: the result in slot 0, the
     /// grid in 1 to 9, as many container slots as the table's.
-    fn mod_crafting_table() -> Kind {
+    pub(crate) fn mod_crafting_table() -> Kind {
         Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {
             id: "test:station",
             slots: 10,
@@ -4218,7 +4218,7 @@ pub(crate) mod tests {
                 let first = menu.place_recipe(env, "minecraft:crafting_table", false, false, None);
                 let again = menu.place_recipe(env, "minecraft:crafting_table", true, false, None);
                 let ghost = menu.place_recipe(env, "minecraft:furnace", false, false, None);
-                let transfer = menu.transfer_recipe(env, "minecraft:stick");
+                let transfer = menu.transfer_recipe(env, "minecraft:stick", false);
                 places.push((first, again, ghost, transfer, seen(menu)));
             }
             assert_eq!(places[1], places[0]);
@@ -4259,7 +4259,7 @@ pub(crate) mod tests {
             );
             // A furnace needs 8 cobblestone, which no one has: nothing moves.
             let before = station.sources.clone();
-            let refused = station.transfer_recipe(env, "minecraft:furnace");
+            let refused = station.transfer_recipe(env, "minecraft:furnace", false);
             assert_eq!(refused, Err(place::TransferError::Missing));
             assert_eq!(station.sources, before);
         });

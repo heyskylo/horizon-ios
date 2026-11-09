@@ -11789,7 +11789,7 @@ impl Game<'_> {
     /// inventory's, a crafting table's or a mod menu type's).
     /// Unlike the recipe book click, this doesn't require learning the recipe.
     pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
-        self.transfer_viewer_recipe(book_id);
+        self.transfer_viewer_recipe(book_id, false);
     }
     /// Creative mode only: gives the player `count` of `item`
     /// (`minecraft:diamond`) as taking it from the creative inventory does
