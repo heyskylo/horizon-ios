@@ -297,10 +297,9 @@ impl MobWorld<'_> {
             if !self.collision.may_collide(state) {
                 return None;
             }
-            let is_contextual = context.is_some() && {
-                let name = &self.facts.get(state).name;
-                name.ends_with("scaffolding") || name.ends_with("powder_snow")
-            };
+            // Scaffolding, liquids (a strider stands on lava) and powder snow
+            // take the entity's context; every other state has its cached shape.
+            let is_contextual = context.is_some() && self.collision.has_context_rule(state);
             if !is_contextual
                 && let Ok(Some(shape)) = self.collision.cached_shapes().cached_shape(state)
             {
