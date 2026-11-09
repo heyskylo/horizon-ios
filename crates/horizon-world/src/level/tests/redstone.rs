@@ -1494,3 +1494,120 @@ fn a_stair_takes_its_corner_shape_from_the_stairs_beside_it() {
         assert_eq!(w.prop(at, "shape"), shape, "{what}");
     }
 }
+
+/// `LeavesBlock.updateDistance` and `decaying`: a leaf's DISTANCE is one more than
+/// the smallest of its six face neighbours', where a block of `#minecraft:logs`
+/// counts as 0, any other leaf as its own DISTANCE and everything else as 7, the cap.
+/// It spreads one step per scheduled tick (`updateShape` schedules one). A leaf is
+/// removed by a random tick only when `!PERSISTENT && DISTANCE == 7`.
+#[test]
+fn leaves_count_their_distance_from_a_log_and_decay_only_at_seven() {
+    let settle = |w: &mut World, rounds: usize| (0..rounds).for_each(|_| w.tick());
+
+    // A row leading away from one log: 1, 2, ... 6, then the cap; and back to the
+    // cap everywhere once the log is gone.
+    let mut w = world!();
+    let leaf = w.id("oak_leaves", &[("persistent", "false")]);
+    w.set(BlockPos::new(0, 5, 0), w.id("oak_log", &[]));
+    for x in 1..=9 {
+        w.set(BlockPos::new(x, 5, 0), leaf);
+    }
+    settle(&mut w, 12);
+    for x in 1..=9i32 {
+        assert_eq!(
+            w.prop(BlockPos::new(x, 5, 0), "distance"),
+            x.min(7).to_string(),
+            "the leaf {x} blocks from the log"
+        );
+    }
+    w.set(BlockPos::new(0, 5, 0), w.b().air());
+    settle(&mut w, 40);
+    for x in 1..=9 {
+        assert_eq!(
+            w.prop(BlockPos::new(x, 5, 0), "distance"),
+            "7",
+            "the leaf {x} blocks from where the log was"
+        );
+    }
+
+    // What counts as the zero beside a leaf.
+    let beside: [(&str, &[(&str, &str)], &str); 8] = [
+        ("oak_log", &[], "1"),
+        ("stripped_oak_wood", &[], "1"),
+        ("crimson_stem", &[], "1"),
+        ("stripped_warped_hyphae", &[], "1"),
+        ("oak_planks", &[], "7"),
+        ("stone", &[], "7"),
+        ("oak_fence", &[], "7"),
+        (
+            "oak_leaves",
+            &[("distance", "7"), ("persistent", "false")],
+            "7",
+        ),
+    ];
+    for (name, props, distance) in beside {
+        let mut w = world!();
+        w.set(
+            BlockPos::new(1, 5, 0),
+            w.id("oak_leaves", &[("persistent", "false")]),
+        );
+        w.set(BlockPos::new(0, 5, 0), w.id(name, props));
+        settle(&mut w, 4);
+        assert_eq!(
+            w.prop(BlockPos::new(1, 5, 0), "distance"),
+            distance,
+            "beside {name}"
+        );
+    }
+
+    // Face neighbours only: the six sides count, the edge and corner diagonals do not.
+    let sides: [((i32, i32, i32), &str); 10] = [
+        ((1, 0, 0), "1"),
+        ((-1, 0, 0), "1"),
+        ((0, 1, 0), "1"),
+        ((0, -1, 0), "1"),
+        ((0, 0, 1), "1"),
+        ((0, 0, -1), "1"),
+        ((1, 1, 0), "7"),
+        ((1, 0, 1), "7"),
+        ((0, 1, 1), "7"),
+        ((1, 1, 1), "7"),
+    ];
+    for ((dx, dy, dz), distance) in sides {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.set(at, w.id("oak_leaves", &[("persistent", "false")]));
+        w.set(BlockPos::new(dx, 5 + dy, dz), w.id("oak_log", &[]));
+        settle(&mut w, 4);
+        assert_eq!(
+            w.prop(at, "distance"),
+            distance,
+            "a log at ({dx}, {dy}, {dz})"
+        );
+    }
+
+    // Decay: only a non-persistent leaf at the cap goes.
+    let cases: [(&str, &str, bool); 4] = [
+        ("7", "false", true),
+        ("7", "true", false),
+        ("6", "false", false),
+        ("1", "false", false),
+    ];
+    for (distance, persistent, decays) in cases {
+        let mut w = world!();
+        let at = BlockPos::new(5, 5, 5);
+        w.put(
+            at,
+            w.id(
+                "oak_leaves",
+                &[("distance", distance), ("persistent", persistent)],
+            ),
+        );
+        w.b().random_tick(&mut w.level, &mut w.ticks, at);
+        assert_eq!(
+            w.get(at) == w.b().air(),
+            decays,
+            "distance {distance}, persistent {persistent}"
+        );
+    }
+}
