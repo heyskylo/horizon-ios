@@ -171,8 +171,8 @@ pub fn main() -> Result<()> {
                     gui_ticks: f["tick"].as_i64().unwrap_or(0),
                     background,
                     upside_down: &up,
-                    // Vanilla has no Horizon mark.
-                    horizon: &|_| false,
+                    // Vanilla draws no mark.
+                    mark: &|_| None,
                 };
                 for d in list.layout(&inputs, font) {
                     draws.push(match d {
