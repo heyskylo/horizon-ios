@@ -1001,12 +1001,14 @@ impl Hdr {
     }
 }
 
-/// Horizon's icon (horizon-theme) as a 1-bit mask: its white strokes, one colour with hard
-/// edges, are the logo; everything else is not.
+/// The windows' icon (`window::set_icon_png`: Horizon's in the official game) as a 1-bit mask:
+/// its white strokes, one colour with hard edges, are the logo; everything else is not. No icon
+/// given: an empty mask.
 fn logo_mask(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
     use wgpu::util::DeviceExt;
-    let (w, h, rgba) =
-        crate::hud::decode_bytes(horizon_theme::ICON_PNG).unwrap_or((1, 1, vec![0; 4]));
+    let (w, h, rgba) = horizon_client_input::window::icon_png()
+        .and_then(|png| crate::hud::decode_bytes(png).ok())
+        .unwrap_or((1, 1, vec![0; 4]));
     let mask: Vec<u8> = rgba
         .as_chunks::<4>()
         .0

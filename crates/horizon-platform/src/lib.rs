@@ -54,7 +54,10 @@ pub mod hooks {
         Mesh, NameDecoration, PartPoses, Pass, PlayerDraw, PlayerModel, PlayerModels, Quad,
         SpriteStore, Sprites,
     };
-    pub use horizon_hooks::{Hooks, Started, TooLate, register, seat, tunnel};
+    pub use horizon_hooks::{
+        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, seat,
+        tunnel,
+    };
 }
 
 /// The settings store (`horizon_hooks::settings`): a crate's own `key:value` lines in the game
