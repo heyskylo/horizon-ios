@@ -14059,8 +14059,6 @@ struct LandingVibration {
 #[cfg(test)]
 mod allay_pickup_cooldown_tests;
 #[cfg(test)]
-mod allay_jukebox_source_tests;
-#[cfg(test)]
 mod dragon_fireball_motion_tests;
 #[cfg(test)]
 mod fake_player_tick_tests;

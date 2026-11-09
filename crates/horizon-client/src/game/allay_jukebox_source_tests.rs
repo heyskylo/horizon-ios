@@ -3,7 +3,7 @@
 //! ends the dance; another jukebox's `jukebox_play` (every 20 ticks of its
 //! song) starts it again (tools/test_allay_jukebox_source_parity.py measures
 //! the same on vanilla 26.3).
-use super::*;
+use crate::game::*;
 use horizon_client::chunk::Chunk;
 use horizon_core::position::ChunkPos;
 use std::sync::Arc;
