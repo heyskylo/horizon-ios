@@ -213,7 +213,7 @@ fn a_jump_without_power_or_saddle_posts_nothing() {
     scene(&mut game, true);
     jump(&mut game, 0);
     assert_eq!(selected(&mut game), None, "no power");
-    let mut game = game();
+    let mut game = self::game();
     scene(&mut game, false);
     jump(&mut game, 100);
     assert_eq!(selected(&mut game), None, "no saddle");
@@ -261,7 +261,7 @@ fn control_each_accepted_jump_posts_one_entity_action() {
         2,
         "two accepted, one refused"
     );
-    let mut game = game();
+    let mut game = self::game();
     scene(&mut game, false);
     assert_eq!(posted_actions(&mut game, &[100]), 0, "refused: no saddle");
 }
