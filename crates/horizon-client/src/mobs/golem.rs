@@ -246,7 +246,9 @@ impl Goal for DefendVillage {
         // wider, as the box test is strict).
         let near = b.inflate(Vec3::new(1.0, 1.0, 1.0));
         // Villager.getPlayerReputation of the player this golem sees: the
-        // villager's gossips about that player's own UUID.
+        // villager's gossips about that player's own UUID. The villagers come
+        // through the same `attackTargeting` (`forCombat().range(64)`), so the
+        // golem must see them too.
         let bad = cx.w.others_near(near).any(|s| {
             s.species == Species::Villager
                 && s.alive
@@ -255,6 +257,7 @@ impl Goal for DefendVillage {
                     .is_some_and(|v| v.gossips.reputation(p.uuid) <= -100)
                 && b.contains(s.position)
                 && s.position.distance_squared(m.position) <= 64.0 * 64.0
+                && m.sees(cx.w, Who::Mob(s.id))
         });
         bad && m.sees(cx.w, Who::Player)
     }
