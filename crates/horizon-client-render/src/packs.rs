@@ -4,9 +4,11 @@
 //! and an overlay resource root that layers the enabled packs over the
 //! vanilla resources (later packs win), so every loader sees one tree.
 mod cache;
+mod import;
 use crate::text::Style;
 use crate::{text::Text, zip::Zip};
 pub use horizon_client_core::pattern;
+pub use import::copy_pack;
 use pattern::Pattern;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -653,7 +655,10 @@ pub fn folder(dir: &Path, format: (i64, i64)) -> Vec<Pack> {
             let name = e.file_name().to_string_lossy().into_owned();
             let source = if path.is_dir() {
                 Source::Dir(path)
-            } else if name.ends_with(".zip") {
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            {
                 Source::Zip(path)
             } else {
                 return None;

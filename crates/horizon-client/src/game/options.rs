@@ -412,6 +412,15 @@ impl Game<'_> {
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
+                Event::ImportPacks(paths) => {
+                    let vanilla = self.vanilla_root();
+                    super::packs::import_resource_packs(
+                        &mut self.ui.options,
+                        &vanilla,
+                        &self.server_packs.active,
+                        &paths,
+                    );
+                }
                 // Horizon's own Add button: the screen picked a hit, the game
                 // owns the folder it lands in.
                 Event::DownloadPack(i) => {
