@@ -6805,7 +6805,10 @@ def command_block_last_output():
     x0, y0, z0 = 3904, 260, 3648
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
            cmd('/scoreboard objectives add cb_out dummy', False)]
-    commands = ['say', 'scoreboard players add @p cb_out 2', 'scoreboard players get #nobody cb_out']
+    # Two failures, whose styled feedback (red, click to suggest the command) is what the save must keep.
+    # A success's feedback names an entity, a new score holder or a bracketed value, whose components
+    # the two engines build differently (or which change later groups' scoreboard lists).
+    commands = ['say', 'scoreboard players get #nobody cb_out']
     at = [(x0 + 2 + 3 * n, y0, z0 + 4) for n in range(len(commands))]
     for command, (x, y, z) in zip(commands, at):
         ops.append(cmd(f'/setblock {x} {y} {z} minecraft:command_block{{Command:"{command}"}}', expect_result=1))
