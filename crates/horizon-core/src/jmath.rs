@@ -100,6 +100,11 @@ pub fn log10(x: f64) -> f64 {
 
 /// `Math.pow`.
 pub fn pow(x: f64, y: f64) -> f64 {
+    // Java differs from C here: a NaN exponent, or |x| == 1 with an infinite
+    // exponent, yields NaN (C returns 1.0). A zero exponent stays 1.0 for any x.
+    if y.is_nan() || (x.abs() == 1.0 && y.is_infinite()) {
+        return f64::NAN;
+    }
     if cfg!(target_arch = "aarch64") {
         libm::pow(x, y)
     } else {
@@ -387,6 +392,20 @@ pub mod exact {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pow_matches_java_special_cases() {
+        let inf = f64::INFINITY;
+        assert!(super::pow(1.0, inf).is_nan());
+        assert!(super::pow(1.0, -inf).is_nan());
+        assert!(super::pow(-1.0, inf).is_nan());
+        assert!(super::pow(-1.0, -inf).is_nan());
+        assert!(super::pow(1.0, f64::NAN).is_nan());
+        assert!(super::pow(2.0, f64::NAN).is_nan());
+        assert_eq!(super::pow(f64::NAN, 0.0), 1.0);
+        assert_eq!(super::pow(f64::NAN, -0.0), 1.0);
+        assert_eq!(super::pow(2.0, 3.0), 8.0);
+        assert_eq!(super::pow(2.0, inf), inf);
+    }
     use super::{aarch64, exact, fdlibm, round_f32};
 
     #[test]
