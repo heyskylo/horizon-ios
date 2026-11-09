@@ -260,6 +260,12 @@ impl Game<'_> {
                 .flatten();
             (lit, burning, smelted, smelting)
         };
+        // `AbstractFurnaceBlockEntity.serverTick`: `burn` sets the changed
+        // flag, so a completed smelt marks the chunk and tells comparators
+        // even though the block state stays LIT.
+        if smelted.is_some() {
+            self.container_changed(pos);
+        }
         if let Some(item) = smelting {
             self.native_furnace_start_smelt([pos.0, pos.1, pos.2], &item);
         }
@@ -420,5 +426,66 @@ mod jukebox_stop_tests {
             return;
         };
         assert!(lines.is_empty(), "{lines:?}");
+    }
+}
+
+#[cfg(test)]
+mod furnace_changed_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{
+        containers::{BlockEntity, Furnace, FurnaceKind},
+        items::ItemStack,
+    };
+    use std::collections::HashMap;
+
+    /// `AbstractFurnaceBlockEntity.serverTick`'s changed flag: `burn` sets it,
+    /// and the old furnace calls `setChanged` at the end of the tick. A smelt
+    /// that completes while the furnace stays LIT changes the output and the
+    /// input without changing the block state, so nothing else marks it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_finished_smelt_marks_the_chunk() {
+        let mut game = server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:furnace")
+            .unwrap();
+        let pos = (8, 64, 8);
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world.block_entities.insert(
+            pos,
+            BlockEntity::Furnace(Furnace {
+                kind: FurnaceKind::Furnace,
+                items: [
+                    Some(ItemStack::new("minecraft:raw_iron", 1)),
+                    Some(ItemStack::new("minecraft:coal", 1)),
+                    None,
+                ],
+                lit_remaining: 5,
+                lit_total: 200,
+                cooking_timer: 199,
+                cooking_total: 200,
+                speed: 1.0,
+                recipes_used: HashMap::new(),
+            }),
+        );
+        game.world.modified.clear();
+
+        game.tick_furnace(pos).expect("the furnace ticks");
+
+        let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+            panic!("no furnace");
+        };
+        assert_eq!(
+            f.items[2].as_ref().map(|s| &*s.item),
+            Some("minecraft:iron_ingot"),
+            "the smelt completed"
+        );
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "a finished smelt left the chunk unmarked"
+        );
     }
 }
