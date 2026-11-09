@@ -19,11 +19,13 @@
 
 pub mod hud;
 pub mod pages;
+pub mod players;
 mod registry;
 pub mod settings;
 pub mod tunnel;
 
 use registry::Registry;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
@@ -41,6 +43,14 @@ pub trait Hooks: Sync {
 
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
+
+    /// Once a frame, before drawing. Only a window's game calls it (each splitscreen player in
+    /// turn, [`seat`]), never the integrated server's thread or a dedicated server.
+    fn frame(&self, _frame: &players::Frame) {}
+
+    /// Once a client tick while a world is shown: the player models in view. Called as
+    /// [`Hooks::frame`] is.
+    fn tick(&self, _models: &mut dyn players::PlayerModels) {}
 
     /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
     /// offers one is used. Asked on the network thread when joining and on the game thread when
@@ -89,9 +99,26 @@ fn all() -> &'static [&'static dyn Hooks] {
     HOOKS.all()
 }
 
+thread_local! {
+    static SEAT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The splitscreen player whose turn it is: 0 for P1 (and without splitscreen), 1 for P2...
+/// Splitscreen players are one process, each `Game` in turn on the game's thread, so a crate's
+/// statics are shared by them: a crate that keeps per-player state (settings, pages, HUD) indexes
+/// it by this. A player keeps its seat while it plays. Other threads always see 0.
+pub fn seat() -> usize {
+    SEAT.get()
+}
+
 /// The engine's side: where it calls the hooks. Only the engine calls these.
 pub mod engine {
     use super::*;
+
+    /// The player whose turn starts on this thread ([`seat`]).
+    pub fn set_seat(seat: usize) {
+        SEAT.set(seat);
+    }
 
     /// Seals every list (hooks and the registries); their first use does it anyway. Call where
     /// registration ends.
@@ -130,6 +157,25 @@ pub mod engine {
         }
     }
 
+    /// Whether any hook is registered: without one the engine builds no view to hand them.
+    pub fn any() -> bool {
+        !all().is_empty()
+    }
+
+    /// [`Hooks::frame`].
+    pub fn frame(frame: &players::Frame) {
+        for hooks in all() {
+            hooks.frame(frame);
+        }
+    }
+
+    /// [`Hooks::tick`].
+    pub fn tick(models: &mut dyn players::PlayerModels) {
+        for hooks in all() {
+            hooks.tick(models);
+        }
+    }
+
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
     pub fn tunnel() -> Option<&'static dyn tunnel::Resolver> {
         all().iter().find_map(|hooks| hooks.tunnel())
@@ -139,6 +185,7 @@ pub mod engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use players::PlayerModels as _;
     use std::sync::Mutex as StdMutex;
 
     /// Records what it heard. One process-wide list, as the game has: this test is the only
@@ -154,6 +201,55 @@ mod tests {
         }
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
+        }
+        fn frame(&self, frame: &players::Frame) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("frame {}", frame.connection));
+        }
+        fn tick(&self, models: &mut dyn players::PlayerModels) {
+            let mut ids = Vec::new();
+            models.for_each(&mut |m| ids.push(m.id));
+            for id in ids {
+                models.set_body_pose(id, Some(std::sync::Arc::new(Still)));
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct Still;
+    impl players::BodyPose for Still {
+        fn pose(&self, _: f32, _: &[[f32; 9]; 6], _: &mut [[f32; 9]; 6]) -> bool {
+            false
+        }
+    }
+
+    /// Two models, poses by id.
+    struct Two(std::collections::BTreeMap<u32, std::sync::Arc<dyn players::BodyPose>>);
+    impl players::PlayerModels for Two {
+        fn connection(&self) -> u64 {
+            1
+        }
+        fn for_each(&self, f: &mut dyn FnMut(players::PlayerModel)) {
+            for id in [3, 7] {
+                f(players::PlayerModel::new(
+                    id,
+                    players::Kind::Player,
+                    None,
+                    0,
+                    false,
+                ));
+            }
+        }
+        fn body_pose(&self, id: u32) -> Option<&std::sync::Arc<dyn players::BodyPose>> {
+            self.0.get(&id)
+        }
+        fn set_body_pose(&mut self, id: u32, pose: Option<std::sync::Arc<dyn players::BodyPose>>) {
+            match pose {
+                Some(p) => self.0.insert(id, p),
+                None => self.0.remove(&id),
+            };
         }
     }
 
@@ -173,9 +269,19 @@ mod tests {
             engine::published(open);
         }
         engine::shutdown();
+        assert!(engine::any());
+        engine::frame(&players::Frame::new(4));
+        let mut models = Two(Default::default());
+        engine::tick(&mut models);
+        assert!(models.body_pose(3).is_some() && models.body_pose(7).is_some());
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
-            ["started 0.2.31", "published true", "published false"]
+            [
+                "started 0.2.31",
+                "published true",
+                "published false",
+                "frame 4"
+            ]
         );
         assert_eq!(register(&Silent), Err(TooLate));
     }
