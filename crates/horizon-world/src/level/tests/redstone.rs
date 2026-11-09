@@ -1116,3 +1116,29 @@ fn lava_spreads_three_blocks_on_a_floor_in_the_overworld() {
         "the fourth block is dry"
     );
 }
+
+/// `LavaFluid.spreadTo`: lava spreading *down* into water turns the water's block to
+/// stone. Water below a lava source does not harden the source itself
+/// (`LiquidBlock.shouldSpreadLiquid` skips the side below).
+#[test]
+fn lava_flowing_down_onto_water_makes_stone_and_stays_lava() {
+    let mut w = world!();
+    w.floor(0, 4, "stone");
+    let (water_at, lava_at) = (BlockPos::new(0, 1, 0), BlockPos::new(0, 2, 0));
+    w.set(water_at, w.id("water", &[]));
+    w.set(lava_at, w.id("lava", &[]));
+    assert_eq!(
+        w.get(lava_at),
+        w.id("lava", &[]),
+        "water below does not turn the lava source to obsidian"
+    );
+    for _ in 0..80 {
+        w.tick();
+    }
+    assert_eq!(
+        w.get(water_at),
+        w.id("stone", &[]),
+        "the water it flowed down onto is stone: {}",
+        w.name(water_at)
+    );
+}
