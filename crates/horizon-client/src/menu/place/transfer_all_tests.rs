@@ -126,3 +126,26 @@ fn a_transfer_of_all_fills_as_many_sets_as_the_items_allow() {
         assert_eq!(station.sources, vec![vec![stack("oak_planks", 2)]]);
     });
 }
+
+/// A quick-moved crafting result counts only the items that moved, not the
+/// whole result stack (`ResultSlot.onQuickCraft`).
+#[test]
+fn quick_move_crafting_records_only_items_moved() {
+    for kind in [Kind::Crafting, Kind::Inventory] {
+        with_menu(kind, |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 1, stack("oak_log", 1));
+            let start = if kind == Kind::Crafting { 10 } else { 9 };
+            let end = if kind == Kind::Crafting { 46 } else { 45 };
+            for slot in start..end {
+                menu.set_slot(env, slot, stack("stone", 64));
+            }
+            menu.set_slot(env, end - 1, stack("oak_planks", 62));
+            menu.settle(env);
+            menu.click(env, 0, 0, crate::menu::Input::QuickMove)
+                .unwrap();
+            assert_eq!(menu.slot(end - 1).unwrap().count, 64);
+            assert_eq!(menu.item_crafted[0].1.count, 2);
+        });
+    }
+}

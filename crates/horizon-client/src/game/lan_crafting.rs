@@ -202,6 +202,8 @@ impl Game<'_> {
             self.as_guest(host, conn, |g| {
                 let player = g.native_acting_id();
                 for (recipe, stack) in &item_crafted {
+                    // ItemStack.onCraftedBy awards Stats.ITEM_CRAFTED.
+                    g.award_stat("crafted", &stack.item, stack.count as i32);
                     g.native_item_crafted(player, recipe, stack);
                 }
             });

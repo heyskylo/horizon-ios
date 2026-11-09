@@ -602,6 +602,9 @@ impl Game<'_> {
         let equipped = std::mem::take(&mut menu.equipped);
         let item_crafted = std::mem::take(&mut menu.item_crafted);
         for (_, stack) in &item_crafted {
+            if !predicting {
+                self.award_stat("crafted", &stack.item, stack.count as i32);
+            }
             self.tutorial_get_item(Some(stack));
         }
         for (i, stack) in after.into_iter().enumerate() {
