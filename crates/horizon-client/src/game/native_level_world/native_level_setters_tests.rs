@@ -1,6 +1,6 @@
 //! The day time, game rule and weather setters of a native mod's `LevelRef` change what the
 //! matching readers and `/time query`, `/gamerule` and `/weather` report.
-use super::*;
+use super::super::*;
 use horizon_client::mod_api::{GameRuleValue, LevelRef, NativeAuthority};
 
 fn game() -> Game<'static> {

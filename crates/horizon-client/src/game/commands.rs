@@ -2174,7 +2174,7 @@ impl Game<'_> {
             self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
         }
     }
-    fn set_command_clock_time(&mut self, clock: &str, total: i64) {
+    pub(super) fn set_command_clock_time(&mut self, clock: &str, total: i64) {
         if clock == "minecraft:overworld" {
             self.world.day_time = total;
         } else {
@@ -2185,7 +2185,7 @@ impl Game<'_> {
                 .0 = total;
         }
     }
-    fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
+    pub(super) fn command_clock_state(&mut self, clock: &str) -> &mut super::chat::WorldClock {
         if clock == "minecraft:overworld" {
             &mut self.ui.clock
         } else {
@@ -2196,17 +2196,6 @@ impl Game<'_> {
                 .or_default()
                 .1
         }
-    }
-    /// `/time set` on `clock`: the mods hear `time_skip` first and can keep `from`; the clock's
-    /// fraction of a tick restarts. False when they did.
-    pub(super) fn jump_clock(&mut self, clock: &str, from: i64, to: i64, cause: &str) -> bool {
-        let mut cancel = false;
-        self.native_time_skip(self.dim.id(), from, to, cause, &mut cancel);
-        if !cancel {
-            self.set_command_clock_time(clock, to);
-            self.command_clock_state(clock).partial = 0.0;
-        }
-        !cancel
     }
     /// `TimeCommand.getDefaultClock`: explicit registered clocks and dimension defaults are
     /// separate; built-in timelines and markers belong only to Overworld.
@@ -2358,53 +2347,6 @@ impl Game<'_> {
             }
             _ => Ok(0),
         }
-    }
-    /// `ServerLevel.setWeatherParameters`, as `/weather` and the mods' weather setter call it: the
-    /// mods hear `weather_change` and `thunder_change` first and can keep the old state. False when
-    /// they did.
-    pub(super) fn apply_weather(
-        &mut self,
-        clear: i32,
-        time: i32,
-        raining: bool,
-        thundering: bool,
-    ) -> bool {
-        let previous = (
-            self.world.weather.clear_time,
-            self.world.weather.rain_time,
-            self.world.weather.thunder_time,
-            self.world.weather.raining,
-            self.world.weather.thundering,
-        );
-        let mut cancel = false;
-        self.native_weather_change(self.dim.id(), raining, thundering, &mut cancel);
-        let old_thundering = self.world.weather.thundering;
-        let old_thunder_time = self.world.weather.thunder_time;
-        let mut cancel_thunder = false;
-        self.native_thunder_change(self.dim.id(), thundering, &mut cancel_thunder);
-        if cancel {
-            let w = &mut self.world.weather;
-            (
-                w.clear_time,
-                w.rain_time,
-                w.thunder_time,
-                w.raining,
-                w.thundering,
-            ) = previous;
-        } else {
-            // ServerLevel.setWeatherParameters.
-            let w = &mut self.world.weather;
-            w.clear_time = clear;
-            w.rain_time = time;
-            w.thunder_time = time;
-            w.raining = raining;
-            w.thundering = thundering;
-            if cancel_thunder {
-                w.thunder_time = old_thunder_time;
-                w.thundering = old_thundering;
-            }
-        }
-        !cancel
     }
     fn cmd_weather(&mut self, ctx: &Context) -> R<i32> {
         let duration = Self::int(ctx, "duration");

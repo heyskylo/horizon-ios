@@ -162,8 +162,6 @@ mod frames;
 #[cfg(feature = "friends")]
 mod friends;
 #[cfg(test)]
-mod native_level_setters_tests;
-#[cfg(test)]
 mod setblock_order_tests;
 // Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
 #[cfg(test)]
