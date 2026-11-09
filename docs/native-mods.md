@@ -4280,6 +4280,15 @@ It names the level it means by its `dimension` (`minecraft:overworld`), as `nati
   height, are left out. It answers `Err`, changing nothing, on a client, for another dimension, a palette entry or filter
   that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
   the end, or more than 65536 filters.
+- Block entity data: `NativeBlockEdit.block_entities` lists `NativeBlockNbt { x, y, z, nbt }` entries (SNBT), loaded after
+  every run as `/setblock ... {nbt}` loads it, so a chest placed by a run keeps the `Items` given. An entry whose position
+  holds no block entity, or whose `id` names another type, is skipped and the block stays as the runs made it; NBT that
+  doesn't read is an `Err`, changing nothing. Palette entries still carry no NBT. A bulk edit tells no neighbour, and
+  heightmaps, light and the sections' emptiness follow the blocks changed.
+- `native_set_block_entity(dimension, pos, nbt)` loads SNBT into the block entity at `pos` the same way and answers
+  whether it was accepted (false: another dimension, a client, a chunk not loaded, no block entity there, NBT that isn't
+  a compound, or an `id` that isn't the entity's type). `native_block_entity_nbt(dimension, pos)` answers its saved NBT as
+  SNBT (`/data get block`), None where there is none. API @API:edit_blocks_nbt@.
 
 ### Machines
 

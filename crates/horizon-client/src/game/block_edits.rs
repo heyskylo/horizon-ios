@@ -13,10 +13,26 @@ use horizon_client::{
     fast_hash::{FxHashMap, FxHashSet},
     world::World,
 };
+use horizon_world::nbt::Tag;
 use horizon_world::{
     heightmap::HeightmapType, registry::BlockStateId, worldgen::terrain::TerrainBlockStates,
 };
 use std::sync::Arc;
+
+/// SNBT of block entity data: a compound.
+fn parse_block_entity_nbt(nbt: &str) -> Result<Tag, String> {
+    match horizon_world::nbt::parse_snbt(nbt) {
+        Ok((tag @ Tag::Compound(_), used)) if nbt[used..].trim().is_empty() => Ok(tag),
+        Ok(_) => Err("block entity NBT must be one compound".into()),
+        Err(e) => Err(e),
+    }
+}
+/// Whether `tag` may be loaded into the block entity `existing` (its saved NBT): its `id`, when it gives one, is
+/// the type of that block entity.
+fn block_entity_id_fits(existing: &Tag, tag: &Tag) -> bool {
+    tag.get("id")
+        .is_none_or(|id| existing.get("id") == Some(id))
+}
 
 /// A change `World::edit_runs` reported: position, previous and new state.
 type Tracked = ((i32, i32, i32), u32, u32);
@@ -54,6 +70,11 @@ impl Game<'_> {
             .iter()
             .map(|f| parse(f, true))
             .collect::<Result<Vec<_>, _>>()?;
+        // (block entity data that doesn't read is refused whole, before anything changes)
+        for entry in &edit.block_entities {
+            parse_block_entity_nbt(&entry.nbt)
+                .map_err(|e| format!("block entity at {} {} {}: {e}", entry.x, entry.y, entry.z))?;
+        }
         let runs = resolve_runs(edit, &palette, filters.len(), |h, x, z| {
             self.edit_height(h, x, z)
         })?;
@@ -117,7 +138,34 @@ impl Game<'_> {
         for pos in removed {
             self.jukebox_removed(pos);
         }
+        for entry in &edit.block_entities {
+            if !self.set_block_entity_checked([entry.x, entry.y, entry.z], &entry.nbt) {
+                log::warn!(
+                    "Horizon: mod block edit: no matching block entity at {} {} {}, its NBT was skipped",
+                    entry.x,
+                    entry.y,
+                    entry.z
+                );
+            }
+        }
         Ok(out.changed)
+    }
+
+    /// Load `nbt` into the block entity at `pos` as `/setblock ... {nbt}` does, only when the block there has a
+    /// block entity and `nbt`'s `id`, if given, is that entity's type. False when refused.
+    pub(super) fn set_block_entity_checked(&mut self, pos: [i32; 3], nbt: &str) -> bool {
+        let Ok(tag) = parse_block_entity_nbt(nbt) else {
+            return false;
+        };
+        let Some(existing) = self.block_entity_nbt(pos) else {
+            return false;
+        };
+        if !block_entity_id_fits(&existing, &tag) {
+            return false;
+        }
+        // (an unchanged entity is still accepted: false means refused)
+        self.load_block_entity_nbt(pos, nbt);
+        true
     }
 
     /// Each column's height on `h` as `edit_height` reads it, none where its chunk is not loaded.
@@ -467,6 +515,7 @@ mod tests {
             palette: vec!["stone".into(), "air".into()],
             filters: vec!["#dirt".into()],
             runs,
+            block_entities: Vec::new(),
         }
     }
 
@@ -523,6 +572,57 @@ mod tests {
         high.height = u32::MAX;
         let runs = resolve_runs(&edit(vec![high]), &[7], 0, |_, _, _| 0).unwrap();
         assert_eq!((runs[0].y0, runs[0].y1), (i32::MAX, i32::MAX));
+    }
+
+    fn saved_chest() -> Tag {
+        let chest = BlockEntity::for_block("minecraft:chest").expect("a chest's");
+        horizon_client::save::encode_block_entity((1, 5, 1), &chest, "minecraft:chest")
+    }
+
+    #[test]
+    fn block_entity_nbt_must_be_one_compound() {
+        assert!(parse_block_entity_nbt("{Items:[]}").is_ok());
+        assert!(parse_block_entity_nbt(" {a:1b} ").is_ok());
+        assert!(parse_block_entity_nbt("[1,2]").is_err());
+        assert!(parse_block_entity_nbt("{a:1b} {b:2b}").is_err());
+        assert!(parse_block_entity_nbt("{Items:").is_err());
+    }
+
+    #[test]
+    fn block_entity_nbt_of_another_type_is_refused() {
+        let existing = saved_chest();
+        let parse = |s| parse_block_entity_nbt(s).unwrap();
+        assert!(block_entity_id_fits(&existing, &parse("{Items:[]}")));
+        assert!(block_entity_id_fits(
+            &existing,
+            &parse("{id:\"minecraft:chest\"}")
+        ));
+        assert!(!block_entity_id_fits(
+            &existing,
+            &parse("{id:\"minecraft:furnace\"}")
+        ));
+        assert!(!block_entity_id_fits(
+            &existing,
+            &parse("{id:\"machines:press\"}")
+        ));
+    }
+
+    #[test]
+    fn a_chest_loaded_from_items_nbt_keeps_its_items() {
+        // what `load_block_entity_nbt` decodes: the chest's own id and position over the given tag
+        let (mut tag, _) =
+            horizon_world::nbt::parse_snbt("{Items:[{Slot:3b,id:\"minecraft:diamond\",count:5}]}")
+                .unwrap();
+        let Tag::Compound(c) = &mut tag else { panic!() };
+        for k in ["id", "x", "y", "z"] {
+            c.insert(k.into(), saved_chest().get(k).unwrap().clone());
+        }
+        let (_, BlockEntity::Chest(stacks)) =
+            horizon_client::save::decode_block_entity(&tag).expect("decodes")
+        else {
+            panic!("not a chest")
+        };
+        assert!(stacks[3].is_some() && stacks[0].is_none());
     }
 
     fn world() -> World {

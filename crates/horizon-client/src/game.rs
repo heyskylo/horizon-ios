@@ -573,7 +573,7 @@ pub use native_server::NativeExperienceOrb;
 pub use native_structures::{NativeStructureBlock, NativeStructureTemplate};
 pub use native_world_columns::NativeColumnBlocks;
 pub use native_world_draw::NativeWorldDraw;
-pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
+pub use native_world_edit::{NativeBlockEdit, NativeBlockNbt, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
 use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
 use std::{
