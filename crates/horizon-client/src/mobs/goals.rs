@@ -2310,6 +2310,8 @@ impl Goal for Breed {
                     // AbstractHorse.canParent of the partner.
                     && (!(equine || camel) || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
                     && (!sniffer || super::sniffer::can_mate_state(s.variant))
+                    // BreedGoal.getFreePartner: `!potentialPartner.isPanicking()`.
+                    && !s.panicking
             })
             .map(|s| s.id)
             .next();
@@ -2318,7 +2320,8 @@ impl Goal for Breed {
     fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
         self.partner
             .and_then(|p| cx.w.seen(p))
-            .is_some_and(|s| s.alive && s.in_love)
+            // BreedGoal.canContinueToUse: `!this.partner.isPanicking()`.
+            .is_some_and(|s| s.alive && s.in_love && !s.panicking)
             && self.love_time < 60
     }
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
