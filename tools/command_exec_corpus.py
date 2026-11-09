@@ -6757,7 +6757,11 @@ def beacon_levels_load():
 def zombie_villager_summoned_data():
     """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
     leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
-    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob."""
+    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob.
+
+    The random profession (`VILLAGER_PROFESSION.getRandom(this.random)`, `none` 1 time in 15) comes
+    from `Entity.random`, which is `RandomSource.create()`: two vanilla runs disagree on it, so only the
+    third subject's profession, read from its save, is checked."""
     x0, y0, z0 = 3776, 260, 3648
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
            cmd('/tick freeze', False)]
@@ -6768,8 +6772,8 @@ def zombie_villager_summoned_data():
         ops.append(cmd(f'/summon zombie_villager {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13262,0,{n},1],{fields}}}',
                        expect_result=1))
         ops.append(cmd(f'/data get entity {uuid} VillagerDataFinalized'))
-        ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
         if n == 3:
+            ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
             ops.append(cmd(f'/data get entity {uuid} VillagerData'))
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
