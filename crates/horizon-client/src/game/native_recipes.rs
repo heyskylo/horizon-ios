@@ -140,6 +140,15 @@ impl Game<'_> {
         self.mod_give(item, count.clamp(1, 99), "");
         Ok(())
     }
+    /// `native_transfer_recipe`, and with `all` as many sets as the
+    /// inventory (and a mod crafting grid's sources) allow, as Shift on the
+    /// recipe book places: every grid slot gets the same count, capped at the
+    /// ingredients' stack size, alternatives (tags) shared out as vanilla's
+    /// `StackedItemContents` does. A server from before `all` ignores it.
+    /// API @API:transfer_recipe_all@.
+    pub(super) fn native_transfer_recipe_all(&mut self, book_id: i32, all: bool) {
+        self.transfer_viewer_recipe(book_id, all);
+    }
     /// `native_place_recipe`: refused as `recipes.place` refuses it.
     pub(super) fn recipe_place(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         if !self.mod_recipe_screen() {
@@ -471,6 +480,33 @@ impl Game<'_> {
             }
             Err(e) => log::warn!("Horizon: the server's recipes were not taken: {e}"),
         }
+    }
+}
+
+impl Game<'_> {
+    /// `native_loot_odds`: the odds of the world's loot table `table`.
+    pub(super) fn loot_odds(
+        &mut self,
+        table: &str,
+        tool: Option<&str>,
+    ) -> Option<Vec<horizon_client::mod_api::NativeLootOdds>> {
+        let loot = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        )?;
+        let odds = loot.odds(table, tool)?;
+        Some(
+            odds.into_iter()
+                .map(|o| horizon_client::mod_api::NativeLootOdds {
+                    item: o.item,
+                    components: String::new(),
+                    chance: o.chance,
+                    min: o.min,
+                    max: o.max,
+                    conditions: o.conditions,
+                })
+                .collect(),
+        )
     }
 }
 

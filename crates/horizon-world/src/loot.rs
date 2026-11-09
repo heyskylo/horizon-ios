@@ -608,6 +608,9 @@ fn overlay_map(overlay: &PackOverlay, kind: &str, out: &mut HashMap<String, Valu
     }
 }
 
+mod odds;
+pub use odds::LootOdds;
+
 /// Loot tables by id. Each is kept as its JSON text and read into a [`Value`]
 /// the first time it is rolled: of vanilla's ~1,450 tables a game rolls a
 /// few, and as `Value`s they took ~7 MB for 0.6 MB of JSON. Every table was
@@ -2916,30 +2919,8 @@ mod native_kinds_tests {
 }
 
 #[cfg(test)]
-mod recipe_result_tests {
-    use super::*;
-
-    /// `ItemStackTemplate.CODEC` reads a stack's fields or a bare item id.
-    #[test]
-    fn a_result_is_an_object_with_an_id_or_a_bare_item_id() {
-        let id = |json: &str| {
-            let v: Value = serde_json::from_str(json).unwrap();
-            recipe_result_id(&v).map(str::to_owned)
-        };
-        assert_eq!(
-            id(r#"{"id": "ruby:ruby", "count": 3}"#).as_deref(),
-            Some("ruby:ruby")
-        );
-        assert_eq!(id(r#""ruby:ruby""#).as_deref(), Some("ruby:ruby"));
-        // No `id` (a transmuting recipe keeps its input's item), the `item` key of older
-        // versions and anything that is neither an object nor a string name no item.
-        assert_eq!(id(r#"{"count": 2}"#), None);
-        assert_eq!(id(r#"{"item": "minecraft:stick"}"#), None);
-        assert_eq!(id(r#"{"id": 7}"#), None);
-        assert_eq!(id("null"), None);
-        assert_eq!(id("[]"), None);
-    }
-}
+#[path = "recipe_result_tests.rs"]
+mod recipe_result_tests;
 
 #[cfg(test)]
 mod location_check_biome_tests {

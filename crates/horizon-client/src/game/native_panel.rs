@@ -14,6 +14,7 @@ use super::{
 use horizon_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
+    mod_api::NativePanelStyle,
     ui::EditBox,
 };
 
@@ -72,9 +73,25 @@ pub(super) struct Panel {
     /// The recipes shown instead of the items.
     pub(super) recipes: Option<super::native_panel_recipes::Pages>,
     pub(super) transfer_warning: Option<(&'static str, &'static str)>,
+    /// The mods that asked for the viewer's page buttons and search box.
+    viewer_styled: std::collections::BTreeSet<String>,
+    pub(super) fuel_popup: Option<super::native_panel_recipes::FuelPopup>,
 }
 
 impl Panel {
+    /// `native_panel_style`.
+    pub(super) fn set_style(&mut self, mod_id: &str, style: NativePanelStyle) {
+        match style {
+            NativePanelStyle::Viewer => self.viewer_styled.insert(mod_id.to_owned()),
+            _ => self.viewer_styled.remove(mod_id),
+        };
+    }
+    /// Whether `owner`'s panel draws the viewer's page buttons and search box:
+    /// Horizon's own Recipes panel, or a mod that asked for them.
+    fn viewer_style(&self, owner: &Owner) -> bool {
+        let id = owner.native_id();
+        id == "recipes" || self.viewer_styled.contains(id)
+    }
     /// What the panel shows: a native mod's, one `on`.
     pub(super) fn shown(&self, on: impl Fn(&str) -> bool) -> Option<&Shown> {
         self.native.as_ref().filter(|s| on(s.owner.native_id()))
@@ -122,6 +139,7 @@ impl Panel {
     fn native_changed(&mut self, keep_search: bool) {
         self.versions += 1;
         self.transfer_warning = None;
+        self.fuel_popup = None;
         if let Some(shown) = self.native.as_mut() {
             shown.version = self.versions;
             if shown.items.is_empty() && shown.recipes.is_none() && !keep_search {
@@ -181,6 +199,12 @@ pub(super) fn inside(p: (f32, f32), [x, y, w, h]: [f32; 4]) -> bool {
 }
 
 impl Game<'_> {
+    /// How mod `mod_id`'s panel draws its page buttons and search box from
+    /// now on (`NativePanelStyle`; the recipe book's until it says). Kept for
+    /// the session, whether or not its panel is showing. API @API:panel_style@.
+    pub(super) fn native_panel_style(&mut self, mod_id: &str, style: NativePanelStyle) {
+        self.panel.set_style(mod_id, style);
+    }
     fn browser_batch(&self) -> Option<HudBatch> {
         let r = self.renderer.as_ref()?;
         Some(HudBatch::new([r.config.width, r.config.height]))
@@ -194,6 +218,7 @@ impl Game<'_> {
         let disabled = &self.settings.mods.disabled;
         let Some(shown) = self.panel.shown(|id| !disabled.contains(id)) else {
             self.panel.of = None;
+            self.panel.fuel_popup = None;
             self.panel.stacks.clear();
             return None;
         };
@@ -212,9 +237,15 @@ impl Game<'_> {
             self.panel.stacks = stacks;
             // The same title again (the mod updating its buttons) keeps the page.
             let old = self.panel.recipes.take();
-            self.panel.recipes = shown
-                .as_ref()
-                .map(|shown| super::native_panel_recipes::Pages::new(items, shown, old));
+            self.panel.recipes = shown.as_ref().map(|shown| {
+                super::native_panel_recipes::Pages::new(
+                    items,
+                    self.res.providers(),
+                    shown,
+                    old,
+                    of.0.native_id() == "recipes",
+                )
+            });
             self.panel.of = Some(of.clone());
         }
         Some(of.0)
@@ -390,7 +421,7 @@ impl Game<'_> {
             .panel
             .of
             .as_ref()
-            .is_some_and(|(owner, _)| owner.native_id() == "recipes");
+            .is_some_and(|(owner, _)| self.panel.viewer_style(owner));
         if pages > 1 || (square && !self.panel.stacks.is_empty()) {
             let labels = [
                 self.translate("gui.recipebook.previous_page", "Previous Page"),
@@ -477,7 +508,7 @@ impl Game<'_> {
             .panel
             .of
             .as_ref()
-            .is_some_and(|(owner, _)| owner.native_id() == "recipes")
+            .is_some_and(|(owner, _)| self.panel.viewer_style(owner))
             .then_some("horizon/jei/search_background_v2");
         let search = self.browser_search(&layout);
         // The hint shows in an empty box without focus, as the recipe book's.
@@ -510,6 +541,9 @@ impl Game<'_> {
                 return;
             }
         }
+        if self.carried.is_none() && self.draw_recipe_fuels(batch, &layout) {
+            return;
+        }
         if self.carried.is_some() {
             self.draw_carried(batch);
         } else if let Some(stack) = self.browser_pointed_stack(&layout) {
@@ -532,6 +566,9 @@ impl Game<'_> {
         let Some(layout) = self.browser_layout(&batch) else {
             return false;
         };
+        if self.recipe_fuel_press(&owner, right) {
+            return true;
+        }
         let cursor = self.cursor;
         if layout.settings.is_some_and(|rect| inside(cursor, rect)) {
             if !right {
@@ -571,7 +608,7 @@ impl Game<'_> {
         }
         let pages = self.browser_pages(&layout);
         let page = self.panel.page;
-        let [back, forward] = layout.browser_arrow_rects(owner.native_id() == "recipes");
+        let [back, forward] = layout.browser_arrow_rects(self.panel.viewer_style(&owner));
         let step = if pages > 1 && page > 0 && inside(cursor, back) {
             Some(page - 1)
         } else if pages > 1 && page + 1 < pages && inside(cursor, forward) {
@@ -659,6 +696,7 @@ impl Game<'_> {
     /// The container screen closed: the search box lets go of the keys.
     pub(super) fn mod_browser_closed(&mut self) {
         self.panel.transfer_warning = None;
+        self.panel.fuel_popup = None;
         if let Some(search) = self.panel.search.as_mut() {
             search.focused = false;
         }
@@ -769,6 +807,28 @@ mod tests {
             note: String::new(),
             action: Some(true),
         }
+    }
+
+    #[test]
+    fn a_mod_chooses_the_viewers_page_buttons_and_keeps_them() {
+        let mut panel = Panel::default();
+        let jei = Owner::Native("jei".into());
+        assert!(
+            !panel.viewer_style(&jei),
+            "the recipe book's arrows by default"
+        );
+        assert!(panel.viewer_style(&Owner::Native("recipes".into())));
+        panel.set_style("jei", super::NativePanelStyle::Viewer);
+        panel.show_items("jei", vec![stack("minecraft:stone")]);
+        assert!(panel.viewer_style(&jei));
+        // Another mod's choice is its own.
+        assert!(!panel.viewer_style(&Owner::Native("other".into())));
+        // It outlasts the panel going away and coming back.
+        panel.show_items("jei", Vec::new());
+        panel.show_items("jei", vec![stack("minecraft:stone")]);
+        assert!(panel.viewer_style(&jei));
+        panel.set_style("jei", super::NativePanelStyle::RecipeBook);
+        assert!(!panel.viewer_style(&jei));
     }
 
     /// A native mod's items and recipe page are what the panel holds, and

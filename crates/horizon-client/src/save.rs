@@ -599,7 +599,7 @@ fn read_ticks(
 }
 fn fluid_name(kind: u32) -> Option<String> {
     use horizon_world::fluid::FluidKind;
-    let fluid = *FluidKind::ALL.get(kind as usize)?;
+    let fluid = FluidKind::from_index(kind as usize)?;
     (fluid != FluidKind::Empty).then(|| fluid.name().to_owned())
 }
 fn fluid_id(name: &str) -> Option<u32> {
@@ -614,7 +614,7 @@ pub use horizon_items::item_nbt::{
 };
 /// The block entity type ID for the block it sits in (a chest-like container
 /// is a chest, trapped chest or barrel).
-fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
+pub fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
     match (e, block) {
         (
             crate::containers::BlockEntity::Chest(_),
@@ -996,7 +996,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     }
     if id == "minecraft:beacon" {
         let beacon = crate::containers::Beacon {
-            levels: int("Levels").unwrap_or(0),
+            // BeaconBlockEntity.loadAdditional never reads `Levels`: updateBase sets them.
             primary: text(tag.get("primary_effect")),
             secondary: text(tag.get("secondary_effect")),
             last_check_y: i32::MIN / 2,
@@ -1073,10 +1073,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
             }
             b.fuel = int("Fuel").unwrap_or(0);
             b.total_fuel = int("total_fuel").unwrap_or(20);
-            b.speed = match tag.get("speed_multiplier") {
-                Some(Tag::Float(f)) => f32::from_bits(*f),
-                _ => 1.0,
-            };
+            b.speed = float(tag.get("speed_multiplier")).map_or(1.0, |v| v as f32);
         }
         BlockEntity::Brushable(b) => {
             b.loot_table = tag.get("LootTable").cloned();
@@ -1171,7 +1168,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         BlockEntity::StructureBlock(b) => **b = crate::structure_block::StructureBlock::load(tag),
         BlockEntity::TestBlock(b) => **b = crate::test_block::TestBlock::load(tag),
         BlockEntity::TestInstanceBlock(b) => b.load(tag),
-        // The state is not known here; a saved jigsaw always has its joint.
+        // The state is not known here (Game::decode_block_entity_at applies it).
         BlockEntity::JigsawBlock(b) => {
             **b = crate::jigsaw_block::JigsawBlock::load(
                 tag,
@@ -6724,9 +6721,8 @@ mod tests {
         };
         assert_eq!(*back, c);
         // The update tag a server's clients get: the items alone.
-        let update =
-            crate::lan::chunks::entity_tag(&crate::containers::BlockEntity::Campfire(Box::new(c)))
-                .expect("update tag");
+        let campfire = crate::containers::BlockEntity::Campfire(Box::new(c));
+        let update = crate::lan::chunks::entity_tag(&campfire, false).expect("update tag");
         assert!(update.get("Items").is_some() && update.get("CookingTimes").is_none());
     }
     /// `LecternBlockEntity.loadAdditional`: `Page` is clamped to

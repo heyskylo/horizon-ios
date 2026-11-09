@@ -23,6 +23,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Agent control](agent-control.md): what AI agents can drive in the launcher and the game, and the design of the control socket, `horizon-ctl` and MCP.
 - [horizon-ctl commands](horizon-ctl-commands.md): every command `horizon-ctl` takes, its CLI arguments, and the corresponding MCP tools for driving the game.
 - [Graphics](graphics.md): the graphics settings screen (pages, search, descriptions), the graphics benchmark and what it measured.
+- [HDR and render passes](hdr-passes.md): what a pass on the world's picture (upscaling, anti-aliasing, frame generation, post effects, captures) keeps so HDR works, and how to check it.
 - [Server against Pumpkin](performance/server-vs-pumpkin.md): Horizon's server and Pumpkin (Rust) under the same bots at 0, 20, 60 and 100 players: tick time, CPU, memory, chunks, join; where Horizon loses, and how to run it again.
 - [Benchmark](benchmark.md): Horizon against vanilla 26.3 and vanilla with performance mods, on the same machine, world, path and settings: what is measured, how it is kept fair, how to reproduce it.
 - [Extras](extras.md): optional zoom, minimap, FPS and keystroke overlays and auto-reconnect, all off by default.
@@ -30,6 +31,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Cosmetics](cosmetics.md): wearable items drawn only by Horizon clients (hats, back items, shoulder pets, name tag styles), with no gameplay effect, client-side visibility toggles and the JSON item format.
 - [Layers](layers.md): engine, platform and Horizon: what belongs to each, where a new feature goes, the dependency rule, every built-in outside address.
 - [Forking](forking.md): the `horizon-extras` feature that holds Horizon's own extras (cosmetics, Friends, its settings pages...), and building the game without them.
+- [Translations](translations.md): where Horizon's own text and its ~85 languages live, the unreviewed mark on machine-written strings, and how a native speaker reviews a language in #translations on Discord.
 - [Narrator](narrator.md): vanilla's text-to-speech (Ctrl+B): the voices per platform, how screens record what they narrate, `horizon-ctl narration`, and where it still differs from vanilla.
 - [Shader packs](shaders.md): Horizon's own WGSL shader packs, how to make and check one (`horizon-shader`).
 - [Shader-pack clean room](cleanroom/README.md): how Java shader-pack support was rebuilt without another loader's code: the [format specification](cleanroom/shader-packs-spec.md) and the [provenance log](cleanroom/provenance-log.md) of every source read.
@@ -76,20 +78,13 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 ## Architecture: world generation
 
-- [World generation](world-generation.md): the pipeline from noise to features.
+- [World generation](world-generation.md): the pipeline from noise to features. Each stage's vanilla comparison is its harness (`tools/test_<name>_parity.py`); `python3 tools/port_ledger.py where Class.method` finds the Rust port of a vanilla method.
 - [World height](world-height.md): each level's shape from its dimension type, data packs' taller levels.
 - [Pregeneration](pregeneration.md): `/pregen`, generating, lighting and saving an area ahead of the players.
-- [Noise generation](noise-generation.md), [compiled density functions](density-functions.md), [structure density](structure-density.md), [terrain filling](terrain-filling.md).
-- Biomes: [lookup](biome-lookup.md), [temperatures](biome-temperatures.md).
-- Surfaces: [material surfaces](material-surfaces.md), [material conditions](material-conditions.md), [rule libraries](material-rule-libraries.md), [vertical anchors](vertical-anchors.md), [value providers](value-providers.md).
-- [Carving](carving.md), [heightmaps](heightmaps.md), [feature placement](feature-placement.md).
 
 ## Architecture: world data and simulation
 
 - [World data](world-data.md): chunk storage, palettes, region files.
-- [Block-state codecs](block-state-codecs.md), [scheduled ticks](scheduled-ticks.md).
-- [Collision geometry](collision-geometry.md): shapes, collision, movement and fluids.
-- [Face visibility](face-visibility.md): which model faces the mesher emits.
 
 ## Java comparison profiling
 

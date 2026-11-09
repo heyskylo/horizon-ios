@@ -2,6 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod projectile_world;
 mod pufferfish_player;
 
 use super::{
@@ -148,92 +149,6 @@ pub(super) struct ProjWorld<'a, 'w> {
     /// block would (`clipIncludingBorder`); None: no border.
     pub border: Option<[f64; 4]>,
 }
-impl ProjectileWorld for ProjWorld<'_, '_> {
-    fn block_contacts(&self, entity: i32, kind: &str, from: Vec3, to: Vec3, bounds: Aabb) {
-        horizon_client::block_contact::swept_inside(entity, kind, from, to, bounds, |p| {
-            let state = self.w.world.block(p.x, p.y, p.z);
-            (state, &self.w.facts.get(state).name)
-        });
-    }
-    fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
-        let mut scene = SceneCollisions {
-            world: self.w.world,
-            binding: self.w.collision,
-            subject: None,
-        };
-        let context = horizon_world::collision_context::CollisionContext::position(from.y);
-        let r = traverse_blocks(from, to, 256, |p: BlockPos| {
-            let state = self.w.world.block(p.x, p.y, p.z);
-            if self.w.facts.is_air(state) {
-                return None;
-            }
-            // ClipContext hands CollisionContext.of(projectile): scaffolding
-            // is open for a projectile below it.
-            let shape = self
-                .w
-                .collision
-                .collision_shape_with_context(&mut scene, state, p, &context)
-                .ok()?;
-            shape.clip(from, to, p)
-        });
-        let hit = r.ok().flatten().map(|hit| {
-            (
-                hit.location,
-                [hit.block.x, hit.block.y, hit.block.z],
-                hit.direction.normal(),
-            )
-        });
-        match self.border {
-            Some(bounds) => clip_including_border(hit, from, to, bounds),
-            None => hit,
-        }
-    }
-    /// Entity.updateFluidInteraction over the projectile's box, not the
-    /// block at its feet (#3072).
-    fn in_water(&self, bounds: Aabb) -> bool {
-        self.w.fluids(bounds, bounds.max_position().y).in_water
-    }
-    fn targets(&self) -> &[(Who, Aabb)] {
-        &self.targets
-    }
-    /// `BaseFireBlock.entityInside` for a thrown projectile: fire and soul
-    /// fire set it alight for 160 ticks.
-    fn ignites(&self, p: [i32; 3]) -> bool {
-        let state = self.w.world.block(p[0], p[1], p[2]);
-        matches!(
-            &*self.w.facts.get(state).name,
-            "minecraft:fire" | "minecraft:soul_fire"
-        )
-    }
-    fn empty(&self, p: [i32; 3]) -> bool {
-        self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
-    }
-    /// `WebBlock.entityInside` and `PowderSnowBlock.entityInside`.
-    fn stuck_speed(&self, p: [i32; 3]) -> Option<Vec3> {
-        horizon_client::projectiles::stuck_speed_of(
-            &self.w.facts.get(self.w.world.block(p[0], p[1], p[2])).name,
-        )
-    }
-    fn bubble_column(&self, p: [i32; 3]) -> Option<(bool, bool)> {
-        horizon_client::motion::bubble_column_at(
-            self.w.world,
-            self.w.registry,
-            self.w.facts,
-            self.w.collision,
-            BlockPos::new(p[0], p[1], p[2]),
-        )
-        .map(|c| (c.drag, c.surface))
-    }
-    fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
-        horizon_client::collisions::projectile_can_stand_on(
-            self.w.world,
-            self.w.collision,
-            BlockPos::new(p[0], p[1], p[2]),
-            entity_y,
-        )
-    }
-}
-
 /// `Projectile.isPickable`: a projectile in `#minecraft:redirectable_projectile`
 /// (a ghast's fireball and both wind charges) is pickable, so another
 /// projectile's `ProjectileUtil.getEntityHitResult` can strike it
@@ -1228,8 +1143,8 @@ impl Game<'_> {
     /// `DistanceManager.inEntityTickingRange` in an entity-ticking chunk
     /// (block coordinates), from every player's tickets (`update_chunk_tickets`).
     pub(super) fn entity_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
-        let levels = self.tickets.levels();
-        move |x, z| levels.entity_ticking_at(x, z)
+        self.tickets
+            .entity_ticking_area(&self.world.chunks, self.remote.is_none())
     }
     /// The entity phase of `tick_creatures`: every mob's tick, deaths, and the
     /// projectiles and effects that follow from them.
@@ -1351,7 +1266,10 @@ impl Game<'_> {
             let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
-            let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
+            let mut index = horizon_client::fast_hash::FxHashMap::with_capacity_and_hasher(
+                snapshot.len(),
+                Default::default(),
+            );
             let mut villager_slots = Vec::new();
             let mut solid_slots = Vec::new();
             for (i, s) in snapshot.iter().enumerate() {
@@ -1364,6 +1282,10 @@ impl Game<'_> {
                 }
             }
             laps.lap("creature_prepare");
+            let single_player = horizon_client::mobs::single_player_pos(
+                players.iter().map(|p| (p.position, p.spectator)),
+            );
+            let mut despawn_w = base.despawn_view();
             let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
                 let m = &mut mobs[i];
@@ -1387,26 +1309,18 @@ impl Game<'_> {
                     keep.push(!m.hostile() || m.persistent);
                     continue;
                 }
-                let nearest_player = nearest
-                    .nearest(m.position.x, m.position.y, m.position.z)
-                    .map(|p| p.position);
+                let nearest_player = single_player.unwrap_or_else(|| {
+                    nearest
+                        .nearest(m.position.x, m.position.y, m.position.z)
+                        .map(|p| p.position)
+                });
                 // ServerLevel.tick: every loaded entity checks despawning, but
                 // only those in entity-ticking chunks (within the simulation
                 // distance) tick. The despawn check reads the nearest player
                 // and the difficulty, not the player the mob sees.
                 if !ticking(bx, bz) {
-                    let w = MobWorld {
-                        others: &snapshot,
-                        others_grid: Some(&grid),
-                        others_index: Some(&index),
-                        others_villagers: Some(&villager_slots),
-                        others_solid: Some(&solid_slots),
-                        nearest_player,
-                        player: None,
-                        teams: std::sync::Arc::clone(&base.teams),
-                        ..base
-                    };
-                    let kept = horizon_client::mobs::ai::despawn_check(m, &w);
+                    despawn_w.nearest_player = nearest_player;
+                    let kept = horizon_client::mobs::ai::despawn_check(m, &despawn_w);
                     if !kept {
                         died.remove(&m.id);
                         snapshot[i].alive = false;
@@ -3095,13 +3009,7 @@ impl Game<'_> {
                 MobEvent::EnterHive { mob, hive } => self.bee_enter_hive(mob, hive),
                 MobEvent::ParrotToShoulder { mob } => self.parrot_to_shoulder(mob),
                 MobEvent::Infested { at, velocities } => self.spawn_infested(at, velocities),
-                MobEvent::Gift { target, item } => {
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target)
-                        && m.saddle_item().is_none()
-                    {
-                        m.set_saddle(Some(ItemStack::new(item, 1)));
-                    }
-                }
+                MobEvent::Gift { target, item } => self.receive_gift(target, item),
                 MobEvent::HurtSelf { mob, kind, amount } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
                         m.damage(amount, horizon_client::mobs::Damage::of(kind));
@@ -5314,7 +5222,12 @@ impl Game<'_> {
         }
     }
     /// Dispatch with the projectile's actual owner context, including a guest shooter.
-    fn projectile_shoot_event(&mut self, owner: Option<Who>, guest: Option<u32>, at: [f64; 3]) {
+    pub(super) fn projectile_shoot_event(
+        &mut self,
+        owner: Option<Who>,
+        guest: Option<u32>,
+        at: [f64; 3],
+    ) {
         if let Some(conn) = guest.filter(|conn| self.lan_acting != Some(*conn)) {
             let dispatched = if let Some(mut host) = self.lan.take() {
                 let result = self.as_guest(&mut host, conn, |g| {
@@ -6458,7 +6371,13 @@ impl Game<'_> {
         {
             let item = self.held().map(|h| h.item.to_string()).unwrap_or_default();
             let used = self.held().cloned();
-            if self.interact_leash(index, &item) {
+            if let Some(context) = self.interact_leash_with_item_context(index, &item) {
+                let used = match context {
+                    super::leads::LeashInteraction::WithItem => used,
+                    super::leads::LeashInteraction::WithoutItem => {
+                        Some(ItemStack::new("minecraft:air", 0))
+                    }
+                };
                 if let Some(stack) = &used {
                     let target = self.mob_entity(&self.mobs[index]);
                     self.trigger_item_entity(
@@ -9169,50 +9088,8 @@ mod breeding_tests {
 }
 
 #[cfg(test)]
-mod damage_type_tests {
-    use super::*;
-
-    #[test]
-    fn named_damage_keeps_its_registry_id_with_or_without_an_attacker() {
-        let named = horizon_client::mobs::NamedDamage::new(
-            "example:fan_fire",
-            horizon_client::mobs::NamedDamage::IS_FIRE,
-        );
-        for attacker in [None, Some(Who::Mob(7)), Some(Who::Player)] {
-            assert_eq!(
-                source_damage_type(Damage {
-                    kind: DamageKind::Named(named),
-                    attacker,
-                    from: None,
-                    attacker_species: None,
-                }),
-                "example:fan_fire"
-            );
-        }
-    }
-
-    /// `DamageSources.explosion`: a blast with a causing entity is
-    /// `player_explosion` whoever caused it, so an exploding creeper's too.
-    #[test]
-    fn a_creeper_blast_is_a_player_explosion() {
-        let blast = |attacker| Damage {
-            kind: DamageKind::Explosion,
-            attacker,
-            from: Some([0.0; 3]),
-            attacker_species: None,
-        };
-        let creeper = blast(Some(Who::Mob(7)));
-        assert_eq!(source_damage_type(creeper), "minecraft:player_explosion");
-        // No causing entity.
-        assert_eq!(source_damage_type(blast(None)), "minecraft:explosion");
-        // The other kinds do not ask.
-        let bite = Damage {
-            kind: DamageKind::MobAttack,
-            ..creeper
-        };
-        assert_eq!(source_damage_type(bite), "minecraft:mob_attack");
-    }
-}
+#[path = "damage_type_tests.rs"]
+mod damage_type_tests;
 
 #[cfg(test)]
 mod pearl_tests {
@@ -10000,431 +9877,8 @@ mod chorus_projectile_drop_tests {
 }
 
 #[cfg(test)]
-mod loaded_arrow_shot_tests {
-    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
-    use horizon_client::{
-        chunk::Chunk,
-        mobs::Who,
-        motion::PlayerMotion,
-        projectiles::{Projectile, ProjectileKind},
-    };
-    use horizon_core::{
-        geometry::Vec3,
-        position::ChunkPos,
-        random::{LegacyRandom, RandomSource},
-    };
-    use std::sync::Arc;
-    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.game_dir = Some(
-            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
-                .join(format!("h114-{:?}", std::thread::current().id())),
-        );
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.build_registries();
-        game.set_allow_commands(true);
-
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.block_ticks
-            .add_empty_chunk(ChunkPos::new(0, 0))
-            .unwrap();
-        assert!(game.run_command("difficulty normal"));
-        assert!(game.run_command("forceload add 0 0"));
-        for (x, z) in [(0, 1), (1, 0), (1, 1)] {
-            game.world
-                .chunks
-                .insert((x, z), Arc::new(Chunk::empty(x, z)));
-            game.block_ticks
-                .add_empty_chunk(ChunkPos::new(x, z))
-                .unwrap();
-        }
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
-        game.creative = true;
-        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
-        assert!(
-            game.run_command("summon pig 13.5 200 2.5 {UUID:[I;114,0,0,99],NoAI:1b,NoGravity:1b}")
-        );
-        game.world.random = LegacyRandom::new(114);
-        test(&mut game);
-    }
-    fn start_events() {
-        crate::game::sculk::TEST_POSTED_EVENTS.with(|v| *v.borrow_mut() = Some(Vec::new()));
-    }
-    fn take_shots() -> Vec<(&'static str, [f64; 3], Option<Who>)> {
-        crate::game::sculk::TEST_POSTED_EVENTS.with(|v| {
-            std::mem::take(v.borrow_mut().as_mut().unwrap())
-                .into_iter()
-                .filter(|e| e.0 == "minecraft:projectile_shoot")
-                .collect()
-        })
-    }
-    fn stop_events() {
-        crate::game::sculk::TEST_POSTED_EVENTS.with(|v| *v.borrow_mut() = None);
-    }
-    fn owner(game: &Game<'_>) -> u32 {
-        game.mobs
-            .iter()
-            .find(|m| game.persist.uuid_of(m.id) == Some([114, 0, 0, 99]))
-            .unwrap()
-            .id
-    }
-    #[test]
-    #[ignore = "prepared resources; actual registered load, Game tick and posted events"]
-    fn loaded_arrow_first_tick_dispatches_once_with_its_real_owner() {
-        with_game(|game| {
-            let owner = owner(game);
-            // Already-shot is an independent silent control before the old failure.
-            for (n, flag) in [(1, Some(1)), (2, None), (3, Some(0))] {
-                let extra = flag
-                    .map(|f| format!(",HasBeenShot:{f}b"))
-                    .unwrap_or_default();
-                assert!(game.run_command(&format!("summon arrow 6.5 201.5 10.5 {{UUID:[I;114,0,0,{n}],NoGravity:1b,Motion:[0d,0d,0d],Owner:[I;114,0,0,99]{extra}}}")));
-                let id = game
-                    .creatures
-                    .projectiles
-                    .iter()
-                    .find(|p| game.persist.uuid_of(p.id) == Some([114, 0, 0, n]))
-                    .unwrap()
-                    .id;
-                let p = game
-                    .creatures
-                    .projectiles
-                    .iter()
-                    .find(|p| p.id == id)
-                    .unwrap();
-                assert_eq!(p.owner_uuid, Some([114, 0, 0, 99]));
-                assert_eq!(p.arrow.as_ref().unwrap().has_been_shot, flag == Some(1));
-                assert!(p.no_gravity);
-                assert_eq!(p.velocity, Vec3::ZERO);
-                start_events();
-                game.tick_projectiles().unwrap();
-                let p = game
-                    .creatures
-                    .projectiles
-                    .iter()
-                    .find(|p| p.id == id)
-                    .unwrap();
-                assert!(p.arrow.as_ref().unwrap().has_been_shot);
-                assert_eq!(p.position, Vec3::new(6.5, 201.5, 10.5));
-                assert_eq!(p.velocity, Vec3::ZERO);
-                let first = take_shots();
-                game.tick_projectiles().unwrap();
-                let second = take_shots();
-                stop_events();
-                assert!(second.is_empty(), "no repeated shot on tick2");
-                let expected = if flag == Some(1) {
-                    Vec::new()
-                } else {
-                    vec![(
-                        "minecraft:projectile_shoot",
-                        [6.5, 201.5, 10.5],
-                        Some(Who::Mob(owner)),
-                    )]
-                };
-                assert_eq!(first, expected, "actual first tick, input={flag:?}");
-                assert!(game.run_command(&format!(
-                    "kill {}",
-                    horizon_protocol::crypto::uuid_string(
-                        horizon_client::lan::playerdata::ints_uuid([114, 0, 0, n])
-                    )
-                )));
-            }
-        });
-    }
-    fn natural(kind: &str) {
-        with_game(|game| {
-            let shooter = owner(game);
-            match kind {
-                "bow"=>{
-                    assert!(game.run_command("item replace entity @s weapon.mainhand with bow"));
-                    assert!(game.run_command("item replace entity @s hotbar.1 with arrow 4"));
-                },
-                "crossbow"=>assert!(game.run_command("item replace entity @s weapon.mainhand with crossbow[charged_projectiles=[{id:\"minecraft:arrow\",count:1}]]")),
-                _=>{}
-            }
-            let clock = game.world.game_time;
-            start_events();
-            match kind {
-                "bow" => {
-                    let bow = game.held().unwrap().clone();
-                    game.release_bow(&bow, 20);
-                }
-                "crossbow" => {
-                    let bow = game.held().unwrap().clone();
-                    assert!(game.use_crossbow(&bow));
-                }
-                "mob" => {
-                    let mut p = Projectile::new(
-                        ProjectileKind::Arrow {
-                            base_damage: 2.0,
-                            critical: false,
-                            effect: None,
-                        },
-                        Vec3::new(6.5, 201.5, 6.5),
-                        Some(Who::Mob(shooter)),
-                    );
-                    p.velocity = Vec3::new(0.0, 0.0, 1.0);
-                    game.launch_mob_projectile(p);
-                }
-                _ => unreachable!(),
-            }
-            assert_eq!(game.creatures.projectiles.len(), 1, "real launch {kind}");
-            let p = &game.creatures.projectiles[0];
-            let id = p.id;
-            assert!(id > 0);
-            assert!(
-                !p.arrow.as_ref().unwrap().has_been_shot,
-                "saved pre-tick state"
-            );
-            let launch = take_shots();
-            game.tick_projectiles().unwrap();
-            let p = game
-                .creatures
-                .projectiles
-                .iter()
-                .find(|p| p.id == id)
-                .unwrap();
-            assert!(p.arrow.as_ref().unwrap().has_been_shot);
-            let at = [p.position.x, p.position.y, p.position.z];
-            let first = take_shots();
-            game.tick_projectiles().unwrap();
-            let second = take_shots();
-            stop_events();
-            assert_eq!(
-                game.world.game_time, clock,
-                "fixture directly invokes actual projectile ticks; runtime clocks independently admitted"
-            );
-            println!("H114_RNG {kind} {}", game.world.random.next_long());
-            assert_eq!(
-                [launch.len(), first.len(), second.len()],
-                [0, 1, 0],
-                "actual launch/tick1/tick2 counts {kind}"
-            );
-            assert_eq!(
-                first[0],
-                (
-                    "minecraft:projectile_shoot",
-                    at,
-                    Some(if kind == "mob" {
-                        Who::Mob(shooter)
-                    } else {
-                        Who::Player
-                    })
-                )
-            );
-        });
-    }
-    #[test]
-    #[ignore = "prepared resources; actual bow release and Game ticks"]
-    fn bow_launch_uses_only_the_first_tick_event() {
-        natural("bow")
-    }
-    #[test]
-    #[ignore = "prepared resources; actual charged crossbow use and Game ticks"]
-    fn crossbow_launch_uses_only_the_first_tick_event() {
-        natural("crossbow")
-    }
-    #[test]
-    #[ignore = "prepared resources; actual Mob launch adapter and Game ticks"]
-    fn mob_launch_uses_only_the_first_tick_event() {
-        natural("mob")
-    }
-    #[test]
-    #[ignore = "prepared resources; non-arrow launch posts remain unchanged"]
-    fn non_arrow_rocket_and_mob_trident_keep_their_immediate_posts() {
-        with_game(|game| {
-            assert!(game.run_command("item replace entity @s weapon.mainhand with crossbow[charged_projectiles=[{id:\"minecraft:firework_rocket\",count:1}]]"));
-            start_events();
-            let bow = game.held().unwrap().clone();
-            assert!(game.use_crossbow(&bow));
-            assert_eq!(game.rockets.len(), 1);
-            assert_eq!(take_shots().len(), 1);
-            game.tick_projectiles().unwrap();
-            assert!(take_shots().is_empty());
-            stop_events();
-            let mut p = Projectile::new(
-                ProjectileKind::Trident,
-                Vec3::new(6.5, 201.5, 6.5),
-                Some(Who::Mob(owner(game))),
-            );
-            p.velocity = Vec3::new(0.0, 0.0, 1.0);
-            start_events();
-            game.launch_mob_projectile(p);
-            assert_eq!(take_shots().len(), 1);
-            game.tick_projectiles().unwrap();
-            assert!(take_shots().is_empty());
-            stop_events();
-        });
-    }
-    #[test]
-    #[ignore = "prepared resources; real loaded owner and finish-hit source"]
-    fn finish_hit_dispatches_once_and_the_next_tick_does_not_repeat_it() {
-        with_game(|game| {
-            assert!(game.run_command("summon arrow 6.5 201.5 10.5 {UUID:[I;114,0,0,20],NoGravity:1b,Motion:[0d,0d,0d],Owner:[I;114,0,0,99]}"));
-            let mut arrow = game.creatures.projectiles.pop().unwrap();
-            let owner = owner(game);
-            assert_eq!(arrow.owner_uuid, Some([114, 0, 0, 99]));
-            // Resolve through the actual registered owner, as tick_projectiles does.
-            arrow.owner = game.who_by_uuid(arrow.owner_uuid.unwrap());
-            assert_eq!(arrow.owner, Some(Who::Mob(owner)));
-            assert!(!arrow.arrow.as_ref().unwrap().has_been_shot);
-            let id = arrow.id;
-            start_events();
-            game.finish_arrow_hit(arrow, super::EntityHit::Deflected);
-            let first = take_shots();
-            assert!(
-                game.creatures
-                    .projectiles
-                    .iter()
-                    .find(|p| p.id == id)
-                    .unwrap()
-                    .arrow
-                    .as_ref()
-                    .unwrap()
-                    .has_been_shot
-            );
-            game.tick_projectiles().unwrap();
-            assert!(take_shots().is_empty());
-            stop_events();
-            assert_eq!(
-                first,
-                vec![(
-                    "minecraft:projectile_shoot",
-                    [6.5, 201.5, 10.5],
-                    Some(Who::Mob(owner))
-                )]
-            );
-        });
-    }
-    #[test]
-    #[ignore = "prepared resources; registered Guest context and finish-hit source"]
-    fn finish_hit_uses_registered_guest_context_and_restores_the_host() {
-        use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
-        use horizon_protocol::packets::configuration::ClientInformation;
-        use std::sync::{atomic::AtomicI32, mpsc};
-        with_game(|game| {
-            game.lan_host(
-                crate::game::lan::LanSettings {
-                    port: 0,
-                    guest_commands: true,
-                    force_game_mode: false,
-                },
-                NetConfig {
-                    announce: false,
-                    ..NetConfig::loopback(0, "arrow-test".into(), 2)
-                },
-                HubConfig {
-                    default_game_mode: 1,
-                    guest_commands: true,
-                    force_game_mode: false,
-                    hardcore: false,
-                    view_distance: 2,
-                    simulation_distance: 2,
-                    dimension: "minecraft:overworld".into(),
-                    allow_flight: false,
-                    seed: 0,
-                    max_players: 2,
-                    integrated: false,
-                    levels: Default::default(),
-                },
-            )
-            .unwrap();
-            let (tx, _rx) = mpsc::channel();
-            let mut guest = Guest::new(
-                Joined {
-                    conn: 2,
-                    uuid: 114,
-                    name: "ArrowGuest".into(),
-                    properties: Vec::new(),
-                    info: ClientInformation::new(2),
-                    brand: "test".into(),
-                    sender: PlayerSender::new(tx, Arc::default()),
-                    latency: Arc::new(AtomicI32::new(0)),
-                    address: "127.0.0.1:25565".parse().unwrap(),
-                    expected: false,
-                    configured: Default::default(),
-                },
-                2,
-                [6.5, 200.0, 6.5],
-                2,
-            );
-            guest.dimension = "minecraft:overworld".into();
-            guest.placed = true;
-            guest.loaded = true;
-            guest.permission = 4;
-            let mut host = game.lan.take().unwrap();
-            host.hub.guests.push(guest);
-            let host_uuid = game.acting_player_uuid();
-            game.as_guest(&mut host,2,|g| {
-                assert_eq!(g.lan_acting,Some(2));
-                assert_eq!(g.acting_player_uuid(),[0,0,0,114]);
-                assert!(g.run_command("item replace entity @s weapon.mainhand with crossbow[charged_projectiles=[{id:\"minecraft:arrow\",count:1}]]"));
-                let bow=g.held().unwrap().clone();assert!(g.use_crossbow(&bow));
-            }).unwrap();
-            game.lan = Some(host);
-            assert_eq!(game.acting_player_uuid(), host_uuid);
-            assert_eq!(game.lan_acting, None);
-            let arrow = game.creatures.projectiles.pop().unwrap();
-            assert_eq!(arrow.guest, Some(2));
-            assert_eq!(arrow.owner, Some(Who::Player));
-            assert_eq!(arrow.owner_uuid, Some([0, 0, 0, 114]));
-            assert!(!arrow.arrow.as_ref().unwrap().has_been_shot);
-            let at = [arrow.position.x, arrow.position.y, arrow.position.z];
-            let id = arrow.id;
-            start_events();
-            game.finish_arrow_hit(arrow, super::EntityHit::Deflected);
-            let first = take_shots();
-            assert_eq!(game.acting_player_uuid(), host_uuid);
-            assert_eq!(game.lan_acting, None);
-            assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].uuid, 114);
-            assert!(
-                game.creatures
-                    .projectiles
-                    .iter()
-                    .find(|p| p.id == id)
-                    .unwrap()
-                    .arrow
-                    .as_ref()
-                    .unwrap()
-                    .has_been_shot
-            );
-            game.tick_projectiles().unwrap();
-            assert!(take_shots().is_empty());
-            stop_events();
-            assert_eq!(
-                first,
-                vec![("minecraft:projectile_shoot", at, Some(Who::Player))]
-            );
-        });
-    }
-}
+#[path = "loaded_arrow_shot_tests.rs"]
+mod loaded_arrow_shot_tests;
 
 #[cfg(test)]
 mod loaded_mob_arrow_permission_tests {
@@ -10768,3 +10222,11 @@ mod h169_glide_travel_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "leash_without_item_criterion_tests.rs"]
+mod leash_without_item_criterion_tests;
+
+#[cfg(test)]
+#[path = "leash_without_item_postbaseline_controls.rs"]
+mod leash_without_item_postbaseline_controls;

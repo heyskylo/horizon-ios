@@ -2065,7 +2065,7 @@ mod tests {
     use crate::pack::tests::zip;
     use crate::{Macros, Pack, preprocess};
 
-    fn program(files: &[(&str, &str)], target: Target) -> Result<Program, Vec<Error>> {
+    pub(super) fn program(files: &[(&str, &str)], target: Target) -> Result<Program, Vec<Error>> {
         let files: Vec<(String, &str)> = files
             .iter()
             .map(|(p, t)| (format!("shaders/{p}"), *t))

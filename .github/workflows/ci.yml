@@ -16,8 +16,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  # A new push to a pull request replaces its running checks; main's runs all finish (releases follow them).
-  group: checks-${{ github.event.pull_request.number || github.sha }}
+  # A new push to a pull request replaces its running checks. On main, the running check finishes and only the
+  # newest push waits behind it: GitHub cancels a waiting run when a newer one joins the group. A burst of merges
+  # queued ~100 main runs on 2026-11-09; the release follows the newest finished main run (docs/release-flow.md).
+  group: checks-${{ github.event.pull_request.number || (github.event_name == 'push' && 'main') || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
@@ -78,21 +80,24 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
           echo "WGPU_BACKEND=dx12" >> "$GITHUB_ENV"
+      # On a pull request, the next three checks compare with HEAD^1: the main that GitHub's merge commit puts the pull
+      # request on. pull_request.base.sha is main at the pull request's last push and falls behind, so main's own
+      # changes since then would count as the pull request's (#13874).
       # docs/layers.md: a crate depends only on its own layer or a lower one; today's exceptions only shrink.
       - name: Crates follow the layers
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 tools/check_layers.py ${BASE_SHA:+--base "$BASE_SHA"}
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: python3 tools/check_layers.py ${BASE:+--base "$BASE"}
       # docs/layers.md#built-in-addresses: every built-in outside address in the Horizon layer's home; the rest only shrinks.
       - name: Built-in addresses stay in their home
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 tools/check_addresses.py ${BASE_SHA:+--base "$BASE_SHA"}
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: python3 tools/check_addresses.py ${BASE:+--base "$BASE"}
       # docs/layers.md#file-size: a Rust file over 3000 lines may not grow (pull requests; main has no base to compare).
       - name: Big files don't grow
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 tools/check_file_size.py ${BASE_SHA:+--base "$BASE_SHA"}
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: python3 tools/check_file_size.py ${BASE:+--base "$BASE"}
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
@@ -215,17 +220,17 @@ jobs:
           $clang = Get-Command clang -ErrorAction Stop
           Write-Output "Using $($clang.Source)"
           & $clang.Source --version
-      - name: Build the game for native Windows ARM64
-        run: cargo build --release --locked --target aarch64-pc-windows-msvc -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+      - name: Build the game for native Windows ARM64 (the official game, as game-build.yml ships it)
+        run: cargo build --release --locked --target aarch64-pc-windows-msvc -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: Check the game's PE machine
-        run: python tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-client.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
+        run: python tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-official.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
       - name: Check game DLL imports
-        run: python tools/check_imports.py target/aarch64-pc-windows-msvc/release/horizon-client.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
+        run: python tools/check_imports.py target/aarch64-pc-windows-msvc/release/horizon-official.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
       - name: Start every game executable
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $client = 'target/aarch64-pc-windows-msvc/release/horizon-client.exe'
+          $client = 'target/aarch64-pc-windows-msvc/release/horizon-official.exe'
           $output = & $client --help 2>&1
           if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -notmatch '--resources') { throw 'horizon-client --help failed' }
           foreach ($binary in @('horizon-ctl.exe', 'horizon-prepare.exe', 'horizon-server.exe')) {

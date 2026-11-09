@@ -5,6 +5,7 @@ pub mod aquifer;
 pub mod bamboo;
 pub mod biome;
 pub mod biome_chunk;
+mod biome_chunks;
 pub mod biome_predicate;
 pub mod biome_source;
 pub mod biome_temperature;

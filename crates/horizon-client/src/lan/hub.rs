@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex, atomic::Ordering};
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
 pub mod chat_filter;
+mod spawn_info;
 
 pub mod game_event {
     pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
@@ -124,6 +125,8 @@ pub fn teleport_cause(cause: Option<&'static str>) -> Option<&'static str> {
 
 /// Everything the hub needs from the game for one tick.
 pub struct TickCtx<'a> {
+    /// The active level's generator sea level (`CommonPlayerSpawnInfo`).
+    pub sea_level: i32,
     pub world: &'a mut World,
     pub entities: &'a [EntityState],
     pub next_entity: &'a mut u32,
@@ -1388,30 +1391,6 @@ impl Hub {
 
     // ---- joining -------------------------------------------------------
 
-    /// `CommonPlayerSpawnInfo`, with the player's `portalCooldown`.
-    fn spawn_info(&self, i: usize, portal_cooldown: i32) -> play::SpawnInfo {
-        let g = &self.guests[i];
-        play::SpawnInfo {
-            dimension_type: self.dimension_type,
-            dimension: self.config.dimension.clone(),
-            seed: horizon_core::biome::obfuscate_seed(self.config.seed),
-            game_type: g.game_mode,
-            previous_game_type: None,
-            debug: self.debug_world,
-            flat: self.flat_world,
-            // Player.getLastDeathLocation.
-            last_death: g
-                .last_death
-                .as_ref()
-                .map(|(dimension, pos)| play::GlobalPos {
-                    dimension: dimension.clone(),
-                    pos: *pos,
-                }),
-            portal_cooldown,
-            sea_level: 63,
-        }
-    }
-
     fn admit(&mut self, j: super::Joined, ctx: &mut TickCtx) -> u32 {
         // The game's ids are taken by incrementing first: the current value
         // is the last id in use (the host's own, right after opening to LAN).
@@ -1493,7 +1472,7 @@ impl Hub {
             reduced_debug_info: self.reduced_debug_info,
             show_death_screen: !self.immediate_respawn,
             limited_crafting: self.limited_crafting,
-            spawn: self.spawn_info(i, 0),
+            spawn: self.spawn_info(i, 0, ctx.sea_level),
             // MinecraftServer.usesAuthentication, enforceSecureProfile.
             online_mode: self.lan.shared.config.online.is_some(),
             enforces_secure_chat: self.enforces_secure_chat(),
@@ -3268,8 +3247,9 @@ impl Hub {
             // Block entities with data the client shows.
             for &(x, y, z) in &positions {
                 // A decorated pot is no block entity: its tag is the chunk's saved one.
+                let state = world.block(x, y, z).0;
                 let tag = match world.block_entities.get(&(x, y, z)) {
-                    Some(entity) => self.encoder.update_tag((x, y, z), entity),
+                    Some(entity) => self.encoder.update_tag((x, y, z), state, entity),
                     None => world
                         .chunks
                         .get(&(x >> 4, z >> 4))
@@ -3278,7 +3258,6 @@ impl Hub {
                 let Some(tag) = tag else {
                     continue;
                 };
-                let state = world.block(x, y, z).0;
                 let Some(kind) = self.encoder.entity_type(state) else {
                     continue;
                 };
@@ -3318,7 +3297,7 @@ impl Hub {
                         continue;
                     };
                     let alpha = if ambient { 38 } else { 255 };
-                    let argb = (alpha << 24) | def.color as i32;
+                    let argb = (alpha << 24) | def.shown_color() as i32;
                     ("entity_effect", Some(ParticleData::Color(argb)))
                 }
             };
@@ -4676,8 +4655,8 @@ impl Hub {
                 positions.push(pos);
             }
         }
-        for pos in positions {
-            let state = ctx.world.block(pos[0], pos[1], pos[2]);
+        for pos @ [x, y, z] in positions {
+            let state = ctx.world.block(x, y, z);
             self.send_to(
                 conn,
                 &C::BlockUpdate(play::BlockUpdate {
@@ -4685,10 +4664,10 @@ impl Hub {
                     state: state.0 as i32,
                 }),
             );
-            let Some(entity) = ctx.world.block_entities.get(&(pos[0], pos[1], pos[2])) else {
+            let Some(entity) = ctx.world.block_entities.get(&(x, y, z)) else {
                 continue;
             };
-            let Some(tag) = self.encoder.update_tag((pos[0], pos[1], pos[2]), entity) else {
+            let Some(tag) = self.encoder.update_tag((x, y, z), state.0, entity) else {
                 continue;
             };
             let Some(kind) = self.encoder.entity_type(state.0) else {
@@ -5075,7 +5054,7 @@ impl Hub {
     /// start" event and the chunk under the player, so the packets follow vanilla's order.
     /// `rotation` is the yaw and pitch they face (vanilla's 0, 0 unless a mod chose others).
     pub fn respawn(&mut self, i: usize, at: [f64; 3], rotation: [f32; 2], ctx: &TickCtx) {
-        let info = self.spawn_info(i, 0);
+        let info = self.spawn_info(i, 0, ctx.sea_level);
         self.close_container_for(i);
         let g = &mut self.guests[i];
         // PlayerList.respawn: into the level in place (the respawn level).
@@ -5210,7 +5189,7 @@ impl Hub {
         portal_cooldown: i32,
         ctx: &TickCtx,
     ) {
-        let info = self.spawn_info(i, portal_cooldown);
+        let info = self.spawn_info(i, portal_cooldown, ctx.sea_level);
         self.close_container_for(i);
         let g = &mut self.guests[i];
         g.dimension = self.config.dimension.clone();

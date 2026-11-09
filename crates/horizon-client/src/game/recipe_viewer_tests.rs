@@ -1,4 +1,5 @@
-//! Run alone with private prepared resources: installs process-wide trait mods.
+//! Needs private prepared resources: installs process-wide trait mods, so it runs in a process of its
+//! own (`mod_api::in_own_process`) and passes whatever else runs beside it.
 use super::super::*;
 use crate::mod_api::{
     self, Hooks, Host, NativeRecipeCategory, NativeRecipeLookup, NativeStack,
@@ -45,8 +46,13 @@ fn stack(item: &str) -> NativeStack {
 }
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn lookups_wait_for_the_next_frame_and_stop_at_the_viewer_that_takes_them() {
+    const NAME: &str = "game::native_recipes::recipe_viewer_tests::lookups_wait_for_the_next_frame_and_stop_at_the_viewer_that_takes_them";
+    mod_api::in_own_process(NAME, lookups_wait_for_the_next_frame);
+}
+
+fn lookups_wait_for_the_next_frame() {
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(

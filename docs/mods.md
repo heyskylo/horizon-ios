@@ -10,6 +10,12 @@ Two kinds of mod run in Horizon:
 Fabric and NeoForge jars do **not** run as they are: their code calls and patches Minecraft's Java classes, and
 Horizon has none. What carries over is the data and assets inside a jar ([modpacks.md](modpacks.md)).
 
+Running Java mods unchanged needs a Java bridge (a JVM beside the game, proposed in [#10216](https://github.com/horizon-rust/horizon/pull/10216); not in Horizon today).
+The project decided on 2026-11-09 that it will only ever be a **separate, optional download, never installed or on by
+default**: when the game or the launcher finds a Java mod it may offer to turn it on, and the player decides. Before
+it is promoted out of beta, its server MSPT and memory are measured against the Java client running the same mods
+(plan: [#13914](https://github.com/horizon-rust/horizon/issues/13914)).
+
 Mods are **off by default**. A fresh install has no `horizon-mods` folder and plays exactly like vanilla 26.3.
 
 ## Playing with mods
@@ -348,7 +354,9 @@ A mod fluid is declared in `data/<id>/horizon/fluid/<name>.json`. It copies `min
 out, it is the template's): `light_level` (0 to 15), `density`, `viscosity`, `temperature`, `motion_scale`,
 `fall_distance_modifier`, `can_push_entity`, `can_swim`, `can_drown`, `can_extinguish`, `can_convert_to_source`,
 `supports_boating`, `can_hydrate`, `tick_rate` (1 or more), `slope_find_distance` (1 to 8), `level_decrease_per_block`
-(1 to 7) and `explosion_resistance`. `bucket` names one of the mod's items and `block` one of its blocks, both optional.
+(1 to 7) and `explosion_resistance`. `bucket` names one of the mod's items and `block` one of its blocks, both optional;
+the block copies the template's liquid block (`"template": "minecraft:water"` or `"minecraft:lava"`), which holds the
+fluid at its `level`.
 `still` and `flowing` (required) and `overlay` are its textures in the block atlas, `tint` an ARGB colour over them:
 
 ```json
@@ -359,9 +367,24 @@ out, it is the template's): `light_level` (0 to 15), `density`, `viscosity`, `te
 Like vanilla's, it is two fluids: the source `<id>:<name>` and the flowing `<id>:flowing_<name>`
 (`ruby:molten/iron` flows as `ruby:molten/flowing_iron`). Both take network ids after vanilla's, by id, so fluid tags
 in `data/<id>/tags/fluid/` may name them, and clients join a server only with the same mods' fluids, as with its
-blocks. Native mods' tanks hold them by these ids. It is a declaration only yet: the world has no blocks of it, the
-bucket doesn't pour it, and nothing draws it ([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these
-step by step).
+blocks. Native mods' tanks hold them by these ids.
+
+Its block flows in the world as its template does, with the fluid's own `tick_rate`, `level_decrease_per_block`,
+`slope_find_distance` and `can_convert_to_source`, and leaves its own block where it spreads. It meets other fluids as
+NeoForge's `BaseFlowingFluid` does: lava's and water's conversions (stone, obsidian, cobblestone) stay theirs, a mod
+fluid copying lava neither fizzes nor turns water to stone, and no fluid replaces a mod fluid. Its `bucket` pours the source and an empty bucket
+picks the source back up (a fluid without one can't be picked up), from a hand or a dispenser, with the template's
+sounds.
+
+It is not water to the game (a zombie in it doesn't become a drowned, nor does it hydrate farmland): as NeoForge tracks
+each `FluidType`, an entity's immersion in it is its own. The player moves in it as in water, whatever its template,
+and its numbers decide the rest: its current pushes the player, dropped items, experience orbs, armour stands and boats
+by `motion_scale` when `can_push_entity`; the player swims and rises in it when `can_swim`, loses air with the eyes in
+it when `can_drown`, is put out when `can_extinguish`, and has the fall distance multiplied by
+`fall_distance_modifier` each tick in it (0 resets it, as water does). Left out, each is its template's: water's
+0.014, all true and 0; lava's 0.0023, only `can_push_entity`, and 0.5. Not yet: mobs and arrows swim and move in it as
+on land, boats don't float on it (`supports_boating`), and it is drawn as its template
+([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these step by step).
 
 A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
 `minecraft:snowball`, a thrown item projectile, or a living mob (below). A thrown type's `item` is one of the mod's own

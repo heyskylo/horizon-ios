@@ -300,6 +300,14 @@ pub(crate) struct Colormap {
     triangular: bool,
     /// Rounds to the nearest pixel (the default) instead of the one below.
     rounds: bool,
+    /// `biome_blend`: blocks take the mean of the colours around them, over the Biome Blend
+    /// square, as vanilla's biome tints do. Without the field, maps that sample the biome
+    /// (`temperature`, `downfall`, `biome_id`) blend: Polytone 6.8.6's water by `biome_id`
+    /// fades over a biome edge.
+    pub(crate) biome_blend: bool,
+    /// Its axes read nothing that changes up a column of one biome (no `o.y`): a section of
+    /// one biome can sample it once per column.
+    pub(crate) column: bool,
     width: u32,
     height: u32,
     rgba: Vec<u8>,
@@ -318,6 +326,18 @@ enum Axis {
 }
 
 impl Axis {
+    /// Whether the axis reads only what stays the same up a column of one biome.
+    fn column(&self) -> bool {
+        use horizon_polytone::expr::Root;
+        let flat = |root: Root, name: &str| match root {
+            Root::Object => matches!(name, "x" | "z" | "biome" | "temperature" | "downfall"),
+            Root::Random => name == "noise",
+            _ => false,
+        };
+        match self {
+            Self::Expr(program) | Self::BiomeId(_, program) => program.reads_only(&flat),
+        }
+    }
     fn value(&self, host: &mut dyn horizon_polytone::expr::Host) -> Option<f64> {
         match self {
             Self::Expr(program) => Some(program.eval(host).ok()?.num()),
@@ -368,6 +388,23 @@ fn biome_id_mapper(pack_root: &Path, json: &Json) -> HashMap<String, f64> {
 }
 
 impl Colormap {
+    /// One colour wherever it samples (a `biome_colors` flat colour, RGB).
+    pub(crate) fn flat(rgb: u32) -> Self {
+        let zero = || Axis::Expr(horizon_polytone::expr::Program::compile("0").expect("a number"));
+        let [_, r, g, b] = rgb.to_be_bytes();
+        Self {
+            x: zero(),
+            y: zero(),
+            triangular: false,
+            rounds: true,
+            biome_blend: false,
+            column: true,
+            width: 1,
+            height: 1,
+            rgba: vec![r, g, b, 255],
+        }
+    }
+
     /// `assets/<namespace>/polytone/colormaps/<path>.png` and its optional `.json` (without
     /// one, the axes are the biome's temperature and downfall).
     pub(crate) fn load(pack_root: &Path, id: &str) -> Option<Self> {
@@ -384,12 +421,17 @@ impl Colormap {
         let json: Json =
             horizon_world::json_file::read(&base.with_extension("json")).unwrap_or(Json::Null);
         let compile = horizon_polytone::expr::Program::compile;
-        let axis = |key: &str, default: &str| -> Option<Axis> {
+        let mut by_biome = false;
+        let mut axis = |key: &str, default: &str| -> Option<Axis> {
             let src = match &json[key] {
                 Json::String(s) => s.clone(),
                 Json::Number(n) => n.to_string(),
                 _ => default.to_owned(),
             };
+            by_biome |= matches!(
+                src.trim(),
+                "biome_id" | "temperature" | "legacy_temperature" | "downfall"
+            ) || matches!(src.trim(), "o.temperature" | "o.downfall");
             // The named samplers (wiki "Default Samplers") as the expressions they stand for.
             let src = match src.trim() {
                 "biome_id" => {
@@ -410,9 +452,16 @@ impl Colormap {
                 }
             }
         };
+        let (x, y) = (
+            axis("x_axis", "o.temperature")?,
+            axis("y_axis", "o.downfall")?,
+        );
+        let column = [&x, &y].iter().all(|axis| axis.column());
         Some(Self {
-            x: axis("x_axis", "o.temperature")?,
-            y: axis("y_axis", "o.downfall")?,
+            x,
+            y,
+            column,
+            biome_blend: json["biome_blend"].as_bool().unwrap_or(by_biome),
             triangular: json["triangular"].as_bool() == Some(true),
             rounds: json["rounds"].as_bool() != Some(false),
             width,
