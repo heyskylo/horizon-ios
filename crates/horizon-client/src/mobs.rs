@@ -4260,10 +4260,19 @@ impl Mob {
         through
     }
     /// `LivingEntity.actuallyHurt`: the absorption amount takes the damage first;
-    /// what is left reaches the health.
+    /// what is left reaches the health. `setAbsorptionAmount` stores the rest
+    /// with `Mth.clamp(amount, 0, getMaxAbsorption())`, so absorption above
+    /// `max_absorption` (from the mob's data, with no Absorption effect) is gone
+    /// after the hit.
     pub fn soak_absorption(&mut self, damage: f32) -> f32 {
         let through = (damage - self.absorption).max(0.0);
-        self.absorption = (self.absorption - (damage - through)).max(0.0);
+        let left = self.absorption - (damage - through);
+        // `Mth.clamp(float, float, float)`: `value < min ? min : Math.min(value, max)`.
+        self.absorption = if left < 0.0 {
+            0.0
+        } else {
+            left.min(armor::max_absorption(self))
+        };
         through
     }
     /// `LivingEntity.checkTotemDeathProtection`: the first hand with a
@@ -6605,9 +6614,31 @@ mod hurt_cooldown_incoming_tests {
         assert_eq!(m.last_hurt, 8.0);
     }
 
+    /// #13078: `setAbsorptionAmount` clamps to `getMaxAbsorption()`, so a hit
+    /// leaves no more absorption than the `max_absorption` attribute allows.
+    #[test]
+    fn a_hit_clamps_absorption_to_its_maximum() {
+        // No Absorption effect: max_absorption 0, and data-given absorption soaks
+        // the hit, then is gone.
+        let mut m = mob(Species::Pig);
+        let health = m.health;
+        m.absorption = 10.0;
+        assert_eq!(armor::max_absorption(&m), 0.0);
+        assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
+        assert_eq!((m.health, m.absorption), (health, 0.0));
+        // Absorption I (max 4): 10 hit for 1 leaves 4, not 9.
+        let mut m = mob(Species::Pig);
+        m.add_effect("absorption", 600, 0);
+        m.absorption = 10.0;
+        assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
+        assert_eq!((m.health, m.absorption), (health, 4.0));
+    }
+
     #[test]
     fn absorption_soaks_the_accepted_difference() {
         let mut m = mob(Species::Pig);
+        // Absorption I: max_absorption 4, so 1.5 is within it.
+        m.add_effect("absorption", 600, 0);
         m.absorption = 1.5;
         assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
         assert_eq!((m.health, m.absorption), (40.0, 0.5));
