@@ -551,7 +551,8 @@ mod tests {
         assert_eq!(w.since, Some(20));
         // Another dimension, opening to LAN: the same visit.
         assert!(w.update(world(Play::Singleplayer, Dimension::Nether), 30));
-        assert!(w.update(world(Play::Hosting { players: 1, max: 8 }, Dimension::Nether), 40));
+        let hosting = world(Play::Hosting { players: 1, max: 8 }, Dimension::Nether);
+        assert!(w.update(hosting, 40));
         assert_eq!(w.since, Some(20));
         assert!(w.update(Status::Menus, 50));
         assert_eq!(w.since, None);
