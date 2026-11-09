@@ -328,7 +328,7 @@ impl Game<'_> {
     pub(super) fn weapon_wear(&mut self, stack: &ItemStack) {
         let items = self.res.items();
         let weapon = items
-            .weapon_damage(&stack)
+            .weapon_damage(stack)
             .map(|damage| (damage, items.get(&stack.item).map_or(0, |i| i.max_damage)));
         if let Some((per_attack, max)) = weapon
             && max > 0
