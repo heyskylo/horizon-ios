@@ -1512,10 +1512,111 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
             assert!(near(g * 4.0, r) && b == 0.0, "{light}: {r} {g} {b}");
             last = r;
         }
+        // A display with little headroom, 300 nits at a paper white of 203: the knee sits at
+        // white, so all that SDR shows stays as it is, and the source's peak is 645 nits.
+        hdr.peak = 300.0;
+        let headroom = 300.0 / 203.0;
+        for light in [0.5f32, 0.9, 1.0] {
+            let g = f64::from(light.powf(1.0 / 2.2));
+            let stored = after(&mut hdr, [g, g * 0.5, 0.0, 1.0], &|_, _| {});
+            assert_eq!(
+                after(&mut hdr, [g, g * 0.5, 0.0, 1.0], &tonemap),
+                stored,
+                "{light}"
+            );
+        }
+        for (light, want) in [
+            (1.2, 1.16839),
+            (1.4, 1.28356),
+            (headroom, 1.31719),
+            (2.0, 1.44024),
+            (4.0, headroom),
+        ] {
+            let [r, ..] = eased(&mut hdr, [light; 3]);
+            assert!(near(r, want), "{light}: {r}, not {want}");
+        }
         // No headroom (a peak below paper white): a clip at white, channel by channel.
         hdr.peak = 150.0;
         let [r, g, b] = eased(&mut hdr, [1.5, 0.5, 0.2]);
         assert!(r == 1.0 && near(g, 0.5) && near(b, 0.2), "{r} {g} {b}");
+    }
+
+    /// ITU-R BT.2390's black level lift on grey light, in HDR10 and in scRGB, against values
+    /// worked out apart from the shader, in f64 from SMPTE ST 2084: E3 = E2 + b (1 - E2)^4 on
+    /// the PQ signal, for a source from 0 to the peak and b the black level's share of it.
+    #[test]
+    fn the_black_level_lift_follows_bt2390_in_pq_and_scrgb() {
+        let Some((device, queue)) = gpu() else {
+            return;
+        };
+        let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+        let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 128.0, 2392.0 / 128.0);
+        let pq = |nits: f64| {
+            let y = (nits / 10_000.0).powf(m1);
+            ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2)
+        };
+        let nits = |e: f64| {
+            let p = e.powf(1.0 / m2);
+            10_000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+        };
+        let (paper, peak) = (203.0, 1000.0);
+        let lifted = |light: f64, black: f64| {
+            let top = pq(peak);
+            let e2 = (pq(light) / top).min(1.0);
+            nits((e2 + pq(black) / top * (1.0 - e2).powi(4)) * top)
+        };
+        for output in [Output::Pq, Output::ScRgb] {
+            let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, output, true, None);
+            (hdr.paper_white, hdr.peak) = (paper as f32, peak as f32);
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: output.format(),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            for black in [0.0, 0.005, 0.05, 0.5] {
+                hdr.black = black as f32;
+                // Black, the shadows, paper white and the peak, in units of paper white.
+                for light in [0.0, 0.001, 0.01, 0.1, 1.0, peak / paper] {
+                    let g = half::f16::from_f64(f64::powf(light, 1.0 / 2.2)).to_f64();
+                    let shown = (g.powf(2.2) * paper).min(peak);
+                    let want = if black > 0.0 {
+                        lifted(shown, black)
+                    } else {
+                        shown
+                    };
+                    let frame = hdr.frame(&device, [1, 1]);
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    fill(&mut encoder, &frame, [g, g, g, 1.0]);
+                    hdr.keep_world(&mut encoder, None);
+                    super::super::hud_coverage::clear(&mut encoder, &hdr.coverage_view().unwrap());
+                    hdr.begin(&queue, true);
+                    hdr.present(&queue, &mut encoder, &target, true, None);
+                    let got = texel(&device, &queue, encoder, &target);
+                    for c in &got[..3] {
+                        let c = f64::from(*c);
+                        let ok = match output {
+                            // 10-bit codes, a step either way for rounding.
+                            Output::Pq => (c - 1023.0 * pq(want)).abs() <= 1.0,
+                            // 80 nits a unit, in half floats.
+                            Output::ScRgb => (c * 80.0 - want).abs() <= 2e-3 * want + 1e-4,
+                        };
+                        assert!(
+                            ok,
+                            "{output:?} black {black}, light {light}: {got:?}, not {want} nits"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
