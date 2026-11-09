@@ -1450,6 +1450,7 @@ dependencies = [
  "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mod-api-gen",
  "horizon-mods",
@@ -1500,7 +1501,6 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "horizon-client-core",
- "horizon-dualsense",
  "horizon-theme",
  "png",
  "winit",
@@ -1529,9 +1529,9 @@ dependencies = [
  "horizon-command",
  "horizon-core",
  "horizon-cosmetics",
- "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mcp",
  "horizon-mods",
@@ -1588,11 +1588,11 @@ dependencies = [
  "horizon-cosmetics",
  "horizon-hdr",
  "horizon-items",
- "horizon-mod-api-gen",
  "horizon-narrator",
  "horizon-optifine",
  "horizon-polytone",
  "horizon-protocol",
+ "horizon-render-pipeline",
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
@@ -1677,6 +1677,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-game"
+version = "0.1.0"
+dependencies = [
+ "horizon-client",
+ "horizon-mods",
+ "horizon-threads",
+]
+
+[[package]]
 name = "horizon-hdr"
 version = "0.1.0"
 dependencies = [
@@ -1686,6 +1695,19 @@ dependencies = [
  "wayland-protocols",
  "wgpu",
 ]
+
+[[package]]
+name = "horizon-heartbeat"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "horizon-telemetry",
+ "log",
+]
+
+[[package]]
+name = "horizon-hooks"
+version = "0.1.0"
 
 [[package]]
 name = "horizon-items"
@@ -1768,6 +1790,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-official"
+version = "0.1.0"
+dependencies = [
+ "horizon-game",
+ "horizon-heartbeat",
+ "horizon-platform",
+ "log",
+ "winresource",
+]
+
+[[package]]
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
@@ -1781,6 +1814,7 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-hooks",
  "horizon-system",
 ]
 
@@ -1853,6 +1887,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-render-pipeline"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
@@ -1916,6 +1954,7 @@ version = "0.1.0"
 dependencies = [
  "half",
  "horizon-core",
+ "horizon-render-pipeline",
  "naga",
  "png",
  "zip",

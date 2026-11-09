@@ -81,7 +81,7 @@ WaterDebugRenderer	home	crates/horizon-client/src/game/debug_renderers.rs	Game::
 LevelExtractor.extract	port	crates/horizon-client/src/game.rs::Game::render	the frame's extraction and draw; gap: minor: no separate render state, the frame is built and drawn in one fn
 LevelExtractor.drainTransientBlockQueue	port	crates/horizon-client/src/game/transient_blocks.rs::Game::drain_transient_block_queue	ClientboundAddTransientBlock's blocks are drawn as moving blocks until a section mesh compiled after them is uploaded
 LevelExtractor.extractVisibleBlockEntities	inline	crates/horizon-client/src/game.rs::Game::render	block entities of the visible sections; gap: minor: no 0.3 visibility gate, see RenderSection.getVisibility
-LevelExtractor.extractBlockDestroyAnimation	port	crates/horizon-client/src/game.rs::Game::destroy_block_progress	keeps the crumbling progress per breaker for 400 ticks; gap: minor: no 32-block distance cut here
+LevelExtractor.extractBlockDestroyAnimation	port	crates/horizon-client/src/game/block_breaking.rs::Game::destroy_block_progress	keeps the crumbling progress per breaker for 400 ticks; gap: minor: no 32-block distance cut here
 LevelExtractor.extractGizmos	port	crates/horizon-client/src/game/debug_keys.rs::Game::debug_gizmos	the frame's debug gizmos
 LevelExtractor.extractPlayerState	inline	crates/horizon-client/src/game.rs::Game::render	player and hands read from the game state at draw time
 LevelExtractor.applyFrustum	port	crates/horizon-client-render/src/gfx/resident.rs::Resident::visible	the frustum decides which sections are visible
