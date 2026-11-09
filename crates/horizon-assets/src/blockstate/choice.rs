@@ -108,6 +108,16 @@ impl<T> CompiledChoices<T> {
             multipart: self.multipart.iter().map(|c| c.map(&mut f)).collect(),
         }
     }
+    /// A variant that needs no random selection and produces exactly one model.
+    pub fn single_variant(&self, selected: &SelectedModels) -> Option<&T> {
+        let SelectedModels::Variant(index) = selected else {
+            return None;
+        };
+        match self.variants.get(*index)? {
+            Choice::Single(value) => Some(value),
+            Choice::Weighted { .. } => None,
+        }
+    }
     /// The variant `particleMaterial` comes from: the first entry of a weighted
     /// list (`WeightedVariants`) and, for a multipart root, of its first
     /// selector whether or not that selector applies (`MultiPartModel`).

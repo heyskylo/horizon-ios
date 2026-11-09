@@ -41,6 +41,8 @@ struct StoredPart {
 #[derive(Default)]
 pub struct SkinModels {
     stored: FxHashMap<usize, (Arc<Part>, Option<Stored>)>,
+    rotations: Rotations,
+    rotation_cache_disabled: bool,
     /// Item models, the same way (`item_render::ItemRenderState::submit_skinned`).
     items: FxHashMap<usize, (Arc<BakedItemModel>, Option<StoredItem>)>,
     vertices: u32,
@@ -72,7 +74,68 @@ pub struct ItemRun {
 /// models pile up otherwise).
 const STORE_LIMIT: u32 = 4 << 20;
 
+/// Local rotations repeat across bones, entities and frames. Exact input bits
+/// keep signed zero and animation precision; collisions only replace an entry.
+struct Rotations([Option<Rotation>; 64]);
+
+#[derive(Clone, Copy)]
+struct Rotation {
+    key: [u32; 3],
+    matrix: glam::Mat4,
+    normal: glam::Mat3,
+}
+
+impl Default for Rotations {
+    fn default() -> Self {
+        Self([None; 64])
+    }
+}
+
+impl Rotations {
+    #[inline]
+    fn get(&mut self, p: [f32; 9]) -> &Rotation {
+        use std::hash::Hasher;
+        let key = [p[3].to_bits(), p[4].to_bits(), p[5].to_bits()];
+        // Positive zero produces these exact matrices on both original paths.
+        // Keep it outside the table so a stream of animated misses cannot evict it.
+        if key == [0; 3] {
+            return &Rotation {
+                key: [0; 3],
+                matrix: glam::Mat4::IDENTITY,
+                normal: glam::Mat3::IDENTITY,
+            };
+        }
+        let mut hash = crate::fast_hash::FxHasher::default();
+        // Hash each angle separately: packing two into a u64 makes opposite
+        // signs collide in common mirrored limb poses.
+        for angle in key {
+            hash.write_u32(angle);
+        }
+        let index = hash.finish() as usize & (self.0.len() - 1);
+        let slot = &mut self.0[index];
+        if slot.as_ref().is_none_or(|rotation| rotation.key != key) {
+            *slot = Some(Rotation {
+                key,
+                matrix: glam::Mat4::from_quat(glam::Quat::from_euler(
+                    glam::EulerRot::ZYX,
+                    p[5],
+                    p[4],
+                    p[3],
+                )),
+                normal: ModelNormals::rotation(p[3], p[4], p[5]),
+            });
+        }
+        slot.as_ref().unwrap()
+    }
+}
+
 impl SkinModels {
+    /// Select the original per-part rotation arithmetic when reuse is disabled.
+    /// The caller can change this between frames without rebuilding the model store.
+    pub fn set_rotation_cache_enabled(&mut self, enabled: bool) {
+        self.rotation_cache_disabled = !enabled;
+    }
+
     /// Starts a frame: drops the models nothing else holds (their vertices
     /// stay in the store until it restarts), restarts the store when it grew
     /// too large or the renderer's (`stored`, its size) is out of step.
@@ -87,7 +150,7 @@ impl SkinModels {
         frame.clear_draws();
     }
 
-    fn restart(&mut self, frame: &mut SkinFrame) {
+    pub fn restart(&mut self, frame: &mut SkinFrame) {
         self.stored.clear();
         self.items.clear();
         self.vertices = 0;
@@ -96,7 +159,11 @@ impl SkinModels {
         frame.reset = true;
     }
 
-    fn entry(&mut self, model: &Arc<Part>, frame: &mut SkinFrame) -> Option<&Stored> {
+    fn entry(
+        &mut self,
+        model: &Arc<Part>,
+        frame: &mut SkinFrame,
+    ) -> Option<(&Stored, &mut Rotations)> {
         let key = Arc::as_ptr(model) as usize;
         let vertices = &mut self.vertices;
         let (_, stored) = self.stored.entry(key).or_insert_with(|| {
@@ -107,7 +174,7 @@ impl SkinModels {
             *vertices += (frame.new_model.len() - before) as u32;
             (model.clone(), stored)
         });
-        stored.as_ref()
+        Some((stored.as_ref()?, &mut self.rotations))
     }
 
     /// An item model's runs, stored on first sight; `None` when it has no
@@ -359,7 +426,8 @@ impl<'a> Skin<'a> {
             }
             return true;
         }
-        let Some(stored) = self.models.entry(model, self.frame) else {
+        let cache_enabled = !self.models.rotation_cache_disabled;
+        let Some((stored, rotations)) = self.models.entry(model, self.frame) else {
             return false;
         };
         let jobs = self.frame.jobs.len();
@@ -368,18 +436,34 @@ impl<'a> Skin<'a> {
             self.frame.parts.len() + stored.parts.len(),
             bytemuck::Zeroable::zeroed(),
         );
-        let mut walk = Walk {
-            stored,
-            poses,
-            parts: &mut self.frame.parts[first_part as usize..],
-            jobs: &mut self.frame.jobs,
-            vertices: &mut self.frame.vertices,
-            bounds: &mut self.bounds,
-            first_part,
-            paint,
-            index: 0,
-        };
-        walk.part(model, base, ModelNormals::new(base));
+        if cache_enabled {
+            let mut walk = CachedWalk {
+                rotations,
+                stored,
+                poses,
+                parts: &mut self.frame.parts[first_part as usize..],
+                jobs: &mut self.frame.jobs,
+                vertices: &mut self.frame.vertices,
+                bounds: &mut self.bounds,
+                first_part,
+                paint,
+                index: 0,
+            };
+            walk.part(model, base, ModelNormals::new(base));
+        } else {
+            let mut walk = Walk {
+                stored,
+                poses,
+                parts: &mut self.frame.parts[first_part as usize..],
+                jobs: &mut self.frame.jobs,
+                vertices: &mut self.frame.vertices,
+                bounds: &mut self.bounds,
+                first_part,
+                paint,
+                index: 0,
+            };
+            walk.part(model, base, ModelNormals::new(base));
+        }
         // The walk's first job never extends an earlier draw's: those have
         // other parts.
         self.last = Some(Walked {
@@ -501,11 +585,271 @@ impl Walk<'_> {
     }
 }
 
+struct CachedWalk<'a> {
+    stored: &'a Stored,
+    rotations: &'a mut Rotations,
+    poses: &'a Poses,
+    parts: &'a mut [SkinPart],
+    jobs: &'a mut Vec<SkinJob>,
+    vertices: &'a mut u32,
+    bounds: &'a mut Option<(glam::Vec3, glam::Vec3)>,
+    first_part: u32,
+    paint: Paint,
+    /// The pre-order index of the part being walked.
+    index: u32,
+}
+
+impl CachedWalk<'_> {
+    /// `render::draw_normals` without the vertices: the part's matrices, and
+    /// its polygons as (part of) a job.
+    fn part(&mut self, part: &Part, base: glam::Mat4, normals: ModelNormals) {
+        let index = self.index;
+        let stored = self.stored.parts[index as usize];
+        let p = self.poses.pose(part);
+        if self.poses.is_hidden(part) || p[6] == 0.0 && p[7] == 0.0 && p[8] == 0.0 {
+            // The whole subtree is left out.
+            self.index = stored.end;
+            return;
+        }
+        let rotation = self.rotations.get(p);
+        let m = super::render::posed_rotated(base, p, rotation.matrix);
+        let normals = normals.part_rotated(p, rotation.normal);
+        let n = if normals.trusted {
+            normals.matrix
+        } else {
+            glam::Mat3::from_cols(
+                normals.matrix.x_axis.normalize_or_zero(),
+                normals.matrix.y_axis.normalize_or_zero(),
+                normals.matrix.z_axis.normalize_or_zero(),
+            )
+        };
+        self.parts[index as usize] = SkinPart {
+            matrix: m.to_cols_array(),
+            normal: n.to_cols_array(),
+        };
+        if !self.poses.skips(part) && stored.count > 0 {
+            self.emit(stored);
+            if let Some((lo, hi)) = self.stored.bounds[index as usize] {
+                let (lo, hi) = (glam::Vec3::from_array(lo), glam::Vec3::from_array(hi));
+                let center = m.transform_point3((lo + hi) * 0.5);
+                let half = (hi - lo) * 0.5;
+                let r = glam::Mat3::from_mat4(m);
+                let extent =
+                    r.x_axis.abs() * half.x + r.y_axis.abs() * half.y + r.z_axis.abs() * half.z;
+                let (a, b) = (center - extent, center + extent);
+                *self.bounds = Some(match *self.bounds {
+                    Some((l, h)) => (l.min(a), h.max(b)),
+                    None => (a, b),
+                });
+            }
+        }
+        self.index += 1;
+        for child in &part.children {
+            self.part(child, m, normals);
+        }
+    }
+
+    /// The part's vertices: extends the last job when they follow its own.
+    fn emit(&mut self, stored: StoredPart) {
+        let first = self.stored.first + stored.first;
+        let paint = self.paint;
+        if let Some(job) = self.jobs.last_mut()
+            && job.first + job.count == first
+            && job.part == self.first_part
+            && job.dst + job.count == *self.vertices
+        {
+            job.count += stored.count;
+        } else {
+            self.jobs.push(SkinJob {
+                dst: *self.vertices,
+                ..paint.job(
+                    first,
+                    stored.count,
+                    self.first_part,
+                    u32::from(self.stored.cull),
+                )
+            });
+        }
+        *self.vertices += stored.count;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gfx::entity_skin::expand;
     use crate::mobs::{Mob, MobData, MobTypes, render};
+
+    #[test]
+    fn rotation_cache_can_be_bypassed_between_frames() {
+        let model = Arc::new(Part::parse(
+            "root",
+            &serde_json::json!({
+                "pose": [0, 0, 0, 0, 0, 0, 1, 1, 1],
+                "polygons": [[[0, 0, 0, 0, 0], [0, 16, 0, 0, 1],
+                              [0, 16, 16, 1, 1], [0, 0, 16, 1, 0]]],
+                "normals": [[1, 0, 0]]
+            }),
+        ));
+        let mut models = SkinModels::default();
+        let mut frame = SkinFrame::default();
+        let mut store = Vec::new();
+        let paint = Paint {
+            uv: [0.125, 0.25, 0.75, 0.875],
+            scroll: 0.0,
+            color: 0xff80_c0ff,
+            light: 0x70a0,
+            overlay: 0,
+        };
+        for (i, enabled) in [false, true, false, true].into_iter().enumerate() {
+            let mut poses = Poses::new(&model);
+            poses.get("root")[3..6].copy_from_slice(&[0.3 + i as f32 * 0.1, -0.7, 1.2]);
+            let base = glam::Mat4::from_scale(glam::Vec3::new(-0.75, 1.25, 0.5));
+            let mut expected = Vec::new();
+            render::draw(
+                &model,
+                base,
+                &poses,
+                paint.uv,
+                paint.color,
+                paint.light,
+                paint.overlay,
+                &mut expected,
+            );
+            let before = models
+                .rotations
+                .0
+                .map(|entry| entry.map(|rotation| rotation.key));
+            models.set_rotation_cache_enabled(enabled);
+            models.begin(&mut frame, store.len() as u32);
+            assert!(Skin::new(&mut models, &mut frame).draw(&model, base, &poses, paint));
+            let after = models
+                .rotations
+                .0
+                .map(|entry| entry.map(|rotation| rotation.key));
+            if enabled {
+                assert_ne!(before, after, "enabled cache must record the new rotation");
+            } else {
+                assert_eq!(
+                    before, after,
+                    "bypass must not access or populate the cache"
+                );
+            }
+            store.extend_from_slice(&frame.new_model);
+            frame.handed();
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&expand(&store, &frame)),
+                bytemuck::cast_slice::<_, u8>(&expected),
+            );
+        }
+    }
+
+    #[test]
+    fn reused_rotations_keep_scaled_and_animated_vertices_bit_exact() {
+        let leaf = |name: &str| {
+            Part::parse(
+                name,
+                &serde_json::json!({
+                    "pose": [0, 0, 0, 0, 0, 0, 1, 1, 1],
+                    "polygons": [[[0, 0, 0, 0, 0], [0, 16, 0, 0, 1],
+                                  [0, 16, 16, 1, 1], [0, 0, 16, 1, 0]]],
+                    "normals": [[1, 0, 0]]
+                }),
+            )
+        };
+        let mut root = leaf("root");
+        let mut child = leaf("child");
+        child.children.push(leaf("tip"));
+        root.children.push(child);
+        let model = Arc::new(root);
+        let mut models = SkinModels::default();
+        let mut frame = SkinFrame::default();
+        let mut store = Vec::new();
+        let angles = [0.0, -0.0, 0.7, f32::from_bits(0.7f32.to_bits() + 1), -1.2];
+        // More distinct rotations than the cache holds, interspersed with hits.
+        // Translation, parent transforms and scale keep changing under a reused
+        // rotation, including mirrored and nonuniform normal stacks.
+        for i in 0..512 {
+            let mut poses = Poses::new(&model);
+            for (j, name) in ["root", "child", "tip"].into_iter().enumerate() {
+                let pose = poses.get(name);
+                pose[0] = i as f32 * 0.03125;
+                pose[1] = j as f32 * -2.25;
+                pose[3] = angles[(i + j) % angles.len()];
+                pose[4] = if i % 3 == 0 { i as f32 * 0.013 } else { 0.0 };
+                pose[5] = angles[(i / 2 + j) % angles.len()];
+                pose[6..9].copy_from_slice(match (i + j) % 4 {
+                    0 => &[1.0, 1.0, 1.0],
+                    1 => &[-1.0, 1.0, -1.0],
+                    2 => &[0.75, 1.25, 0.5],
+                    _ => &[0.0, 0.0, 0.0],
+                });
+            }
+            if i % 17 == 0 {
+                poses.visible("child", false);
+            }
+            if i % 19 == 0 {
+                poses.skip_draw("root");
+            }
+            let base = glam::Mat4::from_translation(glam::Vec3::new(i as f32 * 0.1, -3.25, 7.0))
+                * glam::Mat4::from_rotation_y(i as f32 * 0.017);
+            let paint = Paint {
+                uv: [0.125, 0.25, 0.75, 0.875],
+                scroll: 0.0,
+                color: 0xff80_c0ff,
+                light: 0x70a0,
+                overlay: 0,
+            };
+            let mut expected = Vec::new();
+            render::draw(
+                &model,
+                base,
+                &poses,
+                paint.uv,
+                paint.color,
+                paint.light,
+                paint.overlay,
+                &mut expected,
+            );
+            models.begin(&mut frame, store.len() as u32);
+            assert!(Skin::new(&mut models, &mut frame).draw(&model, base, &poses, paint));
+            store.extend_from_slice(&frame.new_model);
+            frame.handed();
+            let actual = expand(&store, &frame);
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&actual),
+                bytemuck::cast_slice::<_, u8>(&expected),
+                "draw {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn restart_clears_models_and_marks_frame_reset() {
+        let mut models = SkinModels::default();
+        let mut frame = SkinFrame::default();
+        frame.jobs.push(Default::default());
+        frame.parts.push(SkinPart {
+            matrix: [0.0; 16],
+            normal: [0.0; 9],
+        });
+        frame.vertices = 4;
+        frame.outline_jobs.push(Default::default());
+        frame.outline_vertices = 4;
+        assert!(frame.pending());
+
+        models.restart(&mut frame);
+        frame.clear_draws();
+
+        assert_eq!(models.vertices, 0);
+        assert_eq!(frame.base, 0);
+        assert_eq!(frame.vertices, 0);
+        assert_eq!(frame.outline_vertices, 0);
+        assert!(frame.jobs.is_empty());
+        assert!(frame.parts.is_empty());
+        assert!(frame.outline_jobs.is_empty());
+        assert!(frame.reset);
+    }
 
     /// Every vanilla mob, at a few ages and turns: the GPU path's vertices
     /// (its jobs expanded as `entity_skin.wgsl` does) are the CPU path's, to

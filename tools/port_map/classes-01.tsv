@@ -1,6 +1,7 @@
+Squid.hurtServer	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with_player_context	after shared parent damage, require last living attacker for true; retain health loss and existing ink guard
 GlowSquid.aiStep	port	crates/horizon-client/src/mobs/aquatic.rs::glow_squid_ai_step	
 GlowSquid.checkGlowSquidSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::GlowSquid arm: 33 blocks below sea level, dark, in water
-GlowSquid.hurtServer	port	crates/horizon-client/src/mobs/aquatic.rs::hurt_server	
+GlowSquid.hurtServer	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with_player_context	inherited Squid acceptance is returned after parent health effects; existing dim guard calls aquatic::hurt_server
 WolfSoundVariants	skip:data		registry bootstrap of the wolf sound sets; sounds are in species.rs and finalize.rs
 AbstractDragonPhaseInstance.getTurnSpeed	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_dragon	0.7 / dist / rot turn for every phase but Landing; only applied while a fly target is set
 DragonChargePlayerPhase.doServerTick	inline	crates/horizon-client/src/game/dragon.rs::Game::tick_phase	Charging arm: 10-tick countdown once close; gap: minor: no collision re-target
@@ -32,7 +33,7 @@ Mannequin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::Ba
 Mannequin.applyImplicitComponent	missing		minor: the profile from a spawning item is not applied; Horizon has no mannequin item, only summon with a profile tag
 Mannequin.defineSynchedData	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	slots 17 to 19: the profile, DATA_IMMOVABLE and DATA_DESCRIPTION are all read now
 Mannequin.get	skip:other		data-component getter for the PROFILE component; the profile is Mob.profile, read directly
-Mannequin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	ticked in #3514; `Mannequin.readAdditionalSaveData` is cited at crates/horizon-client/src/entity_nbt.rs:1380 (in a comment, so `where` names the enclosing fn)
+Mannequin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	profile, immovable and description load here; validated lowercase pose now feeds extra.avatar_pose for existing live dimensions and eye anchoring. Saved pose default/invalid getter normalization and the remaining schema are separate.
 Mannequin.updateDescription	port	crates/horizon-client/src/mobs.rs::MannequinDescription::component	the description component: the default `entity.minecraft.mannequin.label`, none when hidden, or the server's own (the text drawn under the name tag)
 Giant.createAttributes	skip:data		attributes come from entity-types.json
 ShootWhenStuck.checkExtraStartConditions	inline	crates/horizon-client/src/mobs/breeze.rs::register	
@@ -48,26 +49,27 @@ Pillager.pickUpItem	inline	crates/horizon-client/src/game/raids.rs::Game::sync_r
 Pillager.registerGoals	port	crates/horizon-client/src/mobs/illager.rs::register_pillager	
 Pillager.wantsItem	skip:other		dead code: only a white banner passes, and Pillager.pickUpItem sends every BannerItem to Raider.pickUpItem before consulting it; the ominous banner pickup is in game/raids.rs
 PiglinBrute.createAttributes	skip:data		attributes come from entity-types.json
-PiglinBrute.customServerAiStep	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: the brain tick is replaced by the goals set in register_brute; the activity update is in PiglinBruteAi rows
+PiglinBrute.customServerAiStep	inline	crates/horizon-client/src/mobs/piglin.rs::ai_step	after the goals that pick the target: update_activity, then maybe_play_brute_sound; the goals set in register_brute stand in for vanilla's brain tick
 PiglinBrute.finalizeSpawn	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::mob	golden axe in the main hand via populate; initMemories is missing
 PiglinBrute.hurtServer	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: retaliation is the HurtByTarget goal; no PiglinAi.maybeRetaliate for non-piglin attackers
 PiglinBrute.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	
 PiglinBruteAi.createIdleLookBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: looks at players only (LookAtPlayer); no look at piglins, random look or do-nothing pause
-PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: strolls anywhere; no visits to piglins and no return to its home point
+PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	the walk back to the home memory is `BruteStrollHome` (`StrollToPoi(HOME, 0.6F, 2, 100)`); gap: minor: no visits to piglins (`InteractWith`) and no `StrollAroundPoi`, and the goal yields within ten blocks of home where vanilla re-targets it every 80 ticks
 PiglinBruteAi.findNearestValidAttackTarget	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: targets nearest player or wither skeleton through the target goals; no anger memory first
 PiglinBruteAi.initCoreActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: no door opening and no stop-anger-when-target-dead rule; panic-free float only
 PiglinBruteAi.initFightActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	melee goal at priority 2; attacks as the MeleeAttack goal does
 PiglinBruteAi.initIdleActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	idle behaviour as goals: stroll, look at player, targets
-PiglinBruteAi.initMemories	missing		minor: no home point is remembered, so the brute never returns to where it spawned
+PiglinBruteAi.initMemories	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	the brute's spawn stores its block position as the home memory (`extra.home` plus the brain mirror), which `mobs/piglin.rs::register_brute` now walks it back to; a hit no longer clears it
 PiglinBruteAi.isNearestValidAttackTarget	missing		minor: the brute never drops a target for a nearer one; target goals keep theirs until it dies or is lost
 PiglinBruteAi.maybePlayActivitySound	port	crates/horizon-client/src/mobs/piglin.rs::maybe_play_brute_sound	the level random is drawn every tick and the angry grunt plays under 0.0125 while the brute is fighting
 PiglinBruteAi.playActivitySound	port	crates/horizon-client/src/mobs/piglin.rs::play_brute_sound	entity.piglin_brute.angry when the fight activity starts
 PiglinBruteAi.setAngerTarget	missing		minor: no 600-tick anger memory; the target goals keep the target instead
-PiglinBruteAi.updateActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: no fight and idle activity switch; the melee goal sets the aggressive flag
+PiglinBruteAi.updateActivity	inline	crates/horizon-client/src/mobs/piglin.rs::update_activity	the first valid activity (fight on a target, else idle for a brute) is stored and voiced on a change; shared with PiglinAi and HoglinAi
 StartAdmiringItemIfSeen.create	inline	crates/horizon-client/src/game/piglins.rs::Game::piglin_pickups	gap: player: a piglin takes a wanted item and admires it in hand; it does not stop to admire one it only sees on the ground
 StopAdmiringIfItemTooFarAway.create	inline	crates/horizon-client/src/mobs/piglin.rs::Memories::admire_seen	the 9 block test on NEAREST_VISIBLE_WANTED_ITEM (squared 81) while the off hand holds what is admired, folded into the admire memory tick
 StopAdmiringIfTiredOfTryingToReachItem.create	inline	crates/horizon-client/src/mobs/piglin.rs::Memories::admire_seen	the 200 tick TIME_TRYING_TO_REACH_ADMIRE_ITEM countdown that ends the admire, then DISABLE_WALK_TO_ADMIRE_ITEM for 200
 Parched.getArrow	inline	crates/horizon-client/src/mobs/undead.rs::perform_ranged_attack	Parched arrows carry weakness for 600 ticks
+Parched.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	weakness only, so weakness arrows a parched fires still land on others
 Stray.checkStraySpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Stray arm: powder snow skipped, sky must be visible
 Stray.getArrow	inline	crates/horizon-client/src/mobs/undead.rs::perform_ranged_attack	Stray arrows carry slowness for 600 ticks
 CaveSpider.getVehicleAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::vehicle_attachment	0.21875 of the scale when the vehicle's box is no wider than the spider's; the wider case falls to the type default
@@ -77,12 +79,14 @@ Abilities.pack	skip:java		record copy for the abilities packet; the flags are re
 PlayerSkin.with	missing		minor: skin patches (body, cape, elytra and model overrides) are not applied on top of a profile skin
 PlayerSkin.Patch.create	skip:java		record factory for the patch; the patch itself is missing (see PlayerSkin.with)
 SpectralArrow.doPostHurtEffects	port	crates/horizon-client/src/game/potions.rs::Game::arrow_post_hurt_effects	200-tick Glowing on any target a spectral arrow lands on (creatures.rs:3589); a bow, a crossbow and a dispenser also store the effect on the arrow
+SpectralArrow.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::arrow_to_nbt	Saved integer Duration from modeled spectral state, including constructor default 200; no hit-effect duration claim
+SpectralArrow.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::arrow_from_nbt	Adopts signed integer Duration with default 200 into spectral saved state; no setter or hit-effect change
 SpectralArrow.tick	port	crates/horizon-client/src/game/remote_projectiles.rs::Game::arrow_effect_particles	client tick: an effect sparkle at the arrow's position while it is not stuck; the tipped arrow's colour swirls share the fn
-Fireball.getSlot	missing		minor: the fireball's item slot (its displayed fire charge) is not modelled
-Fireball.readAdditionalSaveData	missing		`fireball_from_nbt` reads no `Item` key, so a saved fireball is drawn as the default fire charge
-Fireball.setItem	missing		minor: the displayed item of a fireball is not set
+Fireball.getSlot	missing		minor: entity slot access (`/loot insert` on an entity) is not modelled, so nothing here can set the slot the fireball's item sits in
+Fireball.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::fireball_from_nbt	the `Item` it is drawn as goes through `setItem`, which refuses an empty stack and keeps a single one
+Fireball.setItem	port	crates/horizon-client/src/projectiles.rs::Projectile::set_item	an empty stack puts the default fire charge back, anything else is kept as one (`copyWithCount(1)`); a kind that is no `Fireball` has no item
 Fireball.shouldRenderAtSqrDistance	skip:ui		render distance rule for the first two ticks; Horizon draws the projectile as its own pass
-LargeFireball.onHit	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: explosion of the given power, then the projectile is gone
+LargeFireball.onHit	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: explosion power and fire flag (mob_griefing), MOB block interaction, then projectile removal. Bounded fire-presence fixture includes disabled-rule and TNT controls; exact motion/counts/geometry and UUID-view serialization are separate.
 LargeFireball.onHitEntity	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	LargeFireball arm: 6 damage to the entity
 SmallFireball.onHitEntity	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	SmallFireball arm: ignites for 5 seconds and deals 5 damage
 AbstractThrownPotion.affectEntitiesAround	port	crates/horizon-client/src/game/splash_water.rs::Game::affect_entities_around	water potion in the potion's (4, 2, 4) box: 1 indirect-magic damage to water-sensitive mobs, put out burning mobs, players and armor stands, then Axolotl.rehydrate
@@ -102,19 +106,19 @@ SpawnContext.create	inline	crates/horizon-client/src/mobs/finalize.rs::VariantRe
 variant/StructureCheck.test	inline	crates/horizon-client/src/mobs/finalize.rs::VariantRegistry::select	Condition::Structure arm: structures with a piece at the position
 AbstractMinecartContainer.applyNaturalSlowdown	inline	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	gap: minor: plain cart friction 0.96; the container's 0.98 plus 0.001 per empty redstone level is missing
 AbstractMinecartContainer.createMenu	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	gap: minor: opens the chest for anyone; no refusal of a loot-table cart for spectators
-AbstractMinecartContainer.remove	inline	crates/horizon-client/src/game/minecarts.rs::Game::hurt_cart	contents spill when the cart breaks, if entity_drops is on
+AbstractMinecartContainer.remove	port	crates/horizon-client/src/game/minecarts.rs::Game::drop_vehicle_contents	Containers.dropContents on every destroying removal, whatever entity_drops says: the damage path's kill or a creative player's discard, and /kill after the open menu writes its slots back; a loot table still held drops the roll made on load
 MinecartChest.interact	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	chest arm: opens the cart's items and plays the chest sound
 MinecartCommandBlock.activateMinecart	inline	crates/horizon-client/src/game/minecarts.rs::Game::activate_cart	gap: minor: no command ever runs; the cart holds no command since its editor is missing
 MinecartCommandBlock.defineSynchedData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::new	the cart's `synced_command` and `synced_output` start empty on the cart itself, as `DATA_ID_COMMAND_NAME` and `DATA_ID_LAST_OUTPUT` do
 MinecartCommandBlock.interact	port	crates/horizon-client/src/game/remote.rs::Game::remote_use_entity	the client opens the command editor of the cart it right-clicked
 MinecartCommandBlock.onSyncedDataUpdated	inline	crates/horizon-client/src/game/command_minecarts.rs::Game::cart_command_updated	the command is the cart's own field rather than synched entity data, which `onUpdated` copies out
-MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	gap: minor: the saved Command text is not read
+MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	loads the base command block and syncs its command/output; a changed command invokes setCommand and resets SuccessCount
 MinecartCommandBlock.MinecartCommandBase.createCommandSourceStack	port	crates/horizon-client/src/game/command_minecarts.rs::Game::perform_cart_command	the due command runs with the cart as its source: its position, rotation and game master level
 MinecartCommandBlock.MinecartCommandBase.onUpdated	inline	crates/horizon-client/src/game/command_minecarts.rs::Game::cart_command_updated	copies the command and the last output into the cart's synched fields
 MinecartFurnace.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	
 MinecartFurnace.addFuel	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	furnace arm: coal or charcoal adds 3600 ticks of fuel up to 32000
 MinecartFurnace.applyNaturalSlowdown	port	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	
-MinecartFurnace.calculateNewPushAlong	inline	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	the push projected on the velocity, inside natural_slowdown
+MinecartFurnace.calculateNewPushAlong	port	crates/horizon-client/src/game/minecarts.rs::push_along	the push projected on the movement when both horizontal lengths pass 1.0E-4 and 0.001, else the push; the slow path and the cart tick both call it
 MinecartFurnace.getDefaultDisplayBlockState	port	crates/horizon-client/src/game/minecarts.rs::Game::display_state	lit furnace while it has fuel
 MinecartFurnace.getMaxSpeed	port	crates/horizon-client/src/game/minecarts.rs::Game::max_speed	half speed on land, three quarters of 0.2 in water
 MinecartFurnace.interact	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	furnace arm
@@ -206,8 +210,8 @@ InkSacItem.tryApplyToSign	inline	crates/horizon-client/src/game/sign_edit.rs::Ga
 InstrumentItem.create	skip:java		builds the horn stack
 InstrumentItem.getInstrument	skip:data		instrument read from the item data
 InstrumentItem.getUseDuration	port	crates/horizon-client/src/game/item_draw.rs::use_duration	goat horn use duration 72000
-InstrumentItem.play	inline	crates/horizon-client/src/game.rs::Game::use_instrument	the instrument's sound at the player (SoundSource.RECORDS, volume `range / 16`), `INSTRUMENT_PLAY` and the use-duration cooldown
-InstrumentItem.use	port	crates/horizon-client/src/game.rs::Game::use_instrument	holds the horn up for the instrument's use duration, plays it, counts the used statistic; an unknown instrument fails
+InstrumentItem.play	inline	crates/horizon-client/src/game/using_item.rs::Game::use_instrument	the instrument's sound at the player (SoundSource.RECORDS, volume `range / 16`), `INSTRUMENT_PLAY` and the use-duration cooldown
+InstrumentItem.use	port	crates/horizon-client/src/game/using_item.rs::Game::use_instrument	holds the horn up for the instrument's use duration, plays it, counts the used statistic; an unknown instrument fails
 Instruments.bootstrap	skip:data		registry bootstrap of the instrument list
 Instruments.register	skip:data		registry bootstrap of the instrument list
 ItemFrameItem.mayPlace	port	crates/horizon-client/src/game/frames.rs::Game::place_item_frame	
@@ -222,3 +226,5 @@ LingeringPotionItem.createPotion	port	crates/horizon-client/src/game/potions.rs:
 LingeringPotionItem.use	inline	crates/horizon-client/src/game/potions.rs::Game::use_potion_item	lingering potion throw
 NameTagItem.interactLivingEntity	port	crates/horizon-client/src/game/names.rs::Game::name_mob	a tag with a custom name names the mob under the crosshair, makes it persistent and is used up, in creative too
 PlaceOnWaterBlockItem.use	inline	crates/horizon-client/src/game/block_items.rs::Game::apply_placed_item	placed by generic block placement; the water rule is not checked here
+Pillager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	modeled occupied Inventory list, including empty; inherited Raider fields separate
+Pillager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Inventory adoption into five-slot occupied-stack model; gap: aggregation and existing pickup-flag load remain separate

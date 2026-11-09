@@ -21,6 +21,7 @@ impl Game<'_> {
         self.tick_craft_table();
         self.tick_container_reach();
         self.load_entity_types();
+        self.ensure_stateful_entity_table();
         if !self.world.block_entities.has_states() {
             let states = self.ticking_states();
             self.world.block_entities.set_states(states);
@@ -37,13 +38,15 @@ impl Game<'_> {
             self.forget_gone_hoppers();
         }
         let ticking = self.block_ticking_area();
-        let mut spawners = Vec::new();
-        let mut trial_spawners = Vec::new();
+        self.spawner_tick_positions.clear();
+        self.trial_spawner_tick_positions.clear();
         self.item_columns = Some(Default::default());
+        self.pass_mobs = Some(Default::default());
         for slot in self.world.block_entity_tickers().iter().copied() {
             let pos = slot.0;
             // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`).
-            if !self.world.block_entities.is_live(slot)
+            if self.world.block_entities.is_asleep(&pos)
+                || !self.world.block_entities.is_live(slot)
                 || !ticking(pos.0, pos.2)
                 || !self.border.contains(f64::from(pos.0), f64::from(pos.2))
             {
@@ -59,17 +62,18 @@ impl Game<'_> {
                 Some(BlockEntity::CreakingHeart(_)) => self.tick_creaking_heart(pos)?,
                 Some(BlockEntity::Spawner(_)) => {
                     self.tick_spawner(pos)?;
-                    spawners.push(pos);
+                    self.spawner_tick_positions.push(pos);
                 }
                 Some(BlockEntity::TrialSpawner(_)) => {
                     self.tick_trial_spawner(pos)?;
-                    trial_spawners.push(pos);
+                    self.trial_spawner_tick_positions.push(pos);
                 }
                 Some(BlockEntity::Vault(_)) => self.tick_vault(pos)?,
                 Some(BlockEntity::Beehive(_)) => self.tick_beehive(pos),
                 Some(BlockEntity::Furnace(_)) => self.tick_furnace(pos)?,
                 Some(BlockEntity::Brewing(_)) => self.tick_brewing_stand(pos)?,
                 Some(BlockEntity::DaylightDetector) => self.tick_daylight_detector(pos),
+                Some(BlockEntity::EndGateway(_)) => self.tick_end_gateway(pos),
                 Some(BlockEntity::Campfire(_)) => self.tick_campfire(pos)?,
                 Some(BlockEntity::Mod(_)) => self.tick_mod_block_entity(pos),
                 Some(BlockEntity::PotentSulfur(_)) => {
@@ -85,15 +89,20 @@ impl Game<'_> {
         }
         // Items move between passes: the columns hold for this one only.
         self.item_columns = None;
+        self.pass_mobs = None;
         self.update_song_volumes();
         self.scan_for_hearts();
         // The client ticks (particles, sounds, the turning mob) are for a
         // window; a dedicated or integrated server has none.
         if self.options.dedicated.is_none() {
+            let spawners = std::mem::take(&mut self.spawner_tick_positions);
             self.client_tick_spawners(&spawners);
-            for key in trial_spawners {
+            self.spawner_tick_positions = spawners;
+            let trial_spawners = std::mem::take(&mut self.trial_spawner_tick_positions);
+            for key in trial_spawners.iter().copied() {
                 self.client_tick_trial_spawner(key);
             }
+            self.trial_spawner_tick_positions = trial_spawners;
         }
         // `ShulkerBoxBlockEntity.tick`: the lids of the boxes this level
         // animates. Their grown collision shape reaches the collision queries
@@ -170,6 +179,7 @@ impl Game<'_> {
                     | "minecraft:bee_nest"
                     | "minecraft:brewing_stand"
                     | "minecraft:daylight_detector"
+                    | "minecraft:end_gateway"
                     // Lit, cookTick; unlit, cooldownTick.
                     | "minecraft:campfire"
                     | "minecraft:soul_campfire" => Ticking::Yes,
@@ -195,12 +205,13 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// `ServerLevel.shouldTickBlocksAt` in a block-ticking chunk
-    /// (`LevelChunk.isTicking`, block coordinates), from every player's
-    /// tickets (`update_chunk_tickets`).
-    fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
+    /// `LevelChunk.isTicking` (block coordinates): a block-ticking chunk from
+    /// every player's tickets (`update_chunk_tickets`), its entities loaded
+    /// (`ServerLevel.areEntitiesLoaded`).
+    pub(super) fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
         let levels = self.tickets.levels();
-        move |x, z| levels.block_ticking_at(x, z)
+        let pending = self.world.entities_pending.clone();
+        move |x, z| levels.block_ticking_at(x, z) && !pending.contains(&(x >> 4, z >> 4))
     }
     /// `DaylightDetectorBlock.tickEntity` of the detector at `pos`.
     fn tick_daylight_detector(&mut self, pos: Pos) {
@@ -226,11 +237,12 @@ impl Game<'_> {
                     .flatten(),
                 f.items[0].as_ref().map(|s| s.item.clone()),
                 f.items[2].as_ref().map_or(0, |s| s.count),
+                f.lit_remaining,
             ),
             _ => return Ok(()),
         };
         let mut drops = Vec::new();
-        let (lit, burning, smelted, smelting) = {
+        let (lit, burning, smelted, smelting, fueled) = {
             let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
                 return Ok(());
             };
@@ -249,8 +261,17 @@ impl Game<'_> {
             let smelting = started
                 .then(|| f.items[0].as_ref().map(|item| item.item.clone()))
                 .flatten();
-            (lit, burning, smelted, smelting)
+            // The tick takes one off `lit_remaining`; only consuming fuel
+            // sets it higher (a lava bucket leaves a bucket of the same count).
+            let fueled = f.lit_remaining > before.4.saturating_sub(1);
+            (lit, burning, smelted, smelting, fueled)
         };
+        // `AbstractFurnaceBlockEntity.serverTick`: `burn` and consuming fuel
+        // set the changed flag, so a completed smelt or a refuel marks the
+        // chunk and tells comparators even though the block state stays LIT.
+        if smelted.is_some() || fueled {
+            self.container_changed(pos);
+        }
         if let Some(item) = smelting {
             self.native_furnace_start_smelt([pos.0, pos.1, pos.2], &item);
         }
@@ -264,6 +285,10 @@ impl Game<'_> {
             self.campfire_drop(pos, stack);
         }
         let Some(lit) = lit else {
+            if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Furnace(f)) if f.idle())
+            {
+                self.world.block_entities.sleep(pos);
+            }
             return Ok(());
         };
         let state = self.world.block(pos.0, pos.1, pos.2);
@@ -276,5 +301,243 @@ impl Game<'_> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod jukebox_stop_tests {
+    use super::Game;
+    use horizon_client::items::ItemStack;
+
+    /// A windowless game from the prepared resources with a resident chunk and
+    /// a jukebox at (0, 64, 0), recording its game events; `None` without the
+    /// resources. `f` gets the game and the disc.
+    fn with_jukebox(f: impl FnOnce(&mut Game<'_>, &ItemStack)) -> Option<Vec<String>> {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES")?);
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .ok()?;
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        let jukebox = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:jukebox")?;
+        game.world.set(0, 64, 0, jukebox).unwrap();
+        let disc = ItemStack::new("minecraft:music_disc_cat", 1);
+        crate::game::dispense_fixture::start_recording();
+        f(&mut game, &disc);
+        Some(crate::game::dispense_fixture::stop_recording())
+    }
+
+    fn stops(lines: &[String]) -> Vec<&String> {
+        lines
+            .iter()
+            .filter(|l| l.ends_with("minecraft:jukebox_stop_play"))
+            .collect()
+    }
+
+    /// `JukeboxSongPlayer.stop` posts `JUKEBOX_STOP_PLAY` at the jukebox, and
+    /// `popOutTheItem` (the disc taken out by hand) and the end of a song both
+    /// reach it. Horizon stopped the sound and told the parrots but posted the
+    /// vibration only when the block itself was broken, so pulling the disc out
+    /// was silent to a sculk sensor beside it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_jukebox_that_stops_tells_the_listeners() {
+        let Some(lines) = with_jukebox(|game, disc| {
+            assert!(game.use_jukebox([0, 64, 0], Some(disc)), "the disc goes in");
+            assert!(
+                game.use_jukebox([0, 64, 0], None),
+                "the empty hand pops it out"
+            );
+        }) else {
+            return;
+        };
+        assert_eq!(
+            stops(&lines),
+            vec![&"G 0,64,0 minecraft:jukebox_stop_play".to_owned()],
+            "{lines:?}"
+        );
+
+        // The end of a song is the same stop: tick until the song is over.
+        let Some(lines) = with_jukebox(|game, disc| {
+            assert!(game.use_jukebox([0, 64, 0], Some(disc)), "the disc goes in");
+            for _ in 0..40_000 {
+                let playing = matches!(
+                    game.world.block_entities.get(&(0, 64, 0)),
+                    Some(horizon_client::containers::BlockEntity::Jukebox(j)) if j.playing
+                );
+                if !playing {
+                    break;
+                }
+                game.tick_jukebox((0, 64, 0));
+            }
+            // JukeboxSongPlayer.stop posts only while a song plays: taking
+            // the finished disc out is silent.
+            assert!(
+                game.use_jukebox([0, 64, 0], None),
+                "the empty hand pops it out"
+            );
+        }) else {
+            return;
+        };
+        assert_eq!(
+            stops(&lines).len(),
+            1,
+            "the song's own end posts it once, its removal after it nothing: {lines:?}"
+        );
+
+        // A broken jukebox posts it from the world's spill instead, and a
+        // jukebox that never held a disc posts nothing at all.
+        let Some(lines) = with_jukebox(|game, disc| {
+            assert!(game.use_jukebox([0, 64, 0], Some(disc)), "the disc goes in");
+            game.jukebox_removed([0, 64, 0]);
+        }) else {
+            return;
+        };
+        assert!(stops(&lines).is_empty(), "not twice: {lines:?}");
+        let Some(lines) = with_jukebox(|game, _| {
+            for _ in 0..41 {
+                game.tick_jukebox((0, 64, 0));
+            }
+        }) else {
+            return;
+        };
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+}
+
+#[cfg(test)]
+mod furnace_changed_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{
+        containers::{BlockEntity, Furnace, FurnaceKind},
+        items::ItemStack,
+    };
+    use std::collections::HashMap;
+
+    /// `AbstractFurnaceBlockEntity.serverTick`'s changed flag: `burn` sets it,
+    /// and the old furnace calls `setChanged` at the end of the tick. A smelt
+    /// that completes while the furnace stays LIT changes the output and the
+    /// input without changing the block state, so nothing else marks it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_finished_smelt_marks_the_chunk() {
+        let mut game = server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:furnace")
+            .unwrap();
+        let pos = (8, 64, 8);
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world.block_entities.insert(
+            pos,
+            BlockEntity::Furnace(Furnace {
+                kind: FurnaceKind::Furnace,
+                items: [
+                    Some(ItemStack::new("minecraft:raw_iron", 1)),
+                    Some(ItemStack::new("minecraft:coal", 1)),
+                    None,
+                ],
+                lit_remaining: 5,
+                lit_total: 200,
+                cooking_timer: 199,
+                cooking_total: 200,
+                speed: 1.0,
+                recipes_used: HashMap::new(),
+            }),
+        );
+        game.world.modified.clear();
+
+        game.tick_furnace(pos).expect("the furnace ticks");
+
+        let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+            panic!("no furnace");
+        };
+        assert_eq!(
+            f.items[2].as_ref().map(|s| &*s.item),
+            Some("minecraft:iron_ingot"),
+            "the smelt completed"
+        );
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "a finished smelt left the chunk unmarked"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_refuel_while_lit_marks_the_chunk() {
+        // litTimeRemaining goes 1 -> 0 and the furnace takes new fuel in the
+        // same tick: it stays LIT, and consuming the fuel sets changed.
+        let mut game = server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:furnace")
+            .unwrap();
+        let pos = (8, 64, 8);
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world.block_entities.insert(
+            pos,
+            BlockEntity::Furnace(Furnace {
+                kind: FurnaceKind::Furnace,
+                items: [
+                    Some(ItemStack::new("minecraft:raw_iron", 1)),
+                    Some(ItemStack::new("minecraft:coal", 2)),
+                    None,
+                ],
+                lit_remaining: 1,
+                lit_total: 1600,
+                cooking_timer: 10,
+                cooking_total: 200,
+                speed: 1.0,
+                recipes_used: HashMap::new(),
+            }),
+        );
+        game.world.modified.clear();
+
+        game.tick_furnace(pos).expect("the furnace ticks");
+
+        let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+            panic!("no furnace");
+        };
+        assert_eq!(f.items[1].as_ref().map(|s| s.count), Some(1), "fuel used");
+        assert!(f.items[2].is_none(), "nothing smelted");
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "a refuel left the chunk unmarked"
+        );
     }
 }

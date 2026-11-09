@@ -34,7 +34,7 @@ fn maker(root: &Path) -> impl Fn(&str) -> Result<Instance, String> + '_ {
     move |name: &str| {
         let home = root.join(crate::modpacks::slug(name));
         if home.exists() {
-            return Err(format!("There is already an instance called {name}."));
+            return Err(instances::name_taken(name));
         }
         fs::create_dir_all(&home).unwrap();
         Ok(Instance {
@@ -55,6 +55,22 @@ fn maker(root: &Path) -> impl Fn(&str) -> Result<Instance, String> + '_ {
 }
 
 const NONE: &dyn Fn(&str, f32) = &|_, _| {};
+
+/// Bytes `build_import::is_game` accepts as a game build: this platform's
+/// executable magic followed by the mod API mark every Horizon program
+/// carries. Not a real program -- `what` only has to recognise one.
+fn fake_program() -> Vec<u8> {
+    let magic: &[u8] = if cfg!(windows) {
+        b"MZ"
+    } else if cfg!(target_os = "macos") {
+        &[0xcf, 0xfa, 0xed, 0xfe]
+    } else {
+        b"ELF"
+    };
+    let mut bytes = magic.to_vec();
+    bytes.extend_from_slice(&horizon_mods::api_level::MARK);
+    bytes
+}
 
 #[test]
 fn says_what_a_dropped_file_is() {
@@ -118,6 +134,48 @@ fn says_what_a_dropped_file_is() {
                 &[("options.txt", b"lang:fr_ch\n"), ("saves/W/level.dat", b"")],
             );
             (p, Ok(Dropped::Instance))
+        },
+        // A game build: the Windows program, taken on its extension without
+        // being read, so `build_import` is the one to say why a file is not a
+        // game for this computer.
+        {
+            let p = dir.join("horizon-client.exe");
+            put(&p, b"not read");
+            (p, Ok(Dropped::Build))
+        },
+        // A browser's second copy keeps the extension, so it is a build too.
+        {
+            let p = dir.join("horizon-client (1).exe");
+            put(&p, b"not read");
+            (p, Ok(Dropped::Build))
+        },
+        // A build for Linux or macOS has no extension: read, and recognised
+        // by its magic and the mod API mark.
+        {
+            let p = dir.join("horizon-client");
+            put(&p, &fake_program());
+            (p, Ok(Dropped::Build))
+        },
+        // An Actions artifact is a zip around the program: nothing a pack or
+        // an instance holds matches, so the build check is the one that does.
+        {
+            let p = dir.join("artifact.zip");
+            // Named as the game is on this platform: from_zip looks for that
+            // entry, which is horizon-client.exe on Windows.
+            zip_file(&p, &[(crate::backend::CLIENT, fake_program().as_slice())]);
+            (p, Ok(Dropped::Build))
+        },
+        // Named as the game but holding nothing like it: not a build.
+        {
+            let p = dir.join("horizon-client-notes");
+            put(&p, b"just notes");
+            (p, Err(()))
+        },
+        // An extensionless file that is not the game is still nothing.
+        {
+            let p = dir.join("README");
+            put(&p, b"hello");
+            (p, Err(()))
         },
         {
             let p = dir.join("random.zip");
@@ -205,5 +263,97 @@ fn an_export_comes_back_as_an_instance_and_nothing_escapes_its_folder() {
         )],
     );
     assert!(import_into(&java, NONE, &maker(&made)).is_err());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_java_pack_cannot_plant_the_browsers_list() {
+    let dir = scratch("planted-list");
+    let made = dir.join("instances");
+    let pack = dir.join("planted.mrpack");
+    let list = br#"{"entries":[{"source":"modrinth","project":"p","slug":"p","title":"p",
+        "kind":"mod","version":"1","number":"1","file":"mods/a.jar",
+        "checksum":"SHA-512:00","page":""}]}"#;
+    zip_file(
+        &pack,
+        &[
+            (
+                "modrinth.index.json",
+                br#"{"name":"Planted","files":[],"dependencies":{"fabric-loader":"0.16"}}"#,
+            ),
+            ("overrides/mod-browser.json", list),
+            ("client-overrides/Mod-Browser.json", list),
+            ("overrides/mods/a.jar", b"jar"),
+        ],
+    );
+    let i = import_mrpack_into(&pack, NONE, &maker(&made)).unwrap();
+    assert!(i.home.join("mods/a.jar").is_file());
+    let names: Vec<_> = fs::read_dir(&i.home)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["mods"]);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_zip_bomb_stops_at_the_limit_and_leaves_nothing() {
+    let dir = scratch("bomb");
+    let made = dir.join("instances");
+    // 64 KiB of zeros compresses to almost nothing; the limit here is 16 KiB.
+    let bomb = dir.join("bomb.zip");
+    zip_file(
+        &bomb,
+        &[
+            ("options.txt", b"ok"),
+            ("saves/Big/region/r.0.0.mca", &[0u8; 64 << 10]),
+        ],
+    );
+    assert!(fs::metadata(&bomb).unwrap().len() < 4 << 10);
+    let refused = import_any(&bomb, NONE, &maker(&made), false, 16 << 10).unwrap_err();
+    assert!(refused.contains("more than 16 KiB"), "{refused}");
+    assert!(!made.join("bomb").exists(), "the half-made instance goes");
+    // Under the limit, all of it comes in; the limit counts every file together.
+    let two = dir.join("two.zip");
+    zip_file(
+        &two,
+        &[
+            ("options.txt", &[1u8; 8 << 10]),
+            ("servers.dat", &[2u8; 8 << 10]),
+        ],
+    );
+    let i = import_any(&two, NONE, &maker(&made), false, 16 << 10).unwrap();
+    assert_eq!(fs::read(i.home.join("servers.dat")).unwrap().len(), 8 << 10);
+    let three = dir.join("three.zip");
+    zip_file(
+        &three,
+        &[
+            ("options.txt", &[1u8; 8 << 10]),
+            ("servers.dat", &[2u8; 8 << 10 | 1]),
+        ],
+    );
+    assert!(import_any(&three, NONE, &maker(&made), false, 16 << 10).is_err());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_mrpack_bomb_stops_at_the_limit_too() {
+    // import_mrpack_into takes every path a pack carries (a Java instance): the same cap applies.
+    let dir = scratch("mrpack-bomb");
+    let made = dir.join("instances");
+    let pack = dir.join("bomb.mrpack");
+    zip_file(
+        &pack,
+        &[
+            (
+                "modrinth.index.json",
+                br#"{"name":"Bomb","files":[],"dependencies":{"fabric-loader":"0.16"}}"#,
+            ),
+            ("overrides/kubejs/data.bin", &[0u8; 64 << 10]),
+        ],
+    );
+    let refused = import_any(&pack, NONE, &maker(&made), true, 16 << 10).unwrap_err();
+    assert!(refused.contains("more than 16 KiB"), "{refused}");
+    assert!(!made.join("bomb").exists(), "the half-made instance goes");
     fs::remove_dir_all(&dir).unwrap();
 }

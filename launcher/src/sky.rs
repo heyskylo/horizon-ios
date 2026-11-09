@@ -9,7 +9,7 @@
 //! motion, and stops 10 s after the window loses focus ([`motion`]).
 use crate::art::bake;
 use gpui::{div, img, prelude::*, px, rgb, Div, RenderImage};
-use horizon_theme::night::Night;
+use horizon_theme::night::{Night, SkyArt};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -152,37 +152,8 @@ const SUN_RADIUS: usize = 15;
 const SUN_RISE: usize = 8;
 const SUN_X: f32 = 0.72;
 
-/// The art's colours in one appearance, beside the night tokens' sky.
-struct Colors {
-    sun: [u32; 3],
-    far: u32,
-    near: u32,
-    /// Clouds far to near, and each layer's lit band.
-    cloud: [u32; 3],
-    lit: [u32; 3],
-    shade: u32,
-    star: u32,
-}
-
-const NIGHT_ART: Colors = Colors {
-    sun: [0xffe28c, 0xffbf66, 0xff944f],
-    far: 0x3a1f5e,
-    near: 0x150f2e,
-    cloud: [0x3b2869, 0x6e3a7e, 0xc96a86],
-    lit: [0x5a3f8a, 0x9c5a92, 0xf7a98a],
-    shade: 0x2a1a4c,
-    star: 0xf4f2ff,
-};
-
-const DAWN_ART: Colors = Colors {
-    sun: [0xfffbea, 0xffeac2, 0xffd3a1],
-    far: 0xbaa8de,
-    near: 0x8c79c6,
-    cloud: [0xeef0fb, 0xfbeef3, 0xfff1e4],
-    lit: [0xffffff; 3],
-    shade: 0xd9cbe8,
-    star: 0xffffff,
-};
+/// How much white the light look lays over the dawn's colours.
+const MORNING: f32 = 0.55;
 
 /// The stars' brightness steps and each group's period: a group steps through the levels in
 /// turn, so a star brightens and dims without a frame for every shade in between.
@@ -252,7 +223,7 @@ struct Layers {
 
 #[derive(Default)]
 pub struct Sky {
-    baked: Option<((bool, u32), Layers)>,
+    baked: Option<((SkyArt, u32), Layers)>,
     /// Images replaced by a new appearance or scale, still in the window's sprite atlas.
     replaced: Vec<Arc<RenderImage>>,
     clock: Clock,
@@ -282,9 +253,9 @@ impl Sky {
         };
         self.clock.set(run, now);
         let t = self.clock.at(now).as_secs_f32();
-        let layers = self.layers(n.dark, scale);
+        let layers = self.layers(n.art, scale);
         let snap = |v: f32| (v * scale).round() / scale;
-        let art = if n.dark { &NIGHT_ART } else { &DAWN_ART };
+        let art = &n.art;
 
         let mut sky = div()
             .absolute()
@@ -395,10 +366,10 @@ impl Sky {
         (sky, next)
     }
 
-    fn layers(&mut self, dark: bool, scale: f32) -> &Layers {
-        let key = (dark, (scale * 100.).round() as u32);
+    fn layers(&mut self, art: SkyArt, scale: f32) -> &Layers {
+        let key = (art, (scale * 100.).round() as u32);
         if !matches!(&self.baked, Some((k, _)) if *k == key) {
-            let art = if dark { &NIGHT_ART } else { &DAWN_ART };
+            let art = &art;
             let layers = Layers {
                 clouds: std::array::from_fn(|i| {
                     let l = &CLOUDS[i];
@@ -441,20 +412,33 @@ fn until_next(v: f32) -> f32 {
 /// sky in four steps toward the next, the stops sharing the height as [`SHARES`] says.
 fn bands(n: &Night, h: f32) -> Vec<(f32, f32, u32)> {
     const STEPS: usize = 4;
+    // The light look's sky is the dawn's washed with white, so the page reads white with a tint
+    // of the dawn rather than lilac.
+    let wash = |c: u32| {
+        if n.dark {
+            c
+        } else {
+            horizon_theme::night::over(0xffffff, MORNING, c)
+        }
+    };
     let rows = (h / TEXEL).ceil();
     let mut out = Vec::with_capacity(SHARES.len() * STEPS);
     let mut at = 0.;
     for (i, share) in SHARES.iter().enumerate() {
         let span = (share * rows).round().max(STEPS as f32);
         let Some(&next) = n.sky.get(i + 1) else {
-            out.push((at * TEXEL, (h / TEXEL - at).max(span) * TEXEL, n.sky[i]));
+            out.push((
+                at * TEXEL,
+                (h / TEXEL - at).max(span) * TEXEL,
+                wash(n.sky[i]),
+            ));
             break;
         };
         let mut from = at;
         for k in 0..STEPS {
             let to = (at + span * (k + 1) as f32 / STEPS as f32).round();
             let c = horizon_theme::night::over(next, k as f32 / STEPS as f32, n.sky[i]);
-            out.push((from * TEXEL, (to - from) * TEXEL, c));
+            out.push((from * TEXEL, (to - from) * TEXEL, wash(c)));
             from = to;
         }
         at += span;
@@ -516,7 +500,7 @@ fn stamp(
     }
 }
 
-fn clouds(layer: &CloudLayer, art: &Colors, depth: usize) -> Vec<[u8; 4]> {
+fn clouds(layer: &CloudLayer, art: &SkyArt, depth: usize) -> Vec<[u8; 4]> {
     let mut out = vec![[0; 4]; layer.period * CLOUD_ROWS];
     for &(x, y, sprite) in layer.clouds {
         stamp(&mut out, layer.period, (x, y), sprite, |m| match m {
@@ -562,7 +546,7 @@ fn skyline(line: &Skyline, color: u32, scale: f32) -> Arc<RenderImage> {
 
 /// The upper half of a sun cut by the horizon, in three bands of colour, its lower half sliced by
 /// rows of sky like Horizon's mark.
-fn sun(art: &Colors) -> Vec<[u8; 4]> {
+fn sun(art: &SkyArt) -> Vec<[u8; 4]> {
     let (r, w) = (SUN_RADIUS as f32, SUN_RADIUS * 2);
     let mut out = vec![[0; 4]; w * SUN_RADIUS];
     for y in 0..SUN_RADIUS {

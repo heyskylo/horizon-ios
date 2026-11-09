@@ -152,15 +152,7 @@ pub fn armor_tint(undyed: Option<u32>, stack: Option<&crate::items::ItemStack>) 
         .unwrap_or(undyed);
     abgr(dyed)
 }
-/// ColorLerper.Type.SHEEP colour: white is 0xE6E6E6, others 75% of the dye.
-pub fn sheep_wool_rgb(color: u8) -> u32 {
-    if color == 0 {
-        return 0xE6E6E6;
-    }
-    let src = DYE[color as usize & 15];
-    let f = |c: u32| ((c as f32 * 0.75).floor() as u32).min(255);
-    f(src >> 16 & 255) << 16 | f(src >> 8 & 255) << 8 | f(src & 255)
-}
+pub use crate::pack_palette::{diffuse as dye, sheep_wool as sheep_wool_rgb};
 /// `ColorLerper.getLerpedColor(ColorLerper.Type.SHEEP, ageInTicks)`: the 16
 /// wool colours in DyeColor order, one per 25 ticks, lerped in between. The
 /// colour a `jeb_` sheep's wool takes.
@@ -596,7 +588,7 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
 pub fn body_color(m: &Mob, alpha: f32) -> u32 {
     match m.species() {
         Species::Wolf => super::tame::tint(m, alpha),
-        Species::TropicalFish => abgr(DYE[m.extra.variant2 as usize & 15]),
+        Species::TropicalFish => abgr(dye(m.extra.variant2 as usize)),
         // LivingEntityRenderer.submit: a spectator is invisible
         // (Player.updateInvisibilityStatus) but not to another spectator or
         // itself, so its body is forced translucent (654311423, alpha 38).
@@ -664,7 +656,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 texture,
-                abgr(DYE[m.extra.color as usize & 15]),
+                abgr(dye(m.extra.color as usize)),
                 false,
             );
         }
@@ -794,7 +786,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 texture,
-                abgr(DYE[m.extra.color as usize & 15]),
+                abgr(dye(m.extra.color as usize)),
                 false,
             );
         }
@@ -940,7 +932,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 interned(format_args!("entity/fish/tropical_{letter}_pattern_{n}")),
-                abgr(DYE[m.extra.variant3 as usize & 15]),
+                abgr(dye(m.extra.variant3 as usize)),
                 false,
             );
         }
@@ -998,6 +990,18 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
     humanoid_armor(m, &mut v);
     v
 }
+/// `HumanoidArmorLayer.renderArmorPiece`: a baby wears the `humanoid_baby`
+/// layer type for every slot (leggings included), an adult the leggings layer
+/// for its legs and the `humanoid` one otherwise.
+fn humanoid_layer_folder(baby: bool, layer: &str) -> &'static str {
+    if baby {
+        "humanoid_baby"
+    } else if layer == "leggings" {
+        "humanoid_leggings"
+    } else {
+        "humanoid"
+    }
+}
 /// `HumanoidArmorLayer`: the armour models of the mob's main model with the
 /// equipment textures (leather tinted, with its overlay).
 fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
@@ -1031,11 +1035,7 @@ fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
             "turtle" => "turtle_scute",
             other => other,
         };
-        let folder = if layer == "leggings" {
-            "humanoid_leggings"
-        } else {
-            "humanoid"
-        };
+        let folder = humanoid_layer_folder(m.is_baby(), layer);
         let model = interned(format_args!("{base}#{layer}"));
         // EquipmentLayerRenderer.getColorForLayer: the leather layer takes
         // the stack's dye colour, the colour it has when undyed otherwise.
@@ -1080,7 +1080,8 @@ pub fn base_transform(m: &Mob, alpha: f32, camera: glam::DVec3) -> glam::Mat4 {
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ) - camera
-        + enderman_render_offset(m, alpha);
+        + enderman_render_offset(m, alpha)
+        + super::shulker::render_offset(m, alpha);
     base_transform_at(m, alpha, glam::Mat4::from_translation(p.as_vec3()))
 }
 /// `EndermanRenderer.getRenderOffset`: a creepy (angry) enderman is moved by
@@ -1103,7 +1104,7 @@ fn enderman_render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
 /// `base_transform` from a pose of the entity's origin (`EntityRenderDispatcher.submit`
 /// under a pose stack, as `SpawnerRenderer` draws the mob inside a spawner).
 pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 {
-    let mut body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
+    let mut body = anim::body_rot(m, alpha);
     if shaking(m) {
         // LivingEntityRenderer.setupRotations: a rapid wobble.
         let ticks = (m.age as f32 + alpha).floor();
@@ -1449,6 +1450,13 @@ pub(super) fn posed(base: glam::Mat4, p: [f32; 9]) -> glam::Mat4 {
         ))
         * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]))
 }
+
+/// Keeps the original multiplication order when the local rotation was reused.
+pub(super) fn posed_rotated(base: glam::Mat4, p: [f32; 9], rotation: glam::Mat4) -> glam::Mat4 {
+    base * glam::Mat4::from_translation(glam::Vec3::new(p[0], p[1], p[2]) / 16.0)
+        * rotation
+        * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]))
+}
 /// `draw_scrolled` through the GPU path when the mob takes it (`skin`), on
 /// the CPU otherwise.
 #[allow(clippy::too_many_arguments)]
@@ -1588,7 +1596,7 @@ pub fn cape(
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ];
-    let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
+    let body = anim::body_rot(m, alpha);
     // LivingEntityRenderState.fallFlyingScale.
     let ticks = m.extra.fall_fly_ticks as f32 + alpha;
     let gliding = (ticks * ticks / 100.0).clamp(0.0, 1.0);
@@ -1967,10 +1975,12 @@ fn render_visible(
     let body_animation = custom_body.and_then(|c| c.animation.as_ref());
     let model = match custom_body {
         Some(custom) => custom.model.clone(),
+        // 3D skin layers: the player's own outer layer, one slab per painted
+        // texel (`mobs::skin_layers`), in place of the flat inflated box.
         None => m
-            .kind
-            .layer(&model_key)
-            .cloned()
+            .skin_3d
+            .clone()
+            .or_else(|| m.kind.layer(&model_key).cloned())
             .unwrap_or_else(|| m.kind.model.clone()),
     };
     let texture = cem_texture(custom_body, &texture, atlas);
@@ -2680,6 +2690,45 @@ pub fn held_item_stack(extra: &super::Extra, off_hand: bool) -> Option<crate::it
 mod tests {
     use super::*;
 
+    /// A baby zombie's armour reads the `humanoid_baby` textures for every
+    /// slot, not the adult `humanoid`/`humanoid_leggings` ones (#7302).
+    #[test]
+    fn a_baby_zombies_armour_uses_the_humanoid_baby_textures() {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = Species::Zombie;
+        let model = kind.model.clone();
+        kind.layers.insert("zombie_baby#main".into(), model);
+        let mut mob = Mob::new(
+            1,
+            std::sync::Arc::new(kind),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        mob.extra.age = -24000;
+        mob.extra.head = Some("minecraft:iron_helmet".into());
+        mob.extra.legs = Some("minecraft:iron_leggings".into());
+        mob.extra.feet = Some("minecraft:leather_boots".into());
+        let mut layers = Vec::new();
+        humanoid_armor(&mob, &mut layers);
+        let textures: Vec<&str> = layers.iter().map(|l| &*l.texture).collect();
+        assert_eq!(
+            textures,
+            [
+                "entity/equipment/humanoid_baby/iron",
+                "entity/equipment/humanoid_baby/iron",
+                "entity/equipment/humanoid_baby/leather",
+                "entity/equipment/humanoid_baby/leather_overlay",
+            ]
+        );
+        mob.extra.age = 0;
+        let mut adult = Vec::new();
+        humanoid_armor(&mob, &mut adult);
+        assert_eq!(
+            &*adult[1].texture,
+            "entity/equipment/humanoid_leggings/iron"
+        );
+    }
+
     #[test]
     fn creeper_swelling_uses_local_fuse_and_keeps_java_zero_division() {
         let mut mob = Mob::new(
@@ -2766,6 +2815,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Arc::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -2975,7 +3025,7 @@ mod tests {
                 );
                 assert!(vertices[24..].iter().all(|v| v.uv[0] >= 0.5));
             }
-            mob.extra.head = Some("minecraft:stone".into());
+            mob.extra.body = Some("minecraft:stone".into());
             let mut vertices = Vec::new();
             render(
                 &mob,

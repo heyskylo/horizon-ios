@@ -8,9 +8,16 @@ for blocks placed where mobs and armor stands stand, for respawn anchors, for
 beds in the Nether and the End, and for doors, trapdoors and fence gates, which a
 hand opens unless their material cannot be (`BlockSetType.canOpenByHand`).
 
+Axe, hoe and shovel clicks use the data-driven `minecraft:block_transformer`
+registry (`ItemStack.useOn` -> `Item.useOn` -> `BlockTransformer.transformBlock`):
+logs stripped and copper scraped, waxed or unwaxed, a double copper chest's other
+half told of the change, copper doors and trapdoors, farmland and dirt paths, and
+the hanging roots a hoe leaves on rooted dirt's clicked face. The states those
+transforms produce are compared by `test_block_transformer_parity.py`; here the
+click that uses one is.
 
-beds in the Nether and the End, and for dragon eggs, which a click moves somewhere
-else nearby (`DragonEggBlock.useWithoutItem`).
+Dragon eggs, which a click moves somewhere else nearby
+(`DragonEggBlock.useWithoutItem`).
 
 Every case has a block at the origin, something above it, and a player three
 blocks south, survival or creative, hungry or full, sneaking or not, who
@@ -32,7 +39,9 @@ explode elsewhere (`RespawnAnchorBlock`, through the stand-in level's real
 (`RespawnAnchorBlock.findStandUpPosition` through `DismountHelper`): the
 position, the yaw that faces the anchor and the charge it uses; others on a
 bed's head set from some yaw (`AbstractBedBlock.findStandUpPosition`: intact,
-bunk, only the foot left or gone, crowded around and on top). Beds and straw
+bunk, only the foot left or gone, crowded around and on top). Villagers lying
+in such beds wake up from some yaw (`Villager.stopSleeping`: the same search for
+a villager's box, with shelves among the blocks around, #9502). Beds and straw
 beds clicked (head or foot, whole or broken) in the Nether and the End blow up
 or fall apart (`AbstractBedBlock.useWithoutItem` under the dimension's
 `bed_rule`: `BedBlock.destroyOnUse`, `StrawBedBlock.destroyBed`). Horizon runs
@@ -104,6 +113,17 @@ def bed_respawn_case(rng, states, case):
     """Respawning at a bed's head set from some yaw: intact, a bunk bed, only the foot left or
     gone, with blocks around and on it, in the Overworld (and a few in the Nether or the End)."""
     name = 'straw_bed' if rng.random() < 0.15 else rng.choice(BED_COLORS) + '_bed'
+    cells = bed_cells(rng, states, name, STAND)
+    if rng.random() < 0.1:
+        case['dim'] = rng.choice(['nether', 'end'])
+    yaw = rng.choice([0.0, 90.0, -90.0, 180.0, round(rng.uniform(-720, 720), rng.choice([0, 2]))])
+    case['respawn_at'] = {'forced': rng.random() < 0.15, 'consume': rng.random() < 0.8, 'yaw': yaw}
+    case['cells'] = cells
+
+
+def bed_cells(rng, states, name, stand):
+    """A bed `name` at the origin: intact, a bunk bed, only the foot left or gone, with blocks from
+    `stand` around and on it."""
     facing = rng.choice(list(FACINGS))
     fx, fz = FACINGS[facing]
     bed = {}
@@ -130,20 +150,30 @@ def bed_respawn_case(rng, states, case):
                 if dy == -1 and (dx, 0, dz) in bed:
                     name2 = 'stone'
                 elif dy < 0:
-                    name2 = rng.choice(['stone'] * 8 + STAND)
+                    name2 = rng.choice(['stone'] * 8 + stand)
                 elif rng.random() < crowd:
-                    name2 = rng.choice(['stone'] * 4 + STAND)
+                    name2 = rng.choice(['stone'] * 4 + stand)
                 else:
                     continue
                 if name2 == 'air':
                     continue
-                state = states.any(rng, name2) if name2 in ('oak_trapdoor', 'oak_slab', 'snow', 'campfire', 'water', 'ladder') else states.get(name2)
+                varied = name2 in ('oak_trapdoor', 'oak_slab', 'snow', 'campfire', 'water', 'ladder') or name2.endswith('_shelf')
+                state = states.any(rng, name2) if varied else states.get(name2)
                 cells.append([dx, dy, dz, state])
-    if rng.random() < 0.1:
-        case['dim'] = rng.choice(['nether', 'end'])
+    return cells
+
+
+# What a villager waking up may stand on or beside: shelves (#9502) beside the blocks a player
+# stands up on.
+WAKE_STAND = STAND + ['oak_shelf', 'spruce_shelf', 'bamboo_shelf', 'oak_shelf']
+
+
+def wake_case(rng, states, case):
+    """A villager lying in a bed (`Villager.stopSleeping`) wakes up from some yaw: the bed intact, a
+    bunk bed, only the foot left or gone, with blocks and shelves around and on it."""
+    case['cells'] = bed_cells(rng, states, rng.choice(BED_COLORS) + '_bed', WAKE_STAND)
     yaw = rng.choice([0.0, 90.0, -90.0, 180.0, round(rng.uniform(-720, 720), rng.choice([0, 2]))])
-    case['respawn_at'] = {'forced': rng.random() < 0.15, 'consume': rng.random() < 0.8, 'yaw': yaw}
-    case['cells'] = cells
+    case['wake'] = {'yaw': yaw}
 
 
 def bed_case(rng, states, case):
@@ -321,6 +351,34 @@ def statue_case(rng, states, case):
         # The item in the off hand, nothing in the main hand.
         use.update(offhand=use['item'], item='-')
     case['use_item'] = use
+
+
+WAX_CHEST_FACINGS = {'north': (0, -1), 'south': (0, 1), 'west': (-1, 0), 'east': (1, 0)}
+
+
+def wax_chest_case(rng, states, case):
+    """Honeycomb on a copper chest (`HoneycombItem.useOn`), sneaking so the chest does not open:
+    a double chest's other half gets its own `block_change` and wax particles, and the clicked
+    block a second sound. Single chests and a half whose other half is gone or not copper are the
+    controls: `ChestBlock.getConnectedBlockPos` looks only at the clicked state."""
+    name = rng.choice(['copper_chest', 'exposed_copper_chest', 'weathered_copper_chest', 'oxidized_copper_chest'])
+    facing = rng.choice(list(WAX_CHEST_FACINGS))
+    own = rng.choice(['left', 'right', 'single'])
+    props = {'facing': facing, 'waterlogged': 'false'}
+    case['cells'] = [[0, 0, 0, states.get(name, type=own, **props)]]
+    if own != 'single':
+        dx, dz = WAX_CHEST_FACINGS[facing]
+        # ChestBlock.getConnectedDirection: LEFT is facing.getClockWise().
+        dx, dz = (-dz, dx) if own == 'left' else (dz, -dx)
+        other = 'right' if own == 'left' else 'left'
+        partner = rng.choices(['same', 'gone', 'plain'], (6, 1, 1))[0]
+        if partner == 'same':
+            case['cells'].append([dx, 0, dz, states.get(name, type=other, **props)])
+        elif partner == 'plain':
+            case['cells'].append([dx, 0, dz, states.get('chest', type=other, **props)])
+    case['use_item'] = {'item': d_plain(rng.choice(['honeycomb', 'honeycomb', 'honeycomb', 'stick']), rng.choice([1, 16])),
+                        'creative': rng.random() < 0.2, 'sneaking': True, 'food': 20,
+                        'face': rng.choice(['up', 'north', 'south', 'west', 'east'])}
 
 
 def timed_case(rng, states, case):
@@ -528,13 +586,142 @@ def block_state_case(rng, states, case):
                         'creative': rng.random() < 0.7, 'sneaking': rng.random() < 0.2, 'food': 20}
 
 
-def cases(facts, count, seed):
+# Axes, hoes and shovels transform blocks through the data-driven
+# `minecraft:block_transformer` registry. `test_block_transformer_parity.py`
+# compares the states that registry produces; this compares the click that uses
+# one: the state change, the sound, the scrub particle, the wear, the statistic,
+# the `block_change` game event, the loot rooted dirt leaves on the clicked face,
+# and the second game event and particle a double copper chest's other half gets.
+AXES = ['wooden_axe', 'stone_axe', 'iron_axe', 'golden_axe', 'diamond_axe', 'netherite_axe']
+HOES = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'golden_hoe', 'diamond_hoe', 'netherite_hoe']
+SHOVELS = ['wooden_shovel', 'stone_shovel', 'iron_shovel', 'golden_shovel', 'diamond_shovel', 'netherite_shovel']
+LOGS = ['oak_log', 'spruce_log', 'birch_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log',
+        'cherry_log', 'pale_oak_log', 'poplar_log', 'bamboo_block', 'crimson_stem', 'warped_stem',
+        'oak_wood', 'spruce_wood', 'birch_wood', 'crimson_hyphae', 'warped_hyphae']
+COPPERS = ['exposed_copper', 'weathered_copper', 'oxidized_copper', 'exposed_cut_copper', 'weathered_cut_copper',
+           'oxidized_cut_copper', 'exposed_copper_bulb', 'weathered_copper_bulb', 'oxidized_copper_bulb',
+           'exposed_copper_grate', 'weathered_copper_grate', 'oxidized_copper_grate', 'exposed_copper_bars',
+           'weathered_copper_bars', 'oxidized_copper_bars', 'exposed_copper_chain', 'weathered_copper_chain',
+           'oxidized_copper_chain', 'exposed_lightning_rod', 'weathered_lightning_rod', 'oxidized_lightning_rod',
+           'waxed_copper_block', 'waxed_exposed_copper', 'waxed_weathered_copper', 'waxed_oxidized_copper',
+           'waxed_cut_copper', 'waxed_exposed_cut_copper', 'waxed_weathered_cut_copper', 'waxed_oxidized_cut_copper',
+           'waxed_copper_bulb', 'waxed_exposed_copper_bulb', 'waxed_weathered_copper_bulb',
+           'waxed_oxidized_copper_bulb', 'waxed_copper_grate', 'waxed_exposed_copper_grate',
+           'waxed_weathered_copper_grate', 'waxed_oxidized_copper_grate', 'waxed_copper_bars',
+           'waxed_exposed_copper_bars', 'waxed_weathered_copper_bars', 'waxed_oxidized_copper_bars',
+           'waxed_copper_chain', 'waxed_exposed_copper_chain', 'waxed_weathered_copper_chain',
+           'waxed_oxidized_copper_chain', 'waxed_lightning_rod', 'waxed_exposed_lightning_rod']
+COPPER_CHESTS = ['exposed_copper_chest', 'weathered_copper_chest', 'oxidized_copper_chest',
+                 'waxed_copper_chest', 'waxed_exposed_copper_chest', 'waxed_weathered_copper_chest',
+                 'waxed_oxidized_copper_chest']
+COPPER_DOORS = ['exposed_copper_door', 'weathered_copper_door', 'oxidized_copper_door',
+                'waxed_copper_door', 'waxed_exposed_copper_door', 'waxed_weathered_copper_door',
+                'waxed_oxidized_copper_door']
+COPPER_TRAPDOORS = ['exposed_copper_trapdoor', 'weathered_copper_trapdoor', 'oxidized_copper_trapdoor',
+                    'waxed_copper_trapdoor', 'waxed_exposed_copper_trapdoor',
+                    'waxed_weathered_copper_trapdoor', 'waxed_oxidized_copper_trapdoor']
+SOIL = {'grass_block': {'snowy': 'false'}, 'podzol': {'snowy': 'false'}, 'mycelium': {'snowy': 'false'},
+        'dirt': {}, 'coarse_dirt': {}, 'dirt_path': {}, 'rooted_dirt': {}}
+FACINGS = {'north': (0, -1), 'south': (0, 1), 'west': (-1, 0), 'east': (1, 0)}
+
+
+def damage_stack(item, damage):
+    if damage:
+        return '{id:"minecraft:%s",count:1,components:{"minecraft:damage":%d}}' % (item, damage)
+    return d_plain(item, 1)
+
+
+def transformer_case(rng, states, case):
+    """One click that uses a block transformer: an axe on a log, a copper block,
+    its door, trapdoor or chest, or a hoe or shovel on soil. The chest and door
+    clicks sneak, because their own use (opening) would otherwise take the click
+    (`suppressUsingBlock`)."""
+    kind = rng.choices(('log', 'copper', 'chest', 'door', 'trapdoor', 'soil'), (3, 4, 2, 1, 1, 3))[0]
+    creative = rng.random() < 0.15
+    damage = rng.choice([0, 0, 0, 1, 10])
+    face = rng.choice(['up', 'up', 'down', 'north', 'south', 'west', 'east'])
+    sneaking = rng.random() < 0.3
+    cells = [[0, -1, 0, states.get(rng.choice(['stone', 'dirt', 'oak_planks']))]]
+    items = []
+    if kind == 'log':
+        name = rng.choice(LOGS)
+        cells.insert(0, [0, 0, 0, states.get(name, axis=rng.choice(['x', 'y', 'z']))])
+        item = rng.choice(AXES) if rng.random() < 0.9 else rng.choice(['iron_sword', 'stick'])
+    elif kind == 'copper':
+        name = rng.choice(COPPERS)
+        cells.insert(0, [0, 0, 0, states.get(name)])
+        item = rng.choice(AXES) if rng.random() < 0.9 else 'iron_sword'
+    elif kind == 'chest':
+        name = rng.choice(COPPER_CHESTS)
+        facing = rng.choice(list(FACINGS))
+        double = rng.random() < 0.5
+        if double:
+            own = rng.choice(['left', 'right'])
+            other = 'right' if own == 'left' else 'left'
+            dx, dz = FACINGS[facing]
+            # ChestBlock.getConnectedDirection: LEFT is facing.getClockWise().
+            dx, dz = (-dz, dx) if own == 'left' else (dz, -dx)
+            cells.insert(0, [0, 0, 0, states.get(name, type=own, facing=facing, waterlogged='false')])
+            cells.insert(1, [dx, 0, dz, states.get(name, type=other, facing=facing, waterlogged='false')])
+        else:
+            cells.insert(0, [0, 0, 0, states.get(name, type='single', facing=facing, waterlogged='false')])
+        for slot in rng.sample(range(27), rng.choice([0, 1, 2])):
+            items.append([0, 0, 0, slot, d.plain(rng.choice(['stone', 'diamond', 'bread']), rng.choice([1, 3, 16]))])
+        item = rng.choice(['iron_axe', 'diamond_axe', 'netherite_axe'])
+        sneaking = True
+    elif kind == 'door':
+        name = rng.choice(COPPER_DOORS)
+        facing = rng.choice(list(FACINGS))
+        props = {'facing': facing, 'hinge': rng.choice(['left', 'right']),
+                 'open': rng.choice(['false', 'true']), 'powered': rng.choice(['false', 'true'])}
+        cells.insert(0, [0, 0, 0, states.get(name, half='lower', **props)])
+        cells.insert(1, [0, 1, 0, states.get(name, half='upper', **props)])
+        item = rng.choice(['iron_axe', 'diamond_axe'])
+        sneaking = True
+    elif kind == 'trapdoor':
+        name = rng.choice(COPPER_TRAPDOORS)
+        cells.insert(0, [0, 0, 0, states.get(name, facing=rng.choice(list(FACINGS)),
+                                              half=rng.choice(['bottom', 'top']),
+                                              open=rng.choice(['false', 'true']),
+                                              powered=rng.choice(['false', 'true']),
+                                              waterlogged=rng.choice(['false', 'true']))])
+        item = rng.choice(['iron_axe', 'diamond_axe'])
+        sneaking = True
+    else:
+        hoe = rng.random() < 0.5
+        # Rooted dirt is the one transform with a loot table, so give it a
+        # third of the hoe cases.
+        names = list(SOIL) + (['rooted_dirt'] * 3 if hoe else [])
+        name = rng.choice(names)
+        cells.insert(0, [0, 0, 0, states.get(name, **SOIL[name])])
+        above = rng.choice(['air', 'air', 'air', 'stone', 'water'])
+        if above != 'air':
+            cells.append([0, 1, 0, states.get(above)])
+        item = rng.choice(HOES if hoe else SHOVELS) if rng.random() < 0.9 else 'iron_sword'
+    case['cells'] = cells
+    case['items'] = items
+    case['use_item'] = {'item': damage_stack(item, damage), 'creative': creative, 'sneaking': sneaking,
+                        'food': 20, 'face': face}
+
+
+def cases(facts, count, seed, transformers=True):
     rng = random.Random(seed)
     states = d.States(facts)
     for n in range(count):
         case = {**h.environment(rng), 'pos': [0, 0, 0]}
         case.pop('raining', None)
         case.pop('thundering', None)
+        if rng.random() < 0.04:
+            wax_chest_case(rng, states, case)
+            case['items'] = []
+            case['mode'] = 'dispense'
+            yield case
+            continue
+        if transformers and rng.random() < 0.08:
+            transformer_case(rng, states, case)
+            case['mode'] = 'dispense'
+            yield case
+            continue
         if rng.random() < 0.08:
             wire_case(rng, states, case)
             case['items'] = []
@@ -666,6 +853,143 @@ def cases(facts, count, seed):
         yield case
 
 
+def wake_cases(facts, count, seed):
+    """Villagers waking up, from a stream of their own so the other cases stay as they were."""
+    rng = random.Random(f'wake {seed}')
+    states = d.States(facts)
+    for _ in range(count):
+        case = {**h.environment(rng), 'pos': [0, 0, 0]}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        wake_case(rng, states, case)
+        case['items'] = []
+        case['mode'] = 'dispense'
+        yield case
+
+
+# Items whose `Item.use` counts the used statistic (#9775): books, the spyglass, boats, a carrot or
+# warped fungus on a stick off its mount, armor and other equippables swapped from the hand, and
+# flint and steel or a fire charge on TNT (or lighting a fire). An empty map needs the server's
+# saved data and a fishing rod a hook, which the stand-in level and the fixture leave out.
+USED = ['writable_book', 'written_book', 'spyglass', 'oak_boat', 'birch_chest_boat', 'bamboo_raft',
+        'carrot_on_a_stick', 'warped_fungus_on_a_stick', 'iron_helmet', 'diamond_chestplate',
+        'leather_leggings', 'golden_boots', 'turtle_helmet', 'carved_pumpkin', 'flint_and_steel', 'fire_charge']
+# What the player looks down on (three blocks south of the clicked block), for the boats: two
+# blocks below its feet, so the new boat clears the player (vanilla's `noCollision` counts the
+# player, which is not in the oracle's level).
+FLOORS = ['stone', 'water', 'water', 'air', 'oak_planks']
+
+
+def used_stat_case(rng, states, case):
+    """An item whose `use` counts the used statistic, in either hand, over the clicked block (TNT for
+    flint and steel and fire charges, most of the time), with a floor under the player for boats."""
+    item = rng.choice(USED)
+    lights = item in ('flint_and_steel', 'fire_charge')
+    origin = 'tnt' if lights and rng.random() < 0.8 else rng.choice(['stone', 'dirt', 'oak_planks'])
+    cells = [[0, 0, 0, states.get(origin)]]
+    floor = rng.choice(FLOORS)
+    if floor != 'air':
+        cells.append([0, -2, 3, states.get(floor)])
+    case['cells'] = cells
+    # One of each: a second would go to the inventory, which the oracle's player lacks.
+    held = d.plain(item, 1)
+    case['use_item'] = {'item': held, 'creative': rng.random() < 0.2, 'sneaking': rng.random() < 0.15,
+                        'food': 20, 'yaw': rng.choice([0.0, 90.0, 180.0, 270.0, 33.0])}
+    if rng.random() < 0.3:
+        main = rng.choice(['-', '-', 'stick', 'stone'])
+        case['use_item'].update(offhand=held, item='-' if main == '-' else d.plain(main, 1))
+
+
+def used_stat_cases(facts, count, seed):
+    """`used_stat_case`s, from a stream of their own so the other cases stay as they were."""
+    rng = random.Random(f'used {seed}')
+    states = d.States(facts)
+    for _ in range(count):
+        case = {**h.environment(rng), 'pos': [0, 0, 0]}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        used_stat_case(rng, states, case)
+        case['items'] = []
+        case['mode'] = 'dispense'
+        yield case
+
+
+# Entities an item places, each with its ENTITY_PLACE game event and used statistic (#9776):
+# paintings and item frames on a wall, armor stands, end crystals on obsidian or bedrock, minecarts
+# on rails.
+HANGING = ['painting', 'painting', 'item_frame', 'glow_item_frame']
+RAILS = ['rail', 'powered_rail', 'detector_rail', 'activator_rail']
+CARTS = ['minecart', 'chest_minecart', 'furnace_minecart', 'tnt_minecart', 'hopper_minecart']
+
+
+def placement_case(rng, states, case):
+    """An item that places an entity, clicked where it fits or does not."""
+    roll = rng.random()
+    if roll < 0.35:
+        # A wall facing the player (south), up to 4x4 so the larger paintings fit; the click on its
+        # south face, or another face.
+        width, height = rng.choice([(1, 1), (2, 2), (4, 3), (4, 4)])
+        wall = rng.choice(['stone', 'oak_planks', 'glass', 'stone'])
+        cells = [[x, y, 0, states.get(wall)] for x in range(-(width // 2), width - width // 2)
+                 for y in range(height)]
+        item = rng.choice(HANGING)
+        # Something in front of the wall, for the frames only: a painting picks among the largest
+        # variants that fit with its own (unseeded) random, so each wall here fits one size alone.
+        if item != 'painting' and rng.random() < 0.3:
+            cells.append([0, 1 if height > 1 else 0, 1, states.get(rng.choice(['torch', 'stone', 'oak_slab']))])
+        case['use_item'] = {'item': d.plain(item, 1), 'face': rng.choice(['south', 'south', 'south', 'up', 'east'])}
+    elif roll < 0.6:
+        cells = [[0, 0, 0, states.get(rng.choice(['stone', 'grass_block', 'short_grass', 'oak_slab']))]]
+        if rng.random() < 0.3:
+            cells.append([0, rng.choice([1, 2]), 0, states.get(rng.choice(['stone', 'glass']))])
+        case['use_item'] = {'item': d.plain('armor_stand', 1)}
+    elif roll < 0.8:
+        cells = [[0, 0, 0, states.get(rng.choice(['obsidian', 'obsidian', 'bedrock', 'stone']))]]
+        if rng.random() < 0.25:
+            cells.append([0, 1, 0, states.get(rng.choice(['fire', 'stone']))])
+        case['use_item'] = {'item': d.plain('end_crystal', 1)}
+    else:
+        rail = rng.choice(RAILS)
+        cells = [[0, -1, 0, states.get('stone')], [0, 0, 0, states.any(rng, rail)]]
+        case['use_item'] = {'item': d.plain(rng.choice(CARTS), 1)}
+    case['cells'] = cells
+    case['use_item'].update(creative=rng.random() < 0.2, sneaking=rng.random() < 0.15, food=20,
+                            yaw=rng.choice([0.0, 90.0, 180.0, 270.0, 33.0]))
+    if rng.random() < 0.25:
+        held = case['use_item']['item']
+        case['use_item'].update(offhand=held, item=rng.choice(['-', '-', d.plain('stick', 1)]))
+
+
+def placement_cases(facts, count, seed):
+    """`placement_case`s, from a stream of their own."""
+    rng = random.Random(f'placed {seed}')
+    states = d.States(facts)
+    for _ in range(count):
+        case = {**h.environment(rng), 'pos': [0, 0, 0]}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        placement_case(rng, states, case)
+        case['items'] = []
+        case['mode'] = 'dispense'
+        yield case
+
+
+def forced_respawn_cases(facts):
+    """Non-bed forced points: Block.isPossibleToRespawnInThis at feet and head.
+
+    Plants containing water are not liquid blocks; bubble columns are. Keep both
+    cases even in a small run so fluid-containing is not substituted for liquid.
+    """
+    states = d.States(facts)
+    for name in ('air', 'water', 'lava', 'bubble_column', 'kelp', 'seagrass', 'stone'):
+        for height in (0, 1):
+            cells = [[0, 0, 0, states.get('air')], [0, 1, 0, states.get('air')]]
+            cells[height][3] = states.get(name)
+            yield {**h.environment(random.Random(10044)), 'pos': [0, 0, 0],
+                   'cells': cells, 'items': [], 'mode': 'dispense',
+                   'respawn_at': {'forced': True, 'consume': False, 'yaw': 37.0}}
+
+
 def d_plain(item, count):
     return d.plain(item, count)
 
@@ -674,6 +998,8 @@ def kind(case, facts):
     first = facts.states[case['cells'][0][3]][0].split(':')[1]
     if 'respawn_at' in case:
         return f'respawn at {first}'
+    if 'wake' in case:
+        return f'villager waking at {first}'
     item = case['use_item']['item']
     item = item.split('"')[1].split(':')[1] if item != '-' else 'empty hand'
     if 'entities' in case:
@@ -683,6 +1009,8 @@ def kind(case, facts):
 
 def main():
     parser = h.argument_parser(__doc__)
+    parser.add_argument('--no-transformers', action='store_true',
+                        help='leave out the axe, hoe and shovel transforms, as the corpus did before them')
     args = parser.parse_args()
     if args.count == 40000:
         args.count = 4000
@@ -691,7 +1019,10 @@ def main():
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'use-item-on-parity'
     work.mkdir(parents=True, exist_ok=True)
-    all_cases = list(cases(facts, args.count, args.seed))
+    all_cases = [*cases(facts, args.count, args.seed, not args.no_transformers),
+                 *wake_cases(facts, max(args.count // 10, 1), args.seed),
+                 *used_stat_cases(facts, max(args.count // 10, 1), args.seed),
+                 *placement_cases(facts, max(args.count // 10, 1), args.seed), *forced_respawn_cases(facts)]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
@@ -710,7 +1041,7 @@ def main():
     rust = h.split_cases((work / 'rust.txt').read_text(), ignore)
     assert len(native) == len(rust) == len(all_cases), (len(native), len(rust), len(all_cases))
     groups, errors = {}, {}
-    planted = eaten = respawned = exploded = 0
+    planted = eaten = respawned = exploded = moved = 0
     for case, a, b in zip(all_cases, native, rust):
         if a and a[0].startswith('error'):
             errors.setdefault(a[0], []).append(case)
@@ -719,6 +1050,8 @@ def main():
         eaten += any(line.startswith('held') and not line.endswith('using -') for line in a)
         respawned += any(line.startswith('respawn ') and line != 'respawn none' and 'respawn_at' in case for line in a)
         exploded += any(line.endswith(' minecraft:explode') for line in a)
+        # Off the bed: not where the villager lay (y 0.6875).
+        moved += any(line.startswith('wake ') and line.split()[2] != '0.687500' for line in a)
         if not d.same(a, b):
             groups.setdefault(kind(case, facts), []).append((case, a, b))
     for name, entries in sorted(errors.items(), key=lambda e: -len(e[1])):
@@ -726,14 +1059,15 @@ def main():
     for name, entries in sorted(groups.items(), key=lambda e: -len(e[1])):
         print(f'{name}: {len(entries)} differing')
         for case, a, b in entries[:args.show]:
-            print('  case ' + d.describe(case, facts) + ' use=' + json.dumps(case.get('use_item', case.get('respawn_at'))))
+            print('  case ' + d.describe(case, facts) + ' use='
+                  + json.dumps(case.get('use_item', case.get('respawn_at', case.get('wake')))))
             print('   native ' + ' | '.join(sorted(a)))
             print('   rust   ' + ' | '.join(sorted(b)))
     total = sum(len(v) for v in groups.values())
     skipped = sum(len(v) for v in errors.values())
     print(f'{len(all_cases) - total - skipped}/{len(all_cases) - skipped} cases match ({skipped} oracle errors); '
           f'vanilla planted in {planted}, started eating in {eaten}, exploded {exploded} times and found a respawn '
-          f'spot in {respawned}')
+          f'spot in {respawned}; villagers woke off the bed in {moved}')
     h.finish(total + skipped)
 
 

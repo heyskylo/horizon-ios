@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "fluid_tanks", "target": "horizon_client::game::machines::native_fluids::Game<'_>::native_fluid_tanks"}
+  ],
+  "rust_summary": "a mod's own fluids in tanks (`native_fluid_insert` takes any namespaced fluid outside `minecraft`), and the tanks' contents read through `Host` (`native_fluid_tanks`).",
+  "doc_summary": "Tanks take a mod's own fluids (`create:chocolate`, `create:potion/healing`) as they take water and lava: `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them, `native_fluid_tanks` reads them, and its mod draws them. A cauldron takes only water and lava, and the world has only vanilla's fluids. Bundles need \"hooks\": @API:mod_fluids@.",
+  "comments": [
+    "crates/horizon-client/src/game/machines/native_fluids.rs"
+  ]
+}

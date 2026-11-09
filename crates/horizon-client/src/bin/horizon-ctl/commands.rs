@@ -61,6 +61,122 @@ impl Group {
     }
 }
 
+/// One field of a command's JSON reply. `ty` is a JSON type (`string`, `integer`, `number`,
+/// `boolean`, `array`, `object`); `a|null` marks a field that is `null` when it does not apply.
+#[derive(Clone, Copy)]
+pub struct Field {
+    pub name: &'static str,
+    pub ty: &'static str,
+    pub help: &'static str,
+}
+
+const fn f(name: &'static str, ty: &'static str, help: &'static str) -> Field {
+    Field { name, ty, help }
+}
+
+/// `hello`: always these three fields.
+const HELLO_REPLY: &[Field] = &[
+    f(
+        "protocol",
+        "string",
+        "the control protocol, MAJOR.MINOR.PATCH (docs/api/stability.md)",
+    ),
+    f(
+        "release",
+        "string",
+        "the game's version (MCP serverInfo carries the same string)",
+    ),
+    f(
+        "features",
+        "array",
+        "the command groups the game answers, each a string",
+    ),
+];
+
+/// `status`: the top-level fields the reply always carries. It holds more (sounds,
+/// projectiles, maps and the like), so a reader must ignore the keys it does not know.
+const STATUS_REPLY: &[Field] = &[
+    f(
+        "screen",
+        "string",
+        "the open screen (playing, inventory, paused...)",
+    ),
+    f(
+        "debug",
+        "object",
+        "the F3 overlay flags: overlay, hitboxes, chunk_borders, pause_menu, advanced_tooltips, pause_on_lost_focus, clipboard",
+    ),
+    f("dimension", "string", "the dimension the player is in"),
+    f("creative", "boolean", "creative mode"),
+    f(
+        "player",
+        "object|null",
+        "position, velocity (blocks), on_ground, health, max_health, food; null without a player",
+    ),
+    f("yaw", "number", "view yaw, degrees"),
+    f("pitch", "number", "view pitch, degrees"),
+    f(
+        "target",
+        "object|null",
+        "the block under the crosshair as pos and block; null when none",
+    ),
+    f("selected", "integer", "the selected hotbar slot, 1 to 9"),
+    f(
+        "held",
+        "object|null",
+        "the held stack as item and count; null when empty",
+    ),
+    f(
+        "offhand",
+        "object|null",
+        "the offhand stack as item, count and damage; null when empty",
+    ),
+    f(
+        "keys",
+        "array",
+        "the keys the game holds down, each a string",
+    ),
+    f("fps", "number", "frames per second"),
+    f("frames", "integer", "frames drawn so far"),
+    f("ticks", "integer", "game ticks so far"),
+    f("day_time", "integer", "the world's time of day, ticks"),
+    f("uptime_seconds", "number", "seconds since the game started"),
+    f("render_distance", "integer", "chunks"),
+    f("chunks", "integer", "chunks loaded"),
+    f("mobs", "integer", "mobs this side knows"),
+    f("block_entities", "integer", "block entities loaded"),
+    f(
+        "pending_chunks",
+        "integer",
+        "chunks still being generated, meshed, uploaded or received",
+    ),
+    f(
+        "streaming",
+        "object",
+        "chunk streaming stages and their counts",
+    ),
+    f(
+        "lod",
+        "object",
+        "far terrain: distances, tiles, quads and sampling progress",
+    ),
+    f(
+        "renderer",
+        "object|null",
+        "GPU, driver, backend, size, draw counts and GPU memory; null without a renderer",
+    ),
+    f(
+        "display",
+        "object|null",
+        "the monitor: width, height, scale, refresh_hz; null without a window",
+    ),
+    f(
+        "server",
+        "object|null",
+        "the connected server's address, name and state; null when not connected",
+    ),
+];
+
 pub struct Cmd {
     pub name: &'static str,
     /// What the game receives instead of `name` (aliases such as look-at-block).
@@ -75,6 +191,8 @@ pub struct Cmd {
     pub mcp: bool,
     /// Runs in horizon-ctl itself, not in the game.
     pub local: bool,
+    /// The reply's fields; empty until the command's reply is described (`REPLY_GROUP`).
+    pub reply: &'static [Field],
 }
 
 const fn p(name: &'static str, ty: Ty, help: &'static str) -> Param {
@@ -150,6 +268,7 @@ const PAGES: Ty = Ty::Enum(&[
     "extras",
     "horizon",
     "agent",
+    "video-vanilla",
 ]);
 
 /// `--confirm`, required by destructive commands: the player agreed.
@@ -167,6 +286,12 @@ pub const DESTRUCTIVE: &[&str] = &["world-delete", "fill", "setblock"];
 pub const OPEN_WORLD: &[&str] = &["connect", "lan", "friends", "chat", "command"];
 
 macro_rules! cmd {
+    ($name:expr, $group:ident, $usage:expr, $summary:expr, $details:expr, [$($ex:expr),* $(,)?], $params:expr, mcp: $mcp:expr, local: $local:expr, reply: $reply:expr) => {
+        Cmd {
+            reply: $reply,
+            ..cmd!($name, $group, $usage, $summary, $details, [$($ex),*], $params, mcp: $mcp, local: $local)
+        }
+    };
     ($name:expr, $group:ident, $usage:expr, $summary:expr, $details:expr, [$($ex:expr),* $(,)?], $params:expr, mcp: $mcp:expr, local: $local:expr $(, wire: $wire:expr)?) => {
         Cmd {
             name: $name,
@@ -179,6 +304,7 @@ macro_rules! cmd {
             params: $params,
             mcp: $mcp,
             local: $local,
+            reply: &[],
         }
     };
     (@wire) => { None };
@@ -194,16 +320,16 @@ pub const COMMANDS: &[Cmd] = &[
         &[flag("world", Ty::Str, "world folder to open or create"), flag("seed", Ty::Str, "seed for a new world"), flag("creative", Ty::Bool, "creative mode for a new world"),
           flag("version", Ty::Str, "an installed launcher version tag such as v2026.10.13"), flag("game", Ty::Str, "path to a horizon-client binary"),
           flag("wait", Ty::Bool, "also wait until the world is ready (default in MCP)"),
-          flag("offscreen", Ty::Bool, "render without showing a window (screenshots still work): locked or headless sessions"),
+          flag("offscreen", Ty::Bool, "render without showing a window, splitscreen's too (screenshots still work): locked or headless sessions"),
           flag("headless", Ty::Bool, "no display, window or GPU: a player that plays through these commands only (no screenshots)")],
         mcp: true, local: true),
     cmd!("wait-for", Session, "wait-for screen NAME|widget ID|loaded|chat TEXT|event KIND [--timeout S] [--since SEQ]", "wait until the game reaches a state, then reply",
         "screen takes the names state shows (playing, inventory, paused, dead, title...); widget an id from ui; loaded means a world is open, the player is in it and no chunk is pending; chat a new line containing TEXT; event a kind from events (death, respawn, item, screen...). chat and event count from --since SEQ (take last from events before acting), else from now. A timeout (default 30 s) is an error with kind timeout.",
         ["horizon-ctl wait-for screen inventory", "horizon-ctl wait-for loaded --timeout 120", "horizon-ctl wait-for chat joined the game", "horizon-ctl wait-for event death --timeout 600"],
         &[flag("timeout", Ty::Num, "seconds (default 30)"), flag("since", Ty::Int, "chat and event: count from this event seq"), p("condition", Ty::Enum(&["screen", "widget", "loaded", "chat", "event"]), "what to wait for"), opt("value", Ty::Rest, "the screen name, widget id, chat text or event kind")], mcp: true, local: false),
-    cmd!("events", Observe, "events [--since SEQ]", "what happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds",
-        "Every event has seq and tick; pass the reply's last as --since next time. The game keeps the newest 256.",
-        ["horizon-ctl events", "horizon-ctl events --since 42"], &[flag("since", Ty::Int, "only events after this seq")], mcp: true, local: false),
+    cmd!("events", Observe, "events [--since SEQ] [--limit N]", "what happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, damage taken (hurt, with its cause), healing, food, dimensions, worlds",
+        "Every event has seq and tick; pass the reply's last as --since next time. --limit keeps the newest N and skipped counts the older ones left out. hurt and death carry the player position (a death drops the inventory there). The game keeps the newest 256.",
+        ["horizon-ctl events", "horizon-ctl events --since 42", "horizon-ctl events --limit 10"], &[flag("since", Ty::Int, "only events after this seq"), flag("limit", Ty::Int, "newest N events")], mcp: true, local: false),
     cmd!("input-log", Observe, "input-log [--since SEQ] [--limit N] [--origin user|agent|game]", "recent input and who caused it: a person, an agent or the game",
         "Every event has seq, tick and origin. `user` is the window's own keyboard, mouse or pad; `agent` is the control socket (this tool); `game` is input the game made up. A `user-input` event in `events` means a person stepped in while an agent was driving. The game keeps the newest 512.",
         ["horizon-ctl input-log", "horizon-ctl input-log --origin user --limit 20", "horizon-ctl input-log --since 120"], &[flag("since", Ty::Int, "only events after this seq"), flag("limit", Ty::Int, "newest N events"), flag("origin", Ty::Enum(&["user", "agent", "game"]), "user, agent or game")], mcp: true, local: false),
@@ -216,10 +342,10 @@ pub const COMMANDS: &[Cmd] = &[
         &[flag("lines", Ty::Int, "how many lines of latest.log (default 100)"), flag("crash", Ty::Bool, "the newest crash report instead")],
         mcp: true, local: true),
     cmd!("status", Session, "status", "game, renderer and streaming state (the scripting socket's original summary)",
-        "Also what F3 shows: the overlay flags, the renderer, chunk streaming and memory.", ["horizon-ctl status"], &[], mcp: true, local: false),
+        "Also what F3 shows: the overlay flags, the renderer, chunk streaming and memory.", ["horizon-ctl status"], &[], mcp: true, local: false, reply: STATUS_REPLY),
     cmd!("hello", Session, "hello", "the control protocol's version, the game's release and the command groups it serves",
         "Replies protocol (MAJOR.MINOR.PATCH of the control protocol, docs/api/stability.md), release (the game's version, the string MCP serverInfo carries too) and features (the command groups the game answers, so a script can test for one before calling it).",
-        ["horizon-ctl hello"], &[], mcp: true, local: false),
+        ["horizon-ctl hello"], &[], mcp: true, local: false, reply: HELLO_REPLY),
     cmd!("memory", Session, "memory", "what holds the game's memory: resident set, allocator, client and server columns by part, renderer, GPU memory by resource",
         "Columns count blocks, biomes, light, heightmaps and records, each shared section once; server_columns are the single-player server thread's own levels. GPU memory by label needs Vulkan or DirectX 12. What the census doesn't reach is the resident set less its parts. A build with the alloc-census feature adds heap_by_tag_mb: the live heap by startup step, timed span, chunk job and thread.", ["horizon-ctl memory"], &[], mcp: true, local: false),
     cmd!("worlds", Session, "worlds", "the saved worlds, newest first: folder, name, mode, last played, version",
@@ -287,7 +413,7 @@ pub const COMMANDS: &[Cmd] = &[
         &[p("direction", Ty::Enum(&["forward", "back", "left", "right"]), "direction relative to the view"), p("seconds", Ty::Num, "how long to walk"),
           flag("sprint", Ty::Bool, "sprint"), flag("sneak", Ty::Bool, "sneak"), flag("jump", Ty::Bool, "keep jumping")], mcp: true, local: false),
     cmd!("goto", Move, "goto X Y Z [--near R] [--sprint] [--direct] [--timeout S]", "walk to a position, finding a path through loaded terrain",
-        "A* over standable blocks (steps up one block, drops up to three, avoids lava, swims when it must), then steering with jumps when stuck. Without a path it fails at once (--direct walks straight at the target anyway, falls included). --near R stops within R blocks (use 1.5-3 to reach a block you then break). Replies with arrived, position and distance, or an error when stuck or out of time (default 60 s).",
+        "A* over standable blocks (steps up one block, drops up to three, avoids lava, swims when it must), then steering with jumps when stuck. Whole-number X and Z name a block and aim at its center (8 64 3 is 8.5 64 3.5); decimals are exact positions. Without a path it fails at once (--direct walks straight at the target anyway, falls included). --near R stops within R blocks (use 1.5-3 to reach a block you then break). Replies with arrived, position and distance, or an error when stuck or out of time (default 60 s).",
         ["horizon-ctl goto 120 70 -40", "horizon-ctl goto 8 64 3 --near 2 --sprint"],
         &[XYZ[0], XYZ[1], XYZ[2], flag("near", Ty::Num, "arrive within this many blocks (default 0.6)"), flag("sprint", Ty::Bool, "sprint"), flag("direct", Ty::Bool, "walk straight when no path is found"), flag("timeout", Ty::Num, "give up after this many seconds (default 60)")], mcp: true, local: false),
     cmd!("jump", Move, "jump", "jump once and reply when landed", "", ["horizon-ctl jump"], &[], mcp: true, local: false),
@@ -311,16 +437,20 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("look-at-entity", Move, "look-at-entity ID [--over S]", "face an entity (same as look-at entity)", "",
         ["horizon-ctl look-at-entity 42"], &[p("id", Ty::Int, "entity id from entities"), OVER], mcp: true, local: false, wire: "look-at entity"),
     cmd!("tp", Move, "tp X Y Z", "teleport the player", "", ["horizon-ctl tp 0 80 0"], &XYZ, mcp: true, local: false),
+    cmd!("emote", Act, "emote [ID|stop]", "play one of the player's emotes, stop it, or list them",
+        "Without an argument: the emotes the player owns (the wheel's) and the one playing. With an ID it plays that emote as the emote wheel does (the player must stand still: moving, attacking or using an item cancels it); stop fades it out. Visual only: nothing is sent to the game server (docs/cosmetics.md).",
+        ["horizon-ctl emote", "horizon-ctl emote wave_hello", "horizon-ctl emote stop"],
+        &[opt("id", Ty::Str, "an owned emote's id, or stop")], mcp: true, local: false),
     // Act
     cmd!("break", Act, "break X Y Z [--timeout S]", "mine a block, holding the attack button until it breaks",
-        "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops and picked_up (inventory change).",
+        "Aims at a visible face (the block must be within reach: use goto --near 2 first), mines with the held item, then waits up to a second for the drops. Replies with block_before, block, ticks, drops, picked_up (inventory change, where a tool that broke shows as -1) and held (the item in hand afterwards, also on a timeout: a broken tool leaves the bare hand).",
         ["horizon-ctl break 10 64 3"], &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], flag("timeout", Ty::Num, "give up after this many seconds (default 30)")], mcp: true, local: false),
-    cmd!("place", Act, "place X Y Z [--item ITEM]", "place the held item (or ITEM from the hotbar) at an empty position",
+    cmd!("place", Act, "place X Y Z [--item ITEM] [--sneak]", "place the held item (or ITEM from the hotbar) at an empty position",
         "Clicks the face of a solid neighbour touching X Y Z. Replies with the block placed and the inventory change.",
-        ["horizon-ctl place 10 64 4 --item oak_planks"], &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], flag("item", Ty::Str, "hotbar item to select first")], mcp: true, local: false),
-    cmd!("interact", Act, "interact X Y Z [FACE]", "right-click a block: open a chest or crafting table, press a button, open a door",
+        ["horizon-ctl place 10 64 4 --item oak_planks"], &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], flag("item", Ty::Str, "hotbar item to select first"), flag("sneak", Ty::Bool, "sneak while clicking: place against a crafting table or chest instead of opening it")], mcp: true, local: false),
+    cmd!("interact", Act, "interact X Y Z [FACE] [--sneak]", "right-click a block: open a chest or crafting table, press a button, open a door",
         "Replies with the screen afterwards and whether the block changed.", ["horizon-ctl interact 5 64 2"],
-        &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], opt("face", FACE, "which face to click")], mcp: true, local: false),
+        &[BLOCK_XYZ[0], BLOCK_XYZ[1], BLOCK_XYZ[2], opt("face", FACE, "which face to click"), flag("sneak", Ty::Bool, "sneak while clicking: use the held item on the block instead of opening it")], mcp: true, local: false),
     cmd!("use-item", Act, "use-item [--hold SECONDS]", "right-click with the held item: eat, drink, throw, draw a bow",
         "Hold for 1.7 s to eat.", ["horizon-ctl use-item --hold 1.7"], &[flag("hold", Ty::Num, "hold the button this long")], mcp: true, local: false),
     cmd!("attack", Act, "attack [ID]", "swing at what the crosshair targets (after facing entity ID)",
@@ -330,6 +460,14 @@ pub const COMMANDS: &[Cmd] = &[
         ["horizon-ctl select 3", "horizon-ctl select oak_planks"], &[p("slot", Ty::Str, "1-9 or an item id")], mcp: true, local: false),
     cmd!("drop", Act, "drop [all]", "drop one of the held item, or the whole stack", "", ["horizon-ctl drop", "horizon-ctl drop all"],
         &[opt("all", Ty::Bool, "drop the whole stack")], mcp: true, local: false),
+    cmd!("hunt", Act, "hunt ID [--timeout S]", "walk up to a mob and hit it until it is gone, then pick up its drops",
+        "For animals and monsters that move between calls: it re-reads the entity's position, walks within reach (sprinting), attacks with the held item, waits 12 ticks for the weapon to recharge, and repeats. Once the entity is gone (killed or despawned) it walks over its last position to collect the drops. Replies with hits, last_seen and inventory_change; times out with kind timeout (default 30 s).",
+        ["horizon-ctl hunt 90", "horizon-ctl hunt 90 --timeout 60"],
+        &[p("id", Ty::Int, "entity id from entities"), flag("timeout", Ty::Num, "give up after this many seconds (default 30)")], mcp: true, local: true),
+    cmd!("collect", Act, "collect [RADIUS]", "walk over every dropped item within RADIUS blocks (default 8) to pick it up",
+        "Drops from break, hunt or a death often land out of pickup range, in a hole or behind a corner. collect walks to each item nearest first, trying each once, and replies with inventory_change and left: the items it could not reach (with why, the walk's error, when it had one). It stops with kind hurt, listing the hurt events, as soon as the player takes damage.",
+        ["horizon-ctl collect", "horizon-ctl collect 16"],
+        &[opt("radius", Ty::Num, "search radius in blocks (default 8)")], mcp: true, local: true),
     cmd!("hold", Act, "hold KEY SECONDS", "press a key, wait, release it", "Keys as for key.", ["horizon-ctl hold w 2"],
         &[p("key", Ty::Str, "key name"), p("seconds", Ty::Num, "how long")], mcp: false, local: true),
     cmd!("key", Act, "key KEY down|up|tap|repeat", "press, release or auto-repeat a key (w a s d space shift ctrl e q esc f3 1-9 arrows ...)",
@@ -338,12 +476,12 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("mouse", Act, "mouse left|right|middle down|up|click", "press or release a mouse button in the world", "",
         ["horizon-ctl mouse right click"], &[p("button", Ty::Enum(&["left", "right", "middle"]), "button"), p("action", Ty::Enum(&["down", "up", "click"]), "what to do")], mcp: true, local: false),
     cmd!("interact-entity", Act, "interact-entity ID", "right-click an entity: trade with a villager, mount a horse, ride a boat, shear a sheep",
-        "Faces the entity (from entities), right-clicks it with the held item, waits two ticks and replies with the screen.",
+        "Faces the entity (from entities), right-clicks it with the held item, waits two ticks and replies with the screen and inventory_change (items gained or lost). Fails without clicking when the entity is not under the crosshair, naming what is in the way.",
         ["horizon-ctl interact-entity 42"], &[p("id", Ty::Int, "entity id from entities")], mcp: true, local: true),
-    cmd!("pad", Act, "pad BUTTON down|up|tap | pad stick left|right X Y | pad trigger left|right V | pad release | pad status", "a virtual controller: buttons, sticks and triggers as a real pad would send them",
-        "Buttons by position: south east west north lb rb lt rt select start ls rs up down left right (south is Xbox A / PlayStation cross). Sticks run -1..1 with up positive and stay tilted until centred; triggers 0..1. Merged with any real controller; status lists the connected ones and what is held.",
+    cmd!("pad", Act, "pad BUTTON down|up|tap | pad stick left|right X Y | pad trigger left|right V | pad release | pad status | pad connection connected [FAMILY]|disconnected | pad family FAMILY", "a virtual controller: buttons, sticks and triggers as a real pad would send them",
+        "Buttons by position: south east west north lb rb lt rt select start ls rs up down left right (south is Xbox A / PlayStation cross). Sticks run -1..1 with up positive and stay tilted until centred; triggers 0..1. Merged with any real controller; status lists the connected ones and what is held. FAMILY is xbox, playstation, nintendo or auto: connection connected raises the notice of that family's controller (PlayStation unless given), and family makes the pad playing that family's (its glyphs; a Nintendo one goes by its letters when Nintendo Buttons says so).",
         ["horizon-ctl pad south tap", "horizon-ctl pad stick left 0 1", "horizon-ctl pad trigger right 1", "horizon-ctl pad status"],
-        &[p("what", Ty::Str, "a button name, stick, trigger, release or status"), opt("a", Ty::Str, "down|up|tap, or left|right"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
+        &[p("what", Ty::Str, "a button name, stick, trigger, release, status, connection or family"), opt("a", Ty::Str, "down|up|tap, left|right, connected|disconnected, or a family"), opt("b", Ty::Num, "stick X or trigger value"), opt("c", Ty::Num, "stick Y")], mcp: true, local: false),
     cmd!("release", Act, "release", "release every key and mouse button", "", ["horizon-ctl release"], &[], mcp: true, local: false),
     cmd!("stop", Act, "stop", "cancel the running action (goto, break...) and release every key", "", ["horizon-ctl stop"], &[], mcp: true, local: false),
     // Screens
@@ -448,12 +586,22 @@ pub const COMMANDS: &[Cmd] = &[
         "Lines are split like a shell (quotes keep spaces); # starts a comment; sleep SECONDS waits. Stops at the first error unless --keep-going. horizon-ctl - is the older form: read stdin and keep going.",
         ["horizon-ctl script play.txt", "printf 'state\\ngoto 0 64 0\\n' | horizon-ctl script"], &[], mcp: false, local: true),
     cmd!("sleep", Scripting, "sleep SECONDS", "wait (in scripts)", "", ["sleep 0.5"], &[], mcp: false, local: true),
-    cmd!("mcp", Scripting, "mcp", "serve the Model Context Protocol on stdin/stdout, one tool per command",
-        "Add it to an MCP client as a stdio server: command horizon-ctl, args [\"mcp\"] (with --socket PATH first if needed). The screenshot tool returns the image.",
-        ["horizon-ctl mcp"], &[], mcp: false, local: true),
+    cmd!("mcp", Scripting, "mcp [--paced]", "serve the Model Context Protocol on stdin/stdout, one tool per command",
+        "Add it to an MCP client as a stdio server: command horizon-ctl, args [\"mcp\"] (with --socket PATH first if needed). The screenshot tool returns the image. --paced stops a single-player world between tool calls: the pause menu opens after each action and closes before the next, so time passes only while an action (or wait) runs, not while the agent thinks; reading tools (state, inventory, entities, events...) leave it paused.",
+        ["horizon-ctl mcp", "horizon-ctl mcp --paced"], &[], mcp: false, local: true),
     cmd!("bench", Scripting, "bench SECONDS", "reset frame stats, wait, reply with the summary", "", ["horizon-ctl bench 10"], &[p("seconds", Ty::Num, "how long to measure")], mcp: true, local: false),
     cmd!("stats", Scripting, "stats [reset] [raw]", "frame-time summary since the last reset", "", ["horizon-ctl stats"], &[opt("reset", Ty::Bool, "start counting again"), opt("raw", Ty::Bool, "every frame time too (frame_ms, cpu_ms, gpu_ms)")], mcp: true, local: false),
     cmd!("gpu-passes", Scripting, "gpu-passes [on|off]", "time Horizon's own render passes on the GPU, shown in F3 and in stats and bench", "", ["horizon-ctl gpu-passes on"], &[opt("mode", Ty::Enum(&["on", "off"]), "on or off; without it, only reports")], mcp: false, local: false),
+    cmd!("trace", Scripting, "trace [FILE [SECONDS] | stop]", "write every thread's timed spans to FILE as a timeline that ui.perfetto.dev opens, for SECONDS or until stop",
+        "Each span (ticks by system, streaming, uploads, far terrain, lighting, the renderer) shows on the thread that ran it, nested by time. Without arguments, only reports whether a trace is being written. HORIZON_TRACE=FILE writes one from the start; horizon-trace on a dedicated server's console writes one to reports/. See docs/graphics.md.",
+        ["horizon-ctl trace /tmp/frame.json 10", "horizon-ctl trace stop"], &[], mcp: false, local: false),
+    cmd!("screenshot-sequence", Scripting, "screenshot-sequence FRAMES STEP_MS PATH|cancel", "draw a shader pack's first FRAMES frames on a set clock and write the last as a PNG",
+        "Needs HORIZON_STILL and a frozen world (docs/agent-control.md). The pack starts over, frame n's clock is n frames and (n - 1) × STEP_MS milliseconds, the PNG is written as screenshot PATH writes it, and the reply comes once it is. Relative paths are taken from horizon-ctl's directory. cancel stops a running sequence.",
+        ["horizon-ctl screenshot-sequence 64 50 frame64.png", "horizon-ctl screenshot-sequence 64 16.666667 frame64.png", "horizon-ctl screenshot-sequence cancel"],
+        &[p("frames", Ty::Str, "frames to draw, 1 to 10000, or cancel"), opt("step_ms", Ty::Num, "milliseconds between frames on the pack's clock, more than 0 (16.666667 for 60 fps)"), opt("path", Ty::Rest, "the PNG to write")], mcp: false, local: false),
+    cmd!("render-capture", Scripting, "render-capture on|off|DIR", "keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example",
+        "on meshes every section and far tile again so the copies are complete (HORIZON_RENDER_CAPTURE=1 keeps them from the start). DIR gets the camera, frame inputs, settings and every resident near section and far tile mesh; entities, particles, weather, the hand and the HUD are left out. See docs/graphics.md.",
+        ["horizon-ctl render-capture on", "horizon-ctl render-capture /tmp/scene"], &[], mcp: false, local: false),
     cmd!("fly", Scripting, "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]", "fly the camera along a line, then reply with the frame summary",
         "The reply's tick_ms and tick_ms_max are the world's smoothed tick time over the flight (the server thread's when single player runs on one). With raw, the reply also lists every frame time in milliseconds (frame_ms).",
         ["horizon-ctl fly 0 100 0 500 100 0 20"], &[], mcp: false, local: false),
@@ -484,7 +632,7 @@ pub fn find(name: &str) -> Option<&'static Cmd> {
 pub fn overview() -> String {
     let mut out = String::from(
         "horizon-ctl: play and script a running Horizon from the command line.\n\n\
-         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--pretty] COMMAND [ARGS...]\n\
+         usage: horizon-ctl [--socket PATH] [--timeout SECONDS] [--api LINE] [--pretty] COMMAND [ARGS...]\n\
          \x20      horizon-ctl COMMAND --help      (or: horizon-ctl help COMMAND)\n",
     );
     for group in Group::ALL {
@@ -496,7 +644,8 @@ pub fn overview() -> String {
     out.push_str(
         "\nEvery reply is one JSON line. Errors are {\"error\": \"...\"}; the exit status is 0 on\n\
          success, 1 when the game replied with an error, 2 for a usage error, 3 when the\n\
-         game cannot be reached or started and 4 while No AI is on (the launcher's settings).\n\
+         game cannot be reached or started, 4 while No AI is on (the launcher's settings) and 5 when\n\
+         --api LINE (such as --api 0.1) names a protocol line the game's hello does not report.\n\
          Actions (goto, break, place...) block until done.\n\
          horizon-ctl help --game lists the running game's own commands, test hooks included.\n\
          The socket is $HORIZON_CONTROL, else $XDG_RUNTIME_DIR/horizon-control.sock (on Windows\n\
@@ -530,6 +679,34 @@ pub fn detail(c: &Cmd) -> String {
         }
     }
     out
+}
+
+/// The commands whose replies are described so far, one group at a time: the test
+/// requires each to name its fields.
+#[cfg(test)]
+pub const REPLY_GROUP: &[&str] = &["hello", "status"];
+
+/// The JSON schema of a command's reply, or none while its reply is undescribed.
+pub fn reply_schema(c: &Cmd) -> Option<Value> {
+    if c.reply.is_empty() {
+        return None;
+    }
+    let mut props = Map::new();
+    let mut required = Vec::new();
+    for fld in c.reply {
+        let types: Vec<&str> = fld.ty.split('|').collect();
+        let ty = if types.len() == 1 {
+            json!(types[0])
+        } else {
+            json!(types)
+        };
+        props.insert(
+            fld.name.to_owned(),
+            json!({ "type": ty, "description": fld.help }),
+        );
+        required.push(fld.name);
+    }
+    Some(json!({ "type": "object", "properties": props, "required": required }))
 }
 
 /// The generated reference, docs/horizon-ctl-commands.md (`horizon-ctl help --markdown`).
@@ -593,6 +770,26 @@ pub fn markdown() -> String {
                 } else {
                     args.join("<br>")
                 }
+            ));
+        }
+    }
+    out.push_str(
+        "\n## Replies\n\nThe reply fields of the commands described so far (more follow, a group at a \
+         time). Each reply is one JSON object; a type ending in `null` may be `null` when the field \
+         does not apply. A reader ignores keys it does not know: replies may gain fields within a \
+         protocol line. The MCP tool list declares the same fields as `outputSchema`.\n",
+    );
+    for c in COMMANDS.iter().filter(|c| !c.reply.is_empty()) {
+        out.push_str(&format!(
+            "\n### `{}`\n\n| Field | Type | Meaning |\n| --- | --- | --- |\n",
+            c.name
+        ));
+        for fld in c.reply {
+            out.push_str(&format!(
+                "| `{}` | {} | {} |\n",
+                fld.name,
+                fld.ty.replace('|', ", "),
+                cell(fld.help)
             ));
         }
     }
@@ -835,6 +1032,52 @@ mod tests {
         assert_eq!(s["required"], json!(["x", "y", "z"]));
         assert_eq!(s["properties"]["timeout"]["type"], "number");
         assert_eq!(tool_name(find("look-at-entity").unwrap()), "look_at_entity");
+    }
+
+    #[test]
+    fn every_command_in_the_reply_group_names_its_reply_fields() {
+        for name in REPLY_GROUP {
+            let c = find(name).unwrap_or_else(|| panic!("{name} is not a command"));
+            assert!(!c.reply.is_empty(), "{name} names no reply fields");
+            let mut seen = std::collections::HashSet::new();
+            for fld in c.reply {
+                assert!(seen.insert(fld.name), "{name}: {} twice", fld.name);
+                assert!(!fld.help.is_empty(), "{name}.{} has no meaning", fld.name);
+                for t in fld.ty.split('|') {
+                    assert!(
+                        [
+                            "string", "integer", "number", "boolean", "array", "object", "null"
+                        ]
+                        .contains(&t),
+                        "{name}.{}: unknown type {t}",
+                        fld.name
+                    );
+                }
+            }
+            assert_eq!(
+                reply_schema(c).unwrap()["required"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                c.reply.len()
+            );
+        }
+        // Nothing outside the group claims a reply the group list does not cover.
+        for c in COMMANDS.iter().filter(|c| !c.reply.is_empty()) {
+            assert!(
+                REPLY_GROUP.contains(&c.name),
+                "{} has fields but is not in REPLY_GROUP",
+                c.name
+            );
+        }
+        assert_eq!(
+            reply_schema(find("hello").unwrap()).unwrap()["properties"]["features"]["type"],
+            "array"
+        );
+        assert_eq!(
+            reply_schema(find("status").unwrap()).unwrap()["properties"]["player"]["type"],
+            json!(["object", "null"])
+        );
     }
 
     #[test]

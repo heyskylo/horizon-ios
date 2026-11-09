@@ -80,7 +80,7 @@ pub fn register(m: &mut Mob) {
                 2,
                 NearestTarget::player(true)
                     .interval(10)
-                    .when(|m, _| m.extra.anger > 0),
+                    .when(super::tame::angry_at_player),
             );
         }
         S::Drowned => {
@@ -295,7 +295,7 @@ fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
         a.set_item(&trident);
     }
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         ranged_attack_uncertainty(cx.w.difficulty.id),
@@ -324,7 +324,11 @@ impl Goal for DrownedTridentAttack {
         self.0.can_use(m, cx) && m.extra.main_hand.as_deref() == Some("minecraft:trident")
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        // `RangedAttackGoal.canContinueToUse` asks `canUse()` again: the
+        // trident test is re-checked, and the goal only falls back to a target
+        // it is still walking towards once the trident is gone.
+        self.0.can_use(m, cx)
+            && (m.extra.main_hand.as_deref() == Some("minecraft:trident") || !m.ai.nav.is_done())
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
@@ -479,6 +483,12 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
     } else if m.ai.target.is_none() {
         m.extra.flag2 = false;
     }
+    // The anger's target is whoever the piglin holds as its target, so a
+    // piglin hit by another mob is angry at that mob and not at the player
+    // (`NearestAttackableTargetGoal` tests `isAngryAt`).
+    if m.ai.target.is_some() {
+        m.extra.angry_at = m.ai.target;
+    }
     if m.extra.anger > 0 {
         m.extra.anger -= 1;
         if !m.is_baby() {
@@ -500,6 +510,7 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
         }
         if m.extra.anger == 0 {
             m.ai.target = None;
+            m.extra.angry_at = None;
             m.extra.flag2 = false;
         }
     } else {
@@ -873,7 +884,8 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let Some(t) = cx.w.target_info(who) else {
         return;
     };
-    let start = Vec3::new(m.position.x, m.eye_y() - 0.1, m.position.z);
+    // AbstractArrow(type, mob, ...) starts at getEyeY() - 0.1F, widened.
+    let start = Vec3::new(m.position.x, m.eye_y() - f64::from(0.1_f32), m.position.z);
     let height = t.bounds.max_position().y - t.bounds.min_position().y;
     let xd = t.position.x - m.position.x;
     let yd = t.position.y + height / 3.0 - start.y;
@@ -881,7 +893,7 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let dist = (xd * xd + zd * zd).sqrt();
     // AbstractArrow.setBaseDamageFromMob: power * 2 + triangle(difficulty * 0.11, 0.57425).
     let id = i32::from(cx.w.difficulty.id);
-    let mut arrow_random = crate::projectiles::own_random(m);
+    let mut arrow_random = crate::random_source::entity();
     let base = f64::from(power) * 2.0 + arrow_random.triangle(f64::from(id) * 0.11, 0.574_25);
     let effect = match m.species() {
         Species::Stray => Some(("minecraft:slowness", 600)),
@@ -902,7 +914,7 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     ignite_for_wither_skeleton(m, &mut p);
     p.shoot(
         &mut arrow_random,
-        [xd, yd + dist * 0.2, zd],
+        [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         (14 - id * 4) as f32,
     );
@@ -1162,7 +1174,10 @@ impl Goal for AttackTurtleEgg {
             self.base.next_start -= 1;
             return false;
         }
-        if self.base.find_nearest(m, cx.w, turtle_egg_target) {
+        // Most of the level holds no turtle egg: its sections' palettes say
+        // so without the walk of every cell in reach.
+        let egg = |s| &*cx.w.facts.get(s).name == "minecraft:turtle_egg";
+        if self.base.may_find(m, cx.w, egg) && self.base.find_nearest(m, cx.w, turtle_egg_target) {
             self.base.next_start = super::goals::reduced(20);
             return true;
         }
@@ -1259,7 +1274,7 @@ impl Goal for AttackTurtleEgg {
             }
             // The break sound's pitch draws from the level random.
             cx.events.push(MobEvent::Sound(
-                "block.turtle_egg.break",
+                "entity.turtle.egg_break",
                 [
                     f64::from(eat[0]) + 0.5,
                     f64::from(eat[1]) + 0.5,
@@ -1568,5 +1583,96 @@ mod wither_arrow_tests {
             }
         });
         let _ = ran;
+    }
+
+    /// #9808: a zombified piglin angry at another mob (a skeleton's arrow
+    /// hit it) is not angry at the player (`NeutralMob.isAngryAt`).
+    #[test]
+    fn a_piglin_angry_at_a_mob_does_not_target_the_player() {
+        with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            let kind = Arc::new(types.types["minecraft:zombified_piglin"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.anger = 300;
+            m.extra.angry_at = Some(Who::Mob(99));
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            for _ in 0..40 {
+                let mut events = Vec::new();
+                m.tick(&w, &mut lr, &mut events);
+                assert_ne!(m.ai.target, Some(Who::Player));
+            }
+            // Fresh piglin, angry at the player: it does take the player.
+            let kind = Arc::new(types.types["minecraft:zombified_piglin"].clone());
+            let mut m = Mob::new(2, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.anger = 300;
+            m.extra.angry_at = Some(Who::Player);
+            let mut hit = false;
+            for _ in 0..60 {
+                let mut events = Vec::new();
+                m.tick(&w, &mut lr, &mut events);
+                hit |= m.ai.target == Some(Who::Player);
+            }
+            assert!(hit, "angry at the player targets the player");
+        });
+    }
+}
+
+#[cfg(test)]
+mod trident_continue_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `DrownedTridentAttackGoal` overrides `canUse` with the trident test and
+    /// inherits `RangedAttackGoal.canContinueToUse`, which calls `canUse()`
+    /// again. Losing the trident mid-attack must therefore stop the goal;
+    /// Horizon's continue asked only the base ranged goal.
+    #[test]
+    fn a_drowned_that_loses_its_trident_stops_the_trident_attack() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:drowned"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.set_main_hand(Some("minecraft:trident".into()));
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            m.ai.goals.add(
+                2,
+                DrownedTridentAttack(crate::mobs::witch::RangedAttack::new(
+                    1.0,
+                    40,
+                    40,
+                    10.0,
+                    drowned_throw,
+                )),
+            );
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &world,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(&mut m, &mut cx);
+            let started = goals.is_running("DrownedTridentAttackGoal");
+            // No path left to follow: only the trident used to keep it going.
+            m.nav_stop();
+            m.extra.set_main_hand(None);
+            goals.tick(&mut m, &mut cx);
+            outcomes = Some((started, goals.is_running("DrownedTridentAttackGoal")));
+            m.ai.goals = goals;
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "a trident attack starts for a drowned holding one and stops when it is gone"
+        );
     }
 }

@@ -214,8 +214,15 @@ pub const ENCHANTMENT_EFFECT_COMPONENT_TYPE_UP: &[(u16, u16, u16)] = &[
 pub const ENCHANTMENT_EFFECT_COMPONENT_TYPE_DOWN: &[(u16, u16, u16)] = &[
     (0, 0, 10), (10, 11, 14), (24, 10, 1), (25, 25, 6),
 ];
+/// Data components 1.21.11 has and the pinned version lacks, by their 1.21.11 id.
+pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[
+    (40, "minecraft:swing_animation"),
+    (43, "minecraft:map_color"),
+];
 /// Every table above, as the adapter reads them.
 pub const IDS: super::ids::Ids = super::ids::Ids {
+    dropped_components: DROPPED_COMPONENTS,
+    substitutes: super::ids::Substitutes::NONE,
     quirks: super::ids::Quirks::NONE,
     states: (OLD_STATES, PINNED_STATES),
     block_state: super::ids::Remap::Runs {

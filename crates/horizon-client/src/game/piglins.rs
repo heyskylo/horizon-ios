@@ -3,14 +3,16 @@
 //! their chests or mine their gold.
 use super::Game;
 use horizon_client::{
+    first_person::SwingAnimation,
     items::ItemStack,
     mobs::{
-        Mob, Species, Who,
+        Mob, Species,
+        equip::{self, Slot},
         finalize::{
-            SLOT_NAMES, item_stack, set_drop_chance, set_item, set_item_stack,
+            OFFHAND, SLOT_NAMES, item_stack, set_drop_chance, set_item, set_item_stack,
             set_slot_enchantments, slot_enchantments, stored_drop_chance,
         },
-        piglin::{ADMIRE, ATE_RECENTLY},
+        piglin::{ADMIRE, eat, has_eaten_recently, is_idle},
     },
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
@@ -26,32 +28,61 @@ impl Game<'_> {
     fn piglin_loved(&self, item: &str) -> bool {
         self.item_in_tag("minecraft:piglin_loved", item)
     }
+    /// `ItemStack.has(DataComponents.BLOCKS_ATTACKS)` for an item id.
+    fn item_blocks_attacks(&self, item: &str) -> bool {
+        self.res
+            .items()
+            .get(item)
+            .is_some_and(|i| i.blocks_attacks.is_some())
+    }
     /// `PiglinAi.isLovedItem` or a preferred weapon (`Piglin.canReplaceCurrentItem`).
     fn piglin_wanted(&self, m: &Mob, item: &str) -> bool {
         self.piglin_loved(item)
             || !m.is_baby() && self.item_in_tag("minecraft:piglin_preferred_weapons", item)
     }
-    /// The `SLOT_NAMES` index `getEquipmentSlotForItem` picks: armour goes
-    /// to its slot, anything else to the main hand.
+    /// The `SLOT_NAMES` index `getEquipmentSlotForItem` picks: the
+    /// `equippable` slot (armour, a shield's off hand), else the main hand.
     fn piglin_slot(&self, item: &str) -> usize {
         let slot = self
             .res
             .items()
             .get(item)
             .and_then(|i| i.equip_slot.as_deref())
-            .filter(|s| matches!(*s, "head" | "chest" | "legs" | "feet"))
+            .filter(|s| matches!(*s, "head" | "chest" | "legs" | "feet" | "offhand"))
             .unwrap_or("mainhand");
         SLOT_NAMES.iter().position(|n| *n == slot).unwrap_or(0)
     }
-    /// `Piglin.canReplaceCurrentItem`: an empty slot takes anything, a wanted
-    /// item replaces an unwanted one and never the other way round. Vanilla's
-    /// armour and weapon comparison for two equal-interest items is left out
-    /// (the piglin keeps what it has).
-    fn piglin_can_replace(&self, m: &Mob, item: &str, slot: usize) -> bool {
-        let Some(current) = horizon_client::mobs::finalize::item(m, slot) else {
+    /// `Piglin.canReplaceCurrentItem`: an empty slot takes anything, a
+    /// `PREVENT_ARMOR_CHANGE` piece stays, a wanted item replaces an unwanted
+    /// one and never the other way round; when both or neither are wanted,
+    /// `Mob.canReplaceCurrentItem` compares armour or weapons.
+    fn piglin_can_replace(&self, m: &Mob, stack: &ItemStack, slot: usize) -> bool {
+        let Some(current) = item_stack(m, slot) else {
             return true;
         };
-        self.piglin_wanted(m, item) && !self.piglin_wanted(m, &current)
+        let new_wanted = self.piglin_wanted(m, &stack.item);
+        let current_wanted = self.piglin_wanted(m, &current.item);
+        let slot = [
+            Slot::MainHand,
+            Slot::OffHand,
+            Slot::Feet,
+            Slot::Legs,
+            Slot::Chest,
+            Slot::Head,
+        ]
+        .get(slot)
+        .copied()
+        .unwrap_or(Slot::MainHand);
+        let new = self.stack_facts(m, stack, slot);
+        let worn = self.stack_facts(m, &current, slot);
+        // `getPreferredWeaponType` is the preferred-weapons tag for adults.
+        let preferred = (!m.is_baby()).then(|| {
+            (
+                self.item_in_tag("minecraft:piglin_preferred_weapons", &stack.item),
+                self.item_in_tag("minecraft:piglin_preferred_weapons", &current.item),
+            )
+        });
+        piglin_replace(new_wanted, current_wanted, &new, &worn, slot, preferred)
     }
     /// `SimpleContainer.canAddItem` on the piglin's eight slots.
     fn piglin_can_add(&self, m: &Mob, stack: &ItemStack) -> bool {
@@ -72,6 +103,9 @@ impl Game<'_> {
         {
             return false;
         }
+        if m.extra.piglin.admire_disabled > 0 && m.ai.target.is_some() {
+            return false;
+        }
         let holds_loved = m
             .extra
             .off_hand
@@ -84,11 +118,11 @@ impl Game<'_> {
         if item == "minecraft:gold_nugget" {
             space
         } else if self.item_in_tag("minecraft:piglin_food", item) {
-            m.extra.ints[0] <= 0 && space
-        } else if !self.piglin_loved(item) {
-            self.piglin_can_replace(m, item, self.piglin_slot(item))
-        } else {
+            !has_eaten_recently(m) && space
+        } else if self.piglin_loved(item) {
             !holds_loved && space
+        } else {
+            self.piglin_can_replace(m, stack, self.piglin_slot(item))
         }
     }
     /// `Mob.equipItemIfPossible` for a piglin: put it in its slot when that
@@ -98,7 +132,7 @@ impl Game<'_> {
         let item = &*stack.item;
         let mut slot = self.piglin_slot(item);
         let m = &self.mobs[index];
-        let mut replace = self.piglin_can_replace(m, item, slot);
+        let mut replace = self.piglin_can_replace(m, stack, slot);
         if slot > 1 && !replace {
             slot = 0;
             replace = m.extra.main_hand.is_none();
@@ -121,7 +155,7 @@ impl Game<'_> {
         if let (true, Some(old)) = (drop_old, old) {
             let mut dropped = ItemStack::new(&old, 1);
             dropped.set_crafting_enchantments(old_enchantments);
-            self.spawn_item(dropped, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(dropped, at, 10);
         }
         true
     }
@@ -148,14 +182,13 @@ impl Game<'_> {
         if stack.count == 0 {
             return;
         }
-        let from = [m.position.x, m.position.y + 1.3, m.position.z];
         let r = &mut self.world.random;
         let to = [
-            from[0] + f64::from(r.next_float() * 8.0 - 4.0),
-            from[1],
-            from[2] + f64::from(r.next_float() * 8.0 - 4.0),
+            m.position.x + f64::from(r.next_float() * 8.0 - 4.0),
+            m.position.y + 1.0,
+            m.position.z + f64::from(r.next_float() * 8.0 - 4.0),
         ];
-        self.piglin_throw(from, to, stack);
+        self.piglin_throw(index, to, stack);
     }
     /// `PiglinAi.stopHoldingOffHandItem` for something that is not
     /// bartering currency: wear it if it can, else keep it in the inventory.
@@ -166,12 +199,26 @@ impl Game<'_> {
             self.piglin_stash(index, stack);
         }
     }
-    /// `BehaviorUtils.throwItem`: toss a stack from a point toward another.
-    fn piglin_throw(&mut self, from: [f64; 3], to: [f64; 3], stack: ItemStack) {
-        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    /// `BehaviorUtils.throwItem`: toss a stack from a piglin toward `target_pos`.
+    /// `targetPos` is elevated by 1.0 block per `throwItemsTowardPos`.
+    /// Throw vector is `(targetPos - thrower.position()).normalize() * 0.30000001192092896`.
+    /// Pickup delay is default (10 ticks). Hand Y pos is `eyeY - 0.3`.
+    fn piglin_throw(&mut self, index: usize, target_pos: [f64; 3], stack: ItemStack) {
+        let m = &self.mobs[index];
+        let from = [m.position.x, m.eye_y() - 0.3, m.position.z];
+        let d = [
+            target_pos[0] - m.position.x,
+            target_pos[1] - m.position.y,
+            target_pos[2] - m.position.z,
+        ];
         let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
-        let v = [d[0] / len * 0.3, d[1] / len * 0.3 + 0.1, d[2] / len * 0.3];
-        self.spawn_item(stack, from, v, 40);
+        const VELOCITY: f64 = 0.30000001192092896;
+        let v = [
+            d[0] / len * VELOCITY,
+            d[1] / len * VELOCITY,
+            d[2] / len * VELOCITY,
+        ];
+        self.spawn_item(stack, from, v, 10);
     }
     /// `PiglinAi.isWearingSafeArmor`.
     pub(super) fn wearing_gold(&self) -> bool {
@@ -194,7 +241,10 @@ impl Game<'_> {
         }
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
-            if m.species() != Species::Piglin || !m.alive() || m.extra.using_item > 0 {
+            if m.species() != Species::Piglin
+                || !m.alive()
+                || !self.creatures.ticked.contains(&m.id)
+            {
                 continue;
             }
             let pos = m.position;
@@ -258,10 +308,10 @@ impl Game<'_> {
             if self.piglin_loved(&item) {
                 self.start_admiring(i, item);
             } else if self.item_in_tag("minecraft:piglin_food", &item)
-                && self.mobs[i].extra.ints[0] <= 0
+                && !has_eaten_recently(&self.mobs[i])
             {
                 // PiglinAi.eat: the food is gone and it will not eat for a while.
-                self.mobs[i].extra.ints[0] = ATE_RECENTLY;
+                eat(&mut self.mobs[i]);
                 self.mobs[i].nav_stop();
             } else {
                 self.mobs[i].nav_stop();
@@ -274,13 +324,25 @@ impl Game<'_> {
     fn admire_seen_item(&mut self, index: usize, nearest: Option<f64>, loved: bool) {
         let m = &mut self.mobs[index];
         let holding = m.extra.off_hand.is_some();
+        // ADMIRING_ITEM is present while it admires what its off hand holds.
+        if holding && m.extra.using_item > 0 {
+            return;
+        }
         m.extra.piglin.admire_seen(holding, nearest, loved);
     }
     fn start_admiring(&mut self, index: usize, item: std::sync::Arc<str>) {
+        // PiglinAi.holdInOffhand: what the off hand held is dropped, whole.
+        if let Some(old) = item_stack(&self.mobs[index], OFFHAND) {
+            let m = &mut self.mobs[index];
+            m.extra.off_hand = None;
+            set_slot_enchantments(m, OFFHAND, Vec::new());
+            let at = [m.position.x, m.position.y, m.position.z];
+            self.spawn_item_own(old, at, 10);
+        }
         let m = &mut self.mobs[index];
         // The memory is set again, for the item it holds now.
         m.extra.piglin.seen_admire = 0;
-        m.extra.off_hand = Some(item);
+        horizon_client::mobs::piglin::hold_in_offhand(m, item);
         m.extra.using_item = ADMIRE;
         m.extra.point = None;
         m.nav_stop();
@@ -310,6 +372,11 @@ impl Game<'_> {
         let Some(i) = self.mobs.iter().position(|m| m.id == mob) else {
             return;
         };
+        if let Some(item) = self.mobs[i].extra.off_hand.as_deref()
+            && self.item_blocks_attacks(item)
+        {
+            return;
+        }
         let Some(item) = self.mobs[i].extra.off_hand.take() else {
             return;
         };
@@ -345,11 +412,13 @@ impl Game<'_> {
     /// `PiglinAi.throwItems`: barters and a baby's unwanted main-hand item
     /// use the same player-directed throw.
     fn piglin_throw_items(&mut self, i: usize, items: Vec<ItemStack>) {
+        if items.is_empty() {
+            return;
+        }
+        // `PiglinAi.throwItemsTowardPos` swings the off hand once before the
+        // throws, so the barters leave the hand the piglin admires them in.
+        self.mobs[i].swing_hand_modified(true, SwingAnimation::DEFAULT);
         let m = &self.mobs[i];
-        let from = [m.position.x, m.position.y + 1.3, m.position.z];
-        // BehaviorUtils.throwItem toward the nearest visible player
-        // (NEAREST_VISIBLE_PLAYER: within 16, alive, no spectators; the
-        // guests count as much as the host), else nearby.
         let at = m.position;
         let host = self
             .player
@@ -374,13 +443,51 @@ impl Game<'_> {
             let to = target.unwrap_or_else(|| {
                 let r = &mut self.world.random;
                 [
-                    from[0] + f64::from(r.next_float() * 8.0 - 4.0),
-                    from[1],
-                    from[2] + f64::from(r.next_float() * 8.0 - 4.0),
+                    at.x + f64::from(r.next_float() * 8.0 - 4.0),
+                    at.y + 1.0,
+                    at.z + f64::from(r.next_float() * 8.0 - 4.0),
                 ]
             });
-            self.piglin_throw(from, to, stack);
+            self.piglin_throw(i, to, stack);
         }
+    }
+    /// `PiglinAi.setAngerTargetToNearestTargetablePlayerIfFound`: the nearest
+    /// visible targetable player when UNIVERSAL_ANGER is on.
+    fn nearest_targetable_player_for_piglin(&self, m: &Mob) -> Option<Option<[i32; 4]>> {
+        let range = m.attrs.follow_range;
+        let mut best: Option<(Option<[i32; 4]>, f64)> = None;
+        if let Some(p) = self.player.as_ref()
+            && !self.creative
+            && !self.spectator()
+            && !p.health.dead_or_dying()
+        {
+            let eye = [p.position.x, p.position.y + 1.62, p.position.z];
+            let d2 = m.distance_sqr(p.position);
+            if d2 <= range * range && self.can_see(m.center(), eye) {
+                let uuid = self
+                    .lan_acting_uuid
+                    .map(horizon_client::lan::playerdata::uuid_ints)
+                    .or(self.level.player_uuid);
+                best = Some((uuid, d2));
+            }
+        }
+        if let Some(h) = self.lan.as_ref() {
+            for g in &h.hub.guests {
+                if h.hub.here(g) && g.loaded && !g.dead && !g.spectator() && g.game_mode != 1 {
+                    let eye = [g.position[0], g.position[1] + 1.62, g.position[2]];
+                    let pos = Vec3::new(g.position[0], g.position[1], g.position[2]);
+                    let d2 = m.distance_sqr(pos);
+                    if d2 <= range * range
+                        && self.can_see(m.center(), eye)
+                        && best.as_ref().is_none_or(|(_, bd)| d2 < *bd)
+                    {
+                        let uuid = horizon_client::lan::playerdata::uuid_ints(g.uuid);
+                        best = Some((Some(uuid), d2));
+                    }
+                }
+            }
+        }
+        best.map(|(uuid, _)| uuid)
     }
     /// `PiglinAi.angerNearbyPiglins`.
     pub(super) fn anger_piglins(&mut self, only_if_seen: bool) {
@@ -392,12 +499,17 @@ impl Game<'_> {
         }
         let at = p.position;
         let eye = [at.x, at.y + 1.62, at.z];
+        let player_uuid = self
+            .lan_acting_uuid
+            .map(horizon_client::lan::playerdata::uuid_ints)
+            .or(self.level.player_uuid);
+        let universal = self.ui.rules.bool("universal_anger");
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if m.species() != Species::Piglin
                 || m.is_baby()
                 || !m.alive()
-                || m.ai.target.is_some()
+                || !is_idle(m)
                 || (m.position.x - at.x).abs() > 16.0
                 || (m.position.y - at.y).abs() > 16.0
                 || (m.position.z - at.z).abs() > 16.0
@@ -407,9 +519,14 @@ impl Game<'_> {
             if only_if_seen && !self.can_see(m.center(), eye) {
                 continue;
             }
+            let target_uuid = if universal {
+                self.nearest_targetable_player_for_piglin(m)
+                    .unwrap_or(player_uuid)
+            } else {
+                player_uuid
+            };
             let m = &mut self.mobs[i];
-            m.extra.anger = 600;
-            m.ai.target = Some(Who::Player);
+            horizon_client::mobs::piglin::set_guarded_anger_target(m, target_uuid);
         }
     }
     /// A clear line of sight between two points (blocks with collision stop it).
@@ -440,5 +557,153 @@ impl Game<'_> {
             .block_tags
             .get("minecraft:guarded_by_piglins")
             .is_some_and(|t| t.contains(name))
+    }
+}
+
+/// The decision of `Piglin.canReplaceCurrentItem` once both stacks are known.
+fn piglin_replace(
+    new_wanted: bool,
+    current_wanted: bool,
+    new: &equip::Facts,
+    worn: &equip::Facts,
+    slot: Slot,
+    preferred: Option<(bool, bool)>,
+) -> bool {
+    if worn.prevents_armor_change {
+        return false;
+    }
+    if new_wanted != current_wanted {
+        return new_wanted;
+    }
+    equip::can_replace_current_item(new, Some(worn), slot, preferred)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn armor(points: f64, binding: bool) -> equip::Facts {
+        equip::Facts {
+            armor: points,
+            armor_toughness: 0.0,
+            attack_damage: 0.0,
+            enchantments: 0,
+            damage: 0,
+            custom_name: false,
+            prevents_armor_change: binding,
+        }
+    }
+
+    #[test]
+    fn better_helmet_replaces_worse_one() {
+        // Diamond (3) over iron (2), neither loved.
+        let (diamond, iron) = (armor(3.0, false), armor(2.0, false));
+        assert!(piglin_replace(
+            false,
+            false,
+            &diamond,
+            &iron,
+            Slot::Head,
+            None
+        ));
+        assert!(!piglin_replace(
+            false,
+            false,
+            &iron,
+            &diamond,
+            Slot::Head,
+            None
+        ));
+    }
+
+    #[test]
+    fn binding_curse_keeps_the_worn_piece() {
+        let (diamond, cursed) = (armor(3.0, false), armor(1.0, true));
+        assert!(!piglin_replace(
+            false,
+            false,
+            &diamond,
+            &cursed,
+            Slot::Head,
+            None
+        ));
+        assert!(!piglin_replace(
+            true,
+            false,
+            &diamond,
+            &cursed,
+            Slot::Head,
+            None
+        ));
+    }
+
+    #[test]
+    fn wanted_beats_comparison() {
+        let (gold, diamond) = (armor(2.0, false), armor(3.0, false));
+        assert!(piglin_replace(
+            true,
+            false,
+            &gold,
+            &diamond,
+            Slot::Head,
+            None
+        ));
+        assert!(!piglin_replace(
+            false,
+            true,
+            &diamond,
+            &gold,
+            Slot::Head,
+            None
+        ));
+    }
+
+    #[test]
+    fn preferred_weapon_comparison_by_damage() {
+        let mut strong = armor(0.0, false);
+        strong.attack_damage = 7.0;
+        let mut weak = armor(0.0, false);
+        weak.attack_damage = 4.0;
+        assert!(piglin_replace(
+            false,
+            false,
+            &strong,
+            &weak,
+            Slot::MainHand,
+            None
+        ));
+        assert!(!piglin_replace(
+            false,
+            false,
+            &weak,
+            &strong,
+            Slot::MainHand,
+            None
+        ));
+    }
+
+    /// `PiglinAi.throwItemsTowardPos` swings the off hand once when it has
+    /// something to throw, so barters leave the admiring hand (#12512).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_throw_swings_the_off_hand_once() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("summon piglin 8.5 80 8.5 {NoAI:1b,PersistenceRequired:1b}"));
+        let i = game
+            .mobs
+            .iter()
+            .position(|m| m.species() == Species::Piglin)
+            .expect("the summoned piglin");
+        // An empty list has nothing to throw and leaves the body alone.
+        game.piglin_throw_items(i, Vec::new());
+        assert!(!game.mobs[i].ai.swinging);
+        game.piglin_throw_items(i, vec![ItemStack::new("minecraft:gold_ingot", 1)]);
+        let m = &game.mobs[i];
+        assert!(m.ai.swinging, "the throw starts a swing");
+        // The off hand's arm: the right one only when the piglin is left-handed.
+        assert_eq!(m.extra.swing_right_arm, Some(m.main_arm_left()));
+        assert_eq!(m.swing_duration(), 6, "SwingAnimation.DEFAULT's ticks");
     }
 }

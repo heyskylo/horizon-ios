@@ -288,18 +288,101 @@ impl Game<'_> {
             Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])),
         )
     }
+    /// `BellBlockEntity.serverTick`: ringing server bells belong to the world,
+    /// including when no renderer is attached.
+    fn tick_bell_servers(&mut self) {
+        if self.be_anims.bells.is_empty() {
+            return;
+        }
+        let mut positions: Vec<_> = self.be_anims.bells.keys().copied().collect();
+        positions.sort_unstable();
+        let raiders = self
+            .res
+            .stations()
+            .enchantments
+            .entity_tags
+            .get("minecraft:raiders")
+            .cloned()
+            .unwrap_or_default();
+        for pos in positions {
+            if self
+                .be_anims
+                .ticker(self.world.block(pos[0], pos[1], pos[2]).0)
+                != Some(Ticker::Bell)
+            {
+                self.be_anims.bells.remove(&pos);
+            } else if self.block_ticking_area()(pos[0], pos[2]) {
+                self.tick_bell(pos, &raiders);
+            }
+        }
+    }
+
+    /// `BellBlockEntity.tick` and `makeRaidersGlow`, using live entity/tag state.
+    fn tick_bell(&mut self, pos: [i32; 3], raiders: &std::collections::HashSet<String>) {
+        let player = self.player_view().map(|p| BellEntity {
+            position: [p.position.x, p.position.y, p.position.z],
+            alive: p.alive,
+            raider: false,
+        });
+        let mobs = &self.mobs;
+        let entity = |h: u64| {
+            if h == PLAYER {
+                return player;
+            }
+            let m = mobs.iter().find(|m| u64::from(m.id) == h)?;
+            Some(BellEntity {
+                position: [m.position.x, m.position.y, m.position.z],
+                alive: m.alive() && !m.removed,
+                raider: raiders.contains(&m.kind.id),
+            })
+        };
+        let tick = self
+            .be_anims
+            .bells
+            .entry(pos)
+            .or_default()
+            .tick(pos, entity);
+        let centre = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5,
+        ];
+        // On a server its own copy does this and sends the sound.
+        if tick.resonate && self.remote.is_none() {
+            // The server's copy plays the resonance for everyone.
+            self.audio
+                .play("minecraft:block.bell.resonate", Some(centre), 1.0, 1.0);
+        }
+        if let Some((particles, glow)) = tick.ended {
+            for (p, color) in particles.into_iter().filter(|_| self.renderer.is_some()) {
+                // ColorParticleOption.create(ENTITY_EFFECT, color): ARGB.
+                let c = color as u32;
+                let channel = |shift: u32| ((c >> shift) & 255) as f32 / 255.0;
+                let options = ParticleOptions {
+                    color: [channel(16), channel(8), channel(0), channel(24)],
+                    ..ParticleOptions::simple(ParticleType::EntityEffect)
+                };
+                self.particles.add(&options, p, [0.0; 3]);
+            }
+            // makeRaidersGlow (the server's effect).
+            for m in self.mobs.iter_mut().filter(|_| self.remote.is_none()) {
+                if glow.contains(&u64::from(m.id)) {
+                    m.add_effect("minecraft:glowing", 60, 0);
+                }
+            }
+        }
+    }
+
     /// The client tickers of the loaded animated block entities, once per
     /// client tick (`ClientLevel.tickBlockEntities`).
     pub(super) fn tick_block_entity_anims(&mut self) {
-        // A server has no window, but its gateways and conduits still run
+        // A server has no window, but its bells, gateways and conduits still run
         // their server tickers; a client of one only animates what it is sent.
         if self.remote.is_none() {
             self.tick_conduit_servers();
+            self.tick_bell_servers();
         }
         let Some(r) = &self.renderer else {
-            if self.remote.is_none() {
-                self.tick_gateway_servers();
-            }
             return;
         };
         // Sorted by position: the order they tick in, and a quick lookup.
@@ -311,7 +394,11 @@ impl Game<'_> {
                 .filter_map(|(p, s)| Some((*p, self.be_anims.ticker(*s)?)))
                 .collect();
             present.sort_unstable_by_key(|(p, _)| *p);
-            self.be_anims.retain_present(&present);
+            if self.remote.is_none() {
+                self.be_anims.retain_present_preserving_bells(&present);
+            } else {
+                self.be_anims.retain_present(&present);
+            }
             self.be_anims.present = present;
             self.be_anims.present_revision = Some(revision);
         }
@@ -369,57 +456,10 @@ impl Game<'_> {
                     self.be_anims.skulls.entry(pos).or_default().tick(powered);
                 }
                 Ticker::Bell => {
-                    let player = self.player_view().map(|p| BellEntity {
-                        position: [p.position.x, p.position.y, p.position.z],
-                        alive: p.alive,
-                        raider: false,
-                    });
-                    let mobs = &self.mobs;
-                    let entity = |h: u64| {
-                        if h == PLAYER {
-                            return player;
-                        }
-                        let m = mobs.iter().find(|m| u64::from(m.id) == h)?;
-                        Some(BellEntity {
-                            position: [m.position.x, m.position.y, m.position.z],
-                            alive: m.alive() && !m.removed,
-                            raider: raiders.contains(&m.kind.id),
-                        })
-                    };
-                    let tick = self
-                        .be_anims
-                        .bells
-                        .entry(pos)
-                        .or_default()
-                        .tick(pos, entity);
-                    let centre = [
-                        f64::from(pos[0]) + 0.5,
-                        f64::from(pos[1]) + 0.5,
-                        f64::from(pos[2]) + 0.5,
-                    ];
-                    // On a server its own copy does this and sends the sound.
-                    if tick.resonate && self.remote.is_none() {
-                        // The server's copy plays the resonance for everyone.
-                        self.audio
-                            .play("minecraft:block.bell.resonate", Some(centre), 1.0, 1.0);
-                    }
-                    if let Some((particles, glow)) = tick.ended {
-                        for (p, color) in particles {
-                            // ColorParticleOption.create(ENTITY_EFFECT, color): ARGB.
-                            let c = color as u32;
-                            let channel = |shift: u32| ((c >> shift) & 255) as f32 / 255.0;
-                            let options = ParticleOptions {
-                                color: [channel(16), channel(8), channel(0), channel(24)],
-                                ..ParticleOptions::simple(ParticleType::EntityEffect)
-                            };
-                            self.particles.add(&options, p, [0.0; 3]);
-                        }
-                        // makeRaidersGlow (the server's effect).
-                        for m in self.mobs.iter_mut().filter(|_| self.remote.is_none()) {
-                            if glow.contains(&u64::from(m.id)) {
-                                m.add_effect("minecraft:glowing", 60, 0);
-                            }
-                        }
+                    // Integrated servers already ticked this state above, independently
+                    // of drawn block entities. Remote clients only animate their copy.
+                    if self.remote.is_some() {
+                        self.tick_bell(pos, &raiders);
                     }
                 }
                 Ticker::Conduit => {
@@ -453,18 +493,10 @@ impl Game<'_> {
                 }
                 Ticker::Pot => {}
                 Ticker::Gateway => {
-                    // The server copy's portalTick runs first; its block event
-                    // reaches the client copy before the client ticks it.
+                    // The server's portalTick (`tick_end_gateway`) already ran:
+                    // its block event reaches this copy before it ticks.
                     let initial = self.gateway_loaded(pos);
-                    let anims = &mut self.be_anims;
-                    let server = anims.gateway_servers.entry(pos).or_insert(initial);
-                    // A server sends its copy's block event instead.
-                    let triggered = self.remote.is_none() && server.portal_tick();
-                    let client = anims.gateways.entry(pos).or_insert(initial);
-                    if triggered {
-                        client.trigger_event(1, 0);
-                    }
-                    client.tick();
+                    self.be_anims.gateways.entry(pos).or_insert(initial).tick();
                 }
             }
         }
@@ -488,7 +520,14 @@ impl Game<'_> {
         if self.world.game_time % 40 == 0 {
             self.find_conduits();
         }
-        let mut positions: Vec<[i32; 3]> = self.be_anims.conduit_servers.keys().copied().collect();
+        let ticking = self.block_ticking_area();
+        let mut positions: Vec<[i32; 3]> = self
+            .be_anims
+            .conduit_servers
+            .keys()
+            .copied()
+            .filter(|p| ticking(p[0], p[2]))
+            .collect();
         positions.sort_unstable();
         for pos in positions {
             self.tick_conduit_server(pos);
@@ -595,7 +634,7 @@ impl Game<'_> {
         }
         if short {
             self.audio.play(
-                "minecraft:block.conduit.ambient_short",
+                "minecraft:block.conduit.ambient.short",
                 Some(centre),
                 1.0,
                 1.0,
@@ -652,12 +691,26 @@ impl Game<'_> {
     /// `ConduitBlockEntity.updateAndAttackTarget`: while the conduit hunts
     /// (42 frame blocks) its target stays until it dies or leaves the 8
     /// blocks, else a random enemy in water or rain is chosen; the target
-    /// takes 4 magic damage.
+    /// takes 4 magic damage. The target is the block entity's (`Target`), so
+    /// a saved or `/data` one is kept or dropped as vanilla's reference is.
     fn conduit_attack(&mut self, conduit: &mut ConduitServer, pos: [i32; 3], hunting: bool) {
-        conduit.target = match conduit.target {
+        let key = (pos[0], pos[1], pos[2]);
+        let saved = match self.world.block_entities.get(&key) {
+            Some(BlockEntity::Conduit(target)) => Some(*target),
+            _ => None,
+        };
+        // EntityReference.getLivingEntity: a reference no loaded mob answers
+        // is no target, and no new one is chosen in its place this time.
+        let current = match saved {
+            Some(Some(uuid)) => Some(self.mob_by_uuid(uuid)),
+            Some(None) => None,
+            None => conduit.target.map(Some),
+        };
+        conduit.target = match current {
             _ if !hunting => None,
             None => self.conduit_new_target(pos),
-            Some(id) => self
+            Some(None) => None,
+            Some(Some(id)) => self
                 .mobs
                 .iter()
                 .find(|m| m.id == id && !m.removed)
@@ -673,6 +726,16 @@ impl Game<'_> {
                 })
                 .map(|m| m.id),
         };
+        if saved.is_some() {
+            let target = conduit.target.map(|id| self.mob_uuid(id));
+            if saved != Some(target)
+                && let Some(BlockEntity::Conduit(saved)) = self.world.block_entities.get_mut(&key)
+            {
+                // `sendBlockUpdated`: the new target reaches the clients.
+                *saved = target;
+                self.mark_block_entity_updated(key);
+            }
+        }
         let Some(m) = conduit
             .target
             .and_then(|id| self.mobs.iter_mut().find(|m| m.id == id))
@@ -727,33 +790,25 @@ impl Game<'_> {
             height: m.height(),
         })
     }
-    /// `TheEndGatewayBlockEntity.portalTick` (the server ticker) of the
-    /// gateways a server keeps a copy of, in block-ticking chunks
-    /// (`Level.tickBlockEntities`): the cooldown an entry started runs out,
-    /// and every 2400 ticks `triggerCooldown` sends its block event.
-    fn tick_gateway_servers(&mut self) {
-        let levels = self.tickets.levels();
-        let mut positions: Vec<[i32; 3]> = self
-            .be_anims
-            .gateway_servers
-            .keys()
-            .copied()
-            .filter(|p| levels.block_ticking_at(p[0], p[2]))
-            .collect();
-        positions.sort_unstable();
-        for pos in positions {
-            let triggered = self
-                .be_anims
-                .gateway_servers
-                .get_mut(&pos)
-                .is_some_and(EndGateway::portal_tick);
-            if triggered {
-                self.block_entity_event(pos, 1, 0);
-            }
+    /// `TheEndGatewayBlockEntity.portalTick` (the server ticker), from
+    /// `Level.tickBlockEntities`: the age counts up in the block entity itself,
+    /// which `/data get block` and the chunk save read; the cooldown an entry
+    /// started runs out, and every 2400 ticks `triggerCooldown` sends its
+    /// block event.
+    pub(super) fn tick_end_gateway(&mut self, pos: (i32, i32, i32)) {
+        let key = [pos.0, pos.1, pos.2];
+        let initial = self.gateway_loaded(key);
+        let server = self.be_anims.gateway_servers.entry(key).or_insert(initial);
+        let triggered = server.portal_tick();
+        let age = server.age;
+        if let Some(BlockEntity::EndGateway(g)) = self.world.block_entities.get_mut(&pos) {
+            g.age = age;
+        }
+        if triggered {
+            self.gateway_cooldown_event(key);
         }
     }
-    /// `EndGatewayBlock.entityInside` on the server: whether the gateway at
-    /// `pos` let the entity in (`triggerCooldown`, with its block event).
+    /// Whether the gateway at `pos` can be entered (`!isCoolingDown`).
     pub(super) fn gateway_available(&self, pos: [i32; 3]) -> bool {
         self.be_anims
             .gateway_servers
@@ -764,6 +819,8 @@ impl Game<'_> {
             <= 0
     }
 
+    /// `EndGatewayBlock.entityInside` on the server: whether the gateway at
+    /// `pos` let the entity in (`triggerCooldown`, with its block event).
     pub(super) fn gateway_enter(&mut self, pos: [i32; 3]) -> bool {
         let initial = self.gateway_loaded(pos);
         let entered = self
@@ -773,14 +830,26 @@ impl Game<'_> {
             .or_insert(initial)
             .enter();
         if entered {
-            self.block_entity_event(pos, 1, 0);
+            // `TheEndGatewayBlockEntity.triggerCooldown`: event 1 here, and
+            // `Level.blockEvent` so the window's copy starts the beam.
+            self.gateway_cooldown_event(pos);
         }
         entered
     }
-    /// The End gateway at `pos` as its chunk was loaded: `Age` from the saved
-    /// block entity (`getUpdateTag`), or a new gateway.
+    /// `triggerCooldown`'s block event 1, on this level and for the window
+    /// (`ClientboundBlockEventPacket` within 64 blocks).
+    fn gateway_cooldown_event(&mut self, pos: [i32; 3]) {
+        self.block_entity_event(pos, 1, 0);
+        self.lan_block_event(pos, 1, 0);
+    }
+    /// The End gateway at `pos`: `Age` from its block entity, else from the
+    /// saved one as its chunk was loaded (`getUpdateTag`), or a new gateway.
     fn gateway_loaded(&self, pos: [i32; 3]) -> EndGateway {
-        let age = self.saved_tag(pos).and_then(|t| number(t.get("Age")));
+        let live = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+            Some(BlockEntity::EndGateway(g)) => Some(g.age),
+            _ => None,
+        };
+        let age = live.or_else(|| self.saved_tag(pos).and_then(|t| number(t.get("Age"))));
         EndGateway {
             age: age.unwrap_or(0),
             teleport_cooldown: 0,
@@ -854,7 +923,7 @@ impl Game<'_> {
                 return None;
             };
             let (value, signature) = profile.textures()?;
-            let url = skins::unpack(&value, signature, &skins::TEXTURE_URIS).skin?;
+            let url = skins::unpack(&value, signature, skins::texture_uris()).skin?;
             let location = skins::skin_location(&skins::texture_hash(&url)?);
             Some((url, location))
         });
@@ -878,6 +947,94 @@ impl Game<'_> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn replacing_a_gateway_discards_its_old_cooldown() {
+        use crate::game::*;
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("set HORIZON_TEST_RESOURCES"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let res = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.options.dedicated = Some(Vec::new());
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.streaming.forced.insert((0, 0));
+        game.build_registries();
+        fn command(game: &mut Game<'_>, line: &str) -> bool {
+            game.as_console(|game| game.run_command(line))
+        }
+        let portal = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:end_gateway")
+            .unwrap();
+        for x in [2, 4] {
+            assert!(command(
+                &mut game,
+                &format!(
+                    "setblock {x} 200 2 end_gateway{{Age:200L,exit_portal:[I;8,210,8],ExactTeleport:1b}}"
+                )
+            ));
+            assert_eq!(game.world.block(x, 200, 2), portal);
+            assert!(
+                game.gateway_enter([x, 200, 2]),
+                "fresh gateway admits a traveller"
+            );
+            assert!(
+                !game.gateway_available([x, 200, 2]),
+                "entry starts its cooldown"
+            );
+        }
+        assert!(command(&mut game, "setblock 2 200 2 air"));
+        assert!(game.res.facts().is_air(game.world.block(2, 200, 2)));
+        assert!(command(
+            &mut game,
+            "setblock 2 200 2 end_gateway{Age:200L,exit_portal:[I;8,210,8],ExactTeleport:1b}"
+        ));
+        assert_eq!(game.world.block(2, 200, 2), portal);
+        assert!(
+            game.gateway_enter([2, 200, 2]),
+            "replacement is a fresh block entity, not the cooling predecessor"
+        );
+        assert!(
+            !game.gateway_available([4, 200, 2]),
+            "the untouched gateway stays on cooldown"
+        );
+        assert!(
+            !game.gateway_enter([2, 200, 2]),
+            "the replacement starts its own cooldown"
+        );
+    }
 
     /// A chest a player opened, then closed without the close path (a death, a
     /// teleport, a dropped connection): the tracked count is stale and the
@@ -928,5 +1085,26 @@ mod tests {
         assert_eq!(recheck_opener_count(&mut counts, &open, elsewhere), (0, 1));
         assert_eq!(openers_at(&open, elsewhere), 1);
         assert_eq!(openers_at(&open, (0, 0, 0)), 0);
+    }
+}
+
+#[cfg(test)]
+mod bell_ownership_tests {
+    use horizon_client::block_entity_anim::{Bell, BlockEntityAnims};
+
+    #[test]
+    fn server_bells_survive_visibility_changes_but_remote_bells_do_not() {
+        let pos = [8, 200, 8];
+        let mut anims = BlockEntityAnims::default();
+        let mut bell = Bell::default();
+        bell.trigger_event(1, 2, 100, || vec![7]);
+        anims.bells.insert(pos, bell);
+        anims.pots.insert(pos, Default::default());
+        anims.retain_present_preserving_bells(&[]);
+        assert_eq!(anims.bells[&pos].nearby.as_deref(), Some([7].as_slice()));
+        assert!(anims.bells[&pos].shaking);
+        assert!(anims.pots.is_empty());
+        anims.retain_present(&[]);
+        assert!(anims.bells.is_empty());
     }
 }

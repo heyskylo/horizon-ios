@@ -88,7 +88,8 @@ import net.minecraft.world.phys.Vec3;
  * NAME} (ServerboundUseItemPacket, main hand) and {@code end}. Each player
  * records the ClientboundSetEntityMotionPacket it receives, the push each
  * ClientboundExplodePacket carries for it, its own sprint flag as the server
- * sets it, teleports, and the system chat (command feedback).
+ * sets it, teleports, and the system chat (command feedback). {@code sneak NAME on|off}
+ * sends ServerboundPlayerInputPacket with the shift key held or not.
  */
 public final class KnockbackClient {
     private static volatile String step = "start";
@@ -128,8 +129,18 @@ public final class KnockbackClient {
                     }
                     case "glide" -> players.get(w[1]).playerCommand(ServerboundPlayerCommandPacket.Action.START_FALL_FLYING);
                     case "sprint" -> players.get(w[1]).sprint(w[2].equals("on"));
+                    case "sneak" -> players.get(w[1]).send(new ServerboundPlayerInputPacket(
+                        new Input(false, false, false, false, false, w[2].equals("on"), false)));
                     case "attack" -> players.get(w[1]).attack(w[2]);
                     case "use" -> players.get(w[1]).send(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 0, 0, 0));
+                    case "useblock" -> {
+                        // useblock <player> x y z: right-click the top face of that block with the main hand.
+                        String[] a = w[2].split(" ");
+                        int bx = Integer.parseInt(a[0]), by = Integer.parseInt(a[1]), bz = Integer.parseInt(a[2]);
+                        players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundUseItemOnPacket(InteractionHand.MAIN_HAND,
+                            new net.minecraft.world.phys.BlockHitResult(new Vec3(bx + 0.5, by + 1.0, bz + 0.5), net.minecraft.core.Direction.UP,
+                                new net.minecraft.core.BlockPos(bx, by, bz), false), 0));
+                    }
                     case "punch" -> players.get(w[1]).send(net.minecraft.network.protocol.game.ServerboundPunchPacket.INSTANCE);
                     case "sync" -> {
                         try {

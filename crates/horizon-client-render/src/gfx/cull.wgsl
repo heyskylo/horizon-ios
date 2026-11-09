@@ -11,10 +11,19 @@ struct Globals {
     view_proj: mat4x4<f32>,
 }
 
-// One test per section: its visible index (which names its origin), its
-// first draw in `phase2` and how many draws it has there (0: phase 1 drew
-// it, and the test only tells whether it is still in sight).
-@group(0) @binding(0) var<storage, read> tests: array<vec4<u32>>;
+// One test per section or far tile: its visible index (which names its
+// origin), then its draws in `phase2` for each solid pass (gfx/cull.rs's
+// `place`): the first pass's first draw, both passes' draw counts (the
+// second's in the high 16 bits), the second pass's first draw. No draws:
+// phase 1 drew it, and the test only tells whether it is still in sight.
+// Then its box's lowest and highest corner around the origin: a section's
+// padded mesh bounds, or -1 and 17 (`SECTION_BOX`) without mesh bounds.
+struct Test {
+    data: vec4<u32>,
+    low: vec4<f32>,
+    high: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> tests: array<Test>;
 // Per test: the stamp of the frame whose test saw the box.
 @group(0) @binding(1) var<storage, read_write> results: array<u32>;
 // Phase 2's draws, 5 words each, with instance counts of 0 until seen.
@@ -36,23 +45,27 @@ struct Box {
     @location(0) @interpolate(flat) test: u32,
 }
 
-fn corner(origin: vec3<f32>, c: u32) -> vec3<f32> {
+fn corner(origin: vec3<f32>, low: vec3<f32>, high: vec3<f32>, c: u32) -> vec3<f32> {
     return origin + vec3(
-        select(-1.0, 17.0, (c & 1u) != 0u),
-        select(-1.0, 17.0, (c & 2u) != 0u),
-        select(-1.0, 17.0, (c & 4u) != 0u),
+        select(low.x, high.x, (c & 1u) != 0u),
+        select(low.y, high.y, (c & 2u) != 0u),
+        select(low.z, high.z, (c & 4u) != 0u),
     );
 }
 
-// Each tested section's box, grown by a block (block models reach one block
-// out of their cell), drawn after phase 1 against its depth with back faces
-// culled: a front face fragment that passes the depth test is the box's
-// nearest point on that pixel in front of phase 1's depth, so the section
-// may show there. A box failing everywhere would have every fragment of its
-// section fail the depth test against the final depth, which is only nearer.
+// Each tested section's or far tile's geometry box, padded by a block,
+// drawn after phase 1 against its depth
+// with back faces culled: a front face fragment that passes the depth test
+// is the box's nearest point on that pixel in front of phase 1's depth, so
+// the section may show there. A box failing everywhere would have every
+// fragment of its section fail the depth test against the final depth,
+// which is only nearer.
 @vertex
 fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box {
-    let origin = origins[tests[t].x].xyz;
+    let test = tests[t];
+    let origin = origins[test.data.x].xyz;
+    let low = test.low.xyz;
+    let high = test.high.xyz;
     var out: Box;
     out.test = t;
     // The box's screen rectangle, from the corners in front of the camera.
@@ -60,7 +73,7 @@ fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box
     var hi = vec2(-1e30);
     var behind = false;
     for (var c = 0u; c < 8u; c++) {
-        let p = globals.view_proj * vec4(corner(origin, c), 1.0);
+        let p = globals.view_proj * vec4(corner(origin, low, high, c), 1.0);
         behind = behind || p.w <= 0.0;
         let q = p.xy / max(p.w, 1e-6);
         lo = min(lo, q);
@@ -71,7 +84,7 @@ fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box
     // clips its front faces away, and a box over a large part of the screen
     // is nearly always in sight and costly to test: both count as seen,
     // through a small triangle in the top left corner at the nearest depth.
-    let near = all(origin < vec3(2.0)) && all(origin > vec3(-18.0));
+    let near = all(origin < vec3(1.0) - low) && all(origin > vec3(-1.0) - high);
     if near || (!behind && size.x * size.y > params.big * 4.0) {
         var p = vec2(-1.0, 1.0);
         if v == 1u {
@@ -82,7 +95,7 @@ fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box
         out.position = select(vec4(0.0, 0.0, 0.0, 1.0), vec4(p, 1.0, 1.0), v < 3u);
         return out;
     }
-    out.position = globals.view_proj * vec4(corner(origin, CORNERS[v]), 1.0);
+    out.position = globals.view_proj * vec4(corner(origin, low, high, CORNERS[v]), 1.0);
     return out;
 }
 
@@ -91,15 +104,20 @@ fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box
 fn see(t: u32) {
     if results[t] != params.stamp {
         results[t] = params.stamp;
-        let test = tests[t];
-        for (var k = 0u; k < test.z; k++) {
+        let test = tests[t].data;
+        for (var k = 0u; k < (test.z & 0xffffu); k++) {
             phase2[(test.y + k) * 5u + 1u] = 1u;
+        }
+        for (var k = 0u; k < (test.z >> 16u); k++) {
+            phase2[(test.w + k) * 5u + 1u] = 1u;
         }
     }
 }
 
-// Phase 1's depth, where the test runs in the shader (gfx/cull.rs).
-@group(1) @binding(0) var depth: texture_depth_2d;
+// Phase 1's depth, where the test runs in the shader (gfx/cull.rs). A depth
+// view bound as an unfilterable float: naga's GLSL backend cannot `textureLoad`
+// a depth texture, and the texel is the same value.
+@group(1) @binding(0) var depth: texture_2d<f32>;
 
 // The world pass's reversed depth test, greater or equal passing, made here:
 // where it cannot be forced before a shader that writes storage, a fragment
@@ -107,7 +125,7 @@ fn see(t: u32) {
 // runs only for the fragments that pass it.
 @fragment
 fn fs_box(in: Box) {
-    if in.position.z >= textureLoad(depth, vec2<u32>(in.position.xy), 0) {
+    if in.position.z >= textureLoad(depth, vec2<u32>(in.position.xy), 0).r {
         see(in.test);
     }
 }

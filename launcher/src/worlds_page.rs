@@ -11,16 +11,22 @@ pub(super) struct Worlds {
     /// read again, so the page doesn't jump.
     pub(super) home: Option<PathBuf>,
     pub(super) list: Vec<World>,
+    /// Which of the list's rows Home's glass Worlds tab has built and measured (`cull`).
+    pub(super) cull: cull::Cull,
     fresh: bool,
     reading: bool,
     /// The world being backed up, copied or deleted now.
     pub(super) busy: Option<String>,
-    confirm_delete: Option<String>,
+    pub(super) confirm_delete: Option<String>,
     /// What the last action did (a backup's zip), or why it failed.
     pub(super) done: Option<Result<(String, Option<PathBuf>), String>>,
 }
 
 impl Worlds {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy.is_some()
+    }
+
     /// Read again on the next frame: the game may have saved, or an action changed the list.
     pub(super) fn stale(&mut self) {
         self.fresh = false;
@@ -69,6 +75,7 @@ impl Launcher {
                 // Another instance may have been picked meanwhile.
                 if this.worlds.home.as_ref() == Some(&home) {
                     this.worlds.list = list;
+                    this.worlds.cull.reset();
                     this.worlds.fresh = true;
                     this.worlds.reading = false;
                 }
@@ -143,7 +150,7 @@ impl Launcher {
                     let dir = zip.parent().map(Path::to_path_buf).unwrap_or(zip);
                     line = line.child(
                         button("world-backups", "Open backups", Kind::Ghost, &t)
-                            .on_click(move |_, _, cx| cx.open_with_system(&dir)),
+                            .on_click(move |_, _, cx| crate::glass_toast::open(cx, &dir)),
                     );
                 }
                 section = section.child(line);
@@ -168,7 +175,7 @@ impl Launcher {
                             button("worlds-folder", "Open folder", Kind::Ghost, &t).on_click(
                                 move |_, _, cx| {
                                     let _ = std::fs::create_dir_all(&saves);
-                                    cx.open_with_system(&saves);
+                                    crate::glass_toast::open(cx, &saves);
                                 },
                             ),
                         ),
@@ -306,7 +313,7 @@ impl Launcher {
                 })
                 .child(
                     act("world-folder", "Open folder", Kind::Ghost)
-                        .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                        .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
                 );
         }
         plate(&t)

@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "handshake",
+      "target": "horizon_client_lib::lan::conn::native_handshake",
+      "neoforge": "none (NeoForge has no handshake event; Paper's PlayerHandshakeEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a client's handshake on the connection's thread, its host rewritable, refusable (`native_handshake`).",
+  "doc_summary": "`native_handshake(address, host, intent, cancel, reason)` hears each network connection's handshake on its own thread, before the server acts on the intent (1 status, 2 login, 3 transfer): rewrite `host` (what a proxy put after it, Floodgate's data, included), or set `cancel` to refuse; a login or transfer is disconnected with `reason`, a status ping closed unanswered. No `Game` and no helper there. Bundles need \"hooks\": @API:handshake@.",
+  "comments": ["crates/horizon-client/src/lan/conn.rs"]
+}

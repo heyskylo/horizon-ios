@@ -147,19 +147,20 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   sunset) behind the hero. Light and dark follow the system, with a toggle. A giant wordmark in
   pixels sits in the footer.
 - **Game**: vanilla's screens. The on-screen keyboard is a rounded plate of keys in the page
-  colour, the focused key in the accent. Horizon's graphics settings screen takes the Blocks
-  palette below in a lighter form (`graphics_style.rs`).
+  colour, the focused key in the accent. Horizon's graphics, controller, Extras and Shaders
+  settings screens take the Blocks palette below in a lighter form (`graphics_style.rs`, through
+  the shared `settings_shell.rs`).
 
 ## Blocks
 
 A blocky, Minecraft-like look in Horizon's purple, for the website, the redesigned launcher and
-the game's graphics settings screen:
+the game's graphics, controller, Extras and Shaders settings screens:
 Minecraft's inventory rather than a document. Its colours are `horizon_theme::Blocks`
 (`BLOCKS_LIGHT`, `BLOCKS_DARK`), which `tokens.css` carries under the same names as before plus
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`
 of the main action. The game's other menus keep `LIGHT` and `DARK`.
 
-In the game the graphics settings screen draws the Blocks palette in GUI pixels, lighter than the
+In the game these settings screens draw the Blocks palette in GUI pixels, lighter than the
 website's blocks so the world stays in view: square panels of the page colour, see-through, with a
 1 px edge and no bevel or lip, flat controls, the violet face on Done, and vanilla's font rather
 than Pixelify. Hover and focus are vanilla's white edge.
@@ -176,8 +177,8 @@ than Pixelify. Hover and focus are vanilla's white edge.
 - **Inventory tabs** switch the kinds in Mods: the open tab joins the panel under it.
 - **Slots** hold pictures: a mod's or pack's own icon and gallery images from its source,
   downloaded when first shown and kept on disk (`launcher/src/browser/images.rs`); the launcher
-  ships no third-party pictures. The Horizon instance shows a grass block drawn from the player's
-  own prepared Minecraft textures. Sources are named in text ("from Modrinth"): Modrinth's logo is
+  ships no third-party pictures. Plain Minecraft shows Horizon's own grass block
+  (`tools/launcher_grass_block.py`), Horizon the brand icon (`docs/media/brand/icon.svg`). Sources are named in text ("from Modrinth"): Modrinth's logo is
   all rights reserved, so it is not shown.
 - **Partner banner**: the one exception to shipping no third-party pictures. Sculk, a server host,
   sponsors Horizon: its banner (`launcher/assets/sculk-banner.webp`, `launcher/src/partner.rs`) sits
@@ -302,7 +303,7 @@ Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
   code for screenshots).
 - **New instance** (`launcher/src/new_instance.rs`): an opaque plate over the dimmed launcher,
   tabs for the kind (Horizon, Vanilla, Modded). A Java kind lists Mojang's versions (search,
-  Snapshots, Old; the newest release chosen), Modded adds the loader (Fabric or Quilt, at its newest
+  Snapshots, Old; the newest release chosen), Modded adds the loader (Fabric, Quilt, Forge or NeoForge, with its logo, at its newest
   stable version), and the name follows the choice ("Fabric 1.21.4") until the player types one.
   Create is the main action.
 
@@ -321,8 +322,15 @@ as `--glass-*`.
   `HORIZON_LAUNCHER_MOTION` works as for Night. Dark appearance only so far; Light keeps the dawn.
 - **Frosted plates, round corners, no borders.** A plate is the scene behind it blurred 24 px and
   saturated 140 %, under white at 6 % and the accent's dark violet (`base`) at 22 %. Menus and
-  popovers blur 48 px and darken to 62 %. Corners (`glass::radius`): dialogs 28, panels 20,
+  popovers take the same glass with a shadow (the mockup's darker `hzl-float` read as another
+  material beside the cards); toasts keep it. Corners (`glass::radius`): dialogs 28, panels 20,
   menus 16, the Play group 14, rows and chips 12, buttons and tabs 10. No pixel steps, no strokes.
+- **Motion as the website plays it** (`launcher/src/motion.rs`): hovers ease over `quick`'s
+  150 ms curve, toasts and a new page arrive as `hzl-pop` (a fade and a 6 px rise over 200 ms,
+  `cubic-bezier(0.2, 0.7, 0.2, 1)`), a switch's knob slides for 200 ms. Menus open at once. Under
+  reduced motion each is drawn where it ends.
+- **Light**: plates are white at 84 % over the dawn sky washed with white (55 %), so the page
+  reads white; icons and text on the accent keep `on-accent`.
 - **One accent, mixed like the mockup.** `accent` (`#6b4bff`) fills the main action;
   `accent-soft` (half accent, half white in OKLab) draws progress, ticks, links and the focus ring;
   text on the accent turns dark when a player's accent is light. `Glass::new` does the mockup's

@@ -10,6 +10,7 @@ use horizon_client::{
     items::ItemStack,
     mobs::Who,
     projectiles::{Projectile, ProjectileKind},
+    random_source,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
@@ -342,12 +343,8 @@ impl Game<'_> {
             if rocket {
                 let at = Vec3::new(eye[0], eye[1] - f64::from(0.15f32), eye[2]);
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(
-                    &mut super::dispenser::entity_random(),
-                    dir.to_array(),
-                    power,
-                    1.0,
-                );
+                shot.shoot(&mut random_source::entity(), dir.to_array(), power, 1.0);
+                // Its first tick posts the shot (Projectile.tick).
                 self.launch_angled_rocket(at, shot.velocity, ammo, Some(Who::Player));
             }
             if !rocket {
@@ -371,6 +368,8 @@ impl Game<'_> {
                     a.fired_from_weapon = Some(weapon.clone());
                     a.pierce = pierce;
                 }
+                // Flame: the arrow is spawned burning (EnchantmentHelper.onProjectileSpawned).
+                self.ignite_spawned_arrow(&weapon, &mut arrow);
                 arrow.shoot(&mut self.world.random, dir.to_array(), power, 1.0);
                 self.add_projectile(arrow);
                 let (player, name, projectile) = (
@@ -380,21 +379,27 @@ impl Game<'_> {
                 );
                 self.native_entity_shoot_bow(player, &name, projectile, power as f32);
             }
-            self.player_projectile_shot();
+            // Ordinary arrows post from ArrowState on their first tick.
             let pitch = if index == 0 {
                 1.0
             } else {
                 let high = index & 1 == 1;
                 1.0 / (self.world.random.next_float() * 0.5 + 1.8) + if high { 0.63 } else { 0.43 }
             };
+            // CrossbowItem.performShooting: at the shooter's getX/Y/Z (feet).
+            let feet = self
+                .player
+                .as_ref()
+                .map_or(eye, |pl| [pl.position.x, pl.position.y, pl.position.z]);
             self.audio
-                .play("minecraft:item.crossbow.shoot", Some(eye), 1.0, pitch);
+                .play("minecraft:item.crossbow.shoot", Some(feet), 1.0, pitch);
             self.damage_held(if rocket { 3 } else { 1 });
         }
         // CrossbowItem.performShooting: SHOT_CROSSBOW with the crossbow, which
         // is an empty stack (no match) when the shots broke it.
         if let Some(stack) = self.held().cloned() {
             self.trigger_item("minecraft:shot_crossbow", &stack);
+            self.award_stat("used", &stack.item, 1);
         }
     }
 }
@@ -402,6 +407,118 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A game on the prepared resources with a creative player.
+    fn game_with_player(root: &std::path::Path) -> (Game<'static>, [f64; 3]) {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.to_path_buf(),
+            None,
+            root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.to_path_buf();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(root),
+            None,
+        )
+        .unwrap();
+        game.creative = true;
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(10.5, 64.0, -3.25),
+            )
+            .unwrap(),
+        );
+        let p = game.player.as_ref().expect("a player").position;
+        game.audio.capture = Some(Vec::new());
+        (game, [p.x, p.y, p.z])
+    }
+
+    /// `BowItem.releaseUsing` and `CrossbowItem.performShooting` play the shot
+    /// with no player at the shooter's `getX/Y/Z`, the feet. At the eye, a
+    /// source a few cm from the listener pans hard to one ear while strafing
+    /// (#8448).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn bow_and_crossbow_shots_sound_at_the_feet_not_the_eye() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let (mut game, feet) = game_with_player(&root);
+        let eye = game.eye_position().unwrap();
+        assert_ne!(eye, feet);
+
+        let bow = ItemStack::new("minecraft:bow", 1);
+        game.release_bow(&bow, 20);
+        let shot = game.audio.capture.take().unwrap_or_default();
+        let at: Vec<_> = shot
+            .iter()
+            .filter(|s| s.event == "minecraft:entity.arrow.shoot")
+            .map(|s| s.position)
+            .collect();
+        assert_eq!(at, vec![feet]);
+
+        game.audio.capture = Some(Vec::new());
+        let mut crossbow = ItemStack::new("minecraft:crossbow", 1);
+        crossbow.data_mut().charged = vec![ItemStack::new(ARROW, 1)];
+        *game.held_mut() = Some(crossbow);
+        game.shoot_crossbow();
+        let shot = game.audio.capture.take().unwrap_or_default();
+        let at: Vec<_> = shot
+            .iter()
+            .filter(|s| s.event == "minecraft:item.crossbow.shoot")
+            .map(|s| s.position)
+            .collect();
+        assert_eq!(at, vec![feet]);
+    }
+
+    /// `AbstractArrow`'s constructor runs `EnchantmentHelper.onProjectileSpawned`
+    /// for the weapon the arrow is fired from, bow or crossbow, so a Flame
+    /// crossbow shoots burning arrows: Flame's `Ignite(constant(100))` is 100
+    /// seconds, 2000 ticks, on every arrow of a Multishot volley (#10482).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_flame_crossbow_shoots_burning_arrows() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let (mut game, _) = game_with_player(&root);
+        // Shoots a crossbow with `enchantments` and one arrow loaded per shot,
+        // and returns how long each new arrow burns for.
+        let mut shoot = |enchantments: &[&str], shots: usize| -> Vec<i32> {
+            let mut crossbow = ItemStack::new(CROSSBOW, 1);
+            for id in enchantments {
+                crossbow.enchant(id, 1);
+            }
+            crossbow.data_mut().charged = vec![ItemStack::new(ARROW, 1); shots];
+            *game.held_mut() = Some(crossbow);
+            let before = game.creatures.projectiles.len();
+            game.shoot_crossbow();
+            game.creatures.projectiles[before..]
+                .iter()
+                .map(|p| p.arrow.as_ref().expect("an arrow").fire_ticks)
+                .collect()
+        };
+        assert_eq!(shoot(&[], 1), vec![0]);
+        assert_eq!(shoot(&["minecraft:flame"], 1), vec![2000]);
+        assert_eq!(
+            shoot(&["minecraft:flame", "minecraft:multishot"], 3),
+            vec![2000; 3]
+        );
+    }
 
     /// A charge that crosses a point between two ticks plays that point's
     /// sound, and one a mod's tick jumps over (`native_living_entity_use_item_tick`

@@ -68,6 +68,8 @@ def run_side(command, out, label):
         reply('tick freeze')
         reply('tick rate 200')
         assert any('false' in m for m in reply('gamerule minecraft:spawn_mobs false'))
+        # Zombie horses burn in daylight (Mob.isSunBurnTick rolls each tick), which made Health random.
+        reply('time set midnight')
         reply('forceload add 0 0 31 31')
         deadline = time.monotonic() + 300
         while True:

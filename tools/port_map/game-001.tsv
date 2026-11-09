@@ -1,5 +1,5 @@
 BlockDestructionProgress.equals	skip:java		identity by breaker id; Horizon keys cracks by breaker id in a map
-BlockDestructionProgress.compareTo	inline	crates/horizon-client/src/game.rs::Game::cracks	the furthest progress on a block wins (max per position)
+BlockDestructionProgress.compareTo	inline	crates/horizon-client/src/game/frame_geometry.rs::Game::cracks	the furthest progress on a block wins (max per position)
 ChunkGenerationTask.create	inline	crates/horizon-client-render/src/streaming.rs::Streaming::schedule_generation	a Job::Generate per column; neighbours are held as protos, not a claimed holder cache
 ChunkGenerationTask.runUntilWait	inline	crates/horizon-client-render/src/streaming.rs::Streaming::update	stages advance as worker results come back, not by waiting on futures
 ChunkGenerationTask.scheduleNextLayer	inline	crates/horizon-client-render/src/streaming.rs::Streaming::update	next stage is generate, then decorate, then finish
@@ -36,9 +36,9 @@ ChunkMap.onLevelChange	port	crates/horizon-client-render/src/streaming.rs::Strea
 ChunkMap.close	port	crates/horizon-client-render/src/streaming.rs::Streaming::drop	waits for saves in flight
 ChunkMap.saveAllChunks	port	crates/horizon-client/src/game.rs::Game::save_level	modified chunks only; wait picks the flushing form
 ChunkMap.hasWork	port	crates/horizon-client-render/src/streaming.rs::Streaming::busy	
-ChunkMap.processUnloads	inline	crates/horizon-client/src/game.rs::Game::update_world	unloaded columns: modified ones saved, entities and block entities dropped
-ChunkMap.saveChunksEagerly	inline	crates/horizon-client-render/src/streaming.rs::Streaming::receive_generated	gap: minor: fresh chunks are marked modified and written at the next autosave or unload, not within a few ticks
-ChunkMap.scheduleUnload	inline	crates/horizon-client/src/game.rs::Game::update_world	save if modified, unload entities and block entities
+ChunkMap.processUnloads	inline	crates/horizon-client/src/game/world_update.rs::Game::update_world	unloaded columns: modified ones saved, entities and block entities dropped
+ChunkMap.saveChunksEagerly	port	crates/horizon-client/src/game.rs::Game::save_chunks_eagerly	ordered dirty queue; per-level cooldown, tick-time and active chunk write gates
+ChunkMap.scheduleUnload	inline	crates/horizon-client/src/game/world_update.rs::Game::update_world	save if modified, unload entities and block entities
 ChunkMap.promoteChunkMap	skip:java		copy of the holder map for the main thread; Horizon has one chunk map
 ChunkMap.scheduleChunkLoad	port	crates/horizon-client-render/src/streaming.rs::ChunkGenerator::load	the Generate job loads a saved final chunk, else a proto is made
 ChunkMap.handleChunkLoadFailure	inline	crates/horizon-client/src/save.rs::SaveDir::load	gap: minor: an unreadable record gives None and the column is generated again with no failure report
@@ -50,7 +50,7 @@ ChunkMap.runGenerationTask	port	crates/horizon-client-render/src/streaming.rs::S
 ChunkMap.onChunkReadyToSend	inline	crates/horizon-client/src/lan/hub.rs::Hub::next_batch	queued columns are sent once lit
 ChunkMap.prepareAccessibleChunk	inline	crates/horizon-client-render/src/streaming.rs::Streaming::update	a column finishes once its 3x3 is decorated
 ChunkMap.allChunksWithAtLeastStatus	inline	crates/horizon-client/src/game/integrated.rs::Game::publish_load_view	only the loading screen asks: lit chunks around the spawn
-ChunkMap.saveChunkIfNeeded	inline	crates/horizon-client/src/game.rs::Game::save_level	the modified set stands for the unsaved flag; autosave every 6000 ticks
+ChunkMap.saveChunkIfNeeded	inline	crates/horizon-client/src/game.rs::Game::save_chunks_eagerly	resident full chunks only; ordered selection delegates to World.modified
 ChunkMap.isExistingChunkFull	inline	crates/horizon-client-render/src/streaming.rs::Streaming::save_checked_out	protos exist only for columns not final, so one cannot overwrite a final chunk
 ChunkMap.markChunkPendingToSend	port	crates/horizon-client/src/lan/hub.rs::requeue	chunks entering the view join the guest's queue, closest first
 ChunkMap.getChunkToSend	inline	crates/horizon-client/src/lan/hub.rs::Hub::next_batch	only lit columns are taken
@@ -87,12 +87,12 @@ ChunkMap.TrackedEntity.updatePlayers	port	crates/horizon-client/src/lan/entity.r
 ChunkResult.error	skip:java		result type
 ChunkTaskDispatcher.hasWork	port	crates/horizon-client-render/src/streaming.rs::Streaming::busy	
 ChunkTaskDispatcher.onLevelChange	port	crates/horizon-client-render/src/streaming.rs::Streaming::requeue	
-ChunkTaskDispatcher.release	missing		minor: queued jobs of a column that lost its ticket are not cancelled; their results are dropped on arrival (Done::Proto range check)
+ChunkTaskDispatcher.release	port	crates/horizon-client-render/src/streaming.rs::release_columns	the columns a view drop or a moved view unloads release their queued jobs (`Streaming::forget_columns`), so their protos are never generated and dropped on arrival
 ChunkTaskDispatcher.submit	port	crates/horizon-client-render/src/streaming.rs::Streaming::submit	
 ChunkTaskDispatcher.pollTask	inline	crates/horizon-client-render/src/streaming.rs::Streaming::new	each worker pops the most urgent job
 ChunkTaskDispatcher.scheduleForExecution	inline	crates/horizon-client-render/src/streaming.rs::Streaming::new	the worker runs the job it popped
 ChunkTaskPriorityQueue.resortChunkTasks	port	crates/horizon-client-render/src/streaming.rs::rank_again	
-ChunkTaskPriorityQueue.release	missing		minor: no per column release; queued jobs stay queued until run
+ChunkTaskPriorityQueue.release	port	crates/horizon-client-render/src/streaming.rs::release_columns	the jobs queued for a released column are dropped from the heap, the jobs without a column (saves, meshes to free) stay
 ChunkTaskPriorityQueue.pop	inline	crates/horizon-client-render/src/streaming.rs::Streaming::new	BinaryHeap pop in the worker loop
 ChunkTracker.checkNeighborsAfterUpdate	inline	crates/horizon-client/src/ticket_levels.rs::compute	closed form: ticket level plus Chebyshev distance, rebuilt when sources change
 ChunkTracker.getComputedLevel	inline	crates/horizon-client/src/ticket_levels.rs::compute	lowest ticket level plus distance, per cell

@@ -38,7 +38,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "players",
-        what: "Who is online (address, ping, op level), the operators, the whitelist and the bans",
+        what: "Who is online (address, ping, position, op level), the operators, the whitelist and the bans",
         args: &[],
         destructive: false,
     },
@@ -161,13 +161,19 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "restore",
-        what: "Restart the server with a backup's world (the current one is kept in backups/)",
+        what: "Restart the server with a backup's world, or with one dimension of it (what it replaces is kept in backups/)",
         args: &[
             (
                 "name",
                 "string",
                 "The backup: file name, unique prefix or label",
                 true,
+            ),
+            (
+                "dimension",
+                "string",
+                "Bring back only this dimension, like minecraft:the_nether; the rest of the world stays",
+                false,
             ),
             CONFIRM,
         ],
@@ -336,7 +342,9 @@ fn request(name: &str, args: &Value) -> Result<(&'static str, String, Option<Val
             (
                 "POST",
                 "/api/v1/restore".into(),
-                Some(json!({ "name": need("name")? })),
+                Some(some(
+                    json!({ "name": need("name")?, "dimension": args["dimension"] }),
+                )),
             )
         }
         "get_config" => ("GET", "/api/v1/config".into(), None),
@@ -419,6 +427,104 @@ pub fn serve(dir: &Path) -> Result<(), String> {
 mod tests {
 
     use super::*;
+
+    const MCP_GOLDENS: &str = include_str!("../testdata/mcp-contract.json");
+
+    fn protocol_line(method: &str, params: Value) -> String {
+        json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string()
+    }
+
+    #[test]
+    fn protocol_and_tool_contracts_match_goldens() {
+        let golden: Value = serde_json::from_str(MCP_GOLDENS).unwrap();
+        let dir = Path::new("mcp-golden-no-server");
+        let mut app = |method: &str, params: &Value| handle(dir, method, params);
+        let initialize = server()
+            .handle_line(
+                &protocol_line("initialize", json!({ "protocolVersion": "2025-06-18" })),
+                &mut app,
+            )
+            .unwrap();
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            horizon_mcp::VERSION_KEY.to_owned(),
+            json!(horizon_mcp::MODERN),
+        );
+        meta.insert(horizon_mcp::CLIENT_CAPABILITIES_KEY.to_owned(), json!({}));
+        let tools_list = server()
+            .handle_line(
+                &protocol_line("tools/list", json!({ "_meta": Value::Object(meta) })),
+                &mut app,
+            )
+            .unwrap();
+        let calls = [
+            ("status", json!({})),
+            ("stop", json!({})),
+            ("restore", json!({ "name": "backup", "confirm": false })),
+            (
+                "delete_backup",
+                json!({ "name": "bad&name", "confirm": true }),
+            ),
+            ("events", json!({ "types": "chat&since=0" })),
+            ("whitelist", json!({ "action": "clear" })),
+        ];
+        let replies: Vec<Value> = calls
+            .iter()
+            .map(|(name, args)| {
+                let reply = handle(
+                    dir,
+                    "tools/call",
+                    &json!({ "name": name, "arguments": args }),
+                )
+                .unwrap();
+                json!({
+                    "name": name,
+                    "arguments": args,
+                    "isError": reply["isError"],
+                    "text": reply["content"][0]["text"],
+                })
+            })
+            .collect();
+        let unknown_tool = handle(dir, "tools/call", &json!({ "name": "nope" })).unwrap_err();
+        let unknown_method = handle(dir, "ping", &json!({})).unwrap_err();
+        let tool_contracts: Vec<Value> = tools_list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| {
+                let properties = tool["inputSchema"]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(name, property)| (name.clone(), property["type"].clone()))
+                    .collect::<Map<String, Value>>();
+                json!({
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "properties": properties,
+                    "required": tool["inputSchema"]["required"],
+                    "annotations": tool["annotations"],
+                })
+            })
+            .collect();
+        let actual = json!({
+            "initialize": initialize["result"],
+            "tools_list": {
+                "resultType": tools_list["result"]["resultType"],
+                "tool_count": tool_contracts.len(),
+                "tools": tool_contracts,
+            },
+            "calls": replies,
+            "unknown_tool": { "code": unknown_tool.0, "message": unknown_tool.1 },
+            "unknown_method": { "code": unknown_method.0, "message": unknown_method.1 },
+        });
+        let _ = std::fs::remove_dir_all(dir);
+        if golden.is_null() {
+            println!("{}", serde_json::to_string_pretty(&actual).unwrap());
+            return;
+        }
+        assert_eq!(actual, golden);
+    }
 
     #[test]
     fn every_tool_has_a_schema_and_a_call() {

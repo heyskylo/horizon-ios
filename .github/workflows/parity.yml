@@ -20,6 +20,12 @@ on:
           busy the job waits for it.
         type: boolean
         default: false
+      frame_identity:
+        description: >-
+          The pull request carries the frame-identity label: it must leave the picture alone (HDR, shader packs), so
+          the frame_identity harness, which no automatic selection picks, runs too.
+        type: boolean
+        default: false
 permissions:
   contents: read
 env:
@@ -33,7 +39,7 @@ jobs:
     # harnesses at a time) up to a few hours, and any pull request's job may land there.
     timeout-minutes: ${{ inputs.full && 360 || 180 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The commit the event names: a fork's later pushes need another run-parity label. The next step merges
           # main into it.
@@ -87,9 +93,15 @@ jobs:
           PARITY_HOSTS: ''
           BASE_SHA: ${{ steps.merge.outputs.base }}
         run: python3 tools/parity.py --changed "$BASE_SHA" --timeout 2400  # world_spawn takes ~1480 s on a busy runner
+      - name: The pictures this change must leave alone
+        if: ${{ !cancelled() && inputs.frame_identity }}
+        env:
+          PARITY_HOSTS: ''
+          BASE_SHA: ${{ steps.merge.outputs.base }}
+        run: python3 tools/parity.py frame_identity --timeout 2400
       - name: Logs of the failed harnesses
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: parity-logs
           path: .local/parity-runner/logs/

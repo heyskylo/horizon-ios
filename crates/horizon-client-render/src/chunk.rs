@@ -225,11 +225,42 @@ pub const BIOME_STRATEGY: Strategy = Strategy::biomes(8);
 /// (what vanilla servers and clients send), more when content mods add states
 /// past 65,536 (docs/modpacks.md). Set once, before the first chunk.
 static BLOCK_BITS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(16);
+/// States in the registry, set with [`BLOCK_BITS`].
+static BLOCK_STATES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
 
 /// Block states are `PalettedContainer`s over the registry: vanilla's 16-bit
 /// global palette, wider with enough content mods.
 pub fn block_strategy() -> Strategy {
     Strategy::blocks(BLOCK_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Whether the registry has this state. Every id is known until the registry is loaded.
+pub fn known_block_state(id: u32) -> bool {
+    id < BLOCK_STATES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A server's block container in our palette width. Ids past our registry (a
+/// server or host with mods we lack) read as air: every per-state table is
+/// indexed by them, and a palette's unused entries are scanned too.
+pub fn known_blocks_only(blocks: PalettedContainer) -> PalettedContainer {
+    let ours = block_strategy();
+    let unknown = |id: u32| !known_block_state(id) || u64::from(id) >> ours.global_bits != 0;
+    let any_unknown = if blocks.is_global() {
+        blocks.has(unknown)
+    } else {
+        blocks.maybe_has(unknown)
+    };
+    if !any_unknown && blocks.strategy().global_bits == ours.global_bits {
+        return blocks;
+    }
+    let mut values = [0u32; 4096];
+    blocks.unpack(&mut values);
+    for value in &mut values {
+        if unknown(*value) {
+            *value = 0;
+        }
+    }
+    PalettedContainer::from_values(ours, &values)
 }
 
 /// Frees `columns` (`count` of them) on a short-lived thread of its own
@@ -250,6 +281,10 @@ pub fn free_columns<T: Send + 'static>(columns: T, count: usize) {
 pub fn set_block_states(states: usize) {
     let bits = horizon_core::paletted::ceil_log2(states).max(16);
     BLOCK_BITS.store(bits, std::sync::atomic::Ordering::Relaxed);
+    BLOCK_STATES.store(
+        u32::try_from(states).unwrap_or(u32::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     forget_shared();
 }
 
@@ -322,6 +357,24 @@ impl Light {
     }
     /// The smallest form of packed light per block.
     pub fn packed(light: Box<[u8; 4096]>) -> Self {
+        match Self::classify(&light) {
+            (false, false, first) => Self::Uniform(first),
+            (true, false, first) => Self::Sky(Self::pack_layer(&light, 4), first & 15),
+            (false, true, first) => Self::Block(Self::pack_layer(&light, 0), first >> 4),
+            (true, true, _) => Self::Full(light),
+        }
+    }
+    /// The smallest form of packed light per block, allocating a 4 KiB box only
+    /// when both sky and block light vary within the section.
+    pub fn from_slice(light: &[u8; 4096]) -> Self {
+        match Self::classify(light) {
+            (false, false, first) => Self::Uniform(first),
+            (true, false, first) => Self::Sky(Self::pack_layer(light, 4), first & 15),
+            (false, true, first) => Self::Block(Self::pack_layer(light, 0), first >> 4),
+            (true, true, _) => Self::Full(Box::new(*light)),
+        }
+    }
+    fn classify(light: &[u8; 4096]) -> (bool, bool, u8) {
         let first = light[0];
         let (mut sky_varies, mut block_varies) = (false, false);
         for &v in light.iter() {
@@ -329,19 +382,14 @@ impl Light {
             sky_varies |= d & 0xF0 != 0;
             block_varies |= d & 15 != 0;
         }
-        let layer = |shift: u32| {
-            let mut layer = Box::new([0u8; 2048]);
-            for (out, pair) in layer.iter_mut().zip(light.as_chunks::<2>().0) {
-                *out = (pair[0] >> shift & 15) | (pair[1] >> shift & 15) << 4;
-            }
-            layer
-        };
-        match (sky_varies, block_varies) {
-            (false, false) => Self::Uniform(first),
-            (true, false) => Self::Sky(layer(4), first & 15),
-            (false, true) => Self::Block(layer(0), first >> 4),
-            (true, true) => Self::Full(light),
+        (sky_varies, block_varies, first)
+    }
+    fn pack_layer(light: &[u8; 4096], shift: u32) -> Box<[u8; 2048]> {
+        let mut layer = Box::new([0u8; 2048]);
+        for (out, pair) in layer.iter_mut().zip(light.as_chunks::<2>().0) {
+            *out = (pair[0] >> shift & 15) | (pair[1] >> shift & 15) << 4;
         }
+        layer
     }
     /// The packed light of blocks `at..at + out.len()`, into `out`.
     #[inline]
@@ -541,7 +589,7 @@ pub struct Chunk {
     /// Block entities read from a save, moved into the world on arrival.
     pub block_entities: Vec<((i32, i32, i32), block_entity::BlockEntity)>,
     /// `CustomName` of the container block entities (shown as the screen title).
-    pub block_names: Vec<((i32, i32, i32), String)>,
+    pub block_names: Vec<((i32, i32, i32), Tag)>,
     /// Generation postprocessing marks (ProtoChunk.postProcessing) as world
     /// positions, applied once by LevelChunk.postProcessGeneration.
     pub postprocess: Vec<[i32; 3]>,
@@ -583,6 +631,14 @@ impl Chunk {
             postprocess: Vec::new(),
             saved: None,
             entities: Vec::new(),
+        }
+    }
+    /// The original `structures.starts`, including starts with unknown pieces.
+    pub fn saved_structure_starts(&self) -> Option<&horizon_world::nbt::Compound> {
+        let structures = self.saved.as_ref()?.root.get(&"structures".into())?;
+        match structures.get("starts")? {
+            horizon_world::nbt::Tag::Compound(starts) => Some(starts),
+            _ => None,
         }
     }
     /// The minimum block Y of the column.
@@ -815,7 +871,10 @@ impl RolledLoot {
     /// Puts the loot table back in place of `Items` while they are still the
     /// roll; false once the container holds anything else.
     pub fn restore(&self, map: &mut Compound) -> bool {
-        if map.get(&"Items".into()) != Some(&self.items) {
+        // An empty shulker box saves no `Items`, which matches an empty roll.
+        let saved = map.get(&"Items".into());
+        let empty = matches!(&self.items, Tag::List(l) if l.is_empty());
+        if saved != Some(&self.items) && !(saved.is_none() && empty) {
             return false;
         }
         map.remove(&"Items".into());

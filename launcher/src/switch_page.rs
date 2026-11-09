@@ -119,9 +119,7 @@ impl Launcher {
                             .child(text(theme::LABEL).truncate().text_color(t.ink).child(name))
                             .child(text(theme::CAPTION).text_color(t.muted).child(how)),
                     )
-                    .when(chosen, |d| {
-                        d.child(div().size(px(6.)).rounded_full().bg(t.accent))
-                    })
+                    .when(chosen, |d| d.child(div().size(px(6.)).bg(t.accent)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.play_as(who.clone());
                         cx.notify();
@@ -158,6 +156,18 @@ impl Launcher {
         self.play_as(Player::Offline(name));
         if !matches!(self.sign_in_state, Some(SignInState::Done(Err(_)))) {
             self.servers.text(Field::OfflineName).set(String::new());
+        }
+    }
+
+    /// Forgets an offline name and its skin.
+    pub(super) fn forget_offline(&mut self, name: &str) {
+        let mut accounts = Accounts::load();
+        if accounts
+            .remove_offline(name, &horizon_launcher::skins::dir())
+            .is_ok()
+            && accounts.save().is_ok()
+        {
+            self.accounts = accounts;
         }
     }
 
@@ -199,14 +209,7 @@ impl Launcher {
             actions = actions.child(
                 button(format!("offline-forget-{i}"), "Forget", Kind::Ghost, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        let mut accounts = Accounts::load();
-                        if accounts
-                            .remove_offline(&forget, &horizon_launcher::skins::dir())
-                            .is_ok()
-                            && accounts.save().is_ok()
-                        {
-                            this.accounts = accounts;
-                        }
+                        this.forget_offline(&forget);
                         cx.notify();
                     }),
                 ),

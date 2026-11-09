@@ -257,6 +257,7 @@ impl IntLit {
     }
 }
 
+/// `FloatTag.valueOf` / `DoubleTag.valueOf`: either zero sign uses the zero tag.
 fn float_tag(text: &str, ty: Option<TypeSuffix>, state: &mut State<SV>) -> Option<Tag> {
     match ty {
         Some(TypeSuffix::Float) => {
@@ -265,7 +266,7 @@ fn float_tag(text: &str, ty: Option<TypeSuffix>, state: &mut State<SV>) -> Optio
                 state.store_at_mark(delayed("snbt.parser.infinity_not_allowed"));
                 return None;
             }
-            Some(Tag::Float(v.to_bits()))
+            Some(Tag::Float(if v == 0.0 { 0 } else { v.to_bits() }))
         }
         None | Some(TypeSuffix::Double) => {
             let v: f64 = text.parse().unwrap_or(f64::NAN);
@@ -273,7 +274,7 @@ fn float_tag(text: &str, ty: Option<TypeSuffix>, state: &mut State<SV>) -> Optio
                 state.store_at_mark(delayed("snbt.parser.infinity_not_allowed"));
                 return None;
             }
-            Some(Tag::Double(v.to_bits()))
+            Some(Tag::Double(if v == 0.0 { 0 } else { v.to_bits() }))
         }
         _ => {
             state.store_at_mark(delayed("snbt.parser.expected_float_type"));
@@ -976,6 +977,135 @@ pub fn rule_in<V: super::packrat::Value>(
         Err(e) => {
             state.store(mark, Sugg::Empty, Reason::Error(e));
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_fully;
+
+    /// A crafted over-deep value must be rejected, never overflow the stack.
+    #[test]
+    fn deeply_nested_compound_is_rejected_not_overflowed() {
+        let mut deep = String::from("1");
+        for _ in 0..400 {
+            deep = format!("{{a:{deep}}}");
+        }
+        assert!(parse_fully(&deep).is_err());
+    }
+
+    /// The `extra` chain of a JSON text component is the same SNBT shape.
+    #[test]
+    fn deeply_nested_list_is_rejected_not_overflowed() {
+        let mut deep = String::from("\"x\"");
+        for _ in 0..400 {
+            deep = format!("[{deep}]");
+        }
+        assert!(parse_fully(&deep).is_err());
+    }
+
+    /// Shallow, real command values must still parse (the cap is not too low).
+    #[test]
+    fn shallow_values_still_parse() {
+        assert!(parse_fully("{a:{b:{c:1}}}").is_ok());
+        assert!(parse_fully("[[1,2],[3,4]]").is_ok());
+    }
+
+    /// Deep but real values parse: 50 nested compounds, and an item whose
+    /// `container` holds an item with a `container`, ten levels down.
+    #[test]
+    fn deep_real_values_still_parse() {
+        let mut compound = String::from("1");
+        for _ in 0..50 {
+            compound = format!("{{a:{compound}}}");
+        }
+        assert!(parse_fully(&compound).is_ok());
+        let mut item = String::from("{id:\"minecraft:stone\",count:1}");
+        for _ in 0..10 {
+            item = format!(
+                "{{id:\"minecraft:shulker_box\",count:1,components:{{\"minecraft:container\":[{{slot:0,item:{item}}}]}}}}"
+            );
+        }
+        assert!(parse_fully(&item).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod floating_zero_tests {
+    use super::*;
+    use horizon_world::nbt::{Limits, read_network};
+
+    fn cases() -> Vec<(&'static str, Tag)> {
+        vec![
+            ("0.0f", Tag::Float(0)),
+            ("-0.0f", Tag::Float(0)),
+            ("0e0f", Tag::Float(0)),
+            ("-0e0f", Tag::Float(0)),
+            ("0.0d", Tag::Double(0)),
+            ("-0.0d", Tag::Double(0)),
+            ("0e0d", Tag::Double(0)),
+            ("-0e0d", Tag::Double(0)),
+            ("0.0", Tag::Double(0)),
+            ("-0.0", Tag::Double(0)),
+            ("0e0", Tag::Double(0)),
+            ("-0e0", Tag::Double(0)),
+            ("1.25f", Tag::Float(0x3fa0_0000)),
+            ("-1.25f", Tag::Float(0xbfa0_0000)),
+            ("1.25d", Tag::Double(0x3ff4_0000_0000_0000)),
+            ("-1.25d", Tag::Double(0xbff4_0000_0000_0000)),
+            ("1e-45f", Tag::Float(1)),
+            ("-1e-45f", Tag::Float(0x8000_0001)),
+            ("5e-324d", Tag::Double(1)),
+            ("-5e-324d", Tag::Double(0x8000_0000_0000_0001)),
+            ("-0", Tag::Int(0)),
+        ]
+    }
+    #[test]
+    fn command_text_keeps_tag_factory_zero_and_nonzero_bits() {
+        for (text, expected) in cases() {
+            assert_eq!(parse_fully(text).unwrap(), expected, "{text}");
+        }
+    }
+    #[test]
+    fn world_text_keeps_tag_factory_zero_and_nonzero_bits() {
+        for (text, expected) in cases() {
+            let (actual, used) = horizon_world::nbt::parse_snbt(text).unwrap();
+            assert_eq!(used, text.len(), "{text}");
+            assert_eq!(actual, expected, "{text}");
+        }
+    }
+    #[test]
+    fn binary_decode_already_canonicalizes_only_zero() {
+        for (bits, expected) in [
+            (0u32, 0),
+            (0x8000_0000, 0),
+            (1, 1),
+            (0x8000_0001, 0x8000_0001),
+            (0x3fa0_0000, 0x3fa0_0000),
+            (0xbfa0_0000, 0xbfa0_0000),
+        ] {
+            let mut bytes = vec![5];
+            bytes.extend(bits.to_be_bytes());
+            assert_eq!(
+                read_network(&bytes, Limits::default()).unwrap(),
+                (Tag::Float(expected), bytes.len())
+            );
+        }
+        for (bits, expected) in [
+            (0u64, 0),
+            (0x8000_0000_0000_0000, 0),
+            (1, 1),
+            (0x8000_0000_0000_0001, 0x8000_0000_0000_0001),
+            (0x3ff4_0000_0000_0000, 0x3ff4_0000_0000_0000),
+            (0xbff4_0000_0000_0000, 0xbff4_0000_0000_0000),
+        ] {
+            let mut bytes = vec![6];
+            bytes.extend(bits.to_be_bytes());
+            assert_eq!(
+                read_network(&bytes, Limits::default()).unwrap(),
+                (Tag::Double(expected), bytes.len())
+            );
         }
     }
 }

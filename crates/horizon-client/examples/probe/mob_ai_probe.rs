@@ -204,7 +204,9 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "Float" => "FloatGoal",
         "RandomFloatAround" => "RandomFloatAroundGoal",
         "GhastLook" => "GhastLookGoal",
+        "Peek" => "ShulkerPeekGoal",
         "GhastShoot" => "GhastShootFireballGoal",
+        "BlazeAttack" => "BlazeAttackGoal",
         "Stroll" => "WaterAvoidingRandomStrollGoal",
         "ParrotWander" => "ParrotWanderGoal",
         "RandomStroll" => "RandomStrollGoal",
@@ -220,6 +222,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "RandomSwimming" => "RandomSwimmingGoal",
         "LookAtPlayer" => "LookAtPlayerGoal",
         "RandomLookAround" => "RandomLookAroundGoal",
+        "SpearUse" => "SpearUseGoal",
         "HurtByTarget" => "HurtByTargetGoal",
         "NearestTarget" => "NearestAttackableTargetGoal",
         "Panic" => "PanicGoal",
@@ -549,6 +552,7 @@ impl HiveHost for ProbeHive<'_, '_> {
     fn sound(&mut self, name: &'static str, at: [f64; 3]) {
         self.events.push(MobEvent::Sound(name, at, 1.0, 1.0));
     }
+    fn set_changed(&mut self, _at: [i32; 3]) {}
 }
 /// The hive's honey level and front from its block state.
 fn hive_state(registry: &BlockRegistry, world: &World, at: [i32; 3]) -> (Option<i32>, [i32; 2]) {
@@ -606,7 +610,12 @@ fn player_damage(e: &MobEvent) -> f32 {
         | MobEvent::CubeHurtPlayer { amount, .. }
         | MobEvent::StingPlayer { amount, .. }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
-        | MobEvent::DamagePlayer { amount, .. } => *amount,
+        | MobEvent::DamagePlayer { amount, .. }
+        | MobEvent::IronGolemHit {
+            target: Who::Player,
+            amount,
+            ..
+        } => *amount,
         MobEvent::SonicBoom {
             target: Who::Player,
             ..
@@ -625,13 +634,18 @@ fn player_hurt(player: Option<&PlayerView>, e: &MobEvent) -> bool {
         | MobEvent::CubeHurtPlayer { amount, .. }
         | MobEvent::StingPlayer { amount, .. }
         | MobEvent::AttackPlayerWithEffect { amount, .. }
-        | MobEvent::DamagePlayer { amount, .. } => *amount > 0.0,
+        | MobEvent::DamagePlayer { amount, .. }
+        | MobEvent::IronGolemHit {
+            target: Who::Player,
+            amount,
+            ..
+        } => *amount > 0.0,
         MobEvent::SonicBoom {
             target: Who::Player,
             ..
         } => true,
         // ServerExplosion.hurtEntities: within twice the radius every hit does damage.
-        MobEvent::Explode(at, radius, _) => {
+        MobEvent::Explode(at, radius, _, _) => {
             let d = Vec3::new(at[0], at[1], at[2])
                 .distance_squared(p.position)
                 .sqrt();
@@ -898,7 +912,9 @@ pub fn main() -> horizon_client::Result<()> {
     let biomes = Biomes::load(root)?;
     let items = Items::load(root, registry, &facts, &PackOverlay::NONE)?;
     let tables = LightTables::load(root, registry, &facts)?;
-    let collision = collisions::load(root, registry)?;
+    let collision = std::sync::Arc::new(collisions::load(root, registry)?);
+    let suffocation =
+        horizon_client::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation)?;
     let air = registry.default_state("minecraft:air").ok_or("no air")?;
     let layers = [
         state(registry, "minecraft:bedrock"),
@@ -1055,6 +1071,13 @@ pub fn main() -> horizon_client::Result<()> {
                     // Set once the brain exists (below).
                     x if x.starts_with("cooldown=") => {}
                     "dead" => m.health = 0.0,
+                    // effect=<name>:<amplifier>, never running out.
+                    x if x.starts_with("effect=") => {
+                        let (name, amp) = x[7..].split_once(':').unwrap();
+                        let name: &'static str =
+                            Box::leak(format!("minecraft:{name}").into_boxed_str());
+                        m.add_effect(name, -1, amp.parse().unwrap());
+                    }
                     "leashed" => m.extra.leash = Some(horizon_client::mobs::leash::Holder::Player),
                     x if x.starts_with("leashto=") => {
                         let n: u32 = x[8..].parse().unwrap();
@@ -1128,6 +1151,9 @@ pub fn main() -> horizon_client::Result<()> {
                 main_hand: s.hand.as_deref().map(Into::into),
                 off_hand: None,
                 head: None,
+                chest: None,
+                legs: None,
+                feet: None,
                 armor_cover: 0.0,
                 invisible: false,
                 spectator: false,
@@ -1146,6 +1172,7 @@ pub fn main() -> horizon_client::Result<()> {
                 sleeping: false,
                 sleep_timer: 0,
                 passenger: false,
+                riding_vehicle: None,
                 vehicle: None,
             }
         });
@@ -1172,21 +1199,26 @@ pub fn main() -> horizon_client::Result<()> {
                     fluid_tables: &motion.fluids,
                     movement: &motion.blocks,
                     collision: &collision,
+                    suffocation: &suffocation,
                     data: &data,
                     player: player.clone(),
+                    controlling_player_movement: None,
                     nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
                     others: $snapshot,
                     dragon: None,
                     leash_boats: &[],
+                    who_lookup: None,
                     others_grid: $grid,
                     others_index: None,
+                    others_villagers: None,
+                    others_solid: None,
                     daylight: (world.day_time.rem_euclid(24000)) < 12000,
                     monsters_burn: !(12542..23460).contains(&world.day_time.rem_euclid(24000)),
                     game_time: world.game_time,
                     day_time: world.day_time,
                     raining: s.rain,
                     thundering: s.thunder,
-                    nether: false,
+                    level: horizon_core::LevelKey::OVERWORLD,
                     block_tags: &items.block_tags,
                     landing: &motion.landing,
                     biomes: &biomes,
@@ -1195,7 +1227,7 @@ pub fn main() -> horizon_client::Result<()> {
                     mob_drops: true,
                     max_entity_cramming: 24,
                     difficulty: LocalDifficulty::new(s.difficulty, world.day_time, 0, 0.0),
-                    end: false,
+                    dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
                     world_seed: 0,
                     // FlatLevelSource.getSeaLevel.
                     sea_level: -63,
@@ -1381,14 +1413,28 @@ pub fn main() -> horizon_client::Result<()> {
                 // (LivingEntity.hurtServer), with the sounds they raise.
                 let mut k = from;
                 while k < events.len() {
-                    if let MobEvent::AttackMob {
-                        target,
-                        amount,
-                        source,
-                    } = events[k]
+                    let (hit, toss) = match events[k] {
+                        MobEvent::AttackMob {
+                            target,
+                            amount,
+                            source,
+                        } => (Some((target, amount, source)), false),
+                        // IronGolem.doHurtTarget: thrown up only if the hit landed.
+                        MobEvent::IronGolemHit {
+                            target: Who::Mob(target),
+                            amount,
+                            source,
+                        } => (Some((target, amount, source)), true),
+                        _ => (None, false),
+                    };
+                    if let Some((target, amount, source)) = hit
                         && let Some(t) = mobs.iter_mut().find(|m| m.id == target)
                         && t.damage(amount, source)
                     {
+                        if toss {
+                            t.velocity.y +=
+                                f64::from(0.4f32) * (1.0 - t.knockback_resistance()).max(0.0);
+                        }
                         let raised = std::mem::take(&mut t.outbox);
                         let n = raised.len();
                         events.splice(k + 1..k + 1, raised);
@@ -1399,7 +1445,7 @@ pub fn main() -> horizon_client::Result<()> {
                 // What a copper golem did to chests, before the next mob ticks.
                 for e in &events[from.min(events.len())..] {
                     match e {
-                        MobEvent::ChestOpen { chest, open } => {
+                        MobEvent::ChestOpen { chest, open, .. } => {
                             let o = world
                                 .chest_openers
                                 .entry((chest[0], chest[1], chest[2]))
@@ -1440,7 +1486,13 @@ pub fn main() -> horizon_client::Result<()> {
                     else {
                         continue;
                     };
-                    let tag = horizon_client::entity_nbt::mob_to_nbt(&mobs[i], [0; 4], None, None);
+                    let tag = horizon_client::entity_nbt::mob_to_nbt(
+                        &mobs[i],
+                        [0; 4],
+                        None,
+                        None,
+                        |_| None,
+                    );
                     let flower = horizon_client::mobs::bee::get(&mobs[i]).and_then(|b| b.flower);
                     let mut honey = Vec::new();
                     let stored = {
@@ -1605,7 +1657,14 @@ pub fn main() -> horizon_client::Result<()> {
                 let _ = writeln!(out, "{t} leads {dropped_leads}");
             }
             for e in &events {
-                if let MobEvent::Sound(name, _, volume, pitch) = e {
+                if let MobEvent::Sound(name, _, volume, pitch)
+                | MobEvent::EntitySound {
+                    name,
+                    volume,
+                    pitch,
+                    ..
+                } = e
+                {
                     let _ = writeln!(
                         out,
                         "{t} sound minecraft:{name} {} {}",

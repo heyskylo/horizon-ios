@@ -36,6 +36,36 @@ fn uuid_words(uuid: u128) -> [i32; 4] {
 }
 
 impl Game<'_> {
+    /// Development oracle: observe the actual open guest merchant, never a synthetic menu.
+    pub(super) fn harness_merchant(
+        &self,
+        host: &LanHost,
+        conn: u32,
+    ) -> Option<(i32, i32, serde_json::Value)> {
+        use serde_json::json;
+        let gm = host.play.get(&conn)?.merchant.as_ref()?;
+        let guest = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == conn && g.placed)?;
+        let id = gm.merchant.mob?;
+        self.mobs
+            .iter()
+            .find(|m| m.id == id && m.alive() && !m.removed)?;
+        let stack = |s: &Option<ItemStack>| s.as_ref().map(|s| json!([s.item.as_ref(), s.count]));
+        let session = &gm.merchant.session;
+        Some((
+            gm.window,
+            gm.state,
+            json!({"window":gm.window,"merchant":self.persist.uuids.get(&id)?,
+            "player":uuid_words(guest.uuid),"slots":gm.slots.iter().map(stack).collect::<Vec<_>>(),
+            "carried":stack(&guest.carried),"xp":session.xp,
+            "offers":session.offers.iter().map(|o|json!({"uses":o.uses,
+                "special":o.special_price_diff,"cost":o.cost_a_count(self.items())})).collect::<Vec<_>>()}),
+        ))
+    }
+
     /// A trading screen the guest's interaction opened (it opened as a
     /// station while the guest acted): handed to the guest.
     pub(super) fn lan_open_merchant(
@@ -249,6 +279,8 @@ impl Game<'_> {
             names: &self.pack.names,
             trade: Some(&trade_env),
             maps: None,
+            limited_crafting: host.hub.limited_crafting,
+            known_recipes: Some(&host.hub.guests[gi].recipe_book),
         };
         let mut menu = Menu::new(Kind::Merchant);
         {
@@ -269,6 +301,7 @@ impl Game<'_> {
         let made = maps.made.take();
         let session = menu.merchant.take().expect("attached");
         let dropped = std::mem::take(&mut menu.dropped);
+        let crafted_counts = std::mem::take(&mut menu.crafted_counts);
         gm.slots = [
             menu.slot(0).cloned(),
             menu.slot(1).cloned(),
@@ -283,6 +316,14 @@ impl Game<'_> {
             g.carried = menu.carried.take();
         }
         self.register_exploration_maps(made);
+        // MerchantResultSlot checks achievements before notifying the merchant.
+        if !crafted_counts.is_empty() {
+            self.as_guest(host, conn, |g| {
+                for (item, count) in crafted_counts {
+                    g.award_stat("crafted", &item, count);
+                }
+            });
+        }
         let (session, traded) = self.merchant_apply(session, gm.merchant.mob);
         gm.merchant.session = session;
         if !traded.is_empty() {
@@ -356,17 +397,6 @@ impl Game<'_> {
         let Some(mut gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.take()) else {
             return false;
         };
-        let uuid = host
-            .hub
-            .guests
-            .iter()
-            .find(|g| g.conn == conn)
-            .map(|g| uuid_words(g.uuid));
-        if std::mem::take(&mut gm.merchant.session.last_traded)
-            && let (Some(id), Some(uuid)) = (gm.merchant.mob, uuid)
-        {
-            self.villager_traded_by(id, uuid);
-        }
         self.merchant_closed(&mut gm.merchant);
         true
     }
@@ -382,8 +412,8 @@ impl Game<'_> {
             .find(|m| m.id == id)
             .is_some_and(|m| m.alive() && guest_within_entity_range(g, &m.bounds(), 4.0))
     }
-    /// `Villager.customServerAiStep` for the guests' trading villagers: the
-    /// TRADE reputation event, then the prices follow.
+    /// `AbstractVillager.stillValid`: close invalid guest merchant screens.
+    /// Trade reputation is delivered by the villager's actual AI phase.
     pub(super) fn lan_merchant_tick(&mut self, host: &mut LanHost) {
         // `AbstractVillager.stillValid`: the trade screen closes once the trader
         // is gone or dead, or the guest is more than 4 blocks past its reach.
@@ -409,13 +439,16 @@ impl Game<'_> {
                 );
             }
         }
+    }
+    /// Refresh open guest prices after the actual villager reputation event.
+    pub(super) fn lan_merchant_reputation(&mut self, host: &mut LanHost, id: u32) {
         let conns: Vec<u32> = host
             .play
             .iter()
             .filter(|(_, p)| {
                 p.merchant
                     .as_ref()
-                    .is_some_and(|m| m.merchant.session.villager && m.merchant.session.last_traded)
+                    .is_some_and(|m| m.merchant.mob == Some(id) && m.merchant.session.villager)
             })
             .map(|(c, _)| *c)
             .collect();
@@ -429,12 +462,6 @@ impl Game<'_> {
             else {
                 continue;
             };
-            let Some(gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.as_mut()) else {
-                continue;
-            };
-            gm.merchant.session.last_traded = false;
-            let Some(id) = gm.merchant.mob else { continue };
-            self.villager_traded_by(id, uuid);
             let reputation = self.villager_reputation_of(id, uuid);
             self.lan_merchant_op(host, conn, None, |menu, env| {
                 if let Some(s) = menu.merchant.as_mut() {

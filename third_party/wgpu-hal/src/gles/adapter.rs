@@ -767,6 +767,14 @@ impl super::Adapter {
         let max_color_attachment_bytes_per_sample =
             max_color_attachments * wgt::TextureFormat::MAX_TARGET_PIXEL_BYTE_COST;
 
+        // Each stage's texture units: GL guarantees 16, and desktop GL usually offers 32.
+        // wgpu's limits must say what the context holds, or a pipeline layout of more
+        // bindings than the minimum is refused although the driver could take it.
+        let max_texture_units = texture_unit_limit(
+            unsafe { gl.get_parameter_i32(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS) },
+            unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_IMAGE_UNITS) },
+        );
+
         let limits = crate::auxil::adjust_raw_limits(wgt::Limits {
             max_texture_dimension_1d: max_texture_size,
             max_texture_dimension_2d: max_texture_size,
@@ -781,8 +789,8 @@ impl super::Adapter {
             max_bindings_per_bind_group: u32::MAX,
             max_dynamic_uniform_buffers_per_pipeline_layout: max_uniform_buffers_per_shader_stage,
             max_dynamic_storage_buffers_per_pipeline_layout: max_storage_buffers_per_shader_stage,
-            max_sampled_textures_per_shader_stage: super::MAX_TEXTURE_SLOTS as u32,
-            max_samplers_per_shader_stage: super::MAX_SAMPLERS as u32,
+            max_sampled_textures_per_shader_stage: max_texture_units,
+            max_samplers_per_shader_stage: max_texture_units,
             max_storage_buffers_per_shader_stage,
             max_storage_textures_per_shader_stage,
             max_uniform_buffers_per_shader_stage,
@@ -1431,9 +1439,32 @@ unsafe impl Sync for super::Adapter {}
 #[cfg(send_sync)]
 unsafe impl Send for super::Adapter {}
 
+/// The sampled-texture (and sampler) limit per shader stage of a context whose vertex and
+/// fragment stages hold `vertex` and `fragment` texture units: both stages must fit, GL
+/// guarantees 16, and the arrays hold `MAX_TEXTURE_SLOTS`.
+fn texture_unit_limit(vertex: i32, fragment: i32) -> u32 {
+    (vertex.min(fragment) as u32)
+        .max(16)
+        .min(super::MAX_TEXTURE_SLOTS as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::Adapter;
+    use super::texture_unit_limit;
+
+    #[test]
+    fn texture_units_are_the_context_s() {
+        // Desktop GL usually offers 32 per stage; the arrays cap it.
+        assert_eq!(texture_unit_limit(32, 32), 32);
+        assert_eq!(texture_unit_limit(64, 64), 32);
+        // WebGL2 and GLES3's minimum, still enough for wgpu's own layouts.
+        assert_eq!(texture_unit_limit(16, 16), 16);
+        // A malformed query leaves the guaranteed minimum.
+        assert_eq!(texture_unit_limit(0, 0), 16);
+        // The shared limit is the lower of the two stages.
+        assert_eq!(texture_unit_limit(16, 32), 16);
+    }
 
     #[test]
     fn test_version_parse() {

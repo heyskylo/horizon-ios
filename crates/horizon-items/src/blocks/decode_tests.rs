@@ -151,6 +151,7 @@ fn the_validation_error_still_fails_the_load_first() {
         &br#"{"states":[["minecraft:air",true,false,"","minecraft:air"]],"defaults":{"minecraft:air":0}}"#[..],
     )
     .unwrap();
+    let expected = format!("{}: {expected}", root.join("gameplay-facts.json").display());
     for parallel in [false, true] {
         let error = super::super::BlockFacts::load_with_projection(
             &root,
@@ -163,4 +164,35 @@ fn the_validation_error_still_fails_the_load_first() {
         assert_eq!(error.to_string(), expected, "parallel: {parallel}");
     }
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_state_past_the_registry_has_airs_facts() {
+    let registry = horizon_world::registry::BlockRegistry::from_facts_json(
+        &br#"{"states":[["minecraft:air",true,false,"","minecraft:air"],["minecraft:stone",true,false,"","minecraft:stone"]],"defaults":{"minecraft:air":0,"minecraft:stone":1}}"#[..],
+    )
+    .unwrap();
+    let root = std::env::temp_dir().join(format!("horizon-facts-unknown-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("gameplay-facts.json"),
+        br#"{"states":[{"id":0},{"id":1}]}"#,
+    )
+    .unwrap();
+    let behaviours = serde_json::json!({
+        "states": [[0, 0], [0, 0]],
+        "blocks": [
+            {"name": "minecraft:air", "class": ["Block"]},
+            {"name": "minecraft:stone", "class": ["Block"]},
+        ],
+    });
+    let facts =
+        super::super::BlockFacts::load_with_behaviour_json(&root, &registry, &behaviours).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let id = horizon_world::registry::BlockStateId;
+    assert_eq!(&*facts.get(id(1)).name, "minecraft:stone");
+    assert!(!facts.is_air(id(1)));
+    assert_eq!(&*facts.get(id(2)).name, "minecraft:air");
+    assert!(facts.is_air(id(2)));
 }

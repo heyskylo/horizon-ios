@@ -5,7 +5,7 @@
 //! through whatever it hit.
 use super::{
     Game,
-    creatures::{ProjWorld, wind_charge_hit},
+    creatures::{ProjWorld, pickable_projectile_hit},
     dragon::{CRYSTAL_IDS, SPECIAL},
     lan_pvp::meets_players,
     native_hooks::mob_kind,
@@ -33,15 +33,7 @@ pub(super) struct Impact {
 
 /// The type the mods know a projectile by: a spectral arrow is its own.
 fn projectile_type(p: &Projectile) -> &'static str {
-    let spectral = p
-        .arrow
-        .as_ref()
-        .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow");
-    if spectral {
-        "minecraft:spectral_arrow"
-    } else {
-        p.kind.id()
-    }
+    p.entity_type()
 }
 
 impl Game<'_> {
@@ -158,7 +150,7 @@ impl Game<'_> {
                     who: Who::Mob(id),
                     at,
                 } => {
-                    if wind_charge_hit(id).is_some() {
+                    if pickable_projectile_hit(id).is_some() {
                         canceled.push(false);
                         continue;
                     }
@@ -274,14 +266,6 @@ impl Game<'_> {
             p.owner = shooter;
         }
         let mut targets = self.projectile_targets();
-        if p.arrow.is_some()
-            || matches!(
-                p.kind,
-                horizon_client::projectiles::ProjectileKind::Snowball
-            )
-        {
-            targets.extend(self.vehicle_targets());
-        }
         if mob_shot || pvp {
             targets.extend(self.lan_projectile_targets());
         }

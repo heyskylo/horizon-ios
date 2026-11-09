@@ -166,6 +166,7 @@ using the "Shape" column. What a content pack needs:
 | Block registry: ids, states, properties, shapes, sounds, light | — | data and up (all 331) | **0.2** | declared in `data/<mod>/horizon/block/*.json`, each from a vanilla *template* block (below) |
 | Item registry, block items | — | data and up | **0.2** | `data/<mod>/horizon/item/*.json`, from a vanilla template item |
 | Mob effect registry: category, colour, icon, name | — | data and up | **0.2** | `data/<mod>/horizon/mob_effect/*.json` ([mods.md](mods.md#content-mods-api-02)); no tick behaviour yet: that needs native hook points |
+| Fluid registry: template, `FluidType` numbers, bucket, block, textures | — | machines and up | **0.2** | `data/<mod>/horizon/fluid/*.json` ([mods.md](mods.md#content-mods-api-02)): ids, tags, its block flowing in the world and its bucket; entities and drawing follow ([#6301](https://github.com/horizon-rust/horizon/issues/6301)) |
 | Recipes, loot tables, tags, advancements, lang, blockstates, models, textures, sounds in the mod's namespace | vanilla namespace only | data and up | **0.2** | the 26.3 data-pack and resource-pack formats, as they are |
 | Worldgen JSON: features, structures, template pools, processors, structure NBT, biome additions | vanilla bundle only | about 30 data-tier structure and biome mods | 0.2.x | carried into the `worldgen/` bundle |
 | Block and item behaviour callbacks: use, place, break, attack, random tick, scheduled tick, neighbour change, entity inside | — | logic and up (253) | **0.3** | `server` interface; hooks per registered id, budgeted |
@@ -178,7 +179,7 @@ using the "Shape" column. What a content pack needs:
 | Accessory slots (what Curios does) | — | Curios users (6 require it, more use it optionally) | **0.4** | built-in slots API |
 | Mod networking between its client and server halves | — | machines and up | **0.4** | `net` interface |
 | Custom recipe types: machine recipes with their own JSON | — | machines and up | **0.4** | recipe-type registry: the mod declares its JSON schema and a display layout for the recipe viewer |
-| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles are already data in 0.2 ([mods.md](mods.md)) |
+| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles, and mobs of a zombie's, a villager's or a wandering trader's class with their own attributes, are already data in 0.2 ([mods.md](mods.md)); a native mod gives a type its own goals with `register_goals` ([native-mods.md](native-mods.md#mob-goals)) |
 | Custom renderers and animated models (block-entity, entity, item; GeckoLib's format) | — | deep | 0.5 | data models (Bedrock geometry + animations), plus a budgeted draw-list interface for the rest |
 | Dimensions: dimension types, levels, chunk generators | — | about 10 (Twilight Forest, Aether, Ad Astra, Undergarden, ...) | 0.5 | JSON part with worldgen; custom generators as mod code |
 | New hooks into vanilla behaviour (what Mixins do) | — | deep | as asked | each becomes a named hook, added for everyone |
@@ -329,8 +330,29 @@ cargo run -p horizon-port-pack -- fetch ~/.horizon/ports/pack         # the port
 cargo run -p horizon-port-pack -- carry ~/.horizon/ports/pack         # content mods with a jar, or name them
 #   --resources <prepared root>: only templates Horizon's tables have
 cargo run -p horizon-port-pack -- report ~/.horizon/ports/pack        # coverage.json and coverage.md
+cargo run -p horizon-port-pack -- events ~/.horizon/ports/pack/jars   # NeoForge events the mods listen to, and their hooks
 cargo run -p horizon-port-pack -- port ~/Downloads/pack.zip ~/.horizon/ports/pack [--from <folder>] [--resources <root>]
 ```
+
+### Data packs in mod jars
+
+Some mods are a data pack in a jar: no classes, a `pack.mcmeta` and a `data/` folder (the skyblock
+packs of Skyblock Plus are). A content mod may not hold `data/minecraft`, so the carry would drop
+what they are for, such as a void world's noise settings. For a 26.2 or 26.3 pack, `port` makes
+them data packs instead: upgraded to 26.3 (`docs/datapack-upgrade.md`; a 26.3 one is copied as
+it is) into `<work>/home/new-world-datapacks/<mod>/`, with what happened in `<work>/datapacks.json`.
+A content mod an earlier port carried from the same jar is removed, and so is a pack in that folder
+whose jar is no longer a data-only one of the pack: `port` owns the folder.
+
+`home/` is the profile's game folder. The game copies its `new-world-datapacks/` into each world it
+creates there: Create New World shows them selected in its Data Packs screen, and a world made
+without that screen (`--world`, the control socket) gets them all. Worlds made before keep what
+they have. Without the folder nothing changes.
+
+Before its jar is read, a mod whose Modrinth project also ships as a data pack (`datapack` among
+the project's loaders) counts as data tier, so `fetch` gets its jar; the jar then decides. The
+report lists these jars as partial: nothing compares them with the Java pack yet, and their
+`assets/` (an advancement font, say) are not loaded.
 
 ### Resource packs from an imported modpack
 
@@ -370,6 +392,37 @@ Fences, Windows and Furniture, Ecologics, Compressed Blocks, More Decorative Blo
 Nether Structures are Partly; Sodium and GeckoLib don't run (Mixins, renderers, nothing to port);
 Fabric API doesn't run (its id has a dash, which content mods can't use). A check takes 0.2 s to
 3 s, and 24 s for Compressed Blocks (18 MB, 9,360 recipes, writing the carry dominates).
+
+`events <jar or folder> [--hooks <native-hooks.json>]` reads the same class files for the NeoForge
+events a mod listens to and the capabilities it uses. A listener is an `@SubscribeEvent` method's
+parameter, or a method reference or lambda that takes one event
+(`NeoForge.EVENT_BUS.addListener(this::onTick)`). It looks each name up in the hook catalog's
+`neoforge` names ([native-hooks-neoforge.md](native-hooks-neoforge.md)). Over a folder of jars it
+ranks the names by how many mods use them. Each name gets one of five answers:
+
+- a hook;
+- another phase's hook (`player_tick` for `PlayerTickEvent.Pre`);
+- a hook whose label says why it isn't quite the counterpart;
+- data: the event is gone because vanilla made what it built into data, and the answer names the
+  registries a port writes instead;
+- none.
+
+Names NeoForge changed after 1.21.1 (`Capabilities.ItemHandler`, `Capabilities.EnergyStorage`,
+`AddReloadListenerEvent`) are looked up under their new ones. `VillagerTradesEvent` and
+`WandererTradesEvent` are data: 26.1 made villager trades the `trade_set` and `villager_trade`
+registries (NeoForge's 26.1 primer), and 26.3's NeoForge has neither event. A port writes each
+trade as a `villager_trade` file and adds it to the tag a set reads (`armorer/level_1`'s set takes
+`#minecraft:armorer/level_1`). Tags merge, so several mods can add to one level. The files come from
+the mod's own data or from `data_pack_files`. The report reads names only, never code: it says
+where a port starts, for a human to check.
+
+On ATM10's 498 jars (2026-11-05, 8 s), 416 of 497 mods listen to events or use capabilities: 6,616
+uses of 326 names. Main's catalog had a hook for 23% of those uses, and 43% once #9924 labelled 32
+core hooks. The most used names with no hook are mod setup and registration
+(`FMLClientSetupEvent` 208 mods, `RegisterPayloadHandlersEvent` 180,
+`RegisterCapabilitiesEvent` 162, `RegisterMenuScreensEvent` 143), which a Horizon mod does its own
+way. After those come `ClientTickEvent.Post` and `.Pre` (95, 46), `RenderLevelStageEvent` (81) and
+`ClientPlayerNetworkEvent.LoggingOut` and `.LoggingIn` (53, 35).
 
 `fetch` gets each jar the player's way, never from us: copied from a folder they have (matched
 by SHA-1, or through a CurseForge app instance's `minecraftinstance.json`), else downloaded from
@@ -436,7 +489,7 @@ refused as walls: their blockstates did not load).
 |---|---|---|
 | Modrinth `.mrpack` | `modrinth.index.json`: `dependencies` (minecraft, neoforge / fabric-loader / forge / quilt-loader), `files[]` with path, sha1/sha512, `env` (client/server), download URLs; `overrides/`, `client-overrides/`, `server-overrides/` | downloaded from the listed Modrinth URLs, hash-checked |
 | CurseForge zip | `manifest.json`: `minecraft.version`, `modLoaders[]`, `files[]` (`projectID`, `fileID`, `required`), `overrides`. When the overrides hold Crash Assistant's `config/crash_assistant/modlist.json` (All the Mods 10 does), its jar names, mod ids and SHA-1s replace the bare ids | the user's installed instance (CurseForge app `minecraftinstance.json` + `mods/`), or the same file on Modrinth by SHA-1. CurseForge's API needs a key, so we take what the user already downloaded |
-| Prism / MultiMC instance | `mmc-pack.json` components (`net.minecraft`, `net.neoforged`, `net.fabricmc.fabric-loader`), `instance.cfg`, `.minecraft/mods/*.jar`, packwiz `.pw.toml` files if present | the instance folder |
+| Prism / MultiMC instance | `mmc-pack.json` components (`net.minecraft`, `net.neoforged`, `net.fabricmc.fabric-loader`); for a CurseForge app instance without one, `minecraftinstance.json` (`gameVersion`, `baseModLoader.name`), else its `manifest.json`; `instance.cfg`, `.minecraft/mods/*.jar`, packwiz `.pw.toml` files if present | the instance folder |
 | packwiz | `pack.toml`, `index.toml`, `mods/*.pw.toml` | as listed |
 | Crash Assistant `modlist.json` | jar name → mod id, name, version, Modrinth SHA-1; the loader entry (NeoForge `21.1.x` is Minecraft 1.21.1). Packs such as ATM10 publish it in their repository | metadata only; jars put in `<work>/jars/` |
 
@@ -878,7 +931,26 @@ left out (blocks with a class of their own are counted and named, since facts ca
 their extra code); **partial** with the failing checks, the blocks left out and what the
 templates miss; **not yet** with the API tier it waits for, or the dependency; **not needed**
 for libraries, performance mods, pack tooling and what Horizon has built in. Unclassified mods
-(the 20 CurseForge-only rows the reviewed table only guesses) count as not yet.
+(the 20 CurseForge-only rows the reviewed table only guesses) count as not yet. A mod made for
+1.20 or older (its `recipes/` and `loot_tables/` folders named as before 1.21, which 26.3 does
+not read) is carried with its data files moved to 1.21's folder names (`recipe/`, `loot_table/`,
+`tags/block/`..., counted as `folders_renamed`); a file the jar also holds under the new name
+keeps that copy. Their JSON stays 1.20's: a recipe result naming its item as `item` (before
+1.20.5), which 26.3 skips, is kept as it is and counted as `recipes_old_result`, and NBT in loot
+functions, ingredients and predicates is not upgraded yet (#10262). In the game each such file
+fails alone and the rest load: those recipes are skipped, `set_nbt` and `copy_nbt` drop their item
+without the NBT, an advancement's NBT predicate matches any item, a template's block renamed since
+1.20 is air, and a 1.20 command in a function fails. Such a mod is partial whatever its harness
+says, with that in its reason. `check` still says it doesn't run.
+
+Both files open with a plain headline for players, counted from the rows' own status, class and
+tier: how many of the mods that need porting came over (ported or partial, as content: blocks,
+items and structures, never the mod's own code), how many of the rest `port` can still carry
+over, how many need mod API the game doesn't have yet, and how many aren't sorted yet. Resource
+packs and shader packs aren't counted as mods. Each row also has its reason in plain words
+(`plain` in `coverage.json`, the last column of `coverage.md`, above the technical line on the
+Modpacks page), next to the unchanged technical `reason` for modders. The launcher words the
+headline through its translations; the sentences per row are English, like the reasons.
 
 **ATM10, measured** (`import` of ATM10's `modlist.json` from its repository on 2026-10-16, 496
 files; `inventory`; `carry` and the harness on the eight mods we downloaded; `report`):
@@ -1040,84 +1112,7 @@ same mods. It reaches the title 2.5x sooner and the world 3.6x sooner, and its f
 because it builds the content root once. One game per row on a loaded machine is not a
 benchmark; a quiet rerun with repeats is still to do.
 
-## The working version for 2026-10-23
-
-In scope (each is a PR or a small stack):
-
-1. **This design merged.**
-2. **Registries 0.2** in the game: content-only `.hmod`s with blocks (full cubes and the
-   vanilla templates the first pack needs: doors, trapdoors, fences, walls, slabs, stairs,
-   panes, glass), items, block items, recipes, loot tables, tags, blockstates, models, textures
-   and lang, in single player. Proven by a harness: a test mod's block placed, rendered, broken
-   with the right time and tool, dropping its loot, crafted from its recipe; every per-state
-   fact equal to its template's with the overrides applied. Parity unchanged with no mods.
-3. **`horizon-port-pack`**: import (`.mrpack`, CurseForge zip and instance, Prism), inventory,
-   classify, licence record, dependency order, data carry-over for data-tier mods and their
-   `.hmod`s, coverage report. Run on ATM10's real list (coverage report published in the PR,
-   metadata only) and on a small real pack end to end.
-4. **First pack end to end, locally:** 5–10 data-tier mods with permissive licences from ATM10
-   (candidates: Macaw's Doors, Fences and Walls, Trapdoors and Paths (MIT), Factory Blocks
-   (CC0), XTones Reworked (MIT), Cloud Glass (MIT), Glassential (MIT), Crystalix (LGPL)), each
-   with its harness against the NeoForge 1.21.1 oracle. The ports stay local even though these
-   licences would allow publishing: we ask first.
-5. **Launcher:** "Import modpack" (`.mrpack` / CurseForge zip / instance) showing the
-   coverage report (ATM10's first), and "Port and play" for what is portable.
-6. **Measured:** load time, RAM and FPS of that pack on NeoForge 1.21.1 against Horizon, with
-   the full ATM10 on NeoForge as the reference row.
-
-Out of scope for that date, and next in order: the rest of worldgen carry-over (mods'
-structures, sets, pools and features generate now, see step 4; mod biomes, noise and density
-functions, and the structure types written in Java such as YUNG's and Formations', do not yet),
-behaviour callbacks and server events, block entities, menus, capabilities and net, as
-native mods, the first agent-ported logic-tier mod as the pilot of step 5, then machines. Porting all
-of ATM10 is a campaign. Each step publishes its coverage number; we make no claim beyond what
-the report shows.
-
-### Where ATM10's data mods stand (2026-10-22)
-
-Measured with #1175, #1176, #1177 and #1191 on main, over the 42 data-tier mods carried from
-ATM10 (the launcher's `--dev-mod` carries), seeds 1234 and 2.
-
-- **Structures.** The carries define 687 structures in 25 mods. 419 of them start somewhere in
-  chunks -128..127 of the Overworld, the Nether or the End at one of the two seeds, and 264 in
-  chunks -64..63 (249 on 2026-10-19). Most of the rest are biome-bound and rare: no desert lies
-  in either square, and ChoiceTheorem's Overhauled Village (25 of 78) and Towns and Towers (15
-  of 60) have a variant per biome. 27 never start because their type is written in Java:
-  Better Mineshafts 13, Repurposed Structures' mansions 8, monuments 4 and End mineshaft 1, and
-  one Better Dungeons type.
-- **Processors.** 1,560 carried and 605 dropped (1,347 and 818 on 2026-10-19). The dropped ones
-  by mod: Formations 227 (Overworld 182, Nether 45), Repurposed Structures 182, Better Dungeons
-  69, Better Jungle Temples 50, Better Strongholds 41, Better Desert Temples 14, Villages and
-  Pillages 10, Better Fortresses 5, Better Witch Huts 3, Mo' Structures 3, Moog's Nether
-  Structures 1.
-- **Content.** 190,550 block states and 12,931 items load. 5 block models are missing (4 of
-  Macaw's Doors' cherry waffle door, Regions Unexplored's blue crystalite): those blocks draw
-  the missing model.
-- **Load time** (Mac mini M4 Pro, offscreen, render distance 12). The first start builds the
-  content root: about 25 to 35 s, and again after every game update, since the root's stamp
-  includes the executable. Later starts: 6.6 to 8.2 s to "resources loaded", against 1.3 to
-  2.5 s for vanilla.
-- **Play.** No crash at either seed: spawn, Mo' Structures' pirate ship, castle in the sky,
-  barn house and villager tower, CTOV villages, Formations' fountains (one with its chamber),
-  the Nether.
-
-What is missing, ranked by how much a player notices:
-
-1. **Code mods.** 333 of ATM10's 496 mods (machines, magic, mobs, tools, storage): the pack's
-   gameplay. They need a native port per mod.
-2. **The 12 mods only on CurseForge**, which the carry has not fetched.
-3. **Plainer structures.** The 605 dropped processors are what makes structures look aged,
-   overgrown or fitted to their biome in Java: Formations' biome swaps and block ageing (its
-   tables are All Rights Reserved code), Repurposed Structures' random and noise replacements
-   and floating-block removal, and YUNG's decorations (Better Dungeons, Jungle Temples,
-   Strongholds).
-4. **Structures that never generate:** the 27 Java types above. Repurposed Structures' mansions
-   and monuments are about 3,000 lines of LGPL layout code; whether to port them into this MIT
-   repository is a licence question.
-5. **The first start after installing or updating:** 25 to 35 s. Later starts are about four
-   times vanilla's.
-6. **Smaller gaps:** Mo' Structures' mixin that keeps lakes out of its structures and its two
-   block-ageing processors, and the 5 missing block models.
+## Measured end to end
 
 ### Three packs through the mod browser, measured
 

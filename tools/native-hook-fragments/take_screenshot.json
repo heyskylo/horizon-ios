@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "take_screenshot", "target": "horizon_client::game::native_client_services::Game<'_>::native_take_screenshot"}
+  ],
+  "rust_summary": "a client mod takes a screenshot as F2 does (`native_take_screenshot`).",
+  "doc_summary": "`native_take_screenshot()` takes a screenshot of the next frame as F2 does, into `screenshots/`, and returns the file it will write; an error without a window or while another screenshot waits for the frame. Bundles need \"hooks\": @API:take_screenshot@.",
+  "comments": ["crates/horizon-client/src/game/native_client_services.rs"]
+}

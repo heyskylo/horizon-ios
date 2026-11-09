@@ -3,7 +3,8 @@
 use super::{
     BoundingBox, StructureResources,
     jigsaw::{
-        JigsawConfig, JigsawContext, PlaceFeature, PoolPiece, Pools, Projection, assemble_drawing,
+        JigsawConfig, JigsawContext, PlaceFeature, PoolPiece, Pools, Projection, lay_out_children,
+        place_start,
     },
     legacy::{LegacyPiece, PieceContext},
 };
@@ -692,13 +693,13 @@ impl StructureRegistry {
                 return false;
             }
         }
-        if let Some(avoid) = set.avoid.as_ref().filter(|_| zones) {
-            if avoid.sets.iter().any(|other| {
+        if let Some(avoid) = set.avoid.as_ref().filter(|_| zones)
+            && avoid.sets.iter().any(|other| {
                 let range = avoid.chunk_count;
                 self.has_start_in_range(other, seed, x, z, range, rings, avoid.their_zones)
-            }) {
-                return false;
-            }
+            })
+        {
+            return false;
         }
         if set.frequency < 1. && !reduce(set.reduction, seed, set.salt, x, z, set.frequency) {
             return false;
@@ -837,6 +838,7 @@ pub struct StructureStart {
     pub structure: usize,
     pub name: String,
     pub chunk: ChunkPos,
+    pub references: i32,
     pub pieces: Vec<Piece>,
     /// Piece union, inflated by 12 for terrain-adapting structures.
     pub bounding_box: BoundingBox,
@@ -856,7 +858,7 @@ impl StructureStart {
             ("id", Tag::String(self.name.as_str().into())),
             ("ChunkX", Tag::Int(self.chunk.x)),
             ("ChunkZ", Tag::Int(self.chunk.z)),
-            ("references", Tag::Int(0)),
+            ("references", Tag::Int(self.references)),
             ("Children", Tag::List(children?)),
         ]))
     }
@@ -947,10 +949,43 @@ pub fn create_starts(
     rings: &Rings,
     chunk: ChunkPos,
 ) -> Vec<StructureStart> {
+    create_starts_with_saved(
+        registry,
+        resources,
+        bindings,
+        context,
+        possible_sets,
+        rings,
+        chunk,
+        Vec::new(),
+    )
+}
+/// Saved starts replace generation of their placement set; all other sets retain their
+/// usual placement checks, weighted choices and generation fallback.
+pub(crate) fn create_starts_with_saved(
+    registry: &StructureRegistry,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    context: &mut impl StartContext,
+    possible_sets: &[usize],
+    rings: &Rings,
+    chunk: ChunkPos,
+    mut saved: Vec<StructureStart>,
+) -> Vec<StructureStart> {
     let seed = context.seed();
     let mut starts = Vec::new();
     for &set_index in possible_sets {
         let set = &registry.sets[set_index];
+        let before = starts.len();
+        while let Some(i) = saved
+            .iter()
+            .position(|start| set.structures.iter().any(|(s, _)| *s == start.structure))
+        {
+            starts.push(saved.remove(i));
+        }
+        if starts.len() != before {
+            continue;
+        }
         if !registry.is_structure_chunk(set, seed, chunk.x, chunk.z, rings) {
             continue;
         }
@@ -1003,6 +1038,7 @@ pub fn create_starts(
             total -= selected.1;
         }
     }
+    starts.extend(saved);
     starts
 }
 /// `Structure.generate` of one structure for one chunk: what the chunk's
@@ -1018,7 +1054,53 @@ pub(crate) fn try_generate(
     chunk: ChunkPos,
     any_biome: bool,
 ) -> Option<StructureStart> {
+    match generate(
+        registry, resources, bindings, context, structure, chunk, any_biome, false,
+    )? {
+        Generated::Start(start) => Some(start),
+        Generated::Stub => None,
+    }
+}
+/// `StructureCheck.canCreateStructure`: whether `structure` may start in `chunk`, by
+/// `Structure.findValidGenerationPoint` alone. A jigsaw's start piece is placed and its biome
+/// checked; its children are not laid out. Other structures answer true: their starts are
+/// cheap to build. False only where [`try_generate`] can't start it, so a search may skip
+/// the chunk's full starts then (#8669).
+pub(crate) fn may_start(
+    registry: &StructureRegistry,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    context: &mut impl StartContext,
+    structure: usize,
+    chunk: ChunkPos,
+) -> bool {
+    generate(
+        registry, resources, bindings, context, structure, chunk, false, true,
+    )
+    .is_some()
+}
+/// What [`generate`] made: the start, or with `stub_only` only that it may start.
+enum Generated {
+    Start(StructureStart),
+    Stub,
+}
+#[allow(clippy::too_many_arguments)]
+fn generate(
+    registry: &StructureRegistry,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    context: &mut impl StartContext,
+    structure: usize,
+    chunk: ChunkPos,
+    any_biome: bool,
+    stub_only: bool,
+) -> Option<Generated> {
     let def = &registry.structures[structure];
+    let vanilla_jigsaw =
+        matches!(&def.kind, StructureKind::Jigsaw(jigsaw) if jigsaw.piece_limited.is_none());
+    if stub_only && !vanilla_jigsaw {
+        return Some(Generated::Stub);
+    }
     context.set_valid_biomes((!any_biome).then_some(&def.biomes));
     let seed = context.seed();
     let mut random = WorldgenRandom::new(LegacyRandom::new(0));
@@ -1061,16 +1143,38 @@ pub(crate) fn try_generate(
                     chunk,
                     start,
                 )?,
-                None => assemble_drawing(
-                    jigsaw.draws,
-                    &config,
-                    context,
-                    &registry.pools,
-                    resources,
-                    bindings,
-                    &mut random,
-                    start,
-                )?,
+                None => {
+                    let placed = place_start(
+                        jigsaw.draws,
+                        &config,
+                        context,
+                        &registry.pools,
+                        resources,
+                        bindings,
+                        &mut random,
+                        start,
+                    )?;
+                    // Structure.findValidGenerationPoint checks the stub's biome before its
+                    // GenerationStub lays the pieces out: a start in another biome costs its
+                    // start piece, not its whole layout (an ancient city's, a camp's).
+                    let quart = placed.position.map(|v| v >> 2);
+                    if !any_biome && !def.biomes.contains(&context.noise_biome(quart)) {
+                        return None;
+                    }
+                    if stub_only {
+                        return Some(Generated::Stub);
+                    }
+                    lay_out_children(
+                        jigsaw.draws,
+                        placed,
+                        &config,
+                        context,
+                        &registry.pools,
+                        resources,
+                        bindings,
+                        &mut random,
+                    )
+                }
             };
             // Vanilla's JigsawPlacement keeps no piece at size 0; the
             // piece-limited assembler keeps the start piece.
@@ -1331,7 +1435,9 @@ pub(crate) fn try_generate(
     if (!any_biome && !def.biomes.contains(&context.noise_biome(quart))) || pieces.is_empty() {
         return None;
     }
-    Some(StructureStart::new(structure, def, chunk, pieces))
+    Some(Generated::Start(StructureStart::new(
+        structure, def, chunk, pieces,
+    )))
 }
 impl StructureStart {
     /// A start of `def` (registry index `structure`) from its pieces, at
@@ -1352,6 +1458,7 @@ impl StructureStart {
             structure,
             name: def.name.clone(),
             chunk,
+            references: 0,
             pieces,
             bounding_box,
         }
@@ -1425,12 +1532,11 @@ pub fn beardifier(
     let mut kernels: Option<BoundingBox> = None;
     for start in starts {
         let def = &registry.structures[start.structure];
-        if let Some(enhanced) = &def.enhanced_terrain {
-            if let Some(b) =
+        if let Some(enhanced) = &def.enhanced_terrain
+            && let Some(b) =
                 enhanced.collect(start, chunk, &mut kernel_pieces, &mut kernel_junctions)
-            {
-                include(b, &mut kernels);
-            }
+        {
+            include(b, &mut kernels);
         }
         let adjustment = def.terrain;
         if adjustment == TerrainAdjustment::None {

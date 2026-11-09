@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "entity_interact_specific",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_interact_specific",
+      "neoforge": "PlayerInteractEvent.EntityInteractSpecific",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "claimed"
+      }
+    }
+  ],
+  "rust_summary": "a right-click on an entity with the point clicked (`native_entity_interact_specific`).",
+  "doc_summary": "a right-click on an entity with the point clicked: `native_entity_interact_specific` hears the entity, its type, the held stack and the point clicked, measured from the entity's position, before `native_interact_entity`, as NeoForge's `PlayerInteractEvent.EntityInteractSpecific`; a claim swings the hand and ends the click. Server-side. Bundles need \"hooks\": @API:entity_interact_specific@."
+}

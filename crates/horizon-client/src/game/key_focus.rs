@@ -4,6 +4,7 @@
 //! point, Enter, Space and keypad Enter press the focused widget
 //! (`AbstractButton.keyPressed`), and a focused slider's left and right move
 //! its value once Enter (or Tab) let them (`AbstractSliderButton.keyPressed`).
+//! A focused text field is the screen's focus: those keys type into it.
 //!
 //! The focus lands on what the controller's focus mode reaches: the targets
 //! each screen registers (`widgets::target_as`, docs/controllers.md). This
@@ -65,7 +66,8 @@ pub(super) struct Context {
     /// The focused slider's arrows change its value (`canChangeValue`).
     pub slider_edit: bool,
     /// A text field has the keyboard (a click focused it): with nothing
-    /// focused, its caret takes left and right.
+    /// focused, its caret takes left and right, and Space and Enter belong to
+    /// it rather than to the widget the keyboard focus was left on.
     pub typing: bool,
     /// The screen joins its list's selected row on Enter itself
     /// (`WorldListEntry.keyPressed`): a focused row passes Enter on.
@@ -109,6 +111,11 @@ pub(super) fn act(nav: Nav, focus: Option<Target>, targets: &[Target], ctx: Cont
             let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
             gamepad::focus_step_rect(edge(ctx.gui, b), b, &rects).map_or(Act::Pass, Act::Focus)
         }
+        // A focused `EditBox` is the screen's focus (`Screen.setFocused`), so
+        // Space and Enter are the box's `charTyped` (a space, say) — never a
+        // press of the widget the keyboard's focus was left on from before
+        // (`AbstractButton.keyPressed` only hears the focused widget).
+        (Nav::Select, _) if ctx.typing => Act::Pass,
         (Nav::Select, None) => Act::Pass,
         (Nav::Select, Some(t)) => match t.kind {
             Kind::Field => Act::Pass,
@@ -267,14 +274,17 @@ pub(super) fn field_click(rect: Rect) -> (f32, f32) {
 /// (`AbstractSelectionList`) and of a focused `EditBox`. Buttons, sliders
 /// and tabs show their highlighted sprite, drawn under the hidden pointer.
 pub(super) fn draw_outline(atlas: &HudAtlas, batch: &mut HudBatch, focus: Target) {
-    let [x, y, w, h] = focus.rect;
     if matches!(focus.kind, Kind::Row | Kind::Field) {
-        let white = rgba(255, 255, 255, 255);
-        batch.fill(atlas, x, y, w, 1.0, white);
-        batch.fill(atlas, x, y + h - 1.0, w, 1.0, white);
-        batch.fill(atlas, x, y, 1.0, h, white);
-        batch.fill(atlas, x + w - 1.0, y, 1.0, h, white);
+        draw_white_outline(atlas, batch, focus.rect);
     }
+}
+
+pub(super) fn draw_white_outline(atlas: &HudAtlas, batch: &mut HudBatch, [x, y, w, h]: Rect) {
+    let white = rgba(255, 255, 255, 255);
+    batch.fill(atlas, x, y, w, 1.0, white);
+    batch.fill(atlas, x, y + h - 1.0, w, 1.0, white);
+    batch.fill(atlas, x, y, 1.0, h, white);
+    batch.fill(atlas, x + w - 1.0, y, 1.0, h, white);
 }
 
 #[cfg(test)]
@@ -412,6 +422,24 @@ mod tests {
             ..CTX
         };
         assert_eq!(act(Nav::Select, Some(r), &[r], joins), Act::Pass);
+    }
+
+    /// A focused text field is the screen's focus: Space types a space into
+    /// it, and neither it nor Enter presses the widget the keyboard's focus
+    /// was left on (the Create World tab a keyboard player tabbed to, say).
+    #[test]
+    fn a_focused_text_field_keeps_space_and_enter_for_typing() {
+        let b = button(0.0, 40.0);
+        let f = field();
+        let targets = [f, b];
+        let typing = Context {
+            typing: true,
+            ..CTX
+        };
+        assert_eq!(act(Nav::Select, Some(b), &targets, typing), Act::Pass);
+        assert_eq!(act(Nav::Select, Some(f), &targets, typing), Act::Pass);
+        // The same widget still takes them when no field has the focus.
+        assert_eq!(act(Nav::Select, Some(b), &targets, CTX), Act::Press);
     }
 
     /// AbstractSliderButton.keyPressed and setFocused.

@@ -1,0 +1,8 @@
+{
+  "hooks": [],
+  "rust_summary": "turning parts of a block entity's kept geometry (`BlockEntityDraw::spin`, `still`): the game turns them each frame from the game time.",
+  "doc_summary": "`BlockEntityDraw::spin(axis, pivot, degrees_per_tick, phase)` makes what is drawn next turn by itself and `still` ends it; kept with `keep`, a turning shaft is drawn every frame with no call of `native_block_entity_submit` until its block entity changes. Bundles need \"hooks\": @API:spinning_geometry@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_block_entity_draw.rs"
+  ]
+}

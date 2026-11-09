@@ -90,6 +90,9 @@ pub struct BlockProperties {
     pub random_ticks: Option<RandomTicks>,
     /// How the block is drawn, whatever the template does (`BlockBehaviour.getRenderShape`).
     pub render_shape: Option<RenderShape>,
+    /// `false`: the block occludes nothing, so its neighbours' faces are drawn and light passes
+    /// it (`BlockBehaviour.Properties.noOcclusion`); unset or `true`: as its template.
+    pub occludes: Option<bool>,
 }
 
 /// Vanilla's `RenderShape`, by its constant's name: `MODEL` puts the block model in the chunk
@@ -141,20 +144,25 @@ impl RandomTicks {
     }
 }
 
-/// Boxes selected by one property (legacy) or an ordered tuple of properties.
+/// Values selected by one property or an ordered tuple of state properties.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct BlockShapes {
+pub struct StateValues<T> {
     #[serde(default)]
     pub property: String,
     #[serde(default)]
     pub properties: Vec<String>,
     #[serde(default)]
-    pub values: BTreeMap<String, Vec<[f64; 6]>>,
-    pub default: Option<Vec<[f64; 6]>>,
+    pub values: BTreeMap<String, T>,
+    pub default: Option<T>,
 }
 
-impl BlockShapes {
+/// Block-local boxes selected by state.
+pub type BlockShapes = StateValues<Vec<[f64; 6]>>;
+/// Light emitted by a state, as an integer from 0 to 15.
+pub type StateLight = StateValues<u8>;
+
+impl<T> StateValues<T> {
     pub fn property_names(&self) -> Vec<&str> {
         if self.property.is_empty() {
             self.properties.iter().map(String::as_str).collect()
@@ -163,7 +171,7 @@ impl BlockShapes {
         }
     }
 
-    fn check(&self) -> Result<(), String> {
+    fn check_selection(&self, label: &str) -> Result<(), String> {
         let names = self.property_names();
         if (!self.property.is_empty() && !self.properties.is_empty())
             || names.iter().any(|name| !state_name(name))
@@ -171,14 +179,25 @@ impl BlockShapes {
             || (names.is_empty() && !self.values.is_empty())
             || (self.values.is_empty() && self.default.is_none())
         {
-            return Err("shapes needs distinct properties and values, or a default".into());
+            return Err(format!(
+                "{label} needs distinct properties and values, or a default"
+            ));
         }
         for key in self.values.keys() {
             let values: Vec<_> = key.split(',').collect();
             if values.len() != names.len() || values.iter().any(|value| !state_name(value)) {
-                return Err(format!("invalid shape key {key:?}: one value per property"));
+                return Err(format!(
+                    "invalid {label} key {key:?}: one value per property"
+                ));
             }
         }
+        Ok(())
+    }
+}
+
+impl BlockShapes {
+    fn check(&self) -> Result<(), String> {
+        self.check_selection("shapes")?;
         for boxes in self.values.values().chain(self.default.iter()) {
             if boxes.len() > 16
                 || boxes.iter().any(|bounds| {
@@ -190,6 +209,42 @@ impl BlockShapes {
             }
         }
         Ok(())
+    }
+}
+
+impl StateLight {
+    fn check(&self) -> Result<(), String> {
+        self.check_selection("state_light")?;
+        if self
+            .values
+            .values()
+            .chain(self.default.iter())
+            .any(|value| *value > 15)
+        {
+            return Err("state_light values are integers 0 to 15".into());
+        }
+        Ok(())
+    }
+}
+
+/// The querying entity class, captured by the real caller. Empty and position-only
+/// queries have no entity and always use the ordinary shape tables.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ShapeEntityKind {
+    Item,
+    Player,
+    Living,
+    Other,
+}
+impl ShapeEntityKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Item => "item",
+            Self::Player => "player",
+            Self::Living => "living",
+            Self::Other => "other",
+        }
     }
 }
 
@@ -233,6 +288,12 @@ struct BlockFile {
     shapes: Option<BlockShapes>,
     collision_shapes: Option<BlockShapes>,
     #[serde(default)]
+    outline_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    #[serde(default)]
+    collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    interaction_shapes: Option<BlockShapes>,
+    state_light: Option<StateLight>,
+    #[serde(default)]
     state_properties: BTreeMap<String, StateProperty>,
     #[serde(default)]
     default_state: BTreeMap<String, String>,
@@ -266,6 +327,13 @@ pub struct Block {
     pub properties: BlockProperties,
     pub shapes: Option<BlockShapes>,
     pub collision_shapes: Option<BlockShapes>,
+    /// Independent overrides for actual entity queries; omitted kinds use the defaults.
+    pub outline_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    pub collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    /// Ray-face override; does not replace the outline hit point or create a hit.
+    pub interaction_shapes: Option<BlockShapes>,
+    /// Per-state emission; takes precedence over `properties.light`.
+    pub state_light: Option<StateLight>,
     /// State properties of its own, which its template does not have.
     pub state_properties: BTreeMap<String, StateProperty>,
     /// State properties overlaid on the template default.
@@ -330,6 +398,7 @@ struct ItemFile {
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
     crafting_remainder: Option<String>,
+    place_block: Option<String>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -347,6 +416,9 @@ pub struct Item {
     /// What it leaves in the crafting grid (`Item.Properties.craftRemainder`):
     /// a vanilla item or one of the mod's own.
     pub crafting_remainder: Option<String>,
+    /// An ordinary `BlockItem` binding to a vanilla block or this namespace's block.
+    /// Components still come from `template`; placement retains this item's identity.
+    pub place_block: Option<String>,
 }
 
 /// `MobEffectCategory`.
@@ -370,12 +442,35 @@ pub struct MobEffect {
     pub color: u32,
 }
 
-/// the vanilla entity types a mod's type may copy: thrown item
-/// projectiles (`ThrowableItemProjectile`).
-pub const ENTITY_TEMPLATES: [&str; 1] = ["minecraft:snowball"];
+mod fluid;
+use fluid::check_fluid;
+pub use fluid::{FLUID_TEMPLATES, Fluid};
 
-/// an entity type the mod adds: a copy of a vanilla template's, thrown
-/// from `item` and drawn as it.
+/// the vanilla entity types a mod's type may copy: thrown item
+/// projectiles (`ThrowableItemProjectile`), then living mobs
+/// ([`LIVING_TEMPLATES`]).
+pub const ENTITY_TEMPLATES: [&str; 4] = [
+    "minecraft:snowball",
+    "minecraft:villager",
+    "minecraft:wandering_trader",
+    "minecraft:zombie",
+];
+
+/// the [`ENTITY_TEMPLATES`] that are living mobs: a type copying one is a mob
+/// of its template's class (NeoForge's `EntityType.Builder.of(Zombie::new,
+/// ...)`), with its own default attributes (`EntityAttributeCreationEvent`).
+/// The wandering trader is the neutral one whose behaviour is all goals,
+/// which a native mod can replace (`register_goals`); a villager's is its
+/// brain.
+pub const LIVING_TEMPLATES: [&str; 3] = [
+    "minecraft:villager",
+    "minecraft:wandering_trader",
+    "minecraft:zombie",
+];
+
+/// an entity type the mod adds: a copy of a vanilla template's. A thrown one
+/// is thrown from `item` and drawn as it; a living one is its template's mob
+/// with other `attributes`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EntityType {
@@ -384,11 +479,26 @@ pub struct EntityType {
     pub id: String,
     /// one of [`ENTITY_TEMPLATES`].
     pub template: String,
-    /// one of the mod's own items, which throws it.
-    pub item: String,
-    /// what a hit deals to an entity, as `thrown` damage.
+    /// a thrown type's: one of the mod's own items, which throws it. A
+    /// living type has none.
+    #[serde(default)]
+    pub item: Option<String>,
+    /// a thrown type's: what a hit deals to an entity, as `thrown` damage.
     #[serde(default)]
     pub damage: f32,
+    /// a living type's default attribute values that differ from its
+    /// template's, by attribute id (`minecraft:max_health`): the template's
+    /// own attributes only, checked against its row in `entity-types.json`
+    /// when the content root builds.
+    #[serde(default)]
+    pub attributes: BTreeMap<String, f64>,
+}
+
+impl EntityType {
+    /// whether the type copies a living mob ([`LIVING_TEMPLATES`]).
+    pub fn is_living(&self) -> bool {
+        LIVING_TEMPLATES.contains(&self.template.as_str())
+    }
 }
 
 /// a menu type the mod adds (vanilla's `MenuType`, NeoForge's
@@ -410,13 +520,64 @@ pub struct MenuType {
     /// slots a player takes from but never puts into, each below `slots`.
     #[serde(default)]
     pub results: Vec<u16>,
+    /// a crafting grid over some of the slots, which crafts as vanilla's
+    /// crafting table does (`CraftingMenu`).
+    #[serde(default)]
+    pub crafting: Option<MenuCrafting>,
+    /// slots that show other containers' slots instead of the block
+    /// entity's, as a crafting station shows the chests beside it; a native
+    /// mod names the containers (`native_menu_links`).
+    #[serde(default)]
+    pub links: Option<MenuLinks>,
+}
+
+/// a mod menu type's linked slots (`links`): `count` slots from `from` on,
+/// which show the slots of the containers a native mod links them to
+/// (`native_menu_links`), in order, rather than the block entity's. The
+/// block entity never holds them; a linked slot with nothing behind it holds
+/// nothing and takes nothing.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuLinks {
+    /// the first linked slot.
+    pub from: u16,
+    /// how many slots, 1 or more.
+    pub count: u16,
+}
+
+impl MenuLinks {
+    fn range(&self) -> std::ops::Range<u32> {
+        u32::from(self.from)..u32::from(self.from) + u32::from(self.count)
+    }
+}
+
+/// a mod menu type's crafting grid (`crafting`): `size`x`size` slots from
+/// `grid` on, row by row, and the slot that shows what they craft
+/// (`ResultSlot`). The block entity holds the grid; the result is the
+/// menu's, never in the block entity.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuCrafting {
+    /// the grid's first slot.
+    pub grid: u16,
+    /// 2 (the inventory's grid) or 3 (a crafting table's); 3 by default.
+    #[serde(default = "MenuCrafting::default_size")]
+    pub size: u16,
+    /// the result slot, outside the grid and not one of `results`.
+    pub result: u16,
+}
+
+impl MenuCrafting {
+    fn default_size() -> u16 {
+        3
+    }
 }
 
 /// the most container or data slots a mod menu type has, as many as a mod
 /// container (`native_block_entity_container`) may.
 pub const MAX_MENU_SLOTS: u16 = 256;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Source {
     Dir(PathBuf),
     Zip(PathBuf),
@@ -433,6 +594,8 @@ pub struct Content {
     pub blocks: Vec<Block>,
     pub items: Vec<Item>,
     pub effects: Vec<MobEffect>,
+    /// Its fluids, by id ([`Fluid`]).
+    pub fluids: Vec<Fluid>,
     /// Its creative inventory tabs, by id.
     pub creative_tabs: Vec<CreativeTab>,
     pub entity_types: Vec<EntityType>,
@@ -465,6 +628,22 @@ impl FileReader<'_> {
             return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
         }
         Ok(out)
+    }
+    /// A content file's path on disk, checked as [`read`](Self::read) checks it (the name,
+    /// the size), for a caller that copies it without reading it; `None` in an archive.
+    pub fn path(&self, name: &str) -> Result<Option<std::path::PathBuf>, String> {
+        check_path(name)?;
+        let Self::Dir(root) = self else {
+            return Ok(None);
+        };
+        let path = root.join(name);
+        let len = std::fs::metadata(&path)
+            .map_err(|e| format!("{name}: {e}"))?
+            .len();
+        if len > MAX_FILE {
+            return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
+        }
+        Ok(Some(path))
     }
 }
 
@@ -534,6 +713,7 @@ impl Content {
             blocks: Vec::new(),
             items: Vec::new(),
             effects: Vec::new(),
+            fluids: Vec::new(),
             creative_tabs: Vec::new(),
             entity_types: Vec::new(),
             menu_types: Vec::new(),
@@ -552,6 +732,7 @@ impl Content {
             blocks: Vec::new(),
             items: Vec::new(),
             effects: Vec::new(),
+            fluids: Vec::new(),
             creative_tabs: Vec::new(),
             entity_types: Vec::new(),
             menu_types: Vec::new(),
@@ -650,11 +831,7 @@ impl Content {
     /// A reader of its content files. A packaged mod's archive is opened
     /// once for all of them (opening it reads its whole index).
     pub fn reader(&self) -> Result<FileReader<'_>, String> {
-        Ok(match &self.source {
-            Source::Dir(root) => FileReader::Dir(root),
-            Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
-            Source::Code => FileReader::Dir(Path::new("")),
-        })
+        reader_of(&self.source)
     }
 
     /// Where content may go, and the declarations.
@@ -668,6 +845,7 @@ impl Content {
         let mut blocks = Vec::new();
         let mut items = Vec::new();
         let mut effects = Vec::new();
+        let mut fluids = Vec::new();
         let mut tabs = Vec::new();
         let mut types = Vec::new();
         let mut menus = Vec::new();
@@ -692,7 +870,7 @@ impl Content {
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/{id}/horizon/"
+                    "{name}: blocks, items, mob effects, fluids, entity types and menu types are declared in data/{id}/horizon/"
                 ));
             }
             let Some(decl) = (own && top == "data")
@@ -714,6 +892,8 @@ impl Content {
                 items.push((item, name.clone()));
             } else if let Some(effect) = parse("mob_effect") {
                 effects.push((effect, name.clone()));
+            } else if let Some(fluid) = parse("fluid") {
+                fluids.push((fluid, name.clone()));
             } else if let Some(tab) = parse("creative_tab") {
                 tabs.push((tab, name.clone()));
             } else if let Some(kind) = parse("entity_type") {
@@ -722,14 +902,18 @@ impl Content {
                 menus.push((menu, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, fluid/, creative_tab/, entity_type/ and menu/*.json only"
                 ));
             }
         }
+        // One reader for every declaration: opening a packaged mod reads its
+        // whole index, so a reader per file made loading a big mod quadratic.
+        let source = self.source.clone();
+        let mut reader = reader_of(&source)?;
         let mut ids = BTreeSet::new();
         for (block, name) in blocks {
             let file: BlockFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if file
                 .connects_to
                 .as_ref()
@@ -745,6 +929,10 @@ impl Content {
                 properties: file.properties,
                 shapes: file.shapes,
                 collision_shapes: file.collision_shapes,
+                outline_context_shapes: file.outline_context_shapes,
+                collision_context_shapes: file.collision_context_shapes,
+                interaction_shapes: file.interaction_shapes,
+                state_light: file.state_light,
                 state_properties: file.state_properties,
                 default_state: file.default_state,
                 item: file.item,
@@ -767,7 +955,7 @@ impl Content {
         let mut remainders = Vec::new();
         for (item, name) in items {
             let file: ItemFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             let item = Item {
                 id: item,
                 template: file.template,
@@ -775,6 +963,7 @@ impl Content {
                 rarity: file.rarity,
                 components: file.components,
                 crafting_remainder: file.crafting_remainder,
+                place_block: file.place_block,
             };
             check_item(&item).map_err(|e| format!("{name}: {e}"))?;
             if !ids.insert(item.id.clone()) {
@@ -787,11 +976,50 @@ impl Content {
         }
         for (effect, name) in effects {
             let file: MobEffect =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if file.color > 0xFF_FFFF {
                 return Err(format!("{name}: color is RGB, 0 to 16777215 (0xFFFFFF)"));
             }
             self.effects.push(MobEffect { id: effect, ..file });
+        }
+        // After every block and item: a fluid's bucket and block are the mod's own.
+        let mut fluid_ids = BTreeSet::new();
+        for (fluid, name) in fluids {
+            let file: Fluid =
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            let fluid = Fluid { id: fluid, ..file };
+            check_fluid(&fluid).map_err(|e| format!("{name}: {e}"))?;
+            if let Some(bucket) = fluid.bucket.as_ref().filter(|b| !ids.contains(*b)) {
+                return Err(format!(
+                    "{name}: bucket {bucket:?} is not one of this mod's items"
+                ));
+            }
+            // The bucket pours the fluid's liquid block: without one it would place nothing.
+            if fluid.bucket.is_some() && fluid.block.is_none() {
+                return Err(format!("{name}: a bucket needs the fluid's block to pour"));
+            }
+            if let Some(block) = &fluid.block {
+                let Some(found) = self.blocks.iter().find(|b| &b.id == block) else {
+                    return Err(format!(
+                        "{name}: block {block:?} is not one of this mod's blocks"
+                    ));
+                };
+                // The liquid block holds the fluid at its `level`: a copy of the template's own.
+                if found.template != fluid.template {
+                    return Err(format!(
+                        "{name}: block {block:?} copies {}, not {} (the fluid's template)",
+                        found.template, fluid.template
+                    ));
+                }
+            }
+            for id in [fluid.id.clone(), fluid.flowing_id()] {
+                if !fluid_ids.insert(id.clone()) {
+                    return Err(format!(
+                        "{name}: fluid {id} is declared twice (a source and another's flowing form)"
+                    ));
+                }
+            }
+            self.fluids.push(fluid);
         }
         // After every item, so a remainder may be declared in a later file.
         for (name, rest) in remainders {
@@ -808,7 +1036,7 @@ impl Content {
         }
         for (tab, name) in tabs {
             let file: CreativeTabFile =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             let id_like = |s: &str| {
                 s.split_once(':')
                     .is_some_and(|(n, p)| !n.is_empty() && !p.is_empty())
@@ -827,24 +1055,62 @@ impl Content {
         }
         for (kind, name) in types {
             let file: EntityType =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if !ENTITY_TEMPLATES.contains(&file.template.as_str()) {
                 return Err(format!(
                     "{name}: template {:?} is not one of {ENTITY_TEMPLATES:?}",
                     file.template
                 ));
             }
-            // its own item, so no vanilla item loses its use to it.
-            if !ids.contains(&file.item) {
+            if file.is_living() {
+                // a mob is spawned, not thrown: nothing throws it, and its
+                // attack is its `minecraft:attack_damage`.
+                if file.item.is_some() || file.damage != 0.0 {
+                    return Err(format!(
+                        "{name}: a living type has no item or damage (its template is {})",
+                        file.template
+                    ));
+                }
+                for (attribute, value) in &file.attributes {
+                    let id_like = attribute
+                        .split_once(':')
+                        .is_some_and(|(n, p)| !n.is_empty() && !p.is_empty());
+                    if !id_like {
+                        return Err(format!(
+                            "{name}: attribute {attribute:?} is an attribute id (namespace:path)"
+                        ));
+                    }
+                    if !value.is_finite() {
+                        return Err(format!("{name}: attribute {attribute} is a finite number"));
+                    }
+                }
+                self.entity_types.push(EntityType { id: kind, ..file });
+                continue;
+            }
+            if !file.attributes.is_empty() {
                 return Err(format!(
-                    "{name}: item {:?} is not one of this mod's items",
-                    file.item
+                    "{name}: only a living type has attributes (its template is {})",
+                    file.template
                 ));
             }
-            if self.entity_types.iter().any(|t| t.item == file.item) {
+            let Some(item) = &file.item else {
                 return Err(format!(
-                    "{name}: item {:?} already throws another entity type",
-                    file.item
+                    "{name}: a thrown type names the item that throws it"
+                ));
+            };
+            // its own item, so no vanilla item loses its use to it.
+            if !ids.contains(item) {
+                return Err(format!(
+                    "{name}: item {item:?} is not one of this mod's items"
+                ));
+            }
+            if self
+                .entity_types
+                .iter()
+                .any(|t| t.item.as_ref() == Some(item))
+            {
+                return Err(format!(
+                    "{name}: item {item:?} already throws another entity type"
                 ));
             }
             if !(file.damage.is_finite() && file.damage >= 0.0) {
@@ -854,7 +1120,7 @@ impl Content {
         }
         for (menu, name) in menus {
             let file: MenuType =
-                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
             if !(1..=MAX_MENU_SLOTS).contains(&file.slots) || file.data_slots > MAX_MENU_SLOTS {
                 return Err(format!(
                     "{name}: slots is 1 to {MAX_MENU_SLOTS}, data_slots 0 to {MAX_MENU_SLOTS}"
@@ -870,6 +1136,50 @@ impl Content {
                 }
                 if !seen.insert(r) {
                     return Err(format!("{name}: result {r} is listed twice"));
+                }
+            }
+            if let Some(c) = file.crafting {
+                let end = u32::from(c.grid) + u32::from(c.size) * u32::from(c.size);
+                if !matches!(c.size, 2 | 3) {
+                    return Err(format!("{name}: crafting size is 2 or 3"));
+                }
+                if end > u32::from(file.slots) || c.result >= file.slots {
+                    return Err(format!(
+                        "{name}: the crafting grid and result are slots below {}",
+                        file.slots
+                    ));
+                }
+                if (u32::from(c.grid)..end).contains(&u32::from(c.result)) {
+                    return Err(format!("{name}: the crafting result is in its grid"));
+                }
+                if file
+                    .results
+                    .iter()
+                    .any(|&r| r == c.result || (u32::from(c.grid)..end).contains(&u32::from(r)))
+                {
+                    return Err(format!(
+                        "{name}: results lists a crafting slot (the result is take-only already)"
+                    ));
+                }
+            }
+            if let Some(l) = file.links {
+                let linked = l.range();
+                if l.count == 0 || linked.end > u32::from(file.slots) {
+                    return Err(format!(
+                        "{name}: links are 1 or more slots below {}",
+                        file.slots
+                    ));
+                }
+                if file.results.iter().any(|&r| linked.contains(&u32::from(r))) {
+                    return Err(format!("{name}: results lists a linked slot"));
+                }
+                if let Some(c) = file.crafting {
+                    let end = u32::from(c.grid) + u32::from(c.size) * u32::from(c.size);
+                    if linked.contains(&u32::from(c.result))
+                        || (u32::from(c.grid)..end).any(|s| linked.contains(&s))
+                    {
+                        return Err(format!("{name}: links overlap the crafting slots"));
+                    }
                 }
             }
             self.menu_types.push(MenuType { id: menu, ..file });
@@ -916,6 +1226,13 @@ fn check_item(item: &Item) -> Result<(), String> {
     if item.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
         return Err("max_stack_size is 1 to 99".into());
     }
+    if let Some(block) = &item.place_block
+        && (!namespaced_id(block)
+            || block.split_once(':').map(|(ns, _)| ns) != item.id.split_once(':').map(|(ns, _)| ns)
+                && !vanilla_id(block))
+    {
+        return Err("place_block is a vanilla block or a block in this item's namespace".into());
+    }
     check_components(&item.components, &["max_stack_size", "rarity"])
 }
 
@@ -928,8 +1245,18 @@ fn check_block(file: &Block) -> Result<(), String> {
             file.template
         ));
     }
-    for shapes in file.shapes.iter().chain(file.collision_shapes.iter()) {
+    for shapes in file
+        .shapes
+        .iter()
+        .chain(file.collision_shapes.iter())
+        .chain(file.outline_context_shapes.values())
+        .chain(file.collision_context_shapes.values())
+        .chain(file.interaction_shapes.iter())
+    {
         shapes.check()?;
+    }
+    if let Some(light) = &file.state_light {
+        light.check()?;
     }
     for (name, property) in &file.state_properties {
         if !state_name(name) {
@@ -1104,6 +1431,14 @@ fn check_sign_walls(blocks: &[&Block]) -> Result<(), String> {
     Ok(())
 }
 
+fn reader_of(source: &Source) -> Result<FileReader<'_>, String> {
+    Ok(match source {
+        Source::Dir(root) => FileReader::Dir(root),
+        Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
+        Source::Code => FileReader::Dir(Path::new("")),
+    })
+}
+
 fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     zip::ZipArchive::new(file).map_err(|e| e.to_string())
@@ -1218,6 +1553,98 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn state_light_checks_ranges_selectors_and_native_declarations() {
+        let load = |name: &str, table: &str| {
+            let declaration = format!(
+                r#"{{"template":"minecraft:stone","properties":{{"light":3}},"state_light":{table}}}"#
+            );
+            hmod(
+                name,
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/block/lamp.json", declaration.as_bytes())],
+            )
+        };
+        let content = load(
+            "state-light-valid",
+            r#"{"properties":["facing","lit"],"values":{"north,true":15},"default":0}"#,
+        )
+        .unwrap();
+        assert_eq!(content.blocks[0].properties.light, Some(3));
+        let table = content.blocks[0].state_light.as_ref().unwrap();
+        assert_eq!(table.default, Some(0));
+        assert_eq!(table.values["north,true"], 15);
+        for (i, table) in [
+            r#"{"default":-1}"#,
+            r#"{"default":16}"#,
+            r#"{"default":256}"#,
+            r#"{"default":2.5}"#,
+            r#"{"default":true}"#,
+            r#"{"default":"15"}"#,
+            r#"{"properties":["axis","axis"],"default":0}"#,
+            r#"{"property":"axis","properties":["axis"],"default":0}"#,
+            r#"{"properties":["axis","lit"],"values":{"x":15},"default":0}"#,
+            r#"{"values":{"x":15},"default":0}"#,
+            r#"{}"#,
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                load(&format!("state-light-invalid-{i}"), table).is_err(),
+                "{table}"
+            );
+        }
+        let mut declared = Content::declared("ruby");
+        let mut lamp = content.blocks[0].clone();
+        lamp.state_light.as_mut().unwrap().default = Some(16);
+        assert!(declared.declare(&[lamp], &[]).is_err());
+        assert!(declared.blocks.is_empty());
+    }
+
+    #[test]
+    fn place_block_checks_files_and_native_declarations() {
+        for (i, target) in ["ruby:frame", "minecraft:stone"].iter().enumerate() {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            let content = hmod(
+                &format!("place-block-{i}"),
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())],
+            )
+            .unwrap();
+            assert_eq!(content.items[0].place_block.as_deref(), Some(*target));
+        }
+        for (i, target) in ["stone", "other:frame", "ruby:Bad", "ruby:"]
+            .iter()
+            .enumerate()
+        {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            assert!(
+                hmod(
+                    &format!("bad-place-block-{i}"),
+                    MANIFEST_TEXT,
+                    &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())]
+                )
+                .is_err()
+            );
+            let mut content = Content::declared("ruby");
+            assert!(
+                content
+                    .declare(
+                        &[],
+                        &[Item {
+                            id: "ruby:empty_frame".into(),
+                            template: "minecraft:stick".into(),
+                            place_block: Some((*target).into()),
+                            ..Default::default()
+                        }]
+                    )
+                    .is_err()
+            );
+            assert!(content.items.is_empty());
+        }
+    }
+
+    #[test]
     fn blocks_and_items_declared_in_code_pass_the_files_checks() {
         let block = |id: &str| Block {
             id: id.into(),
@@ -1314,6 +1741,10 @@ capabilities = ["registries"]
                 template: "minecraft:iron_block".into(),
                 shapes: None,
                 collision_shapes: None,
+                outline_context_shapes: BTreeMap::new(),
+                collision_context_shapes: BTreeMap::new(),
+                interaction_shapes: None,
+                state_light: None,
                 state_properties: BTreeMap::new(),
                 default_state: BTreeMap::new(),
                 properties: BlockProperties {
@@ -1463,6 +1894,168 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn fluids_copy_water_or_lava_and_name_their_flowing_form() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/item/honey_bucket.json",
+                br#"{"template": "minecraft:water_bucket"}"#,
+            ),
+            (
+                "data/ruby/horizon/block/honey.json",
+                br#"{"template": "minecraft:water"}"#,
+            ),
+            (
+                "data/ruby/horizon/fluid/honey.json",
+                br#"{"template": "minecraft:water", "viscosity": 6000, "tick_rate": 20,
+                    "level_decrease_per_block": 2, "can_swim": false, "bucket": "ruby:honey_bucket",
+                    "block": "ruby:honey", "still": "ruby:block/honey_still",
+                    "flowing": "ruby:block/honey_flow", "tint": 4294949120}"#,
+            ),
+            (
+                "data/ruby/horizon/fluid/molten/iron.json",
+                br#"{"template": "minecraft:lava", "light_level": 15,
+                    "still": "ruby:block/iron_still", "flowing": "ruby:block/iron_flow"}"#,
+            ),
+        ];
+        let content = hmod("fluids", MANIFEST_TEXT, files).unwrap();
+        let fluids: Vec<_> = content
+            .fluids
+            .iter()
+            .map(|f| (f.id.as_str(), f.flowing_id(), f.template.as_str()))
+            .collect();
+        assert_eq!(
+            fluids,
+            [
+                (
+                    "ruby:honey",
+                    "ruby:flowing_honey".to_owned(),
+                    "minecraft:water"
+                ),
+                (
+                    "ruby:molten/iron",
+                    "ruby:molten/flowing_iron".to_owned(),
+                    "minecraft:lava"
+                ),
+            ]
+        );
+        let honey = &content.fluids[0];
+        assert_eq!(
+            (honey.viscosity, honey.tick_rate, honey.can_swim),
+            (Some(6000), Some(20), Some(false))
+        );
+        // Left out, a number is the template's.
+        assert_eq!((honey.density, content.fluids[1].tick_rate), (None, None));
+        let textures = r#""still": "ruby:block/a", "flowing": "ruby:block/b""#;
+        for (case, file, why) in [
+            (
+                "fluid-template",
+                r#""template": "minecraft:honey""#,
+                "not one of",
+            ),
+            (
+                "fluid-light",
+                r#""template": "minecraft:lava", "light_level": 16"#,
+                "light_level is 0 to 15",
+            ),
+            (
+                "fluid-rate",
+                r#""template": "minecraft:water", "tick_rate": 0"#,
+                "tick_rate is at least 1",
+            ),
+            (
+                "fluid-drop",
+                r#""template": "minecraft:water", "level_decrease_per_block": 8"#,
+                "1 to 7",
+            ),
+            (
+                "fluid-slope",
+                r#""template": "minecraft:water", "slope_find_distance": 9"#,
+                "1 to 8",
+            ),
+            (
+                "fluid-motion",
+                r#""template": "minecraft:water", "motion_scale": -1"#,
+                "0 or more",
+            ),
+            (
+                "fluid-bucket",
+                r#""template": "minecraft:water", "bucket": "minecraft:bucket""#,
+                "this mod's items",
+            ),
+            (
+                "fluid-block",
+                r#""template": "minecraft:water", "block": "ruby:nothing""#,
+                "this mod's blocks",
+            ),
+            (
+                "fluid-key",
+                r#""template": "minecraft:water", "colour": 1"#,
+                "unknown field",
+            ),
+        ] {
+            let body = format!("{{{file}, {textures}}}");
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/fluid/a.json", body.as_bytes())];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+        // A bucket with no liquid block to pour is refused.
+        let body = format!(
+            r#"{{"template": "minecraft:water", "bucket": "ruby:honey_bucket", {textures}}}"#
+        );
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/item/honey_bucket.json",
+                br#"{"template": "minecraft:water_bucket"}"#,
+            ),
+            ("data/ruby/horizon/fluid/a.json", body.as_bytes()),
+        ];
+        let e = hmod("fluid-bucket-block", MANIFEST_TEXT, files).unwrap_err();
+        assert!(e.contains("needs the fluid's block"), "{e}");
+        // Without its textures a fluid can't be drawn.
+        let files: &[(&str, &[u8])] = &[(
+            "data/ruby/horizon/fluid/a.json",
+            br#"{"template": "minecraft:water"}"#,
+        )];
+        assert!(
+            hmod("fluid-sprites", MANIFEST_TEXT, files)
+                .unwrap_err()
+                .contains("missing field")
+        );
+        // A source may not take another fluid's flowing id.
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/fluid/oil.json",
+                br#"{"template": "minecraft:water", "still": "a:b", "flowing": "a:c"}"#,
+            ),
+            (
+                "data/ruby/horizon/fluid/flowing_oil.json",
+                br#"{"template": "minecraft:water", "still": "a:b", "flowing": "a:c"}"#,
+            ),
+        ];
+        assert!(
+            hmod("fluid-twice", MANIFEST_TEXT, files)
+                .unwrap_err()
+                .contains("declared twice")
+        );
+        // The liquid block is a copy of the fluid's template, which holds it at its level.
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/block/slab.json",
+                br#"{"template": "minecraft:stone"}"#,
+            ),
+            (
+                "data/ruby/horizon/fluid/oil.json",
+                br#"{"template": "minecraft:water", "block": "ruby:slab", "still": "a:b", "flowing": "a:c"}"#,
+            ),
+        ];
+        assert!(
+            hmod("fluid-liquid", MANIFEST_TEXT, files)
+                .unwrap_err()
+                .contains("copies minecraft:stone")
+        );
+    }
+
+    #[test]
     fn menu_types_take_slots_data_slots_and_results() {
         let files: &[(&str, &[u8])] = &[
             (
@@ -1470,6 +2063,10 @@ capabilities = ["registries"]
                 br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
             ),
             ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
+            (
+                "data/ruby/horizon/menu/station.json",
+                br#"{"slots": 16, "results": [11], "crafting": {"grid": 1, "result": 0}, "links": {"from": 12, "count": 4}}"#,
+            ),
         ];
         let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
         let menus: Vec<_> = content
@@ -1479,7 +2076,29 @@ capabilities = ["registries"]
             .collect();
         assert_eq!(
             menus,
-            [("ruby:bag", 4, 0, vec![]), ("ruby:press", 9, 2, vec![7, 8])]
+            [
+                ("ruby:bag", 4, 0, vec![]),
+                ("ruby:press", 9, 2, vec![7, 8]),
+                ("ruby:station", 16, 0, vec![11])
+            ]
+        );
+        let links: Vec<_> = content.menu_types.iter().map(|m| m.links).collect();
+        assert_eq!(
+            links,
+            [None, None, Some(super::MenuLinks { from: 12, count: 4 })]
+        );
+        let crafting: Vec<_> = content.menu_types.iter().map(|m| m.crafting).collect();
+        assert_eq!(
+            crafting,
+            [
+                None,
+                None,
+                Some(super::MenuCrafting {
+                    grid: 1,
+                    size: 3,
+                    result: 0
+                })
+            ]
         );
         for (case, file, why) in [
             ("menu-empty", r#"{"slots": 0}"#, "slots is 1 to 256"),
@@ -1500,6 +2119,61 @@ capabilities = ["registries"]
                 "result 1 is listed twice",
             ),
             ("menu-key", r#"{"slots": 3, "rows": 1}"#, "unknown field"),
+            (
+                "craft-size",
+                r#"{"slots": 20, "crafting": {"grid": 0, "size": 4, "result": 19}}"#,
+                "crafting size is 2 or 3",
+            ),
+            (
+                "craft-past",
+                r#"{"slots": 9, "crafting": {"grid": 1, "result": 0}}"#,
+                "grid and result are slots below 9",
+            ),
+            (
+                "craft-result-past",
+                r#"{"slots": 9, "crafting": {"grid": 0, "size": 2, "result": 9}}"#,
+                "grid and result are slots below 9",
+            ),
+            (
+                "craft-overlap",
+                r#"{"slots": 10, "crafting": {"grid": 0, "result": 4}}"#,
+                "the crafting result is in its grid",
+            ),
+            (
+                "craft-results",
+                r#"{"slots": 10, "results": [2], "crafting": {"grid": 0, "result": 9}}"#,
+                "results lists a crafting slot",
+            ),
+            (
+                "craft-key",
+                r#"{"slots": 10, "crafting": {"grid": 0, "result": 9, "width": 3}}"#,
+                "unknown field",
+            ),
+            (
+                "links-past",
+                r#"{"slots": 10, "links": {"from": 8, "count": 3}}"#,
+                "links are 1 or more slots below 10",
+            ),
+            (
+                "links-empty",
+                r#"{"slots": 10, "links": {"from": 2, "count": 0}}"#,
+                "links are 1 or more slots below 10",
+            ),
+            (
+                "links-results",
+                r#"{"slots": 10, "results": [5], "links": {"from": 4, "count": 2}}"#,
+                "results lists a linked slot",
+            ),
+            (
+                "links-grid",
+                r#"{"slots": 20, "crafting": {"grid": 1, "result": 0}, "links": {"from": 9, "count": 4}}"#,
+                "links overlap the crafting slots",
+            ),
+            (
+                "links-key",
+                r#"{"slots": 10, "links": {"from": 2, "count": 2, "rows": 1}}"#,
+                "unknown field",
+            ),
             ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),
         ] {
             let files: &[(&str, &[u8])] = &[("data/ruby/horizon/menu/a.json", file.as_bytes())];
@@ -1526,13 +2200,13 @@ capabilities = ["registries"]
         let types: Vec<_> = content
             .entity_types
             .iter()
-            .map(|t| (t.id.as_str(), t.item.as_str(), t.damage))
+            .map(|t| (t.id.as_str(), t.item.as_deref(), t.damage))
             .collect();
         assert_eq!(
             types,
             [
-                ("ruby:bolt", "ruby:gem", 2.5),
-                ("ruby:puff", "ruby:dust", 0.0)
+                ("ruby:bolt", Some("ruby:gem"), 2.5),
+                ("ruby:puff", Some("ruby:dust"), 0.0)
             ]
         );
         let snowball = |rest: &str| format!(r#"{{"template": "minecraft:snowball"{rest}}}"#);
@@ -1562,6 +2236,16 @@ capabilities = ["registries"]
                 snowball(r#", "item": "ruby:gem", "size": 1"#),
                 "unknown field",
             ),
+            (
+                "type-no-item",
+                snowball(""),
+                "names the item that throws it",
+            ),
+            (
+                "type-thrown-attributes",
+                snowball(r#", "item": "ruby:gem", "attributes": {"minecraft:max_health": 4}"#),
+                "only a living type has attributes",
+            ),
         ] {
             let files: &[(&str, &[u8])] = &[
                 ("data/ruby/horizon/item/gem.json", ITEM),
@@ -1578,6 +2262,102 @@ capabilities = ["registries"]
         ];
         let e = hmod("type-shared", MANIFEST_TEXT, files).unwrap_err();
         assert!(e.contains("already throws another entity type"), "{e}");
+    }
+
+    #[test]
+    fn living_entity_types_copy_a_mob_with_their_own_attributes() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/entity_type/ghoul.json",
+                br#"{"template": "minecraft:zombie",
+                     "attributes": {"minecraft:max_health": 40, "minecraft:movement_speed": 0.3}}"#,
+            ),
+            (
+                "data/ruby/horizon/entity_type/settler.json",
+                br#"{"template": "minecraft:villager"}"#,
+            ),
+            (
+                "data/ruby/horizon/entity_type/merchant.json",
+                br#"{"template": "minecraft:wandering_trader"}"#,
+            ),
+        ];
+        let content = hmod("living", MANIFEST_TEXT, files).unwrap();
+        let types: Vec<_> = content
+            .entity_types
+            .iter()
+            .map(|t| {
+                let attributes: Vec<_> =
+                    t.attributes.iter().map(|(a, v)| (a.as_str(), *v)).collect();
+                (
+                    t.id.as_str(),
+                    t.template.as_str(),
+                    t.is_living(),
+                    attributes,
+                )
+            })
+            .collect();
+        assert_eq!(
+            types,
+            [
+                (
+                    "ruby:ghoul",
+                    "minecraft:zombie",
+                    true,
+                    vec![
+                        ("minecraft:max_health", 40.0),
+                        ("minecraft:movement_speed", 0.3)
+                    ]
+                ),
+                ("ruby:merchant", "minecraft:wandering_trader", true, vec![]),
+                ("ruby:settler", "minecraft:villager", true, vec![]),
+            ]
+        );
+        let zombie = |rest: &str| format!(r#"{{"template": "minecraft:zombie"{rest}}}"#);
+        for (case, file, why) in [
+            (
+                "living-item",
+                zombie(r#", "item": "ruby:gem""#),
+                "a living type has no item or damage",
+            ),
+            (
+                "living-damage",
+                zombie(r#", "damage": 2"#),
+                "a living type has no item or damage",
+            ),
+            (
+                "living-attribute-id",
+                zombie(r#", "attributes": {"max_health": 40}"#),
+                "is an attribute id",
+            ),
+            (
+                "living-attribute-value",
+                zombie(r#", "attributes": {"minecraft:max_health": "40"}"#),
+                "invalid type",
+            ),
+        ] {
+            let files: &[(&str, &[u8])] = &[
+                ("data/ruby/horizon/item/gem.json", ITEM),
+                ("data/ruby/horizon/entity_type/a.json", file.as_bytes()),
+            ];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_block_may_occlude_nothing() {
+        let block = |occludes: &str| {
+            let text = format!(
+                r#"{{"template": "minecraft:barrel", "properties": {{"occludes": {occludes}}}}}"#
+            );
+            let files: &[(&str, &[u8])] =
+                &[("data/ruby/horizon/block/panel.json", text.as_bytes())];
+            hmod("occludes", MANIFEST_TEXT, files)
+        };
+        let occludes = |c: Result<Content, String>| c.unwrap().blocks[0].properties.occludes;
+        assert_eq!(occludes(block("false")), Some(false));
+        assert_eq!(occludes(block("true")), Some(true));
+        assert!(block(r#""no""#).is_err());
     }
 
     #[test]
@@ -2093,5 +2873,49 @@ capabilities = ["registries"]
         ] {
             assert!(check_path(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod context_shape_tests {
+    use super::*;
+    #[test]
+    fn context_shape_selectors_and_tables_are_validated() {
+        for selector in ["item", "player", "living", "other"] {
+            for channel in ["outline_context_shapes", "collision_context_shapes"] {
+                let text = format!(
+                    r#"{{"template":"minecraft:stone","{channel}":{{"{selector}":{{"default":[]}}}}}}"#
+                );
+                let _: BlockFile = serde_json::from_str(&text).unwrap();
+            }
+        }
+        for selector in ["none", "Item", "minecraft:item", "entity"] {
+            let text = format!(
+                r#"{{"template":"minecraft:stone","collision_context_shapes":{{"{selector}":{{"default":[]}}}}}}"#
+            );
+            assert!(serde_json::from_str::<BlockFile>(&text).is_err());
+        }
+        let mut block = Block {
+            template: "minecraft:stone".into(),
+            ..Default::default()
+        };
+        let bad = BlockShapes {
+            property: String::new(),
+            properties: vec![],
+            values: BTreeMap::new(),
+            default: Some(vec![[1., 0., 0., 0., 1., 1.]]),
+        };
+        block
+            .outline_context_shapes
+            .insert(ShapeEntityKind::Player, bad.clone());
+        assert!(check_block(&block).is_err());
+        block.outline_context_shapes.clear();
+        block
+            .collision_context_shapes
+            .insert(ShapeEntityKind::Item, bad.clone());
+        assert!(check_block(&block).is_err());
+        block.collision_context_shapes.clear();
+        block.interaction_shapes = Some(bad);
+        assert!(check_block(&block).is_err());
     }
 }

@@ -44,6 +44,10 @@ pub(super) struct Internet {
 }
 
 impl Internet {
+    pub(super) fn location_busy(&self) -> bool {
+        self.busy
+    }
+
     pub(super) fn new() -> Self {
         let (tx, rx) = channel();
         Self {
@@ -410,6 +414,135 @@ impl Launcher {
         self.internet_message(panel)
     }
 
+    /// The glass Servers page's "Over the internet" (the mockup's): the Tailscale address once it
+    /// runs, else what to do about it.
+    pub(super) fn glass_internet(&mut self, port: u16, cx: &mut Context<Self>) -> Div {
+        use crate::glass_ui as ui;
+        use horizon_theme::glass::ink;
+        let t = &self.theme.clone();
+        let d = div()
+            .flex()
+            .flex_col()
+            .child(ui::card_heading(tr("Over the internet")));
+        let check = button("ts-check", "Check again", Kind::Ghost, t).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                this.internet_refresh();
+                cx.notify();
+            },
+        ));
+        let act = |b: Stateful<Div>, check: Stateful<Div>| {
+            div().mt(px(10.)).flex().gap(px(8.)).child(b).child(check)
+        };
+        match self.internet.state.clone() {
+            None => d.child(ui::card_note(tr("Looking for Tailscale…")).mt(px(4.))),
+            Some(State::Missing) => d
+                .child(ui::card_note(trf(
+                    "Install Tailscale: friends anywhere join without opening your router (free, only the people you invite). Or forward TCP port {port} to this computer.",
+                    &[("port", &port.to_string())],
+                )).mt(px(4.)))
+                .child(act(
+                    button("ts-install", "Install Tailscale", Kind::Secondary, t)
+                        .on_click(|_, _, cx| cx.open_url(tailscale::install_url())),
+                    check,
+                )),
+            Some(State::Off(_)) => d
+                .child(ui::card_note(tr("Tailscale is installed but not running. Open it and switch it on.")).mt(px(4.)))
+                .child(act(
+                    button("ts-open", "Open Tailscale", Kind::Secondary, t).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            if let Err(e) = tailscale::open_app() {
+                                this.internet.message = Some(Err(e));
+                            }
+                            this.internet.read = None;
+                            cx.notify();
+                        },
+                    )),
+                    check,
+                )),
+            Some(State::SignedOut { auth_url }) => d
+                .child(ui::card_note(tr("Tailscale is installed. Sign in with your own account in Tailscale (Horizon never sees it), then come back here.")).mt(px(4.)))
+                .child(act(
+                    button("ts-login", "Sign in to Tailscale", Kind::Secondary, t).on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            match &auth_url {
+                                Some(url) => cx.open_url(url),
+                                None => {
+                                    if let Err(e) = tailscale::open_app() {
+                                        this.internet.message = Some(Err(e));
+                                    }
+                                }
+                            }
+                            this.internet.read = None;
+                            cx.notify();
+                        }),
+                    ),
+                    check,
+                )),
+            Some(State::Running(_)) => {
+                let node = self.internet.node().cloned().unwrap_or_default();
+                let address = node.address(port);
+                let copied = self.internet.copied.as_ref().is_some_and(|(what, at)| {
+                    *what == address && at.elapsed() < Duration::from_secs(2)
+                });
+                let text = address.clone();
+                let copy = ui::icon_button(
+                    "ts-copy",
+                    if copied { "tick-02" } else { "copy-01" },
+                    36.,
+                    17.,
+                    10.,
+                    false,
+                    t,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    copy_to_clipboard(cx, gpui::ClipboardItem::new_string(text.clone()));
+                    this.internet.copied = Some((text.clone(), Instant::now()));
+                    cx.notify();
+                }));
+                d.child(
+                    div()
+                        .mt(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(
+                            ui::text(15., FontWeight::MEDIUM, ink::FULL)
+                                .min_w_0()
+                                .truncate()
+                                .child(address),
+                        )
+                        .child(copy),
+                )
+                .child(ui::card_note(tr("Through Tailscale. Only the friends you invite can reach it.")).mt(px(4.)))
+            }
+        }
+    }
+
+    /// The glass Servers page's invitations (not in the mockup), under the server's Players: once
+    /// Tailscale runs, inviting a friend to this computer, then the Funnel note.
+    pub(super) fn internet_invites(&mut self, port: u16, cx: &mut Context<Self>) -> Div {
+        if !matches!(self.internet.state, Some(State::Running(_))) {
+            return div();
+        }
+        let ip = self
+            .internet
+            .node()
+            .and_then(|n| n.ipv4())
+            .map(|ip| ip.to_string())
+            .unwrap_or_default();
+        let panel = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(crate::glass_ui::card_heading(tr("Invite a friend")))
+            .child(self.invite_section(&ip, port, cx))
+            .child(crate::glass_ui::card_note(tr(
+                "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.",
+            )));
+        self.internet_message(panel)
+    }
+
     fn internet_message(&self, panel: Div) -> Div {
         let t = self.theme;
         match &self.internet.message {
@@ -639,7 +772,7 @@ impl Launcher {
                             .flex()
                             .items_center()
                             .gap(px(12.))
-                            .child(div().flex_none().size(px(6.)).rounded_full().bg(t.success))
+                            .child(div().flex_none().size(px(6.)).bg(t.success))
                             .child(
                                 text(theme::UI)
                                     .flex_1()

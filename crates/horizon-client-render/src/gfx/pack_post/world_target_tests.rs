@@ -43,6 +43,64 @@ fn a_pack_without_final_reads_the_replaced_world_colour() {
     replacement(Change::Colour, false);
 }
 
+/// A Resolution Scale leaves the pack's picture smaller than the window. Its `final` draws at
+/// the picture's size and one copy upsizes it to the window (#9291), so a final that fetches
+/// its pixel by `gl_FragCoord` (as Photon's does) covers every pixel, not a quarter of them.
+#[test]
+fn a_scaled_picture_fills_the_whole_window() {
+    let instance = crate::gfx::test_gpu::instance();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        return;
+    };
+    let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: adapter.limits(),
+        ..Default::default()
+    })) else {
+        return;
+    };
+    eprintln!("scaled picture adapter: {:?}", adapter.get_info());
+    let picture = [4, 2];
+    let window = [8, 4];
+    let colour = texture(&device, picture, T::Rgba8Unorm);
+    let depth = texture(&device, picture, T::Depth32Float);
+    clear(&device, &queue, &colour, &depth, [32, 64, 16, 255], 0.25);
+    let mut post = pack_with(
+        &device,
+        &queue,
+        &adapter,
+        &colour,
+        &[
+            (
+                "final.vsh",
+                "#version 120\nvoid main(){gl_Position=ftransform();}",
+            ),
+            (
+                "final.fsh",
+                "#version 330 compatibility\nuniform sampler2D colortex0;\nvoid main(){gl_FragColor=texelFetch(colortex0,ivec2(gl_FragCoord.xy),0);}",
+            ),
+        ],
+    );
+    let hud = HudBatch::new(window);
+    let pixels = render(
+        &device,
+        &queue,
+        &mut post,
+        &colour,
+        &depth,
+        &frame(&hud),
+        picture,
+        window,
+    );
+    // Independently specified: the world's colour at every window pixel.
+    let wrong = pixels.iter().filter(|p| **p != [32, 64, 16, 255]).count();
+    assert_eq!(
+        wrong,
+        0,
+        "{wrong} of {} pixels are not the picture",
+        pixels.len()
+    );
+}
+
 fn replacement(change: Change, final_shader: bool) {
     let instance = crate::gfx::test_gpu::instance();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
@@ -62,7 +120,9 @@ fn replacement(change: Change, final_shader: bool) {
     let mut post = pack(&device, &queue, &adapter, &colour, final_shader);
     let hud = HudBatch::new(size);
     let frame = frame(&hud);
-    let initial = render(&device, &queue, &mut post, &colour, &depth, &frame, size);
+    let initial = render(
+        &device, &queue, &mut post, &colour, &depth, &frame, size, size,
+    );
     let expected = if final_shader {
         [32, 64, 191, 255]
     } else {
@@ -93,9 +153,13 @@ fn replacement(change: Change, final_shader: bool) {
         0.75
     };
     clear(&device, &queue, &colour, &depth, pixel, reverse_depth);
-    let actual = render(&device, &queue, &mut post, &colour, &depth, &frame, size);
+    let actual = render(
+        &device, &queue, &mut post, &colour, &depth, &frame, size, size,
+    );
     let mut fresh = pack(&device, &queue, &adapter, &colour, final_shader);
-    let reference = render(&device, &queue, &mut fresh, &colour, &depth, &frame, size);
+    let reference = render(
+        &device, &queue, &mut fresh, &colour, &depth, &frame, size, size,
+    );
     // Independently specified RG channels and GL depth (1 - reverse-Z), in UNORM8.
     let expected = if !final_shader {
         [160, 96, 48, 255]
@@ -178,13 +242,8 @@ fn pack(
     lightmap: &wgpu::TextureView,
     final_shader: bool,
 ) -> PackPost {
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default();
-    zip.start_file("shaders/shaders.properties", options)
-        .unwrap();
-    zip.write_all(b"oldLighting=false\n").unwrap();
-    if final_shader {
-        for (name, source) in [
+    let programs: &[(&str, &str)] = if final_shader {
+        &[
             (
                 "final.vsh",
                 "#version 120\nvarying vec2 uv;\nvoid main(){gl_Position=ftransform();uv=gl_MultiTexCoord0.xy;}",
@@ -193,10 +252,29 @@ fn pack(
                 "final.fsh",
                 "#version 120\nvarying vec2 uv;uniform sampler2D colortex0;uniform sampler2D depthtex0;\nvoid main(){gl_FragColor=vec4(texture2D(colortex0,uv).rg,texture2D(depthtex0,uv).r,1.0);}",
             ),
-        ] {
-            zip.start_file(format!("shaders/{name}"), options).unwrap();
-            zip.write_all(source.as_bytes()).unwrap();
-        }
+        ]
+    } else {
+        &[]
+    };
+    pack_with(device, queue, adapter, lightmap, programs)
+}
+
+/// A pack of `programs` (`name`, GLSL source) over `lightmap`.
+fn pack_with(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    adapter: &wgpu::Adapter,
+    lightmap: &wgpu::TextureView,
+    programs: &[(&str, &str)],
+) -> PackPost {
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("shaders/shaders.properties", options)
+        .unwrap();
+    zip.write_all(b"oldLighting=false\n").unwrap();
+    for (name, source) in programs {
+        zip.start_file(format!("shaders/{name}"), options).unwrap();
+        zip.write_all(source.as_bytes()).unwrap();
     }
     let pack = horizon_shaders::Pack::from_zip_bytes(
         "original-world-inputs",
@@ -215,16 +293,20 @@ fn pack(
         T::Rgba8Unorm,
         World {
             atlas: None,
+            material_maps: None,
             lightmap: lightmap.clone(),
             terrain: None,
             block_ids: &[],
+            sprite_rects: &[],
             celestial: None,
             gui_size: [1, 1],
             clouds: None,
             weather: false,
             hand: false,
         },
-    );
+        &Default::default(),
+    )
+    .expect("the pack runs");
     assert!(post.notes.is_empty(), "{:?}", post.notes);
     post
 }
@@ -238,12 +320,13 @@ fn render(
     depth: &wgpu::TextureView,
     frame: &Frame,
     size: [u32; 2],
+    window: [u32; 2],
 ) -> Vec<[u8; 4]> {
-    let screen = texture(device, size, T::Rgba8Unorm);
+    let screen = texture(device, window, T::Rgba8Unorm);
     let stride = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let read = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: u64::from(stride * size[1]),
+        size: u64::from(stride * window[1]),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -258,7 +341,7 @@ fn render(
         frame,
         &Default::default(),
         size,
-        size,
+        window,
         &[],
         &mut |_, _, _, _| {},
     );
@@ -282,7 +365,7 @@ fn render(
         .unwrap()
         .chunks_exact(stride as usize)
         .flat_map(|row| {
-            row[..size[0] as usize * 4]
+            row[..window[0] as usize * 4]
                 .as_chunks::<4>()
                 .0
                 .iter()
@@ -318,6 +401,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         skybox: false,
         end_sky: false,
         end_sky_sprite: None,
+        boss_world_fog: false,
         environment_fog: None,
         water_fog: [0.0; 3],
         fog: None,
@@ -325,6 +409,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         outline: Vec::new(),
         outline_after_terrain: false,
         outline_high_contrast: false,
+        pvp: Default::default(),
         debug_lines: &[],
         debug_lines_on_top: &[],
         debug_crosshair: &[],
@@ -337,6 +422,7 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: crate::block_entity_render::StaticCacheFrameStats::default(),
         entity_motion: &[],
+        entity_motion_posed: &[],
         colored_lights: &[],
         emissive_layers: &[],
         shadow_only: &[],
@@ -348,9 +434,11 @@ fn frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        world_primitives: Default::default(),
         celestial: &[],
         stars: None,
         hand: &[],
+        hand_items: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),

@@ -30,6 +30,11 @@ const SNAPSHOT_BUDGET: Duration = Duration::from_millis(2);
 
 impl Game<'_> {
     pub(super) fn begin_closing_save(&mut self, quit: bool) -> Result<()> {
+        if quit {
+            // `Minecraft.close`: the friends service sends its offline presence
+            // before the game ends.
+            horizon_client::social::send_offline_presence();
+        }
         if let Some(save) = &mut self.pending_save {
             save.quit |= quit;
             return Ok(());
@@ -45,6 +50,10 @@ impl Game<'_> {
             });
             return Ok(());
         }
+        // Stop client-side terrain work before the integrated server is shut down. The
+        // server's own stop path aborts its workers, but the window's streaming registration
+        // is dropped only after the event loop exits and would otherwise wait for queued work.
+        self.streaming.abort_generation();
         if let Some(integrated) = &self.integrated {
             integrated.request_stop();
             self.pending_save = Some(ClosingSave {
@@ -74,7 +83,6 @@ impl Game<'_> {
             self.award_custom_stat("leave_game", 1);
             self.lan_close(false);
             self.free_player_beds()?;
-            self.streaming.abort_generation();
             self.pending_save = Some(ClosingSave {
                 quit,
                 close: true,
@@ -188,7 +196,10 @@ impl Game<'_> {
                         self.prune_entity_memory();
                         self.save_raids();
                         self.save.save_attachments(&self.world.attachments)?;
-                        self.save.save_forced_chunks(&self.streaming.forced)?;
+                        self.save.save_chunk_tickets(
+                            &self.streaming.forced,
+                            self.tickets.portal_tickets(),
+                        )?;
                         self.save_game_metadata()?;
                         save.stage = Stage::Writes;
                     }

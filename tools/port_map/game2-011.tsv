@@ -87,7 +87,7 @@ AbstractCandleBlock.onProjectileHit	port	crates/horizon-client/src/arrows.rs::Ti
 AbstractCandleBlock.extinguish	inline	crates/horizon-world/src/level/fluids.rs::Sim::place_liquid	gap: minor: water flow turns a lit candle off with its sound; the smoke particles and game event are not here (the candle cake click is CandleCakeBlock's)
 AbstractCandleBlock.setLit	inline	crates/horizon-client/src/arrows.rs::Ticker::block_reaction	the lit=true write for a fire arrow; the lit=false write is in place_liquid
 AbstractCandleBlock.onExplosionHit	port	crates/horizon-client/src/game/wind.rs::Game::wind_trigger_block	a wind burst puts out a lit candle; only trigger blasts do this, as in vanilla
-AbstractCauldronBlock.useItemOn	port	crates/horizon-client/src/game.rs::Game::use_on_cauldron	held item interaction with a cauldron
+AbstractCauldronBlock.useItemOn	port	crates/horizon-client/src/game/cauldrons.rs::Game::use_on_cauldron	held item interaction with a cauldron
 AbstractSkullBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	powered from the neighbour signal at placement
 AbstractSkullBlock.neighborChanged	port	crates/horizon-world/src/level/redstone.rs::Sim::skull_neighbor_changed	powered state follows the neighbour signal
 AnvilBlock.useWithoutItem	inline	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	anvil screen opened from the use result, in the station list
@@ -137,6 +137,8 @@ BeehiveBlock.releaseBeesAndResetHoneyLevel	port	crates/horizon-client/src/game/b
 BeehiveBlock.resetHoneyLevel	port	crates/horizon-client/src/game/beehives.rs::GameHive::set_honey_level	honey level written back to the hive
 BeehiveBlock.spawnParticle	inline	crates/horizon-client/src/animate_tick.rs::beehive_drip	the drip point from the hive shape; the honey drip particle is added there
 BeehiveBlock.spawnFluidParticle	inline	crates/horizon-client/src/animate_tick.rs::beehive_drip	the dripping honey particle position
+BeehiveBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	full honey: the attempt loop draws its nextInt(1) bound again on the check that ends it
+BeehiveBlock.trySpawnDripParticles	port	crates/horizon-client/src/animate_tick.rs::beehive_drip	the 0.3 roll, the impermeable tag and the face the hive hangs over
 BeehiveBlock.createBlockStateDefinition	skip:data		state definition comes from the block data tables
 BeehiveBlock.playerWillDestroy	port	crates/horizon-client/src/game.rs::Game::break_block_as_player	a creative break drops the hive with its bees and honey level
 BeehiveBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	rotation through the state transform table

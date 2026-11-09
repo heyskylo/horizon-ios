@@ -2,6 +2,7 @@
 //! `Llama.handleEating` (wheat and hay), chests, carpets, shearing a carpet
 //! off and riding.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     items::ItemStack,
     mobs::{equine, llama},
@@ -43,8 +44,8 @@ impl Game<'_> {
             used = true;
             happy = true;
         }
-        if (used || !m.extra.tame) && i32::from(m.extra.variant3) < llama::MAX_TEMPER {
-            m.extra.variant3 = (i32::from(m.extra.variant3) + temper).min(llama::MAX_TEMPER) as u8;
+        if (used || !m.extra.tame) && equine::temper(m) < llama::MAX_TEMPER {
+            equine::modify_temper(m, temper);
             used = true;
         }
         if happy {
@@ -78,7 +79,7 @@ impl Game<'_> {
         if !m.alive() || Some(m.id) == self.riding {
             return false;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let (baby, tamed, vehicle) = (m.is_baby(), m.extra.tame, m.rider.is_some());
         let open_inventory = !baby && tamed && sneaking;
         if !vehicle && !open_inventory && !item.is_empty() {
@@ -118,12 +119,18 @@ impl Game<'_> {
                     .play("minecraft:item.llama_carpet.unequip", Some(at), 1.0, 1.0);
                 self.spawn_item(ItemStack::new(&carpet, 1), at, [0.0, 0.2, 0.0], 10);
                 self.damage_held_tool();
+                let id = self.mobs[index].id;
+                let pos = self.mobs[index].position;
+                self.mob_equip_event(id, [pos.x, pos.y, pos.z], false);
                 return true;
             }
             if carpet(item) && m.extra.body.is_none() {
                 self.mobs[index].extra.body = Some(item.into());
                 self.llama_sound(index, "entity.llama.swag", 1.0);
                 self.consume_held();
+                let id = self.mobs[index].id;
+                let pos = self.mobs[index].position;
+                self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
                 return true;
             }
         }
@@ -141,9 +148,8 @@ impl Game<'_> {
         m.extra.flag = false;
         m.extra.counter = 0;
         self.yaw = m.yaw;
-        self.riding = Some(m.id);
         self.mount.reset_jump();
-        self.trigger_player("minecraft:started_riding");
+        self.start_riding(id);
         true
     }
     fn is_led_by_trader(&self, index: usize) -> bool {

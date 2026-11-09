@@ -11,6 +11,7 @@ mod discord;
 mod engine;
 mod events;
 mod http;
+mod import_resources;
 mod init;
 mod lists;
 mod management;
@@ -20,6 +21,7 @@ mod management_tls;
 mod mcp;
 mod panel;
 mod process;
+mod prune;
 mod query;
 mod rcon;
 #[cfg(test)]
@@ -50,7 +52,7 @@ Usage: horizon-server [--dir DIR] <command>
               --offline --yes)
   run         Run the server in the foreground; type console commands, Ctrl-C stops it cleanly. It
               restarts the game if it crashes.
-  start       Run the server in the background (its output goes to logs/supervisor.log)
+  start       Run the server in the background, or resume a stopped supervisor (output goes to logs/supervisor.log)
   stop, restart
   status [--json]
               Up or not, TPS, MSPT, players, RAM and CPU
@@ -69,9 +71,10 @@ Usage: horizon-server [--dir DIR] <command>
               Zip the world and the settings into backups/ (a running server saves first and stays up)
   backups [--json]
               List the backups
-  restore BACKUP [--yes]
+  restore BACKUP [--dimension ID] [--yes]
               Put a backup's world in place (the current one is kept in backups/); a running
-              server restarts with it
+              server restarts with it. --dimension (like minecraft:the_nether) brings back only
+              that dimension and leaves the rest of the world as it is
   service install|uninstall|print [--system]
               Start the server at boot or login: a systemd unit on Linux (--system: for every user,
               with sudo), a launchd agent on macOS, a task at logon on Windows
@@ -89,13 +92,16 @@ Usage: horizon-server [--dir DIR] <command>
               a running server takes the difficulty, default game mode and whitelist at once, the rest
               at its next start
   import FILE Write server.toml from a vanilla server.properties
+  import-resources DIR
+              Copy game files prepared elsewhere (by the launcher or horizon-prepare) into place, after
+              checking they are complete and for this Minecraft version; the old copy stays on failure
   op NAME, deop NAME
   whitelist on|off|list, whitelist add|remove NAME
               Who may join (on the running server, or in the files when it is stopped)
   players [--json]
               Who is online, the operators, the whitelist and the bans
   kick NAME [REASON], ban NAME [REASON], pardon NAME, ban-ip ADDRESS|NAME [REASON], pardon-ip ADDRESS
-              Moderate the running server (vanilla's commands, as from its console)
+              Moderate the running server, or edit ban files while it is stopped
 
   --dir DIR   The server folder (default: the current folder)
 
@@ -138,9 +144,23 @@ fn main() -> ExitCode {
         Some("backups") => cli::backups(&dir, args[1..].iter().any(|a| a == "--json")),
         Some("service") => service::command(&dir, &args[1..]),
         Some("restore") => match args.get(1) {
-            Some(name) => cli::restore(&dir, name, args[2..].iter().any(|a| a == "--yes")),
+            Some(name) => {
+                let rest = &args[2..];
+                match rest.iter().position(|a| a == "--dimension") {
+                    Some(i) if i + 1 >= rest.len() => {
+                        Err("--dimension needs an id (like minecraft:the_nether)".into())
+                    }
+                    found => cli::restore(
+                        &dir,
+                        name,
+                        found.map(|i| rest[i + 1].as_str()),
+                        rest.iter().any(|a| a == "--yes"),
+                    ),
+                }
+            }
             None => Err("restore needs a backup (`horizon-server backups` lists them)".into()),
         },
+        Some("import-resources") => import_resources::command(&dir, &args[1..]),
         Some("import") => import(&dir, &args[1..]),
         Some("config") => settings::command(&dir, &args[1..]),
         Some("update") => update::command(&dir, &args[1..]),

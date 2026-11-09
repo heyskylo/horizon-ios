@@ -6,7 +6,10 @@
 //! own corners, its tint mixed in. The pieces are small images (a texel per 4 logical pixels: a
 //! 24 px blur has nothing finer), kept while the pages that drew them may still be on screen.
 use crate::scene::{Backdrop, Model};
-use gpui::{canvas, div, prelude::*, px, Bounds, Corners, Div, Pixels, RenderImage, Size, Window};
+use gpui::{
+    canvas, div, prelude::*, px, rgb, AnyElement, Bounds, Corners, Div, Pixels, RenderImage, Size,
+    Window,
+};
 use horizon_theme::glass::Glass;
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -39,7 +42,22 @@ struct Pieces {
     build: u64,
     pieces: HashMap<Key, (Arc<RenderImage>, u64)>,
     retired: Vec<Arc<RenderImage>>,
+    /// The light appearance: plates are white at [`LIGHT_GLASS`] or [`LIGHT_FLOAT`] over the dawn
+    /// sky, which has no blurred copy.
+    light: bool,
+    /// Performance mode: plates are a solid colour instead of glass over the scene, so nothing
+    /// is blurred, tinted or sampled.
+    plain: bool,
+    /// Full-window backdrop images baked once per window size/look/generation.
+    full_glass: Option<Arc<RenderImage>>,
+    full_float: Option<Arc<RenderImage>>,
+    full_size: (f32, f32),
+    full_generation: u32,
 }
+
+/// How much white a light plate takes, and a light menu's.
+const LIGHT_GLASS: f32 = 0.84;
+const LIGHT_FLOAT: f32 = 0.94;
 
 thread_local! {
     static PIECES: RefCell<Pieces> = RefCell::new(Pieces {
@@ -49,15 +67,81 @@ thread_local! {
         build: 0,
         pieces: HashMap::new(),
         retired: Vec::new(),
+        light: false,
+        plain: false,
+        full_glass: None,
+        full_float: None,
+        full_size: (0., 0.),
+        full_generation: 0,
     });
 }
 
-/// The scene was built again (a new window size): plates take their pieces from this one.
-pub fn set_backdrop(model: &Model) {
+/// Performance mode's plates: solid, with no glass behind them.
+pub fn set_plain(plain: bool) {
     PIECES.with_borrow_mut(|p| {
-        p.backdrop = Some(Backdrop::new(model, p.look.blur as f64));
+        if p.plain != plain {
+            p.plain = plain;
+            p.generation += 1;
+        }
+    });
+}
+
+/// The scene was built again (a new window size or tint), or the blur changed: plates take
+/// their pieces from this backdrop.
+/// How far below the top bar the pages' scroll area starts, so what scrolls up stops short of the
+/// bar instead of running into it. The pages' heads hold that much less above their titles, so
+/// nothing moves at rest.
+pub const CONTENT_INSET: f32 = 14.;
+
+pub fn set_backdrop(model: &Model, tint: Option<u32>, blur: f32, fast: bool) {
+    PIECES.with_borrow_mut(|p| {
+        let mut backdrop = Backdrop::new(model, blur as f64, fast);
+        backdrop.set_tint(tint);
+        p.backdrop = Some(backdrop);
         p.generation += 1;
     });
+}
+
+/// The accent's tint changed (the window and the blur did not): the backdrop is tinted as its
+/// pieces are read, so they are painted again, and nothing is blurred.
+pub fn set_backdrop_tint(tint: Option<u32>) {
+    PIECES.with_borrow_mut(|p| {
+        if let Some(backdrop) = p.backdrop.as_mut() {
+            if backdrop.set_tint(tint) {
+                p.generation += 1;
+            }
+        }
+    });
+}
+
+/// The player's accent (and so the plates' tint) changed: pieces are painted again.
+pub fn set_look(look: Glass) {
+    PIECES.with_borrow_mut(|p| {
+        if p.look != look {
+            p.look = look;
+            p.generation += 1;
+        }
+    });
+}
+
+/// The appearance changed between light and dark: pieces are painted again.
+pub fn set_light(light: bool) {
+    PIECES.with_borrow_mut(|p| {
+        if p.light != light {
+            p.light = light;
+            p.generation += 1;
+        }
+    });
+}
+
+/// A light piece's texel: white at the plate's opacity, `shape` of it covered.
+fn light_texel(kind: Kind, shape: f32) -> image::Rgba<u8> {
+    let a = if kind == Kind::Float {
+        LIGHT_FLOAT
+    } else {
+        LIGHT_GLASS
+    };
+    image::Rgba([255, 255, 255, (a * shape * 255.).round() as u8])
 }
 
 /// The launcher's pages are being built: pieces nothing drew in the last build are freed (call
@@ -85,8 +169,19 @@ pub fn begin_build(window: &mut Window) {
 }
 
 /// A plate's backdrop with its corners: put it first inside a `relative` element, the content
-/// after it.
-pub fn backdrop(kind: Kind, radius: f32) -> impl IntoElement {
+/// after it. In performance mode it is a solid colour: no backdrop, no glass.
+pub fn backdrop(kind: Kind, radius: f32) -> AnyElement {
+    let (plain, look) = PIECES.with_borrow(|p| (p.plain, p.look));
+    if plain {
+        return div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .rounded(px(radius))
+            .bg(rgb(look.plate))
+            .into_any_element();
+    }
     canvas(
         |_, _, _| {},
         move |bounds, (), window, _| paint(bounds, kind, Corners::all(px(radius)), window),
@@ -95,6 +190,7 @@ pub fn backdrop(kind: Kind, radius: f32) -> impl IntoElement {
     .top_0()
     .left_0()
     .size_full()
+    .into_any_element()
 }
 
 /// A `relative` div on a glass plate with `radius` corners.
@@ -117,7 +213,10 @@ pub fn float(radius: f32) -> Div {
 /// once and kept.
 fn image_at(bounds: Bounds<Pixels>, kind: Kind, fillet: f32) -> Option<Arc<RenderImage>> {
     PIECES.with_borrow_mut(|p| {
-        let backdrop = p.backdrop.as_ref()?;
+        let light = p.light;
+        if !light && p.backdrop.is_none() {
+            return None;
+        }
         let key = (
             f32::from(bounds.origin.x).round() as i32,
             f32::from(bounds.origin.y).round() as i32,
@@ -135,30 +234,98 @@ fn image_at(bounds: Bounds<Pixels>, kind: Kind, fillet: f32) -> Option<Arc<Rende
             *used = build;
             return Some(image.clone());
         }
-        let image = if fillet > 0. {
-            fillet_piece(backdrop, &p.look, kind, key, fillet)
-        } else {
-            piece(backdrop, &p.look, kind, key)
+        let image = match (p.backdrop.as_ref(), light) {
+            (_, true) | (None, _) => light_piece(kind, key, fillet),
+            (Some(backdrop), false) if fillet > 0. => {
+                fillet_piece(backdrop, &p.look, kind, key, fillet)
+            }
+            (Some(backdrop), false) => piece(backdrop, &p.look, kind, key),
         };
         p.pieces.insert(key, (image.clone(), build));
         Some(image)
     })
 }
 
+fn build_dark_full_image(
+    backdrop: &Backdrop,
+    look: &Glass,
+    kind: Kind,
+    vw: f32,
+    vh: f32,
+) -> Arc<RenderImage> {
+    let (cols, rows) = texels(vw, vh);
+    let tint = [16, 8, 0].map(|s| ((look.plate >> s) & 255) as f32 / 255.);
+    let a = look.plate_alpha;
+    let float = kind == Kind::Float;
+
+    let mut buf = image::RgbaImage::new(cols + 2, rows + 2);
+    for (row, line) in buf.rows_mut().enumerate() {
+        let y = (row as f32 - 0.5) * vh / rows as f32;
+        for (col, p) in line.enumerate() {
+            let x = (col as f32 - 0.5) * vw / cols as f32;
+            let c = backdrop.at(float, x as f64, y as f64);
+            let mixed = [0, 1, 2].map(|i| ((tint[i] * a + c[i] * (1. - a)) * 255.).round() as u8);
+            // BGRA, opaque.
+            *p = image::Rgba([mixed[2], mixed[1], mixed[0], 255]);
+        }
+    }
+
+    Arc::new(RenderImage::new([image::Frame::new(buf)]))
+}
+
 fn paint(bounds: Bounds<Pixels>, kind: Kind, corners: Corners<Pixels>, window: &mut Window) {
-    if let Some(image) = image_at(bounds, kind, 0.) {
-        // The piece's border texels go just outside the plate (see [`piece`]).
-        let (w, h) = (
-            f32::from(bounds.size.width).round(),
-            f32::from(bounds.size.height).round(),
-        );
-        let (cols, rows) = texels(w, h);
-        let (tx, ty) = (w / cols as f32, h / rows as f32);
-        let outer = Bounds::new(
-            bounds.origin - gpui::point(px(tx), px(ty)),
-            bounds.size + gpui::size(px(tx * 2.), px(ty * 2.)),
-        );
-        let _ = window.paint_image(bounds, outer, corners, image, 0, false);
+    let viewport = window.viewport_size();
+    let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
+    if vw <= 0. || vh <= 0. {
+        return;
+    }
+
+    let (cols, rows) = texels(vw, vh);
+    let (tx, ty) = (vw / cols as f32, vh / rows as f32);
+    let outer = Bounds::new(
+        gpui::point(-px(tx), -px(ty)),
+        viewport + gpui::size(px(tx * 2.), px(ty * 2.)),
+    );
+
+    let (image, image_bounds) = PIECES.with_borrow_mut(|p| {
+        let light = p.light;
+        if !light && p.backdrop.is_none() {
+            return (None, bounds);
+        }
+
+        if p.full_generation != p.generation || p.full_size != (vw, vh) {
+            if let Some(old) = p.full_glass.take() {
+                p.retired.push(old);
+            }
+            if let Some(old) = p.full_float.take() {
+                p.retired.push(old);
+            }
+            p.full_generation = p.generation;
+            p.full_size = (vw, vh);
+        }
+
+        let full = match kind {
+            Kind::Glass => &mut p.full_glass,
+            Kind::Float => &mut p.full_float,
+        };
+        if full.is_none() {
+            *full = Some(if light {
+                let buf = image::RgbaImage::from_pixel(2, 2, light_texel(kind, 1.));
+                Arc::new(RenderImage::new([image::Frame::new(buf)]))
+            } else if let Some(backdrop) = p.backdrop.as_ref() {
+                build_dark_full_image(backdrop, &p.look, kind, vw, vh)
+            } else {
+                return (None, bounds);
+            });
+        }
+        let image = full.clone();
+
+        let img_bounds = if light { bounds } else { outer };
+        (image, img_bounds)
+    });
+
+    if let Some(image) = image {
+        let _ = window.paint_image(bounds, image_bounds, corners, image, 0, false);
     }
 }
 
@@ -246,6 +413,28 @@ fn fillet_piece(
             *p = image::Rgba([mixed[2], mixed[1], mixed[0], (alpha * 255.).round() as u8]);
         }
     }
+    Arc::new(RenderImage::new([image::Frame::new(buf)]))
+}
+
+/// A light plate's piece (or with `fillet`, a light fillet's): white at the plate's opacity, the
+/// fillet's curve cut out as [`fillet_piece`] does.
+fn light_piece(kind: Kind, key: Key, fillet: f32) -> Arc<RenderImage> {
+    let buf = if fillet > 0. {
+        let (w, scale) = (key.2 as f32, fillet);
+        let n = (w * scale).round().max(1.) as u32;
+        let mut buf = image::RgbaImage::new(n, n);
+        for (row, line) in buf.rows_mut().enumerate() {
+            for (col, p) in line.enumerate() {
+                let (lx, ly) = ((col as f32 + 0.5) / scale, (row as f32 + 0.5) / scale);
+                let d = ((w - lx).powi(2) + ly.powi(2)).sqrt();
+                *p = light_texel(kind, ((d - w) * scale + 0.5).clamp(0., 1.));
+            }
+        }
+        buf
+    } else {
+        let (cols, rows) = texels(key.2 as f32, key.3 as f32);
+        image::RgbaImage::from_pixel(cols + 2, rows + 2, light_texel(kind, 1.))
+    };
     Arc::new(RenderImage::new([image::Frame::new(buf)]))
 }
 

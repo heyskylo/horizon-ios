@@ -12,6 +12,7 @@
 //! it by the rope either. Here the pull lands on the server's copy and the
 //! rider's client overwrites it the same way (`tick_boats`).
 use super::{Game, boats::Boat};
+use horizon_client::actions::Action;
 use horizon_client::mobs::leash::{self, Holder, HolderState, Pending};
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::Tag;
@@ -81,7 +82,7 @@ impl Game<'_> {
                     }
                     let bounds = g.bounds();
                     let (lo, hi) = (bounds.min_position(), bounds.max_position());
-                    let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+                    let moved = g.known_movement;
                     return Held::At(
                         HolderState {
                             position: Vec3::new(g.position[0], g.position[1], g.position[2]),
@@ -283,10 +284,17 @@ impl Game<'_> {
                     self.mob_by_uuid(u)
                         .map(|id| (Holder::Mob(id), None))
                         .or_else(|| self.boat_by_uuid(u).map(|id| (Holder::Boat(id), None)))
+                        .or_else(|| self.knot_by_uuid(u).map(|p| (Holder::Knot(p), None)))
                 }
             }
         };
         if let Some((holder, player)) = found {
+            // The boat is out of the list while it ticks: its own knot is
+            // made here, not found by `lead_fences`.
+            if let Holder::Knot(fence) = holder {
+                self.forget_untied_knots();
+                self.tie_knot(fence);
+            }
             b.leash = Some(holder);
             b.leash_player = player;
             b.leash_pending = None;
@@ -335,6 +343,18 @@ impl Game<'_> {
             .iter()
             .find(|(id, u)| **u == uuid && self.boats.iter().any(|b| b.id == **id))
             .map(|(id, _)| *id)
+    }
+
+    /// The fence post of the leash knot with this UUID (`ServerLevel.getEntity`):
+    /// a summoned or loaded `minecraft:leash_knot`, which sits on its block.
+    pub(super) fn knot_by_uuid(&self, uuid: [i32; 4]) -> Option<[i32; 3]> {
+        self.others
+            .iter()
+            .find(|o| o.kind == "minecraft:leash_knot" && self.persist.uuid_of(o.id) == Some(uuid))
+            .map(|o| {
+                let block = horizon_core::position::BlockPos::containing(o.position);
+                [block.x, block.y, block.z]
+            })
     }
 
     /// The boats on the acting player's lead within 32 blocks of a point
@@ -418,7 +438,7 @@ impl Game<'_> {
         let id = self.boats[i].id;
         // The sneak branch: the player's mobs and boats on leads are re-tied
         // to this boat.
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         if sneaking
             && self.tie_player_leads(glam::DVec3::new(c.x, c.y, c.z), Holder::Boat(id), None)
         {
@@ -467,7 +487,9 @@ impl Game<'_> {
             if self.boat_can_attach(i, player) {
                 let mut b = self.boats[i].clone();
                 self.release_boat_leash(&mut b, true);
+                // LeashData.setLeashHolder forgets a holder still waiting in the save.
                 b.leash = Some(Holder::Player);
+                b.leash_pending = None;
                 b.leash_player = Some(self.acting_player_uuid());
                 self.boats[i] = b;
                 self.lead_sound("tied", at);
@@ -506,6 +528,69 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn command_view_uses_live_and_pending_boat_leashes_not_raw_tags() {
+        use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let (id, uuid, actual_holder, unknown) =
+            (1, [326, 1, 0, 1], [326, 2, 0, 1], [111, 222, 333, 444]);
+        game.boats
+            .push(Boat::new(id, "oak".into(), Vec3::new(6.5, 100.0, 4.5), 0.0));
+        game.persist.uuids.insert(id, uuid);
+        game.level.player_uuid = Some([326, 3, 0, 1]);
+        let read = |game: &mut Game<'_>| game.entity_nbt(Target::Boat(id)).unwrap();
+        assert!(!game.persist.raw.contains_key(&id));
+        assert_eq!(
+            read(&mut game).get("UUID"),
+            Some(&Tag::IntArray(uuid.to_vec()))
+        );
+        assert!(read(&mut game).get("leash").is_none());
+        game.boats[0].leash = Some(Holder::Player);
+        game.boats[0].leash_player = Some(actual_holder);
+        let expected = Tag::compound([("UUID", Tag::IntArray(actual_holder.to_vec()))]);
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        let delayed = Tag::compound([("UUID", Tag::IntArray(unknown.to_vec()))]);
+        game.persist
+            .raw
+            .insert(id, Tag::compound([("leash", delayed.clone())]));
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        game.boats[0].leash = None;
+        game.boats[0].leash_player = None;
+        game.boats[0].leash_pending = Some(Pending::Uuid(unknown));
+        assert_eq!(read(&mut game).get("leash"), Some(&delayed));
+        game.boats[0].leash_pending = None;
+        assert!(read(&mut game).get("leash").is_none());
+    }
+
+    #[test]
     fn a_boat_is_centred_half_its_height_up() {
         let b = Boat::new(1, "oak".into(), Vec3::new(1.0, 64.0, 2.0), 0.0);
         let c = center(&b);
@@ -531,5 +616,42 @@ mod tests {
     fn distances_are_euclidean() {
         let d = distance(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 4.0, 0.0));
         assert!((d - 5.0).abs() < 1e-12);
+    }
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn non_guest_holder_branches_keep_their_existing_velocity_sources() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("summon oak_boat 6.5 100 4.5 {UUID:[I;327,1,0,1]}"));
+        let boat = &mut game.boats[0];
+        boat.velocity = Vec3::new(0.25, -0.125, 0.5);
+        let (id, expected) = (boat.id, boat.velocity);
+        let Held::At(state, quad) = game.boat_holder(Holder::Boat(id), None) else {
+            panic!("actual boat holder must resolve");
+        };
+        assert_eq!(state.velocity, expected);
+        assert!(!quad);
+        assert!(game.run_command("summon pig 4.5 100 4.5 {UUID:[I;327,2,0,1],NoAI:1b}"));
+        let mob = &mut game.mobs[0];
+        mob.velocity = Vec3::new(-0.5, 0.25, 0.125);
+        let (id, expected) = (mob.id, mob.velocity);
+        let Held::At(state, quad) = game.boat_holder(Holder::Mob(id), None) else {
+            panic!("actual mob holder must resolve");
+        };
+        assert_eq!(state.velocity, expected);
+        assert!(!quad);
+        assert!(matches!(
+            game.boat_holder(Holder::Player, Some([327, 3, 0, 1])),
+            Held::Gone
+        ));
+        assert!(matches!(
+            game.boat_holder(Holder::Boat(u32::MAX), None),
+            Held::Gone
+        ));
+        assert!(matches!(
+            game.boat_holder(Holder::Knot([0, 100, 0]), None),
+            Held::Gone
+        ));
     }
 }

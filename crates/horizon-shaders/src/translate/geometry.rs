@@ -49,6 +49,8 @@ pub fn translate_geometry(
         .fold(String::new(), |s, l| s + l + "\n");
     // The pack's vertex stage reads its inputs in our loop, not in `main`.
     gbuffers.body = String::new();
+    // The vertex's place isn't the fragment's through a geometry stage.
+    gbuffers.water_patches = false;
     gbuffers.attributes = Vec::new();
     let program = super::translate(&combined, fragment, Target::Buffers, Some(&gbuffers), true)?;
     Ok((program, triangles))
@@ -328,6 +330,22 @@ fn combine(
             _ => {}
         }
     }
+    // Implicit terrain inputs must be set for each pulled source vertex, alongside
+    // declared attributes. Keep the vertex stage's name separate from geometry globals.
+    let chunk_fade = inputs
+        .inputs
+        .attributes
+        .iter()
+        .find(|(name, _)| name == "mc_chunkFade")
+        .filter(|_| {
+            super::uses_name(&vertex.code, "mc_chunkFade")
+                && !super::scan::Stage::scan(vertex, naga::ShaderStage::Vertex)
+                    .globals
+                    .contains("mc_chunkFade")
+        });
+    if chunk_fade.is_some() {
+        defined.insert("mc_chunkFade".to_owned());
+    }
     let renamed: BTreeSet<&str> = defined
         .iter()
         .map(String::as_str)
@@ -363,6 +381,9 @@ fn combine(
          int hz_n; int hz_strip; int hz_tri; int hz_want_tri; int hz_want_corner; bool hz_found; bool hz_primary;\n\
          vec4 hz_ring_Position[3]; vec4 hz_res_Position; vec4 hz_vs_Position; int hz_vs_vertex;\n",
     );
+    if chunk_fade.is_some() {
+        head.push_str("float hz_vs_mc_chunkFade;\n");
+    }
     for (name, ty) in &vs_outs {
         let (base, array) = split_type(ty);
         writeln!(head, "{base} hz_vs_{name}{array};").unwrap();
@@ -411,6 +432,9 @@ fn combine(
     main.push_str("        hz_vs_vertex = int(hz_vertex_index);\n");
     main.push_str(&inputs.pull);
     main.push_str(&body);
+    if let Some((_, value)) = chunk_fade {
+        writeln!(main, "        hz_vs_mc_chunkFade = {value};").unwrap();
+    }
     for (name, ty) in &vs_attributes {
         let value = inputs
             .inputs

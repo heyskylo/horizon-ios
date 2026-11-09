@@ -32,6 +32,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 if os.name == "nt":
@@ -188,17 +189,17 @@ def duration(seconds):
 
 
 def git(*arguments):
-    return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, check=True).stdout.decode("utf-8")
 
 
 def line_counts(base, changed):
     """Lines added and removed in each changed path since base, untracked files included: {path: (added, removed)}."""
     counts = {}
-    for row in git("diff", "--numstat", base).splitlines():
+    for row in filter(None, git("diff", "--numstat", "--no-renames", "-z", base).split("\0")):
         plus, minus, path = row.split("\t", 2)
         if plus != "-":
             counts[path] = (int(plus), int(minus))
-    for path in git("ls-files", "--others", "--exclude-standard").splitlines():
+    for path in git("ls-files", "--others", "--exclude-standard", "-z").split("\0"):
         if path in changed:
             try:
                 counts[path] = (len((ROOT / path).read_text(encoding="utf-8").splitlines()), 0)
@@ -369,6 +370,10 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     steps = [
         Step("Cargo.lock", where="git"),
         Step("Public tree", "python3 tools/check_public_tree.py", where="here"),
+        # docs/layers.md: a crate depends only on its own layer or a lower one, and the exceptions only shrink.
+        Step("Layers", f"python3 tools/check_layers.py --base {shlex.quote(base)}", where="here"),
+        Step("Addresses", f"python3 tools/check_addresses.py --base {shlex.quote(base)}", where="here"),
+        Step("File size", f"python3 tools/check_file_size.py --base {shlex.quote(base)}", where="here"),
         # Always, as in CI: some read the crates, the roadmap or the workflows.
         Step("Python tests", "python3 -m unittest discover -s tests", where="here", summary=unittest_passed),
         Step("rustfmt", "cargo fmt --all -- --check", skip=None if rust else no_rust),
@@ -388,7 +393,7 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     launcher_skip = None if launcher else "launcher untouched"
     for name, command in [("launcher rustfmt", "cargo fmt --check"),
                           ("launcher clippy", "cargo clippy --all-targets --locked $features -- -D warnings"),
-                          ("launcher tests", "cargo test --locked --lib $features")]:
+                          ("launcher tests", "cargo test --locked --lib --bins $features")]:
         steps.append(Step(name, f"cd launcher && {LAUNCHER_FEATURES}\nin_shell {shlex.quote(command)}", skip=launcher_skip,
                           summary=tests_passed if name == "launcher tests" else None))
     harness = Step("Parity", summary=parity_summary)
@@ -470,6 +475,12 @@ def run_windows(steps, verbose):
         env["PYTHONUTF8"] = "1"
         if step.name == "Public tree":
             command = [sys.executable, "tools/check_public_tree.py"]
+        elif step.name == "Layers":
+            command = [sys.executable, "tools/check_layers.py", *command[2:]]
+        elif step.name == "Addresses":
+            command = [sys.executable, "tools/check_addresses.py", *command[2:]]
+        elif step.name == "File size":
+            command = [sys.executable, "tools/check_file_size.py", *command[2:]]
         elif step.name == "Python tests":
             command = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
         elif step.name == "rustfmt":
@@ -487,7 +498,7 @@ def run_windows(steps, verbose):
             command = ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"]
             cwd = ROOT / "launcher"
         elif step.name == "launcher tests":
-            command = ["cargo", "test", "--locked", "--lib"]
+            command = ["cargo", "test", "--locked", "--lib", "--bins"]
             cwd = ROOT / "launcher"
         elif step.name == "Parity":
             command = shlex.split(step.command)
@@ -514,6 +525,31 @@ def run_windows(steps, verbose):
             step.status, step.detail = "fail", str(error)
         step.seconds = int(time.monotonic() - started)
         finish(step, verbose)
+
+
+def run_checks(steps, host, verbose):
+    """Runs the checks: the Python ones here beside the cargo ones on host, then the harnesses.
+
+    The Python tests and the public-tree check only read files, and they took about two minutes of a warm run that
+    waited for them before cargo started (114 of 213 s, 2026-11-03). Side by side, the run takes about as long as the
+    longer of the two. The harnesses build with cargo, so they still come after it. With --verbose, every check's
+    output is shown, and the checks run one after another so that it doesn't interleave.
+    """
+    here = [step for step in steps if step.where == "here" and step.status is None]
+    beside = [step for step in here if step.name != "Parity"]
+    after = [step for step in here if step.name == "Parity"]
+    on_host = [step for step in steps if step.where == "host" and step.status is None]
+    if verbose:
+        run_script(beside + after, "local", verbose)
+        run_script(on_host, host, verbose)
+        return
+    python = threading.Thread(target=run_script, args=(beside, "local", verbose))
+    python.start()
+    try:
+        run_script(on_host, host, verbose)
+    finally:
+        python.join()
+    run_script(after, "local", verbose)
 
 
 def finish(step, verbose):
@@ -572,8 +608,7 @@ def main():
     problem = lock_problem(changed)
     lock.status, lock.detail = ("fail", problem) if problem else ("pass", "unchanged" if not any(
         p.endswith("Cargo.lock") for p in changed) else "changes with a Cargo.toml")
-    run_script([step for step in steps if step.where == "here" and step.status is None], "local", args.verbose)
-    run_script([step for step in steps if step.where == "host" and step.status is None], args.host, args.verbose)
+    run_checks(steps, args.host, args.verbose)
     warning = old_rust(rust_version(), datetime.date.today()) if args.host == "local" else None
     if warning and any(step.name.endswith("clippy") and step.skip is None for step in steps):
         print(f"pr_ready: Rust {warning}", file=sys.stderr)

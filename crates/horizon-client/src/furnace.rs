@@ -30,6 +30,7 @@ pub trait FurnaceCooking {
         providers: &Providers,
         drops: &mut Vec<ItemStack>,
     ) -> Option<bool>;
+    fn idle(&self) -> bool;
 }
 impl FurnaceCooking for Furnace {
     fn set_input(&mut self, recipes: &Recipes, stack: Option<ItemStack>) {
@@ -77,14 +78,12 @@ impl FurnaceCooking for Furnace {
         if lit || has_fuel && has_ingredient {
             if let Some(ingredient) = self.items[0].clone() {
                 if let Some(recipe) = recipes.cook(self.kind.recipe_type(), &ingredient) {
-                    if self.cooking_timer == 0 {
-                        self.cooking_total = total_time(recipe.time, self.speed);
-                    }
                     let max = items.get(&recipe.result.item).map_or(64, |i| i.max_stack);
                     let can_burn = match &self.items[2] {
                         None => true,
                         Some(out) => {
-                            out.item == recipe.result.item && out.count + recipe.result.count <= max
+                            out.same_item_same_components(&recipe.result)
+                                && out.count + recipe.result.count <= max
                         }
                     };
                     if can_burn {
@@ -171,6 +170,11 @@ impl FurnaceCooking for Furnace {
         }
         (was_lit != lit).then_some(lit)
     }
+    fn idle(&self) -> bool {
+        self.lit_remaining <= 0
+            && self.cooking_timer <= 0
+            && !(self.items[0].is_some() && self.items[1].is_some())
+    }
 }
 fn total_time(time: u32, speed: f32) -> i32 {
     if speed > 0.0 {
@@ -187,15 +191,33 @@ mod tests {
     use horizon_world::loot::PackOverlay;
     use std::{collections::HashMap, fs};
 
-    /// A furnace with `fuel` x `count` burning `test:ore` into `test:ingot`, over a
-    /// data root holding that one recipe and an item table with two fuels: `test:coal`
-    /// (no remainder) and `test:cell` (a content mod's item that leaves `test:husk`).
-    fn burn(fuel: &str, count: u32) -> (Furnace, Vec<ItemStack>) {
-        let root = std::env::temp_dir().join(format!(
-            "horizon-furnace-remainder-{}-{}-{count}",
-            std::process::id(),
-            fuel.replace(':', "-")
-        ));
+    #[test]
+    fn a_furnace_is_idle_only_while_its_tick_changes_nothing() {
+        let stack = |id: &str| Some(ItemStack::new(id, 1));
+        let furnace = |input, fuel, lit_remaining, cooking_timer| Furnace {
+            kind: FurnaceKind::Furnace,
+            items: [input, fuel, stack("minecraft:iron_ingot")],
+            lit_remaining,
+            lit_total: 0,
+            cooking_timer,
+            cooking_total: 200,
+            speed: 1.0,
+            recipes_used: HashMap::new(),
+        };
+        assert!(furnace(None, None, 0, 0).idle());
+        assert!(furnace(stack("minecraft:iron_ore"), None, 0, 0).idle());
+        assert!(furnace(None, stack("minecraft:coal"), 0, 0).idle());
+        assert!(!furnace(stack("minecraft:iron_ore"), stack("minecraft:coal"), 0, 0).idle());
+        assert!(!furnace(None, None, 1, 0).idle());
+        assert!(!furnace(stack("minecraft:iron_ore"), None, 0, 5).idle());
+    }
+
+    /// A data root holding one recipe, `test:ore` into `test:ingot`, and an item table
+    /// with two fuels: `test:coal` (no remainder) and `test:cell` (a content mod's item
+    /// that leaves `test:husk`). The folder is gone when this returns.
+    fn data(name: &str) -> (Items, Recipes, Providers) {
+        let root =
+            std::env::temp_dir().join(format!("horizon-furnace-{name}-{}", std::process::id(),));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
         fs::write(
@@ -221,6 +243,180 @@ mod tests {
         let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
         let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
         let providers = Providers::load(&root);
+        let _ = fs::remove_dir_all(&root);
+        (items, recipes, providers)
+    }
+
+    #[test]
+    fn loaded_totals_survive_until_actual_completion() {
+        let (items, recipes, providers) = data("loaded-total");
+        assert_eq!(
+            recipes
+                .cook(
+                    FurnaceKind::Furnace.recipe_type(),
+                    &ItemStack::new("test:ore", 3)
+                )
+                .unwrap()
+                .time,
+            200
+        );
+        // Fresh Java's five-case Game fixture independently admits the loaded
+        // zero (including a missing saved field), five and normal totals.
+        for (total, timer, completion) in [(0, 0, 1), (5, 0, 5), (200, 0, 200), (5, 1, 4)] {
+            let mut f = Furnace {
+                kind: FurnaceKind::Furnace,
+                items: [Some(ItemStack::new("test:ore", 3)), None, None],
+                lit_remaining: 20,
+                lit_total: 20,
+                cooking_timer: timer,
+                cooking_total: total,
+                speed: 1.0,
+                recipes_used: HashMap::new(),
+            };
+            for elapsed in 1..=6 {
+                let mut drops = Vec::new();
+                assert!(!f.idle());
+                assert_eq!(f.tick(&recipes, &items, &providers, &mut drops), None);
+                assert!(drops.is_empty());
+                assert_eq!((f.lit_remaining, f.lit_total), (20 - elapsed, 20));
+                assert!(f.items[1].is_none());
+                let complete = elapsed >= completion;
+                assert_eq!(
+                    f.items[0].as_ref().unwrap().count,
+                    if complete { 2 } else { 3 },
+                    "loaded {total}/{timer}, tick {elapsed}"
+                );
+                assert_eq!(
+                    f.items[2].as_ref().map(|s| (&*s.item, s.count)),
+                    if complete {
+                        Some(("test:ingot", 1))
+                    } else {
+                        None
+                    }
+                );
+                assert_eq!(f.cooking_total, if complete { 200 } else { total });
+                assert_eq!(
+                    f.cooking_timer,
+                    if complete {
+                        elapsed - completion
+                    } else {
+                        timer + elapsed
+                    }
+                );
+            }
+            // A changed input still goes through setItem's independent reset.
+            f.set_input(&recipes, Some(ItemStack::new("test:ingot", 1)));
+            assert_eq!((f.cooking_timer, f.cooking_total), (0, 200));
+        }
+    }
+
+    #[test]
+    fn cooking_requires_output_components_and_capacity() {
+        let (items, recipes, providers) = data("output-components");
+        let mut different = ItemStack::new("test:ingot", 1);
+        different.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Cold".into()));
+        for (output, eligible) in [
+            (Some(different), false),
+            (None, true),
+            (Some(ItemStack::new("test:ingot", 1)), true),
+            (Some(ItemStack::new("test:ingot", 64)), false),
+            (Some(ItemStack::new("test:ingot", 63)), true),
+        ] {
+            let before = output.clone();
+            let mut f = Furnace {
+                kind: FurnaceKind::Furnace,
+                items: [
+                    Some(ItemStack::new("test:ore", 3)),
+                    Some(ItemStack::new("test:coal", 1)),
+                    output,
+                ],
+                lit_remaining: 0,
+                lit_total: 0,
+                cooking_timer: 0,
+                cooking_total: 200,
+                speed: 1.0,
+                recipes_used: HashMap::new(),
+            };
+            let recipe = recipes
+                .cook(f.kind.recipe_type(), f.items[0].as_ref().unwrap())
+                .unwrap();
+            assert_eq!(
+                (&*recipe.result.item, recipe.result.count, recipe.time),
+                ("test:ingot", 1, 200)
+            );
+            let mut drops = Vec::new();
+            assert_eq!(
+                f.tick(&recipes, &items, &providers, &mut drops),
+                eligible.then_some(true),
+                "output {before:?}"
+            );
+            assert!(drops.is_empty());
+            if eligible {
+                assert!(f.items[1].is_none());
+                for _ in 1..200 {
+                    f.tick(&recipes, &items, &providers, &mut drops);
+                }
+                assert_eq!(f.items[0].as_ref().unwrap().count, 2);
+                assert_eq!(
+                    f.items[2].as_ref().unwrap().count,
+                    before.as_ref().map_or(0, |s| s.count) + 1
+                );
+            } else {
+                assert_eq!(f.items[0].as_ref().unwrap().count, 3);
+                assert_eq!(f.items[1].as_ref().unwrap().count, 1);
+                assert_eq!(f.items[2], before);
+                assert_eq!((f.lit_remaining, f.cooking_timer), (0, 0));
+            }
+        }
+    }
+
+    /// The furnace sleeps while `idle`, so its tick must change nothing then: run the
+    /// real tick on every idle case and compare, and check a furnace that can smelt
+    /// isn't idle and does change.
+    #[test]
+    fn an_idle_furnace_tick_changes_nothing() {
+        let (items, recipes, providers) = data("idle");
+        let stack = |id: &str| Some(ItemStack::new(id, 1));
+        let furnace = |input, fuel, output| Furnace {
+            kind: FurnaceKind::Furnace,
+            items: [input, fuel, output],
+            lit_remaining: 0,
+            lit_total: 0,
+            cooking_timer: 0,
+            cooking_total: 200,
+            speed: 1.0,
+            recipes_used: HashMap::new(),
+        };
+        let idle = [
+            furnace(None, None, None),
+            furnace(stack("test:ore"), None, None),
+            furnace(None, stack("test:coal"), None),
+            furnace(None, None, stack("test:ingot")),
+            furnace(stack("test:ingot"), None, stack("test:ingot")),
+        ];
+        for before in idle {
+            assert!(before.idle(), "{before:?}");
+            let mut after = before.clone();
+            let mut drops = Vec::new();
+            let lit = after.tick(&recipes, &items, &providers, &mut drops);
+            assert_eq!(lit, None, "{before:?}");
+            assert!(drops.is_empty(), "{before:?}");
+            assert_eq!(format!("{after:?}"), format!("{before:?}"));
+        }
+        let mut busy = furnace(stack("test:ore"), stack("test:coal"), None);
+        assert!(!busy.idle());
+        let before = format!("{busy:?}");
+        assert_eq!(
+            busy.tick(&recipes, &items, &providers, &mut Vec::new()),
+            Some(true)
+        );
+        assert_ne!(format!("{busy:?}"), before);
+    }
+
+    /// A furnace with `fuel` x `count` burning `test:ore` into `test:ingot` ([`data`]).
+    fn burn(fuel: &str, count: u32) -> (Furnace, Vec<ItemStack>) {
+        let (items, recipes, providers) =
+            data(&format!("remainder-{}-{count}", fuel.replace(':', "-")));
         let mut furnace = Furnace {
             kind: FurnaceKind::Furnace,
             items: [
@@ -237,7 +433,6 @@ mod tests {
         };
         let mut drops = Vec::new();
         let lit = furnace.tick(&recipes, &items, &providers, &mut drops);
-        let _ = fs::remove_dir_all(&root);
         assert_eq!(lit, Some(true), "the fuel lit the furnace");
         (furnace, drops)
     }

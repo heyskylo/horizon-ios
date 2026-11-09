@@ -1,0 +1,24 @@
+{
+  "hooks": [
+    {
+      "name": "player_register_channels",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_register_channels",
+      "neoforge": "none (NeoForge has no channel registration event; Bukkit's PlayerRegisterChannelEvent and PlayerUnregisterChannelEvent)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "player_channels",
+      "target": "horizon_client::game::native_packets::Game<'_>::native_player_channels"
+    }
+  ],
+  "rust_summary": "the plugin channels a player's client registers and unregisters, in the configuration and in play (`native_player_register_channels`), and those it has (`native_player_channels`).",
+  "doc_summary": "`native_player_register_channels(player, name, channels, register)` hears the plugin channels a client registers (`minecraft:register`) or unregisters (`minecraft:unregister`), the configuration's once right after `native_player_logged_in`, as Bukkit's `PlayerRegisterChannelEvent`; `native_player_channels(player)` lists what it has registered, as `Player.getListeningPluginChannels`. Bundles need \"hooks\": @API:player_channels@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_packets.rs"
+  ]
+}

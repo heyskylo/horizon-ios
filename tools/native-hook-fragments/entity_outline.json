@@ -1,0 +1,14 @@
+{
+  "hooks": [
+    {
+      "name": "entity_outline",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_outline",
+      "side": "client",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the glowing outline a client draws on an entity (`native_entity_outline`).",
+  "doc_summary": "the glowing outline a client draws on an entity (`native_entity_outline(entity_id, kind, outline)`): vanilla's\n`isCurrentlyGlowing` and team colour come in as `Some(0xRRGGBB)` or None, and a mod sets `Some` to make any mob,\nplayer, dropped item or projectile glow in its own colour, or None to remove the outline. Drawing only: the entity's\n`Glowing` flag is unchanged. Bundles need \"hooks\": @API:entity_outline@."
+}

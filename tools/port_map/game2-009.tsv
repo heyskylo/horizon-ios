@@ -17,7 +17,7 @@ PotionContents.withEffectAdded	inline	crates/horizon-client/src/game/dragon.rs::
 PotionContents.getColorOptional	port	crates/horizon-client-core/src/potions.rs::potion_color	amplifier-weighted mix; base colour when there are no effects
 PotionContents.hasEffects	inline	crates/horizon-client/src/game/potions.rs::Game::splash	a lingering cloud is made only when the potion has effects
 PotionContents.getPotionDescription	port	crates/horizon-client-render/src/brewing.rs::tooltip	effect name with potency; joined with a space, not the potion.withAmplifier translation
-PotionContents.onConsume	port	crates/horizon-client/src/game/potions.rs::Game::tick_drinking	gap: minor: duration scale is always 1.0; POTION_DURATION_SCALE is not read
+PotionContents.onConsume	inline	crates/horizon-client/src/game/potions.rs::Game::finish_drinking	the potion's and custom effects at the stack's potion_duration_scale (stack.potion_duration_scale), then the bottle swap; instant effects run at once
 AttackRange.defaultFor	inline	crates/horizon-client/src/game/hand.rs::attack_range_contains	gap: minor: fixed reach 0 to 3 with a 0.3 margin; no entity interaction range attribute
 AttackRange.getClosesetHit	port	crates/horizon-client/src/game/hand.rs::GameHands::hit	gap: minor: uses the crosshair's entity or block, not the closest hit along the attack range
 AttackRange.effectiveMaxRange	inline	crates/horizon-client/src/game/hand.rs::attack_range_contains	creative or survival reach; the mob factor is not used
@@ -120,7 +120,7 @@ SmithingTransformRecipe.display	missing		the book's entries are built from shape
 SmithingTrimRecipe.display	missing		same as SmithingTransformRecipe.display: the table's own screens come from StationRecipes::smithing_result, the book builds no smithing entry
 TransmuteRecipe.computeResultSize	port	crates/horizon-client/src/crafting.rs::Special::assemble	result count plus the material count when it is added
 TransmuteRecipe.matches	port	crates/horizon-client/src/crafting.rs::Special::matches	Transmute arm: one input and the material list
-TransmuteRecipe.assemble	port	crates/horizon-client/src/crafting.rs::Special::assemble	Transmute arm: result with the input's components
+TransmuteRecipe.assemble	port	crates/horizon-client/src/crafting.rs::Special::assemble	Transmute arm: input patch followed by the result template patch, including removals and explicit zero values
 TransmuteRecipe.resultDisplay	port	crates/horizon-client/src/recipe_book.rs::RecipeIndex::result	the recipe's result id
 TransmuteRecipe.createPlacementInfo	port	crates/horizon-client/src/crafting.rs::Recipes::placement	the placement of the input and the materials
 RecipeDisplay.isEnabled	missing		no feature flag check: RecipeIndex::load and Book::build skip the level's enabled_features, so a display of a disabled feature still shows
@@ -136,4 +136,4 @@ SlotDisplay.WithAnyPotion.resolve	port	crates/horizon-client/src/crafting.rs::bo
 SlotDisplay.WithRemainder.resolve	missing		remainders are kept for play (Recipes::remainders), and the book's displays never apply them
 SlotDisplay.WithRemainder.isEnabled	missing		no feature flag check: the recipe load and the book never read the level's enabled_features
 BlockPlaceContext.at	port	crates/horizon-world/src/level/place.rs::Sim::placement_at	the placement position and face from the clicked block
-UseOnContext.isSecondaryUseActive	port	crates/horizon-client/src/game.rs::Game::use_hand	the shift key sets the context's sneaking flag
+UseOnContext.isSecondaryUseActive	port	crates/horizon-client/src/game/use_hand.rs::Game::use_hand	the shift key sets the context's sneaking flag

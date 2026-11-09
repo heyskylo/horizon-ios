@@ -7,6 +7,8 @@ struct Fake {
     log: Arc<Mutex<Vec<String>>>,
     offline: Arc<AtomicBool>,
     wearing: Arc<Mutex<HashMap<u128, Vec<&'static str>>>>,
+    /// Who plays Horizon; `None`: a service from before the field.
+    horizon: Arc<Mutex<Option<HashSet<u128>>>>,
 }
 
 impl Fake {
@@ -49,9 +51,16 @@ impl Transport for Fake {
                 players.insert(uuid.to_owned(), serde_json::Value::Array(refs));
             }
         }
-        Ok(serde_json::json!({"ttl": 300, "players": players})
-            .to_string()
-            .into_bytes())
+        let mut answer = serde_json::json!({"ttl": 300, "players": players});
+        if let Some(horizon) = &*self.horizon.lock().unwrap() {
+            let listed: Vec<&str> = asked
+                .iter()
+                .filter_map(|u| u.as_str())
+                .filter(|u| horizon.contains(&u128::from_str_radix(u, 16).unwrap()))
+                .collect();
+            answer["horizon"] = serde_json::json!(listed);
+        }
+        Ok(answer.to_string().into_bytes())
     }
 
     fn get(&self, path: &str) -> Result<Vec<u8>, String> {
@@ -293,4 +302,36 @@ fn a_new_game_shows_the_last_outfits_while_the_service_is_down() {
     assert!(c.frame().worn(5).is_none());
     drop(fake);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn horizon_players_come_with_the_same_request_as_what_they_wear() {
+    let (fake, mut c, time) = setup(None);
+    // 3 wears a hat and plays Horizon, 50 plays Horizon in nothing, 7 wears a hat elsewhere.
+    *fake.horizon.lock().unwrap() = Some(HashSet::from([3, 50]));
+    {
+        let mut frame = c.frame();
+        assert!(!frame.horizon(3) && !frame.horizon(50));
+        let _ = frame.worn(7);
+    }
+    run(&mut c);
+    assert_eq!(
+        fake.log().iter().filter(|l| l.starts_with("POST")).count(),
+        1
+    );
+    let mut frame = c.frame();
+    assert!(frame.horizon(3) && frame.horizon(50) && !frame.horizon(7));
+    assert_eq!(ids(frame.worn(3)), ["hat"]);
+    assert!(frame.worn(50).is_none());
+    drop(frame);
+    run(&mut c);
+    assert!(fake.log().is_empty());
+    // Stopped playing (or turned it off): gone after the TTL. An older service never says.
+    *fake.horizon.lock().unwrap() = None;
+    time.store(300, Ordering::SeqCst);
+    let _ = c.frame().horizon(3);
+    run(&mut c);
+    let mut frame = c.frame();
+    assert!(!frame.horizon(3));
+    assert_eq!(ids(frame.worn(3)), ["hat"]);
 }

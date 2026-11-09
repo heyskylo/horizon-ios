@@ -8,9 +8,8 @@ use horizon_client::{
 use horizon_world::{chunk::BlockState, registry::BlockRegistry};
 
 /// Why a server block or tag cannot be read.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum NativeBlockReadError {
+pub enum NativeBlockReadError {
     /// The context is stale or the call is outside its server tick hook.
     InactiveContext,
     /// Tag queries require an authoritative server.
@@ -37,7 +36,7 @@ impl Game<'_> {
     }
 
     /// Test a block state's name in an active server tick hook. API 28.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
     pub(super) fn native_block_in_tag(
         &self,
         context: &NativeLifecycleContext,
@@ -51,7 +50,7 @@ impl Game<'_> {
     }
 
     /// Test an item stack in an active server tick hook. API 28.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
     pub(super) fn native_item_in_tag(
         &self,
         context: &NativeLifecycleContext,
@@ -65,7 +64,6 @@ impl Game<'_> {
     }
 
     /// Test a block state's name against the server's merged block tags.
-    #[allow(dead_code)]
     pub(super) fn native_server_block_in_tag(
         &self,
         state: &BlockState,
@@ -75,7 +73,6 @@ impl Game<'_> {
     }
 
     /// Test an item stack against the server's merged item tags.
-    #[allow(dead_code)]
     pub(super) fn native_server_item_in_tag(
         &self,
         stack: &ItemStack,
@@ -90,9 +87,22 @@ impl Game<'_> {
         Ok(items.item_in_tag(tag, item))
     }
 
+    /// Whether block `block` (`minecraft:oak_log`, as `Host::block` names
+    /// one) is in block tag `tag` (`minecraft:logs`, or a mod's
+    /// `create:fan_transparent`) of the server's merged tags, as
+    /// `BlockState.is(TagKey)`: what `native_server_block_in_tag` answers for
+    /// a state of that block, from any server hook. API @API:host_bridge@.
+    pub(super) fn native_block_name_in_tag(
+        &self,
+        block: &str,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        Ok(self.native_tag_items()?.block_in_tag(tag, block))
+    }
+
     /// Read a loaded block in a server tick hook, without loading a chunk.
     /// The returned name and properties are owned and remain valid after the hook.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
     pub(super) fn native_server_block(
         &self,
         context: &NativeLifecycleContext,
@@ -115,6 +125,35 @@ impl Game<'_> {
         }
         .ok_or(NativeBlockReadError::UnavailableDimension)?;
         read_block(world, self.pack.assets.registry, pos)
+    }
+
+    /// The current of the fluid at `pos` in `dimension`
+    /// (`FluidState.getFlow(level, pos)`), normalised: the push an item in it
+    /// gets, a water wheel's speed from the water around it. Zero where there
+    /// is no fluid or it doesn't move; none where the chunk isn't loaded or
+    /// the dimension isn't available (a client has only the level it is in,
+    /// a server also its parked ones), so a caller can keep its last answer.
+    /// API @API:fluid_flow@.
+    pub(super) fn native_fluid_flow(&self, dimension: &str, pos: [i32; 3]) -> Option<[f64; 3]> {
+        let dim = match dimension {
+            "minecraft:overworld" => Dim::Overworld,
+            "minecraft:the_nether" => Dim::Nether,
+            "minecraft:the_end" => Dim::End,
+            _ => return None,
+        };
+        let world = if dim == self.dim {
+            &self.world
+        } else {
+            self.levels.parked_world(dim)?
+        };
+        if !world.loaded(pos[0], pos[2]) {
+            return None;
+        }
+        Some(horizon_client::entities::fluid_flow(
+            world,
+            &self.res.motion().fluids,
+            pos,
+        ))
     }
 }
 

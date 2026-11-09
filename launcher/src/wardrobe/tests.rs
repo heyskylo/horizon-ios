@@ -18,8 +18,16 @@ struct Mock {
     log: Vec<(String, String, String, String)>,
     /// The service fails on its side (503) for the account's changes.
     down: bool,
+    /// The service refuses every sign-in (401), as when it is misconfigured.
+    sign_in_fails: bool,
     /// "Show my cosmetics", as the service keeps it.
     visible: bool,
+    /// The file every `?hash=` request answers, whatever its path says.
+    item: Option<Value>,
+    /// Paddle doesn't sell where the player is: the service grants the set from the Wardrobe.
+    no_paddle: bool,
+    /// The account claimed the founder set.
+    claimed: bool,
 }
 
 fn me(claim: &str, owned: Value, equipped: Value) -> Value {
@@ -27,6 +35,20 @@ fn me(claim: &str, owned: Value, equipped: Value) -> Value {
         "uuid": UUID, "name": "Notch", "owned": owned, "equipped": equipped, "visible": true,
         "claim": {"state": claim, "items": ["hat", "owl"], "starts_at": 100, "ends_at": 200, "claimed": owned != json!([])},
     })
+}
+
+/// `/v1/me`'s answer as the founder claim stands: the set owned once claimed, `one_click` where
+/// Paddle doesn't sell.
+fn founder(m: &Mock) -> Value {
+    let owned = if m.claimed {
+        json!(["hat", "owl"])
+    } else {
+        json!([])
+    };
+    let mut me = me(m.claim, owned, json!({}));
+    me["claim"]["open"] = json!(m.claim == "open");
+    me["claim"]["one_click"] = json!(m.no_paddle);
+    me
 }
 
 fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16, Value) {
@@ -43,6 +65,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 "claim": {"state": m.claim, "items": ["hat"], "starts_at": null, "ends_at": null},
             }),
         ),
+        ("POST", "/v1/auth/start") if m.sign_in_fails => (401, json!({"error": "no_session"})),
         ("POST", "/v1/auth/start") => (200, json!({"server_id": "issued-1", "expires_in": 120})),
         ("POST", "/v1/auth/finish") => {
             let v: Value = serde_json::from_str(body).unwrap();
@@ -55,7 +78,7 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 json!({"session": "svc-session", "uuid": UUID, "name": v["name"], "expires_in": m.expires_in}),
             )
         }
-        (_, "/v1/me" | "/v1/claim" | "/v1/equipped" | "/v1/visible") if !signed_in => {
+        (_, "/v1/me" | "/v1/equipped" | "/v1/visible" | "/v1/claim") if !signed_in => {
             (401, json!({"error": "no_session"}))
         }
         ("PUT", "/v1/equipped" | "/v1/visible") if m.down => (503, json!({"error": "down"})),
@@ -66,9 +89,13 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
             me["visible"] = json!(m.visible);
             (200, me)
         }
-        ("GET", "/v1/me") => (200, me(m.claim, json!([]), json!({}))),
-        ("POST", "/v1/claim") if m.claim != "open" => (403, json!({"error": "claim_closed"})),
-        ("POST", "/v1/claim") => (200, me("open", json!(["hat", "owl"]), json!({}))),
+        ("GET", "/v1/me") => (200, founder(m)),
+        ("POST", "/v1/claim") if !m.no_paddle => (403, json!({"error": "use_checkout"})),
+        ("POST", "/v1/claim") if m.claimed => (409, json!({"error": "claimed"})),
+        ("POST", "/v1/claim") => {
+            m.claimed = true;
+            (200, founder(m))
+        }
         ("PUT", "/v1/equipped") => {
             let v: Value = serde_json::from_str(body).unwrap();
             match v["item"].as_str() {
@@ -76,6 +103,12 @@ fn route(m: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (u16
                 _ => (403, json!({"error": "not_owned"})),
             }
         }
+        ("GET", "/v1/shop") => (
+            200,
+            json!({"open": m.claim == "open", "state": m.claim, "preview": false,
+                   "starts_at": 100, "ends_at": 200, "now": 150, "items": ["hat"]}),
+        ),
+        ("GET", p) if p.contains("?hash=") && m.item.is_some() => (200, m.item.clone().unwrap()),
         _ => (404, json!({"error": "not_found"})),
     }
 }
@@ -193,18 +226,13 @@ fn signing_in_goes_through_mojang_and_sends_the_service_no_token() {
 }
 
 #[test]
-fn claiming_and_equipping_follow_the_window_and_ownership() {
+fn equipping_follows_ownership() {
     let (m, service) = serve(|m| m.claim = "not_yet");
     let catalogue = service.catalogue().unwrap();
     assert_eq!(catalogue.claim.state, ClaimState::NotYet);
     assert_eq!(catalogue.items[0].name("fr_fr"), "Chapeau");
     assert_eq!(catalogue.items[0].name("ja_jp"), "Hat");
     let session = sign_in(&m, &service);
-    assert_eq!(service.claim(&session).unwrap_err(), Error::ClaimClosed);
-    m.lock().unwrap().claim = "open";
-    let me = service.claim(&session).unwrap();
-    assert_eq!(me.owned, ["hat", "owl"]);
-    assert_eq!(me.claim.claimed, Some(true));
     let me = service.equip(&session, "head", Some("hat")).unwrap();
     assert_eq!(me.equipped.get("head").map(String::as_str), Some("hat"));
     assert_eq!(
@@ -288,18 +316,8 @@ fn changes_made_offline_wait_on_disk_and_go_out_in_order() {
 #[test]
 fn an_item_file_is_kept_by_its_hash() {
     let dir = scratch("items");
-    let entry = Entry {
-        id: "hat".into(),
-        hash: "ab12".into(),
-        slot: "head".into(),
-        names: BTreeMap::new(),
-        theme: None,
-    };
-    let file = format!(
-        r#"{{"format": 1, "id": "hat", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
-        png_8x8()
-    );
-    std::fs::write(dir.join("hat-ab12.json"), &file).unwrap();
+    let entry = entry("hat", "ab12");
+    std::fs::write(dir.join("hat-ab12.json"), item_file("hat")).unwrap();
     // Offline, the kept file is read; another hash would need the service.
     let offline = Service::at("http://127.0.0.1:9");
     assert_eq!(offline.item_cached(&entry, &dir).unwrap().id, "hat");
@@ -311,6 +329,77 @@ fn an_item_file_is_kept_by_its_hash() {
         offline.item_cached(&newer, &dir).unwrap_err(),
         Error::Offline
     );
+}
+
+#[test]
+fn a_real_catalogue_entry_is_fetched_kept_and_read_back() {
+    let dir = scratch("real");
+    let (_, service) = serve(|m| m.item = serde_json::from_str(&item_file("founder_visor")).ok());
+    // An id and hash as the live catalogue has them.
+    let entry = entry("founder_visor", "66e9e963f1958c22");
+    let item = service.item_cached(&entry, &dir).unwrap();
+    assert_eq!(item.id, "founder_visor");
+    assert!(dir.join("founder_visor-66e9e963f1958c22.json").is_file());
+    let offline = Service::at("http://127.0.0.1:9");
+    let item = offline.item_cached(&entry, &dir).unwrap();
+    assert_eq!(item.id, "founder_visor");
+}
+
+#[test]
+fn an_entry_that_could_leave_the_cache_is_refused() {
+    let root = scratch("traversal");
+    let cache = root.join("items");
+    // A file a traversal could read, and a service that would send one to write.
+    std::fs::write(root.join("kept-ab12.json"), item_file("hat")).unwrap();
+    let (m, service) = serve(|m| m.item = serde_json::from_str(&item_file("hat")).ok());
+    let absolute = root.join("absolute").display().to_string();
+    for (id, hash) in [
+        ("../kept", "ab12"),
+        ("../escape", "ab12"),
+        ("..\\escape", "ab12"),
+        ("hat", "x/../../escape"),
+        ("hat", "x\\..\\..\\escape"),
+        (absolute.as_str(), "ab12"),
+        ("..", "ab12"),
+        ("hat", ".."),
+        ("hat:x", "ab12"),
+        ("hat", "c:"),
+        ("hat\0", "ab12"),
+        ("hat", "ab12\0"),
+        ("", "ab12"),
+        ("hat", ""),
+    ] {
+        assert_eq!(
+            service.item_cached(&entry(id, hash), &cache).unwrap_err(),
+            Error::Service(200),
+            "{id:?} {hash:?}"
+        );
+    }
+    assert!(m.lock().unwrap().log.is_empty());
+    let beside_the_cache: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name != "items")
+        .collect();
+    assert_eq!(beside_the_cache, ["kept-ab12.json"]);
+}
+
+fn entry(id: &str, hash: &str) -> Entry {
+    Entry {
+        id: id.into(),
+        hash: hash.into(),
+        slot: "head".into(),
+        names: BTreeMap::new(),
+        ..Default::default()
+    }
+}
+
+/// A valid item file, as the service sends it.
+fn item_file(id: &str) -> String {
+    format!(
+        r#"{{"format": 1, "id": "{id}", "slot": "head", "bone": "head", "texture": {{"png": "{}"}}, "parts": []}}"#,
+        png_8x8()
+    )
 }
 
 /// An 8×8 transparent PNG, base64.
@@ -334,23 +423,233 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
-fn the_theme_worn_is_the_one_equipped_in_the_theme_slot() {
+fn the_shop_status_is_asked_without_a_session() {
+    let (mock, service) = serve(|m| m.claim = "not_yet");
+    let status = service.shop().unwrap();
+    assert!(!status.open);
+    assert_eq!(status.state, ClaimState::NotYet);
+    assert_eq!((status.starts_at, status.ends_at), (Some(100), Some(200)));
+    let log = &mock.lock().unwrap().log;
+    assert_eq!(log.len(), 1);
+    let (method, path, auth, _) = &log[0];
+    assert_eq!(
+        (method.as_str(), path.as_str(), auth.as_str()),
+        ("GET", "/v1/shop", "")
+    );
+}
+
+#[test]
+fn a_state_this_launcher_does_not_know_still_reads() {
+    let (m, service) = serve(|m| m.claim = "paused");
+    assert_eq!(service.shop().unwrap().state, ClaimState::Unknown);
+    assert_eq!(
+        service.catalogue().unwrap().claim.state,
+        ClaimState::Unknown
+    );
+    let me = service.me(&sign_in(&m, &service)).unwrap();
+    assert_eq!(me.claim.state, ClaimState::Unknown);
+    // Kept on disk, it reads back the same.
+    let kept = serde_json::to_vec(&me).unwrap();
+    assert_eq!(serde_json::from_slice::<Me>(&kept).unwrap(), me);
+}
+
+#[test]
+fn the_history_keeps_its_orders_and_an_old_answer_still_reads() {
+    let answer = json!({
+        "uuid": "u", "name": "Notch", "owned": [], "equipped": {}, "visible": true,
+        "claim": {"state": "open", "items": ["hat"], "starts_at": 1, "ends_at": 2, "claimed": false, "open": true},
+        "purchases": [
+            {"transaction_id": "txn_b", "item": "top_hat", "amount": 330, "currency": "EUR", "status": "refunded", "at": 9},
+            {"transaction_id": "txn_a", "item": "founder_set", "amount": 0, "currency": "CHF", "status": "paid", "at": 5}
+        ]
+    });
+    let me: Me = serde_json::from_value(answer).unwrap();
+    assert_eq!(me.purchases[0].price().as_deref(), Some("3.30 EUR"));
+    assert_eq!(me.purchases[1].price(), None);
+    // What is kept on disk reads back the same.
+    let kept: Me = serde_json::from_str(&serde_json::to_string(&me).unwrap()).unwrap();
+    assert_eq!(kept.purchases, me.purchases);
+    // An answer from before sales still reads.
+    let old: Me = serde_json::from_value(json!({
+        "uuid": "u", "name": "Notch", "owned": [], "equipped": {},
+        "claim": {"state": "not_yet", "items": [], "starts_at": null, "ends_at": null}
+    }))
+    .unwrap();
+    assert!(old.purchases.is_empty());
+}
+
+/// `join` for `sync_with_session`: tells Mojang the account joined `id`, as a server would.
+fn joined(m: &Arc<Mutex<Mock>>) -> impl Fn(&str) -> Result<(), String> {
+    let m = m.clone();
+    move |id: &str| {
+        m.lock().unwrap().joined.push(id.to_owned());
+        Ok(())
+    }
+}
+
+/// How often the service was asked to finish a sign-in.
+fn finishes(m: &Arc<Mutex<Mock>>) -> usize {
+    m.lock()
+        .unwrap()
+        .log
+        .iter()
+        .filter(|(_, path, ..)| path == "/v1/auth/finish")
+        .count()
+}
+
+/// A live session is reused: the account is proved with Mojang once per service session, not
+/// once per refresh (the Wardrobe used to sign in again every few minutes).
+#[test]
+fn a_live_session_is_reused_between_refreshes() {
+    let (m, service) = serve(|_| {});
+    let mut saved = Saved::default();
+    let mut session = None;
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 1);
+    assert_eq!(m.lock().unwrap().joined.len(), 1);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(
+        finishes(&m),
+        1,
+        "a live session was proved with Mojang again"
+    );
+    assert_eq!(m.lock().unwrap().joined.len(), 1);
+}
+
+/// A session that ran out, or one for another account, signs in again.
+#[test]
+fn an_ended_session_signs_in_again() {
+    let (m, service) = serve(|_| {});
+    let mut saved = Saved::default();
+    let ended = Arc::new(Session {
+        token: "svc-session".into(),
+        until: Instant::now() - Duration::from_secs(1),
+        uuid: UUID.into(),
+        name: "Notch".into(),
+    });
+    let mut session = Some(ended);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 1);
+    assert!(session.as_ref().is_some_and(|s| s.live()));
+    // Another account's live session is not this account's.
+    let other = Arc::new(Session {
+        token: "svc-session".into(),
+        until: Instant::now() + Duration::from_secs(600),
+        uuid: "00000000000000000000000000000000".into(),
+        name: "Other".into(),
+    });
+    let mut session = Some(other);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 2);
+    assert_eq!(session.as_ref().unwrap().uuid, UUID);
+}
+
+/// The service answering 401 ends the session: the launcher signs in once more and retries the
+/// call.
+#[test]
+fn a_401_signs_in_again_and_retries_once() {
+    let (m, service) = serve(|_| {});
+    let mut saved = Saved::default();
+    let stale = Arc::new(Session {
+        token: "ended".into(),
+        until: Instant::now() + Duration::from_secs(600),
+        uuid: UUID.into(),
+        name: "Notch".into(),
+    });
+    let mut session = Some(stale);
+    service
+        .sync_with_session("Notch", UUID, &mut session, &mut saved, joined(&m))
+        .unwrap();
+    assert_eq!(finishes(&m), 1);
+    assert_eq!(session.as_ref().unwrap().token, "svc-session");
+    assert!(saved.me.is_some());
+}
+
+/// A service that refuses every sign-in is not retried in a loop: the 401 stands.
+#[test]
+fn a_refused_sign_in_is_not_retried_forever() {
+    let (m, service) = serve(|m| m.sign_in_fails = true);
+    let stale = Arc::new(Session {
+        token: "ended".into(),
+        until: Instant::now() + Duration::from_secs(600),
+        uuid: UUID.into(),
+        name: "Notch".into(),
+    });
+    let mut session = Some(stale);
+    let err = service
+        .sync_with_session(
+            "Notch",
+            UUID,
+            &mut session,
+            &mut Saved::default(),
+            joined(&m),
+        )
+        .unwrap_err();
+    assert_eq!(err, Error::SignedOut);
+    // One refused 401, one refused sign-in: no second round.
+    let requested: Vec<String> = m
+        .lock()
+        .unwrap()
+        .log
+        .iter()
+        .map(|(_, path, ..)| path.clone())
+        .collect();
+    assert_eq!(requested, ["/v1/me", "/v1/auth/start"]);
+}
+
+#[test]
+fn the_free_claim_is_offered_only_where_the_service_says_and_grants_once() {
+    // Where Paddle sells: nothing offered, and the service refuses a claim anyway.
     let (m, service) = serve(|_| {});
     let session = sign_in(&m, &service);
-    let mut saved = Saved {
-        catalogue: Some(service.catalogue().unwrap()),
-        me: Some(service.me(&session).unwrap()),
-        pending: Vec::new(),
-    };
-    assert_eq!(saved.theme(), None);
-    let wear = |item: &str| Change::Equip {
-        slot: "theme".into(),
-        item: Some(item.into()),
-    };
-    saved.change(wear("dawn"));
-    let (sky, hue) = saved.theme().unwrap();
-    assert_eq!((sky[4], hue), (0xe2a0b0, 344.));
-    // A theme the catalogue doesn't hold (any more) leaves the player's own look.
-    saved.change(wear("dusk"));
-    assert_eq!(saved.theme(), None);
+    assert!(!service.me(&session).unwrap().claim.here());
+    let refused = service.claim(&session).unwrap_err();
+    assert!(refused.use_checkout(), "{refused:?}");
+    assert!(!refused.retry_later());
+    // Where it doesn't: offered, then the set is the account's and the offer is gone.
+    let (m, service) = serve(|m| m.no_paddle = true);
+    let session = sign_in(&m, &service);
+    assert!(service.me(&session).unwrap().claim.here());
+    let me = service.claim(&session).unwrap();
+    assert_eq!(me.owned, ["hat", "owl"]);
+    assert!(!me.claim.here());
+    // Claimed already (another launcher, a double click): the account's answer, no failure.
+    assert_eq!(service.claim(&session).unwrap().owned, ["hat", "owl"]);
+    // A closed window offers nothing, whatever the country.
+    let (m, service) = serve(|m| {
+        m.no_paddle = true;
+        m.claim = "closed";
+    });
+    let session = sign_in(&m, &service);
+    assert!(!service.me(&session).unwrap().claim.here());
+}
+
+#[test]
+fn each_claim_refusal_says_what_to_do_instead_of_a_bare_failure() {
+    // The service's answers to `POST /v1/claim` (horizon-cosmetics' README): each one gets its
+    // own words, never the "had a problem" line a 403 used to show (Discord, 2026-11-05).
+    let generic = Error::Service(403).message();
+    let paddle = Error::Shop("paddle".into()).message();
+    let mut said = std::collections::BTreeSet::new();
+    for code in [
+        "use_checkout",
+        "not_offered_here",
+        "claim_not_open",
+        "claimed",
+    ] {
+        let e = Error::Shop(code.into());
+        assert_ne!(e.message(), generic, "{code}");
+        assert_ne!(e.message(), paddle, "{code}");
+        said.insert(e.message());
+    }
+    assert_eq!(said.len(), 4, "{said:#?}");
+    assert!(!Error::Shop("not_offered_here".into()).use_checkout());
 }

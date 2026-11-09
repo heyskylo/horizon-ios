@@ -11,7 +11,7 @@
 //!   the jar can't be carried at all.
 use crate::{carry, classes, jar};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, io::Read, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -71,19 +71,6 @@ fn loader(names: &[String]) -> &'static str {
     }
 }
 
-/// Data folders named as before 1.21 (`recipes/`, `loot_tables/`) and none
-/// as 1.21 names them: the game doesn't read them, and the carry upgrades
-/// from 1.21.1 on. (Some jars keep a stale plural folder beside the new one.)
-fn old_layout(names: &[String]) -> bool {
-    let has = |kinds: [&str; 2]| {
-        names.iter().any(|n| {
-            let p: Vec<&str> = n.split('/').collect();
-            p.len() > 3 && p[0] == "data" && kinds.contains(&p[2]) && n.ends_with(".json")
-        })
-    };
-    has(["recipes", "loot_tables"]) && !has(["recipe", "loot_table"])
-}
-
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -100,14 +87,24 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
         .map(|name| name.map(|name| name.into_owned()))
         .collect::<Result<_, _>>()
         .map_err(|e| format!("{}: {e}", jar_path.display()))?;
+    // Each class under 16 MiB as before, and all of them under the jar's ceiling: many entries
+    // just under the per-entry cap can't add up to more memory than that (crate::entry).
+    let mut budget = crate::entry::Budget::archive();
     let mut bytes = Vec::new();
     for n in names.iter().filter(|n| n.ends_with(".class")) {
-        let mut b = Vec::new();
-        if let Ok(mut e) = zip.by_name(n)
-            && e.size() < 1 << 24
-            && e.read_to_end(&mut b).is_ok()
-        {
-            bytes.push(b);
+        let Ok(e) = zip.by_name(n) else {
+            continue;
+        };
+        let declared = e.size();
+        match budget.read(e, declared, (1 << 24) - 1) {
+            Ok(b) => bytes.push(b),
+            Err(e) if crate::entry::is_too_big(&e) && declared < 1 << 24 => {
+                return Err(format!(
+                    "{}: its classes unpack to more than 1 GiB",
+                    jar_path.display()
+                ));
+            }
+            Err(_) => {}
         }
     }
     let code = classes::census(bytes.iter().map(Vec::as_slice));
@@ -130,10 +127,8 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
         crate::pipeline::write_json(&out.join("check.json"), &check)?;
         Ok(check)
     };
-    if old_layout(&names) {
-        check.summary = "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 \
-                         and later."
-            .into();
+    if carry::old_layout(&names) {
+        check.summary = carry::OLD_LAYOUT.into();
         return done(check);
     }
     let alone = |m: &str| m == info.mod_id || m == "minecraft";
@@ -308,6 +303,22 @@ displayName = "Ruby"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_jar_whose_metadata_unpacks_past_the_cap_is_refused_unread() {
+        // A small jar whose mods.toml inflates to just past 16 MiB: refused from its declared size,
+        // before anything is read (a lying declared size is stopped by crate::entry's reads).
+        let dir = temp("bomb");
+        let big = vec![b' '; (crate::entry::MAX_TEXT + 1) as usize];
+        let path = jar(&dir, &[("META-INF/mods.toml", &big)]);
+        assert!(
+            fs::metadata(&path).unwrap().len() < 1 << 20,
+            "the jar itself is small"
+        );
+        let refused = check(&path, &dir.join("out")).unwrap_err();
+        assert!(refused.contains("unpacks to more than 16 MiB"), "{refused}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

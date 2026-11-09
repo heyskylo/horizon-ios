@@ -180,6 +180,7 @@ fn density_context_survives_success_binding_failure_and_partial_chunk_failure() 
                 density: Arc::new(Fails),
                 richness: Arc::new(ConstantSampler(1.)),
                 filler_gap: Arc::new(ConstantSampler(-1.)),
+                positive_y: [i32::MIN, i32::MAX],
             }
         } else {
             MaterialRule::Block(BlockStateId(3))

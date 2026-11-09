@@ -4,6 +4,7 @@
 use super::Game;
 use super::entity::{Blast, Entity as _, for_each_entity_mut};
 use horizon_client::advancements::EntityView;
+use horizon_client::join_seq::Joined as _;
 use horizon_client::{
     Result,
     mobs::{Damage, DamageKind, Species, Who},
@@ -35,8 +36,12 @@ pub(super) struct Burst {
 /// Whether a wind push must wait for the entity's own tick: it joined before
 /// the charge (`id` below the charge's), so vanilla has ticked it already this
 /// game tick, and its kind ticks after the projectiles here.
-fn push_waits_for_tick(ticks_after_projectiles: bool, id: u32, charge: Option<u32>) -> bool {
-    ticks_after_projectiles && charge.is_some_and(|c| id < c)
+fn push_waits_for_tick<T: PartialOrd>(
+    ticks_after_projectiles: bool,
+    joined: T,
+    charge: Option<T>,
+) -> bool {
+    ticks_after_projectiles && charge.is_some_and(|c| joined < c)
 }
 /// `Projectile.deflect` with `ProjectileDeflection.REVERSE`.
 pub(super) fn reverse(p: &mut Projectile, jitter: f32) {
@@ -114,7 +119,7 @@ impl Game<'_> {
             ],
             Hit::None => return Ok(()),
         };
-        self.creatures.wind_source = Some(p.id());
+        self.creatures.wind_source = Some(p.join_seq());
         let burst = self.wind_burst(center, radius, knockback, breeze, !breeze);
         self.creatures.wind_source = None;
         burst
@@ -151,16 +156,26 @@ impl Game<'_> {
                     kind: DamageKind::Thrown,
                     attacker: p.owner,
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
+                    attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
+                let mut hurt = false;
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // Breeze.isInvulnerableTo: its own kind's charges.
                     if owner_breeze && m.species() == Species::Breeze {
                         return;
                     }
-                    m.damage(1.0, source);
+                    // Refused before the hurt, so the kill is not credited
+                    // either; the burst of `wind_charge_hit` still goes off.
+                    if horizon_client::mobs::wither::armor_refuses(m, &p.kind) {
+                        return;
+                    }
+                    hurt = m.damage(1.0, source);
                 }
                 if p.owner == Some(Who::Player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
+                }
+                if hurt {
+                    self.shot_post_attack(p, who, p.kind.id(), "minecraft:wind_charge");
                 }
             }
         }
@@ -291,6 +306,7 @@ impl Game<'_> {
             spared: None,
         };
         let source = self.creatures.wind_source;
+        let done = self.ordered.done;
         let mut late = Vec::new();
         let mut entities = self.take_entities();
         for_each_entity_mut!(entities, entity => {
@@ -316,7 +332,10 @@ impl Game<'_> {
             // joined before the charge has ticked by now in vanilla, so the
             // push is for its next tick; here its kind ticks after the
             // projectiles, so the push waits for that tick to run.
-            if push_waits_for_tick(entity.ticks_after_projectiles(), entity.id(), source) {
+            // Joined before the charge and not ticked yet: the push is for its next tick.
+            let waiting = entity.ticks_after_projectiles()
+                && done.is_none_or(|d| entity.join_seq() > d);
+            if push_waits_for_tick(waiting, entity.join_seq(), source) {
                 late.push((entity.id(), push));
             } else {
                 entity.push_from_explosion(push);
@@ -455,6 +474,8 @@ impl Game<'_> {
                 let swap = self.world.random.next_int_bound(i as i32).unwrap_or(0) as usize;
                 targets.swap(i - 1, swap);
             }
+            let dimension = self.dim.id();
+            self.native_wind_burst(dimension, center, &mut targets);
             for pos in targets {
                 self.wind_trigger_block(pos)?;
             }
@@ -639,16 +660,21 @@ mod tests {
         assert!(!push_waits_for_tick(false, 3, Some(7)), "ticks before it");
         assert!(!push_waits_for_tick(true, 3, None), "not a charge's burst");
         let tnt = crate::game::tnt::PrimedTnt {
+            rotation: [0.0, 0.0],
             id: 1,
             position: Vec3::ZERO,
             previous: Vec3::ZERO,
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             no_gravity: false,
             power: 4.0,
+            block_state: None,
             join: Default::default(),
         };
         assert!(Entity::ticks_after_projectiles(&tnt));

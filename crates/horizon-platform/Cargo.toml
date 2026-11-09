@@ -1,0 +1,13 @@
+[package]
+name = "horizon-platform"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The platform's public API: what the Horizon layer and mods may use of the engine (docs/layers.md#platform)"
+
+[dependencies]
+horizon-system = { path = "../horizon-system" }
+
+[lints]
+workspace = true

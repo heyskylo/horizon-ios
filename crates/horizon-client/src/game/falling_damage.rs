@@ -27,6 +27,10 @@ impl Game<'_> {
                     impact.amount,
                     mob_kind,
                 );
+                // Enderman.hurtServer: a falling block is no living attacker.
+                if let Err(e) = self.settle_hurt_teleports() {
+                    log::warn!("Horizon: falling block: enderman teleport: {e}");
+                }
                 let kind = if stalactite {
                     "minecraft:falling_stalactite"
                 } else if anvil {
@@ -133,10 +137,14 @@ impl Game<'_> {
             let name = self.res.facts().get(state).name.clone();
             // LevelChunk.setBlockState creates the new block entity even when
             // the falling entity has no supplied data.
-            if let Some(entity) = self.new_block_entity(&name) {
-                let key = (pos[0], pos[1], pos[2]);
-                let mut tag = horizon_client::save::encode_block_entity(key, &entity, &name);
+            let key = (pos[0], pos[1], pos[2]);
+            if !self.world.block_entities.stateful_entity(state.0)
+                && let Some(entity) = self.new_block_entity_for_state(state)
+            {
                 self.world.block_entities.insert(key, entity);
+            }
+            if let Some(entity) = self.world.block_entities.get(&key) {
+                let mut tag = horizon_client::save::encode_block_entity(key, entity, &name);
                 // FallingBlockEntity.tick copies each supplied field over the
                 // new block entity's saved defaults before loadWithComponents.
                 if let Some(horizon_world::nbt::Tag::Compound(carried)) = block
@@ -191,15 +199,38 @@ impl Game<'_> {
         }) {
             return;
         }
-        let amount = if self.armor[0].is_some() {
-            amount * 0.75
-        } else {
-            amount
+        let original = amount;
+        let Some(id) = self.health_resources.damage.id(kind) else {
+            return;
         };
-        if let Some(p) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(kind)
-        {
-            let _ = p.hurt(&self.motion.health, self.world.health_rules, id, amount);
+        let (hurt, amount) = match self.hurt_player_equipment(id, amount, None, false, 0) {
+            Ok((outcome, actual)) => (outcome.hurt, actual),
+            Err(error) => {
+                log::warn!("falling block damage failed: {error}");
+                (false, amount)
+            }
+        };
+        if hurt {
+            // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, the falling block
+            // (`DamageSources.fallingBlock(this)` and the like) being both the
+            // causing and the direct entity.
+            let block = horizon_client::advancements::EntityView {
+                kind: "minecraft:falling_block".into(),
+                position: [position.x, position.y, position.z],
+                ..Default::default()
+            };
+            self.trigger_entity_hurt_player(&horizon_client::advancements::DamageView {
+                kind: kind.to_owned(),
+                direct: Some(block.clone()),
+                is_direct: true,
+                source: Some(block),
+                original,
+                actual: amount,
+                blocked: false,
+            });
         }
     }
 }
+
+#[cfg(test)]
+mod helmet_tests;

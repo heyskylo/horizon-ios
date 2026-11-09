@@ -60,10 +60,6 @@ impl GradientTable {
     fn permute(&self, index: i32) -> i32 {
         i32::from(self.permutations[(index & 255) as usize])
     }
-
-    fn gradient(&self, index: i32) -> [f32; 3] {
-        PERLIN_GRADIENTS[(self.permute(index) & 15) as usize]
-    }
 }
 
 // Perlin's 16-direction table includes four repeated directions. Simplex uses

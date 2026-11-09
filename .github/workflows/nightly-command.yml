@@ -27,7 +27,7 @@ jobs:
       issues: write         # answers in the thread
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
@@ -41,6 +41,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BODY: ${{ github.event.comment.body }}
           AUTHOR: ${{ github.event.comment.user.login }}
+          # Who may act is decided by this numeric ID: a login can be claimed by someone else after a rename.
+          AUTHOR_ID: ${{ github.event.comment.user.id }}
           ISSUE: ${{ github.event.issue.number }}
           COMMENT_URL: ${{ github.event.comment.html_url }}
         run: python3 tools/ci/nightly_set.py command

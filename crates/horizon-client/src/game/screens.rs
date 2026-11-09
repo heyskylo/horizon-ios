@@ -13,6 +13,30 @@ use horizon_world::nbt::Tag;
 use winit::keyboard::KeyCode;
 
 impl Screen {
+    /// The screens whose own `keyPressed` takes every press: the social
+    /// screen, the command block and block editors, the debug options.
+    pub(super) fn takes_presses(self) -> bool {
+        matches!(
+            self,
+            Self::Social | Self::CommandBlock | Self::DebugOptions | Self::BlockEditor
+        )
+    }
+}
+
+impl Game<'_> {
+    /// A press on a screen that `takes_presses`, to that screen.
+    pub(super) fn screen_press(&mut self, event: &winit::event::KeyEvent) {
+        match self.screen {
+            Screen::Social => self.social_key(event),
+            Screen::CommandBlock => self.command_block_key(event),
+            Screen::DebugOptions => self.debug_options_key(event),
+            Screen::BlockEditor => self.block_editor_key(event),
+            _ => {}
+        }
+    }
+}
+
+impl Screen {
     /// Screen.extractBackground for non-isInGameUi screens, and
     /// PauseScreen.extractBackground only when showPauseMenu is true.
     pub(super) fn blurs_background(self, pause_menu: bool) -> bool {
@@ -30,13 +54,17 @@ impl Screen {
             | Self::DebugOptions => true,
             Self::Playing
             | Self::GameModeSwitcher
+            | Self::EmoteWheel
             | Self::Chat
             | Self::Creative
             | Self::Inventory
             | Self::Dead
             | Self::CommandBlock
             | Self::BlockEditor
-            | Self::Mod => false,
+            | Self::Mod
+            // The HUD editor shows the HUD it moves.
+            | Self::HudEditor
+            | Self::Studio => false,
             // WinScreen.extractBackground: the poem fills the screen with the End portal, the
             // credits alone blur. Game::menu_blur knows which one rolls.
             Self::Win => false,
@@ -268,7 +296,17 @@ impl Game<'_> {
                 }
                 _ => Text::translate(key, &[]),
             };
-            ui::button(batch, atlas, x, y, bw, 20.0, &label, active, hover);
+            let action = match id {
+                0 => Some(horizon_client::widgets::Action::Back),
+                1 => Some(horizon_client::widgets::Action::Options),
+                2 => Some(horizon_client::widgets::Action::Exit),
+                _ => None,
+            };
+            if let Some(action) = action {
+                ui::action_button(batch, atlas, action, x, y, bw, 20.0, &label, active, hover);
+            } else {
+                ui::button(batch, atlas, x, y, bw, 20.0, &label, active, hover);
+            }
             // PauseScreen's customAdditions button: CUSTOM_OPTIONS_TOOLTIP.
             if (id == 11 || id == 14) && hover {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));

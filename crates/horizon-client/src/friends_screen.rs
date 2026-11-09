@@ -244,6 +244,13 @@ pub fn draw(
     }
     for b in buttons {
         let hover = b.active && ui::hovered(cursor, b.x, b.y, b.w, 20.0);
+        if matches!(b.action, Action::Done) {
+            crate::widgets::declare_action(
+                crate::widgets::Action::Done,
+                [b.x, b.y, b.w, 20.0],
+                b.active,
+            );
+        }
         ui::button(
             batch,
             atlas,

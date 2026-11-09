@@ -9,10 +9,11 @@ use std::sync::Once;
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    AddFontMemResourceEx, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-    DEFAULT_CHARSET, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_NOCLIP, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, DeleteObject, DrawTextW, FF_DONTCARE, FillRect, GetDC, OUT_DEFAULT_PRECIS,
-    ReleaseDC, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    AddFontMemResourceEx, BitBlt, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap,
+    CreateCompatibleDC, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DT_CALCRECT, DT_CENTER,
+    DT_LEFT, DT_NOCLIP, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteDC, DeleteObject, DrawTextW,
+    FF_DONTCARE, FillRect, GetDC, OUT_DEFAULT_PRECIS, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
+    SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
 
@@ -34,24 +35,28 @@ static FACES: Once = Once::new();
 /// `Geist Mono`), which must outlive the process: `AddFontMemResourceEx`
 /// keeps referencing them. Repainting is safe and cheap (a background thread
 /// may call this as the console's lines arrive).
-pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
+pub fn paint(hwnd: isize, semibold: &'static [u8], mono: &'static [u8], logs: &[String]) {
     let hwnd = hwnd as HWND;
     FACES.call_once(|| {
         for font in [semibold, mono] {
-            let count = 0u32;
+            let mut count = 0u32;
+            // SAFETY: `font` is a `'static` slice valid for the process lifetime, and
+            // `pNumFonts` (`&raw mut count`) points to writable `u32` storage.
             unsafe {
                 AddFontMemResourceEx(
                     font.as_ptr().cast(),
                     font.len() as u32,
                     std::ptr::null(),
-                    &count,
+                    (&raw mut count).cast_const(),
                 );
             }
         }
     });
+    // SAFETY: `hwnd` is a valid window handle owned by the caller on Windows; all GDI
+    // objects created below are selected out and deleted before releasing `window_dc`.
     unsafe {
-        let hdc = GetDC(hwnd);
-        if hdc.is_null() {
+        let window_dc = GetDC(hwnd);
+        if window_dc.is_null() {
             return;
         }
         let mut rect = RECT {
@@ -61,6 +66,23 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
             bottom: 0,
         };
         GetClientRect(hwnd, &mut rect);
+        // Draw into a memory bitmap and copy it to the window in one blit:
+        // clearing and drawing straight to the window's DC shows the blank
+        // frame in between, so the screen flickers at every repaint.
+        let mem = CreateCompatibleDC(window_dc);
+        let bitmap = CreateCompatibleBitmap(window_dc, rect.right, rect.bottom);
+        if mem.is_null() || bitmap.is_null() {
+            if !bitmap.is_null() {
+                let _ = DeleteObject(bitmap);
+            }
+            if !mem.is_null() {
+                let _ = DeleteDC(mem);
+            }
+            let _ = ReleaseDC(hwnd, window_dc);
+            return;
+        }
+        let old_bitmap = SelectObject(mem, bitmap);
+        let hdc = mem;
         let (w, h) = (
             (rect.right - rect.left) as f32,
             (rect.bottom - rect.top) as f32,
@@ -190,6 +212,21 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
         let _ = DeleteObject(mark);
         let _ = DeleteObject(tagline);
         let _ = DeleteObject(console);
-        let _ = ReleaseDC(hwnd, hdc);
+        // The finished frame reaches the window as one copy.
+        BitBlt(
+            window_dc,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            hdc,
+            rect.left,
+            rect.top,
+            SRCCOPY,
+        );
+        SelectObject(hdc, old_bitmap);
+        let _ = DeleteObject(bitmap);
+        let _ = DeleteDC(hdc);
+        let _ = ReleaseDC(hwnd, window_dc);
     }
 }

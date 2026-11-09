@@ -15,6 +15,7 @@ use std::{
     path::Path,
 };
 
+#[derive(Clone)]
 pub struct ServerAdvancements {
     tree: std::sync::Arc<Tree>,
     kids: Vec<Vec<usize>>,
@@ -267,6 +268,16 @@ impl ServerAdvancements {
         Some(w.data)
     }
 
+    /// `ServerAdvancementManager.get` then `PlayerAdvancements.setSelectedTab`:
+    /// `None` when the server has no advancement `id` (the tab is left as it
+    /// is), else whether a player may keep it as its tab (a root that has a
+    /// display).
+    pub fn selectable(&self, id: &str) -> Option<bool> {
+        self.tree
+            .get(id)
+            .map(|a| a.parent.is_none() && a.display.is_some())
+    }
+
     /// Which advancements a player with `progress` may see.
     pub fn visibility(&self, progress: &Progress) -> Vec<bool> {
         self.tree
@@ -368,6 +379,11 @@ impl ServerAdvancements {
         id: &str,
         sync: &SyncData,
     ) -> Option<horizon_protocol::packets::recipes::RecipeDisplay> {
+        // A recipe with several displays has no ghost here (PlaceRecipe is
+        // not this change's): only a single-display recipe's entry is used.
+        if self.displays.display_ids(id).len() != 1 {
+            return None;
+        }
         let bytes = self.book_entries(id, sync, 0).into_iter().next()?;
         let mut r = horizon_protocol::buf::Reader::new(&bytes);
         horizon_protocol::packets::recipes::RecipeBookEntry::read(&mut r)
@@ -379,10 +395,6 @@ impl ServerAdvancements {
     /// highlighted, and with a notification unless the recipe turns it off.
     fn book_entries(&self, id: &str, sync: &SyncData, flags: i8) -> Vec<Vec<u8>> {
         let ids = self.displays.display_ids(id);
-        if ids.len() != 1 {
-            // Special recipes have no display; transmutations aren't unlocked on joining.
-            return Vec::new();
-        }
         let Some(r) = self
             .recipes
             .get(id)
@@ -391,6 +403,15 @@ impl ServerAdvancements {
             return Vec::new();
         };
         let r = &r;
+        if r["type"].as_str() == Some("minecraft:crafting_transmute") {
+            return self
+                .transmute_entries(r, ids, sync, flags)
+                .unwrap_or_default();
+        }
+        if ids.len() != 1 {
+            // Special recipes have no display.
+            return Vec::new();
+        }
         let kind = r["type"].as_str().unwrap_or("");
         let item = |n: &str| sync.id("minecraft:item", n);
         let slot = |n: &str| sync.id("minecraft:slot_display", n).unwrap_or(0);
@@ -485,7 +506,22 @@ impl ServerAdvancements {
             }
             _ => return Vec::new(),
         };
-        // The group, the recipe book category and the placement's ingredients.
+        self.entry_tail(&mut w, r, sync, category, &placed, flags);
+        vec![w.data]
+    }
+
+    /// An entry's end: the group, the recipe book category, the placement's
+    /// ingredients and the flags.
+    fn entry_tail(
+        &self,
+        w: &mut Writer,
+        r: &Value,
+        sync: &SyncData,
+        category: &str,
+        placed: &[&Value],
+        flags: i8,
+    ) {
+        let item = |n: &str| sync.id("minecraft:item", n);
         match r["group"].as_str().and_then(|g| self.groups.get(g)) {
             Some(g) => w.varint(g + 1),
             None => w.varint(0),
@@ -498,12 +534,113 @@ impl ServerAdvancements {
         w.bool(true);
         w.varint(placed.len() as i32);
         for v in placed {
-            holder_set(&mut w, v, &item);
+            holder_set(w, v, &item);
         }
         // The notification only where the recipe shows one.
         let notify = r["show_notification"].as_bool().unwrap_or(true);
         w.i8(if notify { flags } else { flags & !1 });
-        vec![w.data]
+    }
+
+    /// `TransmuteRecipe.display`: one `ShapelessCraftingRecipeDisplay` per
+    /// material count from the recipe's minimum to its maximum, the input
+    /// then that many materials, its `resultDisplay`, the crafting table; the
+    /// placement (`placementInfo`) is the input and the most materials. All
+    /// or nothing: a form this cannot write, or a count that is not the
+    /// recipe's display ids, gives no entry at all.
+    fn transmute_entries(
+        &self,
+        r: &Value,
+        ids: std::ops::Range<i32>,
+        sync: &SyncData,
+        flags: i8,
+    ) -> Option<Vec<Vec<u8>>> {
+        let (min, max) = crate::crafting::transmute_material_bounds(r.get("material_count"));
+        if (max + 1).checked_sub(min)? != ids.len() {
+            return None;
+        }
+        let item = |n: &str| sync.id("minecraft:item", n);
+        let slot = |n: &str| sync.id("minecraft:slot_display", n);
+        let (input, material) = (&r["input"], &r["material"]);
+        let holder = |v: &Value| matches!(v, Value::String(_));
+        if !holder(input) || !holder(material) {
+            return None;
+        }
+        // TransmuteResult: an item (or none: the input's own items), a count
+        // (1) and components, which this does not write.
+        let result = &r["result"];
+        if result
+            .get("components")
+            .is_some_and(|c| !c.as_object().is_some_and(|o| o.is_empty()))
+        {
+            return None;
+        }
+        let base = result["count"].as_i64().unwrap_or(1) as i32;
+        let add = r["add_material_count_to_result"].as_bool().unwrap_or(false);
+        let result_items: Vec<i32> = match result["id"].as_str() {
+            Some(id) => vec![item(id)?],
+            // Composite over the input's items, in the order clients get the tag.
+            None => match input.as_str()? {
+                tag if tag.starts_with('#') => {
+                    let name = &tag[1..];
+                    sync.tags
+                        .registries
+                        .iter()
+                        .find(|t| t.registry == "minecraft:item")?
+                        .tags
+                        .iter()
+                        .find(|t| t.name == name)?
+                        .ids
+                        .clone()
+                }
+                one => vec![item(one)?],
+            },
+        };
+        let (shapeless, tag, empty_stack) = (
+            sync.id("minecraft:recipe_display", "minecraft:crafting_shapeless")?,
+            slot("minecraft:tag")?,
+            slot("minecraft:item_stack")?,
+        );
+        let (composite, item_slot) = (slot("minecraft:composite")?, slot("minecraft:item")?);
+        let table = item("minecraft:crafting_table")?;
+        let category = crafting_category(r["category"].as_str().unwrap_or("")).name();
+        let placed: Vec<&Value> = std::iter::once(input)
+            .chain(std::iter::repeat_n(material, max))
+            .collect();
+        let mut entries = Vec::with_capacity(ids.len());
+        for (n, id) in (min..=max).zip(ids) {
+            let mut w = Writer::new();
+            w.varint(id);
+            w.varint(shapeless);
+            w.varint(n as i32 + 1);
+            for v in std::iter::once(input).chain(std::iter::repeat_n(material, n)) {
+                w.varint(tag);
+                holder_set(&mut w, v, &item);
+            }
+            // computeResultSize: the materials added to the count, or not.
+            let count = if add { n as i32 + base } else { base };
+            let stack = |w: &mut Writer, id: i32| {
+                w.varint(empty_stack);
+                w.varint(id);
+                w.varint(count);
+                w.varint(0);
+                w.varint(0);
+            };
+            match result["id"].as_str() {
+                Some(_) => stack(&mut w, result_items[0]),
+                None => {
+                    w.varint(composite);
+                    w.varint(result_items.len() as i32);
+                    for &id in &result_items {
+                        stack(&mut w, id);
+                    }
+                }
+            }
+            w.varint(item_slot);
+            w.varint(table);
+            self.entry_tail(&mut w, r, sync, category, &placed, flags);
+            entries.push(w.data);
+        }
+        Some(entries)
     }
 }
 
@@ -795,6 +932,37 @@ mod tests {
     }
 
     #[test]
+    fn an_owned_content_recipe_reaches_the_client_book() {
+        let recipe = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:raw_copper"],"result":{"id":"minecraft:copper_ingot","count":2}}"#;
+        let root = resources("content_namespace", &[("control", recipe)]);
+        let dir = root.join("data/recipe_pilot/recipe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("press.json"), recipe).unwrap();
+        for marker in [
+            horizon_items::content_namespaces::MARKER,
+            horizon_items::content_namespaces::MOD_IDS_MARKER,
+        ] {
+            std::fs::write(root.join(marker), br#"["recipe_pilot"]"#).unwrap();
+        }
+        let (sync, e) = entry(&root, "recipe_pilot:press");
+        assert_eq!(
+            e.id,
+            sync.advancements
+                .displays
+                .first_display("recipe_pilot:press")
+                .unwrap()
+        );
+        match e.display {
+            RecipeDisplay::Shapeless { result, .. } => {
+                assert_eq!(result, SlotDisplay::ItemStack(Stack::new(1, 2)));
+            }
+            other => panic!("not a shapeless content recipe: {other:?}"),
+        }
+        let _ = entry(&root, "minecraft:control");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn a_recipe_with_an_unknown_ingredient_kind_stays_out_of_the_book() {
         let root = resources(
             "mymod_kind",
@@ -871,6 +1039,80 @@ mod tests {
         assert!(len >= 2, "an item list, not empty ({len}) nor a tag");
         assert_eq!(len - 1, 1, "the compound's one item");
         assert_eq!(r.varint().unwrap(), raw);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The stonecutter's recipes go out in registration order (path, then
+    /// namespace): a guest's button picks by position in the host's list,
+    /// which keeps that order too.
+    #[test]
+    fn update_recipes_lists_the_stonecutter_in_registration_order() {
+        let cut = |input: &str| {
+            format!(
+                r#"{{"type":"minecraft:stonecutting","ingredient":"{input}",
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+            )
+        };
+        let vanilla = cut("minecraft:raw_copper");
+        let root = resources("stonecutter_order", &[("z_cut", vanilla.as_str())]);
+        let packs = [(
+            "recipe/pack:a_cut".to_owned(),
+            vec![cut("minecraft:redstone").into_bytes()],
+        )];
+        let sync =
+            SyncData::load(&root, &horizon_world::loot::PackOverlay { files: &packs }).unwrap();
+        let item = |n: &str| sync.id("minecraft:item", n).unwrap();
+        let mut r = Reader::new(&sync.recipes);
+        for _ in 0..r.varint().unwrap() {
+            r.string(64).unwrap();
+            for _ in 0..r.varint().unwrap() {
+                r.varint().unwrap();
+            }
+        }
+        let mut inputs = Vec::new();
+        for _ in 0..r.varint().unwrap() {
+            // An item list (its length plus one), then the result's slot
+            // display: its type, item, count and two empty component lists.
+            let len = r.varint().unwrap();
+            inputs.push((1..len).map(|_| r.varint().unwrap()).collect::<Vec<_>>());
+            for _ in 0..5 {
+                r.varint().unwrap();
+            }
+        }
+        assert_eq!(
+            inputs,
+            [
+                vec![item("minecraft:redstone")],
+                vec![item("minecraft:raw_copper")]
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A world's own load over the data its packs gave (`SyncData::load_over`, which keeps
+    /// that data's recipes) sends what a full read of the same packs sends: their recipes too.
+    #[test]
+    fn a_world_load_over_its_packs_data_sends_what_a_full_read_does() {
+        let cut = |input: &str| {
+            format!(
+                r#"{{"type":"minecraft:stonecutting","ingredient":"{input}",
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+            )
+        };
+        let vanilla_cut = cut("minecraft:raw_copper");
+        let root = resources("load_over", &[("z_cut", vanilla_cut.as_str())]);
+        let packs = [(
+            "recipe/pack:a_cut".to_owned(),
+            vec![cut("minecraft:redstone").into_bytes()],
+        )];
+        let overlay = horizon_world::loot::PackOverlay { files: &packs };
+        let vanilla = SyncData::load(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        let packed = SyncData::load(&root, &overlay).unwrap();
+        let over = SyncData::load_over(&root, &overlay, None, &packed).unwrap();
+        let full = SyncData::load_with_kept(&root, &overlay, None, Some(&packed)).unwrap();
+        assert_ne!(full.recipes, vanilla.recipes, "the pack's recipe is sent");
+        assert_eq!(over.recipes, full.recipes);
+        assert_eq!(over.advancements.recipes, full.advancements.recipes);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1057,5 +1299,82 @@ mod tests {
         assert_eq!(duration, 200);
         assert_eq!(experience, 0.7);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every recipe the game has, as a Horizon server sends it to a Horizon
+    /// client: the client's own book keeps its entries, none is taken from the
+    /// packet (a regression of parity with Horizon on both sides otherwise).
+    /// Needs the prepared resources (`HORIZON_TEST_RESOURCES`, or the checkout's
+    /// `.local`); passes without them.
+    #[test]
+    fn a_horizon_server_of_the_real_recipes_leaves_the_clients_book_as_it_is() {
+        use crate::{
+            crafting::Recipes,
+            items::Items,
+            recipe_book::{Book, PacketNames, RecipeIndex},
+        };
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("registries.json").exists() {
+            return;
+        }
+        let none = &horizon_world::loot::PackOverlay::NONE;
+        let sync = SyncData::load(&root, none).unwrap();
+        let items = Items::catalog(&root, none).unwrap();
+        let recipes = Recipes::load(&root, &items, none).unwrap();
+        let mut book = Book::build(&recipes, &items);
+        book.set_display_ids(&RecipeIndex::load(&root, none));
+        let before: Vec<(String, i32, Option<String>)> = book
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.display_id, e.group.clone()))
+            .collect();
+        let mut sent = Vec::new();
+        for id in sync.advancements.recipes.keys() {
+            for bytes in sync.advancements.book_entries(id, &sync, 0) {
+                sent.push(RecipeBookEntry::read(&mut Reader::new(&bytes)).unwrap());
+            }
+        }
+        assert!(sent.len() > 1000, "{} entries sent", sent.len());
+        let item = |id: i32| {
+            sync.builtin
+                .get("minecraft:item")
+                .and_then(|i| i.name(id))
+                .map(str::to_owned)
+        };
+        let category = |id: i32| {
+            sync.builtin
+                .get("minecraft:recipe_book_category")
+                .and_then(|i| i.name(id))
+                .map(str::to_owned)
+        };
+        let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
+        book.use_server_entries(
+            &sent,
+            &PacketNames {
+                item: &item,
+                category: &category,
+                tag: &tag,
+            },
+        );
+        let after: Vec<(String, i32, Option<String>)> = book
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.display_id, e.group.clone()))
+            .collect();
+        let changed: Vec<_> = before
+            .iter()
+            .zip(&after)
+            .filter(|(b, a)| b != a)
+            .take(10)
+            .collect();
+        assert_eq!(after.len(), before.len(), "entries were added");
+        assert!(changed.is_empty(), "entries changed: {changed:?}");
+        assert!(book.server_requirements.is_empty());
     }
 }

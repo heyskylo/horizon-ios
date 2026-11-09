@@ -7,8 +7,12 @@ use super::{
     states::{BlockId, PropKey},
     update::{above, below, rel},
 };
+use crate::block_support::SupportType;
 use crate::{fluid::FluidKind, registry::BlockStateId};
-use horizon_core::{geometry::Direction, position::BlockPos};
+use horizon_core::{
+    geometry::{Direction, Vec3, VoxelShape},
+    position::BlockPos,
+};
 
 pub(crate) const fn clockwise(direction: Direction) -> Direction {
     match direction {
@@ -71,8 +75,8 @@ impl Behaviours {
     pub(crate) fn implements(&self, state: BlockStateId, interface: Interface) -> bool {
         self.data(state).implements(interface)
     }
-    pub(crate) fn fluid_in(&self, kind: FluidKind, mask: u8) -> bool {
-        mask & (1 << kind as u8) != 0
+    pub(crate) fn fluid_in(&self, kind: FluidKind, mask: crate::fluid::FluidMask) -> bool {
+        mask & kind.mask() != 0
     }
     pub(crate) fn is_water_fluid(&self, kind: FluidKind) -> bool {
         self.fluid_in(kind, self.fluid_tags.water)
@@ -166,6 +170,27 @@ impl crate::block_collision::DynamicCollisionWorld for NoBlockEntities {
     }
 }
 
+/// Block-entity lookups for dynamic shapes, read from the level itself: a
+/// shulker box's lid state decides whether its support shape is the open plate
+/// or the closed full cube (`ShulkerBoxBlock.getBlockSupportShape`).
+struct LevelBlockEntities<'a, L: LevelAccess + ?Sized>(&'a L);
+impl<L: LevelAccess + ?Sized> crate::dynamic_support::DynamicSupportWorld
+    for LevelBlockEntities<'_, L>
+{
+    type Error = std::convert::Infallible;
+    fn shulker_is_closed(&mut self, position: [i32; 3]) -> Result<Option<bool>, Self::Error> {
+        Ok(self
+            .0
+            .shulker_is_closed(BlockPos::new(position[0], position[1], position[2])))
+    }
+    fn moving_piston_shape(
+        &mut self,
+        _position: [i32; 3],
+    ) -> Result<Option<VoxelShape>, Self::Error> {
+        Ok(None)
+    }
+}
+
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// Shape queries over `getCollisionShape(level, pos)`, including the
     /// position-dependent shapes (bamboo, speleothems, shulker boxes).
@@ -192,33 +217,127 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// exported facts see no block entity and call every face unsupported,
     /// which made a lever on the piston's back pop off when it retracted.
     pub(super) fn support_state(&self, pos: BlockPos) -> BlockStateId {
-        let state = self.state(pos);
-        if self.b.is_block(state, self.b.named.moving_piston) {
-            if let Some(piston) = self.moving_piston(pos) {
-                // `PistonMovingBlockEntity.getCollisionShape`: only a piston base.
-                if piston.source
-                    && !piston.extending
-                    && (self.b.is_block(piston.moved_state, self.b.named.piston)
-                        || self
-                            .b
-                            .is_block(piston.moved_state, self.b.named.sticky_piston))
-                {
-                    return self
+        self.support_state_for(pos, self.state(pos))
+    }
+    /// [`Self::support_state`] for `state`, which a shape update hands over as
+    /// the neighbour's state, read with the block entity at `pos`.
+    fn support_state_for(&self, pos: BlockPos, state: BlockStateId) -> BlockStateId {
+        if self.b.is_block(state, self.b.named.moving_piston)
+            && let Some(piston) = self.moving_piston(pos)
+        {
+            // `PistonMovingBlockEntity.getCollisionShape`: only a piston base.
+            if piston.source
+                && !piston.extending
+                && (self.b.is_block(piston.moved_state, self.b.named.piston)
+                    || self
                         .b
-                        .table
-                        .set_bool(piston.moved_state, self.b.props.extended, true);
-                }
+                        .is_block(piston.moved_state, self.b.named.sticky_piston))
+            {
+                return self
+                    .b
+                    .table
+                    .set_bool(piston.moved_state, self.b.props.extended, true);
+            }
+            // The same method for any other moving block: its collision shape
+            // is `movedState.getCollisionShape(..).move(dir * extendedProgress)`,
+            // and `getExtendedProgress` is 0 once progress reaches 1.0, so a
+            // finished-but-not-yet-placed block supports like itself (a wall
+            // coral fan keeps its slime block while the column lands). At 0 or
+            // 0.5 progress the shape is shifted off the cell, a face never full.
+            if !piston.source && piston.progress >= 1.0 {
+                return piston.moved_state;
             }
         }
         state
     }
+    /// `PistonMovingBlockEntity.getCollisionShape` for a block a piston moves (not the
+    /// piston's own base or head): the moved block's collision shape, offset by
+    /// `getExtendedProgress(progress)` along the movement (`progress - 1` while
+    /// extending, `1 - progress` while retracting). `MOVING_PISTON` has a dynamic shape,
+    /// so `isFaceSturdy` asks this shape every time. When `PistonBaseBlock.moveBlocks`
+    /// updates the neighbours, progress is 0 and the shape sits a whole block back,
+    /// outside the cell: a rail on a pushed block loses its support and pops. At
+    /// progress 1, before the block entity finishes, it sits in the cell: a rail
+    /// carried by slime finishes on top of a slime block still moving below it
+    /// (#8111). None for other cells, and for moved blocks without a fixed shape.
+    fn moving_block_shape(&self, pos: BlockPos, state: BlockStateId) -> Option<VoxelShape> {
+        if !self.b.is_block(state, self.b.named.moving_piston) {
+            return None;
+        }
+        let piston = self.moving_piston(pos)?;
+        if piston.source {
+            return None;
+        }
+        let shape = self.b.collision_shape(piston.moved_state)?;
+        let [x, y, z] = piston.shape_state().interpolated_offset(1.0);
+        Some(shape.moved(Vec3::new(f64::from(x), f64::from(y), f64::from(z))))
+    }
+    /// `isFaceSturdy(level, pos, direction, support)` of a moved block's cell, from its
+    /// shape ([`Self::moving_block_shape`]); None for every other cell.
+    fn moving_block_supports(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        support: SupportType,
+    ) -> Option<bool> {
+        let shape = self.moving_block_shape(pos, state)?;
+        Some(support.is_supporting(&shape, direction).unwrap_or(false))
+    }
+    /// `ShulkerBoxBlock.getBlockSupportShape` at `pos`: vanilla asks the block
+    /// entity because a shulker box's shape is dynamic, so an open box gives
+    /// support only through its one-pixel plate opposite `facing`, where the
+    /// exported facts see a closed full cube. None for every other block.
+    fn shulker_support(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        support: SupportType,
+    ) -> Option<bool> {
+        if !self
+            .b
+            .tags
+            .shulker_boxes
+            .contains(self.b.table.block(state))
+        {
+            return None;
+        }
+        let mut world = LevelBlockEntities(&*self.level);
+        self.b
+            .dynamic
+            .get(&state)?
+            .is_face_sturdy(&mut world, [pos.x, pos.y, pos.z], direction, support)
+            .ok()
+    }
     pub fn sturdy(&self, pos: BlockPos, direction: Direction) -> bool {
+        let state = self.state(pos);
+        if let Some(sturdy) = self.moving_block_supports(pos, state, direction, SupportType::Full) {
+            return sturdy;
+        }
+        if let Some(sturdy) = self.shulker_support(pos, state, direction, SupportType::Full) {
+            return sturdy;
+        }
         self.b.is_face_sturdy(self.support_state(pos), direction)
     }
     /// `Block.canSupportRigidBlock(level, below)`.
     pub fn can_support_rigid_block(&self, pos: BlockPos) -> bool {
+        self.can_support_rigid_block_on(pos, self.state(pos))
+    }
+    /// `state.isFaceSturdy(level, pos, UP, RIGID)`: `state` with the live block
+    /// entity at `pos`, as `DiodeBlock.canSurviveOn` asks of a shape update's
+    /// neighbour. A retracting piston's base is a `moving_piston` here.
+    pub(super) fn can_support_rigid_block_on(&self, pos: BlockPos, state: BlockStateId) -> bool {
+        if let Some(rigid) =
+            self.moving_block_supports(pos, state, Direction::Up, SupportType::Rigid)
+        {
+            return rigid;
+        }
+        if let Some(rigid) = self.shulker_support(pos, state, Direction::Up, SupportType::Rigid) {
+            return rigid;
+        }
         self.b
-            .is_face_sturdy_rigid(self.support_state(pos), Direction::Up)
+            .is_face_sturdy_rigid(self.support_state_for(pos, state), Direction::Up)
     }
     /// `Block.canSupportCenter(level, pos, direction)`.
     pub fn can_support_center(&self, pos: BlockPos, direction: Direction) -> bool {
@@ -226,6 +345,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if direction == Direction::Down && self.b.in_set(state, &self.b.tags.unstable_bottom_center)
         {
             return false;
+        }
+        let raw = self.state(pos);
+        if let Some(center) = self.moving_block_supports(pos, raw, direction, SupportType::Center) {
+            return center;
+        }
+        if let Some(center) = self.shulker_support(pos, raw, direction, SupportType::Center) {
+            return center;
         }
         self.b.is_face_sturdy_center(state, direction)
     }

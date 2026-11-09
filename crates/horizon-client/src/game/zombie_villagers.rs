@@ -34,6 +34,17 @@ fn infects(difficulty: Difficulty, coin: impl FnOnce() -> bool) -> bool {
 }
 
 impl Game<'_> {
+    /// `ZombieVillager.handleEntityEvent(16)`: only the client plays the cure sound.
+    pub(super) fn zombie_villager_cure_sound(&mut self, id: u32) {
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && let Some(horizon_client::mobs::MobEvent::Sound(name, at, volume, pitch)) =
+                zombie_villager::cure_sound(m)
+        {
+            self.audio
+                .play_unshared(&format!("minecraft:{name}"), Some(at), volume, pitch);
+        }
+    }
+
     /// `Zombie.killedEntity`: a villager killed by a zombie may rise as a
     /// zombie villager keeping its profession, trades and gossip.
     pub(super) fn zombie_killed(&mut self, killer: u32, victim: u32) {
@@ -72,14 +83,18 @@ impl Game<'_> {
             return;
         };
         convert_to_zombie_villager(&old, z);
-        let killer_at = self.mobs[k].position;
-        let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
-        self.audio.play(
-            "minecraft:entity.zombie.infect",
-            Some([killer_at.x, killer_at.y, killer_at.z]),
-            2.0,
-            pitch,
-        );
+        if !self.mobs[k].silent {
+            let at = self.mobs[k].position;
+            self.level_event_at(
+                1026,
+                [
+                    at.x.floor() as i32,
+                    at.y.floor() as i32,
+                    at.z.floor() as i32,
+                ],
+                0,
+            );
+        }
     }
 
     /// `ZombieVillager.mobInteract`: a golden apple on a weakened zombie
@@ -150,13 +165,17 @@ impl Game<'_> {
                 g.trigger_cured_zombie_villager(&zombie_view, &villager_view)
             });
         }
-        let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
-        self.audio.play(
-            "minecraft:entity.zombie_villager.converted",
-            Some(at),
-            2.0,
-            pitch,
-        );
+        if !old.silent {
+            self.level_event_at(
+                1027,
+                [
+                    old.position.x.floor() as i32,
+                    old.position.y.floor() as i32,
+                    old.position.z.floor() as i32,
+                ],
+                0,
+            );
+        }
     }
 
     /// `ServerLevel.getPlayerByUUID`: the player with `uuid` in this level.
@@ -177,7 +196,7 @@ impl Game<'_> {
         zombie: &adv::EntityView,
         villager: &adv::EntityView,
     ) {
-        let me = self.player_entity();
+        let me = self.player_entity_for("minecraft:cured_zombie_villager");
         let (zombie, villager) = (zombie.clone(), villager.clone());
         self.trigger("minecraft:cured_zombie_villager", move |c, w| {
             let origin = me.position;
@@ -218,6 +237,13 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.name_visible = from.name_visible;
     to.invisible = from.invisible;
     to.extra.pick_up_loot = from.extra.pick_up_loot;
+    // ConversionType.convertCommon: the flags a converted mob keeps.
+    to.extra.left_handed = from.extra.left_handed;
+    to.no_ai = from.no_ai;
+    to.invulnerable_flag = from.invulnerable_flag;
+    to.invulnerable_time = from.invulnerable_time;
+    to.no_gravity = from.no_gravity;
+    to.silent = from.silent;
     to.extra.set_main_hand(from.extra.main_hand.clone());
     if let Some(stack) = from.extra.main_hand_stack() {
         to.extra.set_main_hand_stack(Some(stack.clone()));
@@ -228,6 +254,15 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.extra.legs = from.extra.legs.clone();
     to.extra.feet = from.extra.feet.clone();
     to.extra.effects = from.extra.effects.clone();
+    to.extra.effect_fallbacks = from.extra.effect_fallbacks.clone();
+    if to
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:health_boost")
+    {
+        horizon_client::mobs::finalize::health_boost_changed(to);
+    }
     // VillagerData and the trades, experience and gossip.
     to.extra.variant = from.extra.variant;
     to.extra.variant2 = from.extra.variant2;
@@ -275,5 +310,85 @@ mod tests {
             assert!(is_zombie(s));
         }
         assert!(!is_zombie(Species::Skeleton) && !is_zombie(Species::Villager));
+    }
+
+    /// `ConversionType.convertCommon` copies Silent, NoAI, LeftHanded,
+    /// NoGravity and Invulnerable onto the mob that replaces the old one.
+    #[test]
+    fn infection_and_the_cure_keep_the_common_flags() {
+        use horizon_client::mobs::{Anim, Brain, MobType, Part};
+        use horizon_core::geometry::Vec3;
+        use std::sync::Arc;
+        let mob = |id, species, name: &str| {
+            let kind = MobType {
+                id: name.into(),
+                species,
+                width: 0.6,
+                height: 1.95,
+                eye_height: 1.74,
+                category: "monster".into(),
+                max_health: 20.0,
+                speed: 0.23,
+                flying_speed: 0.4,
+                attack_damage: 3.0,
+                attack_knockback: 0.0,
+                follow_range: 35.0,
+                step_height: 0.6,
+                armor: 0.0,
+                armor_toughness: 0.0,
+                knockback_resistance: 0.0,
+                jump_strength: 0.42,
+                attributes: Arc::default(),
+                item_stack_limits: Arc::default(),
+                gravity: 0.08,
+                safe_fall_distance: 3.0,
+                fall_damage_multiplier: 1.0,
+                water_efficiency: 0.0,
+                water_slowdown: 0.8,
+                air_speed: 0.02,
+                baby_scale: 0.5,
+                head_rot_speed: 10.0,
+                max_head_x_rot: 40.0,
+                max_head_y_rot: 75.0,
+                ambient_interval: 80,
+                flags: Default::default(),
+                model: Arc::new(Part {
+                    name: "root".into(),
+                    pose: [0.0; 9],
+                    polygons: Vec::new(),
+                    children: Vec::new(),
+                }),
+                layers: Default::default(),
+                texture: String::new(),
+                brain: Brain::Passive,
+                anim: Anim::Humanoid { zombie_arms: true },
+                sounds: ["entity.villager.ambient"; 3],
+                step_sound: None,
+                food: Arc::default(),
+                tempt: Arc::default(),
+            };
+            Mob::new(id, Arc::new(kind), Vec3::ZERO, 0.0)
+        };
+        let mut villager = mob(1, Species::Villager, "minecraft:villager");
+        villager.silent = true;
+        villager.no_ai = true;
+        villager.no_gravity = true;
+        villager.invulnerable_flag = true;
+        villager.extra.left_handed = true;
+        let mut zombie = mob(2, Species::ZombieVillager, "minecraft:zombie_villager");
+        assert!(!zombie.silent && !zombie.no_ai && !zombie.extra.left_handed);
+        convert_to_zombie_villager(&villager, &mut zombie);
+        assert!(zombie.silent);
+        assert!(zombie.no_ai);
+        assert!(zombie.no_gravity);
+        assert!(zombie.invulnerable_flag);
+        assert!(zombie.extra.left_handed);
+        let mut cured = mob(3, Species::Villager, "minecraft:villager");
+        convert_to_villager(&zombie, &mut cured);
+        assert!(cured.silent);
+        assert!(cured.no_ai);
+        assert!(cured.no_gravity);
+        assert!(cured.invulnerable_flag);
+        assert!(cured.extra.left_handed);
     }
 }

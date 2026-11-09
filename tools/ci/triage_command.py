@@ -3,7 +3,8 @@
 
     triage_command.py command     one comment (triage-command.yml): checks who asked, acts, answers in the thread
 
-A comment by Ludovic or by a login in .github/trusted-reviewers.txt, on the first line:
+A comment by Ludovic or by an account in .github/trusted-reviewers.txt (matched by numeric ID, never by login), on
+the first line:
 
     /close [completed|not planned]     closes an issue (a pull request: closes it without merging)
     /close duplicate of #123           comments "Duplicate of #123" and closes it as a duplicate
@@ -95,21 +96,21 @@ def label_refusal(name: str) -> str | None:
     return None
 
 
-def authorize(login: str, reviewers: ns.Reviewers) -> None:
-    """Ludovic always; a listed reviewer unless the list is paused; nobody else."""
-    if ns.is_owner(login):
+def authorize(actor: ns.Actor, reviewers: ns.Reviewers) -> None:
+    """Ludovic always; a listed reviewer unless the list is paused; nobody else. By numeric ID."""
+    if ns.is_owner(actor):
         return
-    if login.lower() not in reviewers.logins:
+    if not reviewers.listed(actor.id):
         raise Refused(f"Only Ludovic and the trusted reviewers listed in `{ns.REVIEWERS}` can triage this way.")
     if reviewers.paused:
         raise Refused(f"Triage commands are paused: Ludovic stopped them in `{ns.REVIEWERS}`.")
 
 
-def target_refusal(issue: dict, cmd: Command, login: str) -> str | None:
+def target_refusal(issue: dict, cmd: Command, actor: ns.Actor) -> str | None:
     """Why this thread can't be acted on (None when it can). `issue` is GitHub's issue object."""
     is_pr = "pull_request" in issue
     kind = "pull request" if is_pr else "issue"
-    if not ns.is_owner(login) and ns.is_owner((issue.get("user") or {}).get("login", "")):
+    if not ns.is_owner(actor) and ns.is_owner_id((issue.get("user") or {}).get("id")):
         return f"This {kind} is Ludovic's: triage commands don't touch it."
     if is_pr and (issue["pull_request"] or {}).get("merged_at"):
         return "That pull request is already merged."
@@ -193,23 +194,24 @@ def say(action: str, login: str, url: str) -> str:
     return f"{PREFIX}{action}, on behalf of @{login} ([their comment]({url}))."
 
 
-def run(api, cmd: Command, login: str, number: int, url: str, reviewers: ns.Reviewers, now: datetime) -> str:
+def run(api, cmd: Command, actor: ns.Actor, number: int, url: str, reviewers: ns.Reviewers, now: datetime) -> str:
     """Does the command; returns the comment to post. Raises Refused for a refusal."""
-    authorize(login, reviewers)
+    authorize(actor, reviewers)
+    login = actor.login
     for name in cmd.labels:
         if (why := label_refusal(name)):
             raise Refused(why)
     issue = api.issue(number)
     if issue is None:
         raise Refused("There is no such issue or pull request.")
-    if (why := target_refusal(issue, cmd, login)):
+    if (why := target_refusal(issue, cmd, actor)):
         raise Refused(why)
     if cmd.original is not None:
         if cmd.original == number:
             raise Refused("An item cannot be a duplicate of itself.")
         if api.issue(cmd.original) is None:
             raise Refused(f"There is no #{cmd.original} in Horizon.")
-    if not ns.is_owner(login) and actions_by(api, login, now) >= MAX_PER_DAY:
+    if not ns.is_owner(actor) and actions_by(api, login, now) >= MAX_PER_DAY:
         raise Refused(f"You used your {MAX_PER_DAY} triage actions of the last 24 hours. Try again later.")
     is_pr = "pull_request" in issue
     if cmd.verb == "reopen":
@@ -253,8 +255,12 @@ def command() -> int:
         cmd = parse(body)
         if cmd is None:
             return 0
+        try:
+            actor = ns.actor_from_env()
+        except ns.Refused as e:
+            raise Refused(str(e)) from e
         reviewers = ns.read_reviewers(Path(ns.REVIEWERS).read_text())
-        text = run(api, cmd, login, number, url, reviewers, datetime.now(timezone.utc))
+        text = run(api, cmd, actor, number, url, reviewers, datetime.now(timezone.utc))
     except Refused as e:
         text = f"{PREFIX}refused, {e} (asked by @{safe(login)})"
     except RuntimeError as e:

@@ -144,6 +144,42 @@ def record(control, action, seconds):
     return reply.get("frame_ms") or [], reply.get("cpu_ms") or []
 
 
+def living_player(control, scenario):
+    state = control("state")
+    if not state.get("player") or state["player"].get("health", 0) <= 0 or state.get("screen") == "dead":
+        raise RuntimeError(f"{scenario}: the player is dead or missing")
+    return state
+
+
+def prepare_flight(control, scenario):
+    state = living_player(control, scenario)
+    if state.get("gamemode") != "creative":
+        raise RuntimeError(f"{scenario}: creative flight is required")
+
+    def toggle():
+        # Hold each press across a tick: an instantaneous tap can be missed by movement.
+        try:
+            control("key space down")
+            control("wait 2")
+            control("key space up")
+            control("wait 2")
+            control("key space down")
+            control("wait 2")
+        finally:
+            control("key space up")
+        control("wait 2")
+
+    # `fly` changes the camera's flying flag only. Toggle through normal movement so
+    # the server knows too, and its abilities packet on a dimension change keeps it.
+    if state["player"].get("flying"):
+        toggle()
+        if living_player(control, scenario)["player"].get("flying"):
+            raise RuntimeError(f"{scenario}: could not reset creative flight")
+    toggle()
+    if not living_player(control, scenario)["player"].get("flying"):
+        raise RuntimeError(f"{scenario}: could not enable creative flight")
+
+
 def scenario(name, control, distance):
     frames, cpu = [], []
 
@@ -178,17 +214,22 @@ def scenario(name, control, distance):
         for x, y, z in targets:
             add(record(control, lambda: (control(f"tp {x} {y} {z}"),
                                          control(f"fly {x} {y} {z} {x} {y} {z} 0.1 10")), 5))
-    elif name == "nether":
-        for dim, (x, y, z) in [("the_nether", (100, 100, 100)), ("overworld", (800, 150, 800)),
-                               ("the_nether", (-300, 100, 200)), ("overworld", (-2400, 150, 1600))]:
+    elif name in ("nether", "end"):
+        prepare_flight(control, name)
+        trips = {
+            "nether": [("the_nether", (100, 100, 100)), ("overworld", (800, 150, 800)),
+                       ("the_nether", (-300, 100, 200)), ("overworld", (-2400, 150, 1600))],
+            "end": [("the_end", (100, 80, 0)), ("overworld", (900, 150, -900)),
+                    ("the_end", (-300, 80, 400)), ("overworld", (-1200, 150, 900))],
+        }
+        for dim, (x, y, z) in trips[name]:
             # Through chat, as a player types it: `command` waits on the server thread in the frame.
-            add(record(control, lambda: control(f"chat /execute in minecraft:{dim} run tp @s {x} {y} {z}"), 8))
-    elif name == "end":
-        # Before `portal` this trip makes it fail (#7702): run `portal` first.
-        for dim, (x, y, z) in [("the_end", (100, 80, 0)), ("overworld", (900, 150, -900)),
-                               ("the_end", (-300, 80, 400)), ("overworld", (-1200, 150, 900))]:
             add(record(control, lambda: control(f"chat /execute in minecraft:{dim} run tp @s {x} {y} {z}"), 8),
                 f"{dim} {x}")
+            state = living_player(control, name)
+            if state.get("dimension") != f"minecraft:{dim}" or not state["player"].get("flying"):
+                raise RuntimeError(f"{name}: expected a flying player in minecraft:{dim}, "
+                                   f"got {state.get('dimension')} (flying={state['player'].get('flying')})")
     elif name == "weather":
         x, y, z = 4000, 150, 4000
         control(f"command execute in minecraft:overworld run tp @s {x} {y} {z}")
@@ -224,6 +265,7 @@ def scenario(name, control, distance):
             add(record(control, lambda: control(f"chat /particle minecraft:{kind} {x} {y} {z + 5} 1 1 1 0.05 60 force"),
                        0.6), kind)
     elif name == "portal":
+        living_player(control, name)
         # A creative player crosses a portal after one tick in it (Player.getPortalWaitTime).
         for x, y, z in [(1200, 120, -1200), (-1800, 120, 600)]:
             control(f"command execute in minecraft:overworld run tp @s {x + 3} {y} {z}")
@@ -233,7 +275,7 @@ def scenario(name, control, distance):
             control(f"command fill {x} {y + 1} {z} {x} {y + 3} {z + 1} minecraft:nether_portal[axis=z]")
             time.sleep(1)
             add(record(control, lambda: control(f"tp {x + 0.5} {y + 1} {z + 1.0}"), 8))
-            dimension = str(control("state").get("dimension"))
+            dimension = str(living_player(control, name).get("dimension"))
             if not dimension.endswith("the_nether"):
                 raise RuntimeError(f"the portal at {x} {y} {z} led to {dimension}, not the Nether")
     elif name in ("mobs", "items", "block_entities"):

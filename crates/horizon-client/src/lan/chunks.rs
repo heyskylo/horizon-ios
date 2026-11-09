@@ -105,6 +105,9 @@ pub struct ChunkEncoder {
     mod_entities: Vec<bool>,
     /// The mods' update tags (`native_block_entity_update_tag`).
     pub mod_update_tag: Option<ModUpdateTag>,
+    /// The states with `trial_spawner_state=active`, whose trial spawner
+    /// update tag holds `next_mob_spawns_at`.
+    pub trial_active: Vec<u32>,
     /// The block registry id of each state's block, for BlockEvent.
     pub block_ids: Vec<i32>,
     /// The save's tables, for the heightmaps.
@@ -367,11 +370,122 @@ impl Warm {
     }
 }
 
+/// Columns below which their bodies are written on the tick's thread alone.
+const BODIES_MIN: usize = 4;
+
+/// A column's body with what reads the level done: its sections' bytes, its
+/// heightmaps and its block entities. What is left, the light layers and the
+/// writing, reads only its own sections, so any thread can finish it.
+struct Prepared {
+    x: i32,
+    z: i32,
+    heightmaps: ColumnHeightmaps,
+    wires: Vec<Arc<[u8]>>,
+    /// The block entities as `List<BlockEntityInfo>` writes them.
+    tags: Vec<u8>,
+    /// The level's sections of the column.
+    sections: Vec<Arc<Section>>,
+    around: SectionMask,
+    sky: bool,
+}
+impl Prepared {
+    /// The body as `Clientbound::encode` gives it for LevelChunkWithLight,
+    /// written once into a buffer of its final size.
+    fn write(&self) -> Vec<u8> {
+        let lights = light_sections(&self.sections, self.around, SectionLight::of);
+        let buffer: usize = self.wires.iter().map(|w| w.len()).sum();
+        // The masks, counts and lengths fit the 64 bytes.
+        let size = 64
+            + self
+                .heightmaps
+                .iter()
+                .map(|(_, h)| 10 + 8 * h.len())
+                .sum::<usize>()
+            + buffer
+            + self.tags.len()
+            + lights.len() * 2 * (2048 + 3);
+        let mut w = Writer {
+            data: Vec::with_capacity(size),
+        };
+        w.varint(horizon_protocol::ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT);
+        w.i32(self.x);
+        w.i32(self.z);
+        Heightmaps::write(&*self.heightmaps, &mut w);
+        w.varint(buffer as i32);
+        for wire in &self.wires {
+            w.bytes(wire);
+        }
+        w.bytes(&self.tags);
+        write_light(&lights, self.sky, &mut w);
+        w.data
+    }
+}
+
+/// Bodies to finish, each taken by whichever thread is free first. A body
+/// another thread is still writing is waited for (`OnceLock::get_or_init`).
+struct Bodies {
+    columns: Vec<Prepared>,
+    next: AtomicUsize,
+    done: Vec<OnceLock<std::sync::Mutex<Vec<u8>>>>,
+}
+impl Bodies {
+    /// Take work until none is left.
+    fn run(&self) {
+        loop {
+            let i = self.next.fetch_add(1, Ordering::Relaxed);
+            let Some(column) = self.columns.get(i) else {
+                return;
+            };
+            self.done[i].get_or_init(|| std::sync::Mutex::new(column.write()));
+        }
+    }
+}
+
+/// What the warm-up threads take.
+#[derive(Clone)]
+enum Job {
+    Warm(Arc<Warm>),
+    Bodies(Arc<Bodies>),
+}
+impl Job {
+    fn run(&self) {
+        match self {
+            Self::Warm(job) => job.run(),
+            Self::Bodies(job) => job.run(),
+        }
+    }
+    /// Whether this is the job behind `ptr`.
+    fn is(&self, ptr: *const ()) -> bool {
+        match self {
+            Self::Warm(job) => Arc::as_ptr(job).cast::<()>() == ptr,
+            Self::Bodies(job) => Arc::as_ptr(job).cast::<()>() == ptr,
+        }
+    }
+}
+
 /// The warm-up threads (one per core besides the tick's) and the job they
-/// take: its number, and the job while it has sections left to take.
+/// take: its number, and the job while it has work left to take.
 struct WarmPool {
-    job: std::sync::Mutex<(u64, Option<Arc<Warm>>)>,
+    job: std::sync::Mutex<(u64, Option<Job>)>,
     ready: std::sync::Condvar,
+}
+impl WarmPool {
+    /// Hand `job` to the threads.
+    fn post(&self, job: Job) {
+        {
+            let mut slot = self.job.lock().unwrap();
+            slot.0 += 1;
+            slot.1 = Some(job);
+        }
+        self.ready.notify_all();
+    }
+    /// Everything of the job behind `ptr` is claimed: it leaves the slot.
+    fn clear(&self, ptr: *const ()) {
+        let mut slot = self.job.lock().unwrap();
+        if slot.1.as_ref().is_some_and(|j| j.is(ptr)) {
+            slot.1 = None;
+        }
+    }
 }
 
 /// The warm-up threads, started the first time; none on a single core or
@@ -492,6 +606,7 @@ impl ChunkEncoder {
             entity_types,
             mod_entities,
             mod_update_tag: None,
+            trial_active: Vec::new(),
             block_ids,
             tables: None,
             cache: Default::default(),
@@ -607,15 +722,21 @@ impl ChunkEncoder {
             .filter(|t| **t >= 0)
             .copied()
     }
-    /// The update tag of the block entity at `pos` (`getUpdateTag`): a
-    /// mod's from its hook, a vanilla one's from [`entity_tag`].
-    pub fn update_tag(&self, pos: (i32, i32, i32), entity: &BlockEntity) -> Option<Tag> {
+    /// The update tag of the block entity at `pos` in block `state`
+    /// (`getUpdateTag`): a mod's from its hook, a vanilla one's from
+    /// [`entity_tag`].
+    pub fn update_tag(
+        &self,
+        pos: (i32, i32, i32),
+        state: u32,
+        entity: &BlockEntity,
+    ) -> Option<Tag> {
         match entity {
             BlockEntity::Mod(m) => self
                 .mod_update_tag
                 .and_then(|tag| tag([pos.0, pos.1, pos.2], m))
                 .map(Tag::Compound),
-            _ => entity_tag(entity),
+            _ => entity_tag(entity, self.trial_active.contains(&state)),
         }
     }
     /// Whether the state holds a fluid (water, lava, or a waterlogged block).
@@ -711,6 +832,7 @@ impl ChunkEncoder {
             entity_types: self.entity_types.clone(),
             mod_entities: self.mod_entities.clone(),
             mod_update_tag: self.mod_update_tag,
+            trial_active: self.trial_active.clone(),
             block_ids: self.block_ids.clone(),
             tables: self.tables.clone(),
             cache: Default::default(),
@@ -750,20 +872,9 @@ impl ChunkEncoder {
             return;
         };
         let job = Arc::new(job);
-        {
-            let mut slot = pool.job.lock().unwrap();
-            slot.0 += 1;
-            slot.1 = Some(job.clone());
-        }
-        pool.ready.notify_all();
+        pool.post(Job::Warm(job.clone()));
         job.run();
-        // Everything is claimed: the job leaves the slot.
-        {
-            let mut slot = pool.job.lock().unwrap();
-            if slot.1.as_ref().is_some_and(|j| Arc::ptr_eq(j, &job)) {
-                slot.1 = None;
-            }
-        }
+        pool.clear(Arc::as_ptr(&job).cast());
         self.keep(&job);
     }
 
@@ -840,36 +951,72 @@ impl ChunkEncoder {
         block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
         around: SectionMask,
     ) -> Vec<u8> {
+        self.prepare(chunk, block_entities, around).write()
+    }
+
+    /// What of a column's body reads the level or the caches.
+    fn prepare(
+        &self,
+        chunk: &Chunk,
+        block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
+        around: SectionMask,
+    ) -> Prepared {
         let (wires, entities) = self.blocks(chunk, block_entities);
         let heightmaps = self.heightmaps_of(chunk);
-        let lights = self.light_sections(chunk, around);
-        let buffer: usize = wires.iter().map(|w| w.len()).sum();
         // Before the light: their tags' size is only known once written.
         let mut tags = Writer::new();
         List::<BlockEntityInfo>::write(&entities, &mut tags);
-        // The masks, counts and lengths fit the 64 bytes.
-        let size = 64
-            + heightmaps
-                .iter()
-                .map(|(_, h)| 10 + 8 * h.len())
-                .sum::<usize>()
-            + buffer
-            + tags.data.len()
-            + lights.len() * 2 * (2048 + 3);
-        let mut w = Writer {
-            data: Vec::with_capacity(size),
-        };
-        w.varint(horizon_protocol::ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT);
-        w.i32(chunk.x);
-        w.i32(chunk.z);
-        Heightmaps::write(&*heightmaps, &mut w);
-        w.varint(buffer as i32);
-        for wire in &wires {
-            w.bytes(wire);
+        Prepared {
+            x: chunk.x,
+            z: chunk.z,
+            heightmaps,
+            wires,
+            tags: tags.data,
+            sections: chunk.sections[self.sections.clone()].to_vec(),
+            around,
+            sky: self.sky,
         }
-        w.bytes(&tags.data);
-        write_light(&lights, self.sky, &mut w);
-        w.data
+    }
+
+    /// [`Self::body_with`] for each of `chunks`, in their order. What reads
+    /// the level is done here, column by column as `body_with` does; the
+    /// light layers and the writing, most of a body's cost, go to the warm-up
+    /// threads too when there are enough columns. This thread takes bodies
+    /// as well and waits only for the ones still being written.
+    pub fn bodies_with(
+        &self,
+        chunks: &[&Chunk],
+        world: &crate::world::World,
+        protos: &dyn Fn(i32, i32) -> Option<SectionMask>,
+    ) -> Vec<Vec<u8>> {
+        let columns: Vec<Prepared> = chunks
+            .iter()
+            .map(|c| self.prepare(c, &world.block_entities, self.around(c, world, protos)))
+            .collect();
+        let pool = if columns.len() >= BODIES_MIN {
+            warm_pool()
+        } else {
+            None
+        };
+        let Some(pool) = pool else {
+            return columns.iter().map(Prepared::write).collect();
+        };
+        let job = Arc::new(Bodies {
+            done: columns.iter().map(|_| OnceLock::new()).collect(),
+            columns,
+            next: AtomicUsize::new(0),
+        });
+        pool.post(Job::Bodies(job.clone()));
+        job.run();
+        pool.clear(Arc::as_ptr(&job).cast());
+        job.columns
+            .iter()
+            .zip(&job.done)
+            .map(|(c, done)| {
+                let body = done.get_or_init(|| std::sync::Mutex::new(c.write()));
+                std::mem::take(&mut *body.lock().unwrap())
+            })
+            .collect()
     }
 
     /// ClientboundLightUpdatePacket for the light sections over `changed` (a
@@ -981,7 +1128,7 @@ impl ChunkEncoder {
                     kind,
                     // BlockEntityInfo.create: an empty update tag is not sent.
                     tag: entity
-                        .and_then(|e| self.update_tag(pos, e))
+                        .and_then(|e| self.update_tag(pos, state, e))
                         .or_else(|| pot_tag(chunk, pos))
                         .filter(|t| !matches!(t, Tag::Compound(c) if c.is_empty()))
                         .unwrap_or(Tag::End),
@@ -1087,7 +1234,9 @@ fn java_hash_order<T>(items: &mut Vec<T>, pos: impl Fn(&T) -> (i32, i32, i32)) {
 }
 
 /// The update tag of a block entity (getUpdateTag) for what the client shows.
-pub fn entity_tag(entity: &BlockEntity) -> Option<Tag> {
+/// `trial_active`: its block state is `trial_spawner_state=active`, which a
+/// trial spawner's tag depends on.
+pub fn entity_tag(entity: &BlockEntity, trial_active: bool) -> Option<Tag> {
     match entity {
         BlockEntity::Sign(sign) => Some(Tag::compound(sign.encode())),
         BlockEntity::Spawner(s) => Some(s.update_tag()),
@@ -1131,13 +1280,18 @@ pub fn entity_tag(entity: &BlockEntity) -> Option<Tag> {
         }
         // VaultBlockEntity.getUpdateTag: the shared data, which holds the display item.
         BlockEntity::Vault(v) => Some(v.update_tag()),
-        // TrialSpawnerStateData.getUpdateTag: the spawn data the mob is drawn from.
-        // next_mob_spawns_at (ACTIVE only) is left out: nothing in the client
-        // reads it, and the block state it depends on is not known here.
-        BlockEntity::TrialSpawner(t) => t
-            .next_spawn_data
-            .as_ref()
-            .map(|d| Tag::compound([("spawn_data", d.encode())])),
+        // TrialSpawnerStateData.getUpdateTag: next_mob_spawns_at (ACTIVE only,
+        // 0 included) and the spawn data the mob is drawn from.
+        BlockEntity::TrialSpawner(t) => {
+            let mut entries = Vec::with_capacity(2);
+            if trial_active {
+                entries.push(("next_mob_spawns_at", Tag::Long(t.next_mob_spawns_at)));
+            }
+            if let Some(d) = &t.next_spawn_data {
+                entries.push(("spawn_data", d.encode()));
+            }
+            (!entries.is_empty()).then(|| Tag::compound(entries))
+        }
         // SkullBlockEntity: the profile is the whole reason a head differs.
         BlockEntity::Skull(s) => {
             let mut entries = Vec::new();
@@ -1445,6 +1599,48 @@ mod tests {
     /// A mod block's block entity goes out with its block's own type and the
     /// tag its mod gives; a mod block whose mod made none is left out.
     #[test]
+    fn a_loaded_chunks_update_tag_consumes_only_transient_client_fields() {
+        let builtin = Builtin::parse(
+            r#"{"minecraft:block_entity_type":{"entries":{"test:machine":{"protocol_id":49}}}}"#,
+        )
+        .unwrap();
+        let states = ["minecraft:air", "test:machine"].map(|n| (Arc::<str>::from(n), false));
+        let mut encoder = ChunkEncoder::new(states, &builtin, &[], &[]);
+        encoder.mod_update_tag = Some(|_, entity| {
+            let mut tag = entity.nbt.clone();
+            tag.extend(entity.take_client_update_fields());
+            Some(tag)
+        });
+        let mut chunk = Chunk::empty(0, 0);
+        let pos = (1, MIN_Y + 2, 3);
+        chunk.set(pos.0, pos.1, pos.2, 1);
+        let mut machine = ModBlockEntity::new(crate::containers::ModBlockEntityFields {
+            id: "test:machine".into(),
+            nbt: Compound::from([("progress".into(), Tag::Int(7))]),
+            ..Default::default()
+        });
+        let revision = machine.revision();
+        let effects = Tag::List(vec![Tag::Int(23)]);
+        machine.set_client_update_fields(Compound::from([("effects".into(), effects.clone())]));
+        let entities = HashMap::from([(pos, BlockEntity::Mod(Box::new(machine)))]);
+        let saved = crate::save::encode_block_entity(pos, &entities[&pos], "test:machine");
+        let first = encoder.encode(&chunk, &entities).chunk.block_entities;
+        assert_eq!(first[0].tag.get("effects"), Some(&effects));
+        assert_eq!(first[0].tag.get("progress"), Some(&Tag::Int(7)));
+        let second = encoder.encode(&chunk, &entities).chunk.block_entities;
+        assert!(second[0].tag.get("effects").is_none());
+        assert_eq!(second[0].tag.get("progress"), Some(&Tag::Int(7)));
+        assert_eq!(
+            crate::save::encode_block_entity(pos, &entities[&pos], "test:machine"),
+            saved
+        );
+        let BlockEntity::Mod(machine) = &entities[&pos] else {
+            unreachable!();
+        };
+        assert_eq!(machine.revision(), revision);
+    }
+
+    #[test]
     fn mod_block_entities_carry_their_blocks_type_and_the_mods_tag() {
         let builtin = Builtin::parse(
             r#"{"minecraft:block_entity_type": {"entries": {
@@ -1564,7 +1760,7 @@ mod tests {
         let entity = BlockEntity::Sign(sign);
         assert_eq!(encoder.entity_type(1), Some(7));
         assert_eq!(encoder.entity_type(2), Some(8));
-        let tag = encoder.update_tag(notice, &entity).unwrap();
+        let tag = encoder.update_tag(notice, 1, &entity).unwrap();
         let mut nbt = match tag {
             Tag::Compound(fields) => fields,
             _ => panic!("sign update is not a compound"),
@@ -1585,7 +1781,7 @@ mod tests {
             let sent = encoder.encode(&chunk, &changed).chunk.block_entities;
             assert_eq!(
                 sent.iter().find(|i| i.kind == 7).unwrap().tag,
-                encoder.update_tag(notice, &changed[&notice]).unwrap()
+                encoder.update_tag(notice, 1, &changed[&notice]).unwrap()
             );
         }
     }
@@ -2098,7 +2294,7 @@ mod tests {
         use crate::containers::{Beacon, CreakingHeart, EndGateway};
         // What a client loads from the tag (handleBlockEntityData).
         let load = |id: &str, entity: BlockEntity| {
-            let Some(Tag::Compound(mut tag)) = entity_tag(&entity) else {
+            let Some(Tag::Compound(mut tag)) = entity_tag(&entity, false) else {
                 panic!("no update tag for {id}");
             };
             tag.insert("id".into(), Tag::String(id.into()));
@@ -2115,12 +2311,16 @@ mod tests {
             secondary: Some("minecraft:regeneration".into()),
             ..Default::default()
         };
-        let BlockEntity::Beacon(b) =
-            load("minecraft:beacon", BlockEntity::Beacon(Box::new(beacon)))
-        else {
+        let beacon = BlockEntity::Beacon(Box::new(beacon));
+        // getUpdateTag (saveCustomOnly) carries Levels; loadAdditional never reads them.
+        assert_eq!(
+            entity_tag(&beacon, false).unwrap().get("Levels"),
+            Some(&Tag::Int(4))
+        );
+        let BlockEntity::Beacon(b) = load("minecraft:beacon", beacon) else {
             panic!("not a beacon");
         };
-        assert_eq!(b.levels, 4);
+        assert_eq!(b.levels, 0);
         assert_eq!(b.primary.as_deref(), Some("minecraft:speed"));
         assert_eq!(b.secondary.as_deref(), Some("minecraft:regeneration"));
         let gateway = EndGateway {
@@ -2128,7 +2328,7 @@ mod tests {
             exit_portal: Some([8, 100, 0]),
             exact_teleport: false,
         };
-        let tag = entity_tag(&BlockEntity::EndGateway(gateway.clone())).unwrap();
+        let tag = entity_tag(&BlockEntity::EndGateway(gateway.clone()), false).unwrap();
         assert_eq!(tag.get("ExactTeleport"), None);
         let BlockEntity::EndGateway(g) = load(
             "minecraft:end_gateway",
@@ -2141,7 +2341,7 @@ mod tests {
             exact_teleport: true,
             ..gateway
         };
-        let tag = entity_tag(&BlockEntity::EndGateway(exact.clone())).unwrap();
+        let tag = entity_tag(&BlockEntity::EndGateway(exact.clone()), false).unwrap();
         assert_eq!(tag.get("ExactTeleport"), Some(&Tag::Byte(1)));
         let BlockEntity::EndGateway(g) = load(
             "minecraft:end_gateway",
@@ -2162,10 +2362,48 @@ mod tests {
         };
         assert_eq!(h.creaking, Some((None, [1, 2, 3, 4])));
         // Without a protector the tag is empty.
-        let lone = entity_tag(&BlockEntity::CreakingHeart(Box::default()));
+        let lone = entity_tag(&BlockEntity::CreakingHeart(Box::default()), false);
         assert_eq!(
             lone,
             Some(Tag::Compound(horizon_world::nbt::Compound::new()))
         );
+    }
+
+    #[test]
+    fn trial_spawner_update_tag_has_the_countdown_only_when_active() {
+        let spawner = |next_mob_spawns_at| {
+            BlockEntity::TrialSpawner(Box::new(crate::chunk::block_entity::TrialSpawner {
+                next_mob_spawns_at,
+                ..Default::default()
+            }))
+        };
+        let countdown = |tag: Option<Tag>| tag.and_then(|t| t.get("next_mob_spawns_at").cloned());
+        // getUpdateTag(ACTIVE) writes it whatever its value, 0 included.
+        assert_eq!(
+            countdown(entity_tag(&spawner(1234), true)),
+            Some(Tag::Long(1234))
+        );
+        assert_eq!(countdown(entity_tag(&spawner(0), true)), Some(Tag::Long(0)));
+        // Any other state leaves it out: no spawn data either, so no tag.
+        assert_eq!(entity_tag(&spawner(1234), false), None);
+        // The encoder decides from the block state of the spawner.
+        let mut encoder = ChunkEncoder::new(
+            [
+                "minecraft:air",
+                "minecraft:trial_spawner",
+                "minecraft:trial_spawner",
+            ]
+            .map(|n| (Arc::<str>::from(n), false)),
+            &horizon_protocol::registry::Builtin::default(),
+            &[],
+            &[],
+        );
+        encoder.trial_active = vec![2];
+        let at = (0, 64, 0);
+        assert_eq!(
+            countdown(encoder.update_tag(at, 2, &spawner(7))),
+            Some(Tag::Long(7))
+        );
+        assert_eq!(encoder.update_tag(at, 1, &spawner(7)), None);
     }
 }

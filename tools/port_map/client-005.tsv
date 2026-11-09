@@ -34,7 +34,7 @@ DolphinCarryingItemLayer.submit	inline	crates/horizon-client/src/mobs/render.rs:
 DrownedOuterLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	drowned outer layer, adult and baby
 EnergySwirlLayer.submit	port	crates/horizon-client/src/mobs/render.rs::energy_swirl	charged creeper and powered wither swirl, drawn in render_visible
 EquipmentLayerRenderer.renderLayers	port	crates/horizon-client/src/game/armor_stands.rs::Game::armor_layers	draws all humanoid layers of the equipment asset, including leather overlay
-EquipmentLayerRenderer.getColorForLayer	port	crates/horizon-client/src/game/armor_stands.rs::Game::armor_layers	gap: player: a dyed leather piece is drawn in the undyed brown; the stack's dyed colour is not read
+EquipmentLayerRenderer.getColorForLayer	port	crates/horizon-client/src/game/armor_stands.rs::layer_color	the stack's dyed colour when it has one, else the layer's undyed colour (red and blue swapped for the draw); -1 for a layer that is not dyeable
 EquipmentLayerRenderer.TrimTextureKey.createTextureWithNoPalette	port	crates/horizon-client-render/src/trims.rs::TrimTexture::generate	a trim with no palette is used as its own texture
 EyesLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	spider, enderman and phantom eyes
 FoxHeldItemLayer.submit	inline	crates/horizon-client/src/mobs/render.rs::held_item_transform	the fox branch: the main hand's item in its mouth, at fox_item_transform
@@ -86,9 +86,9 @@ AvatarRenderer.extractRenderState	port	crates/horizon-client/src/mobs.rs::Mob::t
 AvatarRenderer.shouldShowName	port	crates/horizon-client/src/game/names.rs::Game::name_tags	name tags for players and named mobs
 AvatarRenderer.extractFlightData	port	crates/horizon-client/src/mobs/render.rs::base_transform_at	glide time drives the tilt; gap: player: the body does not turn toward the flight direction (no flying yaw)
 AvatarRenderer.extractCapeState	port	crates/horizon-client-render/src/camera.rs::AvatarBob::cape	the cape flap, lean and lean2 from the cloak lagging behind the body
-AvatarRenderer.renderRightHand	port	crates/horizon-client/src/game.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
-AvatarRenderer.renderLeftHand	port	crates/horizon-client/src/game.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
-AvatarRenderer.renderHand	port	crates/horizon-client/src/game.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
+AvatarRenderer.renderRightHand	port	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
+AvatarRenderer.renderLeftHand	port	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
+AvatarRenderer.renderHand	port	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
 AvatarRenderer.isEntityUpsideDown	port	crates/horizon-client/src/mobs/render.rs::base_transform_at	Dinnerbone and Grumm flip; gap: minor: the cape-shown check is missing and the flip applies to every mob
 ArmedEntityRenderState.getArmPose	port	crates/horizon-client/src/mobs/anim.rs::setup	arm poses are chosen per species and hand inside setup
 ArmedEntityRenderState.extractArmedEntityRenderState	port	crates/horizon-client/src/mobs/anim.rs::state	swing and main arm; the held items are read in Game::held_item_geometry

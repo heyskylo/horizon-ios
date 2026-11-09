@@ -8,11 +8,14 @@
 //! often All Rights Reserved, so the ports stay on the player's machine.
 use crate::backend;
 use crate::browser::horizon::pack as horizon_pack;
+use crate::other_launchers::{self, Found};
+use crate::sources::{Folders, Os};
 use horizon_port_pack::{
+    datapacks,
     fetch::{Fetched, How},
     import::Pack,
     pipeline::{self, Log},
-    report::{Row, Status},
+    report::{self, Row, Status},
     resourcepacks::{self, Report as ResourceReport, State},
 };
 use std::fs;
@@ -56,11 +59,13 @@ pub struct Imported {
     pub resourcepacks: usize,
     /// Index-listed resource packs the port step can obtain (separate from Java mods).
     pub indexed_resources: usize,
+    /// Data packs from jars that hold nothing else; new worlds in the profile start with them.
+    pub datapacks: usize,
 }
 
 impl Imported {
     pub fn can_play(&self) -> bool {
-        !self.mods.is_empty() || self.resourcepacks > 0
+        !self.mods.is_empty() || self.resourcepacks > 0 || self.datapacks > 0
     }
     pub fn can_port(&self) -> bool {
         self.portable > 0 || self.indexed_resources > 0
@@ -93,6 +98,44 @@ impl Imported {
         ));
         parts.join("  ·  ")
     }
+    /// The plain headline above the numbers, in the launcher's language: how much of the pack
+    /// comes over and what does not. The same lines as `horizon_port_pack::report::Summary::lines`
+    /// (a test keeps the English equal); none for a pack with no mod to port.
+    pub fn headline(&self) -> Vec<String> {
+        use crate::i18n::{tr, trf};
+        let s = report::summary(&self.rows);
+        let n = |count: usize| count.to_string();
+        let mut lines = Vec::new();
+        if s.needing == 0 {
+            return lines;
+        }
+        lines.push(trf(
+            "{carried} of {total} mods that need porting come over as content (blocks, items and \
+             structures); their own code does not run.",
+            &[("carried", &n(s.carried)), ("total", &n(s.needing))],
+        ));
+        if s.ready + s.blocked + s.later > 0 {
+            lines.push(trf(
+                "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support \
+                 Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client \
+                 features), {later} are not sorted yet (not identified, or waiting on other mods or \
+                 other work).",
+                &[
+                    ("ready", &n(s.ready)),
+                    ("blocked", &n(s.blocked)),
+                    ("later", &n(s.later)),
+                ],
+            ));
+        }
+        if s.partial > 0 {
+            lines.push(
+                tr("Partial means part of a mod came over, but something is left out, differs from \
+                    the original or has not been checked yet.")
+                .to_string(),
+            );
+        }
+        lines
+    }
     /// What getting the jars did, in one line, or None before it ran.
     pub fn jars(&self) -> Option<String> {
         if self.fetched.files.is_empty() {
@@ -121,6 +164,47 @@ impl Imported {
             &[("summary", &parts.join(", "))],
         ))
     }
+}
+
+/// A row's plain explanation in the launcher's language. Unknown sentences from older or
+/// newer reports keep their text; technical details remain untouched.
+pub fn row_plain(row: &Row) -> String {
+    use crate::i18n::{tr, trf};
+    let plain = match row.plain.as_str() {
+        "Its blocks and items came over and passed Horizon's checks; the mod's own code is not run." => tr("Its blocks and items came over and passed Horizon's checks; the mod's own code is not run."),
+        "Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what." => tr("Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what."),
+        "It does not come over yet." => tr("It does not come over yet."),
+        "Nothing to port: Horizon has it built in or does not need it." => tr("Nothing to port: Horizon has it built in or does not need it."),
+        "Horizon cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over." => tr("Horizon cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over."),
+        "It joins other mods together, so it waits until those are ported." => tr("It joins other mods together, so it waits until those are ported."),
+        "Content only (blocks, items, structures). Its jar is here, but it has not been carried over yet." => tr("Content only (blocks, items, structures). Its jar is here, but it has not been carried over yet."),
+        "Content only (blocks, items, structures). It can come over once its jar is here." => tr("Content only (blocks, items, structures). It can come over once its jar is here."),
+        "Needs what blocks and items do when used, placed, broken or ticked, which Horizon's mod API cannot run from a mod yet, so it does not come over." => tr("Needs what blocks and items do when used, placed, broken or ticked, which Horizon's mod API cannot run from a mod yet, so it does not come over."),
+        "Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Horizon's mod API does not have yet, so it does not come over." => tr("Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Horizon's mod API does not have yet, so it does not come over."),
+        "Needs mobs, custom rendering and models, dimensions or new game hooks that Horizon's mod API does not have yet, so it does not come over." => tr("Needs mobs, custom rendering and models, dimensions or new game hooks that Horizon's mod API does not have yet, so it does not come over."),
+        "Needs the game's client interfaces (keys, targeting, inventory reading, interface, rendering), so it does not come over yet." => tr("Needs the game's client interfaces (keys, targeting, inventory reading, interface, rendering), so it does not come over yet."),
+        "Horizon has not worked out what this mod needs yet." => tr("Horizon has not worked out what this mod needs yet."),
+        "A library other mods build on. Horizon's mod API and SDK take its place, so there is nothing to port." => tr("A library other mods build on. Horizon's mod API and SDK take its place, so there is nothing to port."),
+        "It makes the game faster. Horizon's own engine does that, so there is nothing to port." => tr("It makes the game faster. Horizon's own engine does that, so there is nothing to port."),
+        "Pack tooling or a game feature that Horizon already has, so there is nothing to port." => tr("Pack tooling or a game feature that Horizon already has, so there is nothing to port."),
+        "Built into Horizon already, so there is nothing to port." => tr("Built into Horizon already, so there is nothing to port."),
+        "Nothing to port." => tr("Nothing to port."),
+        "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later." => tr("Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later."),
+        "Shader packs are not converted yet." => tr("Shader packs are not converted yet."),
+        "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen." => tr("Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen."),
+        "Not downloaded yet; Port gets it." => tr("Not downloaded yet; Port gets it."),
+        "Horizon could not use this resource pack yet; the technical detail says why." => tr("Horizon could not use this resource pack yet; the technical detail says why."),
+        other => other,
+    };
+    let waiting = match row.waiting {
+        0 => return plain.to_owned(),
+        1 => tr("It also waits for 1 mod it depends on that is not ported yet.").to_owned(),
+        n => trf(
+            "It also waits for {count} mods it depends on that are not ported yet.",
+            &[("count", &n.to_string())],
+        ),
+    };
+    format!("{plain} {waiting}")
 }
 
 /// Reads the pack in `work`.
@@ -157,9 +241,20 @@ pub fn load(work: &Path) -> Result<Imported, String> {
         .iter()
         .filter(|f| f.kind() == "resourcepacks" && f.client != "unsupported")
         .count();
+    // A mod the carry found made for 1.20 or older is not one the port step can carry over.
+    let old: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter(|r| r.old_layout)
+        .map(|r| r.key.as_str())
+        .collect();
+    let portable = records
+        .iter()
+        .filter(|r| pipeline::portable(r) && !old.contains(r.key.as_str()))
+        .count();
     Ok(Imported {
         resourcepacks,
         indexed_resources,
+        datapacks: datapacks::installed(work),
         slug: work
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -170,7 +265,7 @@ pub fn load(work: &Path) -> Result<Imported, String> {
         fetched,
         mods,
         left_off,
-        portable: records.iter().filter(|r| pipeline::portable(r)).count(),
+        portable,
     })
 }
 
@@ -258,9 +353,9 @@ pub fn outcome(pack: &Imported) -> String {
     let not = pack.count(Status::NotYet);
     format!(
         "{} is imported{}: {} of its {} files carried over ({} ported, {} partly), {} don't \
-         yet, {} aren't needed{}. {} resource packs available; enable them in Resource Packs. Its list says why.",
+         yet, {} aren't needed{}. {} resource packs available; enable them in Resource Packs. {} data packs on in new worlds. Its list says why.",
         pack.title(),
-        if pack.mods.is_empty() {
+        if pack.mods.is_empty() && pack.datapacks == 0 {
             ""
         } else {
             " and ported"
@@ -276,6 +371,7 @@ pub fn outcome(pack: &Imported) -> String {
             n => format!("; {n} are left off (listed under the pack)"),
         },
         pack.resourcepacks,
+        pack.datapacks,
     )
 }
 
@@ -304,8 +400,14 @@ pub fn apply_profile(cmd: &mut Command, work: &Path) -> Result<(), String> {
     }
     // Only mods that load together: the game would refuse the later of two sharing a namespace.
     let (mods, _) = pipeline::loadable(&carried(work));
-    if mods.is_empty() && resourcepacks::available(work).is_empty() {
-        return Err("No content mods or resource packs are available: port the pack first.".into());
+    if mods.is_empty()
+        && resourcepacks::available(work).is_empty()
+        && datapacks::installed(work) == 0
+    {
+        return Err(
+            "No content mods, data packs or resource packs are available: port the pack first."
+                .into(),
+        );
     }
     prepare_resourcepacks(work);
     let home = profile_home(work);
@@ -332,9 +434,111 @@ fn prepare_resourcepacks(work: &Path) {
     }
 }
 
+/// The modpacks other launchers keep on this computer, for the Modpacks page to offer: each
+/// instance with a `mods` folder of its own. A profile of the official launcher that plays in the
+/// launcher's own folder is the player's everyday game, not a pack, and is left out.
+pub fn found_on_this_computer(os: Os, folders: &Folders) -> Vec<Found> {
+    other_launchers::scan(os, folders)
+        .into_iter()
+        .filter(|f| !f.shared && f.game.join("mods").is_dir())
+        .collect()
+}
+
+/// The folder "Import an instance folder…" takes for `found`: a Prism or MultiMC instance's own
+/// folder, whose `mmc-pack.json` names its versions, else its game folder.
+pub fn found_folder(found: &Found) -> PathBuf {
+    match found.game.parent() {
+        Some(dir) if dir.join("mmc-pack.json").is_file() => dir.to_path_buf(),
+        _ => found.game.clone(),
+    }
+}
+
+/// The slug [`import`] gives `found`: imported once, the page opens it instead.
+pub fn found_slug(found: &Found) -> String {
+    let folder = found_folder(found);
+    slug(&folder.file_name().unwrap_or_default().to_string_lossy())
+}
+
+/// One line on `found`, in the order of [`Imported::summary`]: the app it came from, then its
+/// Minecraft version and loader when its launcher records them.
+pub fn found_summary(found: &Found) -> String {
+    let mut parts = vec![other_launchers::app_name(found.launcher).to_string()];
+    if let Some(minecraft) = &found.minecraft {
+        parts.push(format!("Minecraft {minecraft}"));
+    }
+    if let Some(l) = &found.loader {
+        parts.push(format!("{} {}", l.name, l.version));
+    }
+    parts.join("  ·  ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn found_packs_are_other_launchers_instances_with_mods() {
+        let root = std::env::temp_dir().join(format!("horizon-found-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let write = |path: &Path, text: &str| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        let folders = Folders {
+            home: root.join("home"),
+            data: root.join("data"),
+            config: root.join("config"),
+        };
+        let cf = root.join("home/Documents/curseforge/minecraft/Instances");
+        write(
+            &cf.join("All the Mods 10/minecraftinstance.json"),
+            r#"{"gameVersion": "1.21.1", "baseModLoader": {"name": "neoforge-21.1.133"}}"#,
+        );
+        write(&cf.join("All the Mods 10/mods/a.jar"), "jar");
+        // Resource packs only: not a modpack.
+        write(&cf.join("Packs only/resourcepacks/p.zip"), "zip");
+        let prism = root.join("data/PrismLauncher/instances/fabric-1.21");
+        write(
+            &prism.join("mmc-pack.json"),
+            r#"{"components": [{"uid": "net.minecraft", "version": "1.21.1"}]}"#,
+        );
+        write(
+            &prism.join("instance.cfg"),
+            "name=My Fabric
+",
+        );
+        write(&prism.join("minecraft/mods/b.jar"), "jar");
+        // The official launcher's default profile plays in its own folder, mods and all.
+        let official = root.join("data/minecraft");
+        write(
+            &official.join("launcher_profiles.json"),
+            r#"{"profiles": {"a": {"type": "latest-release"}}}"#,
+        );
+        write(&official.join("mods/c.jar"), "jar");
+
+        let found = found_on_this_computer(Os::MacOs, &folders);
+        let names: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["My Fabric", "All the Mods 10"]);
+        // A Prism instance imports from its own folder, which names its version.
+        assert_eq!(found_folder(&found[0]), prism);
+        assert_eq!(found_slug(&found[0]), "fabric-1-21");
+        assert_eq!(found_folder(&found[1]), cf.join("All the Mods 10"));
+        assert_eq!(found_slug(&found[1]), "all-the-mods-10");
+        // The slug is the one importing it gives.
+        for f in &found {
+            let pack = horizon_port_pack::import::import(&found_folder(f)).unwrap();
+            assert_eq!(found_slug(f), slug(&pack.name));
+        }
+        assert_eq!(
+            found_summary(&found[0]),
+            "Prism Launcher  ·  Minecraft 1.21.1"
+        );
+        assert_eq!(
+            found_summary(&found[1]),
+            "CurseForge  ·  Minecraft 1.21.1  ·  neoforge 21.1.133"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn slugs() {
@@ -456,6 +660,34 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_with_only_data_packs_plays_and_its_game_folder_holds_them() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-launcher-datapack-profile-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let work = root.join("ports/sky");
+        fs::create_dir_all(&work).unwrap();
+        pipeline::write_json(&work.join("pack.json"), &Pack::default()).unwrap();
+        assert!(!load(&work).unwrap().can_play());
+        let pack = datapacks::folder(&work).join("void");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("pack.mcmeta"), b"{}").unwrap();
+        let p = load(&work).unwrap();
+        assert!(p.can_play());
+        assert_eq!(p.datapacks, 1);
+        assert!(outcome(&p).contains("1 data packs on in new worlds"));
+        let mut cmd = Command::new("true");
+        apply_profile(&mut cmd, &work).unwrap();
+        assert_eq!(cmd.get_args().count(), 0);
+        // The game finds them in its game folder, the profile's home.
+        let home = profile_home(&work);
+        assert_eq!(cmd.get_current_dir(), Some(home.as_path()));
+        assert!(pack.starts_with(&home));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn resource_downloads_enable_port_even_when_no_mods_are_portable() {
         let root = std::env::temp_dir().join(format!(
             "horizon-launcher-resource-index-{}",
@@ -475,6 +707,51 @@ mod tests {
         assert!(!p.can_play());
         assert_eq!(p.portable, 0);
         assert_eq!(p.indexed_resources, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Prominence II (Fabric 1.20.1): of its 29 data-tier content mods the port found 24 made
+    /// for 1.20 or older. Those are not carried, so the pack does not list them as portable.
+    #[test]
+    fn mods_made_for_1_20_are_not_portable() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-launcher-old-layout-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        pipeline::write_json(&root.join("pack.json"), &Pack::default()).unwrap();
+        let record = |key: &str| horizon_port_pack::inventory::Record {
+            key: key.into(),
+            class: "content".into(),
+            tier: "data".into(),
+            ..Default::default()
+        };
+        pipeline::write_json(
+            &root.join("inventory.json"),
+            &vec![record("old"), record("new")],
+        )
+        .unwrap();
+        let row = |key: &str, old_layout: bool| Row {
+            key: key.into(),
+            name: key.into(),
+            class: "content".into(),
+            tier: "data".into(),
+            license: String::new(),
+            license_kind: "unknown".into(),
+            status: Status::NotYet,
+            reason: String::new(),
+            plain: String::new(),
+            waiting: 0,
+            old_layout,
+        };
+        pipeline::write_json(
+            &root.join("coverage.json"),
+            &vec![row("old", true), row("new", false)],
+        )
+        .unwrap();
+        let p = load(&root).unwrap();
+        assert_eq!(p.portable, 1);
+        assert!(p.can_port());
         fs::remove_dir_all(root).unwrap();
     }
 }

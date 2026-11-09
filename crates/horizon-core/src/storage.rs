@@ -57,6 +57,41 @@ impl std::fmt::Display for StorageError {
 
 impl std::error::Error for StorageError {}
 
+/// One entry's word and bit shift, so a read and the write that follows it
+/// compute the position once.
+#[derive(Clone, Copy, Debug)]
+pub struct Slot {
+    word: usize,
+    shift: u32,
+}
+
+/// A run of entries `stride` apart that all keep the same bit shift, which is
+/// the case for its own stride when a word divides it. A vertical fill walks
+/// [`write_back`](Self::write_back) instead of locating every block again.
+pub struct WordRun<'a> {
+    words: &'a mut [u64],
+    /// The word of the next entry down, and the words between entries.
+    word: usize,
+    step: usize,
+    shift: u32,
+    /// The bits of a word outside the entry, and the value pre-shifted into it.
+    keep: u64,
+    value: u64,
+}
+
+impl WordRun<'_> {
+    /// Writes the run's value at the next entry down and returns the entry it
+    /// replaced. A word that already holds the value ends up unchanged.
+    #[inline]
+    pub fn write_back(&mut self) -> u32 {
+        self.word -= self.step;
+        let cell = &mut self.words[self.word];
+        let old = ((*cell & !self.keep) >> self.shift) as u32;
+        *cell = (*cell & self.keep) | self.value;
+        old
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackedStorage {
     bits: u8,
@@ -150,6 +185,7 @@ impl PackedStorage {
     /// Reads `index` without a bounds check. Callers use this once they hold a
     /// slice length or a section index they have already validated.
     /// `index` must be less than `len`.
+    #[inline]
     pub fn read(&self, index: usize) -> u32 {
         debug_assert!(index < self.len);
         let (word, shift) = self.slot(index);
@@ -159,11 +195,62 @@ impl PackedStorage {
     /// Writes `value` at `index` without revalidating either. `index` must be
     /// less than `len` and `value` must fit `bits`, which holds for a section
     /// palette index from the same container. Returns the previous value.
+    #[inline]
     pub fn write(&mut self, index: usize, value: u32) -> u32 {
         debug_assert!(index < self.len && u64::from(value) <= self.mask);
         let (word, shift) = self.slot(index);
         let old = ((self.words[word] >> shift) & self.mask) as u32;
         self.words[word] = (self.words[word] & !(self.mask << shift)) | (u64::from(value) << shift);
+        old
+    }
+
+    /// The word and bit shift of an entry: [`read_at`](Self::read_at) and
+    /// [`write_at`](Self::write_at) take it in place of an index, so a read
+    /// followed by a write computes the position once. `index` must be less
+    /// than `len`.
+    #[inline]
+    pub fn slot_of(&self, index: usize) -> Slot {
+        debug_assert!(index < self.len);
+        let (word, shift) = self.slot(index);
+        Slot { word, shift }
+    }
+    /// Whether a run of entries `stride` apart keeps one bit shift: true when a
+    /// word holds a whole number of strides, which the widths that divide 64
+    /// bits per entry (`per_word` 64, 32, 16, 8, 4 and 2) do for a stride of
+    /// 256 entries. Other widths move the shift along the run.
+    #[inline]
+    pub fn fixed_shift(&self, stride: usize) -> bool {
+        stride.is_multiple_of(self.per_word)
+    }
+    /// The run of entries `stride` apart starting **one stride before**
+    /// `index`, which must keep one bit shift ([`fixed_shift`](Self::fixed_shift))
+    /// and hold `value`. Its calls write `index - stride`, then `index - 2 *
+    /// stride` and so on.
+    pub fn word_run(&mut self, index: usize, stride: usize, value: u32) -> WordRun<'_> {
+        debug_assert!(self.fixed_shift(stride) && u64::from(value) <= self.mask);
+        let (word, shift) = self.slot(index);
+        let mask = self.mask;
+        WordRun {
+            words: &mut self.words,
+            word,
+            step: stride / self.per_word,
+            shift,
+            keep: !(mask << shift),
+            value: u64::from(value) << shift,
+        }
+    }
+    /// [`read`](Self::read) at a slot `slot_of` returned for the same index.
+    #[inline]
+    pub fn read_at(&self, slot: Slot) -> u32 {
+        ((self.words[slot.word] >> slot.shift) & self.mask) as u32
+    }
+    /// [`write`](Self::write) at a slot `slot_of` returned for the same index.
+    #[inline]
+    pub fn write_at(&mut self, slot: Slot, value: u32) -> u32 {
+        debug_assert!(u64::from(value) <= self.mask);
+        let word = &mut self.words[slot.word];
+        let old = ((*word >> slot.shift) & self.mask) as u32;
+        *word = (*word & !(self.mask << slot.shift)) | (u64::from(value) << slot.shift);
         old
     }
 
@@ -226,6 +313,43 @@ mod tests {
         storage.set(11, 31).unwrap();
         storage.set(12, 7).unwrap();
         assert_eq!(storage.words(), &[31 << 55, 7]);
+    }
+
+    /// A slot read and written at the position `slot_of` gave holds what
+    /// `read`/`write` hold, and a word run steps exactly where `write` would.
+    #[test]
+    fn slots_and_word_runs_write_where_index_writes() {
+        for bits in 1..=32u8 {
+            let mut indexed = PackedStorage::new(bits, 4096).unwrap();
+            let mut slotted = indexed.clone();
+            let mask = (1u64 << bits) - 1;
+            let mut rng = 0x9e37_79b9_7f4a_7c15u64 ^ u64::from(bits);
+            let mut next = || {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng
+            };
+            for _ in 0..500 {
+                let index = (next() % 4096) as usize;
+                let value = ((next() >> 20) & mask) as u32;
+                let slot = slotted.slot_of(index);
+                assert_eq!(slotted.read_at(slot), slotted.read(index));
+                assert_eq!(slotted.write_at(slot, value), indexed.write(index, value));
+            }
+            assert_eq!(indexed, slotted);
+            if !slotted.fixed_shift(256) {
+                continue;
+            }
+            // The top entry of a column at x = z = 15, then down it.
+            let top = 0xfff;
+            let value = ((next() >> 20) & mask) as u32;
+            let mut run = slotted.word_run(top, 256, value);
+            for step in 1..16 {
+                assert_eq!(run.write_back(), indexed.write(top - step * 256, value));
+            }
+            assert_eq!(indexed, slotted);
+        }
     }
 
     #[test]

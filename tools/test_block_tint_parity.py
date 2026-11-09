@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Compare level-free block-model tints with actual 26.3 BlockTintSources.
 
-Every state of blocks with registered sources, plus untinted carried blocks,
-is checked at indices -1, 0, 1 and 2. Geometry and framebuffer are separate checks.
+Every state of every registered block -- not only the hand-picked tinted
+families -- is checked at indices -1, 0, 1 and 2: a block Horizon tints and
+vanilla does not (or the other way round) only shows up in that sweep.
+Geometry and framebuffer are separate checks.
 """
 import json
 try:
@@ -18,9 +20,15 @@ attached_pumpkin_stem melon_stem pumpkin_stem lily_pad stone poppy red_mushroom
 brown_mushroom crimson_fungus warped_roots carved_pumpkin""".split()
 
 
+def sweep(states):
+    """The hand-picked families plus every other registered block name."""
+    names = {name.split(':', 1)[-1] for name in states.by_name}
+    return sorted(set(BLOCKS) | names)
+
+
 def make_input(build):
     states = mesh.States(lab.RESOURCES)
-    ids = sorted({state for name in BLOCKS for state in states.by_name["minecraft:" + name]})
+    ids = sorted({state for name in sweep(states) for state in states.by_name.get("minecraft:" + name, [])})
     rows = [[state, index] for state in ids for index in [-1, 0, 1, 2]]
     path = build / "input.json"
     path.write_text(json.dumps(dict(resources=str(lab.RESOURCES), cases=rows)))
@@ -29,7 +37,9 @@ def make_input(build):
 
 def main():
     harness.differential("block-tint-parity", "VanillaBlockTintOracle", "block_tint_probe",
-        make_input, "BlockTintSource.color(state), all states of tinted blocks and untinted carried blocks; per-face tint indices, no level/biome. Not model or framebuffer parity.",
+        make_input, "BlockTintSource.color(state) at indices -1, 0, 1 and 2 for every state of every registered block, "
+                     "not just the hand-picked tinted families; per-face tint indices, no level/biome. "
+                     "Not model or framebuffer parity.",
         sources=[lab.ROOT / "tools/test_block_tint_parity.py", lab.ROOT / "crates/horizon-client-render/src/mesher.rs",
                  lab.ROOT / "crates/horizon-client/src/item_render.rs"])
 

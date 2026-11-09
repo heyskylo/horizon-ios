@@ -9,8 +9,8 @@ use crate::{
     items::{ItemStack, Items},
     particles::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape},
 };
-use horizon_world::loot::PackOverlay;
-use horizon_world::nbt::Tag;
+use horizon_world::nbt::{JavaString, Tag};
+use horizon_world::{component_patch::Patch, loot::PackOverlay};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -41,7 +41,7 @@ pub fn native_ingredient(
 /// stack being matched, `accept` already true (the load-time list named
 /// the item). Set `accept` to false to refuse the stack — its components
 /// are the usual reason. The hook may be called many times a craft; the
-/// answer must be the same for the same stack. API @API:ingredient_test@.
+/// answer must be the same for the same stack. API 377.
 #[inline(never)]
 pub fn native_ingredient_test(
     kind: &str,
@@ -273,6 +273,8 @@ pub struct Template {
     pub count: u32,
     pub damage: u32,
     pub extra: Option<Box<StackData>>,
+    /// Result patch before decoding defaults, including explicit removals/zeroes.
+    pub components: Option<Tag>,
 }
 /// `ItemStackTemplate.CODEC` count: absent means 1, present must be an
 /// integer in `1..=99` (`ExtraCodecs.intRange(1, 99)`), else the recipe is
@@ -288,15 +290,14 @@ pub(crate) fn template_count(v: &Value) -> Option<u32> {
 }
 impl Template {
     fn parse(v: &Value) -> Option<Self> {
-        let (damage, extra) = match v.get("components") {
-            Some(c) => crate::item_data::decode_components(Some(&json_tag(c))),
-            None => (0, None),
-        };
+        let components = v.get("components").map(json_tag);
+        let (damage, extra) = crate::item_data::decode_components(components.as_ref());
         Some(Self {
             item: horizon_world::loot::recipe_result_id(v).map(Arc::from),
             count: template_count(v)?,
             damage,
             extra,
+            components,
         })
     }
     /// `ItemStackTemplate.create`.
@@ -314,56 +315,65 @@ impl Template {
     /// `TransmuteRecipe.createWithOriginalComponents`: the input's component
     /// patch on the result item, then the template's own components over it.
     fn over(&self, input: &ItemStack, extra_count: u32) -> ItemStack {
+        let original = assembly_components(input);
+        let result = self
+            .components
+            .clone()
+            .unwrap_or_else(|| assembly_components(&self.create()));
+        // ItemStackTemplate.apply: the second patch wins for each component;
+        // a removal replaces a value rather than coexisting with it.
+        let entries = |tag: Tag| match tag {
+            Tag::Compound(map) => map
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = key.to_string_lossy();
+                    match key.strip_prefix('!') {
+                        Some(key) => (key.to_owned(), None),
+                        None => (key.to_owned(), Some(value)),
+                    }
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let patch = Patch::new(entries(original).into_iter().chain(entries(result)));
+        let components = Tag::compound(patch.entries().iter().map(|(key, value)| match value {
+            Some(value) => (JavaString::from(key.as_str()), value.clone()),
+            None => (
+                JavaString::from(format!("!{key}").as_str()),
+                Tag::Compound(Default::default()),
+            ),
+        }));
+        let (damage, extra) = crate::item_data::decode_components(Some(&components));
         let mut out = ItemStack {
             item: self.item.clone().unwrap_or_else(|| input.item.clone()),
             count: self.count + extra_count,
-            damage: input.damage,
-            extra: input.extra.clone(),
+            damage,
+            extra,
         };
-        if self.damage > 0 {
-            out.damage = self.damage;
-        }
-        if let Some(over) = &self.extra {
-            overlay(out.data_mut(), over);
+        if let Some(input) = input.data() {
+            // Runtime-only stack bookkeeping is not a saved component patch.
+            let data = out.data_mut();
+            data.wire = input.wire.clone();
+            data.bundle_selected = input.bundle_selected;
         }
         out.tidy();
         out
     }
 }
-/// `DataComponentPatch` application: every component the overlay sets wins.
-fn overlay(dst: &mut StackData, src: &StackData) {
-    let none = StackData::default();
-    macro_rules! field {
-        ($($f:ident),*) => {$(
-            if src.$f != none.$f {
-                dst.$f = src.$f.clone();
-            }
-        )*};
+/// Assembly also carries the transient map postprocess component; the saved
+/// ItemStack codec deliberately omits it. Do not turn it into saved data.
+fn assembly_components(stack: &ItemStack) -> Tag {
+    let mut components = match crate::item_data::encode_components(stack) {
+        Some(Tag::Compound(map)) => map,
+        _ => Default::default(),
+    };
+    if let Some(postprocess) = stack.data().and_then(|d| d.map_post_processing) {
+        components.insert(
+            "minecraft:map_post_processing".into(),
+            Tag::Int(i32::from(postprocess)),
+        );
     }
-    field!(
-        enchantments,
-        stored_enchantments,
-        repair_cost,
-        custom_name,
-        potion,
-        trim,
-        container,
-        charged,
-        fireworks,
-        map_id,
-        writable_pages,
-        written,
-        banner_patterns,
-        base_color,
-        ominous_banner,
-        ominous_amplifier,
-        dyed_color,
-        firework_explosion,
-        pot_decorations,
-        bundle_contents,
-        stew_effects,
-        map_post_processing
-    );
+    Tag::Compound(components)
 }
 /// A JSON recipe value as the NBT a component codec reads.
 fn json_tag(v: &Value) -> Tag {
@@ -393,6 +403,12 @@ pub enum Recipe {
     },
     /// The recipes with code of their own.
     Special(Special),
+}
+impl Recipe {
+    /// `Recipe.isSpecial`: special recipes (e.g. firework rocket, dye) are not in the recipe book.
+    pub fn is_special(&self) -> bool {
+        matches!(self, Recipe::Special(_))
+    }
 }
 /// The custom and transmuting crafting recipes.
 #[derive(Clone, Debug)]
@@ -1302,6 +1318,17 @@ pub fn recipe_id(name: &str) -> String {
         format!("minecraft:{name}")
     }
 }
+/// The sort key of vanilla's recipe registration order, which first-match
+/// lookups (`RecipeManager.getRecipeFor`'s `findFirst`), the stonecutter's
+/// list and the recipe book's display numbers all follow:
+/// `ResourceManagerRegistryLoadTask` sorts the resource files by `Identifier`
+/// (path, then namespace) and `RecipeMap` keeps that order. The file's path
+/// ends in `.json`, so `prefix-early` sorts before `prefix`. `name` is a
+/// table name (`oak_planks`) or a whole id.
+pub fn registration_key(name: &str) -> (String, String) {
+    let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", name));
+    (format!("{path}.json"), namespace.to_owned())
+}
 fn custom_type(v: &Value) -> Option<&str> {
     v["type"]
         .as_str()
@@ -1310,7 +1337,7 @@ fn custom_type(v: &Value) -> Option<&str> {
 pub struct Recipes {
     pub crafting: Vec<(String, Recipe)>,
     pub cooking: Vec<Cooking>,
-    /// The recipes of types of mods' own, by type, in file order.
+    /// The recipes of types of mods' own, by type, in registration order.
     pub custom: HashMap<String, Vec<CustomRecipe>>,
     /// `category` and `group` of each crafting recipe, by file name.
     pub meta: HashMap<String, (String, String)>,
@@ -1323,6 +1350,12 @@ pub struct Recipes {
 }
 type CookIndex = HashMap<String, crate::fast_hash::FxHashMap<String, Vec<usize>>>;
 /// `MinMaxBounds.Ints` as (min, max) with the given defaults.
+/// `TransmuteRecipe`'s `material_count` as the recipe parser reads it: a
+/// number is exact, an object's missing ends are 1 and 8, both kept in 1..8.
+pub(crate) fn transmute_material_bounds(material_count: Option<&Value>) -> (usize, usize) {
+    let (min, max) = bounds(material_count, (1, 1), (1, 8));
+    (min.clamp(1, 8) as usize, max.clamp(1, 8) as usize)
+}
 fn bounds(v: Option<&Value>, default: (i64, i64), open: (i64, i64)) -> (i64, i64) {
     match v {
         Some(Value::Number(n)) => {
@@ -1403,6 +1436,27 @@ pub fn qualified(id: &str) -> String {
 }
 
 impl Recipes {
+    pub fn empty() -> Self {
+        Self {
+            crafting: Vec::new(),
+            cooking: Vec::new(),
+            custom: HashMap::new(),
+            meta: HashMap::new(),
+            facts: HashMap::new(),
+            curses: HashSet::new(),
+            cook_index: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// `RecipeManager.getRecipe`: look up a crafting recipe by its id name.
+    pub fn recipe(&self, name: &str) -> Option<&Recipe> {
+        let bare = name.strip_prefix("minecraft:").unwrap_or(name);
+        self.crafting
+            .iter()
+            .find(|(n, _)| n == name || n == bare)
+            .map(|(_, r)| r)
+    }
+
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Result<Self> {
         let sources = Self::sources(root, overlay)?;
         Self::from_sources(root, items, overlay, sources)
@@ -1488,8 +1542,11 @@ impl Recipes {
         root: &Path,
         items: &Items,
         overlay: &PackOverlay,
-        sources: Vec<(String, Value)>,
+        mut sources: Vec<(String, Value)>,
     ) -> Result<Self> {
+        // Every table in registration order, whatever order the sources come
+        // in (the world's packs' files after the game's own).
+        sources.sort_by_cached_key(|(name, _)| registration_key(name));
         let mut crafting = Vec::new();
         let mut cooking = Vec::new();
         let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
@@ -1583,12 +1640,12 @@ impl Recipes {
                         }),
                 ),
                 "minecraft:crafting_transmute" => special((|| {
-                    let (min, max) = bounds(v.get("material_count"), (1, 1), (1, 8));
+                    let (min, max) = transmute_material_bounds(v.get("material_count"));
                     Some(Special::Transmute {
                         input: ing("input")?,
                         material: ing("material")?,
-                        min: min.clamp(1, 8) as usize,
-                        max: max.clamp(1, 8) as usize,
+                        min,
+                        max,
                         add_count: v["add_material_count_to_result"].as_bool().unwrap_or(false),
                         result: result()?,
                     })
@@ -1948,6 +2005,70 @@ mod tests {
     use crate::banner::BannerLayer;
     use std::fs;
 
+    /// ItemStackTemplate.apply applies the result patch after the input patch.
+    #[test]
+    fn transmute_result_patch_preserves_inheritance_and_explicit_removals() {
+        let input_tag = json_tag(&serde_json::json!({
+            "minecraft:damage": 5, "minecraft:lore": ["Old"]
+        }));
+        let (damage, extra) = crate::item_data::decode_components(Some(&input_tag));
+        let input = ItemStack {
+            item: "minecraft:wooden_sword".into(),
+            count: 1,
+            damage,
+            extra,
+        };
+        for (components, expected_damage, removed) in [
+            (
+                serde_json::json!({"minecraft:custom_name": "Kept"}),
+                5,
+                false,
+            ),
+            (
+                serde_json::json!({"minecraft:custom_name": "Up", "!minecraft:damage": {}}),
+                0,
+                true,
+            ),
+            (
+                serde_json::json!({"minecraft:custom_name": "Zero", "minecraft:damage": 0}),
+                0,
+                false,
+            ),
+        ] {
+            let template = Template::parse(&serde_json::json!({
+                "id": "minecraft:stone_sword", "components": components
+            }))
+            .unwrap();
+            let output = template.over(&input, 0);
+            assert_eq!(output.item.as_ref(), "minecraft:stone_sword");
+            assert_eq!(output.damage, expected_damage);
+            let encoded = crate::item_data::encode_components(&output).unwrap();
+            assert_eq!(
+                encoded.get("minecraft:lore"),
+                input_tag.get("minecraft:lore")
+            );
+            assert_eq!(
+                encoded.get("minecraft:custom_name"),
+                Some(&json_tag(&components["minecraft:custom_name"]))
+            );
+            assert_eq!(encoded.get("!minecraft:damage").is_some(), removed);
+            if expected_damage == 0 {
+                assert!(encoded.get("minecraft:damage").is_none());
+            }
+        }
+        let mut map = input.clone();
+        map.data_mut().map_post_processing = Some(1);
+        let template = Template::parse(&serde_json::json!({"id": "minecraft:filled_map"})).unwrap();
+        let output = template.over(&map, 0);
+        assert_eq!(output.data().unwrap().map_post_processing, Some(1));
+        assert!(
+            crate::item_data::encode_components(&output)
+                .unwrap()
+                .get("minecraft:map_post_processing")
+                .is_none()
+        );
+    }
+
     #[test]
     fn result_count_is_bounded_like_vanilla() {
         let parse = |s: &str| Template::parse(&serde_json::from_str(s).unwrap());
@@ -2172,7 +2293,7 @@ mod tests {
         assert_eq!(kind(r#"{"type":7}"#), None);
         assert_eq!(kind("{}"), None);
     }
-    /// Recipes of a mod's own types land in `custom` by type, in file order,
+    /// Recipes of a mod's own types land in `custom` by type, in registration order,
     /// with the id the file has; a data pack overrides by id and adds more; a
     /// `minecraft` type the game doesn't know is dropped.
     #[test]
@@ -2282,6 +2403,77 @@ mod tests {
         let grid = [Some(ItemStack::new("minecraft:flint", 1)), None, None, None];
         let (_, made) = recipes.find(&grid, 2).unwrap();
         assert_eq!((&*made.item, made.count), ("minecraft:stick", 1));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// ResourceManagerRegistryLoadTask registers by resource-file Identifier,
+    /// and RecipeMap keeps that order when taking the first matching recipe,
+    /// for the crafting grid and the furnaces alike.
+    #[test]
+    fn recipe_selection_follows_resource_file_order() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-recipe-order-{}", std::process::id()));
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        let items = Items::for_tests(HashMap::new());
+        let crafting = |item: &str| {
+            serde_json::json!({
+                "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:flint"],
+                "result": {"id": item}
+            })
+        };
+        let smelting = |item: &str| {
+            serde_json::json!({
+                "type": "minecraft:smelting", "ingredient": "minecraft:flint",
+                "result": {"id": item}
+            })
+        };
+        let flint = ItemStack::new("minecraft:flint", 1);
+        let cases = [
+            (vec!["minecraft:z_pick", "parity:a_pick"], "parity:a_pick"),
+            (
+                vec!["a_priority:z_pick", "z_priority:a_pick"],
+                "z_priority:a_pick",
+            ),
+            (
+                vec!["z_priority:equal", "a_priority:equal"],
+                "a_priority:equal",
+            ),
+            // File names include .json: '-' sorts before the parent's '.'.
+            (
+                vec!["parity:prefix", "parity:prefix-early"],
+                "parity:prefix-early",
+            ),
+            (vec!["z_pick", "parity:a_pick"], "parity:a_pick"),
+        ];
+        let kinds: [(&str, &dyn Fn(&str) -> serde_json::Value); 2] =
+            [("crafting", &crafting), ("smelting", &smelting)];
+        for (ids, expected) in cases {
+            for (kind, recipe) in kinds {
+                for reverse in [false, true] {
+                    let mut sources: Vec<_> = ids
+                        .iter()
+                        .map(|id| (id.to_string(), recipe("minecraft:stick")))
+                        .collect();
+                    if reverse {
+                        sources.reverse();
+                    }
+                    let recipes =
+                        Recipes::from_sources(&root, &items, &PackOverlay::NONE, sources).unwrap();
+                    let (id, result) = match kind {
+                        "crafting" => recipes.find(&[Some(flint.clone())], 1).unwrap(),
+                        _ => {
+                            let c = recipes.cook("minecraft:smelting", &flint).unwrap();
+                            (c.id.as_str(), c.result.clone())
+                        }
+                    };
+                    assert_eq!(
+                        id, expected,
+                        "{kind}, input order: {ids:?}, reversed={reverse}"
+                    );
+                    assert_eq!(&*result.item, "minecraft:stick");
+                }
+            }
+        }
         let _ = fs::remove_dir_all(&root);
     }
 

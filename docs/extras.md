@@ -20,10 +20,10 @@ again restores vanilla's behaviour completely.
 | Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
 | The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
 | Cosmetics (show mine, show others'), off with their flag | `extras.rs`, `crates/horizon-client/src/game/cosmetics.rs` ([cosmetics.md](cosmetics.md)) |
-| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...** |
+| The settings page | `extras_ui.rs` (`Page::Extras`, on `settings_shell.rs`): **Options → Horizon Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles change the picture, so they are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
 
-The settings are grouped by extra, under a header each, two buttons to a row as
-vanilla's options lists are, and each says what it does in its tooltip. An
+The settings are grouped by extra, under a header each, one to a row, and the strip
+under the list says what the row in focus or under the pointer does. An
 extra's own settings (its key, corner, size...) are greyed out while its switch
 is off (`Item::parent`).
 
@@ -41,6 +41,14 @@ the Extras page, not in vanilla's Key Binds screen: Horizon has no Horizon categ
 in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 
 ## The extras
+
+### Chunk pregeneration (`pregen`, default off)
+- Makes `/pregen` available in single-player and hosted LAN worlds, with the existing cheat and
+  permission checks. It does not start generation: run `/pregen start` explicitly.
+- Saved with the other Extras settings and applied immediately; no launch argument or restart is
+  needed. `--pregen` still enables it for the whole run. Dedicated servers use their own property.
+- Turning it off hides the command without cancelling an existing task; turn it on again to manage
+  that task, or cancel it first. See [pregeneration](pregeneration.md).
 
 ### Fullbright (`fullbright`, default off)
 - Displays blocks and entities with a fully bright lightmap, including in dark caves.
@@ -69,7 +77,8 @@ horizon-rust/horizon-mods under `native/<name>/`, [mods.md](mods.md#horizons-off
 options. Players install them from the launcher's Mods page, and the launcher builds them into the game
 ([native-mods.md](native-mods.md)). The game keeps
 the hook points they use (`crates/horizon-client/src/game/native_hooks.rs`), and `horizon-extras.txt` keeps the old
-keys and `movedToMods`.
+keys and `movedToMods`. The Extras page keeps a **Zoom** row: the mod's switch and Settings button when
+it is built in, else a note saying to install it from the Mods page.
 
 The game still draws the minimap, for the native mod (`native_minimap` in `native_hooks.rs`, [mods.md](mods.md)):
 - a corner map (top right by default), square or round, small/medium/large, zoom 0.5 to 4 blocks per pixel, rotating
@@ -156,10 +165,13 @@ once and the screens click exactly as vanilla's (`tools/test_menu_click_parity.p
 and the container screen tests are unchanged).
 
 ### Sorting (`sort`, default off; `sortKey`, unbound)
-- A small button right of the container's title (chests, barrels, ender
-  chests, shulker boxes) and one right of the "Inventory" line (the main
-  inventory; the hotbar is left alone). The key, when bound on the Extras
-  page, sorts the part under the cursor (the container when over no slot).
+- On every menu screen, by its slots' roles (`native_slot_roles`): a small
+  button over the top right of its storage slots (chests, barrels, ender
+  chests, shulker boxes, hoppers, dispensers, a mount's chest, a mod menu
+  type's linked slots) and one right of the "Inventory" line (the main
+  inventory; the hotbar is left alone), crafting tables and workstations
+  included. The key, when bound on the Extras page, sorts the part under the
+  cursor (the storage when over no slot).
 - Partial stacks of one item merge, then the stacks go in creative tab order
   (the search tab's), then by name; full stacks before the partial one,
   empty slots last. It needs an empty hand.
@@ -178,13 +190,14 @@ and the container screen tests are unchanged).
 - `chatIndicator` off removes the coloured bar at the left of a line. It hides
   the bar only, never the message.
 
-### Scroll wheel changes settings (`wheelCyclesSettings`, default on)
-- On, the wheel works as in vanilla: over a button in the settings it changes the button's value
-  (`CycleButton.mouseScrolled`), and a button focused with the keyboard or a pad steps on the
-  wheel wherever the cursor is.
-- Off, the wheel only scrolls the list under the cursor, on every settings page, Video's included
-  (`OptionsUi::wheel`, `GraphicsUi::wheel`). Scrolling through a long page then can't change an
-  option that passes under the cursor (#5455). Client-only.
+### Scroll wheel changes settings (`wheelCyclesListSettings`, default off)
+- Off, as in vanilla, the wheel scrolls the list under the cursor, on every settings page, Video's
+  included (`AbstractScrollArea.mouseScrolled`, `OptionsUi::wheel`, `GraphicsScreen::wheel_step`). Scrolling
+  through a long page can't change an option that passes under the cursor (#5455, #9633). A cycle
+  button outside a list, such as a world's Difficulty, still steps
+  (`CycleButton.mouseScrolled`).
+- On, the wheel over a button in a list changes the button's value too, and a button focused with
+  the keyboard or a pad steps on the wheel wherever the cursor is. Client-only.
 
 ### Splitscreen (`splitscreen`, default off)
 
@@ -197,6 +210,12 @@ A joined player's **Splitscreen Settings** in the pause menu switches profiles i
 Cancel keeps the current one. The switch is disabled while another player is joined; once
 P1 is alone, turning it off restores the normal controller reader. Leaving it on while
 alone keeps watching for joins without a compositor.
+
+When Splitscreen is enabled, Play in the launcher also hands over its other signed-in
+Microsoft accounts. They appear first in the profile picker, marked **(Microsoft)**, and
+connect with their own sessions, skins and secure-chat keys. An account whose session is
+unavailable appears as **(Offline)**: sign in again in the launcher and restart the game to
+use it on an online-mode server. Launcher accounts cannot be forgotten from this page.
 
 `HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
 The Setup map previews the monitors, windows and player views. Click a player (its name turns
@@ -220,7 +239,15 @@ press A; if nobody joins, the offer runs out, or it's declined, it drives P1 aga
 whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
 say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
 goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
-Joining P1 on an external server follows separately.
+On a server P1 joined on this computer or its local network (a dedicated server, another
+computer's LAN world: a loopback, private or link-local address, after the SRV redirect) the
+others join the same server, each as its own profile. Anywhere else (a public server, even in
+offline mode, or a friend's invite) an offline profile can't join: everyone who plays there owns
+the game, so each player needs its own signed-in account. A name already on the server can't be
+picked, and an online-mode server refuses offline profiles; both are said on the profile page
+before it tries. A player the server turns away as it comes in picks again, told why; one kicked later
+leaves; when P1 leaves the server, everyone does. The server's resource packs are asked once,
+of P1: the others follow P1's answer.
 
 ### Music page (`musicPage`, default off; `musicOff`, none off by default)
 - An extra like the rest: off, Music & Sounds is exactly vanilla's page and every

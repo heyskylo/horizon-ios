@@ -530,7 +530,7 @@ impl Game<'_> {
                     }
                     _ => {
                         let source = self.command_source.unwrap_or_else(|| self.player_source());
-                        let view = source.entity.map(|t| self.entity_view_of(t));
+                        let view = source.entity.map(|t| self.entity_view_asked(t, cond));
                         self.conditions_hold(cond, view.as_ref(), source.pos)
                     }
                 }

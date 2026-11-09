@@ -47,6 +47,7 @@ struct Point {
     p: Vec2,
     uv: [f32; 2],
     glint_uv: [f32; 2],
+    cit_uv: [f32; 2],
 }
 fn lerp(a: Point, b: Point, t: f32) -> Point {
     Point {
@@ -55,6 +56,7 @@ fn lerp(a: Point, b: Point, t: f32) -> Point {
             a.uv[0] + (b.uv[0] - a.uv[0]) * t,
             a.uv[1] + (b.uv[1] - a.uv[1]) * t,
         ],
+        cit_uv: std::array::from_fn(|k| a.cit_uv[k] + (b.cit_uv[k] - a.cit_uv[k]) * t),
         glint_uv: [
             a.glint_uv[0] + (b.glint_uv[0] - a.glint_uv[0]) * t,
             a.glint_uv[1] + (b.glint_uv[1] - a.glint_uv[1]) * t,
@@ -155,7 +157,7 @@ fn emit_cit(batch: &mut HudBatch, fans: &[Vec<Point>], cit: CitDraw) {
         }
         let glint = &cit.rules[layer.rule].glint;
         let color = vertex_color(slot, intensity);
-        let uv = |v: Point| layer_uv(v.glint_uv, cit.millis, glint.speed, glint.rotation, 8.0);
+        let uv = |v: Point| layer_uv(v.cit_uv, cit.millis, glint.speed, glint.rotation, 8.0);
         let start = batch.vertices.len();
         for fan in fans {
             for k in 1..fan.len().saturating_sub(1) {
@@ -405,6 +407,7 @@ fn draw_quads_with(
                 p: v.pos.truncate(),
                 uv: v.uv,
                 glint_uv: v.glint_uv,
+                cit_uv: v.cit_uv,
             })
             .collect();
         let color = lit_color(q, lights);
@@ -585,6 +588,7 @@ mod tests {
             pos: [(0.0, y0), (0.0, y1), (8.0, y1), (8.0, y0)].map(|(x, y)| Vec3::new(x, y, z(y))),
             uv: [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
             foil_uv: [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+            gui_glint_uv: None,
             normal: Vec3::Z,
             color,
             foil: Foil::None,
@@ -725,8 +729,10 @@ mod tests {
         };
         let mut batch = HudBatch::new([320, 240]);
         batch.glint_alpha = 0.5;
+        let mut quad = face(0.0, 8.0, |_| 0.0, 0xFFFF_FFFF);
+        quad.gui_glint_uv = Some([[42.0, 42.0]; 4]);
         draw_quads_with(
-            &[face(0.0, 8.0, |_| 0.0, 0xFFFF_FFFF)],
+            &[quad],
             (Vec3::Z, Vec3::Z),
             &mut batch,
             [0.0, 0.0, 16.0, 16.0],
@@ -742,6 +748,7 @@ mod tests {
         for v in &batch.vertices[12..] {
             // Slot 1 in red; full intensity at half the glint strength in alpha.
             assert_eq!(v.color.to_le_bytes(), [1, 0, 0, 128]);
+            assert_eq!(v.glint_uv, v.pos, "CIT retains the sprite-local UVs");
         }
     }
 
@@ -762,6 +769,7 @@ mod tests {
             p: Vec2::new(x, y),
             uv: [x, y],
             glint_uv: [0.0, 0.0],
+            cit_uv: [0.0, 0.0],
         };
         let fan = clip_triangle(
             [p(-4.0, 0.0), p(8.0, 0.0), p(8.0, 8.0)],

@@ -179,9 +179,29 @@ impl Game<'_> {
             }
         }
     }
+    /// Only the connected owner's acting context supplies a verified identity.
+    /// Guests and unresolved sources retain the existing damage API behavior.
+    pub(super) fn owner_damage_uuid(&self) -> Option<[i32; 4]> {
+        if self.lan_acting.is_some() && self.lan_acting_uuid.is_none() {
+            return None;
+        }
+        let actual = self
+            .lan_acting_uuid
+            .map(horizon_client::lan::playerdata::uuid_ints)
+            .or(self.level.player_uuid)?;
+        let owner = self
+            .serving
+            .as_ref()
+            .map(|s| horizon_client::lan::playerdata::uuid_ints(s.owner))
+            .or(self.level.player_uuid)?;
+        (actual == owner).then_some(actual)
+    }
     /// `LivingEntity.hurtServer` of the mob at `index` by the player's hit:
     /// the weapon's `armor_effectiveness` enchantments (Breach) thin its armor.
     pub(super) fn hurt_by_player(&mut self, index: usize, amount: f32, source: Damage) -> bool {
+        let player_uuid = (source.attacker == Some(horizon_client::mobs::Who::Player))
+            .then(|| self.owner_damage_uuid())
+            .flatten();
         let _attacker = self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id));
         let held = self.held().cloned();
         let aim = self.attacker_aim(source.attacker);
@@ -217,6 +237,7 @@ impl Game<'_> {
             damage_type: Some(match source.kind {
                 horizon_client::mobs::DamageKind::MaceSmash => "minecraft:mace_smash",
                 horizon_client::mobs::DamageKind::Spear => "minecraft:spear",
+                horizon_client::mobs::DamageKind::Thorns => "minecraft:thorns",
                 _ => "minecraft:player_attack",
             }),
             items: Some(world_items!(self)),
@@ -238,12 +259,39 @@ impl Game<'_> {
         // The causing entity's aim, for what turns a blow by where it points
         // (`SulfurCube.knockback`).
         self.mobs[index].attacker_aim = aim;
-        let hurt = self.mobs[index].damage_with(amount, source, Some(&mut breach));
+        // Absorbed tenths left by a hit that came another way (a player's projectile) are
+        // not this player's.
+        self.mobs[index].dealt_absorbed = 0;
+        let hurt = match player_uuid {
+            Some(uuid) => {
+                self.mobs[index].damage_with_player_uuid(amount, source, uuid, Some(&mut breach))
+            }
+            None => self.mobs[index].damage_with(amount, source, Some(&mut breach)),
+        };
         self.mobs[index].attacker_aim = None;
+        // LivingEntity.actuallyHurt: Stats.DAMAGE_DEALT_ABSORBED for the attacking player,
+        // awarded here, during that player's own attack (a server's guest has its own
+        // statistics only inside `as_guest`).
+        let absorbed = std::mem::take(&mut self.mobs[index].dealt_absorbed);
+        if absorbed > 0 {
+            self.award_custom_stat("damage_dealt_absorbed", absorbed);
+        }
         if hurt && self.mobs[index].health != old_health {
             self.mob_damage_event(self.mobs[index].id);
         }
         hurt
+    }
+    /// Takes the absorbed tenths a projectile's hit left on the mobs; the shooter gets them
+    /// as `damage_dealt_absorbed` when it is the player (`LivingEntity.actuallyHurt`).
+    pub(super) fn settle_dealt_absorbed(&mut self, by_player: bool) {
+        let absorbed: i32 = self
+            .mobs
+            .iter_mut()
+            .map(|m| std::mem::take(&mut m.dealt_absorbed))
+            .fold(0, i32::saturating_add);
+        if by_player && absorbed > 0 {
+            self.award_custom_stat("damage_dealt_absorbed", absorbed);
+        }
     }
     /// `Player.itemAttackInteraction` after the player's hit landed on the mob
     /// at `index`: the item's `hurtEnemy` (the "used" statistic of a weapon),
@@ -251,6 +299,9 @@ impl Game<'_> {
     /// wear.
     pub(super) fn weapon_hit(&mut self, index: usize) {
         let Some(stack) = self.held().cloned() else {
+            // An empty hand still meets the victim's own post-attack
+            // enchantments (Thorns).
+            self.post_attack(index);
             return;
         };
         let weapon = self
@@ -403,7 +454,7 @@ impl Game<'_> {
         ];
         self.level_event_at(2013, on_pos, 750);
         let heavy = if fall > HEAVY_THRESHOLD { 2.0 } else { 1.0 };
-        let player = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+        let player = Some(self.acting_uuid());
         for m in self.mobs.iter_mut().filter(|m| {
             target != Spared::Mob(m.id) && m.alive() && !m.removed && !ally_of_player(m, player)
         }) {
@@ -511,7 +562,7 @@ impl Game<'_> {
         };
         let base = sweep_base_damage(ratio, attribute, scale);
         let (xd, zd) = self.extra_knockback_direction();
-        let uuid = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+        let uuid = Some(self.acting_uuid());
         let allies = self.player_allies();
         // getEntitiesOfClass walks the entity sections (x, then z, then y)
         // under the box, each in the order its entities were added.
@@ -550,13 +601,13 @@ impl Game<'_> {
                 let Some(i) = self.armor_stands.iter().position(|s| s.id == id) else {
                     continue;
                 };
-                // knockback(0.4, ..) follows a hurtServer that landed, on a
+                // knockback(0.4F, ..) follows a hurtServer that landed, on a
                 // stand that is still there (LivingEntity.knockback).
                 if !self.punch_armor_stand(i) {
                     continue;
                 }
                 let mut knock = horizon_client::health::Knock {
-                    strength: 0.4,
+                    strength: f64::from(0.4_f32),
                     x: xd,
                     z: zd,
                 };
@@ -606,7 +657,7 @@ impl Game<'_> {
                 if old_health > 0.0 && !self.mobs[i].alive() {
                     self.native_kill_event(i);
                 }
-                self.mobs[i].knockback(0.4, xd, zd, &source);
+                self.mobs[i].knockback(f64::from(0.4_f32), xd, zd, &source);
                 self.last_hurt_by_player
                     .insert(self.mobs[i].id, self.lan_acting);
                 self.post_attack(i);

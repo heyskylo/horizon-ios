@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "block_entity_accepts_fluid",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_accepts_fluid",
+      "neoforge": "IFluidHandler.isFluidValid",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a mod tank's say on which fluids it takes (`native_block_entity_accepts_fluid`).",
+  "doc_summary": "`native_block_entity_accepts_fluid(block, tank, fluid, cancel)` is asked before `native_fluid_insert` fills a fillable tank of a mod block's `ModFluidTanks`, in both passes, and before `native_move_fluids` counts that tank's room; set `cancel` to refuse the fluid there, so a water tank takes no `create:chocolate` and a removed mod leaves no id it cannot use behind. Every tank accepts every fluid unless a mod says otherwise; a cauldron and a drain never ask it. Bundles need \"hooks\": @API:block_entity_accepts_fluid@."
+}

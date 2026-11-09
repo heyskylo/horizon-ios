@@ -4,7 +4,7 @@
 //! as vanilla's `submit` does (no block-entity placement transform) and
 //! reports `getExtents` over the same posed parts.
 use super::{Foil, ItemQuad, ItemRenderer, ItemSink, SpecialHost, argb};
-use crate::{block_entity_render::ModelPart, hud::Rect};
+use crate::{block_entity_render::ModelPart, hud::Rect, mobs::EntityModelDocument};
 use glam::{Mat4, Quat, Vec3};
 use horizon_assets::item_model::{SpecialKind, SpecialModel};
 use serde_json::Value;
@@ -55,6 +55,16 @@ pub(super) fn load_parts(root: &Path) -> HashMap<String, ModelPart> {
     else {
         return HashMap::new();
     };
+    load_parts_from_value(&all)
+}
+
+pub(super) fn load_parts_from_document(
+    document: &EntityModelDocument,
+) -> HashMap<String, ModelPart> {
+    load_parts_from_value(document.value())
+}
+
+fn load_parts_from_value(all: &Value) -> HashMap<String, ModelPart> {
     LAYERS
         .iter()
         .chain(COPPER_GOLEM_LAYERS.iter())
@@ -136,6 +146,7 @@ fn draw(
                 ]
             }),
             foil_uv: poly.map(|v| [v[3], v[4]]),
+            gui_glint_uv: None,
             normal,
             color,
             foil,

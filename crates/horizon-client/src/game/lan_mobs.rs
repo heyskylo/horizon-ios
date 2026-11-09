@@ -43,7 +43,7 @@ pub(super) fn player_for(
     // An iron golem's anger is for the player who hit it (`NeutralMob` keeps
     // the angry-at UUID), and outlasts the 100 ticks of `getLastHurtByMob`:
     // while it lasts, the golem keeps that player, not whoever is nearest.
-    let angry = m.species() == Species::IronGolem && m.extra.anger > 0;
+    let angry = m.species() == Species::IronGolem && m.extra.angry_at == Some(Who::Player);
     let targeting = m.ai.target == Some(Who::Player)
         || angry
         || m.ai.last_hurt_by == Some(Who::Player) && m.age as i32 - m.ai.last_hurt_by_time <= 100;
@@ -68,13 +68,10 @@ pub(super) fn player_for(
     if m.extra.leash == Some(horizon_client::mobs::leash::Holder::Player)
         && let Some(holder) = m.extra.leash_player
     {
-        if host.is_some_and(|v| v.alive && !v.spectator && v.uuid == holder) {
+        if host.is_some_and(|v| v.uuid == holder) {
             return None;
         }
-        if let Some((conn, _)) = guests
-            .iter()
-            .find(|(_, v)| v.alive && !v.spectator && v.uuid == holder)
-        {
+        if let Some((conn, _)) = guests.iter().find(|(_, v)| v.uuid == holder) {
             return Some(*conn);
         }
     }
@@ -138,7 +135,7 @@ pub(super) fn acts_on_player(e: &MobEvent) -> bool {
                 target: Who::Player,
                 ..
             }
-            | MobEvent::Launch {
+            | MobEvent::IronGolemHit {
                 target: Who::Player,
                 ..
             }
@@ -162,6 +159,26 @@ fn guest_view(mut v: PlayerView, uuid: u128, moved: [f64; 3]) -> PlayerView {
 }
 
 impl Game<'_> {
+    /// How mobs see the guest `conn`, as `lan_guest_views` gives each: None
+    /// for no such guest in play here, or while the hub is taken out.
+    pub(super) fn lan_guest_view(&mut self, conn: u32) -> Option<PlayerView> {
+        let mut host = self.lan.take()?;
+        let found = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == conn && host.hub.here(g) && g.loaded && !g.dead)
+            .map(|g| {
+                let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+                (g.uuid, moved)
+            });
+        let view = found.and_then(|(uuid, moved)| {
+            let v = self.as_guest(&mut host, conn, |g| g.player_view())??;
+            Some(guest_view(v, uuid, moved))
+        });
+        self.lan = Some(host);
+        view
+    }
     /// How mobs see each guest in play (`player_view` with the guest swapped
     /// in).
     pub(super) fn lan_guest_views(&mut self) -> GuestViews {
@@ -218,26 +235,40 @@ impl Game<'_> {
     }
 
     /// Mob events aimed at a guest, run as that guest (`guest_hit_by`).
-    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, MobEvent)>) {
+    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, u32, MobEvent)>) {
         if events.is_empty() {
             return;
         }
         let Some(mut host) = self.lan.take() else {
             return;
         };
-        for (conn, e) in events {
-            self.guest_hit_by(&mut host, conn, |g| {
-                let _ = g.handle_mob_events(vec![e]);
-            });
+        for (conn, mob, e) in events {
+            self.guest_hit_by(&mut host, conn, |g| g.guest_mob_event(mob, e));
         }
         self.lan = Some(host);
+    }
+
+    /// One mob event, with the guest swapped in. A hit knows the mob that
+    /// swung, so nothing guesses it from where the hit came from.
+    pub(super) fn guest_mob_event(&mut self, mob: u32, e: MobEvent) {
+        if matches!(
+            e,
+            MobEvent::AttackPlayer(..)
+                | MobEvent::AttackPlayerWithEffect { .. }
+                | MobEvent::StingPlayer { .. }
+        ) {
+            self.combat.melee_mob = Some(mob);
+        }
+        let _ = self.handle_mob_events(vec![e]);
+        // Used up by the hit; a blow that hurt nobody leaves it to no other.
+        self.combat.melee_mob = None;
     }
 
     /// The guests' boxes for the blocks entities trigger (pressure plates,
     /// tripwires, detector rails): `Entity.checkInsideBlocks` and
     /// `Level.getEntities` see every player in the level, but not spectators
     /// (`Entity.isIgnoringBlockTriggers`).
-    pub(super) fn lan_block_trigger_boxes(&self) -> Vec<([f64; 3], [f64; 3])> {
+    pub(super) fn lan_block_trigger_boxes(&self) -> Vec<(u128, ([f64; 3], [f64; 3]))> {
         let Some(host) = self.lan.as_ref() else {
             return Vec::new();
         };
@@ -248,7 +279,7 @@ impl Game<'_> {
             .map(|g| {
                 let b = g.bounds();
                 let (lo, hi) = (b.min_position(), b.max_position());
-                ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
+                (g.uuid, ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]))
             })
             .collect()
     }
@@ -476,6 +507,9 @@ mod tests {
             main_hand: None,
             off_hand: None,
             head: None,
+            chest: None,
+            legs: None,
+            feet: None,
             armor_cover: 0.0,
             invisible: false,
             spectator: false,
@@ -494,6 +528,7 @@ mod tests {
             sleeping: false,
             sleep_timer: 0,
             passenger: false,
+            riding_vehicle: None,
             vehicle: None,
         }
     }
@@ -569,11 +604,13 @@ mod tests {
         golem.ai.last_hurt_by_time = 100;
         golem.ai.target = None;
         golem.extra.anger = 300;
+        golem.extra.angry_at = Some(Who::Player);
         // The attacker (conn 7) ran off; a bystander (conn 8) is nearer.
         let guests = vec![(7, view(30.0, false)), (8, view(3.0, false))];
         assert_eq!(player_for(&golem, None, &guests, Some(7)), Some(7));
-        // Calm again: the nearest player is seen.
+        // Calm again (`stopBeingAngry`): the nearest player is seen.
         golem.extra.anger = 0;
+        golem.extra.angry_at = None;
         assert_eq!(player_for(&golem, None, &guests, Some(7)), Some(8));
     }
 }

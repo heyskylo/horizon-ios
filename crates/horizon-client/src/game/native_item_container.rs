@@ -133,7 +133,6 @@ fn extract_one(
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// The slots a mod gave item `item`, clamped; none for any other item.
     fn item_container_size(&self, item: &str) -> Option<u32> {

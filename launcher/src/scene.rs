@@ -9,6 +9,11 @@
 //! clouds and the sun in runs of one colour, and the fireflies. The scene is its own view, so a
 //! frame of it doesn't build the launcher's pages again: GPUI Fast draws them from the last frame.
 //!
+//! A player's accent other than the violet tints the whole picture as the mockup does: a layer
+//! of `color-mix(in oklab, accent 58%, #767676)` over it with `mix-blend-mode: color` (each
+//! colour keeps its luminance and takes the tint's hue and chroma, [`color_blend`]). The blend
+//! is the same sum on every colour, so it is done where each colour is painted.
+//!
 //! [`Backdrop`] is the same picture blurred, for the glass plates (`glass.rs`): GPUI has no
 //! backdrop filter, but the only thing under a plate is this scene.
 use crate::art;
@@ -26,6 +31,11 @@ const SKY: [u32; 15] = [
     0x902f76, 0xab3a75, 0xc64a71, 0xde5f6a, 0xef7c63, 0xf89d62,
 ];
 const SKY_STEPS: usize = SKY.len() - 4;
+/// The sky gradient's stop positions, `(i / SKY_STEPS)^(1 / 2.3)`: `sky_rgb` runs once per
+/// texel of the baked sky, so they are worked out once, not per texel.
+static SKY_STOPS: std::sync::LazyLock<[f64; SKY_STEPS + 1]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|i| (i as f64 / SKY_STEPS as f64).powf(1. / 2.3))
+});
 const SUN: [u32; 7] = [
     0xfff5d2, 0xffe4a0, 0xffca78, 0xffac5f, 0xff8c58, 0xfb6c62, 0xee5277,
 ];
@@ -428,7 +438,8 @@ impl Model {
     fn sky_rgb(&self, x: f64, y: f64) -> [f64; 3] {
         let horizon = self.horizon as f64 * self.px;
         let t = clamp(y / horizon, 0., 1.);
-        let stop = |i: usize| (i as f64 / SKY_STEPS as f64).powf(1. / 2.3);
+        let stops = &*SKY_STOPS;
+        let stop = |i: usize| stops[i];
         let mut i = 0;
         while i + 1 < SKY_STEPS && t > stop(i + 1) {
             i += 1;
@@ -689,6 +700,9 @@ impl Smooth {
 /// where each one's top row is.
 struct Baked {
     key: (u32, u32, u32),
+    tint: Option<u32>,
+    /// The cheaper sky (performance mode) this picture was baked with.
+    fast: bool,
     model: Model,
     sky: Smooth,
     halo: (Smooth, Bounds<Pixels>),
@@ -697,18 +711,24 @@ struct Baked {
 
 /// The rows a ridge image has below the window, for it to rise with the pointer.
 const RIDGE_EXTRA: i32 = 4;
+/// Logical pixels per texel of the baked sky in performance mode: its gradients are smooth.
+const SKY_TEXEL: f64 = 4.;
 
 impl Baked {
-    fn new(width: f64, height: f64, scale: f32) -> Baked {
+    fn new(width: f64, height: f64, scale: f32, tint: Option<u32>, fast: bool) -> Baked {
         let model = Model::new(width, height);
-        // The sky's gradients are smooth: half the window's logical size is enough.
+        let tint_rgb = tint.map(rgb);
+        let tinted = |c: [f64; 3]| tint_rgb.map_or(c, |t| color_blend(c, t));
+        // The sky's gradients are smooth: half the window's logical size is enough, and a
+        // quarter of it in performance mode.
+        let texel = if fast { SKY_TEXEL } else { 2. };
         let (sw, sh) = (
-            ((width / 2.).ceil() as usize).max(1),
-            ((height / 2.).ceil() as usize).max(1),
+            ((width / texel).ceil() as usize).max(1),
+            ((height / texel).ceil() as usize).max(1),
         );
         let sky = Smooth::new(sw, sh, |x, y| {
             (
-                model.sky_rgb((x as f64 + 0.5) * 2., (y as f64 + 0.5) * 2.),
+                tinted(model.sky_rgb((x as f64 + 0.5) * texel, (y as f64 + 0.5) * texel)),
                 1.,
             )
         });
@@ -716,11 +736,12 @@ impl Baked {
         let (cx, cy) = (model.sun.0 as f64 * model.px, model.sun.1 as f64 * model.px);
         let side = ((r * 2.) / 2.).ceil().max(1.) as usize;
         let halo = Smooth::new(side, side, |x, y| {
-            model.halo(
+            let (c, a) = model.halo(
                 cx - r + (x as f64 + 0.5) * 2.,
                 cy - r + (y as f64 + 0.5) * 2.,
                 0.5,
-            )
+            );
+            (tinted(c), a)
         });
         let halo_bounds = Bounds::new(
             point(px((cx - r) as f32), px((cy - r) as f32)),
@@ -728,7 +749,14 @@ impl Baked {
         );
         let ridges = (0..model.ridges.len())
             .map(|n| {
-                let (texels, cols, rows, top) = model.ridge_texels(n, RIDGE_EXTRA);
+                let (mut texels, cols, rows, top) = model.ridge_texels(n, RIDGE_EXTRA);
+                if let Some(t) = tint {
+                    for texel in texels.iter_mut().filter(|t| t[3] > 0) {
+                        let c = (texel[0] as u32) << 16 | (texel[1] as u32) << 8 | texel[2] as u32;
+                        let c = tinted_u32(c, Some(t));
+                        *texel = [(c >> 16) as u8, (c >> 8) as u8, c as u8, texel[3]];
+                    }
+                }
                 let image = art::bake(
                     &texels,
                     cols as usize,
@@ -741,6 +769,8 @@ impl Baked {
             .collect();
         Baked {
             key: key(width, height, scale),
+            tint,
+            fast,
             model,
             sky,
             halo: (halo, halo_bounds),
@@ -775,6 +805,18 @@ pub struct Scene {
     last: Option<Instant>,
     /// The frame timer in flight, if any.
     waking: bool,
+    /// The accent's tint (the mockup's `mix-blend-mode: color` layer); none for the violet.
+    tint: Option<u32>,
+    /// The glass plates' blur in px.
+    blur: f32,
+    /// The window (its `key`), blur and look the plates' backdrop was made for: a new accent
+    /// needs neither a new backdrop nor a new blur.
+    backdrop_for: Option<((u32, u32, u32), f32, bool)>,
+    /// A bake of a new tint is running on a worker thread (one at a time: the next waits).
+    baking: bool,
+    /// Performance mode: a quarter-resolution sky, a box blur, resizes baked in the background
+    /// and no frame per mouse move.
+    fast: bool,
 }
 
 impl Scene {
@@ -788,7 +830,66 @@ impl Scene {
             target: (0., 0.),
             last: None,
             waking: false,
+            tint: None,
+            blur: horizon_theme::glass::BLUR,
+            backdrop_for: None,
+            baking: false,
+            fast: false,
         }
+    }
+
+    /// The player's accent (none for the violet, else the colour every colour of the scene takes
+    /// the hue and chroma of) and the plates' blur. The scene is baked again when the tint
+    /// changes, the plates' backdrop blurred again when the blur does.
+    pub fn set_look(&mut self, tint: Option<u32>, blur: f32, cx: &mut Context<Self>) {
+        if self.tint != tint || self.blur != blur {
+            if self.tint != tint {
+                // The plates' backdrop takes the new tint as it is read: no blur again.
+                crate::glass::set_backdrop_tint(tint);
+            }
+            self.tint = tint;
+            self.blur = blur;
+            cx.notify();
+        }
+    }
+
+    /// Turns performance mode on or off: a quarter-resolution sky, a box blur, resizes baked in
+    /// the background and the scene not restarted by every mouse move. The pictures are rebuilt
+    /// once when it changes.
+    pub fn set_performance(&mut self, fast: bool, cx: &mut Context<Self>) {
+        if self.fast != fast {
+            self.fast = fast;
+            self.backdrop_for = None;
+            cx.notify();
+        }
+    }
+
+    /// Makes `baked` the picture shown; the images it replaces are dropped on the next frame.
+    fn install(&mut self, baked: Baked) {
+        if let Some(old) = self.baked.replace(baked) {
+            self.replaced.extend(old.images());
+        }
+    }
+
+    /// Bakes the scene for the tint now wanted on a worker thread, the last picture staying on
+    /// screen meanwhile. When it lands, `render` sees whether yet another tint is wanted (a drag
+    /// goes on) and starts the next bake: bakes never pile up, and the last tint is always baked.
+    fn bake_in_background(&mut self, width: f64, height: f64, scale: f32, cx: &mut Context<Self>) {
+        self.baking = true;
+        let tint = self.tint;
+        let fast = self.fast;
+        cx.spawn(async move |this, cx| {
+            let baked = cx
+                .background_executor()
+                .spawn(async move { Baked::new(width, height, scale, tint, fast) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.baking = false;
+                this.install(baked);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The pointer moved to `at` in a window `size` big: the ridges, clouds and stars lean
@@ -808,7 +909,11 @@ impl Scene {
             f64::from(f32::from(at.x)) / w * 2. - 1.,
             f64::from(f32::from(at.y)) / h * 2. - 1.,
         );
-        cx.notify();
+        // The 31 ms timer already draws the new target; a frame per mouse event only restarts
+        // a scene that stopped (unfocused for over 10 s), which performance mode skips.
+        if !self.fast || !self.waking {
+            cx.notify();
+        }
     }
 
     fn wake(&mut self, after: Duration, cx: &mut Context<Self>) {
@@ -838,11 +943,42 @@ impl Render for Scene {
             f64::from(f32::from(viewport.height)),
         );
         let scale = window.scale_factor();
-        if self.baked.as_ref().map(|b| b.key) != Some(key(width, height, scale)) {
-            let baked = Baked::new(width, height, scale);
-            crate::glass::set_backdrop(&baked.model);
-            if let Some(old) = self.baked.replace(baked) {
-                self.replaced.extend(old.images());
+        let size_key = key(width, height, scale);
+        // The first frame is baked here, and in the default look a new window size too: a
+        // picture of another size would be wrong meanwhile. Performance mode keeps the picture
+        // shown (its layers stretch) and bakes a resize in the background.
+        let needs_sync = self.baked.is_none()
+            || (!self.fast && self.baked.as_ref().map(|b| b.key) != Some(size_key));
+        if needs_sync {
+            let baked = Baked::new(width, height, scale, self.tint, self.fast);
+            self.install(baked);
+        }
+        // Performance mode: the cheap bake runs right here, so a new accent reaches the
+        // background in the same frame as the buttons (0 ms, as on the components).
+        let stale_look = self
+            .baked
+            .as_ref()
+            .is_some_and(|b| b.tint != self.tint || b.fast != self.fast);
+        if self.fast && stale_look {
+            let baked = Baked::new(width, height, scale, self.tint, self.fast);
+            self.install(baked);
+        }
+        if !self.baking
+            && self
+                .baked
+                .as_ref()
+                .is_some_and(|b| b.key != size_key || b.tint != self.tint || b.fast != self.fast)
+        {
+            self.bake_in_background(width, height, scale, cx);
+        }
+        // The plates' backdrop follows the picture shown, the blur and the look. Performance
+        // mode's plates are solid, so nothing samples the scene and no backdrop is built.
+        if !self.fast {
+            let shown = self.baked.as_ref().expect("baked above");
+            let backdrop_for = (shown.key, self.blur, false);
+            if self.backdrop_for != Some(backdrop_for) {
+                crate::glass::set_backdrop(&shown.model, self.tint, self.blur, false);
+                self.backdrop_for = Some(backdrop_for);
             }
         }
 
@@ -878,6 +1014,8 @@ impl Render for Scene {
         // The sky's moving parts (`renderSky`): stars and the odd meteor, in logical pixels.
         let sky_height = m.horizon as f64 * m.px;
         let shift = -view.0 * 4.;
+        let tint = self.tint;
+        let (star_cool, star_warm) = (tinted_u32(STAR_COOL, tint), tinted_u32(STAR_WARM, tint));
         let mut stars: Vec<(Bounds<Pixels>, f32, Hsla)> = Vec::new();
         for s in &m.stars {
             let twinkle = 0.5 + 0.5 * (time * s.speed + s.phase).sin();
@@ -888,7 +1026,7 @@ impl Render for Scene {
             }
             let x = s.x + shift;
             let color = |a: f64| -> Hsla {
-                let c = if s.cool { STAR_COOL } else { STAR_WARM };
+                let c = if s.cool { star_cool } else { star_warm };
                 gpui::rgba(c << 8 | (a * 255.).round() as u32).into()
             };
             let r = s.size / 2.;
@@ -907,9 +1045,15 @@ impl Render for Scene {
                 ));
             }
         }
-        stars.extend(meteor(time, m.width, sky_height));
+        stars.extend(meteor(time, m.width, sky_height, star_warm));
 
-        let runs = m.runs(time, view);
+        let mut runs = m.runs(time, view);
+        if tint.is_some() {
+            for run in &mut runs {
+                run.3 = tinted_u32(run.3, tint);
+            }
+        }
+        let firefly = tinted_u32(FIREFLY, tint);
         let flies: Vec<_> = m
             .flies
             .iter()
@@ -987,7 +1131,7 @@ impl Render for Scene {
                                     + point(px((x + dx) as f32 * tx), px((y + dy) as f32 * tx)),
                                 size(px(tx), px(tx)),
                             );
-                            fill(b, alpha(FIREFLY, a))
+                            fill(b, alpha(firefly, a))
                         };
                         window.paint_quad(at(0, 0, a));
                         for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
@@ -1033,7 +1177,7 @@ fn alpha(c: u32, a: f64) -> Rgba {
 
 /// The meteor of the 9-second window `time` falls in, if one is crossing the sky: its trail as
 /// small dots fading from the head (the website strokes a 1.5 px line with a gradient).
-fn meteor(time: f64, width: f64, sky_height: f64) -> Vec<(Bounds<Pixels>, f32, Hsla)> {
+fn meteor(time: f64, width: f64, sky_height: f64, colour: u32) -> Vec<(Bounds<Pixels>, f32, Hsla)> {
     let window9 = (time / 9.).floor();
     let mut rand = Rng((window9 as i64 * 7919 + 13) as i32);
     let age = time - window9 * 9. - (1. + rand.next() * 5.);
@@ -1053,7 +1197,7 @@ fn meteor(time: f64, width: f64, sky_height: f64) -> Vec<(Bounds<Pixels>, f32, H
         .map(|i| {
             let f = i as f64 / steps as f64;
             let (x, y) = (hx - dir * 0.87 * 110. * f, hy - 0.5 * 110. * f);
-            let c: Hsla = alpha(STAR_WARM, life * (1. - f)).into();
+            let c: Hsla = alpha(colour, life * (1. - f)).into();
             (rect(x - 0.75, y - 0.75, 1.5, 1.5), 0.75, c)
         })
         .collect()
@@ -1062,17 +1206,27 @@ fn meteor(time: f64, width: f64, sky_height: f64) -> Vec<(Bounds<Pixels>, f32, H
 /// The scene blurred as `.hzl-glass` and `.hzl-float` see it through their backdrop filters
 /// (blur, then `saturate(140%)`, and `brightness(0.62)` for the float): one colour per texel at
 /// the scene's first frame, without the stars (a 24 px blur leaves nothing of them).
+///
+/// The accent's tint is not in the blurred texels: `color_blend` keeps the backdrop's luminance
+/// and blur is linear, so tinting after the blur gives (up to gamut clipping) what tinting
+/// before it did. A new accent is then a cheap [`set_tint`](Self::set_tint), not a new blur.
 pub struct Backdrop {
     pub w: usize,
     pub h: usize,
     /// Logical pixels per texel.
     pub px: f64,
-    pub glass: Vec<[f32; 3]>,
-    pub float: Vec<[f32; 3]>,
+    /// The blurred scene before tint, saturation and brightness: one colour per texel.
+    glass: Vec<[f32; 3]>,
+    float: Vec<[f32; 3]>,
+    /// The accent's tint, laid over a blurred colour as it is read.
+    tint: Option<[f64; 3]>,
+    /// No blur: texels are read as squares, since filtering between them would soften the pixel
+    /// art the blur setting is meant to leave sharp (#12062).
+    sharp: bool,
 }
 
 impl Backdrop {
-    pub fn new(m: &Model, blur: f64) -> Backdrop {
+    pub fn new(m: &Model, blur: f64, fast: bool) -> Backdrop {
         let (w, h) = (m.w as usize, m.h as usize);
         let mut base = vec![[0f64; 3]; w * h];
         for (i, c) in base.iter_mut().enumerate() {
@@ -1104,27 +1258,43 @@ impl Backdrop {
                 }
             }
         }
-        let filtered = |sigma: f64, brightness: f64| -> Vec<[f32; 3]> {
-            blur_rgb(&base, w, h, sigma / m.px)
-                .into_iter()
-                .map(|c| {
-                    let s = saturate(c, 1.4);
-                    s.map(|v| (clamp(v, 0., 1.) * brightness) as f32)
-                })
-                .collect()
+        let blurred = |sigma: f64| -> Vec<[f32; 3]> {
+            let texels = if fast {
+                box_blur_rgb(&base, w, h, sigma / m.px)
+            } else {
+                gaussian_blur_rgb(&base, w, h, sigma / m.px)
+            };
+            texels.into_iter().map(|c| c.map(|v| v as f32)).collect()
         };
         Backdrop {
             w,
             h,
             px: m.px,
-            glass: filtered(blur, 1.),
-            float: filtered(blur + 24., 0.62),
+            glass: blurred(blur),
+            float: blurred(if blur <= 0. { 0. } else { blur + 24. }),
+            tint: None,
+            sharp: blur <= 0.,
         }
     }
 
-    /// The blurred colour at a point in logical pixels (bilinear between texel centres).
+    /// Lays `tint` (none for the violet) over the backdrop from now on; true if it changed.
+    pub fn set_tint(&mut self, tint: Option<u32>) -> bool {
+        let tint = tint.map(rgb);
+        let changed = self.tint != tint;
+        self.tint = tint;
+        changed
+    }
+
+    /// The blurred colour at a point in logical pixels (bilinear between texel centres, or the
+    /// texel under it with no blur), tinted,
+    /// saturated and dimmed as the filters do.
     pub fn at(&self, float: bool, x: f64, y: f64) -> [f32; 3] {
         let grid = if float { &self.float } else { &self.glass };
+        if self.sharp {
+            let x = clamp((x / self.px).floor(), 0., (self.w - 1) as f64) as usize;
+            let y = clamp((y / self.px).floor(), 0., (self.h - 1) as f64) as usize;
+            return self.finish(grid[y * self.w + x], float);
+        }
         let fx = clamp(x / self.px - 0.5, 0., (self.w - 1) as f64);
         let fy = clamp(y / self.px - 0.5, 0., (self.h - 1) as f64);
         let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
@@ -1132,17 +1302,57 @@ impl Backdrop {
         let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
         let px = |x: usize, y: usize| grid[y * self.w + x];
         let l = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t);
-        l(
+        let blurred = l(
             l(px(x0, y0), px(x1, y0), tx),
             l(px(x0, y1), px(x1, y1), tx),
             ty,
-        )
+        );
+        self.finish(blurred, float)
     }
+
+    /// A backdrop colour tinted, saturated and dimmed as the filters do.
+    fn finish(&self, blurred: [f32; 3], float: bool) -> [f32; 3] {
+        let mut c = blurred.map(f64::from);
+        if let Some(t) = self.tint {
+            c = color_blend(c, t);
+        }
+        let brightness = if float { 0.62 } else { 1. };
+        saturate(c, 1.4).map(|v| (clamp(v, 0., 1.) * brightness) as f32)
+    }
+}
+
+/// CSS's `color` blend of `source` over `backdrop` (0 to 1, sRGB): the source's hue and chroma at
+/// the backdrop's luminance (`SetLum(Cs, Lum(Cb))` in Compositing and Blending Level 1).
+fn color_blend(backdrop: [f64; 3], source: [f64; 3]) -> [f64; 3] {
+    let lum = |c: [f64; 3]| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+    let d = lum(backdrop) - lum(source);
+    let c = source.map(|v| v + d);
+    let l = lum(c);
+    let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+    let c = if n < 0. {
+        c.map(|v| l + (v - l) * l / (l - n))
+    } else {
+        c
+    };
+    if x > 1. {
+        c.map(|v| l + (v - l) * (1. - l) / (x - l))
+    } else {
+        c
+    }
+}
+
+/// `c` under the tint, if any.
+fn tinted_u32(c: u32, tint: Option<u32>) -> u32 {
+    let Some(t) = tint else {
+        return c;
+    };
+    let [r, g, b] = color_blend(rgb(c), rgb(t)).map(|v| byte(v) as u32);
+    r << 16 | g << 8 | b
 }
 
 /// A Gaussian blur of standard deviation `sigma` texels, its edges held (CSS blurs a backdrop
 /// with its edge pixels repeated).
-fn blur_rgb(src: &[[f64; 3]], w: usize, h: usize, sigma: f64) -> Vec<[f64; 3]> {
+fn gaussian_blur_rgb(src: &[[f64; 3]], w: usize, h: usize, sigma: f64) -> Vec<[f64; 3]> {
     if sigma <= 0. {
         return src.to_vec();
     }
@@ -1174,6 +1384,79 @@ fn blur_rgb(src: &[[f64; 3]], w: usize, h: usize, sigma: f64) -> Vec<[f64; 3]> {
         out
     };
     pass(&pass(src, true), false)
+}
+
+/// A Gaussian blur of standard deviation `sigma` texels, as three box blurs (their widths add
+/// up to the Gaussian's variance; the shape is within a few percent of it), its edges held as
+/// CSS holds a backdrop's. A pass costs the same few operations a texel whatever `sigma` is:
+/// the Gaussian kernel it replaces cost `6 * sigma` taps a texel and pass.
+fn box_blur_rgb(src: &[[f64; 3]], w: usize, h: usize, sigma: f64) -> Vec<[f64; 3]> {
+    if sigma <= 0. {
+        return src.to_vec();
+    }
+    let mut a = src.to_vec();
+    let mut b = vec![[0.; 3]; w * h];
+    for r in box_radii(sigma) {
+        box_pass(&a, &mut b, w, h, r, true);
+        box_pass(&b, &mut a, w, h, r, false);
+    }
+    a
+}
+
+/// The radii of three boxes (a box of radius `r` is `2r + 1` wide) whose variances add up to
+/// `sigma`'s: Kutskir's "boxes for gauss".
+fn box_radii(sigma: f64) -> [usize; 3] {
+    let n = 3.;
+    let ideal = (12. * sigma * sigma / n + 1.).sqrt();
+    let mut lower = ideal.floor() as i64;
+    if lower % 2 == 0 {
+        lower -= 1;
+    }
+    let lower = lower.max(1);
+    let upper = lower + 2;
+    let l = lower as f64;
+    // How many of the three take the lower width.
+    let m = ((12. * sigma * sigma - n * l * l - 4. * n * l - 3. * n) / (-4. * l - 4.)).round();
+    std::array::from_fn(|i| {
+        let width = if (i as f64) < m { lower } else { upper };
+        ((width - 1) / 2) as usize
+    })
+}
+
+/// One box blur of radius `r` along the rows (`horizontal`) or the columns, edges held.
+fn box_pass(
+    src: &[[f64; 3]],
+    out: &mut [[f64; 3]],
+    w: usize,
+    h: usize,
+    r: usize,
+    horizontal: bool,
+) {
+    let (lines, len, stride, step) = if horizontal {
+        (h, w, w, 1)
+    } else {
+        (w, h, 1, w)
+    };
+    let r = r as i64;
+    let scale = 1. / (2 * r + 1) as f64;
+    for line in 0..lines {
+        let base = line * stride;
+        let at = |i: i64| src[base + i.clamp(0, len as i64 - 1) as usize * step];
+        let mut sum = [0.; 3];
+        for k in -r..=r {
+            let c = at(k);
+            for ch in 0..3 {
+                sum[ch] += c[ch];
+            }
+        }
+        for i in 0..len as i64 {
+            out[base + i as usize * step] = sum.map(|v| v * scale);
+            let (add, sub) = (at(i + 1 + r), at(i - r));
+            for ch in 0..3 {
+                sum[ch] += add[ch] - sub[ch];
+            }
+        }
+    }
 }
 
 /// CSS `saturate(s)` (Filter Effects' matrix).
@@ -1293,6 +1576,22 @@ mod tests {
     }
 
     #[test]
+    fn the_accent_tint_keeps_luminance_and_takes_the_hue_like_css() {
+        // Compositing and Blending's SetLum: grey at 0.5 under pure red is (1, 2/7, 2/7).
+        let c = color_blend([0.5; 3], [1., 0., 0.]);
+        assert!((c[0] - 1.).abs() < 1e-9 && (c[1] - 2. / 7.).abs() < 1e-9 && c[1] == c[2]);
+        // Luminance is kept, darks stay dark and a grey tint makes the scene grey.
+        let lum = |c: [f64; 3]| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+        let night = rgb(SKY[1]);
+        let teal = rgb(horizon_theme::glass::mix_oklab(0x0f766e, 0x767676, 0.58));
+        assert!((lum(color_blend(night, teal)) - lum(night)).abs() < 1e-9);
+        let grey = color_blend(rgb(SUN[0]), [0.4; 3]);
+        assert!(grey[0] == grey[1] && grey[1] == grey[2]);
+        // No tint for the violet: the scene is the website's.
+        assert_eq!(tinted_u32(HALO, None), HALO);
+    }
+
+    #[test]
     fn mix_cuts_channels_like_javascript() {
         assert_eq!(mix(0x000000, 0xffffff, 0.5), 0x7f7f7f);
         assert_eq!(mix(0x102030, 0x102030, 0.3), 0x102030);
@@ -1307,5 +1606,45 @@ mod tests {
         // Every column of the nearest ridge reaches the bottom.
         let (texels, cols, rows, _) = m.ridge_texels(2, 0);
         assert!((0..cols).all(|c| texels[((rows - 1) * cols + c) as usize][3] == 255));
+    }
+
+    /// Why the backdrop can be tinted after its blur: with no gamut clipping, `color` blend is
+    /// linear in the backdrop, so blur (an average) and tint commute.
+    #[test]
+    fn tinting_commutes_with_blurring_when_nothing_clips() {
+        let (a, b, t) = ([0.4, 0.3, 0.5], [0.5, 0.4, 0.3], [0.2, 0.5, 0.3]);
+        let mean = [0, 1, 2].map(|i| (a[i] + b[i]) / 2.);
+        let tint_then_blur = {
+            let (x, y) = (color_blend(a, t), color_blend(b, t));
+            [0, 1, 2].map(|i| (x[i] + y[i]) / 2.)
+        };
+        let blur_then_tint = color_blend(mean, t);
+        for i in 0..3 {
+            assert!((tint_then_blur[i] - blur_then_tint[i]).abs() < 1e-9);
+        }
+    }
+
+    /// #12062: with the blur at 0 px, a plate shows the scene's texels as squares, not filtered
+    /// into each other; with a blur, it still reads between texel centres.
+    #[test]
+    fn no_blur_reads_texels_as_squares() {
+        let backdrop = |sharp| Backdrop {
+            w: 2,
+            h: 1,
+            px: 4.,
+            glass: vec![[0.; 3], [1.; 3]],
+            float: vec![[0.; 3], [1.; 3]],
+            tint: None,
+            sharp,
+        };
+        let (black, white) = ([0f32; 3], [1f32; 3]);
+        // Just left of the edge between the two texels.
+        assert_eq!(backdrop(true).at(false, 3.9, 2.), black);
+        assert_eq!(backdrop(true).at(false, 4.1, 2.), white);
+        let soft = backdrop(false).at(false, 3.9, 2.);
+        assert!(soft[0] > 0.3 && soft[0] < 0.7, "{soft:?}");
+        // Model::new with blur 0 makes a sharp backdrop.
+        assert!(Backdrop::new(&Model::new(320., 200.), 0., false).sharp);
+        assert!(!Backdrop::new(&Model::new(320., 200.), 24., false).sharp);
     }
 }

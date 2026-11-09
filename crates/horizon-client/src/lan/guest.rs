@@ -32,15 +32,28 @@ pub struct SavedBody {
     pub fire_ticks: i32,
     pub air: i32,
     pub fall_distance: f64,
+    /// `Motion`: the delta movement, blocks a tick.
+    pub velocity: [f64; 3],
+    /// `foodExhaustionLevel` and `foodTickTimer` (FoodData); the food level
+    /// and saturation live on the guest.
+    pub food_exhaustion: f32,
+    pub food_tick_timer: i32,
+    /// `TicksFrozen`: the time spent in powder snow.
+    pub ticks_frozen: i32,
 }
 
 impl SavedBody {
     /// The body state of `motion`, to save.
     pub fn of(motion: &PlayerMotion) -> Self {
+        let v = motion.velocity;
         Self {
             fire_ticks: motion.fire_ticks,
             air: motion.air,
             fall_distance: motion.fall_distance,
+            velocity: [v.x, v.y, v.z],
+            food_exhaustion: motion.health.food.exhaustion,
+            food_tick_timer: motion.health.food.timer,
+            ticks_frozen: motion.ticks_frozen,
         }
     }
     /// Put it on a new body.
@@ -48,6 +61,11 @@ impl SavedBody {
         motion.fire_ticks = self.fire_ticks;
         motion.air = self.air;
         motion.fall_distance = self.fall_distance;
+        let [x, y, z] = self.velocity;
+        motion.velocity = Vec3::new(x, y, z);
+        motion.health.food.exhaustion = self.food_exhaustion;
+        motion.health.food.timer = self.food_tick_timer;
+        motion.ticks_frozen = self.ticks_frozen;
     }
 }
 
@@ -95,8 +113,21 @@ pub struct Guest {
     pub latency: Arc<AtomicI32>,
     pub info: ClientInformation,
     pub brand: String,
+    /// The plugin channels the client registered (`minecraft:register`), in configuration and
+    /// in play, in order (`super::apply_channels`).
+    pub channels: Vec<String>,
+    /// The client's answers to the server's resource pack during its configuration, not yet
+    /// told to the mods: pack id and action (`super::Configured`).
+    pub configuration_pack_answers: Vec<(u128, i32)>,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
+    /// A native mod's limit on `view_distance` for this player alone
+    /// (`native_set_player_view_distance`); None: the server's.
+    pub view_limit: Option<i32>,
+    /// A fake player (a mod's bot with no client; `native_set_player_fake`): it keeps only a small
+    /// area loaded and ticking around it and does not count for natural spawning, so hundreds of
+    /// bots do not each hold a whole view distance.
+    pub fake: bool,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
     pub yaw: f32,
@@ -104,6 +135,9 @@ pub struct Guest {
     pub head_yaw: f32,
     pub on_ground: bool,
     pub game_mode: i32,
+    /// `previousPlayerGameType`: the mode left last, which the game mode
+    /// switcher goes back to; none until the mode first changes.
+    pub previous_game_mode: Option<i32>,
     /// The permission level (0 none, 2 game masters, 4 owners).
     pub permission: u8,
     pub sneaking: bool,
@@ -176,6 +210,12 @@ pub struct Guest {
     pub above_ground_vehicle_ticks: i32,
     pub vehicle_gravity: f64,
     pub vehicle_rests: bool,
+    /// `Entity.verticalCollisionBelow` of the player's own body: its last
+    /// accepted move came down onto something.
+    pub rests_on_ground: bool,
+    /// `ServerGamePacketListenerImpl.lastSupportedBlocksSend`: the connection
+    /// tick the blocks under the player were last force-sent.
+    pub support_blocks_sent: u64,
     /// A position move arrived since the client's last ClientTickEnd
     /// (receivedPositionThisTick): a second one is a protocol error.
     pub position_this_tick: bool,
@@ -191,6 +231,10 @@ pub struct Guest {
     /// The players a native mod hid from it (`Hub::hidden`) that its player
     /// list no longer has.
     pub tab_hidden: crate::fast_hash::FxHashSet<u128>,
+    /// The entities a native mod showed this client alone
+    /// (`native_client_entity_spawn`), by id, with their types: no level
+    /// holds them, and they go with the guest.
+    pub client_entities: crate::fast_hash::FxHashMap<i32, String>,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
     /// Since it joined or respawned, the client hasn't said it loaded the level
@@ -241,6 +285,9 @@ pub struct Guest {
     /// The 36 inventory slots (hotbar first), armor (head..feet) and off hand.
     pub inventory: Vec<Option<ItemStack>>,
     pub armor: [Option<ItemStack>; 4],
+    /// Armor as of this player's last `collectEquipmentChanges` look; swapped
+    /// with `armor` so each player compares against their own snapshot.
+    pub location_armor: [Option<ItemStack>; 4],
     pub offhand: Option<ItemStack>,
     pub selected: usize,
     pub carried: Option<ItemStack>,
@@ -252,6 +299,9 @@ pub struct Guest {
     pub ender_items: Vec<Option<ItemStack>>,
     /// What a native mod's menu shows (`Slots::Native`), while one is open.
     pub native_menu: Vec<Option<ItemStack>>,
+    /// The slots of that menu that hold items clicks move, when the mod gave
+    /// it any (`menu::NativeStore`).
+    pub native_store: Option<super::menu::NativeStore>,
     pub health: f32,
     /// The saved `AbsorptionAmount`, until the player's first body on the
     /// server takes it (the body holds the live amount).
@@ -279,9 +329,12 @@ pub struct Guest {
     /// (Entity.DATA_AIR_SUPPLY_ID, Player.DATA_PLAYER_ABSORPTION_ID); their
     /// defaults until either changes.
     pub sent_air: (i32, f32),
+    pub sent_frozen: i32,
     /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
     /// last sent about itself.
     pub sent_shared: i8,
+    /// Pose last delivered to this player's own entity data, initially Standing.
+    pub sent_pose: Pose,
     /// The shoulder parrots (Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT) the
     /// player's client was last sent about itself.
     pub sent_shoulders: [Option<i32>; 2],
@@ -308,12 +361,51 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// The hand-over a proxy started by exporting it with `freeze`
+    /// (`arrivals::Handover`): while it lasts, what it sends other than its
+    /// acknowledgements is not acted on, and every export answers with the
+    /// same record. It ends after `[transfer]`'s `max_freeze_seconds`.
+    pub handover: Option<super::arrivals::Handover>,
+    /// Its login started while a proxy said it would arrive from another
+    /// server, and used that expectation up (`player-expect`).
+    pub expected: bool,
+    /// A player arriving from another server (`arrivals`): connected and
+    /// receiving the world, but not placed, so no one else sees, hears or
+    /// hurts it until the hand-over finishes.
+    pub held: bool,
+    /// The hub tick at which it was held, to drop it if its hand-over never comes.
+    pub held_since: u64,
+    /// A held player whose record has been applied but that is not yet let into the world
+    /// (`player-import` with `"place": false`): `player-confirm` places it, `player-drop` removes it.
+    pub imported: bool,
+    /// Whether the others are told when it is placed, as the import asked.
+    pub arrival_announce: bool,
+    /// The hand-over its record came with (`player-import`): `player-confirm` and
+    /// `player-drop` name it, and another hand-over's record is not taken.
+    pub arrival_handover: Option<u128>,
+    /// The import of that hand-over moved the view to another chunk (`recentered` in its reply),
+    /// kept so a retried import or a confirm after it answers the same.
+    pub arrival_recentered: bool,
+    /// Leaving for another server (`player-release moved`) without the "left the
+    /// game" line.
+    pub quiet_leave: bool,
+    /// Taken out of the world because a proxy moved it to another server: the game
+    /// saves neither its player file nor its records, since the other server has the
+    /// player now.
+    pub released: bool,
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
+    /// Root commands above this player's level that the mods put back into
+    /// their tree (`native_player_commands_sent_v2`).
+    pub granted_commands: Vec<String>,
     /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
     /// another (`native_set_flying_speed`). Saved with the player.
     pub flying_speed: f32,
+    /// `Abilities.mayfly` in a mode that does not give it: a server mod let the
+    /// player fly (`native_set_flight`), until their game mode changes or they
+    /// respawn. Not saved.
+    pub allow_flight: bool,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -333,6 +425,9 @@ pub struct Guest {
     pub post_effects_dirty: bool,
     /// `ServerPlayer.recipeBook`.
     pub recipe_book: crate::recipe_book::Settings,
+    /// `PlayerAdvancements.lastSelectedTab`: the advancement tab the player
+    /// last opened, as its id, when the server kept it (a root with a display).
+    pub selected_tab: Option<String>,
     /// `PlayerAdvancements`: the criteria obtained, whether they came from
     /// the player's file, the advancements the client was last told it may
     /// see (empty before the first packet), and those whose progress
@@ -367,9 +462,13 @@ impl Guest {
             entity_id,
             sender: j.sender,
             latency: j.latency,
-            view_distance: (i32::from(j.info.view_distance)).clamp(2, view_distance),
+            view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
+            view_limit: None,
+            fake: false,
             info: j.info,
             brand: j.brand,
+            channels: j.configured.channels,
+            configuration_pack_answers: j.configured.pack_answers,
             position,
             previous_position: position,
             yaw: 0.0,
@@ -377,6 +476,7 @@ impl Guest {
             head_yaw: 0.0,
             on_ground: false,
             game_mode: SURVIVAL,
+            previous_game_mode: None,
             permission: 0,
             sneaking: false,
             input: 0,
@@ -411,12 +511,15 @@ impl Guest {
             above_ground_vehicle_ticks: 0,
             vehicle_gravity: 0.0,
             vehicle_rests: false,
+            rests_on_ground: false,
+            support_blocks_sent: 0,
             position_this_tick: false,
             anticheat: Default::default(),
             replay: None,
             changes: Default::default(),
             moved: false,
             tab_hidden: Default::default(),
+            client_entities: Default::default(),
             loaded: false,
             loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
@@ -437,6 +540,7 @@ impl Guest {
             logs_kept: None,
             inventory: vec![None; 36],
             armor: [None, None, None, None],
+            location_armor: [None, None, None, None],
             offhand: None,
             selected: 0,
             carried: None,
@@ -444,6 +548,7 @@ impl Guest {
             craft_result: None,
             ender_items: vec![None; 27],
             native_menu: Vec::new(),
+            native_store: None,
             health: 20.0,
             saved_absorption: None,
             food: 20,
@@ -459,7 +564,9 @@ impl Guest {
             sent_health: None,
             sent_xp: None,
             sent_air: (300, 0.0),
+            sent_frozen: 0,
             sent_shared: 0,
+            sent_pose: Pose::Standing,
             sent_shoulders: [None; 2],
             last_death: None,
             ack_up_to: std::cell::Cell::new(-1),
@@ -474,8 +581,20 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            handover: None,
+            expected: j.expected,
+            held: false,
+            held_since: 0,
+            imported: false,
+            arrival_announce: true,
+            arrival_handover: None,
+            arrival_recentered: false,
+            quiet_leave: false,
+            released: false,
             hidden_commands: Vec::new(),
+            granted_commands: Vec::new(),
             flying_speed: 0.05,
+            allow_flight: false,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -486,6 +605,7 @@ impl Guest {
             post_effects: Vec::new(),
             post_effects_dirty: true,
             recipe_book: Default::default(),
+            selected_tab: None,
             advancements: Default::default(),
             advancements_loaded: false,
             advancements_visible: Vec::new(),
@@ -503,6 +623,9 @@ impl Guest {
         })
     }
     pub fn send(&self, packet: &play::Clientbound) {
+        if self.fake && !super::conn::fake_wants_id(packet.id()) {
+            return;
+        }
         if self.anticheat.record.is_some() {
             self.note_change(packet);
         }
@@ -609,8 +732,22 @@ impl Guest {
     pub fn client_loaded(&self) -> bool {
         !self.dead && self.load_timeout == 0
     }
+    /// `ServerPlayerGameMode.changeGameModeForPlayer`: the mode left becomes
+    /// the previous one; the mode already in use changes nothing.
+    pub fn change_game_mode(&mut self, mode: i32) {
+        if mode != self.game_mode {
+            self.previous_game_mode = Some(self.game_mode);
+            self.game_mode = mode;
+            // GameType.updatePlayerAbilities sets mayfly for the new mode.
+            self.allow_flight = false;
+        }
+    }
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
+    }
+    /// `Abilities.mayBuild`: survival or creative.
+    pub fn may_build(&self) -> bool {
+        matches!(self.game_mode, SURVIVAL | CREATIVE)
     }
     /// PlayerAbilities flags (invulnerable, flying, may fly, instabuild).
     pub fn ability_flags(&self) -> i8 {
@@ -621,7 +758,7 @@ impl Guest {
         if self.flying || self.spectator() {
             f |= 2;
         }
-        if self.creative() || self.spectator() {
+        if self.creative() || self.spectator() || self.allow_flight {
             f |= 4;
         }
         if self.creative() {
@@ -803,6 +940,29 @@ fn dye_id(name: &str) -> Option<i32> {
         .map(|i| i as i32)
 }
 
+/// `SignText.STREAM_CODEC` of a saved `SignText.CODEC` value: the four
+/// messages, the four filtered ones when it has them, the dye's id (black when
+/// absent) and the glow.
+fn sign_text_bytes(text: &horizon_world::nbt::Tag) -> Option<Vec<u8>> {
+    use horizon_world::nbt::Tag;
+    let lines = |key: &str| match text.get(key) {
+        Some(Tag::List(lines)) if lines.len() == 4 => Some(lines),
+        _ => None,
+    };
+    let mut w = horizon_protocol::buf::Writer::new();
+    lines("messages")?.iter().for_each(|line| w.nbt(line));
+    let filtered = lines("filtered_messages");
+    w.bool(filtered.is_some());
+    filtered.into_iter().flatten().for_each(|line| w.nbt(line));
+    let color = match text.get("color") {
+        Some(Tag::String(color)) => color.to_string_lossy(),
+        _ => "black".into(),
+    };
+    w.varint(dye_id(&color)?);
+    w.bool(matches!(text.get("has_glowing_text"), Some(Tag::Byte(b)) if *b != 0));
+    Some(w.data)
+}
+
 /// The off hand slot is conventionally 40 in saves and 45 in the menu.
 /// `synced_id` names an entry of a synced registry (enchantments, trim
 /// materials and patterns) by its id on this connection.
@@ -812,6 +972,330 @@ pub fn stack_to_network(
     s: &Option<ItemStack>,
 ) -> Option<Stack> {
     network_stack(&item_id, &synced_id, s)
+}
+/// `ProvidesTrimMaterial.STREAM_CODEC`, `ProvidesBannerPatterns.STREAM_CODEC` and
+/// `AdventureModePredicate.STREAM_CODEC`: encode supported typed saved forms.
+/// A failed child discards this entire local buffer, including its prefix.
+fn builtin_component(
+    name: &str,
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+) -> Option<horizon_protocol::item::Component> {
+    use horizon_protocol::buf::Writer;
+    use horizon_world::nbt::Tag;
+    let mut w = Writer::new();
+    match name {
+        "minecraft:provides_trim_material" => match value {
+            Tag::String(name) => {
+                let name = name.to_string().ok()?;
+                let id = ids(
+                    "minecraft:trim_material",
+                    &horizon_world::datafix::dynamic::namespaced(&name),
+                )?;
+                if id < 0 {
+                    return None;
+                }
+                w.varint(id.checked_add(1)?);
+            }
+            Tag::Compound(map) => {
+                if map.keys().any(|k| {
+                    !matches!(
+                        k.to_string().ok().as_deref(),
+                        Some("palette_id" | "description")
+                    )
+                }) {
+                    return None;
+                }
+                let Tag::String(palette) = value.get("palette_id")? else {
+                    return None;
+                };
+                let description @ Tag::String(_) = value.get("description")? else {
+                    return None;
+                };
+                w.varint(0);
+                w.string(&horizon_world::datafix::dynamic::namespaced(
+                    &palette.to_string().ok()?,
+                ));
+                w.bytes(&horizon_world::nbt::write_network(description, Default::default()).ok()?);
+            }
+            _ => return None,
+        },
+        "minecraft:provides_banner_patterns" => {
+            write_holder_set("minecraft:banner_pattern", value, ids, &mut w)?
+        }
+        "minecraft:can_place_on" | "minecraft:can_break" => {
+            let predicates = match value {
+                Tag::List(list) if !list.is_empty() => list.as_slice(),
+                Tag::Compound(_) => std::slice::from_ref(value),
+                _ => return None,
+            };
+            w.varint(i32::try_from(predicates.len()).ok()?);
+            for predicate in predicates {
+                write_block_predicate(predicate, ids, &mut w)?;
+            }
+        }
+        _ => return None,
+    }
+    Some(horizon_protocol::item::Component::Raw(w.data))
+}
+
+/// `ByteBufCodecs.holderSet`: tags or direct registry entries, without item-id remapping.
+fn write_holder_set(
+    registry: &str,
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+    w: &mut horizon_protocol::buf::Writer,
+) -> Option<()> {
+    use horizon_world::nbt::Tag;
+    if let Tag::String(name) = value {
+        let name = name.to_string().ok()?;
+        if let Some(tag) = name.strip_prefix('#') {
+            if tag.is_empty() {
+                return None;
+            }
+            w.varint(0);
+            w.string(&horizon_world::datafix::dynamic::namespaced(tag));
+            return Some(());
+        }
+    }
+    let entries = match value {
+        Tag::List(list) => list.as_slice(),
+        Tag::String(_) => std::slice::from_ref(value),
+        _ => return None,
+    };
+    w.varint(i32::try_from(entries.len()).ok()?.checked_add(1)?);
+    for entry in entries {
+        let Tag::String(name) = entry else {
+            return None;
+        };
+        let name = name.to_string().ok()?;
+        if name.starts_with('#') {
+            return None;
+        }
+        let id = ids(
+            registry,
+            &horizon_world::datafix::dynamic::namespaced(&name),
+        )?;
+        if id < 0 {
+            return None;
+        }
+        w.varint(id);
+    }
+    Some(())
+}
+
+/// `BlockPredicate.STREAM_CODEC`: every admitted field is a conjunction.
+fn write_block_predicate(
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+    w: &mut horizon_protocol::buf::Writer,
+) -> Option<()> {
+    use horizon_world::nbt::Tag;
+    let Tag::Compound(map) = value else {
+        return None;
+    };
+    if map.keys().any(|k| {
+        !matches!(
+            k.to_string().ok().as_deref(),
+            Some("blocks" | "state" | "nbt" | "components" | "predicates")
+        )
+    }) {
+        return None;
+    }
+    w.bool(value.get("blocks").is_some());
+    if let Some(blocks) = value.get("blocks") {
+        write_holder_set("minecraft:block", blocks, ids, w)?;
+    }
+    w.bool(value.get("state").is_some());
+    if let Some(Tag::Compound(state)) = value.get("state") {
+        // StatePropertiesPredicate's codec iterates a Java HashMap. Keep the
+        // existing map implementation and a private UTF-16 String key adapter.
+        #[derive(PartialEq, Eq)]
+        struct Key<'a>(&'a horizon_world::nbt::JavaString);
+        impl horizon_world::java_hash_map::JavaKey for Key<'_> {
+            fn java_hash(&self) -> i32 {
+                self.0
+                    .0
+                    .iter()
+                    .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(*c as i32))
+            }
+            fn comparable_compare(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.0.cmp(other.0))
+            }
+            fn tie_break(&self, other: &Self) -> std::cmp::Ordering {
+                self.0.cmp(other.0)
+            }
+        }
+        let mut ordered = horizon_world::java_hash_map::JavaHashMap::default();
+        for (key, matcher) in state {
+            ordered.put(Key(key), matcher);
+        }
+        w.varint(i32::try_from(state.len()).ok()?);
+        let mut cursor = ordered.cursor();
+        while let Some((key, matcher)) = ordered.next_entry(&mut cursor).ok()? {
+            w.string(&key.0.to_string().ok()?);
+            match matcher {
+                Tag::String(exact) => {
+                    w.bool(true);
+                    w.string(&exact.to_string().ok()?);
+                }
+                Tag::Compound(range) => {
+                    if range
+                        .keys()
+                        .any(|k| !matches!(k.to_string().ok().as_deref(), Some("min" | "max")))
+                    {
+                        return None;
+                    }
+                    w.bool(false);
+                    for bound in ["min", "max"] {
+                        w.bool(matcher.get(bound).is_some());
+                        if let Some(v) = matcher.get(bound) {
+                            let Tag::String(v) = v else {
+                                return None;
+                            };
+                            w.string(&v.to_string().ok()?);
+                        }
+                    }
+                }
+                _ => return None,
+            }
+        }
+    } else if value.get("state").is_some() {
+        return None;
+    }
+    w.bool(value.get("nbt").is_some());
+    if let Some(nbt) = value.get("nbt") {
+        let parsed;
+        let nbt = if let Tag::String(text) = nbt {
+            let text = text.to_string().ok()?;
+            let (tag, end) = horizon_world::nbt::parse_snbt(&text).ok()?;
+            if !text[end..].trim().is_empty() {
+                return None;
+            }
+            parsed = tag;
+            &parsed
+        } else {
+            nbt
+        };
+        if !matches!(nbt, Tag::Compound(_)) {
+            return None;
+        }
+        w.bytes(&horizon_world::nbt::write_network(nbt, Default::default()).ok()?);
+    }
+    write_matchers(value, ids, w)
+}
+
+/// `DataComponentMatchers.STREAM_CODEC`: bounded exact-name and partial custom-data forms.
+fn write_matchers(
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+    w: &mut horizon_protocol::buf::Writer,
+) -> Option<()> {
+    use horizon_world::nbt::Tag;
+    for (field, expected, registry) in [
+        (
+            "components",
+            "minecraft:custom_name",
+            "minecraft:data_component_type",
+        ),
+        (
+            "predicates",
+            "minecraft:custom_data",
+            "minecraft:data_component_predicate_type",
+        ),
+    ] {
+        let Some(matchers) = value.get(field) else {
+            w.varint(0);
+            continue;
+        };
+        let Tag::Compound(map) = matchers else {
+            return None;
+        };
+        w.varint(i32::try_from(map.len()).ok()?);
+        for (name, matcher) in map {
+            let name = horizon_world::datafix::dynamic::namespaced(&name.to_string().ok()?);
+            if name != expected {
+                return None;
+            }
+            let id = ids(registry, &name)?;
+            if id < 0 {
+                return None;
+            }
+            if field == "components" {
+                let Tag::String(_) = matcher else {
+                    return None;
+                };
+                w.varint(id);
+                w.bytes(&horizon_world::nbt::write_network(matcher, Default::default()).ok()?);
+            } else {
+                let parsed;
+                let compound = if let Tag::String(text) = matcher {
+                    let text = text.to_string().ok()?;
+                    let (tag, end) = horizon_world::nbt::parse_snbt(&text).ok()?;
+                    if !text[end..].trim().is_empty() {
+                        return None;
+                    }
+                    parsed = tag;
+                    &parsed
+                } else {
+                    matcher
+                };
+                if !matches!(compound, Tag::Compound(_)) {
+                    return None;
+                }
+                // The official partial-matcher stream codec consumes a TAG String
+                // here, unlike BlockPredicate's COMPOUND_TAG above.
+                let text = crate::snbt::to_snbt(compound);
+                w.bool(true);
+                w.varint(id);
+                w.bytes(
+                    &horizon_world::nbt::write_network(
+                        &Tag::String(text.as_str().into()),
+                        Default::default(),
+                    )
+                    .ok()?,
+                );
+            }
+        }
+    }
+    Some(())
+}
+
+/// Project actual model holders; a direct definition never needs a registry id.
+fn trim_component(
+    trim: &crate::item_data::Trim,
+    synced_id: &dyn Fn(&str, &str) -> Option<i32>,
+) -> Option<horizon_protocol::item::Component> {
+    use crate::item_data::trim::Holder;
+    use horizon_protocol::item::{Component, TrimHolder, TrimMaterial, TrimPattern};
+    let id = |registry: &str, name: &str| {
+        if name.contains(':') {
+            synced_id(registry, name)
+        } else {
+            synced_id(registry, &format!("minecraft:{name}"))
+        }
+    };
+    let material = match &trim.0 {
+        Holder::Named(name) => TrimHolder::Id(id("minecraft:trim_material", name)?),
+        Holder::Direct(value) => TrimHolder::Direct(TrimMaterial {
+            palette_id: value.palette_id.to_string(),
+            description: value.description.clone(),
+        }),
+    };
+    let pattern = match &trim.1 {
+        Holder::Named(name) => TrimHolder::Id(id("minecraft:trim_pattern", name)?),
+        Holder::Direct(value) => TrimHolder::Direct(TrimPattern {
+            asset_id: value.asset_id.to_string(),
+            description: value.description.clone(),
+            decal: value.decal,
+        }),
+    };
+    Some(match (material, pattern) {
+        (TrimHolder::Id(material), TrimHolder::Id(pattern)) => {
+            Component::Trim { material, pattern }
+        }
+        (material, pattern) => Component::TrimDirect { material, pattern },
+    })
 }
 fn network_stack(
     item_id: &dyn Fn(&str) -> i32,
@@ -850,6 +1334,13 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        // TridentItem.use runs on both peers: each must see the stack's own durability limit.
+        if let Some(horizon_world::nbt::Tag::Int(max)) = d.other("minecraft:max_damage") {
+            stack.added.push((
+                horizon_protocol::item::component::MAX_DAMAGE,
+                horizon_protocol::item::Component::Int(*max),
+            ));
+        }
         // Unbreakable is a unit component; clients need its presence for the
         // durability bar, tooltip and item model, including in single player.
         if d.other("minecraft:unbreakable").is_some() {
@@ -857,6 +1348,33 @@ fn network_stack(
                 horizon_protocol::item::component::UNBREAKABLE,
                 horizon_protocol::item::Component::Unit,
             ));
+        }
+        // These built-ins use their own stream codecs, not the custom NBT route.
+        for (name, kind) in [
+            (
+                "minecraft:provides_trim_material",
+                horizon_protocol::item::component::PROVIDES_TRIM_MATERIAL,
+            ),
+            (
+                "minecraft:provides_banner_patterns",
+                horizon_protocol::item::component::PROVIDES_BANNER_PATTERNS,
+            ),
+            (
+                "minecraft:can_place_on",
+                horizon_protocol::item::component::CAN_PLACE_ON,
+            ),
+            (
+                "minecraft:can_break",
+                horizon_protocol::item::component::CAN_BREAK,
+            ),
+        ] {
+            if d.other(&format!("!{name}")).is_some() {
+                stack.removed.push(kind);
+            } else if let Some(value) = d.other(name)
+                && let Some(component) = builtin_component(name, value, synced_id)
+            {
+                stack.added.push((kind, component));
+            }
         }
         for (name, value) in &d.other {
             let (removed, kind) = match name.strip_prefix('!') {
@@ -883,39 +1401,36 @@ fn network_stack(
                 horizon_protocol::item::Component::Int(rgb),
             ));
         }
-        // ArmorTrim: both holders as references into the synced registries.
-        if let Some((material, pattern)) = &d.trim {
-            let id = |registry: &str, name: &str| {
-                if name.contains(':') {
-                    synced_id(registry, name)
-                } else {
-                    synced_id(registry, &format!("minecraft:{name}"))
-                }
-            };
-            if let (Some(material), Some(pattern)) = (
-                id("minecraft:trim_material", material),
-                id("minecraft:trim_pattern", pattern),
-            ) {
-                stack.added.push((
-                    horizon_protocol::item::component::TRIM,
-                    horizon_protocol::item::Component::Trim { material, pattern },
-                ));
-            }
+        if let Some(trim) = &d.trim
+            && let Some(component) = trim_component(trim, synced_id)
+        {
+            stack
+                .added
+                .push((horizon_protocol::item::component::TRIM, component));
         }
         // BannerPatternLayers: each pattern a reference into the synced registry;
-        // a layer that has none leaves the stack without the component.
-        let layers: Option<Vec<(i32, i32)>> = d
-            .banner_patterns
+        // a layer that has none leaves the stack without the component. An
+        // ominous banner made by the raid keeps only its flag, so its layers
+        // are the ones the NBT encoder synthesises from it.
+        let patterns: Vec<(&str, &str)> = if d.ominous_banner && d.banner_patterns.is_empty() {
+            crate::item_data::OMINOUS_LAYERS.to_vec()
+        } else {
+            d.banner_patterns
+                .iter()
+                .map(|layer| (&*layer.pattern, &*layer.color))
+                .collect()
+        };
+        let layers: Option<Vec<(i32, i32)>> = patterns
             .iter()
-            .map(|layer| {
-                let name = if layer.pattern.contains(':') {
-                    layer.pattern.to_string()
+            .map(|(pattern, color)| {
+                let name = if pattern.contains(':') {
+                    pattern.to_string()
                 } else {
-                    format!("minecraft:{}", layer.pattern)
+                    format!("minecraft:{pattern}")
                 };
                 Some((
                     synced_id("minecraft:banner_pattern", &name)?,
-                    dye_id(&layer.color)?,
+                    dye_id(color)?,
                 ))
             })
             .collect();
@@ -923,6 +1438,29 @@ fn network_stack(
             stack.added.push((
                 horizon_protocol::item::component::BANNER_PATTERNS,
                 horizon_protocol::item::Component::BannerPatterns(layers),
+            ));
+        }
+        // The raid captain's banner: `Raid.getBannerComponentPatch` gives it
+        // the ominous name, rarity and hidden layers, which `StackData` keeps
+        // as `ominous_banner` rather than in `other` (#12530).
+        if d.ominous_banner {
+            stack.added.push((
+                horizon_protocol::item::component::ITEM_NAME,
+                horizon_protocol::item::Component::Text(horizon_world::nbt::Tag::compound([(
+                    "translate",
+                    horizon_world::nbt::Tag::String("block.minecraft.ominous_banner".into()),
+                )])),
+            ));
+            stack.added.push((
+                horizon_protocol::item::component::RARITY,
+                horizon_protocol::item::Component::Int(1),
+            ));
+            stack.added.push((
+                horizon_protocol::item::component::TOOLTIP_DISPLAY,
+                horizon_protocol::item::Component::TooltipDisplay {
+                    hide: false,
+                    hidden: vec![horizon_protocol::item::component::BANNER_PATTERNS],
+                },
             ));
         }
         // `painting/variant`: a reference into the synced registry.
@@ -936,6 +1474,24 @@ fn network_stack(
                 horizon_protocol::item::component::PAINTING_VARIANT,
                 horizon_protocol::item::Component::PaintingVariant(id),
             ));
+        }
+        // `sign_text_front` and `sign_text_back`: a copied sign's text, which the
+        // client's own placement puts on the sign it predicts (#8102).
+        for (name, kind) in [
+            (
+                "minecraft:sign_text_front",
+                horizon_protocol::item::component::SIGN_TEXT_FRONT,
+            ),
+            (
+                "minecraft:sign_text_back",
+                horizon_protocol::item::component::SIGN_TEXT_BACK,
+            ),
+        ] {
+            if let Some(bytes) = d.other(name).and_then(sign_text_bytes) {
+                stack
+                    .added
+                    .push((kind, horizon_protocol::item::Component::Raw(bytes)));
+            }
         }
         // A shield's `base_color`.
         if let Some(id) = d.base_color.as_deref().and_then(dye_id) {
@@ -1182,6 +1738,23 @@ fn network_stack(
             .removed
             .push(horizon_protocol::item::component::RARITY);
     }
+    // `DataComponents.MAX_STACK_SIZE`: an int in 1..=99 on this stack, not the
+    // item's default. A removed component falls back to that default.
+    if s.data()
+        .is_some_and(|d| d.other("!minecraft:max_stack_size").is_some())
+    {
+        stack
+            .removed
+            .push(horizon_protocol::item::component::MAX_STACK_SIZE);
+    } else if let Some(horizon_world::nbt::Tag::Int(n)) =
+        s.data().and_then(|d| d.other("minecraft:max_stack_size"))
+        && (1..=99).contains(n)
+    {
+        stack.added.push((
+            horizon_protocol::item::component::MAX_STACK_SIZE,
+            horizon_protocol::item::Component::Int(*n),
+        ));
+    }
     // The component as loaded, so a translatable name stays one.
     if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
         stack.added.push((
@@ -1282,6 +1855,99 @@ mod tests {
     use horizon_protocol::buf::{Codec, Reader, Writer};
     use horizon_protocol::item::{Component, component};
     use horizon_world::nbt::Tag;
+
+    #[test]
+    fn builtin_predicate_streams_keep_typed_conjunctions_and_reject_whole_unknown_forms() {
+        let ids = |registry: &str, name: &str| match (registry, name) {
+            ("minecraft:block", "minecraft:chest") => Some(245),
+            ("minecraft:data_component_type", "minecraft:custom_name") => Some(6),
+            ("minecraft:data_component_predicate_type", "minecraft:custom_data") => Some(4),
+            _ => None,
+        };
+        // Original value boundaries independently consumed by the pinned Java codecs.
+        for (input, expected) in [
+            (
+                r#"{blocks:"minecraft:chest",nbt:"{Lock:{}}"}"#,
+                "010102f50100010a0a00044c6f636b00000000",
+            ),
+            (
+                r#"{blocks:"minecraft:chest",components:{"minecraft:custom_name":"Box"}}"#,
+                "010102f50100000106080003426f7800",
+            ),
+            (
+                r#"{blocks:"minecraft:chest",predicates:{"minecraft:custom_data":{a:1}}}"#,
+                "010102f5010000000101040800057b613a317d",
+            ),
+        ] {
+            let tag = horizon_world::nbt::parse_snbt(input).unwrap().0;
+            let encoded = builtin_component("minecraft:can_break", &tag, &ids).unwrap();
+            let Component::Raw(bytes) = encoded else {
+                panic!("fresh encoding")
+            };
+            let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(hex, expected, "{input}");
+            let mut stack = horizon_protocol::item::Stack::new(1, 1);
+            stack
+                .added
+                .push((component::CAN_BREAK, Component::Raw(bytes)));
+            let mut w = Writer::new();
+            horizon_protocol::item::Slot::write(&Some(stack), &mut w);
+            let mut r = Reader::new(&w.data);
+            let decoded = horizon_protocol::item::Slot::read(&mut r).unwrap().unwrap();
+            assert!(decoded.component(component::CAN_BREAK).is_some());
+            assert_eq!(r.remaining(), 0);
+        }
+        for input in [
+            r#"{blocks:"minecraft:chest",unknown:1}"#,
+            r#"{blocks:"minecraft:chest",state:{age:{min:"3",unknown:"7"}}}"#,
+            r#"{blocks:"minecraft:chest",components:{"minecraft:custom_name":"Box","minecraft:damage":1}}"#,
+            r#"{blocks:"minecraft:chest",predicates:{"minecraft:custom_data":{a:1},"minecraft:damage":{}}}"#,
+            r#"[{blocks:"minecraft:chest"},{blocks:"minecraft:missing"}]"#,
+            r#"{blocks:"minecraft:chest",nbt:"{a:1} trailing"}"#,
+        ] {
+            let tag = horizon_world::nbt::parse_snbt(input).unwrap().0;
+            assert!(
+                builtin_component("minecraft:can_break", &tag, &ids).is_none(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_removal_markers_survive_actual_saved_stack_adoption() {
+        for (name, kind) in [
+            (
+                "minecraft:provides_trim_material",
+                component::PROVIDES_TRIM_MATERIAL,
+            ),
+            (
+                "minecraft:provides_banner_patterns",
+                component::PROVIDES_BANNER_PATTERNS,
+            ),
+            ("minecraft:can_place_on", component::CAN_PLACE_ON),
+            ("minecraft:can_break", component::CAN_BREAK),
+        ] {
+            let input = Tag::compound([
+                ("id", Tag::String("minecraft:stone".into())),
+                ("count", Tag::Int(1)),
+                (
+                    "components",
+                    Tag::Compound(
+                        [(
+                            format!("!{name}").as_str().into(),
+                            Tag::Compound(Default::default()),
+                        )]
+                        .into(),
+                    ),
+                ),
+            ]);
+            let actual = horizon_items::item_nbt::item_from_nbt(&input).unwrap();
+            assert!(actual.data().unwrap().other(&format!("!{name}")).is_some());
+            let sent = stack_to_network(|_| 1, |_, _| None, &Some(actual)).unwrap();
+            assert_eq!(sent.removed, [kind]);
+            assert!(sent.added.is_empty());
+        }
+    }
 
     #[test]
     fn lore_lines_reach_the_client() {
@@ -1422,6 +2088,8 @@ mod tests {
                 sender: PlayerSender::new(tx, Arc::new(std::sync::atomic::AtomicUsize::new(0))),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:1".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
             },
             1,
             position,

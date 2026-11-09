@@ -1,8 +1,11 @@
 //! What `horizon-server` asks the dedicated server on its control endpoint (`--control-socket`, docs/server.md
 //! section 2): `server-status` answers with the tick rate, the tick times `/tick query` reports, the players
-//! and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
+//! (including their positions) and the loaded chunks; `console <line>` runs a console command and answers with the lines it logged;
 //! `server-events <since>` answers the typed events after that number (events.rs); `management <connection>
 //! <json>` edits the lists as vanilla's management protocol does (management.rs).
+//! `player-expect <uuid> [seconds]`, `player-drop <uuid>`, `player-export <uuid> [freeze]`,
+//! `player-release <uuid> ...`, `player-import <uuid> <json>` and `player-confirm <uuid> ...` are a proxy's,
+//! for a player it moves between two servers, and `transfer-status` the counts it reads first (transfer.rs).
 use super::{ServerState, capture_log};
 use crate::game::Game;
 use serde_json::{Value, json};
@@ -27,7 +30,7 @@ impl ServerState {
         }
     }
     /// Ticks per second over the last few seconds.
-    fn tps(&self) -> f64 {
+    pub(super) fn tps(&self) -> f64 {
         match (self.ticks.front(), self.ticks.back()) {
             (Some(first), Some(last)) if self.ticks.len() > 1 => {
                 (self.ticks.len() - 1) as f64 / last.duration_since(*first).as_secs_f64().max(1e-9)
@@ -41,12 +44,20 @@ impl Game<'_> {
     /// Answers the requests waiting on the control endpoint.
     pub(super) fn poll_server_control(&mut self, state: &mut ServerState) {
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
+            // A `console stop` just before stops this server for the next request too.
+            self.note_stopping(state.lists.lock().unwrap().stop);
             let reply = match request.line.trim().split_once(' ') {
                 _ if request.line.trim() == "server-status" => self.server_status(state),
+                // A proxy reading whether it may send players here (transfer.rs).
+                _ if request.line.trim() == "transfer-status" => self.transfer_status(),
                 Some(("server-events", since)) => {
                     super::events::since(since.trim().parse().unwrap_or(0))
                 }
                 Some(("management", rest)) => self.management(state, rest),
+                // A proxy moving a player here or away (transfer.rs, lan/arrivals.rs).
+                Some((verb, rest)) if verb.starts_with("player-") => {
+                    self.player_request(verb, rest)
+                }
                 Some(("console", line)) => {
                     // Command feedback is logged as system chat; the reply carries the text alone.
                     let output: Vec<String> = capture_log(|| self.console_command(state, line))
@@ -76,6 +87,48 @@ impl Game<'_> {
         }
     }
 
+    /// Each level's loaded chunks and entities (players and block entities apart), the level in place
+    /// first: what the Prometheus text reports by dimension.
+    fn status_levels(&self) -> Value {
+        let mut levels = vec![json!({
+            "dimension": self.dim.id(),
+            "chunks": self.world.chunks.len(),
+            "entities": self.entity_count(),
+        })];
+        for dim in self.levels.parked_dims() {
+            if let (Some(world), Some(entities)) = (
+                self.levels.parked_world(dim),
+                self.levels.parked_entity_count(dim),
+            ) {
+                levels.push(json!({
+                    "dimension": dim.id(),
+                    "chunks": world.chunks.len(),
+                    "entities": entities,
+                }));
+            }
+        }
+        Value::Array(levels)
+    }
+
+    /// The entities of the level in place: mobs, items, orbs, projectiles, vehicles, falling blocks,
+    /// hangings, armor stands, cushions, tridents, rockets and primed TNT.
+    fn entity_count(&self) -> usize {
+        self.mobs.iter().filter(|m| !m.removed).count()
+            + self.dropped.len()
+            + self.orbs.len()
+            + self.creatures.projectiles.len()
+            + self.carts.len()
+            + self.boats.len()
+            + self.falling.len()
+            + self.paintings.len()
+            + self.item_frames.len()
+            + self.armor_stands.len()
+            + self.cushions.len()
+            + self.tridents.len()
+            + self.rockets.len()
+            + self.tnts.len()
+    }
+
     fn server_status(&self, state: &ServerState) -> Value {
         let millis = |nanos: u64| nanos as f64 / 1e6;
         let samples = self.clock.sorted_samples();
@@ -90,12 +143,14 @@ impl Game<'_> {
                 .guests
                 .iter()
                 .map(|g| {
-                    json!({
-                        "name": g.name,
-                        "uuid": horizon_protocol::crypto::uuid_string(g.uuid),
-                        "address": g.address.ip().to_string(),
-                        "ping_ms": g.latency.load(Ordering::Relaxed),
-                    })
+                    player_status(
+                        &g.name,
+                        g.uuid,
+                        &g.address.ip().to_string(),
+                        g.latency.load(Ordering::Relaxed),
+                        &g.dimension,
+                        g.position,
+                    )
                 })
                 .collect();
             (players, h.hub.lan.shared.max_players())
@@ -112,7 +167,54 @@ impl Game<'_> {
             "players": players,
             "max_players": max_players,
             "chunks": self.world.chunks.len(),
+            "levels": self.status_levels(),
             "paused": state.paused,
         })
+    }
+}
+
+fn player_status(
+    name: &str,
+    uuid: u128,
+    address: &str,
+    ping_ms: i32,
+    dimension: &str,
+    position: [f64; 3],
+) -> Value {
+    json!({
+        "name": name,
+        "uuid": horizon_protocol::crypto::uuid_string(uuid),
+        "address": address,
+        "ping_ms": ping_ms,
+        "dimension": dimension,
+        "position": position,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::player_status;
+    use serde_json::json;
+
+    #[test]
+    fn player_status_includes_coordinates() {
+        assert_eq!(
+            player_status(
+                "Alex",
+                1,
+                "203.0.113.7",
+                42,
+                "minecraft:the_nether",
+                [1.5, 64.0, -2.25]
+            ),
+            json!({
+                "name": "Alex",
+                "uuid": "00000000-0000-0000-0000-000000000001",
+                "address": "203.0.113.7",
+                "ping_ms": 42,
+                "dimension": "minecraft:the_nether",
+                "position": [1.5, 64.0, -2.25],
+            })
+        );
     }
 }

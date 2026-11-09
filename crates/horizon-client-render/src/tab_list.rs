@@ -12,7 +12,11 @@ use crate::{
     scoreboard::{Comp, NumberFormat, Objective, RenderType, Scoreboard, comp_text},
     text::Text,
 };
-use std::{borrow::Cow, cmp::Ordering, collections::HashMap};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 /// `GameType.SPECTATOR` id.
 pub const SPECTATOR: i32 = 3;
@@ -124,10 +128,18 @@ pub fn face(
     }
 }
 
-/// `Hud.extractTabList`: whether the list shows. A single-player world
-/// shows it only with another listed player or a `list` objective.
-pub fn visible(key_down: bool, local_server: bool, listed: usize, objective: bool) -> bool {
-    key_down && !(local_server && listed <= 1 && !objective)
+/// `Hud.extractTabList`: whether the list shows. `Hud.extractRenderState`
+/// only calls it inside `if (!isHidden)`, so F1 takes the list away whatever
+/// else holds it up. A single-player world shows it only with another listed
+/// player or a `list` objective.
+pub fn visible(
+    hud_shown: bool,
+    key_down: bool,
+    local_server: bool,
+    listed: usize,
+    objective: bool,
+) -> bool {
+    hud_shown && key_down && !(local_server && listed <= 1 && !objective)
 }
 
 /// `Options.getBackgroundColor(553648127)`: the row background.
@@ -146,12 +158,14 @@ fn compare_utf16(a: &str, b: &str) -> Ordering {
 /// `String.compareToIgnoreCase` (per code point: upper then lower case).
 fn compare_ignore_case(a: &str, b: &str) -> Ordering {
     fn simple(c: char, upper: bool) -> char {
-        let mut it: Box<dyn Iterator<Item = char>> = if upper {
-            Box::new(c.to_uppercase())
+        let pair = if upper {
+            let mut it = c.to_uppercase();
+            (it.next(), it.next())
         } else {
-            Box::new(c.to_lowercase())
+            let mut it = c.to_lowercase();
+            (it.next(), it.next())
         };
-        match (it.next(), it.next()) {
+        match pair {
             (Some(m), None) => m,
             _ => c,
         }
@@ -181,23 +195,25 @@ fn compare_ignore_case(a: &str, b: &str) -> Ordering {
 /// list order first, spectators last, team name, profile name ignoring
 /// case), at most 80 players.
 pub fn sorted_players<'a>(players: &'a [TabPlayer], board: &Scoreboard) -> Vec<&'a TabPlayer> {
-    let team = |p: &TabPlayer| {
-        board
-            .players_team(&p.name)
-            .map_or("", |t| t.name.as_str())
-            .to_owned()
-    };
-    let mut out: Vec<&TabPlayer> = players.iter().collect();
-    out.sort_by(|a, b| {
+    let mut out: Vec<_> = players
+        .iter()
+        .map(|p| {
+            (
+                p,
+                board.players_team(&p.name).map_or("", |t| t.name.as_str()),
+            )
+        })
+        .collect();
+    out.sort_by(|(a, team_a), (b, team_b)| {
         a.list_order
             .wrapping_neg()
             .cmp(&b.list_order.wrapping_neg())
             .then_with(|| (a.game_mode == SPECTATOR).cmp(&(b.game_mode == SPECTATOR)))
-            .then_with(|| compare_utf16(&team(a), &team(b)))
+            .then_with(|| compare_utf16(team_a, team_b))
             .then_with(|| compare_ignore_case(&a.name, &b.name))
     });
     out.truncate(80);
-    out
+    out.into_iter().map(|(p, _)| p).collect()
 }
 
 /// What `setVisible(true)` has the narrator say:
@@ -328,7 +344,15 @@ pub struct TabInputs<'a> {
     /// The player is in the level with an upside-down name
     /// (`AvatarRenderer.isPlayerUpsideDown`).
     pub upside_down: &'a dyn Fn(u128) -> bool,
+    /// A mark after the player's head, or none: an extension point for what lives above the
+    /// engine (Horizon's mark, `horizon_cosmetics::mark`). Vanilla draws none.
+    pub mark: &'a dyn Fn(u128) -> Option<NameMark>,
 }
+
+/// A mark drawn after a player's head in the tab list: filled rectangles `(x, y, width, height,
+/// ARGB)` in an 8x8 box. Once any listed player has one, every row gets the column, so the names
+/// stay aligned.
+pub type NameMark = &'static [(u8, u8, u8, u8, u32)];
 
 /// `PlayerTabOverlay`: the header, footer, visibility and heart states.
 #[derive(Clone, Debug, Default)]
@@ -337,6 +361,26 @@ pub struct TabList {
     pub footer: Option<Text>,
     visible: bool,
     health: HashMap<u128, HealthState>,
+    cache: Option<LayoutCache>,
+    order: Option<(Vec<TabPlayer>, Scoreboard, Vec<u128>)>,
+}
+#[derive(Clone)]
+struct LayoutCache {
+    players: Vec<TabPlayer>,
+    board: Scoreboard,
+    objective: Option<Objective>,
+    header: Option<Text>,
+    footer: Option<Text>,
+    language: Option<std::sync::Arc<crate::lang::Language>>,
+    dimensions: (i32, bool, u32, u64),
+    flags: Vec<(bool, Option<NameMark>)>,
+    draws: Vec<GuiDraw>,
+    hearts: Vec<(usize, i32, i32, i32, u128, i32)>,
+}
+impl std::fmt::Debug for LayoutCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LayoutCache").finish_non_exhaustive()
+    }
 }
 struct Entry {
     name: Text,
@@ -361,10 +405,87 @@ impl TabList {
         self.header = None;
         self.footer = None;
     }
-    /// `extractRenderState`.
+    /// Share the cached display order with skin residency selection.
+    pub fn displayed_ids(&mut self, players: &[TabPlayer], board: &Scoreboard) -> &[u128] {
+        if self.order.as_ref().is_none_or(|(old, previous, _)| {
+            old.len() != players.len()
+                || old.iter().zip(players).any(|(a, b)| {
+                    a.uuid != b.uuid
+                        || a.name != b.name
+                        || a.list_order != b.list_order
+                        || a.game_mode != b.game_mode
+                })
+                || previous != board
+        }) {
+            let ids = sorted_players(players, board)
+                .iter()
+                .map(|p| p.uuid)
+                .collect();
+            self.order = Some((players.to_vec(), board.clone(), ids));
+        }
+        &self.order.as_ref().unwrap().2
+    }
+    /// `extractRenderState`: retain text, measurements and geometry, not animated hearts.
     pub fn layout(&mut self, i: &TabInputs, font: &Font) -> Vec<GuiDraw> {
+        let language = crate::lang::current();
+        let dimensions = (i.screen_width, i.online_mode, i.background, font.epoch());
+        let flags: Vec<_> = i
+            .players
+            .iter()
+            .map(|p| ((i.upside_down)(p.uuid), (i.mark)(p.uuid)))
+            .collect();
+        let valid = self.cache.as_ref().is_some_and(|c| {
+            c.players == i.players
+                && c.board == *i.board
+                && c.objective.as_ref() == i.objective
+                && c.header == self.header
+                && c.footer == self.footer
+                && c.dimensions == dimensions
+                && c.flags == flags
+                && match (&c.language, &language) {
+                    (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        });
+        if !valid {
+            let mut hearts = Vec::new();
+            let draws = self.build_layout(i, font, &mut hearts);
+            self.cache = Some(LayoutCache {
+                players: i.players.to_vec(),
+                board: i.board.clone(),
+                objective: i.objective.cloned(),
+                header: self.header.clone(),
+                footer: self.footer.clone(),
+                language,
+                dimensions,
+                flags,
+                draws,
+                hearts,
+            });
+        }
+        let cache = self.cache.take().unwrap();
+        let mut out = Vec::with_capacity(cache.draws.len());
+        let mut start = 0;
+        for &(at, y, left, right, id, score) in &cache.hearts {
+            out.extend_from_slice(&cache.draws[start..at]);
+            self.hearts(y, left, right, id, score, i.gui_ticks, font, &mut out);
+            start = at;
+        }
+        out.extend_from_slice(&cache.draws[start..]);
+        self.cache = Some(cache);
+        out
+    }
+    fn build_layout(
+        &mut self,
+        i: &TabInputs,
+        font: &Font,
+        hearts: &mut Vec<(usize, i32, i32, i32, u128, i32)>,
+    ) -> Vec<GuiDraw> {
         let width = |t: &Text| font.width_text(t) as i32;
-        let players = sorted_players(i.players, i.board);
+        let ids = self.displayed_ids(i.players, i.board);
+        let by_id: HashMap<_, _> = i.players.iter().map(|p| (p.uuid, p)).collect();
+        let players: Vec<_> = ids.iter().map(|id| by_id[id]).collect();
         let spacer = font.width(" ") as i32;
         let mut max_name = 0;
         let mut max_score = 0;
@@ -407,8 +528,8 @@ impl TabList {
             entries.push(entry);
         }
         if !self.health.is_empty() {
-            self.health
-                .retain(|id, _| players.iter().any(|p| p.uuid == *id));
+            let displayed: HashSet<_> = players.iter().map(|p| p.uuid).collect();
+            self.health.retain(|id, _| displayed.contains(id));
         }
         let slots = players.len() as i32;
         let mut rows = slots;
@@ -425,6 +546,14 @@ impl TabList {
         };
         let sw = i.screen_width;
         let head = if show_head { 9 } else { 0 };
+        // A column for the marks once anyone listed has one, so the names stay aligned.
+        let marked: Vec<Option<NameMark>> = players.iter().map(|p| (i.mark)(p.uuid)).collect();
+        let mark = if marked.iter().any(Option::is_some) {
+            9
+        } else {
+            0
+        };
+        let head = head + mark;
         let slot_width = (cols * (head + max_name + width_for_score + 13)).min(sw - 50) / cols;
         let xxo = sw / 2 - (slot_width * cols + (cols - 1) * 5) / 2;
         let mut yyo = 10;
@@ -491,6 +620,20 @@ impl TabList {
                 );
                 xo += 9;
             }
+            if let Some(rects) = marked[n as usize] {
+                for &(mx, my, w, h, color) in rects {
+                    let (x, y) = (xo + i32::from(mx), yo + i32::from(my));
+                    let (x1, y1) = (x + i32::from(w), y + i32::from(h));
+                    out.push(GuiDraw::Fill {
+                        x0: x,
+                        y0: y,
+                        x1,
+                        y1,
+                        color,
+                    });
+                }
+            }
+            xo += mark;
             let spectator = p.game_mode == SPECTATOR;
             out.push(GuiDraw::Text {
                 text: entry.name.clone(),
@@ -504,16 +647,7 @@ impl TabList {
                 let right = left + width_for_score;
                 if right - left > 5 {
                     if objective.render_type == RenderType::Hearts {
-                        self.hearts(
-                            yo,
-                            left,
-                            right,
-                            p.uuid,
-                            entry.score,
-                            i.gui_ticks,
-                            font,
-                            &mut out,
-                        );
+                        hearts.push((out.len(), yo, left, right, p.uuid, entry.score));
                     } else if let Some(text) = &entry.formatted {
                         out.push(GuiDraw::Text {
                             text: text.clone(),
@@ -664,6 +798,60 @@ mod tests {
     }
 
     #[test]
+    fn cached_tab_layout_matches_rebuilt_layout_and_animated_health() {
+        let font = Font::metrics(std::path::Path::new("missing-tab-test-resources"));
+        let mut board = Scoreboard::default();
+        board.add_objective(
+            "hp",
+            "dummy",
+            serde_json::json!("hp"),
+            RenderType::Hearts,
+            false,
+            None,
+        );
+        board.add_team("red");
+        board.add_to_team("Alice", "red");
+        board.score_mut("Alice", "hp").value = 20;
+        let mut players = vec![TabPlayer::new(1, "Alice"), TabPlayer::new(2, "Bob")];
+        let mut cached = TabList::default();
+        let mut fresh = TabList::default();
+        cached.header = Some(Text::literal("Header"));
+        fresh.header = cached.header.clone();
+        for frame in 0..40 {
+            match frame {
+                2 => {
+                    players[0].display_name =
+                        Some(serde_json::json!({"text": "Changed", "obfuscated": true}))
+                }
+                3 => board.team_mut("red").unwrap().prefix = serde_json::json!("prefix"),
+                4 => board.score_mut("Alice", "hp").value = 9,
+                5 => players.push(TabPlayer::new(3, "Charlie")),
+                6 => {
+                    players.pop();
+                }
+                _ => {}
+            }
+            let inputs = TabInputs {
+                players: &players,
+                board: &board,
+                objective: board.objective("hp"),
+                screen_width: if frame < 7 { 400 } else { 300 },
+                online_mode: true,
+                gui_ticks: frame,
+                background: 0x20ffffff,
+                upside_down: &|_| false,
+                mark: &|_| None,
+            };
+            fresh.cache = None;
+            assert_eq!(
+                cached.layout(&inputs, &font),
+                fresh.layout(&inputs, &font),
+                "frame {frame}"
+            );
+        }
+    }
+
+    #[test]
     fn order_ping_and_skins() {
         let board = Scoreboard::default();
         let mut a = TabPlayer::new(1, "bob");
@@ -682,8 +870,11 @@ mod tests {
         assert_eq!(ping_sprite(1000), "icon/ping_1");
         // UUID.hashCode of 0 is 0: the first default skin.
         assert_eq!(default_skin(0), "entity/player/slim/alex");
-        assert!(!visible(true, true, 1, false));
-        assert!(visible(true, true, 1, true));
-        assert!(visible(true, false, 1, false));
+        assert!(!visible(true, true, true, 1, false));
+        assert!(visible(true, true, true, 1, true));
+        assert!(visible(true, true, false, 1, false));
+        // F1 (`Hud.isHidden`) takes the list away however it was held up.
+        assert!(!visible(false, true, false, 2, false));
+        assert!(!visible(false, true, true, 1, true));
     }
 }

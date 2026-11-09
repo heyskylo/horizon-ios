@@ -4,6 +4,7 @@
 //! `/fetchprofile`, `/publish`, `/unpublish`, `/debug`, `/jfr` and
 //! `/version`, with vanilla's feedback and failures.
 use super::{Arg, Context, Game, R, Target, err};
+use horizon_client::actions::Action;
 use horizon_client::{
     command::CommandError,
     skins::{NameOrId, Resolve, ResolvedProfile},
@@ -292,8 +293,7 @@ impl Game<'_> {
             self.set_camera(None);
             return;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
-            && self.screen == super::Screen::Playing;
+        let sneaking = self.keys.held(Action::Sneak) && self.screen == super::Screen::Playing;
         match self.target_position(t) {
             Some(p) if !sneaking => {
                 let rot = self.target_rotation(t);
@@ -827,18 +827,15 @@ impl Game<'_> {
                 &[self.target_name(t)],
             ));
         }
-        let [a, b, c, d] = self.level.player_uuid.unwrap_or([0; 4]);
-        let id = (u128::from(a as u32) << 96)
-            | (u128::from(b as u32) << 64)
-            | (u128::from(c as u32) << 32)
-            | u128::from(d as u32);
-        let name = super::super::chat::PLAYER_NAME;
+        // The player in place: a guest's own profile while their command runs.
+        let id = horizon_client::lan::playerdata::ints_uuid(self.acting_uuid());
+        let name = self.acting_player_name().to_owned();
         self.report_resolved_profile(
             "commands.fetchprofile.entity.success",
-            Text::literal(name),
+            Text::literal(&name),
             &ResolvedProfile {
                 id,
-                name: name.to_owned(),
+                name,
                 properties: Vec::new(),
             },
         );
@@ -947,9 +944,16 @@ impl Game<'_> {
         let port = match ctx.get("port") {
             Some(Arg::Int(p)) => *p,
             // HttpUtil.getAvailablePort.
-            _ => std::net::TcpListener::bind(("0.0.0.0", 0))
-                .and_then(|l| l.local_addr())
-                .map_or(25564, |a| i32::from(a.port())),
+            _ => std::net::TcpListener::bind((
+                if std::env::var_os("HORIZON_TEST_LOOPBACK").is_some_and(|v| v == "1") {
+                    "127.0.0.1"
+                } else {
+                    "0.0.0.0"
+                },
+                0,
+            ))
+            .and_then(|l| l.local_addr())
+            .map_or(25564, |a| i32::from(a.port())),
         };
         let published = if self.serving() {
             self.published_port()

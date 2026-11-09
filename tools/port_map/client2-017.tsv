@@ -49,10 +49,10 @@ ServerSelectionList.OnlineServerEntry.getNarration	port	crates/horizon-client/sr
 ServerSelectionList.OnlineServerEntry.matches	skip:java		selection is kept by index, so no entry identity match is needed
 WarningScreen	home	crates/horizon-client/src/game/code_of_conduct.rs	title, the text box with 12 px around it, the checkbox, then the footer 8 px apart (Prompt::layout); title.rs warning_top is the same column for the safety warning
 AccessibilityOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	ACCESSIBILITY_OPTIONS list, same options in the same order
-AccessibilityOptionsScreen.init	missing		minor: High Contrast is not greyed out without the high_contrast pack, and Rotate with Minecarts is not greyed out without the minecart feature
+AccessibilityOptionsScreen.init	missing		minor: High Contrast is not greyed out when the high_contrast pack is unavailable, and gets no error tooltip; Rotate with Minecarts is greyed out (layout)
 AccessibilityOptionsScreen.addOptions	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	Narrator row with the Controls button, then the rest of the rows
-AccessibilityOptionsScreen.addFooter	missing		minor: the Accessibility Help link button is absent from the footer
-AccessibilityOptionsScreen.isMinecartOptionEnabled	missing		minor: no minecart feature-flag check; part of the greying-out in init
+AccessibilityOptionsScreen.addFooter	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	the Accessibility Help link button sits beside Done on the Accessibility page, and Act::AccessibilityHelp confirms CommonLinks.ACCESSIBILITY_HELP over the options screen
+AccessibilityOptionsScreen.isMinecartOptionEnabled	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	Rotate with Minecarts is inactive unless a world is open whose feature flags include minecart_improvements
 ChatOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	gap: minor: Chat Delay is on the Accessibility page instead; Chat page rows
 FontOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	Force Unicode Font and Japanese glyph variants
 InWorldGameRulesScreen.initContent	port	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	GameRules button: a remote world sends REQUEST_GAMERULE_VALUES (action 2); a local world builds RulesScreen from its rules
@@ -125,7 +125,7 @@ PackSelectionScreen.reload	port	crates/horizon-client-render/src/pack_screen.rs:
 PackSelectionScreen.copyPacks	port	crates/horizon-client/src/title.rs::Title::drop_file	gap: minor: a dropped pack is copied into the Create New World data pack folder only (datapack::copy_pack); the resource pack screen takes no drops
 PackSelectionScreen.onFilesDrop	port	crates/horizon-client/src/title.rs::Title::drop_file	a zip or pack folder dropped on the create world screen is copied into its pack folder (datapack.rs::copy_pack); the standalone pack screen takes no drops
 PackSelectionScreen.getPackIcon	port	crates/horizon-client-render/src/pack_screen.rs::load_icon	icons decoded once into PackInfo.icon, then bound as textures (icon_texture)
-PackSelectionScreen.Watcher	missing		minor: no WatchService on the packs folder (create, watchDir, pollForChanges)
+PackSelectionScreen.Watcher	home	crates/horizon-client-render/src/datapack.rs,crates/horizon-client-render/src/options_ui.rs	polling instead of a WatchService: the folder is stamped once a second by `folder_stamp` (`OptionsUi::watch_data_packs`) and a changed stamp re-lists the packs
 TransferableSelectionList.keyPressed	missing		minor: no keyboard entry navigation: keys reach only the search box (type_text, shortcut, erase), not a selected pack
 TransferableSelectionList.HeaderEntry.extractContent	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::draw_list	header row (Available or Selected) drawn in the list
 TransferableSelectionList.PackEntry.getNarration	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::draw_list	the row under the mouse else the selected one: a pack narrates as narrator.select with its title, a header as its own title

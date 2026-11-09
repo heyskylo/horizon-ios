@@ -3,8 +3,10 @@
 //! pack's files to build a stage: the prelude before (the inputs and the
 //! resources), the entry points after.
 use crate::inputs::{
-    Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct, VERTEX_INPUT, WEATHER_INPUT,
+    DISPLACEMENT_INPUT, Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct,
+    TONEMAP_INPUT, VERTEX_INPUT, WEATHER_INPUT,
 };
+use crate::manifest::Api;
 use crate::package::Pack;
 
 /// The bind group of a pack's resources; groups 0 to 2 are the renderer's.
@@ -23,6 +25,9 @@ pub enum StageKind {
     Weather,
     /// A full-screen pass over the world's picture, under the hand and HUD.
     Post,
+    /// 0.2: the picture for an output (the display), once per pixel of it after the post chain,
+    /// before the camera overlays and the HUD.
+    Tonemap,
 }
 
 /// A resource a stage reads, declared by its prelude.
@@ -98,6 +103,54 @@ fn shadow_position(position: vec3<f32>) -> vec3<f32> {
 }
 ";
 
+const LINEAR_SAMPLER: Resource = Resource {
+    binding: 4,
+    name: "linear_sampler",
+    ty: "var linear_sampler: sampler",
+    doc: "Bilinear filtering, clamped to the edges.",
+};
+
+const NEAREST_SAMPLER: Resource = Resource {
+    binding: 5,
+    name: "nearest_sampler",
+    ty: "var nearest_sampler: sampler",
+    doc: "Nearest texel, clamped to the edges.",
+};
+
+/// The tonemap stage's resources, at the post stage's bindings for the same names.
+const TONEMAP_RESOURCES: [Resource; 4] = [
+    FRAME,
+    Resource {
+        binding: 3,
+        name: "previous",
+        ty: "var previous: texture_2d<f32>",
+        doc: "The post chain's picture at the window's size (without a post chain, the world's at the world's size), linear light: what `input.color` samples, for a curve that reads around the pixel.",
+    },
+    LINEAR_SAMPLER,
+    NEAREST_SAMPLER,
+];
+
+/// 0.2's colour boundary, in every 0.2 prelude: vanilla's 2.2 power both ways.
+const COLOR_HELPERS: &str = "\
+// Negatives and NaN made 0 (a comparison with NaN is false), so no `pow` sees them.
+fn horizon_sanitize(c: vec3<f32>) -> vec3<f32> {
+    return select(vec3<f32>(0.0), c, c > vec3<f32>(0.0));
+}
+fn horizon_decode(c: vec3<f32>) -> vec3<f32> {
+    return pow(horizon_sanitize(c), vec3<f32>(2.2));
+}
+fn horizon_encode(c: vec3<f32>) -> vec3<f32> {
+    return pow(horizon_sanitize(c), vec3<f32>(1.0 / 2.2));
+}
+// Alpha is coverage: it stays as it is.
+fn horizon_decode_rgba(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(horizon_decode(c.rgb), c.a);
+}
+fn horizon_encode_rgba(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(horizon_encode(c.rgb), c.a);
+}
+";
+
 const POST_RESOURCES: [Resource; 12] = [
     FRAME,
     Resource {
@@ -118,18 +171,8 @@ const POST_RESOURCES: [Resource; 12] = [
         ty: "var previous: texture_2d<f32>",
         doc: "The previous pass's output (`scene_color` for the first pass).",
     },
-    Resource {
-        binding: 4,
-        name: "linear_sampler",
-        ty: "var linear_sampler: sampler",
-        doc: "Bilinear filtering, clamped to the edges.",
-    },
-    Resource {
-        binding: 5,
-        name: "nearest_sampler",
-        ty: "var nearest_sampler: sampler",
-        doc: "Nearest texel, clamped to the edges.",
-    },
+    LINEAR_SAMPLER,
+    NEAREST_SAMPLER,
     shadow_map(6),
     shadow_sampler(7),
     Resource {
@@ -143,8 +186,8 @@ const POST_RESOURCES: [Resource; 12] = [
     Resource {
         binding: 11,
         name: "scene_surface",
-        ty: "var scene_surface: texture_2d<f32>",
-        doc: "What the material stage's `set_surface` stored for the solid terrain at each pixel, unfiltered (`textureLoad`): read it through the prelude's `surface_at`, which knows its layout and where it no longer shows. Blank without a material stage that calls `set_surface`.",
+        ty: "var scene_surface: texture_2d<u32>",
+        doc: "What the material stage's `set_surface` stored for the solid terrain at each pixel, unfiltered (`textureLoad`; its texels are the bits of floats, so `bitcast<vec4<f32>>` them): read it through the prelude's `surface_at`, which knows its layout and where it no longer shows. Blank without a material stage that calls `set_surface`.",
     },
 ];
 
@@ -211,8 +254,13 @@ fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32> {
 ";
 
 /// What the material entries (the checker's below and the renderer's) share: the
-/// surface's normal and tangent from the derivatives of its position and uv.
-const MATERIAL_HELPERS: &str = "\
+/// surface's normal and tangent from the derivatives of its position and uv. The arguments are
+/// the line's return statements of `block_light_color`, `block_texture` and
+/// `block_texture_level`, the helpers that read colour.
+macro_rules! material_helpers {
+    ($light:literal, $texture:literal, $texture_level:literal) => {
+        concat!(
+            "\
 // The colour of the block light at the camera-relative `position` (rgb, from the `[[lights]]`
 // of the sources nearby) and how strongly they reach it (a, 0 where none does). Block light
 // keeps its own brightness (`input.light.x`): this is its colour only.
@@ -223,8 +271,9 @@ fn block_light_color(position: vec3<f32>) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     let c = textureSampleLevel(block_light_colors, reflection_sampler, uvw, 0.0);
-    return vec4<f32>(c.rgb * 4.0, c.a);
-}
+",
+            $light,
+            "}
 // What the post stage's `surface_at` reads for this point of solid terrain: its `normal` (a
 // unit vector in world axes), `smoothness` (0..1, say for reflections) and `data`, a value of
 // the pack's own passed through. Unset, the point keeps the face's own normal and 0 for both;
@@ -246,12 +295,14 @@ var<private> horizon_block_lod: f32;
 // what `input.albedo` holds at the point itself, readable anywhere on the sprite, for normals
 // or detail generated from the texture.
 fn block_texture(uv: vec2<f32>) -> vec4<f32> {
-    return horizon_block_sample(uv, horizon_block_layer, horizon_block_lod);
-}
+",
+            $texture,
+            "}
 // `block_texture` at mip level `lod` (0 the full-size texture).
 fn block_texture_level(uv: vec2<f32>, lod: f32) -> vec4<f32> {
-    return horizon_block_sample(uv, horizon_block_layer, lod);
-}
+",
+            $texture_level,
+            "}
 // The block texture's size, in texels (16 x 16 for vanilla's).
 fn block_texture_size() -> vec2<f32> {
     return horizon_block_size();
@@ -322,7 +373,23 @@ fn horizon_material_tangent(position: vec3<f32>, uv: vec2<f32>, normal: vec3<f32
     let tangent = normalize(t - normal * dot(normal, t));
     return vec4<f32>(tangent, select(-1.0, 1.0, dot(cross(normal, tangent), b) >= 0.0));
 }
-";
+"
+        )
+    };
+}
+
+const MATERIAL_HELPERS: &str = material_helpers!(
+    "    return vec4<f32>(c.rgb * 4.0, c.a);\n",
+    "    return horizon_block_sample(uv, horizon_block_layer, horizon_block_lod);\n",
+    "    return horizon_block_sample(uv, horizon_block_layer, lod);\n"
+);
+
+/// 0.2's: the `[[lights]]` colours and the block texture decoded (the LabPBR maps are data).
+const MATERIAL_HELPERS_0_2: &str = material_helpers!(
+    "    return vec4<f32>(horizon_decode(c.rgb * 4.0), c.a);\n",
+    "    return horizon_decode_rgba(horizon_block_sample(uv, horizon_block_layer, horizon_block_lod));\n",
+    "    return horizon_decode_rgba(horizon_block_sample(uv, horizon_block_layer, lod));\n"
+);
 
 /// The post prelude's `surface_at`, for the post helpers' end.
 const POST_SURFACE: &str = "\
@@ -339,7 +406,7 @@ struct SurfaceData {
 fn surface_at(texel: vec2<i32>) -> SurfaceData {
     let size = vec2<i32>(textureDimensions(scene_surface));
     let t = clamp(texel, vec2<i32>(0), size - 1);
-    let s = textureLoad(scene_surface, t, 0);
+    let s = bitcast<vec4<f32>>(textureLoad(scene_surface, t, 0));
     let depth_size = vec2<i32>(textureDimensions(scene_depth));
     let depth = textureLoad(scene_depth, clamp(texel, vec2<i32>(0), depth_size - 1), 0);
     // The terrain's own depth is stored with it: anything drawn nearer since hides it.
@@ -399,10 +466,13 @@ fn horizon_block_pbr_size() -> vec2<f32> {
 pub const PBR_STUB: &str = pbr_stub!();
 
 /// Entry points with the material stage's inputs: the renderer calls
-/// `material` from its own terrain shader in the same way.
-const MATERIAL_ENTRIES: &str = concat!(
-    pbr_stub!(),
-    "\
+/// `material` from its own terrain shader in the same way. The arguments are the line's
+/// `MaterialInput` and return statements.
+macro_rules! material_entries {
+    ($input:literal, $result:literal) => {
+        concat!(
+            pbr_stub!(),
+            "\
 struct HorizonMaterialIn {
     @builtin(position) position: vec4<f32>,
     @location(0) albedo: vec4<f32>,
@@ -422,11 +492,30 @@ struct HorizonMaterialIn {
     let fluid = select(0u, select(2u, 1u, in.translucent != 0u), in.fluid_quad != 0u);
     let normal = horizon_material_normal(in.world);
     let tangent = horizon_material_tangent(in.world, in.uv, normal);
-    let input = MaterialInput(in.albedo, in.tint, in.light, in.lightmap, in.world, in.uv, in.translucent != 0u, in.tags, in.material,
-        in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent, vec3<f32>(0.0));
-    return material(input).color;
-}
 ",
+            $input,
+            $result,
+            "}
+"
+        )
+    };
+}
+
+const MATERIAL_ENTRIES: &str = material_entries!(
+    "    let input = MaterialInput(in.albedo, in.tint, in.light, in.lightmap, in.world, in.uv, in.translucent != 0u, in.tags, in.material,
+        in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent, vec3<f32>(0.0), 0.0);
+",
+    "    return material(input).color;\n"
+);
+
+/// 0.2's: the colours decoded on the way in, and the result encoded for the frame
+/// (`[frame] blend = "gamma"`; under `"linear"` the renderer stores it as it is).
+const MATERIAL_ENTRIES_0_2: &str = material_entries!(
+    "    let input = MaterialInput(horizon_decode_rgba(in.albedo), horizon_decode_rgba(in.tint), in.light,
+        horizon_decode(in.lightmap), in.world, in.uv, in.translucent != 0u, in.tags, in.material,
+        in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent, vec3<f32>(0.0), 0.0);
+",
+    "    return horizon_encode_rgba(material(input).color);\n"
 );
 
 /// Entry points with the sky stage's inputs: the renderer calls `sky` from
@@ -442,6 +531,17 @@ struct HorizonSkyIn {
 }
 ";
 
+const SKY_ENTRIES_0_2: &str = "\
+struct HorizonSkyIn {
+    @builtin(position) position: vec4<f32>,
+    @location(0) direction: vec3<f32>,
+    @location(1) color: vec4<f32>,
+}
+@fragment fn horizon_fs_sky(in: HorizonSkyIn) -> @location(0) vec4<f32> {
+    return horizon_encode_rgba(sky(SkyInput(normalize(in.direction), horizon_decode_rgba(in.color))));
+}
+";
+
 /// An entry point with the weather stage's inputs: the renderer calls `weather` from its own
 /// weather shader in the same way.
 const VERTEX_ENTRIES: &str = "\
@@ -451,6 +551,32 @@ const VERTEX_ENTRIES: &str = "\
 ) -> @builtin(position) vec4<f32> {
     let input = VertexInput(position, uv, material, light, tint, flags & 7u, flags >> 31u);
     return frame.projection * frame.view * vec4<f32>(vertex(input), 1.0);
+}
+";
+
+/// 0.2's: the tint is a colour, so it is decoded too.
+const VERTEX_ENTRIES_0_2: &str = "\
+@vertex fn horizon_vs_vertex(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) light: vec2<f32>,
+    @location(3) tint: vec4<f32>, @location(4) material: u32, @location(5) flags: u32,
+) -> @builtin(position) vec4<f32> {
+    let input = VertexInput(position, uv, material, light, horizon_decode_rgba(tint), flags & 7u, flags >> 31u);
+    return frame.projection * frame.view * vec4<f32>(vertex(input), 1.0);
+}
+";
+
+/// `fn displacement(input: DisplacementInput) -> f32`, the material stage's function
+/// under `[displacement]`.
+pub const DISPLACEMENT_SIGNATURE: &str = "fn displacement(input: DisplacementInput) -> f32";
+
+/// An entry point calling the material stage's `displacement`, after its entries under
+/// `[displacement]`: the renderer calls it from its own terrain vertex shader in the same way.
+const DISPLACEMENT_ENTRIES: &str = "@vertex fn horizon_vs_displacement(
+    @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>,
+    @location(3) material: u32, @location(4) height: f32,
+) -> @builtin(position) vec4<f32> {
+    let depth = displacement(DisplacementInput(position, normal, uv, material, height));
+    return frame.projection * frame.view * vec4<f32>(position - normal * depth, 1.0);
 }
 ";
 
@@ -467,16 +593,83 @@ struct HorizonWeatherIn {
 }
 ";
 
+const WEATHER_ENTRIES_0_2: &str = "\
+struct HorizonWeatherIn {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) light: vec2<f32>,
+    @location(2) world: vec3<f32>,
+    @location(3) @interpolate(flat) snow: u32,
+}
+@fragment fn horizon_fs_weather(in: HorizonWeatherIn) -> @location(0) vec4<f32> {
+    let input = WeatherInput(horizon_decode_rgba(in.color), in.light, in.world, in.snow != 0u);
+    return horizon_encode_rgba(weather(input));
+}
+";
+
+/// The post stage's entry points under 0.2: the chain's targets hold linear light, so nothing
+/// converts, and the pass's alpha is ignored.
+const POST_ENTRIES_0_2: &str = "\
+struct HorizonPostOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+@vertex fn horizon_vs_post(@builtin(vertex_index) i: u32) -> HorizonPostOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var out: HorizonPostOut;
+    out.position = vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+    out.uv = vec2<f32>(p.x, 1.0 - p.y);
+    return out;
+}
+@fragment fn horizon_fs_post(in: HorizonPostOut) -> @location(0) vec4<f32> {
+    let color = textureSampleLevel(previous, linear_sampler, in.uv, 0.0);
+    return vec4<f32>(post(PostInput(in.uv, in.position.xy, color, depth_at(in.uv))).rgb, 1.0);
+}
+";
+
+/// The tonemap stage's entry points: a full-screen triangle at the window's size, and a fragment
+/// that holds the result to what the display pass takes.
+const TONEMAP_ENTRIES: &str = "\
+struct HorizonTonemapOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+@vertex fn horizon_vs_tonemap(@builtin(vertex_index) i: u32) -> HorizonTonemapOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var out: HorizonTonemapOut;
+    out.position = vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+    out.uv = vec2<f32>(p.x, 1.0 - p.y);
+    return out;
+}
+@fragment fn horizon_fs_tonemap(in: HorizonTonemapOut) -> @location(0) vec4<f32> {
+    let color = horizon_sanitize(textureSampleLevel(previous, linear_sampler, in.uv, 0.0).rgb);
+    let out = tonemap(TonemapInput(in.uv, in.position.xy, color));
+    return vec4<f32>(min(horizon_sanitize(out), vec3<f32>(frame.headroom)), 1.0);
+}
+";
+
+impl Api {
+    /// The stages the line has, in `StageKind::ALL`'s order.
+    pub fn stages(self) -> &'static [StageKind] {
+        match self {
+            Api::V0_1 => &StageKind::ALL[..5],
+            Api::V0_2 => &StageKind::ALL,
+        }
+    }
+}
+
 impl StageKind {
-    pub const ALL: [StageKind; 5] = [
+    pub const ALL: [StageKind; 6] = [
         StageKind::Sky,
         StageKind::Vertex,
         StageKind::Material,
         StageKind::Weather,
         StageKind::Post,
+        StageKind::Tonemap,
     ];
 
-    /// The manifest's name for the stage (`[sky]`, `[vertex]`, `[material]`, `[weather]`, `[[post]]`).
+    /// The manifest's name for the stage (`[sky]`, `[vertex]`, `[material]`, `[weather]`,
+    /// `[[post]]`, `[tonemap]`).
     pub fn name(self) -> &'static str {
         match self {
             StageKind::Sky => "sky",
@@ -484,6 +677,7 @@ impl StageKind {
             StageKind::Vertex => "vertex",
             StageKind::Weather => "weather",
             StageKind::Post => "post",
+            StageKind::Tonemap => "tonemap",
         }
     }
 
@@ -499,6 +693,7 @@ impl StageKind {
             StageKind::Vertex => &VERTEX_INPUT,
             StageKind::Weather => &WEATHER_INPUT,
             StageKind::Post => &POST_INPUT,
+            StageKind::Tonemap => &TONEMAP_INPUT,
         }
     }
 
@@ -506,7 +701,7 @@ impl StageKind {
     pub fn output(self) -> &'static str {
         match self {
             StageKind::Material => SURFACE.name,
-            StageKind::Vertex => "vec3<f32>",
+            StageKind::Vertex | StageKind::Tonemap => "vec3<f32>",
             StageKind::Sky | StageKind::Weather | StageKind::Post => "vec4<f32>",
         }
     }
@@ -526,22 +721,33 @@ impl StageKind {
             StageKind::Post => &POST_RESOURCES,
             StageKind::Sky | StageKind::Vertex | StageKind::Weather => std::slice::from_ref(&FRAME),
             StageKind::Material => &MATERIAL_RESOURCES,
+            StageKind::Tonemap => &TONEMAP_RESOURCES,
         }
     }
 
-    /// Everything the pack's files may use, declared before them.
-    pub fn prelude(self) -> String {
-        let mut out =
-            String::from("// Horizon shader API prelude (docs/api/shaders-reference.md)\n");
-        out += &Frame::WGSL.wgsl();
+    /// Everything the pack's files may use under the line `api`, declared before them.
+    pub fn prelude(self, api: Api) -> String {
+        let mut out = match api {
+            Api::V0_1 => {
+                String::from("// Horizon shader API prelude (docs/api/shaders-reference.md)\n")
+            }
+            Api::V0_2 => String::from(
+                "// Horizon shader API 0.2 prelude (docs/api/shaders-reference-0.2.md)\n",
+            ),
+        };
+        out += &Frame::line(api).wgsl();
         out += &self.input().wgsl();
         if self == StageKind::Material {
             out += &SURFACE.wgsl();
             // The vertex stage's file joins the material's module (`compose`).
             out += &VERTEX_INPUT.wgsl();
+            out += &DISPLACEMENT_INPUT.wgsl();
         }
         for r in self.resources() {
             out += &format!("@group({GROUP}) @binding({}) {};\n", r.binding, r.ty);
+        }
+        if api == Api::V0_2 {
+            out += COLOR_HELPERS;
         }
         match self {
             StageKind::Post => {
@@ -550,23 +756,33 @@ impl StageKind {
                 out += SHADOW_HELPERS;
             }
             StageKind::Material => {
-                out += MATERIAL_HELPERS;
+                out += match api {
+                    Api::V0_1 => MATERIAL_HELPERS,
+                    Api::V0_2 => MATERIAL_HELPERS_0_2,
+                };
                 out += SHADOW_HELPERS;
             }
             StageKind::Vertex => out += SHADOW_HELPERS,
-            StageKind::Sky | StageKind::Weather => {}
+            StageKind::Sky | StageKind::Weather | StageKind::Tonemap => {}
         }
         out
     }
 
-    /// The entry points put after the pack's files.
-    pub fn entries(self) -> &'static str {
-        match self {
-            StageKind::Sky => SKY_ENTRIES,
-            StageKind::Material => MATERIAL_ENTRIES,
-            StageKind::Vertex => VERTEX_ENTRIES,
-            StageKind::Weather => WEATHER_ENTRIES,
-            StageKind::Post => POST_ENTRIES,
+    /// The entry points put after the pack's files under the line `api`.
+    pub fn entries(self, api: Api) -> &'static str {
+        match (api, self) {
+            (Api::V0_1, StageKind::Sky) => SKY_ENTRIES,
+            (Api::V0_1, StageKind::Material) => MATERIAL_ENTRIES,
+            (Api::V0_1, StageKind::Vertex) => VERTEX_ENTRIES,
+            (Api::V0_1, StageKind::Weather) => WEATHER_ENTRIES,
+            (Api::V0_1, StageKind::Post) => POST_ENTRIES,
+            (Api::V0_2, StageKind::Sky) => SKY_ENTRIES_0_2,
+            (Api::V0_2, StageKind::Material) => MATERIAL_ENTRIES_0_2,
+            (Api::V0_2, StageKind::Vertex) => VERTEX_ENTRIES_0_2,
+            (Api::V0_2, StageKind::Weather) => WEATHER_ENTRIES_0_2,
+            (Api::V0_2, StageKind::Post) => POST_ENTRIES_0_2,
+            // 0.1 has no tonemap stage: a manifest with one is refused before it is built.
+            (_, StageKind::Tonemap) => TONEMAP_ENTRIES,
         }
     }
 }
@@ -635,8 +851,9 @@ pub fn post_target_declarations(manifest: &crate::manifest::Manifest) -> String 
 }
 
 /// The WGSL of the stage `kind` whose own file is `file`: the prelude, the
-/// pack's shared files in order, the file, then the entry points.
+/// pack's shared files in order, the file, then the entry points, all of the pack's line.
 pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
+    let api = pack.manifest.api;
     let mut composed = Composed {
         text: String::new(),
         parts: Vec::new(),
@@ -651,7 +868,7 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
             .parts
             .push((name.to_owned(), start..composed.text.len()));
     };
-    let mut prelude = kind.prelude() + &texture_declarations(&pack.manifest.textures);
+    let mut prelude = kind.prelude(api) + &texture_declarations(&pack.manifest.textures);
     if kind == StageKind::Post {
         prelude += &post_target_declarations(&pack.manifest);
     }
@@ -667,6 +884,7 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
         StageKind::Vertex => m.vertex.as_ref(),
         StageKind::Weather => m.weather.as_ref(),
         StageKind::Post => m.post.iter().find(|s| s.file == file),
+        StageKind::Tonemap => m.tonemap.as_ref(),
     };
     for extra in stage.into_iter().flat_map(|s| &s.files) {
         if extra != file && !m.shared.contains(extra) {
@@ -685,7 +903,14 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
             }
         }
     }
-    push("<entries>", kind.entries());
+    if kind == StageKind::Material && m.displacement.is_some() {
+        push(
+            "<entries>",
+            &(kind.entries(api).to_owned() + DISPLACEMENT_ENTRIES),
+        );
+    } else {
+        push("<entries>", kind.entries(api));
+    }
     composed
 }
 

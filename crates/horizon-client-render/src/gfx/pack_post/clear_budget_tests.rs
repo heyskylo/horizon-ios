@@ -22,7 +22,7 @@ fn hdr_pack(sized: bool, format: &str) -> Post {
         add(
             &format!("{program}.fsh"),
             &format!(
-                "#version 120\n/* RENDERTARGETS:{buffer} */\n/* const int colortex{buffer}Format={format}; */\nvoid main() {{ gl_FragData[0]=vec4(0,0.5,0,1); }}\n"
+                "#version 120\n/* RENDERTARGETS:{buffer} */\n/*\nconst int colortex{buffer}Format={format};\n*/\nvoid main() {{ gl_FragData[0]=vec4(0,0.5,0,1); }}\n"
             ),
         );
         if sized {
@@ -60,6 +60,16 @@ fn hdr_pack(sized: bool, format: &str) -> Post {
         );
     }
     post
+}
+
+// Check the fixture contract even when the render tests cannot find an adapter.
+#[test]
+fn clear_fixture_loads_the_requested_formats_without_a_gpu() {
+    for sized in [false, true] {
+        for format in ["RGBA16F", "RGBA8"] {
+            hdr_pack(sized, format);
+        }
+    }
 }
 
 fn hdr_clear_case(sized: bool, attachment_limit: u32, byte_budget: u32, format: &str) {

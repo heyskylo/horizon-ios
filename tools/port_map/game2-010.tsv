@@ -4,7 +4,7 @@ Enchantment.isImmuneToDamage	port	crates/horizon-client/src/game/enchant_effects
 Enchantment.modifyDamageProtection	port	crates/horizon-items/src/enchant.rs::Enchantments::modify_value_with	armor protection is summed per damage type in apply_effect_status (potions.rs)
 Enchantment.doPostPiercingAttack	port	crates/horizon-client/src/game/enchant_effects.rs::Game::post_piercing_attack	gap: minor: the effect's own requirements are not read; Lunge's checks are hard-coded
 Enchantment.tick	port	crates/horizon-client/src/game/enchant_effects.rs::Game::tick_soul_speed	gap: minor: only Soul Speed's tick effects; it is the only tick effect in the data
-Enchantment.onProjectileSpawned	port	crates/horizon-client/src/game/enchant_effects.rs::Game::bow_projectile_ignite	Flame's ignite; the only projectile_spawned effect in the data
+Enchantment.onProjectileSpawned	port	crates/horizon-client/src/game/enchant_effects.rs::Game::ignite_spawned_arrow	Flame's ignite; the only projectile_spawned effect in the data
 Enchantment.onHitBlock	port	crates/horizon-client/src/game/trident.rs::Game::channel_rod_hit	Channeling's lightning rod hit; the only hit_block effect in the data
 Enchantment.modifyItemFilteredCount	port	crates/horizon-items/src/enchant.rs::Enchantments::modify_value_with	one enchantment's effects for one component, item context
 Enchantment.modifyEntityFilteredValue	port	crates/horizon-items/src/enchant.rs::Enchantments::modify_value_with	one enchantment's effects for one component, entity context
@@ -20,7 +20,7 @@ LevelBasedValue.Exponent.calculate	port	crates/horizon-items/src/enchant.rs::lev
 LevelBasedValue.Fraction.calculate	port	crates/horizon-items/src/enchant.rs::level_value	minecraft:fraction; zero denominator gives 0
 LevelBasedValue.Linear.calculate	port	crates/horizon-items/src/enchant.rs::level_value	minecraft:linear
 LevelBasedValue.Lookup.calculate	port	crates/horizon-items/src/enchant.rs::level_value	minecraft:lookup with fallback
-ChangeItemDamage.apply	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: the held item only; Soul Speed's boots use wear_boots and Thorns its own path
+ChangeItemDamage.apply	port	crates/horizon-client/src/game/item_durability.rs::Game::damage_held	gap: minor: the held item only; Soul Speed's boots use wear_boots and Thorns its own path
 EnchantmentAttributeEffect.getModifier	port	crates/horizon-items/src/enchant.rs::Enchantments::attributes	slot suffix on the id is added in apply_enchantment_attributes
 EnchantmentAttributeEffect.onChangedBlock	inline	crates/horizon-client/src/game/enchant_effects.rs::Game::tick_soul_speed	modifiers switch on there (Soul Speed only)
 EnchantmentAttributeEffect.onDeactivated	inline	crates/horizon-client/src/game/enchant_effects.rs::Game::tick_soul_speed	modifiers switch off there (Soul Speed only)

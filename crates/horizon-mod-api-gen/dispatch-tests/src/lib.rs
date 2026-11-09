@@ -1,5 +1,13 @@
+/// The game's `mod_api` types a hook names with a `crate::mod_api::` path.
+#[cfg(test)]
+mod mod_api {
+    #[derive(Clone, Copy)]
+    pub struct NativeInventoryKind;
+}
 #[cfg(test)]
 mod tests {
+    include!("block_clone_item_tests.rs");
+    include!("state_block_entity_tests.rs");
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -8,7 +16,11 @@ mod tests {
         count: i32,
     }
     struct BlockEntityDraw(Vec<u32>);
-    #[allow(dead_code)]
+    struct NativeWorldDraw(Vec<u32>);
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod stubs {
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub(super) struct BlockStateId;
@@ -33,18 +45,30 @@ mod tests {
         pub(super) struct NativeLootDrops<'a>(pub &'a ());
         pub(super) struct NativeNoteBlockChange<'a>(pub &'a ());
         pub(super) struct NativeScreenView<'a>(pub &'a ());
+        pub(super) struct NativeTextField;
+        pub(super) struct ClientboundPlayPacket;
+        pub(super) struct EntityDataValue;
+        pub(super) struct NativeGenerate;
+        pub(super) struct NativeProtoChunk<'a>(pub &'a ());
+        pub(super) struct NativeLodColumn<'a>(pub &'a ());
+        pub(super) struct TickSpan;
         pub(super) struct Corners;
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
         pub(super) struct ItemEnergyBuffer;
         pub(super) struct Suggestion;
-        pub(super) struct HudBatch;
+        #[derive(Default)]
+        pub(super) struct HudBatch(pub Vec<u32>);
         pub(super) struct BiomeColors;
         pub(super) struct SpawnEntry;
         pub(super) struct UseAnimation;
         #[derive(Clone, Copy)]
         pub(super) struct Hand;
         pub(super) struct NativeMobRender<'a>(pub &'a ());
+        pub(super) struct LayerDefinition;
+        pub(super) struct ModelPart;
         pub(super) struct NativeShake;
+        pub(super) struct WorldPrimitives;
+        pub(super) struct WorldHold;
         pub(super) struct Music;
         pub(super) struct MusicLayer;
         pub(super) struct NativeBlockRim;
@@ -53,14 +77,28 @@ mod tests {
         pub(super) struct NativeMod;
         pub(super) struct NativePanelEvent;
         pub(super) struct NativeScreen;
+        pub(super) struct NativeStack;
+        pub(super) struct NativeRecipeLookup;
+        pub(super) struct NativeRecipeCategory;
         pub(super) struct ModBlockEntity;
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;
         pub(super) struct ModFluidTanks;
+        #[derive(Clone, Copy)]
+        pub(super) struct NativeFluidAction;
+        pub(super) struct NativeFluidDrain;
+        pub(super) struct NativeFluidStack;
+        pub(super) struct NativeFluidTankView;
+        pub(super) struct NativeFishingMedium;
         pub(super) struct ModEnergyBuffer;
+        pub(super) struct Mob;
         pub(super) struct LootStack;
+        pub(super) struct SoundPlayback<'a>(pub &'a ());
         pub(super) struct NativeLootContext<'a>(pub &'a ());
         pub(super) struct NativeDataMapType;
+        pub(super) struct NativeConfig;
+        pub(super) struct NativeConfigFile;
+        pub(super) struct NativeReloadListener;
         pub(super) struct RecipeBookCategory;
         pub(super) struct NativeMapDecoration;
         pub(super) struct NativeMapInfo<'a>(pub &'a ());
@@ -91,7 +129,10 @@ mod tests {
             pub struct KeyEvent;
         }
     }
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod generated {
         mod horizon_mods {
             pub mod content {
@@ -121,6 +162,18 @@ mod tests {
                 pub struct GuiDraw;
             }
         }
+        mod horizon_client_core {
+            pub mod text {
+                pub struct Text;
+            }
+        }
+        mod horizon_protocol {
+            pub mod packets {
+                pub mod login {
+                    pub struct Property;
+                }
+            }
+        }
         include!(concat!(env!("OUT_DIR"), "/mod_api_generated.rs"));
     }
     use generated::*;
@@ -142,6 +195,9 @@ mod tests {
         calls: Arc<Mutex<Vec<u32>>>,
     }
     impl Hooks for Mod {
+        fn world_submit(&self, _: &dyn Host, event: &mut WorldSubmitEvent<'_>) {
+            event.draw.0.push(self.id);
+        }
         fn block_entity_submit(&self, _: &dyn Host, event: &mut BlockEntitySubmitEvent<'_>) {
             assert_eq!(event.pos, [1, 2, 3]);
             assert_eq!(event.block, "example:machine");
@@ -224,6 +280,22 @@ mod tests {
         }
     }
     #[test]
+    fn world_submit_dispatches_in_order_with_shared_draw() {
+        let mods: Vec<Box<dyn Hooks>> = vec![1, 2]
+            .into_iter()
+            .map(|id| {
+                Box::new(Mod {
+                    id,
+                    calls: Arc::new(Mutex::new(Vec::new())),
+                }) as Box<dyn Hooks>
+            })
+            .collect();
+        let mut draw = NativeWorldDraw(Vec::new());
+        dispatch_world_submit(&TestHost, &mods, &mut draw);
+        assert_eq!(draw.0, [1, 2]);
+    }
+
+    #[test]
     fn block_entity_submit_dispatches_in_order_with_shared_draw() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mods: Vec<Box<dyn Hooks>> = vec![
@@ -244,6 +316,35 @@ mod tests {
             &mut draw,
         );
         assert_eq!(draw.0, [1, 2]);
+    }
+
+    #[test]
+    fn foreground_gui_preserves_draws_and_dispatches_with_visibility_flags() {
+        struct Indicator(u32);
+        impl Hooks for Indicator {
+            fn gui_render_post(&self, _: &dyn Host, event: &mut GuiRenderPostEvent<'_>) {
+                // A persistent indicator opts into F1 and hides on focus loss.
+                if event.focused {
+                    event
+                        .batch
+                        .0
+                        .push(self.0 + u32::from(event.gui_hidden) * 10);
+                }
+            }
+        }
+        let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Indicator(1)), Box::new(Indicator(2))];
+        for (hidden, focused, expected) in [
+            (false, true, vec![99, 1, 2]),
+            (true, true, vec![99, 11, 12]),
+            (true, false, vec![99]),
+        ] {
+            let mut batch = HudBatch(vec![99]);
+            dispatch_gui_render_post(&TestHost, &mods, &mut batch, hidden, focused);
+            assert_eq!(batch.0, expected);
+        }
+        let mut batch = HudBatch(vec![99]);
+        dispatch_gui_render_post(&TestHost, &[], &mut batch, true, true);
+        assert_eq!(batch.0, [99]);
     }
 
     #[test]
@@ -358,6 +459,37 @@ mod tests {
             &mut answer,
         );
         assert_eq!(*calls.lock().unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn permission_check_tells_a_false_answer_from_not_set() {
+        struct Provider(Option<bool>);
+        impl Hooks for Provider {
+            fn permission_check(
+                &self,
+                _: &dyn Host,
+                event: &mut PermissionCheckEvent<'_>,
+            ) -> Option<bool> {
+                if event.node == "example.node" {
+                    self.0
+                } else {
+                    None
+                }
+            }
+        }
+        let denies: Vec<Box<dyn Hooks>> = vec![Box::new(Provider(Some(false)))];
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &denies, 1, "example.node", 0, &mut result);
+        assert_eq!(result, Some(false), "set to false is not unset");
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &denies, 1, "other.node", 0, &mut result);
+        assert_eq!(
+            result, None,
+            "a node the provider doesn't answer is not set"
+        );
+        let mut result = None;
+        dispatch_permission_check(&TestHost, &[], 1, "example.node", 0, &mut result);
+        assert_eq!(result, None, "no provider: not set");
     }
 
     #[test]

@@ -1,0 +1,21 @@
+The Logical Redstone Archive catalogue in this folder (entries.jsonl) was made by
+maybeachromium (GitHub: SolsticeSpectrum) and is shared under the WTFPL, version 2.
+Source: https://github.com/horizon-rust/horizon/issues/10103 (lra-catalog-2026-11-05.zip).
+
+This licence covers the catalogue only. The archive's schematics, by the
+Logical Redstone Archive's contributors, have no licence: they are not in this
+repository, and tools/test_redstone_catalog_parity.py downloads them at run time.
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+                    Version 2, December 2004
+
+ Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>
+
+ Everyone is permitted to copy and distribute verbatim or modified
+ copies of this license document, and changing it is allowed as long
+ as the name is changed.
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+  0. You just DO WHAT THE FUCK YOU WANT TO.

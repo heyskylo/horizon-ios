@@ -3,6 +3,7 @@
 //! (flint and steel / fire charge).
 use super::{Game, entity::Entity};
 use horizon_client::entity_rules::EntityRules;
+use horizon_client::lan::playerdata::uuid_ints;
 use horizon_client::{
     Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex, mobs::Who, text::Text,
 };
@@ -15,6 +16,8 @@ use horizon_world::level::flags as level_flags;
 
 #[derive(Clone, Debug)]
 pub(super) struct PrimedTnt {
+    /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
+    pub rotation: [f32; 2],
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
     pub(super) join: horizon_client::join_seq::JoinSeq,
     /// The entity id a server tracks it by (0 until it is tracked).
@@ -24,6 +27,13 @@ pub(super) struct PrimedTnt {
     pub velocity: Vec3,
     pub fuse: i32,
     pub on_ground: bool,
+    /// `Entity.fallDistance` (`fall_distance` in its save).
+    pub fall_distance: f64,
+    /// `Entity.stuckSpeedMultiplier`: set by powder snow or a cobweb it is
+    /// in, it scales the next move, which then starts from rest.
+    pub stuck: Vec3,
+    /// `Entity.wasTouchingWater`, from its last immersion update.
+    pub in_water: bool,
     pub owner: Option<Who>,
     pub guest: Option<u32>,
     /// `Entity.noGravity` (`NoGravity` in its save).
@@ -31,9 +41,23 @@ pub(super) struct PrimedTnt {
     /// `PrimedTnt.explosionPower`: 4 by default, saved as `explosion_power`
     /// and clamped to 0..128 when read back.
     pub power: f32,
+    /// PrimedTnt.DATA_BLOCK_STATE_ID; None is the default TNT state.
+    pub block_state: Option<horizon_world::registry::BlockStateId>,
 }
 impl PrimedTnt {
-    pub(super) const SIZE: f64 = 0.98;
+    /// The live state encoded for each existing save view.
+    pub(super) fn block_state_nbt(
+        &self,
+        registry: &horizon_world::registry::BlockRegistry,
+    ) -> horizon_world::nbt::Tag {
+        self.block_state.map_or_else(
+            || horizon_world::nbt::Tag::String("minecraft:tnt".into()),
+            |state| horizon_client::entity_nbt::state_to_nbt(registry, state),
+        )
+    }
+
+    /// `EntityTypes.TNT`'s `sized(0.98F, 0.98F)`, widened from the float.
+    pub(super) const SIZE: f64 = 0.98_f32 as f64;
     pub(super) fn bounds(&self) -> Aabb {
         let h = Self::SIZE / 2.0;
         Aabb::new(
@@ -45,6 +69,100 @@ impl PrimedTnt {
             ),
         )
     }
+    /// `Entity.move`: a pending stuck multiplier is used up by the next move,
+    /// which starts from rest. Returns it, for a move that scales its step by it.
+    pub(super) fn take_stuck(&mut self) -> Option<Vec3> {
+        if self.stuck.length_squared() <= 1.0e-7 {
+            return None;
+        }
+        self.velocity = Vec3::ZERO;
+        Some(std::mem::replace(&mut self.stuck, Vec3::ZERO))
+    }
+    /// PowderSnowBlock.getCollisionShape: a top that holds it once it has
+    /// fallen more than 2.5 blocks, read with [`Self::collision_context`].
+    pub(super) fn powder_snow_subject(&self) -> horizon_client::collisions::PowderSnowSubject {
+        horizon_client::collisions::PowderSnowSubject {
+            fall_distance: self.fall_distance,
+            ..Default::default()
+        }
+    }
+    pub(super) fn collision_context(
+        &self,
+    ) -> horizon_world::collision_context::CollisionContext<'static> {
+        horizon_world::collision_context::CollisionContext::for_entity(
+            horizon_world::collision_context::CollisionEntity {
+                identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                kind: horizon_world::collision_context::EntityContextKind::Other,
+                y: self.position.y,
+                descending: false,
+                main_hand: None,
+            },
+            false,
+        )
+    }
+    /// Entity.checkFallDamage after a move that stepped `moved_y`: out of
+    /// water, each step down is narrowed to a float before it adds to the
+    /// fall; landing forgets it.
+    pub(super) fn check_fall_damage(&mut self, moved_y: f64) {
+        if !self.in_water && moved_y < 0.0 {
+            self.fall_distance -= f64::from(moved_y as f32);
+        }
+        if self.on_ground {
+            self.fall_distance = 0.0;
+        }
+    }
+    /// Entity.applyEffectsFromBlocks for a move from `from` to here
+    /// (`original` the step it asked for, when the move was recorded): powder
+    /// snow and cobwebs it went through make it stuck, a bubble column lifts or
+    /// drags it, and slime it stands on slows it, first. Returns the columns it
+    /// is at the top of, which send their surface particles.
+    pub(super) fn apply_effects_from_blocks(
+        &mut self,
+        world: &horizon_client::world::World,
+        assets: &horizon_client::assets::Assets,
+        facts: &horizon_client::blocks::BlockFacts,
+        collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        from: Vec3,
+        original: Option<Vec3>,
+    ) -> Vec<BlockPos> {
+        if self.on_ground {
+            // SlimeBlock.stepOn, before the blocks it is inside.
+            let under = world.block(
+                self.position.x.floor() as i32,
+                (self.position.y - f64::from(0.2_f32)).floor() as i32,
+                self.position.z.floor() as i32,
+            );
+            if &*facts.get(under).name == "minecraft:slime_block"
+                && let Some(scale) = horizon_client::entities::slime_step_on_scale(self.velocity.y)
+            {
+                self.velocity.x *= scale;
+                self.velocity.z *= scale;
+            }
+        }
+        let mut tops = Vec::new();
+        let stuck = horizon_client::falling_block::apply_effects_from_blocks(
+            from,
+            self.position,
+            original,
+            &mut self.velocity,
+            &mut self.fall_distance,
+            &mut Vec::new(),
+            |p| match &*facts.get(world.block(p.x, p.y, p.z)).name {
+                "minecraft:powder_snow" => horizon_client::falling_block::Inside::PowderSnow,
+                "minecraft:cobweb" => horizon_client::falling_block::Inside::Cobweb,
+                _ => horizon_client::falling_block::Inside::Nothing,
+            },
+        );
+        if let Some(multiplier) = stuck {
+            self.stuck = multiplier;
+        }
+        if self.push_by_bubble_column_over(world, assets.registry, facts, collision, |pos| {
+            tops.push(pos)
+        }) {
+            self.fall_distance = 0.0;
+        }
+        tops
+    }
     pub(super) fn tick(
         &mut self,
         world: &horizon_client::world::World,
@@ -53,21 +171,54 @@ impl PrimedTnt {
         facts: &horizon_client::blocks::BlockFacts,
         fluids: &horizon_client::motion::FluidResources,
         border: Option<&horizon_core::geometry::border::BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+    ) -> Result<Vec<BlockPos>> {
+        self.tick_among(world, collision, assets, facts, fluids, border, blocks, &[])
+    }
+    /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
+    /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn tick_among(
+        &mut self,
+        world: &horizon_client::world::World,
+        collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        assets: &horizon_client::assets::Assets,
+        facts: &horizon_client::blocks::BlockFacts,
+        fluids: &horizon_client::motion::FluidResources,
+        border: Option<&horizon_core::geometry::border::BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+        entities: &[Aabb],
     ) -> Result<Vec<BlockPos>> {
         self.previous = self.position;
         self.velocity.y -= self.get_gravity();
+        let mut wanted = self.velocity;
+        if let Some(multiplier) = self.take_stuck() {
+            wanted = wanted.multiply(multiplier);
+        }
         let scene = SceneCollisions {
             world,
             binding: collision,
-            subject: None,
+            subject: Some(self.powder_snow_subject()),
         };
-        let wanted = self.velocity;
-        // Entity.collide: the world border's walls stop it too.
+        // Entity.collide: the world border's walls and the entities that
+        // `canBeCollidedWith` it (a boat, a shulker) stop it too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
-        let moved = scene
-            .resolve_in_border(self.bounds(), wanted, 0.0, self.on_ground, border)
-            .unwrap_or(Vec3::ZERO);
-        if horizon_client::entities::move_applies(wanted, moved) {
+        let moved = horizon_client::collisions::EntityCollisions {
+            blocks: scene,
+            entities,
+            border,
+        }
+        .resolve_with_context(
+            self.bounds(),
+            wanted,
+            0.0,
+            self.on_ground,
+            self.collision_context(),
+        )
+        .unwrap_or(Vec3::ZERO);
+        let from = self.position;
+        let recorded = horizon_client::entities::move_applies(wanted, moved);
+        if recorded {
             self.position = Vec3::new(
                 self.position.x + moved.x,
                 self.position.y + moved.y,
@@ -75,6 +226,7 @@ impl PrimedTnt {
             );
         }
         self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
+        self.check_fall_damage(moved.y);
         if moved.x != wanted.x {
             self.velocity.x = 0.0;
         }
@@ -88,39 +240,32 @@ impl PrimedTnt {
                 (self.position.y - f64::from(1.0e-5_f32)).floor() as i32,
                 self.position.z.floor() as i32,
             );
+            // Restitution reads the velocity, at rest after a stuck move.
             self.velocity.y = horizon_client::entities::vertical_collision_velocity(
-                wanted.y,
+                self.velocity.y,
                 moved.y,
                 0.04,
                 wanted.y < 0.0,
                 &*facts.get(below).name == "minecraft:slime_block",
             );
         }
-        // Entity.applyEffectsFromBlocks: a bubble column lifts or drags it, and the
-        // columns it is at the top of send their surface particles.
-        let mut tops = Vec::new();
-        self.push_by_bubble_column_over(world, assets.registry, facts, collision, |pos| {
-            tops.push(pos)
-        });
-        if self.on_ground {
-            // Entity.applyEffectsFromBlocks -> SlimeBlock.stepOn.
-            let under = world.block(
-                self.position.x.floor() as i32,
-                (self.position.y - f64::from(0.2_f32)).floor() as i32,
-                self.position.z.floor() as i32,
-            );
-            if &*facts.get(under).name == "minecraft:slime_block"
-                && let Some(scale) = horizon_client::entities::slime_step_on_scale(self.velocity.y)
-            {
-                self.velocity.x *= scale;
-                self.velocity.z *= scale;
-            }
+        // Entity.move's last step: soul sand and honey slow the TNT's
+        // horizontal speed. `blocks` is None only for the isolated unit tests.
+        if let Some(blocks) = blocks {
+            let factor =
+                horizon_client::motion::block_speed_factor_at(world, blocks, self.position, None);
+            self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
         }
-        self.velocity = Vec3::new(
-            self.velocity.x * 0.98,
-            self.velocity.y * 0.98,
-            self.velocity.z * 0.98,
+        let tops = self.apply_effects_from_blocks(
+            world,
+            assets,
+            facts,
+            collision,
+            from,
+            recorded.then_some(wanted),
         );
+        // Entity.scale(getAirDrag()): 0.98F, widened before it scales motion.
+        self.velocity = horizon_client::entity_rules::scale_air_drag(self.velocity);
         if self.on_ground {
             self.velocity = Vec3::new(
                 self.velocity.x * 0.7,
@@ -130,8 +275,13 @@ impl PrimedTnt {
         }
         self.fuse -= 1;
         if self.fuse > 0 {
-            // PrimedTnt updates immersion after moving and decrementing its fuse.
-            self.push_by_fluid(world, fluids);
+            // PrimedTnt updates immersion after moving and decrementing its
+            // fuse; water forgets the fall.
+            let (water, _) = self.push_by_fluid(world, fluids);
+            self.in_water = water > 0.0;
+            if self.in_water {
+                self.fall_distance = 0.0;
+            }
         }
         Ok(tops)
     }
@@ -143,7 +293,16 @@ impl Game<'_> {
     pub(super) fn tnt_prime_allowed(&mut self, pos: BlockPos) -> bool {
         let mut cancel = false;
         self.native_tnt_primed(self.lan_acting_uuid, [pos.x, pos.y, pos.z], &mut cancel);
-        !cancel
+        let dimension = self.dim.id();
+        self.native_tnt_primed_v2(
+            self.lan_acting_uuid,
+            dimension,
+            [pos.x, pos.y, pos.z],
+            &mut cancel,
+        );
+        // `TntBlock.prime` leaves the block alone with `tnt_explodes` off, for
+        // redstone, fire and an unstable block breaking alike.
+        !cancel && self.ui.rules.bool("tnt_explodes")
     }
     /// Primes TNT a level event announced, or, when the mods refuse, puts
     /// back the block the fire or signal had already taken out.
@@ -211,7 +370,12 @@ impl Game<'_> {
         );
         // An id from the entity counter at once, so a command can name it.
         self.next_entity += 1;
+        // Entity: the UUID is the first two draws of the TNT's own random.
+        let uuid =
+            horizon_client::save::insecure_uuid(&mut horizon_client::random_source::entity());
+        self.persist.uuids.insert(self.next_entity, uuid);
         self.tnts.push(PrimedTnt {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: self.next_entity,
@@ -220,76 +384,181 @@ impl Game<'_> {
             velocity: Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
             fuse,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner,
             guest,
             // PrimedTnt's constructor: 4 when nothing sets it.
             power: 4.0,
+            block_state: None,
         });
+    }
+    /// The end of a piston's `Entity.move(MoverType.PISTON, …)` for primed TNT
+    /// `i`, after restitution, for a step of `moved` from `from` (which it
+    /// skipped if tiny): its fall and the block speed factor, then
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks(previousPos, position)`,
+    /// so powder snow it was pushed into makes it stuck.
+    pub(super) fn finish_tnt_piston_move(&mut self, i: usize, from: Vec3, moved: Vec3) {
+        let t = &mut self.tnts[i];
+        t.check_fall_damage(moved.y);
+        let factor = horizon_client::motion::block_speed_factor_at(
+            &self.world,
+            &self.res.motion().blocks,
+            t.position,
+            None,
+        );
+        t.velocity = horizon_world::entity_move::scale_by_block_speed(t.velocity, factor);
+        self.tnt_piston_block_effects(i, from);
+    }
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks(previousPos, position)`
+    /// for primed TNT `i`, also run when `limitPistonMovement` left no push.
+    pub(super) fn tnt_piston_block_effects(&mut self, i: usize, from: Vec3) {
+        let t = &mut self.tnts[i];
+        let known = t.velocity;
+        let tops = t.apply_effects_from_blocks(
+            &self.world,
+            &self.pack.assets,
+            self.res.facts(),
+            self.collision,
+            from,
+            None,
+        );
+        let (to, bounds) = (t.position, t.bounds());
+        self.entity_powder_snow_particles(from, to, bounds, known, false);
+        for pos in tops {
+            self.bubble_column_particles(pos);
+        }
     }
     /// `PrimedTnt.tick` for every primed TNT, in order; an expired fuse
     /// explodes immediately (later TNT in the list feel its knockback this
     /// tick). TNT primed by an explosion starts ticking next tick.
-    pub(super) fn tick_tnt(&mut self) -> Result<()> {
-        let mut count = self.tnts.len();
-        let mut i = 0;
-        // ServerLevel.tick: only entities in entity-ticking chunks tick.
-        let ticking = self.entity_ticking_area();
-        while i < count {
-            let t = &mut self.tnts[i];
-            if !ticking(t.position.x.floor() as i32, t.position.z.floor() as i32) {
-                i += 1;
-                continue;
+    /// One primed TNT's `tick`: it moves, and explodes when its fuse is out.
+    /// `i` is its place in the list; the caller has checked it is ticking.
+    /// `entities` are the boxes that stop its move (`Game::item_entity_collisions`).
+    pub(super) fn tick_one_tnt(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
+        let t = &mut self.tnts[i];
+        let tops = t.tick_among(
+            &self.world,
+            self.collision,
+            &self.pack.assets,
+            self.res.facts(),
+            &self.res.motion().fluids,
+            Some(self.border.geometry()),
+            Some(&self.res.motion().blocks),
+            entities,
+        )?;
+        let snow = (t.previous, t.position, t.bounds(), t.velocity);
+        self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
+        for pos in tops {
+            self.bubble_column_particles(pos);
+        }
+        let t = &mut self.tnts[i];
+        if t.fuse <= 0 {
+            let center = [
+                t.position.x,
+                t.position.y + PrimedTnt::SIZE * 0.0625,
+                t.position.z,
+            ];
+            let bounds = t.bounds();
+            let (id, owner, guest, power) = (t.id, t.owner, t.guest, t.power);
+            let silent = self.entity_silent(id);
+            let (owner, guest) = match owner {
+                Some(_) => (owner, guest),
+                None => self
+                    .loaded_tnt_owner(id)
+                    .map_or((None, None), |(w, g)| (Some(w), g)),
+            };
+            let in_water = self.bounds_in_water(bounds);
+            self.tnts.remove(i);
+            // PrimedTnt.tick: with `tnt_explodes` off it goes away without exploding.
+            if !self.ui.rules.bool("tnt_explodes") {
+                return Ok(());
             }
-            let tops = t.tick(
-                &self.world,
-                self.collision,
-                &self.pack.assets,
-                self.res.facts(),
-                &self.res.motion().fluids,
-                Some(self.border.geometry()),
-            )?;
-            for pos in tops {
-                self.bubble_column_particles(pos);
-            }
-            let t = &mut self.tnts[i];
-            if t.fuse <= 0 {
-                let center = [
-                    t.position.x,
-                    t.position.y + PrimedTnt::SIZE * 0.0625,
-                    t.position.z,
-                ];
-                let bounds = t.bounds();
-                let (owner, guest, power) = (t.owner, t.guest, t.power);
-                let in_water = self.bounds_in_water(bounds);
-                self.tnts.remove(i);
-                count -= 1;
-                // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
-                let interaction = self.destroy_type("tnt_explosion_drop_decay");
-                self.combat.explosion_in_water = in_water;
-                // `Explosion.getIndirectSourceEntity`: a player-lit TNT names
-                // its igniter, which `blast_attacker` and the damage type read.
-                self.combat.blast_guest = guest;
-                self.combat.blast_owner = tnt_blast_owner(
-                    owner,
-                    || {
-                        self.lan
-                            .as_ref()
-                            .and_then(|host| self.player_attacker(host, guest))
-                    },
-                    |id| self.mob_display_name(id),
-                );
-                let result = self.with_hive_emptying_blast(|g| {
-                    g.server_explode(center, power, interaction, false)
-                });
-                self.combat.blast_owner = None;
-                self.combat.blast_guest = None;
-                self.combat.explosion_in_water = false;
-                result?;
-            } else {
-                i += 1;
-            }
+            // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
+            let interaction = self.destroy_type("tnt_explosion_drop_decay");
+            self.combat.explosion_in_water = in_water;
+            // `Explosion.getIndirectSourceEntity`: a player-lit TNT names
+            // its igniter, which `blast_attacker` and the damage type read.
+            self.combat.blast_guest = guest;
+            self.combat.blast_owner = tnt_blast_owner(
+                owner,
+                || {
+                    self.lan
+                        .as_ref()
+                        .and_then(|host| self.player_attacker(host, guest))
+                },
+                |id| self.mob_display_name(id),
+            );
+            let result = self.with_hive_emptying_blast(|g| {
+                g.server_explode_from(
+                    center,
+                    power,
+                    interaction,
+                    false,
+                    super::explosion::ExplosionSource::default()
+                        .with_silence(silent)
+                        .with_entity(id, "minecraft:tnt"),
+                )
+            });
+            self.combat.blast_owner = None;
+            self.combat.blast_guest = None;
+            self.combat.explosion_in_water = false;
+            result?;
         }
         Ok(())
+    }
+    /// The saved compound of primed TNT `i`: chunk saves, `/data get`, portals.
+    pub(super) fn tnt_nbt(&mut self, i: usize) -> horizon_world::nbt::Tag {
+        let id = self.tnts[i].id;
+        let uuid = self.uuid_for(id);
+        let owner = self.tnt_owner_uuid(self.tnts[i].owner, self.tnts[i].guest);
+        let t = &self.tnts[i];
+        horizon_client::entity_nbt::tnt_to_nbt(
+            t.position,
+            t.velocity,
+            t.on_ground,
+            t.fall_distance,
+            t.fuse,
+            t.power,
+            t.block_state_nbt(self.pack.assets.registry),
+            t.rotation,
+            uuid,
+            owner,
+            self.persist.raw.get(&id),
+        )
+    }
+    /// `EntityReference.of(owner)`: the UUID of the player or mob that lit it.
+    fn tnt_owner_uuid(&mut self, owner: Option<Who>, guest: Option<u32>) -> Option<[i32; 4]> {
+        match owner? {
+            Who::Player => match guest {
+                Some(conn) => self
+                    .lan
+                    .as_ref()?
+                    .hub
+                    .guest(conn)
+                    .map(|g| uuid_ints(g.uuid)),
+                None => self.level.player_uuid,
+            },
+            Who::Mob(id) if self.mobs.iter().any(|m| m.id == id) => Some(self.uuid_for(id)),
+            Who::Mob(id) => self.persist.uuids.get(&id).copied(),
+        }
+    }
+    /// `PrimedTnt.getOwner` for TNT loaded with an `owner`: looked up when
+    /// asked, so a player who joined or a mob loaded since is found.
+    fn loaded_tnt_owner(&self, id: u32) -> Option<(Who, Option<u32>)> {
+        let uuid = horizon_client::entity_nbt::tnt_owner(self.persist.raw.get(&id)?)?;
+        let guest = self.lan.as_ref().and_then(|host| {
+            let mut guests = host.hub.guests.iter();
+            guests.find(|g| uuid_ints(g.uuid) == uuid).map(|g| g.conn)
+        });
+        if guest.is_some() {
+            return Some((Who::Player, guest));
+        }
+        if self.level.player_uuid == Some(uuid) {
+            return Some((Who::Player, None));
+        }
+        self.mob_by_uuid(uuid).map(|m| (Who::Mob(m), None))
     }
     /// `TntBlock.useItemOn`: flint and steel or a fire charge primes TNT.
     pub(super) fn ignite_tnt(&mut self, stack: &ItemStack) -> Result<bool> {
@@ -305,6 +574,13 @@ impl Game<'_> {
             return Ok(false);
         }
         let pos = BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
+        if !self.ui.rules.bool("tnt_explodes") {
+            // TntBlock.useItemOn: the rule is off, the acting player's overlay
+            // says so, and PASS lets the item's own useOn light a fire there.
+            let message = Text::translate("block.minecraft.tnt.disabled", &[]);
+            self.send_overlay_message(message);
+            return Ok(false);
+        }
         if !self.tnt_prime_allowed(pos) {
             return Ok(true);
         }
@@ -321,6 +597,7 @@ impl Game<'_> {
         } else {
             self.consume_held();
         }
+        self.award_stat("used", item, 1);
         Ok(true)
     }
     /// `TntRenderer`: the block centred on the entity, swelling over the last
@@ -378,6 +655,7 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            self.mark_motion(out.len(), Self::MOTION_OBJECT | u64::from(t.id));
             let fuse = t.fuse as f32 - alpha as f32 + 1.0;
             let scale = if fuse < 10.0 {
                 let g = (1.0 - fuse / 10.0).clamp(0.0, 1.0);
@@ -454,19 +732,22 @@ impl Game<'_> {
 impl Game<'_> {
     /// `positionRider` for the mobs riding primed TNT: the passenger attachment
     /// (the top of its 0.98 box), less the rider's own vehicle attachment.
-    pub(super) fn seat_tnt_mobs(&mut self) {
+    pub(super) fn seat_tnt_mobs(&mut self, riders: &super::passengers::Riders) {
         for i in 0..self.tnts.len() {
             let (id, pos, prev) = (
                 self.tnts[i].id,
                 self.tnts[i].position,
                 self.tnts[i].previous,
             );
-            if id == 0 {
+            let Some(js) = riders.get(&id).filter(|_| id != 0) else {
                 continue;
-            }
-            for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(id)) {
+            };
+            let tnt_box = self.tnts[i].bounds();
+            for &j in js {
+                let m = &mut self.mobs[j];
                 // Primed TNT's box is 0.98 wide.
                 let offset = horizon_client::mobs::riders::vehicle_attachment(m, 0.98);
+                m.seated(id, offset, tnt_box);
                 m.position = tnt_seat(pos, offset);
                 m.previous = tnt_seat(prev, offset);
                 m.velocity = Vec3::ZERO;
@@ -501,6 +782,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_block_state_follows_the_model_instead_of_raw_input() {
+        use horizon_world::{
+            nbt::Tag,
+            registry::{BlockRegistry, BlockStateId},
+        };
+        let unstable = Tag::compound([
+            ("id", Tag::String("minecraft:tnt".into())),
+            (
+                "properties",
+                Tag::compound([("unstable", Tag::String("true".into()))]),
+            ),
+        ]);
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![
+                    Tag::String("minecraft:tnt".into()),
+                    Tag::String("minecraft:stone".into()),
+                    unstable.clone(),
+                ]),
+            ),
+            (
+                "defaults",
+                Tag::compound([
+                    ("minecraft:tnt", Tag::Int(0)),
+                    ("minecraft:stone", Tag::Int(1)),
+                ]),
+            ),
+        ]))
+        .unwrap();
+        let mut tnt = PrimedTnt {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            id: 1,
+            position: Vec3::ZERO,
+            previous: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            fuse: 400,
+            on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
+            owner: None,
+            guest: None,
+            no_gravity: true,
+            power: 4.0,
+            block_state: Some(BlockStateId(1)),
+        };
+        let raw = Tag::compound([("block_state", Tag::String("audit_missing:block".into()))]);
+        for (state, expected) in [
+            (Some(BlockStateId(1)), Tag::String("minecraft:stone".into())),
+            (Some(BlockStateId(2)), unstable),
+            (None, Tag::String("minecraft:tnt".into())),
+        ] {
+            tnt.block_state = state;
+            let saved = horizon_client::entity_nbt::tnt_to_nbt(
+                tnt.position,
+                tnt.velocity,
+                tnt.on_ground,
+                tnt.fall_distance,
+                tnt.fuse,
+                tnt.power,
+                tnt.block_state_nbt(&registry),
+                [0.0, 0.0],
+                [221, 0, 0, 1],
+                None,
+                Some(&raw),
+            );
+            assert_eq!(saved.get("block_state"), Some(&expected));
+        }
+    }
+
+    #[test]
     fn a_tnt_lit_by_a_skeletons_arrow_names_the_skeleton_as_its_cause() {
         let name = || Text::translate("entity.minecraft.skeleton", &[]);
         let by_mob = tnt_blast_owner(Some(Who::Mob(7)), || None, |id| (id == 7).then(name));
@@ -515,10 +870,11 @@ mod tests {
 
     #[test]
     fn a_rider_sits_on_top_of_the_tnt_less_its_own_attachment() {
-        // 64 + 0.98 (the box's top) - 0.14 (a rider's vehicle attachment).
+        // 64 + 0.98F (the box's top, `EntityAttachment.PASSENGER` at its
+        // height) - 0.14 (a rider's vehicle attachment).
         let seat = tnt_seat(Vec3::new(1.5, 64.0, -2.5), 0.14);
         assert_eq!((seat.x, seat.z), (1.5, -2.5));
-        assert!((seat.y - 64.84).abs() < 1e-9);
+        assert!((seat.y - (64.0 + f64::from(0.98_f32) - 0.14)).abs() < 1e-9);
     }
 
     #[test]
@@ -526,6 +882,7 @@ mod tests {
         use horizon_core::geometry::Direction;
         use horizon_world::piston_push::bounce_velocity;
         let mut tnt = PrimedTnt {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -534,9 +891,13 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: true,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
+            block_state: None,
         };
         tnt.velocity = bounce_velocity(Direction::Up, tnt.velocity);
         tnt.on_ground = false;
@@ -567,6 +928,7 @@ mod tests {
         for bordered in [false, true] {
             let at = Vec3::new(24.0, 4.0, 20.5);
             let mut tnt = PrimedTnt {
+                rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
                 id: 0,
@@ -575,12 +937,16 @@ mod tests {
                 velocity: Vec3::new(1.5, 0.0, 0.0),
                 fuse: 80,
                 on_ground: true,
+                fall_distance: 0.0,
+                stuck: Vec3::ZERO,
+                in_water: false,
                 owner: None,
                 guest: None,
                 power: 4.0,
+                block_state: None,
             };
             let border = bordered.then_some(&border);
-            tnt.tick(&world, &collision, &assets, &facts, &fluids, border)
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, border, None)
                 .unwrap();
             let east = tnt.bounds().max_position().x;
             if bordered {
@@ -592,6 +958,80 @@ mod tests {
                 assert!(east > 25.0, "no border: goes on, got {east}");
             }
         }
+    }
+
+    /// `Entity.move`'s last step, `getBlockSpeedFactor`: primed TNT sliding
+    /// over soul sand or honey keeps 40% of the horizontal speed it keeps over
+    /// stone. Skips quietly without the vanilla data (CI has none).
+    #[test]
+    fn primed_tnt_on_soul_sand_or_honey_is_slowed_by_the_move() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = horizon_client::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = horizon_client::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = horizon_client::collisions::load(&root, assets.registry).unwrap();
+        let motion = horizon_client::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut after = Vec::new();
+        // The tops of the blocks: stone 1, soul sand 7/8, honey 15/16.
+        for (block, top) in [
+            ("minecraft:stone", 4.0),
+            ("minecraft:soul_sand", 3.875),
+            ("minecraft:honey_block", 3.9375),
+        ] {
+            let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
+            let id = assets.registry.default_state(block).unwrap();
+            for x in 18..=23 {
+                for z in 19..=21 {
+                    world.set(x, 3, z, id).unwrap();
+                }
+            }
+            let at = Vec3::new(19.5, top, 20.5);
+            let mut tnt = PrimedTnt {
+                rotation: [0.0, 0.0],
+                join: Default::default(),
+                no_gravity: false,
+                id: 0,
+                position: at,
+                previous: at,
+                velocity: Vec3::new(0.2, 0.0, 0.0),
+                fuse: 80,
+                on_ground: true,
+                fall_distance: 0.0,
+                stuck: Vec3::ZERO,
+                in_water: false,
+                owner: None,
+                guest: None,
+                power: 4.0,
+                block_state: None,
+            };
+            tnt.tick(
+                &world,
+                &collision,
+                &assets,
+                &facts,
+                &fluids,
+                None,
+                Some(&motion.blocks),
+            )
+            .unwrap();
+            after.push(tnt.velocity.x);
+        }
+        let (stone, soul, honey) = (after[0], after[1], after[2]);
+        assert!(stone > 0.0);
+        assert!(
+            (soul - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "soul sand {soul} vs stone {stone}"
+        );
+        assert!(
+            (honey - stone * f64::from(0.4_f32)).abs() < 1.0e-9,
+            "honey {honey} vs stone {stone}"
+        );
     }
 
     #[test]
@@ -622,6 +1062,7 @@ mod tests {
         world.set(21, 4, 20, flowing).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
         let mut tnt = PrimedTnt {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -630,11 +1071,15 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
+            block_state: None,
         };
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert_eq!(
             tnt.position.x, at.x,
@@ -646,14 +1091,14 @@ mod tests {
             tnt.velocity
         );
         assert_eq!(tnt.fuse, 79);
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert!((tnt.position.x - at.x - 0.014).abs() < 1e-12);
         assert!(tnt.on_ground);
         tnt.position = at;
         tnt.velocity = Vec3::ZERO;
         tnt.fuse = 1;
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert_eq!(tnt.fuse, 0);
         assert_eq!(
@@ -664,7 +1109,7 @@ mod tests {
         tnt.position = at;
         tnt.velocity = Vec3::ZERO;
         tnt.fuse = 80;
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert_eq!(
             tnt.velocity.x, 0.0,
@@ -680,7 +1125,7 @@ mod tests {
             .unwrap();
         tnt.on_ground = false;
         tnt.velocity = Vec3::ZERO;
-        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
             .unwrap();
         assert!(
             tnt.position.y < at.y && tnt.velocity.y < 0.0,
@@ -725,6 +1170,7 @@ mod tests {
         // (Entity.handleOnInsideBubbleColumn / handleOnAboveBubbleColumn).
         let at = Vec3::new(20.5, 6.0, 20.5);
         let mut tnt = PrimedTnt {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -733,12 +1179,16 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
+            block_state: None,
         };
         for _ in 0..10 {
-            tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                 .unwrap();
         }
         assert!(
@@ -759,7 +1209,7 @@ mod tests {
         tnt.velocity = Vec3::ZERO;
         tnt.on_ground = false;
         for _ in 0..4 {
-            tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                 .unwrap();
         }
         assert!(
@@ -804,6 +1254,7 @@ mod tests {
         world.set(20, 2, 20, soul_sand).unwrap();
         let at = Vec3::new(20.5, 6.0, 20.5);
         let primed = || PrimedTnt {
+            rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
             id: 0,
@@ -812,15 +1263,19 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
+            block_state: None,
         };
         let mut tops = Vec::new();
         let mut tnt = primed();
         for _ in 0..30 {
             tops.extend(
-                tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                     .unwrap(),
             );
         }
@@ -834,11 +1289,698 @@ mod tests {
         let mut tnt = primed();
         for _ in 0..10 {
             assert!(
-                tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                tnt.tick(&world, &collision, &assets, &facts, &fluids, None, None)
                     .unwrap()
                     .is_empty()
             );
         }
     }
+
+    /// A server's game on the prepared resources with the chunk at the origin
+    /// loaded, as `native_machines`' tests make one; None without them.
+    fn server_game() -> Option<Game<'static>> {
+        use crate::game::*;
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return None;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.options.dedicated = Some(Vec::new());
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.streaming.forced.insert((0, 0));
+        Some(game)
+    }
+
+    #[test]
+    fn loaded_tnt_fuse_uses_numeric_short_and_saves_without_raw() {
+        use horizon_world::nbt::Tag;
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        let cases = [
+            (None, 80),
+            (Some(Tag::Short(80)), 80),
+            (Some(Tag::Short(2)), 2),
+            (Some(Tag::Short(-1)), -1),
+            (Some(Tag::Byte(-2)), -2),
+            (Some(Tag::Int(32768)), -32768),
+            (Some(Tag::Long(65535)), -1),
+            (Some(Tag::Long(i64::MAX)), -1),
+            (Some(Tag::Float((-1.5_f32).to_bits())), -2),
+            (Some(Tag::Double((-1.5_f64).to_bits())), -2),
+            (Some(Tag::Double(1.5_f64.to_bits())), 1),
+            (Some(Tag::Double(32768.75_f64.to_bits())), -32768),
+            (Some(Tag::String("wrong_type".into())), 80),
+        ];
+        for (value, expected) in cases {
+            let mut tag = Tag::compound([
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(4.5_f64.to_bits()),
+                        Tag::Double(200_f64.to_bits()),
+                        Tag::Double(4.5_f64.to_bits()),
+                    ]),
+                ),
+                (
+                    "Motion",
+                    Tag::List(vec![
+                        Tag::Double(0.125_f64.to_bits()),
+                        Tag::Double(0),
+                        Tag::Double(0),
+                    ]),
+                ),
+                ("NoGravity", Tag::Byte(1)),
+                ("block_state", Tag::String("minecraft:stone".into())),
+                ("explosion_power", Tag::Float(2.5_f32.to_bits())),
+                ("owner", Tag::IntArray(vec![5, 6, 7, 8])),
+                ("CustomName", Tag::String("Fuse control".into())),
+                ("Tags", Tag::List(vec![Tag::String("h090".into())])),
+            ]);
+            if let (Some(value), Tag::Compound(fields)) = (value, &mut tag) {
+                fields.insert("fuse".into(), value);
+            }
+            let i = game.tnts.len();
+            game.load_tnt(tag.clone(), Some([90, 0, 0, i as i32 + 1]));
+            let t = &game.tnts[i];
+            assert_eq!(t.fuse, expected, "{tag:?}");
+            assert_eq!(t.velocity, Vec3::new(0.125, 0.0, 0.0));
+            assert!(t.no_gravity);
+            assert_eq!(t.power, 2.5);
+            let state = t.block_state_nbt(game.pack.assets.registry);
+            assert_eq!(state, Tag::String("minecraft:stone".into()));
+            let saved = crate::entity_nbt::tnt_to_nbt(
+                t.position,
+                t.velocity,
+                t.on_ground,
+                t.fall_distance,
+                t.fuse,
+                t.power,
+                state,
+                t.rotation,
+                [90, 0, 0, i as i32 + 1],
+                None,
+                None,
+            );
+            assert_eq!(saved.get("fuse"), Some(&Tag::Short(expected as i16)));
+            let saved = game.tnt_nbt(i);
+            for field in [
+                "owner",
+                "CustomName",
+                "Tags",
+                "Motion",
+                "block_state",
+                "explosion_power",
+            ] {
+                assert_eq!(saved.get(field), tag.get(field), "{field}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn live_data_commands_adopt_into_the_existing_tnt() {
+        use crate::game::commands::Target;
+        use horizon_world::nbt::Tag;
+        let mut game = server_game().expect("prepared Game resources are required");
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.streaming.forced.contains(&(0, 0)));
+        // The existing unit helper supplies a resident column. The paired
+        // runtime harness separately admits actual ticket/streaming readiness.
+        assert!(game.world.chunks.contains_key(&(0, 0)));
+        assert!(game.run_command(
+            "summon pig 8.5 200 5.5 {UUID:[I;89,0,0,3],Health:10f,NoAI:1b,NoGravity:1b}"
+        ));
+        assert!(game.run_command("summon tnt 5.5 200 5.5 {UUID:[I;89,0,0,1],fuse:40s,Motion:[0d,0d,0d],NoGravity:1b,explosion_power:2f,owner:[I;89,0,0,3],Tags:[keep],Silent:1b}"));
+        let pig = game
+            .mobs
+            .iter()
+            .find(|m| game.persist.uuid_of(m.id) == Some([89, 0, 0, 3]))
+            .unwrap()
+            .id;
+        assert_eq!(
+            game.mobs.iter().find(|m| m.id == pig).unwrap().kind.id,
+            "minecraft:pig"
+        );
+        assert_eq!(game.tnts.len(), 1);
+        let id = game.tnts[0].id;
+        assert_eq!(game.persist.uuid_of(id), Some([89, 0, 0, 1]));
+        assert_eq!(game.tnts[0].fuse, 40);
+        assert_eq!(game.tnts[0].velocity, Vec3::ZERO);
+        assert!(game.tnts[0].no_gravity);
+        // Preserve a live owner referencing an actually registered mob.
+        game.tnts[0].owner = Some(Who::Mob(pig));
+        let before = game.tnts[0].clone();
+        let next_id = game.next_entity;
+        let clock = game.world.game_time;
+        assert!(before.join.is_joined());
+        let reference = Target::Tnt(id);
+        let saved_before = game.entity_nbt(reference).unwrap();
+        assert_eq!(saved_before.get("NoGravity"), Some(&Tag::Byte(1)));
+        assert_eq!(
+            saved_before.get("owner"),
+            Some(&Tag::IntArray(vec![89, 0, 0, 3]))
+        );
+        assert!(
+            !game.run_command("data merge entity 00000059-0000-0000-0000-000000000001 {fuse:40s}")
+        );
+        assert!(game.run_command("data merge entity 00000059-0000-0000-0000-000000000001 {fuse:60s,Motion:[0.125d,0d,-0.25d],Tags:[adopted]}"), "valid TNT data must reach the existing live instance");
+        assert_eq!(
+            game.next_entity, next_id,
+            "adoption must not spawn another entity"
+        );
+        assert_eq!(game.tnts.len(), 1);
+        let live = game.tnts.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(live.fuse, 60, "the actual modeled counter changes");
+        assert_eq!(live.velocity, Vec3::new(0.125, 0.0, -0.25));
+        assert_eq!(live.position, before.position);
+        assert_eq!(live.previous, live.position);
+        assert_eq!(live.rotation, before.rotation);
+        assert_eq!(live.join, before.join);
+        assert_eq!(live.owner, before.owner);
+        assert_eq!(live.guest, before.guest);
+        assert_eq!(live.power, before.power);
+        assert_eq!(live.no_gravity, before.no_gravity);
+        assert_eq!(game.world.game_time, clock);
+        assert_eq!(game.persist.uuid_of(id), Some([89, 0, 0, 1]));
+        let saved = game.entity_nbt(reference).unwrap();
+        assert_eq!(saved.get("fuse"), Some(&Tag::Short(60)));
+        assert_eq!(
+            saved.get("Tags"),
+            Some(&Tag::List(vec![Tag::String("adopted".into())]))
+        );
+        for field in [
+            "UUID",
+            "Pos",
+            "NoGravity",
+            "Rotation",
+            "owner",
+            "block_state",
+            "explosion_power",
+            "Silent",
+        ] {
+            assert!(
+                saved_before.get(field).is_some(),
+                "positive saved {field} control"
+            );
+            assert_eq!(
+                saved.get(field),
+                saved_before.get(field),
+                "retained {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn silent_tnt_keeps_the_blast_without_its_sound() {
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for silent in [false, true, false] {
+            let glass = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:glass")
+                .unwrap();
+            game.world.set(8, 64, 8, glass).unwrap();
+            game.audio.heard.clear();
+            game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 1, None, None);
+            game.tnts[0].no_gravity = true;
+            game.tnts[0].velocity = Vec3::ZERO;
+            let id = game.tnts[0].id;
+            set_silent(&mut game, id, silent);
+            let before = particle_count(&game);
+            game.tick_one_tnt(0, &[]).unwrap();
+            rows.push(format!(
+                "explosion {silent} {} {}",
+                particle_count(&game) > before,
+                sound_count(&game, "minecraft:entity.generic.explode") != 0
+            ));
+            assert!(game.tnts.is_empty(), "the fuse still expires");
+            assert!(
+                game.res.facts().is_air(game.world.block(8, 64, 8)),
+                "silence keeps block destruction"
+            );
+            assert!(particle_count(&game) > before, "the blast remains visible");
+            assert_eq!(
+                sound_count(&game, "minecraft:entity.generic.explode"),
+                u32::from(!silent),
+                "direct source Silent={silent}"
+            );
+            game.audio.heard.clear();
+            game.server_explode(
+                [8.5, 64.0, 8.5],
+                0.0,
+                super::super::explosion::BlockInteraction::Keep,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                game.audio.heard.get("minecraft:entity.generic.explode"),
+                Some(&1),
+                "a source-free blast stays audible"
+            );
+        }
+        write_silence_output("explosion", &rows);
+    }
+
+    #[test]
+    fn silent_potions_keep_the_splash_without_its_sound() {
+        use horizon_client::projectiles::{Hit, Projectile, ProjectileKind};
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for kind in ["splash_potion", "lingering_potion"] {
+            for potion in ["awkward", "swiftness", "healing"] {
+                for silent in [false, true] {
+                    game.audio.heard.clear();
+                    let stack = ItemStack::new(&format!("minecraft:{kind}"), 1)
+                        .with_potion(&format!("minecraft:{potion}"));
+                    let mut projectile = Projectile::new(
+                        ProjectileKind::potion(stack),
+                        Vec3::new(8.5, 64.0, 8.5),
+                        None,
+                    );
+                    projectile.id = game.take_entity_id();
+                    set_silent(&mut game, projectile.id, silent);
+                    let before = particle_count(&game);
+                    let clouds = game.breath_clouds.len();
+                    game.projectile_hit(
+                        &projectile,
+                        Hit::Block {
+                            pos: [8, 63, 8],
+                            at: projectile.position,
+                            face: [0, 1, 0],
+                        },
+                    )
+                    .unwrap();
+                    rows.push(format!(
+                        "{kind} {potion} {silent} {} {}",
+                        particle_count(&game) > before,
+                        sound_count(&game, "minecraft:entity.splash_potion.break") != 0
+                    ));
+                    assert!(
+                        particle_count(&game) > before,
+                        "{kind} {potion} Silent={silent}: visible splash"
+                    );
+                    assert_eq!(
+                        sound_count(&game, "minecraft:entity.splash_potion.break"),
+                        u32::from(!silent),
+                        "{kind} {potion} Silent={silent}"
+                    );
+                    assert_eq!(
+                        game.breath_clouds.len() - clouds,
+                        usize::from(kind == "lingering_potion" && potion != "awkward"),
+                        "silence leaves the lingering cloud intact"
+                    );
+                }
+            }
+        }
+        write_silence_output("potions", &rows);
+    }
+
+    fn write_silence_output(name: &str, rows: &[String]) {
+        if let Some(root) = std::env::var_os("HORIZON_SOURCE_SILENCE_OUTPUT") {
+            std::fs::write(
+                std::path::Path::new(&root).join(format!("{name}.txt")),
+                rows.join("\n") + "\n",
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn silent_creeper_keeps_the_blast_after_its_source_is_removed() {
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        for silent in [false, true, false] {
+            let id = game
+                .spawn_mob_for("minecraft:creeper", [8.5, 64.0, 8.5], true, true)
+                .unwrap();
+            let mob = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
+            mob.silent = silent;
+            mob.swell = mob.max_swell;
+            mob.extra.flag = true;
+            let mut events = Vec::new();
+            horizon_client::mobs::hostile::creeper_tick(mob, &mut events);
+            assert!(mob.removed);
+            game.mobs.retain(|m| m.id != id);
+            game.audio.heard.clear();
+            let particles = particle_count(&game);
+            game.handle_mob_events(events).unwrap();
+            assert!(particle_count(&game) > particles);
+            assert_eq!(
+                sound_count(&game, "minecraft:entity.generic.explode"),
+                u32::from(!silent)
+            );
+        }
+    }
+
+    #[test]
+    fn silent_launched_potions_and_bottles_keep_their_impact() {
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(8, 63, 8, stone).unwrap();
+        for kind in ["splash_potion", "lingering_potion", "experience_bottle"] {
+            for silent in [false, true, false] {
+                game.launch_thrown(
+                    ItemStack::new(&format!("minecraft:{kind}"), 1)
+                        .with_potion("minecraft:swiftness"),
+                    Vec3::new(8.5, 64.1, 8.5),
+                    Vec3::new(0.0, -1.0, 0.0),
+                    None,
+                );
+                let id = *game.potions.thrown_ids().last().unwrap();
+                set_silent(&mut game, id, silent);
+                game.audio.heard.clear();
+                let particles = particle_count(&game);
+                let clouds = game.breath_clouds.len();
+                let xp: u32 = game.orbs.iter().map(|o| o.points() * o.count).sum();
+                game.tick_effects(true);
+                assert_eq!(game.potions.thrown_ids().count(), 0);
+                assert!(particle_count(&game) > particles, "{kind} keeps its splash");
+                assert_eq!(
+                    sound_count(&game, "minecraft:entity.splash_potion.break"),
+                    u32::from(!silent),
+                    "{kind} Silent={silent}"
+                );
+                assert_eq!(
+                    game.breath_clouds.len() - clouds,
+                    usize::from(kind == "lingering_potion")
+                );
+                let gained = game.orbs.iter().map(|o| o.points() * o.count).sum::<u32>() - xp;
+                if kind == "experience_bottle" {
+                    assert!((3..=11).contains(&gained), "silence keeps the experience");
+                }
+            }
+        }
+    }
+
+    fn set_silent(game: &mut Game<'_>, id: u32, silent: bool) {
+        game.remember_tags(
+            id,
+            &horizon_world::nbt::Tag::Compound(
+                [(
+                    "Silent".into(),
+                    horizon_world::nbt::Tag::Byte(i8::from(silent)),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        );
+    }
+
+    fn sound_count(game: &Game<'_>, event: &str) -> u32 {
+        game.audio.heard.get(event).copied().unwrap_or(0)
+    }
+
+    #[test]
+    fn silent_bottles_preserve_xp_and_the_server_random_stream() {
+        use horizon_client::projectiles::{Hit, Projectile, ProjectileKind};
+        let Some(mut game) = source_silence_game() else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for seed in [0, 1, -1, 42, i64::MIN, i64::MAX] {
+            let mut audible = None;
+            for silent in [false, true] {
+                game.world.random = horizon_core::random::LegacyRandom::new(seed);
+                game.orbs.clear();
+                let mut projectile = Projectile::new(
+                    ProjectileKind::ExperienceBottle,
+                    Vec3::new(8.5, 64.0, 8.5),
+                    None,
+                );
+                projectile.id = game.take_entity_id();
+                set_silent(&mut game, projectile.id, silent);
+                game.projectile_hit(
+                    &projectile,
+                    Hit::Block {
+                        pos: [8, 63, 8],
+                        at: projectile.position,
+                        face: [0, 1, 0],
+                    },
+                )
+                .unwrap();
+                let xp: u32 = game.orbs.iter().map(|o| o.points() * o.count).sum();
+                let next = game.world.random.next_long();
+                assert!((3..=11).contains(&xp));
+                if let Some((audible_xp, audible_next)) = audible {
+                    assert_eq!(
+                        (xp, next),
+                        (audible_xp, audible_next),
+                        "Silent must not change XP or level RNG"
+                    );
+                    rows.push(format!(
+                        "bottle_rng {seed} {} {}",
+                        xp == audible_xp,
+                        next == audible_next
+                    ));
+                } else {
+                    audible = Some((xp, next));
+                }
+            }
+        }
+        write_silence_output("bottles", &rows);
+    }
+
+    fn source_silence_game() -> Option<Game<'static>> {
+        let mut game = server_game()?;
+        // Observe the server's real emission requests without a camera or render tick.
+        game.particles.requested = Some(Vec::new());
+        Some(game)
+    }
+
+    fn particle_count(game: &Game<'_>) -> usize {
+        game.particles.requested.as_ref().unwrap().len()
+    }
+
+    /// #10063: TNT lit between level ticks (flint and steel, a command) has its
+    /// first tick in the next level tick, so its fuse reads 79 after it, and it
+    /// explodes on the 80th (`PrimedTnt.tick`). Horizon held every TNT that
+    /// joined during a tick back one more: the late pass compared its join
+    /// against an `announced` already raised past it.
+    #[test]
+    fn lit_tnt_ticks_on_the_next_level_tick_and_explodes_on_the_80th() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 80, None, None);
+        // Hang it in the empty chunk, so it neither falls out nor lands.
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        game.tick_world(true).unwrap();
+        assert_eq!(game.tnts.len(), 1);
+        assert_eq!(
+            game.tnts[0].fuse, 79,
+            "its first tick is the next level tick"
+        );
+        let mut exploded_on = None;
+        for tick in 2..=90 {
+            game.tick_world(true).unwrap();
+            if game.tnts.is_empty() {
+                exploded_on = Some(tick);
+                break;
+            }
+        }
+        assert_eq!(exploded_on, Some(80), "explodes on the 80th tick");
+    }
+    /// TNT a blast primes joins while the entities tick (vanilla's
+    /// `EntityTickList` loop) and waits for the next tick. The fix for #10063
+    /// must not tick it in the tick it joined.
+    #[test]
+    fn tnt_primed_by_a_blast_waits_for_the_next_tick() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        let block = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:tnt")
+            .unwrap();
+        game.world.set(9, 64, 8, block).unwrap();
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 1, None, None);
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        let first = game.tnts[0].id;
+        for _ in 0..3 {
+            game.tick_world(true).unwrap();
+            if game.tnts.iter().all(|t| t.id != first) {
+                break;
+            }
+        }
+        assert!(
+            game.tnts.iter().all(|t| t.id != first),
+            "the first TNT went off"
+        );
+        assert_eq!(game.tnts.len(), 1, "its blast primed the TNT block");
+        let primed = &game.tnts[0];
+        assert_eq!(
+            primed.position, primed.previous,
+            "not ticked in the tick the blast primed it"
+        );
+        game.tick_world(true).unwrap();
+        let primed = &game.tnts[0];
+        assert_ne!(primed.position, primed.previous, "ticked on the next tick");
+    }
 }
 horizon_client::impl_joined!(PrimedTnt);
+
+#[cfg(test)]
+mod entity_collision_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+
+    /// `Entity.collide` for primed TNT, a falling block and an experience orb:
+    /// a boat holds the TNT and the orb up, a shulker the sand, as they hold
+    /// up a dropped item (`canBeCollidedWith`).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn tnt_sand_and_orbs_land_on_boats_and_shulkers() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-tnt-boat-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.ui.difficulty = 2;
+        let registry = &game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let sand = registry.default_state("minecraft:sand").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("summon oak_boat 4.5 200 4.5"));
+        assert!(game.run_command("summon oak_boat 12.5 200 12.5"));
+        assert!(game.run_command("summon shulker 8.5 200 8.5 {NoAI:1b}"));
+        assert!(game.run_command("summon tnt 4.5 202 4.5 {fuse:80}"));
+        assert!(game.run_command("summon tnt 4.5 202 12.5 {fuse:80}"));
+        assert!(game.run_command(
+            "summon falling_block 8.5 203 8.5 {BlockState:{Name:\"minecraft:sand\"},Time:1}"
+        ));
+        assert!(game.run_command("summon experience_orb 12.5 202 12.5 {Value:1}"));
+        for _ in 0..40 {
+            game.tick_world(true).unwrap();
+        }
+        let boat_top = game.boats[0].bounds().max_position().y;
+        let tnt_at = |z: f64| {
+            game.tnts
+                .iter()
+                .find(|t| (t.position.z - z).abs() < 0.5)
+                .map(|t| t.position.y)
+                .unwrap()
+        };
+        assert_eq!(tnt_at(4.5), boat_top, "the TNT rests on the boat");
+        assert_eq!(tnt_at(12.5), 200.0, "the other TNT lands on the stone");
+        assert_eq!(
+            game.orbs[0].position.y, boat_top,
+            "the orb rests on the boat"
+        );
+        // FallingBlockEntity.tick: it stops on the shulker, but the air
+        // under it would let it fall on (`wouldContinueFalling`), so it breaks
+        // into an item there instead of passing through to the stone.
+        assert_ne!(
+            game.world.block(8, 200, 8),
+            sand,
+            "the sand does not fall through"
+        );
+        assert_ne!(
+            game.world.block(8, 201, 8),
+            sand,
+            "nor is it placed over air"
+        );
+        assert!(
+            game.dropped
+                .iter()
+                .any(|i| &*i.stack.item == "minecraft:sand"),
+            "the sand breaks into an item"
+        );
+    }
+}

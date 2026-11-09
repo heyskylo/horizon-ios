@@ -24,7 +24,7 @@ pub const DEFAULT: &str = "minecraft:default";
 
 /// A glyph ready to draw: atlas UVs and its box relative to the pen
 /// position (GlyphBitmap left/top/right/bottom), in GUI pixels.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Glyph {
     pub rect: Option<Rect>,
     pub left: f32,
@@ -104,8 +104,11 @@ struct FontSet {
     providers: Vec<Provider>,
     /// Every char drawn looks up here, so the hasher is Fx, not SipHash.
     glyphs: crate::fast_hash::FxHashMap<char, Glyph>,
-    /// `glyphsByWidth` for obfuscated text (built on first use).
-    by_width: Option<HashMap<u32, Vec<char>>>,
+    /// `SelectedGlyphs.nonFishy` of the characters whose first glyph has a fishy advance (the
+    /// others use `glyphs`): what obfuscated text draws.
+    non_fishy: crate::fast_hash::FxHashMap<char, Glyph>,
+    /// `glyphsByWidth` for obfuscated text (built on first use), by `ceil(advance)`.
+    by_width: Option<HashMap<i32, Vec<char>>>,
 }
 /// The atlas region glyphs are rasterized into, filled in rows.
 struct Region {
@@ -123,14 +126,20 @@ struct Cache {
     random: horizon_core::random::LegacyRandom,
 }
 pub struct Font {
-    /// The atlas rects of the sheets under `textures/font`.
+    /// The atlas rects of every texture, by resource name: a bitmap provider's
+    /// `file` may name any texture, not only one under `textures/font`.
     sheets: HashMap<String, Rect>,
     missing: Glyph,
     white: Rect,
     root: PathBuf,
+    /// The game's own resources, below a pack overlay: a font file the overlay
+    /// lacks (a pack adds providers over vanilla's, or the overlay left a
+    /// directory out) is read from here, as vanilla's resource stack does.
+    fallback: Option<PathBuf>,
     /// Atlas size and the reserved dynamic region (y, height).
     atlas: (u32, u32),
     region: (u32, u32),
+    metrics_only: bool,
     cache: RefCell<Cache>,
     /// Set anew for each font and each `reset_cache` (see `epoch`).
     generation: std::cell::Cell<u64>,
@@ -195,6 +204,13 @@ fn parse_hex(text: &[u8], out: &mut HashMap<u32, HexGlyph>) {
         out.insert(codepoint, HexGlyph { rows, left, right });
     }
 }
+/// A resource file's bytes, from `root` or, when the overlay lacks it, from
+/// the game's own resources below (`defaults`).
+fn read_resource(root: &Path, defaults: Option<&Path>, path: &str) -> Option<Vec<u8>> {
+    std::fs::read(root.join(path))
+        .ok()
+        .or_else(|| defaults.and_then(|d| std::fs::read(d.join(path)).ok()))
+}
 fn read_json(root: &Path, path: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&std::fs::read(root.join(path)).ok()?).ok()
 }
@@ -258,10 +274,11 @@ fn used_width(pixels: &[u8], stride: u32, (cx, cy, cw, ch): (u32, u32, u32, u32)
         })
         .map_or(0, |x| x + 1)
 }
-/// `FontSet.hasFishyAdvance`: a provider glyph whose advance is under 0 or
-/// over 32 is not used. `FontSet.computeGlyphInfo` moves on to the next
-/// provider that has the character, so a pack's absurd advance cannot widen
-/// a line; Horizon keeps one advance per glyph and tests it here.
+/// `FontSet.hasFishyAdvance`: an advance under 0 or over 32. Such a glyph is still the one drawn
+/// (`SelectedGlyphs.any` is the first provider's); only `SelectedGlyphs.nonFishy`, what obfuscated
+/// text draws, moves on to the next provider that has the character. Packs rely on it: a `space`
+/// provider's kerning runs from -512 to 512, and a tall bitmap's glyphs pass 32. Horizon keeps one
+/// advance per glyph and tests it here.
 fn fishy_advance(advance: f32) -> bool {
     !(0.0..=32.0).contains(&advance)
 }
@@ -276,30 +293,46 @@ fn hex_advance(h: &HexGlyph) -> f32 {
 /// pixels, copied into the atlas when first drawn.
 fn load_bitmap(
     root: &Path,
+    defaults: Option<&Path>,
     p: &serde_json::Value,
     sheets: &HashMap<String, Rect>,
     pixels: &[u8],
     atlas: (u32, u32),
+    metrics_only: bool,
 ) -> HashMap<char, BitmapGlyph> {
     let mut out = HashMap::new();
     let file = p["file"].as_str().unwrap_or("");
     let (ns, name) = file.split_once(':').unwrap_or(("minecraft", file));
-    let in_atlas = (ns == "minecraft")
-        .then(|| sheets.get(name.trim_end_matches(".png")).copied())
-        .flatten();
+    let name = name.trim_end_matches(".png");
+    // The atlas names the default namespace's textures by their path and every
+    // other namespace's as `namespace:path` (HudAtlas::build).
+    let atlas_name = if ns == "minecraft" {
+        name.to_owned()
+    } else {
+        format!("{ns}:{name}")
+    };
+    let in_atlas = sheets.get(&atlas_name).copied();
     // The sheet: its size, and its pixels when they are not in the atlas.
     let (sw, sh, sheet) = match in_atlas {
         Some(rect) => {
             let (w, h) = rect.texels(atlas);
             (w, h, None)
         }
-        None => match crate::hud::decode(&root.join(resource_path(file, "textures", ""))) {
-            Ok((w, h, rgba)) => (w, h, Some(Arc::new((w, rgba)))),
-            Err(_) => {
-                log::warn!("font sheet {file} could not be read");
-                return out;
+        None => {
+            let path = resource_path(file, "textures", "");
+            let sheet = crate::hud::decode(&root.join(&path)).or_else(|first| {
+                defaults
+                    .and_then(|d| crate::hud::decode(&d.join(&path)).ok())
+                    .ok_or(first)
+            });
+            match sheet {
+                Ok((w, h, rgba)) => (w, h, Some(Arc::new((w, rgba)))),
+                Err(_) => {
+                    log::warn!("font sheet {file} could not be read");
+                    return out;
+                }
             }
-        },
+        }
     };
     let rows: Vec<Vec<char>> = p["chars"]
         .as_array()
@@ -345,6 +378,10 @@ fn load_bitmap(
                 advance: (0.5 + used as f32 * scale).floor() + 1.0,
                 offset: 1.0,
             };
+            if metrics_only {
+                out.insert(*ch, BitmapGlyph::Atlas(glyph));
+                continue;
+            }
             let glyph = match &sheet {
                 None => BitmapGlyph::Atlas(Glyph {
                     rect: Some(glyph_rect(
@@ -372,11 +409,13 @@ fn load_bitmap(
 }
 /// `TrueTypeGlyphProviderDefinition.load`: a TrueType file (not CFF) under
 /// `font/`, its Unicode characters but the `skip` ones.
-fn load_true_type(root: &Path, p: &serde_json::Value) -> Option<TrueType> {
+fn load_true_type(root: &Path, defaults: Option<&Path>, p: &serde_json::Value) -> Option<TrueType> {
     let file = p["file"].as_str()?;
-    let data = std::fs::read(root.join(resource_path(file, "font", "")))
-        .map_err(|e| log::warn!("font file {file}: {e}"))
-        .ok()?;
+    let path = resource_path(file, "font", "");
+    let Some(data) = read_resource(root, defaults, &path) else {
+        log::warn!("font file {file} could not be read");
+        return None;
+    };
     // FT_Get_Font_Format must say TrueType: CFF outlines ("OTTO") are refused.
     if data.starts_with(b"OTTO") {
         log::warn!("font file {file} is not in TTF format");
@@ -476,13 +515,16 @@ impl TrueType {
         )
     }
 }
-fn load_hex(root: &Path, p: &serde_json::Value) -> HashMap<u32, HexGlyph> {
+fn load_hex(root: &Path, defaults: Option<&Path>, p: &serde_json::Value) -> HashMap<u32, HexGlyph> {
     let mut glyphs = HashMap::new();
     let Some(file) = p["hex_file"].as_str() else {
         return glyphs;
     };
-    let path = root.join(resource_path(file, "", "").replace("//", "/"));
-    let Ok(zip) = Zip::open(&path) else {
+    let path = resource_path(file, "", "").replace("//", "/");
+    let Some(zip) = Zip::open(&root.join(&path))
+        .ok()
+        .or_else(|| defaults.and_then(|d| Zip::open(&d.join(&path)).ok()))
+    else {
         return glyphs;
     };
     let names: Vec<String> = zip
@@ -593,11 +635,59 @@ impl Font {
         region: (u32, u32),
         white: Rect,
     ) -> Self {
-        let sheets = sprites
-            .iter()
-            .filter(|(k, _)| k.starts_with("font/"))
-            .map(|(k, v)| (k.clone(), *v))
-            .collect();
+        Self::load_with(root, None, sprites, pixels, atlas, region, white, false)
+    }
+    /// [`Font::load`] over a pack overlay: a sheet, TrueType file or Unihex
+    /// file the overlay lacks is read from `defaults`, the game's own
+    /// resources, as vanilla's resource stack does. (Definitions stay the
+    /// overlay's: a pack's filter may hide one from a lower pack.)
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_over(
+        root: &Path,
+        defaults: &Path,
+        sprites: &HashMap<String, Rect>,
+        pixels: &[u8],
+        atlas: (u32, u32),
+        region: (u32, u32),
+        white: Rect,
+    ) -> Self {
+        let fallback = (root != defaults).then_some(defaults);
+        Self::load_with(root, fallback, sprites, pixels, atlas, region, white, false)
+    }
+    /// A server measures text but never draws it. Decode bitmap sheets only
+    /// to obtain advances, then release their pixels; never rasterize glyphs.
+    pub fn metrics(root: &Path) -> Self {
+        let white = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        Self::load_with(
+            root,
+            None,
+            &HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            white,
+            true,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn load_with(
+        root: &Path,
+        fallback: Option<&Path>,
+        sprites: &HashMap<String, Rect>,
+        pixels: &[u8],
+        atlas: (u32, u32),
+        region: (u32, u32),
+        white: Rect,
+        metrics_only: bool,
+    ) -> Self {
+        let sheets = sprites.clone();
         let font = Self {
             sheets,
             missing: Glyph {
@@ -611,8 +701,10 @@ impl Font {
             },
             white,
             root: root.to_owned(),
+            fallback: fallback.map(|p| p.to_owned()),
             atlas,
             region,
+            metrics_only,
             cache: RefCell::new(Cache {
                 sets: Vec::new(),
                 region: Region {
@@ -621,11 +713,8 @@ impl Font {
                     pending: Vec::new(),
                     full: false,
                 },
-                random: horizon_core::random::LegacyRandom::new(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_nanos() as i64),
-                ),
+                // `Font.random`: `RandomSource.create()`.
+                random: crate::random_source::create(),
             }),
             generation: std::cell::Cell::new(next_generation()),
             uniform: false,
@@ -661,12 +750,20 @@ impl Font {
                 )),
                 "bitmap" => Some(Provider::Bitmap(
                     Filter::of(p),
-                    load_bitmap(&self.root, p, &self.sheets, pixels, self.atlas),
+                    load_bitmap(
+                        &self.root,
+                        self.fallback.as_deref(),
+                        p,
+                        &self.sheets,
+                        pixels,
+                        self.atlas,
+                        self.metrics_only,
+                    ),
                 )),
                 "unihex" => Some(Provider::Unihex(Filter::of(p), p.clone(), None)),
                 "ttf" => Some(Provider::TrueType(
                     Filter::of(p),
-                    Box::new(load_true_type(&self.root, p)?),
+                    Box::new(load_true_type(&self.root, self.fallback.as_deref(), p)?),
                 )),
                 _ => None,
             })
@@ -674,6 +771,7 @@ impl Font {
         FontSet {
             providers,
             glyphs: Default::default(),
+            non_fishy: Default::default(),
             by_width: None,
         }
     }
@@ -682,6 +780,7 @@ impl Font {
         let mut cache = self.cache.borrow_mut();
         for (_, set) in &mut cache.sets {
             set.glyphs.clear();
+            set.non_fishy.clear();
             set.by_width = None;
         }
         cache.region.cursor = (0, 0);
@@ -735,7 +834,7 @@ impl Font {
             return *g;
         }
         let was_full = std::mem::replace(&mut region.full, false);
-        let found = self.resolve(set, region, c);
+        let found = self.resolve(set, region, c, false);
         // No room: the missing glyph for now, not remembered, so the
         // character is tried again once `begin_frame` cleared the region.
         let overflowed = std::mem::replace(&mut region.full, was_full);
@@ -747,13 +846,46 @@ impl Font {
         set.glyphs.insert(c, glyph);
         glyph
     }
-    fn resolve(&self, set: &mut FontSet, region: &mut Region, c: char) -> Option<Glyph> {
+    /// `FontSet.getRandomGlyph`'s `SelectedGlyphs.nonFishy`: the glyph of the first provider whose
+    /// advance is not fishy, else the missing glyph. A character whose first glyph is fine has
+    /// the same one for both.
+    fn glyph_non_fishy(&self, id: &str, c: char) -> Glyph {
+        let any = self.glyph_of(id, c);
+        if !fishy_advance(any.advance) {
+            return any;
+        }
+        let mut cache = self.cache.borrow_mut();
+        let Cache { sets, region, .. } = &mut *cache;
+        let Some((_, set)) = sets.iter_mut().find(|(k, _)| k == id) else {
+            return self.missing;
+        };
+        if let Some(g) = set.non_fishy.get(&c) {
+            return *g;
+        }
+        let was_full = std::mem::replace(&mut region.full, false);
+        let found = self.resolve(set, region, c, true);
+        let overflowed = std::mem::replace(&mut region.full, was_full);
+        region.full |= overflowed;
+        if overflowed {
+            return self.missing;
+        }
+        let glyph = found.unwrap_or(self.missing);
+        set.non_fishy.insert(c, glyph);
+        glyph
+    }
+    fn resolve(
+        &self,
+        set: &mut FontSet,
+        region: &mut Region,
+        c: char,
+        non_fishy: bool,
+    ) -> Option<Glyph> {
         let (uniform, japanese) = (self.uniform, self.japanese);
         for provider in &mut set.providers {
             match provider {
                 Provider::Space(advances) => {
                     if let Some(a) = advances.get(&c)
-                        && !fishy_advance(*a)
+                        && !(non_fishy && fishy_advance(*a))
                     {
                         return Some(Glyph {
                             rect: None,
@@ -768,10 +900,12 @@ impl Font {
                 }
                 Provider::Bitmap(filter, glyphs) if filter.passes(uniform, japanese) => {
                     match glyphs.get(&c) {
-                        Some(BitmapGlyph::Atlas(g)) if !fishy_advance(g.advance) => {
+                        Some(BitmapGlyph::Atlas(g)) if !(non_fishy && fishy_advance(g.advance)) => {
                             return Some(*g);
                         }
-                        Some(BitmapGlyph::Sheet(cell)) if !fishy_advance(cell.glyph.advance) => {
+                        Some(BitmapGlyph::Sheet(cell))
+                            if !(non_fishy && fishy_advance(cell.glyph.advance)) =>
+                        {
                             let (stride, pixels) = (&cell.sheet.0, &cell.sheet.1);
                             let mut rgba = Vec::with_capacity((cell.w * cell.h * 4) as usize);
                             for y in cell.y..cell.y + cell.h {
@@ -789,17 +923,26 @@ impl Font {
                     }
                 }
                 Provider::Unihex(filter, def, glyphs) if filter.passes(uniform, japanese) => {
-                    let glyphs = glyphs.get_or_insert_with(|| load_hex(&self.root, def));
+                    let glyphs = glyphs
+                        .get_or_insert_with(|| load_hex(&self.root, self.fallback.as_deref(), def));
                     if let Some(h) = glyphs.get(&u32::from(c)).copied()
-                        && !fishy_advance(hex_advance(&h))
+                        && !(non_fishy && fishy_advance(hex_advance(&h)))
                     {
                         return self.rasterize_hex(region, h);
                     }
                 }
                 Provider::TrueType(filter, ttf) if filter.passes(uniform, japanese) => {
                     if let Some(id) = ttf.ids.get(&c)
-                        && !fishy_advance(ttf.advance(*id))
+                        && !(non_fishy && fishy_advance(ttf.advance(*id)))
                     {
+                        if self.metrics_only {
+                            return Some(Glyph {
+                                rect: None,
+                                advance: ttf.advance(*id),
+                                offset: 1.0,
+                                ..self.missing
+                            });
+                        }
                         let (glyph, bitmap) = ttf.glyph(*id);
                         return match bitmap {
                             Some((w, h, rgba)) => {
@@ -820,6 +963,17 @@ impl Font {
     }
     fn rasterize_hex(&self, region: &mut Region, h: HexGlyph) -> Option<Glyph> {
         let width = h.right.saturating_sub(h.left) + 1;
+        if self.metrics_only {
+            return Some(Glyph {
+                rect: None,
+                left: 0.0,
+                top: 0.0,
+                right: width as f32 / 2.0,
+                bottom: 8.0,
+                advance: hex_advance(&h),
+                offset: 0.5,
+            });
+        }
         let mut rgba = Vec::with_capacity((width * 16 * 4) as usize);
         for row in h.rows {
             for bit in h.left..=h.right {
@@ -838,6 +992,10 @@ impl Font {
             offset: 0.5,
         })
     }
+    /// Starts the random `random_glyph` draws on over from `seed`.
+    pub fn reseed(&self, seed: i64) {
+        self.cache.borrow_mut().random = horizon_core::random::LegacyRandom::new(seed);
+    }
     /// `FontSet.getRandomGlyph`: what an obfuscated character draws, a random
     /// glyph of the font as wide as `advance` (rounded up), else the missing
     /// glyph.
@@ -851,7 +1009,7 @@ impl Font {
     pub fn random_glyph(&self, style: &Style, advance: f32) -> Glyph {
         use horizon_core::random::RandomSource;
         let id = style.font.as_deref().unwrap_or(DEFAULT);
-        let width = advance.ceil() as u32;
+        let width = advance.ceil() as i32;
         let pick = {
             let mut cache = self.cache.borrow_mut();
             let Cache { sets, random, .. } = &mut *cache;
@@ -869,9 +1027,9 @@ impl Font {
                     chars.get(i as usize).copied()
                 })
         };
-        pick.map_or(self.missing, |c| self.glyph_of(id, c))
+        pick.map_or(self.missing, |c| self.glyph_non_fishy(id, c))
     }
-    fn glyphs_by_width(&self, set: &mut FontSet) -> HashMap<u32, Vec<char>> {
+    fn glyphs_by_width(&self, set: &mut FontSet) -> HashMap<i32, Vec<char>> {
         let (uniform, japanese) = (self.uniform, self.japanese);
         let mut chars = std::collections::BTreeSet::new();
         let mut in_atlas = false;
@@ -893,50 +1051,45 @@ impl Font {
             // Nothing in the atlas: the glyphs below U+0250, rasterized as used.
             chars.extend((0..0x250u32).filter_map(char::from_u32));
         }
-        let mut out: HashMap<u32, Vec<char>> = HashMap::new();
+        let mut out: HashMap<i32, Vec<char>> = HashMap::new();
         for c in chars {
             if let Some(advance) = self.provider_advance(set, c) {
-                out.entry(advance.ceil() as u32).or_default().push(c);
+                out.entry(advance.ceil() as i32).or_default().push(c);
             }
         }
         out
     }
-    /// A character's advance in `set` (its first provider that has it),
-    /// without rasterizing it.
+    /// A character's advance in `set` (its first provider that has it, fishy or not, as the
+    /// by-width table of `FontSet.reload` takes it), without rasterizing it.
     fn provider_advance(&self, set: &mut FontSet, c: char) -> Option<f32> {
         let (uniform, japanese) = (self.uniform, self.japanese);
         for provider in &mut set.providers {
             match provider {
                 Provider::Space(advances) => {
-                    if let Some(a) = advances.get(&c)
-                        && !fishy_advance(*a)
-                    {
+                    if let Some(a) = advances.get(&c) {
                         return Some(*a);
                     }
                 }
                 Provider::Bitmap(filter, glyphs) if filter.passes(uniform, japanese) => {
                     match glyphs.get(&c) {
-                        Some(BitmapGlyph::Atlas(g)) if !fishy_advance(g.advance) => {
+                        Some(BitmapGlyph::Atlas(g)) => {
                             return Some(g.advance);
                         }
-                        Some(BitmapGlyph::Sheet(cell)) if !fishy_advance(cell.glyph.advance) => {
+                        Some(BitmapGlyph::Sheet(cell)) => {
                             return Some(cell.glyph.advance);
                         }
                         _ => {}
                     }
                 }
                 Provider::Unihex(filter, def, glyphs) if filter.passes(uniform, japanese) => {
-                    let glyphs = glyphs.get_or_insert_with(|| load_hex(&self.root, def));
-                    if let Some(h) = glyphs.get(&u32::from(c))
-                        && !fishy_advance(hex_advance(h))
-                    {
+                    let glyphs = glyphs
+                        .get_or_insert_with(|| load_hex(&self.root, self.fallback.as_deref(), def));
+                    if let Some(h) = glyphs.get(&u32::from(c)) {
                         return Some(hex_advance(h));
                     }
                 }
                 Provider::TrueType(filter, ttf) if filter.passes(uniform, japanese) => {
-                    if let Some(id) = ttf.ids.get(&c)
-                        && !fishy_advance(ttf.advance(*id))
-                    {
+                    if let Some(id) = ttf.ids.get(&c) {
                         return Some(ttf.advance(*id));
                     }
                 }
@@ -1327,6 +1480,55 @@ mod tests {
     }
 
     #[test]
+    fn server_metrics_preserve_bitmap_true_type_and_unihex_advances() {
+        let sheet = png(16, 8, |x, _| x < 2 || (8..14).contains(&x));
+        let def = br#"{"providers":[{"type":"space","advances":{" ":4}},{"type":"bitmap","file":"minecraft:font/a.png","ascent":7,"chars":["ab"]}]}"#;
+        let ttf = br#"{"providers":[{"type":"ttf","file":"minecraft:mono.ttf","size":11,"oversample":2}]}"#;
+        let root = root(
+            "metrics",
+            &[
+                ("assets/minecraft/font/default.json", def),
+                ("assets/minecraft/font/alt.json", ttf),
+                (
+                    "assets/minecraft/font/mono.ttf",
+                    horizon_theme::fonts::GEIST_MONO,
+                ),
+                ("assets/minecraft/textures/font/a.png", &sheet),
+            ],
+        );
+        let rendered = load(&root);
+        let metrics = Font::metrics(&root);
+        assert_eq!(metrics.width("a b"), 14.0);
+        assert_eq!(metrics.width("§lab"), 12.0);
+        let text = Text::literal("ab ab");
+        assert_eq!(
+            metrics.split_formatted(&text, 10.0),
+            rendered.split_formatted(&text, 10.0)
+        );
+        let alt = Style {
+            font: Some("minecraft:alt".into()),
+            bold: Some(true),
+            ..Style::default()
+        };
+        for c in ['A', 'i', ' ', '\u{fffd}'] {
+            assert_eq!(metrics.advance(c, &alt), rendered.advance(c, &alt));
+            assert!(metrics.glyph_styled(c, &alt).rect.is_none());
+        }
+        let mut hex = HashMap::new();
+        parse_hex(b"0041:0000000018242442427E424242420000\n", &mut hex);
+        let h = hex[&0x41];
+        let glyph = metrics
+            .rasterize_hex(&mut metrics.cache.borrow_mut().region, h)
+            .unwrap();
+        assert_eq!(glyph.advance, 4.0);
+        assert_eq!(glyph.offset, 0.5);
+        assert!(glyph.rect.is_none());
+        assert!(metrics.take_patches().is_empty());
+        assert!(!rendered.take_patches().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn true_type_glyphs_are_rasterized_at_the_provider_size() {
         let def = br#"{"providers":[{"type":"ttf","file":"minecraft:mono.ttf","size":11,"oversample":2,"shift":[0.5,1],"skip":["B"]}]}"#;
         let root = root(
@@ -1365,6 +1567,52 @@ mod tests {
         assert!(texels.iter().all(|t| t.iter().all(|v| *v == t[0])));
         assert!(texels.iter().all(|t| t[0] == 0 || t[0] >= 25));
         assert!(texels.iter().any(|t| t[0] == 255));
+    }
+
+    /// A bitmap provider's `file` can name any texture. When the atlas has that
+    /// texture (HUD packs keep their glyph sheets outside `textures/font`), the
+    /// glyphs are read from it instead of being copied into the small run-time
+    /// region one by one; the region then cannot fill up and turn later glyphs
+    /// into the missing one, whose advance shifts the rest of a HUD line.
+    #[test]
+    fn a_bitmap_sheet_outside_font_is_read_from_the_atlas() {
+        let sheet = png(16, 8, |x, _| x < 2 || (8..14).contains(&x));
+        let (_, _, pixels) = crate::hud::decode_bytes(&sheet).unwrap();
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 8,
+        };
+        for (ns, file, key) in [
+            ("minecraft", "minecraft:hud/sheet.png", "hud/sheet"),
+            (
+                "hudengine",
+                "hudengine:font/sheet.png",
+                "hudengine:font/sheet",
+            ),
+        ] {
+            let def = format!(
+                r#"{{"providers":[{{"type":"bitmap","file":"{file}","ascent":7,"chars":["ab"]}}]}}"#
+            );
+            // The image is only in the atlas: the pack's copy is not on disk.
+            let root = root(
+                ns,
+                &[("assets/minecraft/font/default.json", def.as_bytes())],
+            );
+            let sprites = HashMap::from([(key.to_string(), rect)]);
+            let font = Font::load(&root, &sprites, &pixels, (16, 8), (0, 8), white());
+            let _ = std::fs::remove_dir_all(&root);
+            assert_eq!(font.glyph('a').advance, 3.0, "{ns}");
+            assert_eq!(font.glyph('b').advance, 7.0, "{ns}");
+            assert!(font.glyph('a').rect.is_some(), "{ns}");
+            assert!(
+                font.take_patches().is_empty(),
+                "{ns}: the atlas sheet is not copied into the run-time region"
+            );
+        }
     }
 
     #[test]
@@ -1406,12 +1654,13 @@ mod tests {
         assert!(!font.take_patches().is_empty());
     }
 
-    /// `FontSet.computeGlyphInfo`: a provider glyph with an advance outside
-    /// 0..32 is skipped, so the next provider that has the character is used.
+    /// `FontSet.computeGlyphInfo`: `SelectedGlyphs.any` is the first provider's glyph, fishy
+    /// advance or not, and is what is drawn and measured; `nonFishy`, what obfuscated text draws,
+    /// is the first provider whose advance is within 0..32, else the missing glyph.
     #[test]
-    fn a_fishy_advance_falls_through_to_the_next_provider() {
-        // 64 opaque columns: the first provider's 'a' would advance 65, past
-        // the 32 vanilla allows, so the narrow provider's 'a' is the one used.
+    fn a_fishy_glyph_is_drawn_and_only_obfuscated_text_falls_through() {
+        // 64 opaque columns: the first provider's 'a' advances 65, past the 32 vanilla
+        // calls fishy, and the narrow provider's 'a' advances 3.
         let wide = png(64, 8, |_, _| true);
         let narrow = png(16, 8, |x, _| x < 2);
         let def = br#"{"providers":[{"type":"bitmap","file":"minecraft:font/wide.png","ascent":7,"chars":["a"]},{"type":"bitmap","file":"minecraft:font/narrow.png","ascent":7,"chars":["a"]}]}"#;
@@ -1425,11 +1674,80 @@ mod tests {
         );
         let font = load(&root);
         let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(font.glyph('a').advance, 3.0, "the narrow provider wins");
-        assert_eq!(font.advance('a', &Style::default()), 3.0);
-        // Obfuscated text picks a glyph by its own advance: nothing is 65 wide.
-        let obfuscated = font.random_glyph(&Style::default(), 65.0);
-        assert_eq!(obfuscated.advance, 6.0, "the missing glyph");
+        let drawn = font.glyph('a');
+        assert_eq!(drawn.advance, 65.0, "the first provider's glyph is drawn");
+        assert!(drawn.rect.is_some());
+        assert_eq!(font.advance('a', &Style::default()), 65.0);
+        // The by-width table files 'a' under its first glyph's 65; the glyph it then draws is
+        // the narrow provider's (`nonFishy`).
+        assert_eq!(font.random_glyph(&Style::default(), 65.0).advance, 3.0);
+        // Nothing else is 3 wide in the table, and the missing glyph is 6.
+        assert_eq!(font.random_glyph(&Style::default(), 3.0).advance, 6.0);
+    }
+
+    /// A `space` provider's shift glyphs (kerning in server packs: -512 to 512) are drawn and
+    /// measured as they are, and `nonFishy` has nothing else to draw for them.
+    #[test]
+    fn space_glyphs_with_any_advance_are_kept() {
+        let shifts: Vec<i32> = (0..10)
+            .map(|i| -(1 << i))
+            .chain((0..10).map(|i| 1 << i))
+            .collect();
+        let advances: Vec<String> = shifts
+            .iter()
+            .enumerate()
+            .map(|(i, a)| format!("\"\\ue{:03x}\": {a}", i))
+            .collect();
+        let def = format!(
+            r#"{{"providers":[{{"type":"space","advances":{{{}}}}}]}}"#,
+            advances.join(",")
+        );
+        let root = root(
+            "space-shifts",
+            &[("assets/minecraft/font/default.json", def.as_bytes())],
+        );
+        let font = load(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        for (i, a) in shifts.iter().enumerate() {
+            let c = char::from_u32(0xe000 + i as u32).unwrap();
+            assert_eq!(font.glyph(c).advance, *a as f32, "{c:?}");
+            assert_eq!(font.advance(c, &Style::default()), *a as f32);
+        }
+        // Obfuscated text asks for a glyph of a given width: a fishy space has none to give.
+        let c = char::from_u32(0xe000 + 19).unwrap();
+        assert_eq!(font.glyph(c).advance, 512.0);
+        assert_eq!(
+            font.glyph_non_fishy(DEFAULT, c).advance,
+            6.0,
+            "the missing glyph"
+        );
+        assert_eq!(font.random_glyph(&Style::default(), 512.0).advance, 6.0);
+    }
+
+    /// Nexo's GUI glyphs: a bitmap `height` of 287 with no advance, so every glyph wider than 31
+    /// pixels has a fishy advance, and is still drawn.
+    #[test]
+    fn a_wide_bitmap_glyph_is_drawn() {
+        let sheet = png(40, 287, |_, _| true);
+        let def = br#"{"providers":[{"type":"bitmap","file":"minecraft:font/gui.png","height":287,"ascent":65,"chars":["a"]}]}"#;
+        let root = root(
+            "wide-bitmap",
+            &[
+                ("assets/minecraft/font/default.json", def),
+                ("assets/minecraft/textures/font/gui.png", &sheet),
+            ],
+        );
+        let font = load(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let g = font.glyph('a');
+        assert_eq!(g.advance, 41.0, "the glyph's 40 columns and one");
+        assert!(g.rect.is_some(), "drawn, not the missing glyph");
+        assert!(fishy_advance(g.advance));
+        assert_eq!(
+            font.glyph_non_fishy(DEFAULT, 'a').advance,
+            6.0,
+            "excluded from what obfuscated text draws"
+        );
     }
 
     /// StringDecomposer.iterateFormatted: a `§` that ends a part stops that

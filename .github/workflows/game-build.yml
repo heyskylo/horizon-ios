@@ -1,6 +1,6 @@
 name: game build
-# Builds the game for every platform from `ref`: the Java exporters, then Linux and the Linux server and Windows on
-# GitHub, macOS on the Mac mini's runner with a 1500-frame offscreen run of a new world (smoke-test.json): Apple
+# Builds the game for every platform from `ref`: the Java exporters, then Linux and the Linux server, Windows x64
+# and ARM64 on GitHub, and macOS on the Mac mini's runner with a 1500-frame offscreen run of a new world (smoke-test.json): Apple
 # Silicon, and Intel cross-built there for x86_64-apple-darwin and checked under Rosetta 2 (#1161). Called by
 # release.yml (the releases) and nightly-build.yml (the opt-in Nightly), always from main's copy of this file: the
 # caller's commit, never the one being built. It holds no secrets: signing the checksums is the callers' own job,
@@ -45,7 +45,7 @@ jobs:
     # Three full preparations (two isolated, one batched) besides the compile.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
             ! \( -name '*.class' \( -path 'exporters/server/dev/horizonlab/parity/*' -o -path 'exporters/client/dev/horizonlab/parity/*' \) \))
           [ -z "$stray" ] || { echo "::error::not one of our classes: $stray"; exit 1; }
           python3 tools/check_prepare_exporters.py --binary target/release/horizon-prepare
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: original-exporters
           path: exporters/
@@ -83,6 +83,10 @@ jobs:
   build:
     needs: exporters
     name: build ${{ matrix.name }}
+    # Windows ARM64 and musl are new: a failure never holds the other platforms' release (the signing job
+    # needs this job, and a failed entry of it would fail it). The release steps leave the missing
+    # optional archives out with a warning.
+    continue-on-error: ${{ matrix.name == 'windows-arm64' || matrix.name == 'linux-musl' }}
     strategy:
       fail-fast: false
       matrix:
@@ -94,12 +98,27 @@ jobs:
             # The server build too: packaging/server/install.sh installs it on Linux.
             server_dir: horizon-server-linux-x86_64
             server_asset: horizon-server-linux-x86_64.tar.gz
+          - name: linux-musl
+            os: ubuntu-22.04
+            musl: true
+            dir: horizon-linux-musl-x86_64
+            asset: horizon-linux-musl-x86_64.tar.gz
           - name: windows
             os: windows-latest
             dir: horizon-windows-x64
             asset: horizon-windows-x64.zip
             exe: .exe
+            pe_arch: x64
             # The C runtime linked in, so the game runs without the Visual C++ redistributable.
+            rustflags: -C target-feature=+crt-static
+          - name: windows-arm64
+            os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            dir: horizon-windows-arm64
+            asset: horizon-windows-arm64.zip
+            exe: .exe
+            pe_arch: arm64
+            # The ARM64 runner builds and runs native ARM64 executables; keep the C runtime in the archive.
             rustflags: -C target-feature=+crt-static
           - name: macos
             mac: true
@@ -128,7 +147,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -141,21 +160,29 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        if: runner.environment == 'github-hosted'
+        if: runner.environment == 'github-hosted' && !matrix.musl
         with:
           # A release restores only what a release saved: an untrusted build has its own key and saves nothing.
           shared-key: ${{ inputs.trusted && 'release' || 'nightly' }}-${{ matrix.name }}
           save-if: ${{ inputs.trusted }}
       - name: ALSA and udev headers
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.musl
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Build the client, horizon-ctl, horizon-prepare and horizon-server
+        if: ${{ !matrix.musl }}
         run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: Every program the release folder takes was built
+        if: ${{ !matrix.musl }}
         run: |
           for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
             test -f "$BIN/$binary${{ matrix.exe }}" || { echo "::error::$BIN/$binary${{ matrix.exe }} is missing"; exit 1; }
           done
+      - name: Verify Windows executable architecture
+        if: runner.os == 'Windows'
+        run: |
+          python tools/check_pe_arch.py "${{ matrix.pe_arch }}" \
+            "$BIN/horizon-client${{ matrix.exe }}" "$BIN/horizon-ctl${{ matrix.exe }}" \
+            "$BIN/horizon-prepare${{ matrix.exe }}" "$BIN/horizon-server${{ matrix.exe }}"
       - name: The signing keychain, unlocked
         if: runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != '' && inputs.developer_id
         env:
@@ -173,6 +200,7 @@ jobs:
             codesign --verify --strict --verbose=2 "$BIN/$binary"
           done
       - name: Only system libraries
+        if: ${{ !matrix.musl }}
         # Windows: no non-system DLL (a "DLL not found" dialog on some players' machines). Linux: the standard
         # loader and libraries every desktop distribution has. macOS: only the system's own libraries.
         run: |
@@ -188,13 +216,14 @@ jobs:
       - name: Baseline x86-64 CPUs only
         # No POPCNT or LZCNT at all (the script says why only those): a C library's count intrinsic killed the
         # game before main on a Core 2 (#7264). Not the Mac builds: every Intel Mac that runs macOS 11 has both.
-        if: runner.os != 'macOS'
+        if: runner.os != 'macOS' && matrix.pe_arch != 'arm64' && !matrix.musl
         run: |
           set -euo pipefail
           rustup component add llvm-tools
           ${{ runner.os == 'Windows' && 'python' || 'python3' }} tools/check_cpu_baseline.py \
             $(for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do echo "$BIN/$binary${{ matrix.exe }}"; done)
       - name: Every program starts
+        if: ${{ !matrix.musl }}
         run: |
           set -euo pipefail
           bin=$BIN
@@ -239,21 +268,34 @@ jobs:
           # Published with the release; the publish job checks it again before it publishes anything.
           cp "$home/smoke.json" "$RUNNER_TEMP/smoke-test.json"
       # One smoke-test.json per build, the Apple Silicon one's; the Intel build must pass its own run too.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: runner.environment == 'self-hosted' && !matrix.target
         with:
           name: smoke-test.json
           path: ${{ runner.temp }}/smoke-test.json
           if-no-files-found: error
           retention-days: 3
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: original-exporters
           path: exporters
+      - name: Build, check and package for musl in Alpine
+        if: matrix.musl
+        # Run Docker on the Ubuntu host: JavaScript actions themselves require glibc.
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work \
+            -e HORIZON_VERSION -e HORIZON_NIGHTLY \
+            rust:alpine3.22 sh tools/ci/build-musl.sh
       - name: Package
+        if: ${{ !matrix.musl }}
         run: |
           set -euo pipefail
           cargo run --locked -p xtask -- package "$BIN/horizon-client${{ matrix.exe }}" "dist/${{ matrix.dir }}"
+          # Windows x64: Microsoft's DXC, pinned and checksummed, which DirectX 12 uses on integrated GPUs
+          # (gfx/dx12_compiler.rs), with its licence. ARM64 keeps FXC (THIRD_PARTY_NOTICES.md says why).
+          if [[ "${{ matrix.name }}" == windows ]]; then
+            python tools/ci/fetch_dxc.py "dist/${{ matrix.dir }}"
+          fi
           cd dist
           rm -f "${{ matrix.asset }}"
           case "${{ matrix.asset }}" in
@@ -277,7 +319,7 @@ jobs:
             codesign --verify --strict "dist/${{ matrix.dir }}/$binary"
           done
           packaging/macos/notarize.sh "dist/${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
@@ -299,7 +341,7 @@ jobs:
           rm -f "${{ matrix.server_asset }}"
           tar czf "${{ matrix.server_asset }}" "${{ matrix.server_dir }}"
           ls -l "${{ matrix.server_asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.server_asset
         with:
           name: ${{ matrix.server_asset }}

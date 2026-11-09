@@ -7,19 +7,13 @@ use super::{
 use crate::{
     collision::CachedCollisionRegistry,
     compression::invalid,
-    fluid::{FluidBlockBindings, FluidKind, FluidState},
+    fluid::{FluidBlockBindings, FluidKind, FluidMask, FluidState},
     registry::{BlockRegistry, BlockStateId, BlockTableFile},
     worldgen::tags::TagDefinitions,
 };
 use horizon_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::{self, File},
-    io,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 #[path = "data/cache.rs"]
 mod cache;
 pub(super) use cache::set_dir as set_cache_dir;
@@ -154,12 +148,12 @@ pub(crate) fn analyse_shape(shape: &VoxelShape) -> io::Result<ShapeInfo> {
 /// Fluid tags as masks over `FluidKind::mask`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FluidTags {
-    pub water: u8,
-    pub lava: u8,
-    pub supports_frogspawn: u8,
-    pub supports_lily_pad: u8,
-    pub supports_sugar_cane_adjacently: u8,
-    pub bubble_column_can_occupy: u8,
+    pub water: FluidMask,
+    pub lava: FluidMask,
+    pub supports_frogspawn: FluidMask,
+    pub supports_lily_pad: FluidMask,
+    pub supports_sugar_cane_adjacently: FluidMask,
+    pub bubble_column_can_occupy: FluidMask,
 }
 
 /// A set of blocks (a resolved block tag).
@@ -633,10 +627,14 @@ pub fn load_registry(root: &Path) -> io::Result<BlockRegistry> {
 
 /// [`load_registry`] with each state's `(air, fluid)` columns.
 pub fn load_registry_with_flags(root: &Path) -> io::Result<(BlockRegistry, Vec<(bool, bool)>)> {
+    // The root's mod fluids join the fluid table first: every fluid state
+    // read from this registry (cached or not) may name one.
+    crate::fluid::load_mod_fluids(root)?;
     if let Some(cached) = cache::load_registry(root) {
         return Ok(cached);
     }
-    let loaded = BlockRegistry::from_facts_json_with_flags(File::open(root.join("facts.json"))?)?;
+    // Read whole, then parsed from the slice: see `BlockRegistry::from_facts_json_bytes`.
+    let loaded = BlockRegistry::from_facts_json_bytes(&fs::read(root.join("facts.json"))?)?;
     cache::store_registry(root, &loaded.0, &loaded.1);
     Ok(loaded)
 }
@@ -814,15 +812,17 @@ fn build_with_gameplay<G: GameplayStateSource>(
             .map_err(|e| invalid(e.to_string()))?;
     }
     let fluid_built = fluid_definitions
-        .build(|name, _| FluidKind::from_name(name).map(|kind| kind as u8))
+        .build(|name, _| FluidKind::from_name(name).map(|kind| kind.index() as u32))
         .map_err(|e| invalid(e.to_string()))?;
-    let fluid_mask = |name: &str| -> u8 {
+    let fluid_mask = |name: &str| -> FluidMask {
         fluid_built
             .tags
             .get(name)
             .into_iter()
             .flatten()
-            .fold(0, |mask, kind| mask | 1 << kind)
+            .fold(0, |mask, kind| {
+                mask | FluidKind::from_index(*kind as usize).map_or(0, FluidKind::mask)
+            })
     };
     let fluid_tags = FluidTags {
         water: fluid_mask("minecraft:water"),
@@ -859,15 +859,20 @@ fn build_with_gameplay<G: GameplayStateSource>(
                 flags |= bit;
             }
         }
-        let fluid_kind = FluidKind::ALL
-            .get(int(2) as usize)
-            .copied()
-            .ok_or_else(|| fail("invalid exported fluid"))?;
-        let fluid = FluidState::new(
+        let fluid_kind =
+            FluidKind::from_index(int(2) as usize).ok_or_else(|| fail("invalid exported fluid"))?;
+        let mut fluid = FluidState::new(
             fluid_kind,
             int(3) as u8,
             row.get(4).and_then(Value::as_bool).unwrap_or(false),
         );
+        // A mod's liquid block copies its template's row (vanilla water or
+        // lava): it holds its own fluid.
+        if let Some(state) = registry.state(BlockStateId(id as u32))
+            && FluidKind::of_liquid_block(&state.name).is_some()
+        {
+            fluid = FluidState::from_block(state)?;
+        }
         facts.push(StateFacts {
             flags,
             sturdy: int(0) as u32,

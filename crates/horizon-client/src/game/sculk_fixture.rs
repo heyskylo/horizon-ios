@@ -623,9 +623,14 @@ impl Game<'_> {
                     lines.push(format!("game {rest}"));
                 }
             }
-            for (sound, at, volume, pitch) in
-                self.audio.capture.replace(Vec::new()).unwrap_or_default()
-            {
+            for sound in self.audio.capture.replace(Vec::new()).unwrap_or_default() {
+                let horizon_client::audio::CapturedSound {
+                    event: sound,
+                    position: at,
+                    volume,
+                    pitch,
+                    ..
+                } = sound;
                 if CLIENT_SOUNDS.contains(&sound.as_str()) {
                     continue;
                 }
@@ -743,6 +748,23 @@ impl Game<'_> {
                         m.damage(amount, horizon_client::mobs::Damage::player(at));
                     }
                     self.last_hurt_by_player.insert(id, self.lan_acting);
+                }
+                // Creeper.ignite: the next tick primes the fuse.
+                "ignite" | "ate" => {
+                    let id = sources
+                        .get(words[1][1..].parse::<usize>().unwrap_or(usize::MAX))
+                        .copied()
+                        .ok_or("no such mob")?;
+                    let mut events = Vec::new();
+                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                        if words[0] == "ignite" {
+                            m.extra.flag = true;
+                        } else {
+                            // Mob.ate.
+                            horizon_client::mobs::ai::ate(m, &mut events);
+                        }
+                    }
+                    self.handle_mob_events(events)?;
                 }
                 "set" => {
                     let n = |i: usize| words[i].parse::<i32>().unwrap_or(0);

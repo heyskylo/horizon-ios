@@ -114,7 +114,8 @@ impl Game<'_> {
             let at = block(s.position);
             let center = at.map(|v| f64::from(v) + 0.5);
             if s.tick_count == s.spawn_item_after - ABOUT_TO_SPAWN {
-                self.audio.play(
+                self.audio.play_on(
+                    6, // SoundSource.NEUTRAL, as OminousItemSpawner.tickServer selects.
                     "minecraft:block.trial_spawner.about_to_spawn_item",
                     Some(center),
                     1.0,
@@ -176,7 +177,9 @@ impl Game<'_> {
                 let from = Vec3::new(p[0], p[1], p[2]);
                 self.shoot_projectile_item(from, [0.0, -1.0, 0.0], &s.item, power, uncertainty);
             }
-            None => self.spawn_item(s.item.clone(), p, super::dispenser::new_item_motion(), 0),
+            None => {
+                self.spawn_item_own(s.item.clone(), p, 0);
+            }
         }
         self.level_event_at(3021, at, 1);
         self.post_block_game_event("minecraft:entity_place", at, None, None);
@@ -237,3 +240,6 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod warning_tests;

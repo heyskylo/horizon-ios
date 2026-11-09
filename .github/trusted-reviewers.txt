@@ -1,10 +1,16 @@
-# Trusted reviewers: one list for two things (docs/release-flow.md "Trusted reviewers").
+# Trusted reviewers: one list for three things (docs/release-flow.md "Trusted reviewers").
 # - `/nightly 2640 2642` picks the pull requests the Nightly holds (tools/ci/nightly_set.py);
-# - `/close`, `/reopen`, `/label`, `/unlabel` triage issues and pull requests (tools/ci/triage_command.py).
-# Ludovic is always allowed and isn't listed. One GitHub login per line, with who added it and when. Removing a
-# line revokes that login at once. A line with only `paused` stops both for every reviewer (Ludovic's still work).
-kacpherek    # added by Ludovic, 2026-10-27
-rdbtCVS      # added by Ludovic, 2026-10-27
-Online5277   # added by Ludovic, 2026-10-27 (his top three by merged pull requests)
-levzzz5154   # added by Ludovic, 2026-10-28 (Horizon Team; author of horizon-mixins)
-Qwerner88880 # added by Ludovic, 2026-10-31 (Discord vladislav_hagen; native-mod hooks)
+# - `/close`, `/reopen`, `/label`, `/unlabel` triage issues and pull requests (tools/ci/triage_command.py);
+# - `/unclaim @login` releases someone else's claim, and listed reviewers have no claim limit (tools/ci/claim_command.py).
+# One reviewer per line: `<numeric GitHub ID> <login>`, with who added it and when. The ID decides; the login is only
+# for people reading this file and for messages. A login is a name anyone can claim once its owner renames or deletes
+# the account; an ID is never reused. Get it with `gh api users/<login> --jq .id`, or run
+# `python3 tools/ci/resolve_reviewer_ids.py` to fill in the IDs and `--check` to catch renames.
+# A line in any other form (a bare login included) grants nothing. Ludovic is always allowed (OWNER_ID in
+# tools/ci/nightly_set.py) and isn't listed. Removing a line revokes that account at once. A line with only `paused`
+# stops all three for every reviewer (Ludovic's still work).
+54669067 kacpherek       # added by Ludovic, 2026-10-27
+87152661 rdbtCVS         # added by Ludovic, 2026-10-27
+84875247 Online5277      # added by Ludovic, 2026-10-27 (his top three by merged pull requests)
+86072227 levzzz5154      # added by Ludovic, 2026-10-28 (Horizon Team; author of horizon-mixins)
+169198624 itarqos5        # added by Ludovic, 2026-11-08 (Discord Literal; Horizon Team)

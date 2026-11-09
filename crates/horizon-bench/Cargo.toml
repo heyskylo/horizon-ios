@@ -2,6 +2,7 @@
 name = "horizon-bench"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 license = "MIT"
 description = "The benchmark report format (docs/benchmark-report.md), shared by the game, the launcher and the upload"
 

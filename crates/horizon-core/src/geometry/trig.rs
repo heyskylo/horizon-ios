@@ -86,6 +86,11 @@ pub fn atan2(mut y: f64, mut x: f64) -> f64 {
 pub fn atan2_degrees(y: f64, x: f64) -> f32 {
     (atan2(y, x) * f64::from(RAD_TO_DEG)) as f32
 }
+/// `(float)(Mth.atan2(y, x) * 180.0 / Math.PI)` in doubles, multiplied then
+/// divided in Java's order, as `OldMinecartBehavior.tick` sets a cart's yaw.
+pub fn atan2_degrees_double(y: f64, x: f64) -> f32 {
+    (atan2(y, x) * 180.0 / std::f64::consts::PI) as f32
+}
 
 /// `Mth.sin` / `Mth.cos` on a float, as the models call them.
 pub trait Mth {
@@ -100,6 +105,16 @@ impl Mth for f32 {
         cos(f64::from(self))
     }
 }
+
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+//
+// The notice above covers `fdlibm_asin`, `fdlibm_atan` and `fdlibm_atan2` below, Rust ports
+// of fdlibm 5.3's e_asin.c, s_atan.c and e_atan2.c (https://www.netlib.org/fdlibm/).
 
 /// fdlibm `__ieee754_asin`, as `StrictMath.asin` (and so `Math.asin`) computes it.
 #[allow(clippy::excessive_precision, clippy::approx_constant, clippy::eq_op)] // fdlibm's constants and NaN, verbatim.
@@ -339,6 +354,19 @@ mod tests {
         }
         assert_eq!(fdlibm_asin(60.0 / 256.0).to_bits(), 0x3fce_481c_0fce_7134);
         assert_eq!(fdlibm_asin(61.0 / 256.0).to_bits(), 0x3fce_cbd7_5b6c_d8f0);
+    }
+    /// An off-rail minecart summoned at (4103.5, 300, 4103.5) with Motion
+    /// [0.1, 0.25, -0.3] saves Rotation 108.43497 after one tick and 108.43496
+    /// after the second (0.95F air drag) in 26.3 (#13204); the platform atan2
+    /// gives 108.43495 both times.
+    #[test]
+    fn atan2_degrees_double_matches_a_saved_minecart_yaw() {
+        let (x0, z0) = (4103.5_f64, 4103.5_f64);
+        let (x1, z1) = (x0 + 0.1, z0 - 0.3);
+        assert_eq!(atan2_degrees_double(z0 - z1, x0 - x1), 108.43497_f32);
+        let drag = f64::from(0.95_f32);
+        let (x2, z2) = (x1 + 0.1 * drag, z1 - 0.3 * drag);
+        assert_eq!(atan2_degrees_double(z1 - z2, x1 - x2), 108.43496_f32);
     }
     #[test]
     fn long_narrowing_and_quadrants() {

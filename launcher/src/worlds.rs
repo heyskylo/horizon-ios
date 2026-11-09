@@ -11,8 +11,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// The lock a running game holds on a world; vanilla's backups leave it out.
 const LOCK: &str = "session.lock";
 
+struct WorldLock(fs::File);
+
+impl Drop for WorldLock {
+    fn drop(&mut self) {
+        // A concurrent process spawn can inherit the file before exec closes it.
+        // Release the lock explicitly rather than waiting for every handle to close.
+        let _ = self.0.unlock();
+    }
+}
+
 /// Hold the same exclusive lock as the game until a filesystem operation finishes.
-fn lock_world(world: &World) -> Result<fs::File, String> {
+fn lock_world(world: &World) -> Result<WorldLock, String> {
     let lock = fs::File::options()
         .write(true)
         .create(true)
@@ -20,7 +30,7 @@ fn lock_world(world: &World) -> Result<fs::File, String> {
         .open(world.path.join(LOCK))
         .map_err(|e| e.to_string())?;
     lock.try_lock().map_err(|e| e.to_string())?;
-    Ok(lock)
+    Ok(WorldLock(lock))
 }
 
 #[derive(Clone, Debug, PartialEq)]

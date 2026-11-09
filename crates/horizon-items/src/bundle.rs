@@ -123,6 +123,16 @@ pub struct Contents {
 }
 
 impl Contents {
+    /// A component collection may belong to any item, including an item with
+    /// no previous bundle_contents component. Reuse the same weight model.
+    pub fn from_items(items: &Items, inside: Vec<ItemStack>) -> Self {
+        let weight = contents_weight(items, &inside);
+        Self {
+            items: inside,
+            weight,
+            selected: -1,
+        }
+    }
     /// The bundle's contents; None when the stack is no bundle.
     pub fn of(items: &Items, stack: &ItemStack) -> Option<Self> {
         let inside = contents_of(items, stack)?.to_vec();

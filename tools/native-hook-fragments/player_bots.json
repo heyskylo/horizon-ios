@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "simulate_player_move", "target": "horizon_client::game::native_bots::Game<'_>::native_simulate_player_move"},
+    {"name": "collision_boxes", "target": "horizon_client::game::native_bots::Game<'_>::native_collision_boxes"}
+  ],
+  "rust_summary": "player bots driven by a server mod: one tick of a player's own movement from an input (`native_simulate_player_move`) and the block collision boxes in a box (`native_collision_boxes`).",
+  "doc_summary": "`native_simulate_player_move(uuid, input)` plays one tick of a server player's movement from a bot's keys (forward, strafe, jump, sneak, sprint, yaw, pitch, the last velocity) with the client's own movement code, as `LocalPlayer.aiStep` and `Player.travel` do, and returns the position, velocity and ground it reaches without moving the player; `native_collision_boxes(dimension, aabb)` lists the block collision boxes in a box, as `Level.getBlockCollisions(null, aabb)`. Bundles need \"hooks\": @API:player_bots@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_bots.rs"
+  ]
+}

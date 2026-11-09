@@ -155,6 +155,10 @@ pub struct Meta {
     /// Set for a Minecraft: Java Edition instance: it plays the real game, not Horizon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub java: Option<JavaGame>,
+    /// A Java instance's own settings while it plays Horizon, back when it plays Java again
+    /// ([`switch`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub java_kept: Option<JavaGame>,
 }
 
 /// A Minecraft: Java Edition instance: the real game of one version, with the Java it runs on
@@ -487,6 +491,19 @@ pub fn create_java(name: &str, minecraft: &str) -> Result<Instance, String> {
     )
 }
 
+/// What creating or renaming an instance says when another already has `name`.
+pub fn name_taken(name: &str) -> String {
+    crate::i18n::trf(
+        "There is already an instance called {name}. Choose another name.",
+        &[("name", name)],
+    )
+}
+
+/// `name_taken` for `instance copy-from`, whose flag for another name is `--as`.
+pub fn name_taken_with_flag(name: &str) -> String {
+    format!("{} (`--as NAME`)", name_taken(name))
+}
+
 fn create_in(
     game_home: &Path,
     data: &Path,
@@ -500,7 +517,7 @@ fn create_in(
     }
     let all = list_in(game_home, data);
     if all.iter().any(|i| i.name.eq_ignore_ascii_case(name)) {
-        return Err(format!("There is already an instance called {name}."));
+        return Err(name_taken(name));
     }
     if let Some(from) = from.filter(|f| matches!(f.kind, Kind::Port | Kind::Pack)) {
         return Err(format!(
@@ -619,7 +636,7 @@ fn edit_in(
                 .iter()
                 .any(|i| i.id != instance.id && i.name.eq_ignore_ascii_case(name))
         {
-            return Err(format!("There is already an instance called {name}."));
+            return Err(name_taken(name));
         }
     }
     store.save(data)?;
@@ -720,6 +737,10 @@ fn new_player_name_in(game_home: &Path, data: &Path) -> Result<String, String> {
     }
     Ok(name)
 }
+
+#[path = "instances/switch.rs"]
+mod switch;
+pub use switch::{switch, unkept, Plays, Unkept};
 
 #[cfg(test)]
 #[path = "instances/tests.rs"]

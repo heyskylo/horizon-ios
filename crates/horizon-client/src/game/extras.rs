@@ -61,7 +61,9 @@ impl Game<'_> {
         // For mods (`render.frame-stats`, `native_frame_rate`).
         let now = self.extras_now();
         self.extras.fps.record(now, elapsed.as_secs_f32() * 1000.0);
+        self.recipe_lookups_now();
         self.native_frame(elapsed);
+        self.pvp_frame();
         self.recipes_received_now();
     }
     /// The frame counter for mods: fps, min, 1% low.
@@ -83,6 +85,10 @@ impl Game<'_> {
     /// The server this game connected to last.
     pub(super) fn server_address(&self) -> Option<&str> {
         self.extras.reconnect.address()
+    }
+    /// The server this game connected to last was found on the local network.
+    pub(super) fn server_is_lan(&self) -> bool {
+        self.extras.reconnect.lan()
     }
     /// Auto-reconnect: the server let the player in.
     pub(super) fn extras_joined(&mut self) {
@@ -130,7 +136,13 @@ impl Game<'_> {
     /// (the launcher's session file is gone after the first read).
     pub(super) fn extras_retry(&mut self) -> horizon_client::Result<()> {
         if let Some(retry) = self.title.as_mut().and_then(|t| t.due_retry()) {
-            self.connect_server_with_options(&retry.address, &retry.name, None, retry.lan)?;
+            self.connect_server_with_options(
+                &retry.address,
+                &retry.name,
+                None,
+                retry.lan,
+                self.realm_session,
+            )?;
         }
         Ok(())
     }
@@ -259,13 +271,14 @@ impl Game<'_> {
             };
             extras_hud::draw_minimap(batch, atlas, &mut corners, &look);
         }
+        self.draw_pvp_hud(batch, &mut corners);
         self.native_hud(batch, &mut corners);
     }
     /// The height the status effect icons take at the top right
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).
     fn effect_rows_height(&self) -> f32 {
         let effects = &self.potions.effects.list;
-        if effects.is_empty() || self.screen != Screen::Playing {
+        if effects.is_empty() || self.screen != Screen::Playing || self.pvp_effects_shown() {
             return 0.0;
         }
         let harmful = effects.iter().any(|e| {

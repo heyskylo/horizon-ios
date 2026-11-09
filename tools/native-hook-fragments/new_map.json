@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "new_map", "target": "horizon_client::game::native_hooks::Game<'_>::native_new_map"},
+    {"name": "paint_map", "target": "horizon_client::game::native_hooks::Game<'_>::native_paint_map"}
+  ],
+  "rust_summary": "maps a server mod draws, kept by the world: `native_new_map` and `native_paint_map`.",
+  "doc_summary": "`native_new_map(dimension, colors)` makes a locked map of the world showing a 128 x 128 picture, under the world's next map id, saved with its maps and sent like any map to whoever carries it or sees it framed (Bukkit's `Server.createMap`); `native_paint_map(map_id, colors)` replaces a map's whole picture the same way (`MapCanvas`). Bundles need \"hooks\": @API:new_map@."
+}

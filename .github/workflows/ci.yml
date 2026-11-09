@@ -16,8 +16,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  # A new push to a pull request replaces its running checks; main's runs all finish (releases follow them).
-  group: checks-${{ github.event.pull_request.number || github.sha }}
+  # A new push to a pull request replaces its running checks. On main, the running check finishes and only the
+  # newest push waits behind it: GitHub cancels a waiting run when a newer one joins the group. A burst of merges
+  # queued ~100 main runs on 2026-11-09; the release follows the newest finished main run (docs/release-flow.md).
+  group: checks-${{ github.event.pull_request.number || (github.event_name == 'push' && 'main') || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
@@ -27,19 +29,24 @@ jobs:
   # One job, not one per check: each job takes a runner from the organisation's shared pool, and with every pull request
   # and every merge to main starting this workflow, three jobs a run left the pool's queue tens of minutes deep.
   #
-  # Where: GitHub's runners. With the repository variable SELF_HOSTED_CI=all (for when that pool is full: their 4 CPUs
-  # are about one GitHub runner, docs/ci-runners.md), main's pushes and this repository's own pull requests run on
-  # playhorizon's checks runners (label playhorizon-ci); a fork's pull request never does (and the runners refuse it
-  # themselves). There the build folder persists (CARGO_TARGET_DIR, outside the checkout), so the apt packages,
-  # Python and the Rust cache steps are GitHub's only.
+  # Where (docs/ci-runners.md): our checks runners (label horizon-checks: the desktop's, an isolated user, so a fork's
+  # pull request runs there too) take the pull requests whose number ends in 0 or 1, about what their three runners
+  # can do; GitHub's runners take the others and main's pushes (which also save the Rust cache GitHub's pull request
+  # runs read), so both pools work at once. The repository variable SELF_HOSTED_CI moves them: `all` every job to
+  # ours, `light` (the desktop paused) or `off` every job to GitHub's. On ours the build folder persists
+  # (CARGO_TARGET_DIR, outside the checkout), so the apt packages, Python and the Rust cache steps are GitHub's only.
   verify:
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "linux", "playhorizon-ci"]') || 'ubuntu-latest' }}
+    runs-on: >-
+      ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
+      github.event_name == 'pull_request' && (endsWith(format('{0}', github.event.pull_request.number), '0') ||
+      endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
+      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: runner.environment == 'github-hosted'
         with:
           python-version: '3.12'
@@ -63,6 +70,31 @@ jobs:
           else
             python tools/check_public_tree.py --history
           fi
+      # Our runners as GitHub's: some Python tests compile Rust with a bare `rustc` (GitHub's image has a default
+      # toolchain, our runners' own rustup homes may not), and the GPU tests find no adapter there, so they return
+      # early. Ours have Mesa's software Vulkan for parity; a backend Linux lacks keeps the tests from it, so a pull
+      # request's verify doesn't depend on which pool took it (#8627: a GPU test that flakes on lavapipe).
+      - name: Our runners as GitHub's (a default Rust toolchain, no GPU)
+        if: runner.environment != 'github-hosted'
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          echo "WGPU_BACKEND=dx12" >> "$GITHUB_ENV"
+      # docs/layers.md: a crate depends only on its own layer or a lower one; today's exceptions only shrink.
+      - name: Crates follow the layers
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 tools/check_layers.py ${BASE_SHA:+--base "$BASE_SHA"}
+      # docs/layers.md#built-in-addresses: every built-in outside address in the Horizon layer's home; the rest only shrinks.
+      - name: Built-in addresses stay in their home
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 tools/check_addresses.py ${BASE_SHA:+--base "$BASE_SHA"}
+      # docs/layers.md#file-size: a Rust file over 3000 lines may not grow (pull requests; main has no base to compare).
+      - name: Big files don't grow
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 tools/check_file_size.py ${BASE_SHA:+--base "$BASE_SHA"}
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
@@ -104,10 +136,14 @@ jobs:
   # changes it or a crate it builds is checked here, and so is every push to main: two pull requests can each pass
   # alone and break it together (#2059 and the registry ratings did, 2026-10-26).
   launcher:
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "linux", "playhorizon-ci"]') || 'ubuntu-latest' }}
+    runs-on: >-
+      ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
+      github.event_name == 'pull_request' && (endsWith(format('{0}', github.event.pull_request.number), '0') ||
+      endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
+      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Does this pull request change the launcher or a crate it builds?
@@ -139,18 +175,114 @@ jobs:
         run: |
           cargo +stable fmt --check
           cargo +stable clippy --all-targets --locked -- -D warnings
-          cargo +stable test --locked --lib
+          cargo +stable test --locked --lib --bins
+  # Compile and test Windows ARM64 on an actual ARM64 host, and inspect the resulting PE headers. By hand only
+  # (`gh workflow run checks --ref <branch>`): GitHub's runner queue is the bottleneck, and main's runs gate the
+  # releases (tools/release_train.py waits for them), so neither pull requests nor main's pushes start this
+  # 90-minute job. The Nightly and launcher releases build and check these binaries on every run.
+  windows-arm64:
+    name: Windows ARM64 game and launcher
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 90
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Use every runner core for Cargo
+        shell: pwsh
+        run: |
+          $cores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+          "CARGO_BUILD_JOBS=$cores" >> $env:GITHUB_ENV
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-arm64-game
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+          shared-key: windows-arm64-launcher
+      - name: Check LLVM assembler used by ring
+        shell: pwsh
+        run: |
+          $llvmBin = Join-Path $env:ProgramFiles 'LLVM\bin'
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $llvmBin 'clang.exe'))) {
+            $env:PATH = "$llvmBin;$env:PATH"
+            "PATH=$env:PATH" >> $env:GITHUB_ENV
+          }
+          $clang = Get-Command clang -ErrorAction Stop
+          Write-Output "Using $($clang.Source)"
+          & $clang.Source --version
+      - name: Build the game for native Windows ARM64
+        run: cargo build --release --locked --target aarch64-pc-windows-msvc -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+      - name: Check the game's PE machine
+        run: python tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-client.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
+      - name: Check game DLL imports
+        run: python tools/check_imports.py target/aarch64-pc-windows-msvc/release/horizon-client.exe target/aarch64-pc-windows-msvc/release/horizon-ctl.exe target/aarch64-pc-windows-msvc/release/horizon-prepare.exe target/aarch64-pc-windows-msvc/release/horizon-server.exe
+      - name: Start every game executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $client = 'target/aarch64-pc-windows-msvc/release/horizon-client.exe'
+          $output = & $client --help 2>&1
+          if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -notmatch '--resources') { throw 'horizon-client --help failed' }
+          foreach ($binary in @('horizon-ctl.exe', 'horizon-prepare.exe', 'horizon-server.exe')) {
+            $path = "target/aarch64-pc-windows-msvc/release/$binary"
+            $output = & $path --help 2>&1
+            if ($LASTEXITCODE -ne 0 -or -not $output) { throw "$binary --help failed" }
+          }
+          foreach ($binary in @('horizon-prepare.exe', 'horizon-server.exe')) {
+            $path = "target/aarch64-pc-windows-msvc/release/$binary"
+            $output = & $path --version 2>&1
+            if ($LASTEXITCODE -ne 0 -or -not $output) { throw "$binary --version failed" }
+            Write-Output ($output -join "`n")
+          }
+      - name: Test and build the native Windows ARM64 launcher
+        working-directory: launcher
+        run: |
+          cargo test --release --locked --target aarch64-pc-windows-msvc --lib
+          cargo build --release --locked --target aarch64-pc-windows-msvc
+      - name: Check the launcher's PE machine
+        working-directory: launcher
+        run: python ../tools/check_pe_arch.py arm64 target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
+      - name: Check launcher DLL imports and command-line startup
+        working-directory: launcher
+        # bash, as launcher.yml's check on the same runner: the launcher is a GUI-subsystem program, and a pwsh
+        # `$output = & launcher --version` read no output from it (run 42217014588).
+        shell: bash
+        run: |
+          launcher=target/aarch64-pc-windows-msvc/release/horizon-launcher.exe
+          python ../tools/check_imports.py "$launcher"
+          out=$("$launcher" --version)
+          echo "$out"
+          [[ "$out" == "horizon-launcher "* ]] || { echo "::error::horizon-launcher --version printed '$out'"; exit 1; }
+      - name: Build a native-mod game with the launcher's managed toolchain
+        working-directory: launcher
+        shell: pwsh
+        env:
+          HORIZON_LAUNCHER_HOME: ${{ runner.temp }}\horizon-native-arm64-toolchain
+          HORIZON_NATIVE_TARGET_DIR: ${{ runner.temp }}\horizon-native-arm64-toolchain\target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --release --locked --target aarch64-pc-windows-msvc --lib rust_toolchain::tests::managed_arm64_toolchain_builds_the_game -- --ignored --exact --nocapture
+          $client = Join-Path $env:HORIZON_NATIVE_TARGET_DIR 'fast/horizon-client.exe'
+          python ../tools/check_pe_arch.py arm64 $client
+          python ../tools/check_imports.py $client
   # Most pull requests leave the harnesses to parity-main, which runs them on main a batch of merges at a time
   # (.github/workflows/parity-main.yml; releases wait for it). A pull request still runs them itself when it changes
   # a harness, an oracle, a probe or the runner, or carries the run-parity label (run-parity.yml, when it is added).
   parity-scope:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    # A git diff of this repository's own branch: one of playhorizon's small runners (docs/ci-runners.md).
-    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "playhorizon-light"]') || 'ubuntu-latest' }}
+    # A git diff of this repository's own branch: one of our small runners (horizon-light, docs/ci-runners.md).
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     outputs:
       run: ${{ steps.scope.outputs.run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -162,7 +294,7 @@ jobs:
         run: |
           changed=$(git diff --name-only "$(git merge-base "$BASE_SHA" HEAD)" HEAD)
           harness=$(grep -E '^(tools/test_[a-z0-9_]+_parity\.py|tools/(parity[a-z_]*|lab)\.py|tools/parity_hosts\.json|mods/horizon/src/test/|crates/[^/]+/examples/|crates/horizon-client/src/game/[a-z_]*(fixture|harness)\.rs|\.github/workflows/parity[a-z-]*\.yml)' <<< "$changed" || true)
-          if [ -n "$harness" ] || [[ " $LABELS " == *" run-parity "* ]]; then
+          if [ -n "$harness" ] || [[ " $LABELS " == *" run-parity "* ]] || [[ " $LABELS " == *" frame-identity "* ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "The pull request runs its harnesses: ${harness:-label run-parity}"
           else
@@ -177,6 +309,7 @@ jobs:
       base: ${{ github.event.pull_request.base.sha }}
       head: ${{ github.event.pull_request.head.sha }}
       full: ${{ contains(github.event.pull_request.labels.*.name, 'full-parity') }}
+      frame_identity: ${{ contains(github.event.pull_request.labels.*.name, 'frame-identity') }}
   # Horizon never downloads the game. These jobs need a self-hosted Linux runner
   # (label horizon-game) holding the maintainer's own copy: the official launcher's
   # game directory in HORIZON_MINECRAFT_DIR and the pinned server jar in
@@ -185,13 +318,13 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, horizon-game]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -533,11 +666,11 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, horizon-game]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'

@@ -143,14 +143,14 @@ impl Ticks {
         if let Some(captured) = &mut self.capture {
             captured.push(CapturedTick {
                 fluid: true,
-                kind: fluid as u32,
+                kind: fluid.index() as u32,
                 pos,
                 delay,
             });
             return ScheduleResult::Added;
         }
         let tick = ScheduledTick {
-            kind: TickTypeId(fluid as u32),
+            kind: TickTypeId(fluid.index() as u32),
             pos,
             trigger_tick: game_time.wrapping_add(i64::from(delay)),
             priority: TickPriority::Normal,

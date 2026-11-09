@@ -11,14 +11,13 @@ use horizon_client::{
 use serde_json::Value;
 
 /// One open criterion of a mod's trigger, as the mod's test sees it.
-pub(crate) struct NativeCriterion<'a> {
+pub struct NativeCriterion<'a> {
     /// The criterion's `conditions`, `Null` when it has none. Its `player`
     /// predicate is the game's to test, as vanilla's `SimpleInstance.player`.
-    pub(crate) conditions: &'a Value,
+    pub conditions: &'a Value,
     world: &'a dyn adv::World,
 }
 
-#[allow(dead_code)]
 impl NativeCriterion<'_> {
     /// Whether `stack` passes the item predicate under `key` in the
     /// conditions, as the game's own triggers read an `ItemPredicate`:
@@ -26,7 +25,7 @@ impl NativeCriterion<'_> {
     /// and `damage` components, and the `enchantments` and `damage`
     /// predicates; other components and predicates aren't checked. A missing
     /// key passes, as an absent `Optional<ItemPredicate>` does.
-    pub(crate) fn item(&self, key: &str, stack: &ItemStack) -> bool {
+    pub fn item(&self, key: &str, stack: &ItemStack) -> bool {
         adv::item(&self.conditions[key], &item_view(stack), self.world)
     }
 }
@@ -41,7 +40,6 @@ fn mod_trigger(trigger: &str) -> bool {
 
 /// Helpers for server mods, kept as stable as the hook points.
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Fires the mod's criteria trigger `trigger` (`mymod:pipe_connected`)
     /// for the player with that UUID: vanilla's
@@ -91,9 +89,21 @@ impl Game<'_> {
         .is_some()
     }
 
+    /// `native_trigger_criterion` with its test behind a reference, as a
+    /// trait mod calls it through `dyn Host`: the same players, criteria and
+    /// answer. API @API:host_bridge@.
+    pub(super) fn native_trigger_mod_criterion(
+        &mut self,
+        uuid: u128,
+        trigger: &str,
+        test: &dyn Fn(&NativeCriterion<'_>) -> bool,
+    ) -> bool {
+        self.native_trigger_criterion(uuid, trigger, test)
+    }
+
     /// `trigger` for a mod's trigger, for the player in place.
     fn trigger_mod_criteria(&mut self, trigger: &str, test: &dyn Fn(&NativeCriterion<'_>) -> bool) {
-        let me = self.player_entity();
+        let me = self.player_entity_for(trigger);
         self.trigger(trigger, |conditions, world| {
             passes(conditions, &me, world, test)
         });
@@ -129,6 +139,9 @@ mod tests {
     impl adv::World for Plains {
         fn dimension(&self) -> &str {
             "minecraft:overworld"
+        }
+        fn weather(&self) -> (bool, bool) {
+            (false, false)
         }
         fn biome(&self, _: [i32; 3]) -> String {
             "minecraft:plains".into()

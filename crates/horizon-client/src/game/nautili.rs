@@ -2,6 +2,7 @@
 //! pufferfish, feeding, the saddle and armour, riding, and the zombie
 //! nautilus a drowned with a trident sometimes rides.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     items::ItemStack,
     mobs::{Species, nautilus},
@@ -49,8 +50,8 @@ impl Game<'_> {
             .map(|t| t.iter().cloned().collect())
             .unwrap_or_default();
         let food = nautilus::is_food(m, item, &taming);
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
-            || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
+        let sneaking =
+            self.keys.held(Action::Sneak) || self.keys.raw(&winit::keyboard::KeyCode::ShiftRight);
         let tame = m.extra.tame;
         if m.is_baby() {
             // Animal.mobInteract: food grows a baby up by a tenth.
@@ -77,11 +78,12 @@ impl Game<'_> {
             if !tame && food {
                 // tryToTame: one time in three.
                 self.use_nautilus_food(item);
+                let acting = self.acting_player_uuid();
                 let m = &mut self.mobs[index];
                 let tamed = m.random.next_int_bound(3).unwrap_or(1) == 0;
                 if tamed {
                     m.extra.tame = true;
-                    m.extra.owner = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+                    m.extra.owner = Some(acting);
                     m.persistent = true;
                     m.nav_stop();
                     m.ai.target = None;
@@ -115,12 +117,18 @@ impl Game<'_> {
                 let sound = nautilus::saddle_sound(m);
                 self.nautilus_sound(index, sound);
                 self.consume_held();
+                let id = self.mobs[index].id;
+                let pos = self.mobs[index].position;
+                self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
                 return true;
             }
             if item.ends_with("_nautilus_armor") && tame && m.extra.body.is_none() {
                 m.extra.body = Some(item.into());
                 self.nautilus_sound(index, "item.armor.equip_nautilus");
                 self.consume_held();
+                let id = self.mobs[index].id;
+                let pos = self.mobs[index].position;
+                self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
                 return true;
             }
         }
@@ -132,9 +140,8 @@ impl Game<'_> {
             }
             self.break_leash(id, true, false);
             self.yaw = self.mobs[index].yaw;
-            self.riding = Some(id);
             self.mount.reset_jump();
-            self.trigger_player("minecraft:started_riding");
+            self.start_riding(id);
             return true;
         }
         // Animal.mobInteract: a tame adult fed falls in love (not a zombie).

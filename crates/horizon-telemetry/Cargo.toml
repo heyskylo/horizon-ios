@@ -3,10 +3,13 @@ name = "horizon-telemetry"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 description = "Opt-in data collection: the player's consent, the payloads, the local outbox and its upload"
 
 [dependencies]
+horizon-addresses = { path = "../horizon-addresses" }
+# The machine's description (horizon-system, through the platform's API).
+horizon-platform = { path = "../horizon-platform" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # zstd in pure Rust: batches are compressed before they leave and checked when they arrive.

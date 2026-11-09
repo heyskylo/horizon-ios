@@ -351,6 +351,13 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
             super::finalize::Reason::Natural,
         );
     }
+    // Drowned.finalizeSpawn, once Zombie.finalizeSpawn is done: a nautilus
+    // shell in an empty offhand, as a guaranteed drop. Java draws it from the
+    // level's random; this route stands in the mob's own, as above.
+    if m.species() == S::Drowned && m.extra.off_hand.is_none() && m.random.next_float() < 0.03 {
+        super::finalize::set_item(m, super::finalize::OFFHAND, "minecraft:nautilus_shell");
+        super::finalize::set_drop_chance(m, super::finalize::OFFHAND, 2.0);
+    }
 }
 /// A baby from `Animal.spawnChildFromBreeding`: `getBreedOffspring` creates
 /// it without `finalizeSpawn`, so it never ran `Mob.finalizeSpawn`. Undoes
@@ -449,6 +456,26 @@ mod tests {
             Attr::FollowRange,
             "minecraft:random_spawn_bonus"
         ));
+    }
+    /// #11651: unfinalized spawns (EntityType.create) skip finalizeSpawn's rolls.
+    #[test]
+    fn unfinalized_spawns_skip_finalize_rolls() {
+        let Some(types) = types() else { return };
+        let kind = std::sync::Arc::new(types.types.get("minecraft:zombie").unwrap().clone());
+        let m = Mob::new(
+            1,
+            kind,
+            horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        assert!(!has_modifier(
+            &m,
+            Attr::FollowRange,
+            "minecraft:random_spawn_bonus"
+        ));
+        assert!(!m.extra.left_handed);
+        assert!(m.extra.head.is_none());
+        assert!(m.extra.main_hand.is_none());
     }
     /// `Zombie` / `AbstractSkeleton` halloween garb: 25% of empty heads, never
     /// on other mobs, and not when it is not Halloween.

@@ -23,6 +23,13 @@ pub(super) struct PackImage {
 }
 
 impl PackImage {
+    pub(super) fn reset_history(&mut self) {
+        self.view = None;
+        self.copy = None;
+        self.before = None;
+        self.made_for = [0; 2];
+    }
+
     pub(super) fn sample_type(&self, features: wgpu::Features) -> wgpu::TextureSampleType {
         self.format
             .sample_type(None, Some(features))
@@ -30,12 +37,15 @@ impl PackImage {
     }
 }
 
-/// The images `image.*` declares.
-pub(super) fn images(defs: Vec<CustomImage>) -> Vec<PackImage> {
+/// The images `image.*` declares; `packed_float`: this device stores into `Rg11b10Ufloat`
+/// (`format`).
+pub(super) fn images(defs: Vec<CustomImage>, packed_float: bool) -> Vec<PackImage> {
     defs.into_iter()
         .map(|def| PackImage {
-            format: format(def.format),
-            dimension: if def.is_3d() {
+            format: format(def.format, packed_float),
+            dimension: if def.is_1d() {
+                wgpu::TextureViewDimension::D1
+            } else if def.is_3d() {
                 wgpu::TextureViewDimension::D3
             } else {
                 wgpu::TextureViewDimension::D2
@@ -51,8 +61,20 @@ pub(super) fn images(defs: Vec<CustomImage>) -> Vec<PackImage> {
         .collect()
 }
 
+/// The texture dimension a view of `view` needs.
+fn texture_dimension(view: wgpu::TextureViewDimension) -> wgpu::TextureDimension {
+    match view {
+        wgpu::TextureViewDimension::D1 => wgpu::TextureDimension::D1,
+        wgpu::TextureViewDimension::D3 => wgpu::TextureDimension::D3,
+        _ => wgpu::TextureDimension::D2,
+    }
+}
+
 /// The wgpu format of an image's internal format: a storage format of the same channels.
-pub(super) fn format(f: Format) -> wgpu::TextureFormat {
+/// `R11F_G11F_B10F` is itself where the device stores into it (`packed_float`): no alpha, so it
+/// reads 1 there, as Iris 1.11.7 read it with a probe pack of ours (#10490); elsewhere an
+/// `Rgba16Float` stand-in, which keeps an alpha.
+pub(super) fn format(f: Format, packed_float: bool) -> wgpu::TextureFormat {
     use wgpu::TextureFormat as T;
     let pick = |r, rg, rgba| match f.channels {
         1 => r,
@@ -60,6 +82,9 @@ pub(super) fn format(f: Format) -> wgpu::TextureFormat {
         _ => rgba,
     };
     match (f.kind, f.bits) {
+        (Kind::Unorm, 10) => T::Rgb10a2Unorm,
+        (Kind::Uint, 10) => T::Rgb10a2Uint,
+        (Kind::Snorm, 16) => pick(T::R16Snorm, T::Rg16Snorm, T::Rgba16Snorm),
         (Kind::Int, 8) => pick(T::R8Sint, T::Rg8Sint, T::Rgba8Sint),
         (Kind::Int, 16) => pick(T::R16Sint, T::Rg16Sint, T::Rgba16Sint),
         (Kind::Int, _) => pick(T::R32Sint, T::Rg32Sint, T::Rgba32Sint),
@@ -67,6 +92,7 @@ pub(super) fn format(f: Format) -> wgpu::TextureFormat {
         (Kind::Uint, 16) => pick(T::R16Uint, T::Rg16Uint, T::Rgba16Uint),
         (Kind::Uint, _) => pick(T::R32Uint, T::Rg32Uint, T::Rgba32Uint),
         (Kind::Float, 32) => pick(T::R32Float, T::Rg32Float, T::Rgba32Float),
+        (Kind::Float, 11) if packed_float => T::Rg11b10Ufloat,
         (Kind::Float, _) => pick(T::R16Float, T::Rg16Float, T::Rgba16Float),
         (Kind::Snorm, _) => pick(T::R8Snorm, T::Rg8Snorm, T::Rgba8Snorm),
         (Kind::Unorm, 16) => pick(T::R16Unorm, T::Rg16Unorm, T::Rgba16Unorm),
@@ -76,8 +102,12 @@ pub(super) fn format(f: Format) -> wgpu::TextureFormat {
 
 /// Whether this device can make `def`: its format's features, and a size in pixels within the
 /// device's limits.
-pub(super) fn makeable(device: &wgpu::Device, def: &CustomImage) -> Result<(), String> {
-    let format = format(def.format);
+pub(super) fn makeable(
+    device: &wgpu::Device,
+    def: &CustomImage,
+    packed_float: bool,
+) -> Result<(), String> {
+    let format = format(def.format, packed_float);
     let missing = format.required_features() - device.features();
     if !missing.is_empty() {
         return Err(format!(
@@ -85,7 +115,9 @@ pub(super) fn makeable(device: &wgpu::Device, def: &CustomImage) -> Result<(), S
         ));
     }
     let limits = device.limits();
-    let largest = if def.is_3d() {
+    let largest = if def.is_1d() {
+        limits.max_texture_dimension_1d
+    } else if def.is_3d() {
         limits.max_texture_dimension_3d
     } else {
         limits.max_texture_dimension_2d
@@ -128,11 +160,7 @@ pub(super) fn resize_images(
                     },
                     mip_level_count: 1,
                     sample_count: 1,
-                    dimension: if image.dimension == wgpu::TextureViewDimension::D3 {
-                        wgpu::TextureDimension::D3
-                    } else {
-                        wgpu::TextureDimension::D2
-                    },
+                    dimension: texture_dimension(image.dimension),
                     format: image.format,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | usage,
                     view_formats: &[],
@@ -298,6 +326,11 @@ impl StandIn {
     }
 }
 
+pub(super) fn reset_stand_ins(device: &wgpu::Device, images: &mut Vec<StandIn>) {
+    let wanted = images.iter().map(|i| (i.format, i.dimension)).collect();
+    *images = stand_ins(device, wanted);
+}
+
 /// One stand-in for each format and dimension of `wanted`.
 pub(super) fn stand_ins(
     device: &wgpu::Device,
@@ -321,11 +354,7 @@ pub(super) fn stand_ins(
                     },
                     mip_level_count: 1,
                     sample_count: 1,
-                    dimension: if dimension == wgpu::TextureViewDimension::D3 {
-                        wgpu::TextureDimension::D3
-                    } else {
-                        wgpu::TextureDimension::D2
-                    },
+                    dimension: texture_dimension(dimension),
                     format,
                     usage: wgpu::TextureUsages::STORAGE_BINDING
                         | wgpu::TextureUsages::COPY_DST
@@ -378,6 +407,12 @@ pub(super) struct Buffers {
 }
 
 impl Buffers {
+    pub(super) fn reset_history(&mut self) {
+        self.group = None;
+        self.buffers.clear();
+        self.made_for = [0; 2];
+    }
+
     /// The layout of `objects`, bound in `stages`; each buffer is at least its entry in
     /// `minimums` long.
     pub(super) fn new(

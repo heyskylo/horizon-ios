@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "run_command_captured", "target": "horizon_client::game::native_server::Game<'_>::native_run_command_captured"}
+  ],
+  "rust_summary": "a console command run with its result and answer kept (`native_run_command_captured`).",
+  "doc_summary": "`native_run_command_captured(line)` runs `line` as the console (a mod's registered command going to the mods, anything else to vanilla's) and returns a `NativeCommandResult`: whether it ran, vanilla's result value and the lines it answered with, which reach no one else. Bundles need \"hooks\": @API:run_command_captured@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_server.rs"
+  ]
+}

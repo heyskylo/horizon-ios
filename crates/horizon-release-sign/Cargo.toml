@@ -3,7 +3,7 @@ name = "horizon-release-sign"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.85"
+rust-version.workspace = true
 description = "Signed release checksums: release.yml signs SHA256SUMS, the launcher and horizon-server check them before installing"
 
 [dependencies]

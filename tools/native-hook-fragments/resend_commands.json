@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "resend_commands", "target": "horizon_client::game::native_permissions::Game<'_>::native_resend_commands"}
+  ],
+  "rust_summary": "a player's command tree sent again, the mods asked anew (`native_resend_commands`), as Bukkit's `Player.updateCommands`.",
+  "doc_summary": "`native_resend_commands(player)` sends a player their command tree again in the next server tick, with `native_player_commands_sent`, its v2 and the permission nodes of the mods' commands asked anew, as Bukkit's `Player.updateCommands`: after a permissions mod changed what they may use. Bundles need \"hooks\": @API:resend_commands@.",
+  "comments": ["crates/horizon-client/src/game/native_permissions.rs"]
+}

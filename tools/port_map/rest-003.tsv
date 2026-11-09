@@ -62,25 +62,25 @@ KeyMapping.Category.register	skip:data		category registry
 KeyboardHandler.handleChunkDebugKeys	missing		minor: F3+E, F, L, M, O, U, V, W do nothing (section paths, fog, smart cull, multi-draw, octree, frustum, section visibility, wireframe); no keybinds exist for them
 KeyboardHandler.copyCreateBlockCommand	port	crates/horizon-client/src/game/debug_keys.rs::Game::copy_recreate_command	
 KeyboardHandler.copyCreateEntityCommand	port	crates/horizon-client/src/game/debug_keys.rs::Game::copy_recreate_command	
-KeyboardHandler.charTyped	port	crates/horizon-client/src/game.rs::Game::window_event	typed text routed to the open screen
-KeyboardHandler.textInput	port	crates/horizon-client/src/game.rs::Game::window_event	typed text routed to the open screen
+KeyboardHandler.charTyped	port	crates/horizon-client/src/game/window_handler.rs::Game::window_event	typed text routed to the open screen
+KeyboardHandler.textInput	port	crates/horizon-client/src/game/window_handler.rs::Game::window_event	typed text routed to the open screen
 KeyboardHandler.textEditing	port	crates/horizon-client/src/game/ime.rs::Game::ime_preedit	WindowEvent::Ime(Preedit) draws the composition in the focused field
 KeyboardHandler.submitPreeditEvent	inline	crates/horizon-client-render/src/preedit.rs::set_preedit	the preedit reaches the screen's field directly, and Commit types the text
-Minecraft.<init>	inline	crates/horizon-client/src/game.rs::run_loading	gap: minor: no unclean-start recovery; startedCleanly is only a default in options_file.rs
-Minecraft.onGameLoadFinished	missing		minor: startedCleanly is never written after load
+Minecraft.<init>	inline	crates/horizon-client/src/game/resource_loader.rs::run_loading	the last start's startedCleanly is read by unclean_start_recovery (fullscreen dropped when it is false), then this start is marked unfinished until the handoff
+Minecraft.onGameLoadFinished	inline	crates/horizon-client/src/game/loading_screen.rs::Loading::finish	the handoff's last two steps: startedCleanly set true and the options saved; the initial screens come from the menu handoff and there is no load-time telemetry
 Minecraft.createTitle	missing		minor: the window title is always Horizon (with_title in game.rs), no version or world type
 Minecraft.createUserApiService	skip:service		
 Minecraft.abortResourcePackRecovery	missing		minor: no automatic abort when a pack keeps failing; errors stay on the Packs page
 Minecraft.addResourcePackLoadFailToast	port	crates/horizon-client/src/game/packs.rs::Game::reload_packs	gap: minor: the failure is a Packs-page error, not a toast
 Minecraft.triggerResourcePackRecovery	missing		minor: a failing pack at runtime is not removed; reload_packs only reports reload errors
-Minecraft.run	port	crates/horizon-client/src/game.rs::run_event_loop	the loop that runs the game to its end, the window event loop or Game::run_headless when headless, then the crash report as emergencySaveAndCrash does; run_with is the process entry that reaches it
+Minecraft.run	port	crates/horizon-client/src/game/loading_screen.rs::run_event_loop	the loop that runs the game to its end, the window event loop or Game::run_headless when headless, then the crash report as emergencySaveAndCrash does; run_with is the process entry that reaches it
 Minecraft.saveReport	port	crates/horizon-client-render/src/crash.rs::Report::save	
 Minecraft.saveReportAndShutdownSoundManager	port	crates/horizon-client-render/src/crash.rs::Report::save	gap: minor: sound shutdown is not part of Report::save
 Minecraft.selfTest	skip:debug		dev self-test, disabled in vanilla (the IS_RUNNING_IN_IDE && false check)
-Minecraft.exitWorldAndClose	port	crates/horizon-client/src/game.rs::Game::close_world	
+Minecraft.exitWorldAndClose	port	crates/horizon-client/src/game/world_session.rs::Game::close_world	
 Minecraft.close	port	crates/horizon-client/src/game.rs::Game::finish_close_world	shutdown of the session
 Minecraft.renderFrame	port	crates/horizon-client/src/game.rs::Game::render	
-Minecraft.pauseIfInactive	port	crates/horizon-client/src/game.rs::Game::window_event	gap: minor: pauses at the focus-lost event, not after 500 ms without focus
+Minecraft.pauseIfInactive	port	crates/horizon-client/src/game/window_handler.rs::Game::window_event	gap: minor: pauses at the focus-lost event, not after 500 ms without focus
 Minecraft.constructProfiler	skip:debug		profiler plumbing
 Minecraft.finishProfilers	skip:debug		profiler plumbing
 Minecraft.resizeGui	port	crates/horizon-client-input/src/window.rs::calculate_scale	gap: minor: GUI scale only; no screen resize or mouse resync in this fn
@@ -91,17 +91,17 @@ Minecraft.isLevelRunningNormally	port	crates/horizon-client/src/clock.rs::TickRa
 Minecraft.isMultiplayerServer	skip:other		no single predicate; remote and LAN code test their own state
 Minecraft.getQuickActionsDialog	port	crates/horizon-client/src/game/quick_actions.rs::Game::open_quick_actions	key.quickActions opens the tag's dialog, or minecraft:quick_actions when it names several
 Minecraft.disconnectFromWorld	port	crates/horizon-client/src/game/remote.rs::Game::leave_server	gap: minor: only the remote exit; local worlds exit via close_world
-Minecraft.disconnectWithProgressScreen	inline	crates/horizon-client/src/game.rs::Game::close_world	the exit is folded into the world close
+Minecraft.disconnectWithProgressScreen	inline	crates/horizon-client/src/game/world_session.rs::Game::close_world	the exit is folded into the world close
 Minecraft.clearClientLevel	inline	crates/horizon-client/src/game/remote.rs::Game::leave_server	level teardown is part of leave_server
 Minecraft.setScreenAndShow	skip:other		Horizon switches the screen field; no forced frame render needed
 Minecraft.updateLevelInEngines	skip:other		one world state in Horizon; no engines to update
 Minecraft.telemetryOptInExtra	skip:service		
 Minecraft.extraTelemetryAvailable	skip:service		
 Minecraft.allowsTelemetry	skip:service		
-Minecraft.allowsMultiplayer	skip:service		
+Minecraft.allowsMultiplayer	port	crates/horizon-client-render/src/ban_notice.rs::AccountStatus::allows_multiplayer	servers allowed, no multiplayer ban and no forced name change; the title screen enables its Multiplayer and Realms buttons from it
 Minecraft.allowsRealms	skip:service		
 Minecraft.friendsEnabled	skip:service		
-Minecraft.handleGlobalKeyPress	port	crates/horizon-client/src/game.rs::Game::key_pressed	F11 and F2 shortcuts; the friends key is service
+Minecraft.handleGlobalKeyPress	port	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	F11 and F2 shortcuts; the friends key is service
 Minecraft.toggleFullscreen	port	crates/horizon-client/src/game/options.rs::Game::toggle_fullscreen	
 Minecraft.toggleFriendsScreen	skip:service		
 Minecraft.allowChatOnlyWithFriend	skip:service		
@@ -123,7 +123,7 @@ MouseHandler.fillMousePositionDetails	skip:debug		crash report mouse details
 MouseHandler.onDrop	port	crates/horizon-client/src/title.rs::Title::drop_file	a file dropped on the window joins the create screen's data packs
 MouseHandler.getScaledYPos	port	crates/horizon-client-input/src/window.rs::scaled_pos	
 MouseHandler.resyncMousePosition	skip:other		winit reports the cursor position; no SDL global-state resync
-MouseHandler.releaseMouse	port	crates/horizon-client/src/game.rs::Game::capture	release path (capture false)
+MouseHandler.releaseMouse	port	crates/horizon-client/src/game/pointer_capture.rs::Game::capture	release path (capture false)
 MouseHandler.drawDebugMouseInfo	skip:debug		F3 mouse coordinates
 NarratorStatus.shouldNarrateSystemOrChat	port	crates/horizon-narrator/src/lib.rs::Status::should_narrate_system_or_chat	All, System or Chat; gates saySystemChatQueued (GameNarrator::say_system_chat_queued)
 OptionInstance.createBoolean	skip:data		option definitions live in options_file.rs

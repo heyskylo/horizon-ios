@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "toast_add",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_toast_add",
+      "neoforge": "ToastAddEvent",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a new toast about to be queued, cancellable (`native_toast_add`).",
+  "doc_summary": "A new toast is about to be queued: `native_toast_add(kind, id, cancel)`, NeoForge's `ToastAddEvent`. `kind` is `advancement`, `recipe`, `tutorial`, `system` or `now_playing`; `id` is the advancement id, the first recipe id, the tutorial hint, the system toast's id, or empty. Updates to a toast already up are not adds. Set `cancel` and it isn't queued, shown or sounded. Bundles need \"hooks\": @API:toast_add@."
+}

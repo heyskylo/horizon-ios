@@ -17,6 +17,8 @@ Strider.StriderPathNavigation.createPathFinder	port	crates/horizon-client/src/mo
 Strider.StriderPathNavigation.isStableDestination	port	crates/horizon-client/src/mobs/nav.rs::Mob::stable_destination	lava counts as stable for lava walkers
 Vex.registerGoals	port	crates/horizon-client/src/mobs/vex.rs::register	float, charge, random move, look goals, owner and player targets
 Vex.restoreFrom	missing		no mob `restoreFrom`: a vex that changes dimension keeps no owner link
+Vex.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	owner is written as the owner's UUID, nothing when the vex has no owner; bound_pos only when bound, life_ticks only with a limited life
+Vex.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	bound_pos, life_ticks (no limit when absent) and owner, kept as the UUID the save names
 Vex.getVexFlag	inline	crates/horizon-client/src/mobs/vex.rs::Charge::can_continue	the charging bit is the plain extra.flag; there is no flags byte
 Vex.setVexFlag	inline	crates/horizon-client/src/mobs/vex.rs::Charge::start	start sets extra.flag; stop and tick clear it
 Vex.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	Vex arm: populate (sword) then enchant
@@ -101,12 +103,12 @@ SulfurCube.loadFromBucketTag	inline	crates/horizon-client/src/mobs/sulfur_cube.r
 SulfurCube.requiresCustomPersistence	port	crates/horizon-client/src/mobs/ai.rs::requires_custom_persistence	holding a block or let out of a bucket
 SulfurCube.hurtServer	port	crates/horizon-client/src/mobs/sulfur_cube.rs::accepts_damage	fire or explosion primes; a held block shrugs off blows and only knocks back
 SulfurCube.matchingArchetypes	port	crates/horizon-client/src/mobs/sulfur_cube.rs::archetype_of	one archetype per item, not a list
-SulfurCube.tickFuse	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::ai_step	gap: minor: fuse countdown and blast, but no leash drop or on-death effects at the blast
+SulfurCube.tickFuse	port	crates/horizon-client/src/mobs/sulfur_cube.rs::tick_fuse	gap: minor: fuse countdown and blast, but no leash drop or on-death effects at the blast
 SulfurCube.primeWhenOnPoweredPosition	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::sulfur_cube_power_priming	lit when the best neighbour signal at the cube is not 0; no block has an own signal
 SulfurCube.customServerAiStep	port	crates/horizon-client/src/mobs/sulfur_cube.rs::ai_step	timers, buoyancy, facing, growing up and player push
 SulfurCube.collectEquipmentChanges	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::ai_step	goals are disabled while a block is held; archetype effects are read on demand, not applied as modifiers
 SulfurCube.equipItem	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::interact_sulfur_cube	swallows the item; the old block is ejected
-SulfurCube.applyContactDamage	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::player_push	gap: minor: contact damage reaches only the player, not other entities
+SulfurCube.applyContactDamage	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::mob_contacts	gap: minor: ordinary mob targets plus existing player_push only; other entity kinds remain outside this adapter
 SulfurCube.isEquippableInSlot	port	crates/horizon-client/src/mobs/sulfur_cube.rs::swallowable	swallowable items only
 SulfurCube.canUseSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_use_slot	body slot needs alive and adult
 SulfurCube.canHoldItem	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::sulfur_cube_pickups	empty body, adult and not on a pickup timer
@@ -149,3 +151,6 @@ HoglinAi.setAttackTarget	inline	crates/horizon-client/src/mobs/piglin.rs::regist
 HoglinAi.setAttackTargetIfCloserThanCurrent	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	NearestTarget keeps the closest target and skips pacified hoglins
 HoglinAi.getSoundForActivity	inline	crates/horizon-client/src/mobs/ai.rs::play_ambient	gap: player: the retreat grunt near repellents or while retreating is missing; the angry grunt while a target is set is ported
 Evoker.EvokerAttackSpellGoal.createSpellEntity	port	crates/horizon-client/src/mobs/illager.rs::fang_floor	gap: minor: the sturdy-face test is a full-collision test on the block below; the fang event comes from cast_fangs
+SulfurCube.doPush	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::mob_contacts	mob contact stage only; ordinary AI push impulse remains in ai::push_entities
+Slime.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: an AbstractCubeMob that is ageable but never a baby
+MagmaCube.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: same as the slime

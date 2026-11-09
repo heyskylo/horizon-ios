@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "max_players", "target": "horizon_client::game::native_player_reads::Game<'_>::native_max_players"},
+    {"name": "server_dir", "target": "horizon_client::game::native_player_reads::Game<'_>::native_server_dir"},
+    {"name": "log_file", "target": "horizon_client::game::native_player_reads::Game<'_>::native_log_file"}
+  ],
+  "rust_summary": "the server's player limit, folder and log file (`native_max_players`, `native_server_dir`, `native_log_file`).",
+  "doc_summary": "`native_max_players()` gives the server's player limit (Bukkit's `Server.getMaxPlayers`), `native_server_dir()` a dedicated server's folder and `native_log_file()` the `latest.log` this run writes. Bundles need \"hooks\": @API:server_files@.",
+  "comments": ["crates/horizon-client/src/game/native_player_reads.rs"]
+}

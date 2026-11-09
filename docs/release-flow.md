@@ -13,7 +13,7 @@ reopened; labels never start it):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
-| `verify` | GitHub `ubuntu-latest`; with `SELF_HOSTED_CI=all`, playhorizon's checks runners for main's pushes and this repository's own pull requests, never a fork's ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job (one runner from the organisation's shared pool per run). Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (playhorizon) | ~8 min |
+| `verify` | Our checks runners (label `horizon-checks`, the desktop's) for the pull requests whose number ends in 0 or 1, forks included; GitHub `ubuntu-latest` for the others and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
 | `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
@@ -34,6 +34,10 @@ minutes on a Mac mini runner, while five other pull requests' jobs queued behind
 its job runs on playhorizon's runner only (4 harnesses at a time), and waits for it while that runner is busy
 instead of taking the Mac mini's. Labels don't start `checks`: add it when opening the pull request
 (`gh pr create --label full-parity`), or before the next push.
+
+A pull request that must leave the picture alone (HDR, shader packs) carries the `frame-identity` label: its job also
+runs `frame_identity` ([parity-workflow.md](parity-workflow.md)), which no automatic selection picks, since it fails
+any change that moves the picture on purpose. Like `full-parity`, it is read when the job starts.
 
 Horizon never downloads the game, so harnesses that compare with vanilla run only where the maintainer's own
 copy is: the Mac mini and playhorizon (below). Their runners run as the maintainer's account and keep their checkout
@@ -85,26 +89,21 @@ release's macOS build back. Each keeps its own checkout, `target/` and Rust inst
 `_work/horizon/shared-local` links to the first's, so they share the vanilla data, the preparations (one at a
 time, under a lock) and the parity passes and slots.
 
-**The desktop's runner (retired).** On 2026-10-26 the maintainer asked that CI stop using his desktop: its services are
-stopped and `ludodesktop-horizon` has no label a job asks for (only `self-hosted`, `Linux`, `X64`), so nothing waits for
-it. What follows describes it as it ran. It ran on the maintainer's Linux desktop while nobody used it: its
-screen locked, or untouched for 15 minutes (his rule, 2026-10-26). `tools/ci/linux-runner.sh install`, run there as
-him, registers it and installs two systemd user services: `horizon-runner` (the runner, in
-`~/.actions-runners/horizon`, nice 19, in `horizon-ci.slice` with CPU and I/O weight 20, half the threads (on all of
-them the CPU package reached 92–96 °C) and memory capped at two thirds of the RAM; `CARGO_BUILD_JOBS` and the harness slots at 8, after the machine froze under ~7 cold cargo
-builds on 2026-10-14; its own Rust install; the JDK, sccache and the build libraries from nixpkgs; its own
-`vscreen` so no game it starts reaches his screen) and `horizon-runner-pause` (`tools/ci/runner_pause.py`), the
-only thing that starts the runner. The watcher stops it at once on keyboard, mouse or gamepad input (read from
-`/dev/input`: only whether bytes came, never what), while an unlocked session has had input in the last 15 minutes,
-while the CPU package is at 90 °C or more, while a game runs (Steam, gamescope, Wine, Proton or Minecraft
-processes, fleet-load's own detection, or a process outside the CI slice using the GPU at 50 % or more), or while
-`~/.actions-runners/horizon/pause` exists, and starts it again 5 minutes after the last such sign. A job already
-under way is throttled to 2 threads at the lowest weight and the runner stops after it: freezing the job would make
-GitHub drop it as lost and the harnesses time out. Old pull requests' `runner-env.sh` know only the Mac: the
-runner's `.env` and `.path` give their jobs Python, the JDK and the vanilla data (`HORIZON_SHARED_SOURCE`) all the
-same. The nightly audit and parity-main stay on the Mac mini's runners: the audit compares with the previous night,
-so it stays on one platform, and a parity-main job slowed down on the desktop because he came back could time out,
-and its failures bisect and comment on merges.
+**The desktop's runner.** Since 2026-11-03 (the maintainer's decision) `ludodesktop-horizon` takes pull requests'
+parity jobs too, beside the Mac mini and playhorizon: labels `self-hosted`, `X64`, `horizon-game`, `ludodesktop`, and no
+`Linux`, so ci.yml's by-hand `[self-hosted, linux, horizon-game]` jobs stay on playhorizon. It is declared in the
+maintainer's NixOS configuration (`services.github-runners`, his private fleet repo), not installed by
+`tools/ci/linux-runner.sh`. A fork's job reaches it only through `run-parity`, so it runs as a system user, `gha`, with
+no sudo, SSH keys or logins; its service sees no `/home` and no device (no GPU: Vulkan is Mesa's lavapipe, on an Xvfb
+of its own), the system is read-only to it, and it runs in a slice at CPU and I/O weight 20, at most 16 of the 24
+threads, 20 GB of memory, nice 10 (`CARGO_BUILD_JOBS=16`, 8 harness slots). It runs only while the maintainer isn't at
+the machine: a timer stops it within a minute when he is at the screen (an unlocked session) and starts it 2 minutes
+after he leaves. A job it stops fails: rerun it, and it goes to whichever runner is free. Its vanilla data is his own
+copy, kept in the runner's folder; a clean-up before each start keeps its build folders under 40 GB and its 2 newest
+preparations. The nightly audit and parity-main stay on the Mac mini's runners: the audit compares with the previous
+night, so it stays on one platform, and a parity-main job stopped because he came back would bisect and comment on
+merges for nothing. The desktop is no parity host for `tools/parity.py --hosts` any more (its `tools/parity_hosts.json`
+entry points at the 10-26 setup, whose pause file stays set, so it refuses work).
 
 **playhorizon's runner.** `playhorizon-horizon` runs on a server a hosting partner lends the project (Ubuntu, 8
 AMD EPYC threads, 30 GB, in Detroit; reachable only through the maintainer's tailnet). Nobody sits at it, so the
@@ -116,8 +115,8 @@ Without Nix, `linux-runner.sh` takes the build libraries, the JDK, sccache, Xvfb
 (lavapipe; there is no GPU) from apt, and Python 3.13 from uv. The partner can reach the machine, so gh is not
 logged in there: the registration token comes from another machine (`RUNNER_TOKEN`), and no job with secrets may
 run there (parity has none). It is also a parity host (`playhorizon` in `tools/parity_hosts.json`, 3 jobs on CPUs 0-3). Since
-2026-10-26 it has the `horizon-game` label: pull requests' parity jobs run there or on the Mac mini, and `full-parity`
-ones only there.
+2026-10-26 it has the `horizon-game` label: pull requests' parity jobs run there, on the Mac mini or on the desktop, and
+`full-parity` ones only there.
 
 ## Merging
 
@@ -126,7 +125,7 @@ requires `verify` for everyone, and Ludovic's review for the files `.github/CODE
 and ships releases). Branches don't have to be up to date with main: main's own `checks` run catches the rare
 semantic conflict.
 
-**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277) and
+**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x, itarqos5) and
 Ludovic. The orchestrator's agents prove only the risky pull requests (below), so a contributor's ordinary pull
 request doesn't wait for them.
 
@@ -277,15 +276,33 @@ the notes.
 | Archive | Runs on | Checks |
 | --- | --- | --- |
 | `horizon-linux-x86_64.tar.gz` | GitHub `ubuntu-22.04` (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
+| `horizon-linux-musl-x86_64.tar.gz` | Alpine 3.22 in Docker on GitHub `ubuntu-22.04`, targeting `x86_64-unknown-linux-musl` | musl loader and libraries only (`tools/check_imports.py --musl`), CPU baseline and every program's startup checked inside Alpine |
 | `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
-| `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`) |
+| `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is x64 |
+| `horizon-windows-arm64.zip` | GitHub `windows-11-vs2026-arm`, built for `aarch64-pc-windows-msvc`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is ARM64 and binaries start on the native runner |
 | `horizon-macos-arm64.zip` | The Mac mini's runner (`vars.MAC_RUNNER=macos-latest` sends it to GitHub) | system libraries only (`otool -L`); a 1500-frame offscreen run of a new world (about 12 s; 300 frames end before the world has loaded) with resources prepared from the runner's own Minecraft (`--offscreen --world smoke --frames 1500 --smoke-report`: frames drawn, chunks generated and meshed, a player, no error) |
 | `horizon-macos-x64.zip` | The same runner, cross-built for `x86_64-apple-darwin` (#1161) | as `horizon-macos-arm64.zip`, every program and the 1500-frame run under Rosetta 2; only the arm64 build's `smoke-test.json` is published |
 
-Each builds `horizon-client`, `horizon-ctl` and `horizon-prepare` in release mode, checks all three exist, starts
-each one (`--help`, `--version`), packages the folder with `cargo run -p xtask -- package` and archives it. The
+Each builds `horizon-client`, `horizon-ctl`, `horizon-prepare` and `horizon-server` in release mode, checks they
+exist, verifies Windows PE architectures, checks the `--help` and `--version` entry points, packages the folder with
+`cargo run -p xtask -- package` and archives it. The
 GitHub jobs keep their Cargo caches (`Swatinem/rust-cache`); the Mac mini keeps its `target/`. Only the Mac
 runs the game: GitHub's runners have neither a GPU worth the name nor the game files.
+
+The musl archive is an optional manual download for musl-based Linux desktops; see
+[installation and updates](native-client.md#musl-linux-manual-installation). The launcher still selects the
+standard glibc archive. The musl client and tools keep audio and controllers enabled and link musl dynamically
+(`-C target-feature=-crt-static`) to load graphics and window libraries at runtime. A failed musl build does
+not block other platforms: signing and publication omit the missing archive with a warning. The dedicated
+server archive remains glibc; the bundled musl `horizon-server` refuses automatic updates to glibc archives.
+
+Musl gameplay parity is not yet validated. On x86-64, `horizon-core::jmath` uses the platform libm for several
+functions, so musl may round differently from glibc or HotSpot. Values near a simulation threshold could
+therefore change world generation or mob behaviour for the same seed. This build has no musl parity results;
+CLI startup checks do not establish gameplay parity. Before merging the platform support, record a successful
+Nightly dry run and a musl-desktop launch covering the title screen, a new world, sound and a controller.
+
+Building Windows ARM64 locally: [Windows ARM64](windows-arm64.md).
 
 ### Notes
 
@@ -393,11 +410,14 @@ and by hand; pushes to `launcher` and `launcher-*` branches only build.
   `HORIZON_LAUNCHER_TAG`, which `launcher/src/backend.rs` reads with `option_env!` (falling back to `Cargo.toml`'s),
   so `--version`, the window, the User-Agent and the self-update comparison all use them. Each build checks
   `--version` says it.
-- Linux on GitHub `ubuntu-22.04`, Windows on `windows-latest`, macOS on the Mac mini's runner; each runs the
-  launcher's tests, checks its libraries, and installs the latest game release with the new launcher.
+- Linux on GitHub `ubuntu-22.04`, Windows x64 on `windows-latest`, Windows ARM64 on `windows-11-vs2026-arm`, and
+  macOS on the Mac mini's runner; each runs the launcher's tests and checks its libraries. The smoke test installs
+  the newest game build for that platform; Intel macOS skips only the install step while no matching build is
+  available yet, and Windows ARM64 installs the x64 build (under emulation) from a Nightly without an ARM64 one.
 - Published with `--latest=false`: the repository's latest release stays a game release. Notes list the pull
   requests under New and Fixed; Kira posts launcher releases without pinging.
-- Windows also publishes `horizon-launcher-setup.exe`, the launcher's binary under another name: with no
+- Windows also publishes `horizon-launcher-setup.exe` (x64) and `horizon-launcher-setup-arm64.exe`, the launcher's
+  binary under another name: with no
   arguments it opens the per-user setup (`launcher/src/installer.rs`) instead of Home, and
   `horizon-launcher.exe uninstall` removes it again. Both files are in the release's signed `SHA256SUMS`.
 
@@ -442,7 +462,7 @@ commit's source to build them ([native-mods.md](native-mods.md)).
 ### Trusted reviewers
 
 One list, `.github/trusted-reviewers.txt`, governs two things for the people on it (kacpherek, rdbtCVS and
-Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with no repository role: `/nightly` (below) and triage by comment.
+Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11-08) and for Ludovic, with no repository role: `/nightly` (below) and triage by comment.
 
 ```text
 /close                    closes an issue as completed; a pull request is closed without merging
@@ -463,14 +483,20 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with 
   than 60 actions per reviewer in 24 hours (counted from the workflow's own comments).
 - **Safety.** Same as `/nightly`: main's copy of the workflow runs, no pull request's code is checked out or run,
   the comment reaches the script as env vars, and the token has `issues` and `pull-requests` write only.
-- **Ludovic stays in charge.** A one-line pull request removing a login from the list revokes it as soon as it merges
-  (the file is his under CODEOWNERS). A line `paused` stops `/nightly` and the triage commands for every reviewer;
-  his own still work.
+- **Ludovic stays in charge.** A one-line pull request removing a reviewer's line revokes it as soon as it merges
+  (the file is his under CODEOWNERS). A line `paused` stops `/nightly`, the triage commands and the reviewers' claim
+  powers for every reviewer; his own still work.
+- **Accounts, not names.** Each line is `<numeric GitHub ID> <login>`, and every command decides by the comment
+  author's ID (`AUTHOR_ID`, from `github.event.comment.user.id`), never by the login: GitHub hands a renamed or deleted
+  account's login to whoever claims it next, while an ID is never reused. Ludovic is `OWNER_ID` in
+  `tools/ci/nightly_set.py`. A line in any other form, a bare login included, grants nothing.
+  `python3 tools/ci/resolve_reviewer_ids.py` fills in IDs for new lines; `--check` reports a listed ID whose login
+  changed (a rename to look at) or whose account is gone.
 
 ### Trusted reviewers pick the Nightly's pull requests
 
 The Nightly is where contributors test pull requests before the gate. The trusted reviewers listed in
-`.github/trusted-reviewers.txt` (kacpherek, rdbtCVS and Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and Ludovic pick them with a
+`.github/trusted-reviewers.txt` (kacpherek, rdbtCVS and Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11-08) and Ludovic pick them with a
 comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `tools/ci/nightly_set.py`):
 
 ```text

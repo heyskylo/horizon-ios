@@ -11,7 +11,7 @@ use horizon_world::{
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -59,6 +59,9 @@ pub enum BlockEntity {
     CreakingHeart(Box<CreakingHeart>),
     /// `BannerBlockEntity`: the pattern layers.
     Banner(Banner),
+    /// `CopperGolemStatueBlockEntity`: its own components, which hold the
+    /// custom name of the golem it was (`createStatue`).
+    CopperGolemStatue(Compound),
     /// `CrafterBlockEntity`.
     Crafter(Crafter),
     /// `SpawnerBlockEntity` (`crate::mobs::spawner`).
@@ -77,9 +80,18 @@ pub enum BlockEntity {
     Skull(Skull),
     /// `TheEndGatewayBlockEntity`: its age and configured destination.
     EndGateway(EndGateway),
+    /// `TheEndPortalBlockEntity`: no data, only identity.
+    EndPortal,
     /// `DaylightDetectorBlockEntity`: no data, only the ticker
     /// (`DaylightDetectorBlock.tickEntity`).
     DaylightDetector,
+    /// `BellBlockEntity`: saved identity only; ringing state is kept separately.
+    Bell,
+    /// `ConduitBlockEntity`: the UUID of its `destroyTarget` (`Target`). Its
+    /// shape and animation are kept separately (`block_entity_anim`).
+    Conduit(Option<[i32; 4]>),
+    /// `EnchantingTableBlockEntity`: its custom name is the world's block name.
+    EnchantingTable,
     /// Suspicious sand and gravel: saved loot and the transient brushed face.
     Brushable(Box<Brushable>),
     /// A shelf holds three displayed item stacks.
@@ -108,6 +120,9 @@ pub enum BlockEntity {
 pub struct ModBlockEntity {
     fields: ModBlockEntityFields,
     revision: ModRevision,
+    // A client update can consume transient effects without changing saved
+    // fields. Most entities never use this; do not allocate their queue.
+    client_update_fields: OnceLock<Mutex<Compound>>,
 }
 /// What a `ModBlockEntity` holds: its type id (`mymod:machine`), its saved
 /// compound without `id`, `x`, `y`, `z` and `Items`, its item slots
@@ -138,10 +153,54 @@ impl ModBlockEntity {
                 born: MOD_BLOCK_ENTITIES_MADE.fetch_add(1, Ordering::Relaxed),
                 changes: 0,
             },
+            client_update_fields: OnceLock::new(),
         }
     }
     pub fn revision(&self) -> ModRevision {
         self.revision
+    }
+    /// Replace the owner's pending, one-shot client update fields. These
+    /// fields are not saved, cloned, compared or retained for drawing, and
+    /// changing them does not change this entity's revision. The owner must
+    /// explicitly take and merge them into its update tag. Calling this does
+    /// not schedule a block update.
+    ///
+    /// An empty batch clears a pending batch without allocating an idle queue.
+    pub fn set_client_update_fields(&mut self, fields: Compound) {
+        if fields.is_empty() {
+            self.clear_client_update_fields();
+            return;
+        }
+        *self
+            .client_update_fields
+            .get_or_init(|| Mutex::new(Compound::new()))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = fields;
+    }
+    /// Discard the owner's pending client update fields, without changing
+    /// saved data, revision or a queue that has never been used.
+    pub fn clear_client_update_fields(&mut self) {
+        if let Some(fields) = self.client_update_fields.get() {
+            fields
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+        }
+    }
+    /// Atomically take the owner's pending fields at update-tag construction.
+    /// A loaded chunk and a block change use this same boundary. Construct a
+    /// tag once, then send that tag to every recipient; another construction
+    /// sees an empty batch. A save or a clone does not consume this batch.
+    ///
+    /// This is safe for an update-tag hook receiving only a shared reference,
+    /// including a saved chunk encoded by a worker thread. If a previous lock
+    /// holder panicked, preserve its pending data instead of dropping it.
+    pub fn take_client_update_fields(&self) -> Compound {
+        self.client_update_fields
+            .get()
+            .map_or_else(Compound::new, |fields| {
+                std::mem::take(&mut *fields.lock().unwrap_or_else(PoisonError::into_inner))
+            })
     }
     /// A client's copy loads the tag the server sent (`loadWithComponents`
     /// in `ClientPacketListener.handleBlockEntityData`): `tag`'s fields
@@ -402,6 +461,9 @@ pub struct Jukebox {
     pub items: [Option<ItemStack>; 1],
     /// `ticks_since_song_started`, while a song plays.
     pub ticks: i64,
+    /// `JukeboxBlockEntity.saveAdditional` writes the clock only when its song
+    /// reference exists. Keep this separate from legacy playback adoption.
+    pub song_clock_present: bool,
     pub playing: bool,
 }
 impl Jukebox {
@@ -431,6 +493,16 @@ pub struct SignText {
     pub glowing: bool,
     /// The `click_event` in each line's component style, as saved.
     pub click: [Option<Tag>; 4],
+    /// Each line's saved component when it is more than plain text (a colour,
+    /// siblings, a list), so its style survives loading, saving and the
+    /// network. See `SignText::message` for a line edited since.
+    pub saved: [Option<SavedLine>; 4],
+}
+/// A sign line's saved component and the text it showed when it was read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedLine {
+    pub text: String,
+    pub component: Tag,
 }
 /// `SignBlockEntity` / `HangingSignBlockEntity` data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -450,6 +522,11 @@ pub struct Info {
     pub pos: [f64; 3],
     pub source: Option<Who>,
     pub owner: Option<Who>,
+    /// `uuid`: the source's saved identity (`source`), taken when the event
+    /// was posted. `source` is the live entity and comes back `None` on load.
+    pub source_uuid: Option<[i32; 4]>,
+    /// `projectileOwnerUuid` (`projectile_owner`), likewise beside `owner`.
+    pub owner_uuid: Option<[i32; 4]>,
 }
 /// `VibrationSelector`: the closest, then highest-frequency candidate of a tick.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -695,6 +772,85 @@ pub struct CommandBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_client_update_fields_are_lazy_replaceable_and_drained_once() {
+        let mut machine = ModBlockEntity::new(ModBlockEntityFields {
+            id: "test:machine".into(),
+            nbt: Compound::from([("progress".into(), Tag::Int(7))]),
+            ..Default::default()
+        });
+        let revision = machine.revision();
+        let saved = machine.fields.clone();
+        let debug = format!("{machine:?}");
+        machine.clear_client_update_fields();
+        machine.set_client_update_fields(Compound::new());
+        assert!(machine.take_client_update_fields().is_empty());
+        assert!(machine.client_update_fields.get().is_none());
+
+        machine.set_client_update_fields(Compound::from([("discarded".into(), Tag::Int(1))]));
+        let expected = Compound::from([("effects".into(), Tag::List(vec![Tag::Int(2)]))]);
+        machine.set_client_update_fields(expected.clone());
+        assert_eq!(machine.take_client_update_fields(), expected);
+        assert!(machine.take_client_update_fields().is_empty());
+
+        machine.set_client_update_fields(expected.clone());
+        let copy = machine.clone();
+        assert_eq!(machine, copy, "transient fields are not retained contents");
+        assert_ne!(machine.revision(), copy.revision());
+        assert!(copy.client_update_fields.get().is_none());
+        assert!(copy.take_client_update_fields().is_empty());
+        assert_eq!(machine.take_client_update_fields(), expected);
+        machine.set_client_update_fields(expected);
+        machine.clear_client_update_fields();
+        assert!(machine.take_client_update_fields().is_empty());
+        assert_eq!(machine.fields, saved);
+        assert_eq!(machine.revision(), revision);
+        assert_eq!(format!("{machine:?}"), debug);
+    }
+
+    #[test]
+    fn concurrent_client_update_constructions_consume_one_batch() {
+        let mut machine = ModBlockEntity::default();
+        let expected = Compound::from([("effects".into(), Tag::Int(23))]);
+        machine.set_client_update_fields(expected.clone());
+        let received = std::thread::scope(|scope| {
+            let handles = (0..16)
+                .map(|_| scope.spawn(|| machine.take_client_update_fields()))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let nonempty = received
+            .into_iter()
+            .filter(|c| !c.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(nonempty, [expected]);
+    }
+
+    #[test]
+    fn a_poisoned_client_update_lock_preserves_its_pending_batch() {
+        let mut machine = ModBlockEntity::default();
+        let expected = Compound::from([("effects".into(), Tag::Int(23))]);
+        machine.set_client_update_fields(expected.clone());
+        std::thread::scope(|scope| {
+            assert!(
+                scope
+                    .spawn(|| {
+                        let _held = machine.client_update_fields.get().unwrap().lock().unwrap();
+                        panic!("interrupt before consuming the queued batch");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
+        assert_eq!(machine.take_client_update_fields(), expected);
+        assert!(machine.take_client_update_fields().is_empty());
+        machine.set_client_update_fields(expected.clone());
+        assert_eq!(machine.take_client_update_fields(), expected);
+    }
 
     #[test]
     fn a_mod_block_entitys_revision_moves_with_each_change_and_only_then() {

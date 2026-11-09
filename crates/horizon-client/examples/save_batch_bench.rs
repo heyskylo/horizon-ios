@@ -1,7 +1,9 @@
 //! Synthetic village/storage save batches, using the production snapshot and
 //! full chunk NBT encoder. Run with `cargo run --profile fast -p horizon-client
-//! --example save_batch_bench`. Add `-- --nbt` to also time serialization.
-//! Exact NBT equality is always validated. No GPU, compression or disk I/O timed.
+//! --example save_batch_bench`. Add `-- --nbt` to also time serialization, or
+//! `-- --split [--density N]` to time the encode, write, read and decode stages
+//! of one batch apart. Exact NBT equality is always validated. No GPU,
+//! compression or disk I/O timed.
 extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     biome::Biomes,
@@ -19,7 +21,7 @@ use horizon_world::{
 use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 
 type Entities = HashMap<(i32, i32, i32), BlockEntity>;
-type Names = HashMap<(i32, i32, i32), String>;
+type Names = HashMap<(i32, i32, i32), Tag>;
 const BLOCKS: [&str; 5] = [
     "minecraft:air",
     "minecraft:stone",
@@ -96,7 +98,10 @@ fn fixture(per_chunk: usize) -> (Vec<Arc<Chunk>>, Entities, Names) {
             }
             c.set(p.0 & 15, p.1, p.2 & 15, block);
             if j % 4 == 2 {
-                names.insert(p, format!("Storage {x},{z}/{j}"));
+                names.insert(
+                    p,
+                    Tag::String(format!("Storage {x},{z}/{j}").as_str().into()),
+                );
             }
             // Exercise the existing NBT overlay and saved list order as well.
             if j % 8 == 2 {
@@ -180,6 +185,20 @@ fn measure(mut f: impl FnMut(), repetitions: usize) -> f64 {
     start.elapsed().as_secs_f64() * 1e6 / repetitions as f64
 }
 
+/// The best of `rounds` timings of one pass over `items`, dropping each result:
+/// the estimator of uninterrupted CPU time when the machine has other work.
+fn best_us<T, U>(items: &[T], mut f: impl FnMut(&T) -> U, rounds: usize) -> f64 {
+    let mut best = f64::INFINITY;
+    for _ in 0..rounds {
+        let start = Instant::now();
+        for item in items {
+            black_box(f(item));
+        }
+        best = best.min(start.elapsed().as_secs_f64() * 1e6);
+    }
+    best
+}
+
 fn compare(mut before: impl FnMut(), mut after: impl FnMut()) -> (f64, f64, usize) {
     for _ in 0..5 {
         before();
@@ -206,6 +225,47 @@ fn compare(mut before: impl FnMut(), mut after: impl FnMut()) -> (f64, f64, usiz
 fn main() -> horizon_client::Result<()> {
     let include_nbt = std::env::args().any(|arg| arg == "--nbt");
     let (registry, biomes) = encoding_fixture()?;
+    if std::env::args().any(|arg| arg == "--split") {
+        // One column batch, its four save-and-load stages timed apart, so a
+        // change to one stage shows without the others. `--density N` picks the
+        // fixture's block entities per column (default 48, the storage one).
+        let density = std::env::args()
+            .position(|arg| arg == "--density")
+            .and_then(|i| std::env::args().nth(i + 1))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(48);
+        let (chunks, entities, names) = fixture(density);
+        let snapshots = save::chunks_with_block_entities(&chunks, &entities, &names);
+        let encode = best_us(&snapshots, |c| save::encode(c, &registry, &biomes), 15);
+        let encoded: Vec<_> = snapshots
+            .iter()
+            .map(|c| save::encode(c, &registry, &biomes))
+            .collect();
+        let write = best_us(
+            &encoded,
+            |t| nbt::write_named(t, Limits::default()).unwrap(),
+            15,
+        );
+        let bytes: Vec<Vec<u8>> = encoded
+            .iter()
+            .map(|t| nbt::write_named(t, Limits::default()).unwrap())
+            .collect();
+        let read = best_us(
+            &bytes,
+            |b| nbt::read_named(b, Limits::default()).unwrap(),
+            15,
+        );
+        let roots: Vec<_> = bytes
+            .iter()
+            .map(|b| nbt::read_named(b, Limits::default()).unwrap().0)
+            .collect();
+        let decode = best_us(&roots, |r| save::decode(r, &registry, &biomes).unwrap(), 15);
+        println!(
+            "encode {encode:.0} us, write {write:.0} us, read {read:.0} us, decode {decode:.0} us, {} bytes, {density} entities/column, 256 chunks",
+            bytes.iter().map(Vec::len).sum::<usize>()
+        );
+        return Ok(());
+    }
     println!(
         "stage,fixture,chunks,world_entities,world_names,saved_entities,bytes,before_us,after_us,speedup,samples,reps"
     );

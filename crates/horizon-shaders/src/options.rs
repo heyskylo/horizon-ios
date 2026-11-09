@@ -86,18 +86,23 @@ pub fn with_options(pack: &Pack, macros: &crate::Macros) -> crate::Macros {
     out
 }
 
-/// A pack's `shaders.properties` as the game reads it before the programs: parsed with the
-/// pack's options over `macros` (the standard set and the renderer's), after which `macros` gets
-/// the features the pack turns on (`iris.features.*`, `Macros::define_features`). Returns the
-/// properties and a note for each required feature Horizon lacks. Whatever reads a pack's
-/// programs (the game, the `real_packs` test) reads them with these macros.
+/// The macros `shaders.properties` is read with: the pack's options over `macros`. No
+/// `IRIS_FEATURE_<name>` is among them (spec OQ-2), so what a pack puts behind one is not read.
+pub fn properties_macros(pack: &Pack, macros: &crate::Macros) -> crate::Macros {
+    with_options(pack, macros)
+}
+
+/// A pack's `shaders.properties` as the game reads it before the programs: parsed with
+/// `properties_macros` over `macros` (the standard set and the renderer's). Returns the
+/// properties and a note for each required feature Horizon lacks (`Macros::feature_notes`).
+/// Whatever reads a pack's programs (the game, the `real_packs` test) reads them with `macros`.
 pub fn read_properties(
     pack: &Pack,
     macros: &mut crate::Macros,
 ) -> (crate::Properties, Vec<String>) {
     let text = pack.read_text("shaders.properties").unwrap_or_default();
-    let properties = crate::Properties::parse(&text, &with_options(pack, macros));
-    let notes = macros.define_features(&properties);
+    let properties = crate::Properties::parse(&text, &properties_macros(pack, macros));
+    let notes = crate::Macros::feature_notes(&properties);
     (properties, notes)
 }
 
@@ -417,11 +422,34 @@ iris.features.required = NOT_A_FEATURE
         let (properties, notes) = read_properties(&pack, &mut macros);
         assert_eq!(properties.get("screen"), Some("x"));
         assert_eq!(properties.get("vendor"), Some("other"));
-        assert!(macros.is_defined("IRIS_FEATURE_SSBO"));
+        assert!(!macros.is_defined("IRIS_FEATURE_SSBO"));
         assert_eq!(
             notes,
             ["the pack requires `NOT_A_FEATURE`, which is not supported yet"]
         );
+    }
+
+    /// Neither `shaders.properties` nor the programs see an `IRIS_FEATURE_<name>` (spec OQ-2):
+    /// what a pack puts behind one is skipped, for an optional, a required, an unlisted and an
+    /// unknown feature alike, and a required feature Horizon has gets no note.
+    #[test]
+    fn properties_and_programs_see_no_feature_macro() {
+        let bytes = crate::pack::tests::zip(&[(
+            "shaders/shaders.properties",
+            "iris.features.required = COMPUTE_SHADERS\n\
+             #ifdef IRIS_FEATURE_CUSTOM_IMAGES\nuniform.float.optional = 1.0\n#endif\n\
+             #ifdef IRIS_FEATURE_COMPUTE_SHADERS\nuniform.float.required = 1.0\n#endif\n\
+             #ifdef IRIS_FEATURE_SSBO\nuniform.float.unlisted = 1.0\n#endif\n\
+             #ifdef IRIS_FEATURE_NOT_A_FEATURE\nuniform.float.unknown = 1.0\n#endif\n\
+             iris.features.optional = CUSTOM_IMAGES\n",
+        )]);
+        let pack = Pack::from_zip_bytes("p.zip", bytes).unwrap();
+        let mut macros = crate::Macros::standard();
+        let (properties, notes) = read_properties(&pack, &mut macros);
+        let read = |name: &str| properties.get(&format!("uniform.float.{name}")).is_some();
+        assert!(!read("optional") && !read("required") && !read("unlisted") && !read("unknown"));
+        assert!(notes.is_empty());
+        assert!(!macros.is_defined("IRIS_FEATURE_CUSTOM_IMAGES"));
     }
 
     #[test]
@@ -576,5 +604,45 @@ iris.features.required = NOT_A_FEATURE
             "#define LEVEL 2 //[1 2 3]\n"
         );
         assert_eq!(parse_chosen(&chosen_text(&chosen)), chosen);
+    }
+
+    /// A custom uniform's or variable's line has the macros expanded: a value option, a
+    /// `#define` of `shaders.properties` (function-like too), a standard macro, and a macro in
+    /// the uniform's name. Our probe pack's shape; Iris 1.11.7 drew p0..p5 as 127, 191, 64, 255,
+    /// 127 and 255 of 255 with the option at its default.
+    #[test]
+    fn custom_uniform_lines_read_the_options_and_macros() {
+        let bytes = crate::pack::tests::zip(&[
+            ("shaders/final.fsh", "#define MY_OPT 2 // [1 2 3]\n"),
+            (
+                "shaders/shaders.properties",
+                "#define PROP_DEF 3\n#define HALF(x) ((x) * 0.5)\n#define KEYNAME p5\n\
+                 uniform.float.p0 = MY_OPT * 0.25\n\
+                 uniform.float.p1 = PROP_DEF * 0.25\n\
+                 variable.float.v2 = MY_OPT * 0.125\nuniform.float.p2 = v2\n\
+                 uniform.float.p3 = if(MC_VERSION > 10000, 1.0, 0.0)\n\
+                 uniform.float.p4 = HALF(MY_OPT) * 0.5\n\
+                 uniform.float.KEYNAME = 1.0\n",
+            ),
+        ]);
+        for (chosen, p0) in [(None, 0.5), (Some("3"), 0.75)] {
+            let mut pack = Pack::from_zip_bytes("p.zip", bytes.clone()).unwrap();
+            if let Some(value) = chosen {
+                pack = pack.with_chosen(BTreeMap::from([("MY_OPT".into(), value.into())]));
+            }
+            let (properties, _) = read_properties(&pack, &mut crate::Macros::standard());
+            assert!(properties.notes.is_empty(), "{:?}", properties.notes);
+            let mut custom = crate::Custom::parse(&properties);
+            let values: Vec<f64> = custom
+                .eval(0.016, &|_| None)
+                .iter()
+                .map(|v| v.v[0])
+                .collect();
+            let p4 = if chosen.is_some() { 0.75 } else { 0.5 };
+            assert_eq!(values, [p0, 0.75, p0 / 2.0, 1.0, p4, 1.0]);
+            let names: Vec<_> = custom.uniforms().map(|(name, _)| name.to_owned()).collect();
+            assert_eq!(names, ["p0", "p1", "p2", "p3", "p4", "p5"]);
+            assert!(custom.notes.is_empty(), "{:?}", custom.notes);
+        }
     }
 }

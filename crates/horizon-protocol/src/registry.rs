@@ -85,8 +85,19 @@ impl Builtin {
                     .as_u64()
                     .ok_or_else(|| Error::new(format!("{entry}: no protocol_id")))?
                     as usize;
+                // No registry has a million entries; an id beyond that is
+                // a crafted report, and resizing to it would allocate
+                // gigabytes for one entry.
+                if id > 1_000_000 {
+                    return Err(Error::new(format!(
+                        "{entry}: protocol_id {id} out of range"
+                    )));
+                }
                 if id >= names.len() {
                     names.resize(id + 1, String::new());
+                }
+                if !names[id].is_empty() {
+                    return Err(Error::new(format!("{entry}: duplicate protocol_id {id}")));
                 }
                 names[id] = entry.clone();
             }
@@ -181,6 +192,13 @@ impl Dynamic {
             if let Some(v) = int("logical_height") {
                 d.logical_height = v;
             }
+            // DimensionType's codec refuses a shape outside these; the client sizes
+            // its columns and light from them, so keep the named type's own.
+            if !DimensionType::valid_shape(d.min_y, d.height) {
+                let vanilla = DimensionType::vanilla(name);
+                d.min_y = vanilla.min_y;
+                d.height = vanilla.height;
+            }
             if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_skylight")) {
                 d.has_skylight = *v != 0;
             }
@@ -227,6 +245,15 @@ pub struct DimensionType {
     pub default_clock: Option<String>,
 }
 impl DimensionType {
+    /// `DimensionType.MIN_Y`, `MAX_Y` and `MIN_HEIGHT`: a type's `min_y` and
+    /// `height` are multiples of 16, at least 16 high, inside -2032..=2031.
+    pub fn valid_shape(min_y: i32, height: i32) -> bool {
+        min_y % 16 == 0
+            && height % 16 == 0
+            && height >= 16
+            && min_y >= -2032
+            && i64::from(min_y) + i64::from(height) <= 2032
+    }
     pub fn vanilla(name: &str) -> Self {
         let (min_y, height, logical_height, has_skylight, has_ceiling, default_clock) = match name {
             "minecraft:the_nether" => (0, 256, 128, false, true, None),
@@ -280,6 +307,23 @@ mod tests {
         assert_eq!(items.name(2), None);
     }
 
+    /// A crafted huge protocol_id must error instead of allocating a
+    /// name table of that size, and duplicate ids must error instead of
+    /// silently overwriting.
+    #[test]
+    fn huge_or_duplicate_protocol_ids_are_rejected() {
+        let huge =
+            r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":2000000000}}}}"#;
+        assert!(Builtin::parse(huge).is_err());
+        let dup = r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":1},"minecraft:air":{"protocol_id":1}}}}"#;
+        assert!(Builtin::parse(dup).is_err());
+        // Sparse but sane ids (1 and 7, as LAN tests use) still parse.
+        let sparse = r#"{"minecraft:block_entity_type":{"entries":{"minecraft:chest":{"protocol_id":1},"minecraft:sign":{"protocol_id":7}}}}"#;
+        let b = Builtin::parse(sparse).unwrap();
+        let x = b.get("minecraft:block_entity_type").unwrap();
+        assert_eq!(x.name(7), Some("minecraft:sign"));
+    }
+
     #[test]
     fn dynamic_registries_follow_arrival_order() {
         let mut d = Dynamic::default();
@@ -314,6 +358,32 @@ mod tests {
         assert_eq!(ceil_log2(35723), 16);
         assert_eq!(ceil_log2(65), 7);
         assert_eq!(ceil_log2(64), 6);
+    }
+
+    #[test]
+    fn a_dimension_shape_the_codec_refuses_keeps_the_named_types() {
+        let shape = |min_y: i32, height: i32| {
+            let mut d = Dynamic::default();
+            d.add(RegistryData {
+                registry: "minecraft:dimension_type".into(),
+                entries: vec![RegistryEntry {
+                    id: "example:tall".into(),
+                    data: Some(Tag::compound([
+                        ("min_y", Tag::Int(min_y)),
+                        ("height", Tag::Int(height)),
+                    ])),
+                }],
+            });
+            let t = d.dimension(0);
+            (t.min_y, t.height)
+        };
+        // The tallest the codec takes, and a few it refuses.
+        assert_eq!(shape(-2032, 4064), (-2032, 4064));
+        assert_eq!(shape(0, 2_147_483_632), (-64, 384));
+        assert_eq!(shape(0, 8), (-64, 384));
+        assert_eq!(shape(-64, 100), (-64, 384));
+        assert_eq!(shape(-2048, 256), (-64, 384));
+        assert_eq!(shape(1024, 1024), (-64, 384));
     }
 
     #[test]
