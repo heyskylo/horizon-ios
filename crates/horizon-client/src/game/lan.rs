@@ -2726,11 +2726,11 @@ impl Game<'_> {
                 m.needs_sync = false;
                 m.sync_position = false;
             }
-            self.creatures.projectiles.iter_mut().for_each(|p| p.needs_sync = false);
-            self.tridents.iter_mut().for_each(|t| t.needs_sync = false);
-            for d in &mut self.dropped {
-                d.needs_sync = false;
+            for p in &mut self.creatures.projectiles {
+                p.needs_sync = false;
             }
+            self.tridents.iter_mut().for_each(|t| t.needs_sync = false);
+            self.dropped.iter_mut().for_each(|d| d.needs_sync = false);
             // The step command reaches clients before the events its tick
             // generated, as ServerTickRateManager.updateStepTicks does.
             host.hub.sync_ticking(
