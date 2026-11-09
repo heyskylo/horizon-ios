@@ -1065,3 +1065,27 @@ fn a_comparator_reads_the_output_vanilla_gives_each_state_based_block() {
         )
     );
 }
+
+/// `WaterFluid.getTickDelay` is 5: a source's first spread is five ticks after it is
+/// placed, and each flowing block schedules the next five ticks on, so the water
+/// reaches distance `d` on tick `5 * d`, none sooner, out to its seven blocks.
+#[test]
+fn water_advances_one_block_every_five_ticks() {
+    let mut w = world!();
+    w.floor(0, 12, "stone");
+    w.set(BlockPos::new(0, 1, 0), w.id("water", &[]));
+    let air = w.b().air();
+    let mut arrived = [None; 9];
+    for tick in 1..=60 {
+        w.tick();
+        for (d, slot) in arrived.iter_mut().enumerate().skip(1) {
+            if slot.is_none() && w.get(BlockPos::new(d as i32, 1, 0)) != air {
+                *slot = Some(tick);
+            }
+        }
+    }
+    for d in 1..=7 {
+        assert_eq!(arrived[d], Some(5 * d as i32), "water reaches distance {d}");
+    }
+    assert_eq!(arrived[8], None, "and never the eighth block");
+}
