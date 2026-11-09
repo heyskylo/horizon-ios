@@ -3108,17 +3108,28 @@ impl Game<'_> {
         if hurts {
             self.note_dragon_attacker("minecraft:mob_attack");
         }
-        let (health, rules) = (&self.health_resources, self.world.health_rules);
-        let id = health.damage.id("minecraft:mob_attack");
+        let id = self.health_resources.damage.id("minecraft:mob_attack");
         let mut canceled = false;
+        // Same sequence as `push_seen_with_hurt`, but the hurt goes through the
+        // host's equipment path so the armor wears (`LivingEntity.doHurtEquipment`).
+        let before = self.player.as_ref().map(|p| p.velocity);
+        let mut marked_before = false;
         if let Some(p) = self.player.as_mut() {
-            push_seen_with_hurt(p, push, |p| {
-                if let Some(id) = id.filter(|_| hurts)
-                    && let Ok(o) = p.hurt_blocking(health, rules, id, 5.0, None)
-                {
-                    canceled = o.canceled;
-                }
-            });
+            marked_before = std::mem::take(&mut p.health.sync_velocity);
+            p.velocity = p.velocity.add_vector(push);
+        }
+        if let Some(id) = id.filter(|_| hurts)
+            && let Ok((o, _)) = self.hurt_player_equipment(id, 5.0, None, false, 0)
+        {
+            canceled = o.canceled;
+        }
+        if let Some(p) = self.player.as_mut() {
+            if !p.health.sync_velocity
+                && let Some(before) = before
+            {
+                p.velocity = before;
+            }
+            p.health.sync_velocity |= marked_before;
         }
         self.combat.forget_noted(canceled);
         if !sitting
