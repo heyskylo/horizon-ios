@@ -488,8 +488,12 @@ impl Game<'_> {
                 self.lan_display_data_kept(o.id, tag, hub, e);
             }
         }
+        // Only this level's displays: the others are kept for their own level's pass.
         KEPT_DISPLAYS.with(|kept| {
             let mut kept = kept.borrow_mut();
+            let Some(kept) = kept.get_mut(&self.dim) else {
+                return;
+            };
             if kept.len() > self.others.len() + 64 {
                 let ids: horizon_client::fast_hash::FxHashSet<u32> =
                     self.others.iter().map(|o| o.id).collect();
@@ -512,6 +516,7 @@ impl Game<'_> {
         let registry = std::ptr::from_ref(self.pack.assets.registry) as usize;
         KEPT_DISPLAYS.with(|kept| {
             let mut kept = kept.borrow_mut();
+            let kept = kept.entry(self.dim).or_default();
             let same =
                 |k: &KeptDisplay| k.registry == registry && k.kind == e.kind && k.tag == *tag;
             if let Some(k) = kept.get(&id).filter(|k| same(k)) {
@@ -552,7 +557,8 @@ impl Game<'_> {
 }
 
 /// A display's synched data as [`Game::lan_display_data`] built it from
-/// `tag`, kept for the display's id on the thread that tracks entities.
+/// `tag`, kept for the display's id on the thread that tracks entities, per
+/// level: a server thread tracks each dimension's `others` in turn.
 struct KeptDisplay {
     registry: usize,
     kind: String,
@@ -563,8 +569,9 @@ struct KeptDisplay {
     item: Option<(usize, Option<horizon_client::items::ItemStack>)>,
 }
 thread_local! {
-    static KEPT_DISPLAYS: std::cell::RefCell<horizon_client::fast_hash::FxHashMap<u32, KeptDisplay>> =
-        Default::default();
+    static KEPT_DISPLAYS: std::cell::RefCell<
+        horizon_client::fast_hash::FxHashMap<super::Dim, horizon_client::fast_hash::FxHashMap<u32, KeptDisplay>>,
+    > = Default::default();
 }
 
 impl Game<'_> {
