@@ -300,11 +300,7 @@ impl Game<'_> {
             ) {
                 continue;
             }
-            let marks = if player || self.cosmetics_local() {
-                self.cosmetics_marks(m, Some(m.id) == own)
-            } else {
-                Marks::default()
-            };
+            let marks = self.hooks_name_marks(m, Some(m.id) == own);
             let at = match marks.top {
                 Some(top) => p + glam::DVec3::Y * cosmetic_lift(top, m.model_scale()),
                 None => p,
@@ -770,10 +766,10 @@ impl Game<'_> {
                     if background { BACKGROUND } else { 0 },
                 ),
             };
-            if n == last && marks.horizon {
+            if let Some(mark) = marks.mark.filter(|_| n == last) {
                 let x = -self.gui.atlas.font.width_text(text) / 2.0 - 10.0;
                 // 8 text pixels square, a pixel left of the background.
-                for &(mx, my, w, h, argb) in super::cosmetics::MARK {
+                for &(mx, my, w, h, argb) in mark {
                     let a = text_alpha * (argb >> 24) / 255;
                     batch.fill(
                         &self.gui.atlas,
@@ -937,10 +933,11 @@ struct NameTag {
     marks: Marks,
 }
 
-/// What Horizon draws by a player's name: its mark (they play Horizon) and their name tag style.
+/// What a hook draws by a player's name (`horizon_hooks::players::NameDecoration`): a mark
+/// before it (Horizon's: they play Horizon) and a name tag style.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Marks {
-    pub horizon: bool,
+    pub mark: Option<horizon_hooks::players::Mark>,
     pub style: Option<TagStyle>,
     /// How high the cosmetics drawn on their body get above the neck, in model pixels: the tag
     /// goes up over a tall one (`cosmetic_lift`).

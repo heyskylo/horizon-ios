@@ -19,11 +19,13 @@
 
 pub mod hud;
 pub mod pages;
+pub mod players;
 mod registry;
 pub mod settings;
 pub mod tunnel;
 
 use registry::Registry;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What a crate above the engine hears from the game. Every method has an empty default:
@@ -41,6 +43,36 @@ pub trait Hooks: Sync {
 
     /// The game is ending normally: its window closed and the world is saved. Not after a crash.
     fn shutdown(&self) {}
+
+    /// Once a frame, before drawing: `sprites` takes the pictures the crate's
+    /// [`players::Sprites`] lacked. Only a window's game calls it (each splitscreen player in
+    /// turn, [`seat`]), never the integrated server's thread or a dedicated server; so are the
+    /// player methods below (not [`Hooks::tunnel`]).
+    fn frame(&self, _frame: &players::Frame, _sprites: &mut dyn players::SpriteStore) {}
+
+    /// Once a client tick while a world is shown: the player models in view.
+    fn tick(&self, _models: &mut dyn players::PlayerModels) {}
+
+    /// What goes by a player model's name over its head, each frame its name tag is drawn. The
+    /// first hook that answers is used.
+    fn name_decoration(
+        &self,
+        _model: &players::PlayerModel,
+        _sprites: &dyn players::Sprites,
+    ) -> Option<players::NameDecoration> {
+        None
+    }
+
+    /// The mark before the name of the player `uuid` in the player list, each frame it shows.
+    /// The first hook that answers is used.
+    fn player_mark(&self, _uuid: u128) -> Option<players::Mark> {
+        None
+    }
+
+    /// How the camera stands in third person, each frame. The first hook that answers is used.
+    fn camera(&self, _own: &players::CameraView) -> Option<players::CameraOverride> {
+        None
+    }
 
     /// The resolver of `friend:` addresses this crate offers ([`tunnel`]); the first hook that
     /// offers one is used. Asked on the network thread when joining and on the game thread when
@@ -158,9 +190,26 @@ fn all() -> &'static [&'static dyn Hooks] {
     HOOKS.all()
 }
 
+thread_local! {
+    static SEAT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The splitscreen player whose turn it is: 0 for P1 (and without splitscreen), 1 for P2...
+/// Splitscreen players are one process, each `Game` in turn on the game's thread, so a crate's
+/// statics are shared by them: a crate that keeps per-player state (settings, pages, HUD) indexes
+/// it by this. A player keeps its seat while it plays. Other threads always see 0.
+pub fn seat() -> usize {
+    SEAT.get()
+}
+
 /// The engine's side: where it calls the hooks. Only the engine calls these.
 pub mod engine {
     use super::*;
+
+    /// The player whose turn starts on this thread ([`seat`]).
+    pub fn set_seat(seat: usize) {
+        SEAT.set(seat);
+    }
 
     /// Seals every list (hooks and the registries); their first use does it anyway. Call where
     /// registration ends.
@@ -225,6 +274,43 @@ pub mod engine {
         }
     }
 
+    /// Whether any hook is registered: without one the engine builds no view to hand them.
+    pub fn any() -> bool {
+        !all().is_empty()
+    }
+
+    /// [`Hooks::frame`].
+    pub fn frame(frame: &players::Frame, sprites: &mut dyn players::SpriteStore) {
+        for hooks in all() {
+            hooks.frame(frame, sprites);
+        }
+    }
+
+    /// [`Hooks::name_decoration`].
+    pub fn name_decoration(
+        model: &players::PlayerModel,
+        sprites: &dyn players::Sprites,
+    ) -> Option<players::NameDecoration> {
+        all().iter().find_map(|h| h.name_decoration(model, sprites))
+    }
+
+    /// [`Hooks::player_mark`].
+    pub fn player_mark(uuid: u128) -> Option<players::Mark> {
+        all().iter().find_map(|h| h.player_mark(uuid))
+    }
+
+    /// [`Hooks::camera`].
+    pub fn camera(own: &players::CameraView) -> Option<players::CameraOverride> {
+        all().iter().find_map(|h| h.camera(own))
+    }
+
+    /// [`Hooks::tick`].
+    pub fn tick(models: &mut dyn players::PlayerModels) {
+        for hooks in all() {
+            hooks.tick(models);
+        }
+    }
+
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
     pub fn tunnel() -> Option<&'static dyn tunnel::Resolver> {
         all().iter().find_map(|hooks| hooks.tunnel())
@@ -234,6 +320,7 @@ pub mod engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use players::PlayerModels as _;
     use std::sync::Mutex as StdMutex;
 
     /// Records what it heard. One process-wide list, as the game has: this test is the only
@@ -252,6 +339,92 @@ mod tests {
         }
         fn activity(&self, now: Activity) {
             self.0.lock().unwrap().push(format!("{now:?}"));
+        }
+        fn frame(&self, frame: &players::Frame, sprites: &mut dyn players::SpriteStore) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("frame {}", frame.connection));
+            if !sprites.has(1) {
+                sprites.put(1, vec![0; 64 * 64 * 4]);
+            }
+        }
+        fn name_decoration(
+            &self,
+            model: &players::PlayerModel,
+            sprites: &dyn players::Sprites,
+        ) -> Option<players::NameDecoration> {
+            let badge = sprites.get(1).map(|uv| players::Badge::new(uv, 0xFF0000));
+            (model.kind == players::Kind::Player)
+                .then(|| players::NameDecoration::new(Some(MARK), badge, Some(2.0)))
+        }
+        fn player_mark(&self, uuid: u128) -> Option<players::Mark> {
+            (uuid == 9).then_some(MARK)
+        }
+        fn camera(&self, own: &players::CameraView) -> Option<players::CameraOverride> {
+            Some(players::CameraOverride::new(own.age / 10.0))
+        }
+        fn tick(&self, models: &mut dyn players::PlayerModels) {
+            let mut ids = Vec::new();
+            models.for_each(&mut |m| ids.push(m.id));
+            for id in ids {
+                models.set_body_pose(id, Some(std::sync::Arc::new(Still)));
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct Still;
+    impl players::BodyPose for Still {
+        fn pose(&self, _: f32, _: &[[f32; 9]; 6], _: &mut [[f32; 9]; 6]) -> bool {
+            false
+        }
+    }
+
+    /// Two models, poses by id.
+    struct Two(std::collections::BTreeMap<u32, std::sync::Arc<dyn players::BodyPose>>);
+    impl players::PlayerModels for Two {
+        fn connection(&self) -> u64 {
+            1
+        }
+        fn for_each(&self, f: &mut dyn FnMut(players::PlayerModel)) {
+            for id in [3, 7] {
+                f(players::PlayerModel::new(
+                    id,
+                    players::Kind::Player,
+                    None,
+                    0,
+                    false,
+                ));
+            }
+        }
+        fn body_pose(&self, id: u32) -> Option<&std::sync::Arc<dyn players::BodyPose>> {
+            self.0.get(&id)
+        }
+        fn set_body_pose(&mut self, id: u32, pose: Option<std::sync::Arc<dyn players::BodyPose>>) {
+            match pose {
+                Some(p) => self.0.insert(id, p),
+                None => self.0.remove(&id),
+            };
+        }
+    }
+
+    const MARK: players::Mark = &[(0, 0, 8, 8, 0xFF00_00FF)];
+
+    /// One sprite slot, as the game's atlas has many.
+    #[derive(Default)]
+    struct Atlas(Option<(u64, usize)>);
+    impl players::SpriteStore for Atlas {
+        fn has(&self, id: u64) -> bool {
+            self.0.is_some_and(|(i, _)| i == id)
+        }
+        fn put(&mut self, id: u64, rgba: Vec<u8>) {
+            self.0 = Some((id, rgba.len()));
+        }
+    }
+    impl players::Sprites for Atlas {
+        fn get(&self, id: u64) -> Option<[f32; 4]> {
+            players::SpriteStore::has(self, id).then_some([0.0, 0.0, 0.5, 0.5])
         }
     }
 
@@ -279,6 +452,27 @@ mod tests {
             engine::activity(now);
         }
         engine::shutdown();
+        assert!(engine::any());
+        let mut atlas = Atlas::default();
+        let model = |kind| players::PlayerModel::new(5, kind, Some(9), 0, false);
+        // Before the frame put the sprite in: the decoration without its badge.
+        let before = engine::name_decoration(&model(players::Kind::Player), &atlas).unwrap();
+        assert!(before.badge.is_none() && before.top == Some(2.0));
+        engine::frame(&players::Frame::new(4, false), &mut atlas);
+        assert_eq!(atlas.0, Some((1, 64 * 64 * 4)));
+        let after = engine::name_decoration(&model(players::Kind::Player), &atlas).unwrap();
+        assert_eq!(
+            after.badge.map(|b| (b.uv, b.line)),
+            Some(([0.0, 0.0, 0.5, 0.5], 0xFF0000))
+        );
+        assert!(engine::name_decoration(&model(players::Kind::Mannequin), &atlas).is_none());
+        assert_eq!(engine::player_mark(9), Some(MARK));
+        assert_eq!(engine::player_mark(8), None);
+        let camera = engine::camera(&players::CameraView::new(5.0));
+        assert_eq!(camera.map(|c| c.distance), Some(0.5));
+        let mut models = Two(Default::default());
+        engine::tick(&mut models);
+        assert!(models.body_pose(3).is_some() && models.body_pose(7).is_some());
         assert_eq!(
             *RECORDER.0.lock().unwrap(),
             [
@@ -286,7 +480,8 @@ mod tests {
                 "published true",
                 "published false",
                 "Menus",
-                "Hidden"
+                "Hidden",
+                "frame 4"
             ]
         );
         assert_eq!(register(&Silent), Err(TooLate));

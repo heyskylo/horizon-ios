@@ -46,8 +46,16 @@ pub use horizon_server_files as server_files;
 /// [`hooks::register`] it before the game starts (docs/layers.md, "How a Horizon crate plugs
 /// in"). The engine's dispatch side is not part of the API.
 pub mod hooks {
+    /// The players the game shows (`horizon_hooks::players`): the views [`Hooks::frame`] and
+    /// [`Hooks::tick`] get, the pose a crate lays over a player's body, what goes by their names,
+    /// the crate's sprites and the camera.
+    pub use horizon_hooks::players::{
+        BODY_PARTS, Badge, BodyPose, CameraOverride, CameraView, Frame, Gear, Kind, Mark,
+        NameDecoration, PlayerModel, PlayerModels, SpriteStore, Sprites,
+    };
     pub use horizon_hooks::{
-        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, tunnel,
+        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, seat,
+        tunnel,
     };
 }
 
