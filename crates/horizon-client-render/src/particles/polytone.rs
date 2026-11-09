@@ -801,6 +801,26 @@ impl Host for Ctx<'_, '_> {
             _ => Err(format!("{name} is not available here")),
         }
     }
+
+    /// A particle's own fields, as `particle_method` answers them.
+    fn field(&mut self, root: Root, field: horizon_polytone::expr::Field) -> Option<V> {
+        use horizon_polytone::expr::Field as F;
+        let Subject::Particle(p) = &self.subject else {
+            return None;
+        };
+        if root != Root::Object {
+            return None;
+        }
+        Some(V::Num(match field {
+            F::Age => f64::from(p.age),
+            F::Life => f64::from(p.lifetime),
+            F::Custom => *self.custom,
+            F::X => p.position[0],
+            F::Y => p.position[1],
+            F::Z => p.position[2],
+            F::Temperature | F::Downfall => return None,
+        }))
+    }
 }
 
 fn eval(program: &Program, ctx: &mut Ctx) -> Option<f64> {

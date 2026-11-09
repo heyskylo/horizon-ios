@@ -2028,7 +2028,7 @@ pub struct PackResources {
     /// The packs' Polytone post chains (#11486), when a pack has some.
     polytone_post: Option<Arc<horizon_client::polytone_post::PolytonePost>>,
     /// The packs' Polytone custom colours (`polytone/colors.json`).
-    polytone_colors: Arc<horizon_client::polytone_colors::PackColors>,
+    polytone_colors: Arc<horizon_client::pack_palette::PackColors>,
 }
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
@@ -2882,19 +2882,8 @@ struct Game<'a> {
     /// The open connection joined from Realms: `ServerData.isRealm` for the friends
     /// service's presence status.
     realm_session: bool,
-    /// Active packet replay session (game/studio.rs).
-    pub(super) studio_replay: Option<horizon_client::studio::ReplayDriver>,
-    pub(super) studio_freecam: horizon_client::studio::StudioFreecam,
-    pub(super) studio_timeline: horizon_client::studio::TimelineUi,
-    pub(super) studio_topbar: horizon_client::studio::TopBarUi,
-    pub(super) studio_rmb_down: bool,
-    studio_camera_track_dirty: bool,
-    /// Camera perspective to restore after leaving replay playback.
-    studio_replay_previous_camera_type: Option<perspective::CameraType>,
-    /// Replay opened from the title screen owns the synthetic remote session.
-    studio_replay_standalone: bool,
-    last_replay_tick: Option<Instant>,
-    pub(super) studio_virtual_tick_ms: f32,
+    /// Horizon Studio: replay playback, its free camera, timeline and top bar (game/studio.rs).
+    pub(super) studio: studio::Studio,
     /// This world is open to the network (game/lan.rs).
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
@@ -5026,7 +5015,7 @@ impl Game<'_> {
         if canceled {
             return Ok(false);
         }
-        self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
+        self.input_feedback(horizon_client::input_source::Feedback::BlockBroken);
         let broken = state;
         let facts = self.res.facts().get(state).clone();
         let state = self.crack_mined_pot(pos, state);
@@ -5845,7 +5834,7 @@ impl Game<'_> {
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
-        self.pad.guide_shown.clear();
+        self.input_hud_begin();
         let mut batch = HudBatch::new(size);
         batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
@@ -5942,7 +5931,7 @@ impl Game<'_> {
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
-        let in_studio = self.studio_replay.is_some();
+        let in_studio = self.studio.replay.is_some();
         let show_hud = !self.ui.hide_gui && !in_studio;
         // Hud.extractRenderState asks `Screen.isInGameUi` twice: such a screen
         // defers the subtitles over itself, and keeps them while F1 hides the
@@ -6142,7 +6131,7 @@ impl Game<'_> {
                     let atlas = &g.gui.atlas;
                     let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
                     let draws = hud_layout::experience_colored(
-                        g.pack.polytone_colors.xp_bar(),
+                        g.pack.polytone_colors.xp_bar,
                         wi,
                         hi,
                         g.experience.progress,
@@ -6284,19 +6273,19 @@ impl Game<'_> {
         }
         if !self.ui.hide_gui
             && self.screen == Screen::Playing
-            && (self.studio_replay.is_some() || self.studio_freecam.active)
+            && (self.studio.replay.is_some() || self.studio.freecam.active)
         {
-            self.studio_topbar.render(
+            self.studio.topbar.render(
                 &mut batch,
                 &self.gui.atlas,
                 self.cursor,
-                self.studio_freecam.locked_to_path,
+                self.studio.freecam.locked_to_path,
             );
-            self.studio_timeline.render(
+            self.studio.timeline.render(
                 &mut batch,
                 &self.gui.atlas,
                 self.cursor,
-                &self.studio_freecam,
+                &self.studio.freecam,
             );
         }
         if show_hud {
@@ -6475,18 +6464,6 @@ impl Game<'_> {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
         }
     }
-    /// `AbstractContainerScreen` keeps `isQuickCrafting` and the drag it
-    /// belongs to on the screen. Horizon keeps both on `Game` (`inv_clicks`,
-    /// `inv_drag`, `last_inv_click`), so they are dropped when the pointer
-    /// changes hands: a screen that opens or closes starts with its own
-    /// state, and a press whose release never reached the screen -- the
-    /// pointer left the window, or the screen closed first -- would
-    /// otherwise leave every later press on every later screen swallowed.
-    pub(super) fn reset_inventory_clicks(&mut self) {
-        self.inv_clicks.cancel_drag();
-        self.inv_drag = None;
-        self.last_inv_click = None;
-    }
     pub(super) fn close_container(&mut self) {
         // `Gui.setScreen` clears the old screen's focus before it goes: the
         // key that closed the container (Tab bound to the inventory) has
@@ -6530,29 +6507,15 @@ impl Game<'_> {
         }
         self.close_ender_chest();
     }
-    /// A sound a menu click made the player play (a bundle's insert or
-    /// remove): `Entity.playSound` at the player.
-    pub(super) fn player_menu_sound(&mut self, sound: &str) {
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let at = [p.position.x, p.position.y, p.position.z];
-        let (volume, pitch) = if sound == horizon_client::bundle::INSERT_FAIL {
-            (1.0, 1.0)
-        } else {
-            (0.8, 0.8 + self.world.random.next_float() * 0.4)
-        };
-        self.audio.play(sound, Some(at), volume, pitch);
-    }
     /// `Camera.setRotation`: the camera's orientation, turned round in
     /// third-person front view.
     pub(super) fn camera_orientation(&self) -> glam::Quat {
-        if self.studio_freecam.active {
+        if self.studio.freecam.active {
             return camera_rotation(
                 perspective::CameraType::FirstPerson,
-                self.studio_freecam.yaw,
-                self.studio_freecam.pitch,
-            ) * glam::Quat::from_rotation_z(self.studio_freecam.roll.to_radians());
+                self.studio.freecam.yaw,
+                self.studio.freecam.pitch,
+            ) * glam::Quat::from_rotation_z(self.studio.freecam.roll.to_radians());
         }
         match self.posed_rotation {
             // The frame's camera, already turned round in front view.
@@ -6759,8 +6722,8 @@ impl Game<'_> {
         self.mark_player(out.len(), !self.own_body_in_view());
         let player_start = out.len();
         self.mark_motion(player_start, Self::MOTION_OWN_PLAYER);
-        let player_alpha = if self.studio_replay.is_some() {
-            (self.studio_virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
+        let player_alpha = if self.studio.replay.is_some() {
+            (self.studio.virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
         } else {
             self.clock.camera_fraction()
         };
@@ -9262,7 +9225,7 @@ impl Game<'_> {
         let camera_alpha = self.clock.camera_fraction();
         let vanilla = self.camera_view(camera_alpha as f32);
         let view = vanilla.map(|view| {
-            if self.shows_panorama() || self.studio_freecam.active {
+            if self.shows_panorama() || self.studio.freecam.active {
                 view
             } else {
                 self.native_camera_pose_now(camera_alpha as f32, view)
@@ -9440,9 +9403,9 @@ impl Game<'_> {
         // hitboxes (F3+G, F3+B).
         let mut lines = self.fishing_line(alpha, size);
         let mut g = self.debug_gizmos(alpha as f32, camera.to_array());
-        if self.studio_freecam.active || self.studio_replay.is_some() {
+        if self.studio.freecam.active || self.studio.replay.is_some() {
             horizon_client::studio::render_camera_path(
-                &self.studio_freecam.track,
+                &self.studio.freecam.track,
                 &mut g,
                 None,
                 100,
@@ -9469,7 +9432,7 @@ impl Game<'_> {
             Vec::new()
         };
         pr.lap("pr_native_visuals");
-        let view = if self.studio_freecam.active {
+        let view = if self.studio.freecam.active {
             glam::Mat4::from_quat(self.camera_orientation().conjugate())
         } else {
             horizon_client::camera::view_matrix(view_yaw, view_pitch)
@@ -9595,7 +9558,7 @@ impl Game<'_> {
         } else {
             self.fov_degrees(camera_alpha as f32, camera.to_array())
         };
-        let camera_effects = fov::camera_effects_enabled(title, self.studio_freecam.active);
+        let camera_effects = fov::camera_effects_enabled(title, self.studio.freecam.active);
         let bob = if !camera_effects {
             glam::Mat4::IDENTITY
         } else {
@@ -10100,7 +10063,7 @@ impl Game<'_> {
                 )
             )
         {
-            self.pad.keyboard_took_over = true;
+            self.input_keyboard_used();
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
@@ -10489,19 +10452,19 @@ impl Game<'_> {
                         let previous = self.cursor;
                         self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
                         if self.screen == Screen::Playing
-                            && (self.studio_timeline.dragging_playhead
-                                || self.studio_timeline.dragging_keyframe.is_some())
+                            && (self.studio.timeline.dragging_playhead
+                                || self.studio.timeline.dragging_keyframe.is_some())
                         {
-                            let action = self.studio_timeline.handle_mouse_drag(
+                            let action = self.studio.timeline.handle_mouse_drag(
                                 self.cursor,
                                 b.width,
-                                &mut self.studio_freecam,
+                                &mut self.studio.freecam,
                             );
                             if matches!(
                                 action,
                                 horizon_client::studio::TimelineAction::KeyframeMoved
                             ) {
-                                self.studio_camera_track_dirty = true;
+                                self.studio.camera_track_dirty = true;
                             }
                             return Ok(());
                         }
@@ -10553,7 +10516,7 @@ impl Game<'_> {
                     }
                 }
                 WindowEvent::MouseWheel { .. }
-                    if self.screen == Screen::Playing && self.studio_replay.is_some() => {}
+                    if self.screen == Screen::Playing && self.studio.replay.is_some() => {}
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (raw_x, raw_y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
@@ -10831,44 +10794,44 @@ impl Game<'_> {
                 WindowEvent::MouseInput { state, button, .. } => {
                     let pressed = state == ElementState::Pressed;
                     if !pressed && button == MouseButton::Left {
-                        let action = self.studio_timeline.handle_mouse_up();
+                        let action = self.studio.timeline.handle_mouse_up();
                         if !matches!(action, horizon_client::studio::TimelineAction::None) {
                             self.handle_studio_timeline_action(action);
                         }
                     }
-                    if (self.studio_freecam.active || self.studio_replay.is_some())
+                    if (self.studio.freecam.active || self.studio.replay.is_some())
                         && button == MouseButton::Right
                     {
                         if let Some(renderer) = &self.renderer {
                             let batch =
                                 HudBatch::new([renderer.config.width, renderer.config.height]);
-                            if self.studio_timeline.visible
-                                && self.cursor.1 >= batch.height - self.studio_timeline.height()
+                            if self.studio.timeline.visible
+                                && self.cursor.1 >= batch.height - self.studio.timeline.height()
                             {
                                 if pressed
-                                    && let Some(index) = self.studio_timeline.keyframe_at_cursor(
+                                    && let Some(index) = self.studio.timeline.keyframe_at_cursor(
                                         self.cursor,
                                         batch.width,
                                         batch.height,
-                                        &self.studio_freecam,
+                                        &self.studio.freecam,
                                     )
                                 {
-                                    if index < self.studio_freecam.track.keyframes.len() {
-                                        self.studio_freecam.track.keyframes.remove(index);
-                                        self.studio_camera_track_dirty = true;
+                                    if index < self.studio.freecam.track.keyframes.len() {
+                                        self.studio.freecam.track.keyframes.remove(index);
+                                        self.studio.camera_track_dirty = true;
                                     }
-                                    self.studio_timeline.selected_keyframe = None;
+                                    self.studio.timeline.selected_keyframe = None;
                                 }
                                 return Ok(());
                             }
                         }
                         if pressed {
-                            self.studio_topbar.close_dropdown();
-                            self.studio_rmb_down = true;
+                            self.studio.topbar.close_dropdown();
+                            self.studio.rmb_down = true;
                             self.capture(true);
                             return Ok(());
-                        } else if self.studio_rmb_down {
-                            self.studio_rmb_down = false;
+                        } else if self.studio.rmb_down {
+                            self.studio.rmb_down = false;
                             self.capture(false);
                             return Ok(());
                         }
@@ -10876,7 +10839,7 @@ impl Game<'_> {
                     if pressed
                         && button == MouseButton::Left
                         && self.screen == Screen::Playing
-                        && (self.studio_replay.is_some() || self.studio_freecam.active)
+                        && (self.studio.replay.is_some() || self.studio.freecam.active)
                     {
                         let size = self
                             .renderer
@@ -10884,8 +10847,8 @@ impl Game<'_> {
                             .map(|renderer| [renderer.config.width, renderer.config.height])
                             .unwrap_or([1, 1]);
                         let batch = HudBatch::new(size);
-                        let had_open_menu = self.studio_topbar.open_menu.is_some();
-                        let topbar_action = self.studio_topbar.handle_mouse_click(
+                        let had_open_menu = self.studio.topbar.open_menu.is_some();
+                        let topbar_action = self.studio.topbar.handle_mouse_click(
                             self.cursor,
                             batch.width,
                             batch.height,
@@ -10894,26 +10857,26 @@ impl Game<'_> {
                             self.handle_studio_topbar_action(topbar_action);
                             return Ok(());
                         }
-                        if had_open_menu || self.cursor.1 <= self.studio_topbar.height {
+                        if had_open_menu || self.cursor.1 <= self.studio.topbar.height {
                             return Ok(());
                         }
-                        if self.studio_timeline.visible {
-                            let action = self.studio_timeline.handle_mouse_down(
+                        if self.studio.timeline.visible {
+                            let action = self.studio.timeline.handle_mouse_down(
                                 self.cursor,
                                 batch.width,
                                 batch.height,
-                                &self.studio_freecam,
+                                &self.studio.freecam,
                             );
                             if !matches!(action, horizon_client::studio::TimelineAction::None) {
                                 self.handle_studio_timeline_action(action);
                                 return Ok(());
                             }
-                            if self.cursor.1 >= batch.height - self.studio_timeline.height() {
+                            if self.cursor.1 >= batch.height - self.studio.timeline.height() {
                                 return Ok(());
                             }
                         }
                     }
-                    if self.screen == Screen::Playing && self.studio_replay.is_some() {
+                    if self.screen == Screen::Playing && self.studio.replay.is_some() {
                         return Ok(());
                     }
                     if matches!(self.screen, Screen::Inventory | Screen::Creative)
@@ -11383,7 +11346,7 @@ impl Game<'_> {
                     let between = now.saturating_duration_since(self.frame_end);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
-                    if self.studio_freecam.active
+                    if self.studio.freecam.active
                         && self.screen == Screen::Playing
                         && !self.dialog_open()
                     {
@@ -11393,7 +11356,7 @@ impl Game<'_> {
                         let vertical =
                             held(KeyCode::KeyE) - held(KeyCode::KeyQ) + held(KeyCode::Space);
                         let fast = self.keys.raw(&KeyCode::ControlRight);
-                        self.studio_freecam.update_flight_motion(
+                        self.studio.freecam.update_flight_motion(
                             forward,
                             strafe,
                             vertical,
@@ -11473,7 +11436,7 @@ impl Game<'_> {
                     self.extras_frame(elapsed);
                     self.extras_retry()?;
                     self.apply_mouse_look();
-                    self.pad_look(elapsed.as_secs_f32());
+                    self.input_look(elapsed.as_secs_f32());
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();
@@ -12183,16 +12146,7 @@ impl<'a> Game<'a> {
             entity_attachments: Default::default(),
             remote: None,
             realm_session: false,
-            studio_replay: None,
-            studio_freecam: Default::default(),
-            studio_timeline: Default::default(),
-            studio_topbar: Default::default(),
-            studio_rmb_down: false,
-            studio_camera_track_dirty: false,
-            studio_replay_previous_camera_type: None,
-            studio_replay_standalone: false,
-            last_replay_tick: None,
-            studio_virtual_tick_ms: 0.0,
+            studio: Default::default(),
             lan: None,
             integrated: None,
             level_shapes: Default::default(),
