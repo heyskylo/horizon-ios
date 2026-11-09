@@ -1,7 +1,5 @@
 //! `AvoidEntityGoal`/`TemptGoal` targeting predicates (test module of `goals.rs`).
 use super::*;
-
-use super::*;
 use crate::mobs::world::test_player;
 use crate::mobs::world::{with_built_test_world, with_test_world};
 use std::sync::Arc;
