@@ -112,3 +112,26 @@ fn an_observer_pulses_from_two_to_four_ticks_after_its_faced_side_changes() {
     }
     assert_eq!(powered(&w), "false", "and it does not start again");
 }
+
+/// `ObserverBlock.updateShape` reacts only when the direction to the changed
+/// neighbour is its `FACING`: a change on any other side starts no pulse.
+#[test]
+fn an_observer_ignores_changes_on_the_sides_it_does_not_face() {
+    for (side, offset) in [
+        ("behind", (-1, 0, 0)),
+        ("north", (0, 0, -1)),
+        ("south", (0, 0, 1)),
+        ("above", (0, 1, 0)),
+        ("below", (0, -1, 0)),
+    ] {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.put(at, w.id("observer", &[("facing", "east")]));
+        let stone = w.id("stone", &[]);
+        w.set(BlockPos::new(offset.0, 5 + offset.1, offset.2), stone);
+        for _ in 0..8 {
+            w.tick();
+            assert_eq!(w.prop(at, "powered"), "false", "a change {side} of it");
+        }
+    }
+}
