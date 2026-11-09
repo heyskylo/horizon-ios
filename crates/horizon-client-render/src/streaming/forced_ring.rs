@@ -1,7 +1,41 @@
 //! How a forced chunk's ring is ranked (#13175).
-use super::{FORCED_TERRAIN_RING, Ranges};
+use super::{Band, FORCED_TERRAIN_RING, Ranges, Streaming};
+use std::collections::HashSet;
+
+type Chunks = HashSet<(i32, i32)>;
+
+/// What queued jobs were ranked from (`Streaming::requeue`): the centre, the
+/// band, the extra areas, and the forced chunks.
+#[derive(Default)]
+pub(super) struct Basis {
+    player: ((i32, i32), Option<Band>),
+    extra: Vec<((i32, i32), i32)>,
+    forced: (Chunks, Chunks),
+}
+
+/// Whether the queued jobs' ranking is out of date; it is brought up to date.
+pub(super) fn basis_changed(s: &mut Streaming) -> bool {
+    let b = &mut s.queue_basis;
+    let same = b.player == (s.center, s.band)
+        && b.extra == s.extra
+        && b.forced.0 == s.forced
+        && b.forced.1 == s.mod_forced;
+    if !same {
+        b.player = (s.center, s.band);
+        b.extra.clone_from(&s.extra);
+        b.forced.0.clone_from(&s.forced);
+        b.forced.1.clone_from(&s.mod_forced);
+    }
+    !same
+}
 
 impl Ranges<'_> {
+    /// `player_distance`, or the nearer one to a forced chunk whose ring reaches
+    /// (x, z): see `forced_distance`.
+    pub(super) fn distance(&self, x: i32, z: i32) -> i64 {
+        self.player_distance(x, z).min(self.forced_distance(x, z))
+    }
+
     /// Distance (squared) to the nearest forced chunk whose ring reaches
     /// (x, z), or `i64::MAX`. A forced chunk's ring is loaded with its ticket
     /// (levels 32 to 35 around the FORCED ticket's 31), so the 3x3 it needs to
@@ -42,7 +76,6 @@ mod tests {
     use super::*;
     use crate::fast_hash::{FxHashMap, FxHashSet};
     use crate::world::World;
-    use std::collections::HashSet;
 
     /// A forced chunk's ring is loaded with its ticket, so it ranks around
     /// the forced chunk and not by how far it lies from the player. Vanilla

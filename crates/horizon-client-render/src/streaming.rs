@@ -506,11 +506,8 @@ pub struct Streaming {
     decoration_order: DecorationOrder,
     order_area: Option<((i32, i32), i32)>,
     /// What the queued jobs' priorities were computed from (`requeue`): the
-    /// centre, the band, and the extra areas.
-    queue_basis: (((i32, i32), Option<Band>), Vec<((i32, i32), i32)>),
-    /// The forced chunks (`forced`, `mod_forced`) the queued jobs were ranked
-    /// for: a forced chunk's ring is ranked around it (`Ranges::distance`).
-    queue_forced: (HashSet<(i32, i32)>, HashSet<(i32, i32)>),
+    /// centre, the band, the extra areas, and the forced chunks.
+    queue_basis: forced_ring::Basis,
     finishing: FxHashSet<(i32, i32)>,
     decorates: bool,
     /// `ChunkGenerator::decorates_beside_final`.
@@ -1132,7 +1129,6 @@ impl Streaming {
             decoration_order: DecorationOrder::default(),
             order_area: None,
             queue_basis: Default::default(),
-            queue_forced: Default::default(),
             finishing: Default::default(),
             decorates: generator.decorates(),
             saves_beside_final: generator.decorates_beside_final(),
@@ -1351,17 +1347,9 @@ impl Streaming {
     /// render distance 32 nothing was decorated until every proto chunk had
     /// been generated.
     fn requeue(&mut self) {
-        let basis = (self.center, self.band);
-        if self.queue_basis.0 == basis
-            && self.queue_basis.1 == self.extra
-            && self.queue_forced.0 == self.forced
-            && self.queue_forced.1 == self.mod_forced
-        {
+        if !forced_ring::basis_changed(self) {
             return;
         }
-        self.queue_basis = (basis, self.extra.clone());
-        self.queue_forced.0.clone_from(&self.forced);
-        self.queue_forced.1.clone_from(&self.mod_forced);
         let mut queue = self.shared.queue.lock().unwrap();
         rank_again(&mut queue, |x, z| self.distance(x, z));
     }
@@ -2858,21 +2846,20 @@ impl Ranges<'_> {
             _ => own,
         }
     }
-    fn distance(&self, x: i32, z: i32) -> i64 {
+    fn player_distance(&self, x: i32, z: i32) -> i64 {
         let d = |c: (i32, i32)| {
             let (dx, dz) = (i64::from(x - c.0), i64::from(z - c.1));
             dx * dx + dz * dz
         };
-        let own = if let Some(cover) = self.cover {
-            d(self.center).min(cover.nearest_sq(x, z))
-        } else {
-            self.extra
-                .iter()
-                .map(|(c, _)| d(*c))
-                .fold(d(self.center), i64::min)
-        };
-        own.min(self.forced_distance(x, z))
+        if let Some(cover) = self.cover {
+            return d(self.center).min(cover.nearest_sq(x, z));
+        }
+        self.extra
+            .iter()
+            .map(|(c, _)| d(*c))
+            .fold(d(self.center), i64::min)
     }
+
     /// How far past the view distance chunks are generated, and how far around
     /// a finished chunk (`near_finished`): decorated chunks need their
     /// neighbours generated too.
