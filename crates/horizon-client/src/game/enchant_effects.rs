@@ -1034,7 +1034,7 @@ impl Game<'_> {
         if level == 0 {
             return None;
         }
-        let (particle, pitch) = soul_speed_tick_effects(
+        let (particle, pitch) = soul_speed_tick(
             [position.x, position.y, position.z],
             [moved.x, moved.y, moved.z],
             width,
@@ -1467,12 +1467,13 @@ fn pick_mending_slot(
     slots: [(PlayerSlot, &Option<ItemStack>); 6],
     random: &mut impl RandomSource,
 ) -> Option<PlayerSlot> {
+    let mending = |s: &Option<ItemStack>| {
+        s.as_ref()
+            .is_some_and(|s| s.damage > 0 && s.enchantment_level("minecraft:mending") > 0)
+    };
     let candidates: Vec<PlayerSlot> = slots
         .into_iter()
-        .filter(|(_, s)| {
-            s.as_ref()
-                .is_some_and(|s| s.damage > 0 && s.enchantment_level("minecraft:mending") > 0)
-        })
+        .filter(|(_, s)| mending(s))
         .map(|(slot, _)| slot)
         .collect();
     if candidates.is_empty() {
@@ -1487,7 +1488,7 @@ fn pick_mending_slot(
 /// `minecraft:tick` effects: the sound's `random_chance` (35%) draws from
 /// `level_random` (`Enchantment.entityContext`), while the particle coordinates
 /// and sound pitch draw from `wearer_random` (`entity.getRandom()`).
-fn soul_speed_tick_effects(
+fn soul_speed_tick(
     position: [f64; 3],
     moved: [f64; 3],
     width: f32,
@@ -1518,10 +1519,7 @@ fn soul_speed_tick_effects(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PLAYER_SLOTS, PlayerSlot, armor_changes, block_break_speed_factor, pick_mending_slot,
-        soul_speed_tick_effects,
-    };
+    use super::{armor_changes, block_break_speed_factor, pick_mending_slot, soul_speed_tick};
     use horizon_client::items::ItemStack;
     use horizon_core::random::{LegacyRandom, RandomSource};
 
@@ -1575,15 +1573,14 @@ mod tests {
         let legs = Some(unbreaking);
         let feet = mending_item("minecraft:diamond_boots", 9);
 
-        let slot_ref = |slot: PlayerSlot| match slot {
-            PlayerSlot::Main => &main,
-            PlayerSlot::Off => &off,
-            PlayerSlot::Armor(0) => &head,
-            PlayerSlot::Armor(1) => &chest,
-            PlayerSlot::Armor(2) => &legs,
-            PlayerSlot::Armor(3) => &feet,
-            PlayerSlot::Armor(_) => unreachable!(),
-        };
+        let slots = [
+            (super::PlayerSlot::Main, &main),
+            (super::PlayerSlot::Off, &off),
+            (super::PlayerSlot::Armor(3), &feet),
+            (super::PlayerSlot::Armor(2), &legs),
+            (super::PlayerSlot::Armor(1), &chest),
+            (super::PlayerSlot::Armor(0), &head),
+        ];
 
         let mut world_rng = LegacyRandom::new(10_001);
         let mut expected_world = LegacyRandom::new(10_001);
@@ -1591,13 +1588,12 @@ mod tests {
         let mut expected_player = LegacyRandom::new(20_002);
 
         let expected_candidates = [
-            PlayerSlot::Main,
-            PlayerSlot::Off,
-            PlayerSlot::Armor(3),
-            PlayerSlot::Armor(0),
+            super::PlayerSlot::Main,
+            super::PlayerSlot::Off,
+            super::PlayerSlot::Armor(3),
+            super::PlayerSlot::Armor(0),
         ];
         for _ in 0..16 {
-            let slots = PLAYER_SLOTS.map(|slot| (slot, slot_ref(slot)));
             let picked = pick_mending_slot(slots, &mut player_rng);
             let idx = expected_player.next_int_bound(4).unwrap() as usize;
             assert_eq!(picked, Some(expected_candidates[idx]));
@@ -1607,12 +1603,12 @@ mod tests {
 
         let none: Option<ItemStack> = None;
         let empty = [
-            (PlayerSlot::Main, &none),
-            (PlayerSlot::Off, &chest),
-            (PlayerSlot::Armor(3), &none),
-            (PlayerSlot::Armor(2), &legs),
-            (PlayerSlot::Armor(1), &chest),
-            (PlayerSlot::Armor(0), &none),
+            (super::PlayerSlot::Main, &none),
+            (super::PlayerSlot::Off, &chest),
+            (super::PlayerSlot::Armor(3), &none),
+            (super::PlayerSlot::Armor(2), &legs),
+            (super::PlayerSlot::Armor(1), &chest),
+            (super::PlayerSlot::Armor(0), &none),
         ];
         assert_eq!(pick_mending_slot(empty, &mut player_rng), None);
         assert_eq!(player_rng.next_long(), expected_player.next_long());
@@ -1628,52 +1624,37 @@ mod tests {
         let width = 0.6f32;
 
         for seed in 0..32 {
-            let mut level_rng = LegacyRandom::new(seed);
+            let mut l_rng = LegacyRandom::new(seed);
             let mut expected_level = LegacyRandom::new(seed);
-            let mut wearer_rng = LegacyRandom::new(seed + 1_000);
+            let mut w_rng = LegacyRandom::new(seed + 1_000);
             let mut expected_wearer = LegacyRandom::new(seed + 1_000);
 
-            let (particle, pitch) = soul_speed_tick_effects(
-                pos,
-                moved,
-                width,
-                true,
-                &mut level_rng,
-                &mut wearer_rng,
-            );
+            let out = soul_speed_tick(pos, moved, width, true, &mut l_rng, &mut w_rng);
             let want_x = pos[0] + (expected_wearer.next_double() - 0.5) * f64::from(width);
             let want_z = pos[2] + (expected_wearer.next_double() - 0.5) * f64::from(width);
             let want_pos = [want_x, pos[1] + 0.1, want_z];
             let want_vel = [moved[0] * -0.2, 0.1, moved[2] * -0.2];
-            assert_eq!(particle, Some((want_pos, want_vel)));
+            assert_eq!(out.0, Some((want_pos, want_vel)));
             let want_pitch = if expected_level.next_float() < 0.35 {
                 Some(expected_wearer.next_float() * 0.4 + 0.6)
             } else {
                 None
             };
-            assert_eq!(pitch, want_pitch);
-            assert_eq!(level_rng.next_long(), expected_level.next_long());
-            assert_eq!(wearer_rng.next_long(), expected_wearer.next_long());
+            assert_eq!(out.1, want_pitch);
+            assert_eq!(l_rng.next_long(), expected_level.next_long());
+            assert_eq!(w_rng.next_long(), expected_wearer.next_long());
         }
 
         // When tick_effects is false, the leading 35% random_chance still draws
         // one float from level_rng while wearer_rng is untouched.
-        let mut level_rng = LegacyRandom::new(77);
+        let mut l_rng = LegacyRandom::new(77);
         let mut expected_level = LegacyRandom::new(77);
-        let mut wearer_rng = LegacyRandom::new(88);
+        let mut w_rng = LegacyRandom::new(88);
         let mut expected_wearer = LegacyRandom::new(88);
-        let (particle, pitch) = soul_speed_tick_effects(
-            pos,
-            moved,
-            width,
-            false,
-            &mut level_rng,
-            &mut wearer_rng,
-        );
+        let out = soul_speed_tick(pos, moved, width, false, &mut l_rng, &mut w_rng);
         let _ = expected_level.next_float();
-        assert_eq!(particle, None);
-        assert_eq!(pitch, None);
-        assert_eq!(level_rng.next_long(), expected_level.next_long());
-        assert_eq!(wearer_rng.next_long(), expected_wearer.next_long());
+        assert_eq!(out, (None, None));
+        assert_eq!(l_rng.next_long(), expected_level.next_long());
+        assert_eq!(w_rng.next_long(), expected_wearer.next_long());
     }
 }
