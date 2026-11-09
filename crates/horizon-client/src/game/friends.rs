@@ -5,8 +5,8 @@
 //! and the key, so friends join with no server of ours; a relay the player
 //! configured adds a short code and a fallback. The integrated server is the
 //! LAN one, unchanged: tunnelled guests are LAN guests that connect from the
-//! loopback address. The joining side reads codes and opens tunnels for the engine's
-//! `friend:` addresses (`tunnel`, registered at startup).
+//! loopback address. The joining side is horizon-friends' (`game`), registered by
+//! horizon-official.
 use super::{Game, lan::LanSettings};
 use horizon_client::{Result, hud::HudBatch, lang, text::Text};
 use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
@@ -14,7 +14,6 @@ use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
 use std::time::{Duration, Instant};
 
 mod screen;
-pub(crate) mod tunnel;
 
 use screen::{self as friends_screen, Action, FriendsView};
 pub use screen::{TITLE, title};
