@@ -1526,7 +1526,7 @@ impl Game<'_> {
         if !self.minecart_improvements() {
             let (xd, zd) = (c.previous.x - c.position.x, c.previous.z - c.position.z);
             if xd * xd + zd * zd > 0.001 {
-                c.yaw = zd.atan2(xd).to_degrees() as f32;
+                c.yaw = horizon_core::geometry::trig::atan2_degrees_double(zd, xd);
                 if c.flipped {
                     c.yaw += 180.0;
                 }
