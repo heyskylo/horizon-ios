@@ -516,11 +516,12 @@ def run_windows(steps, verbose):
         try:
             with process_tree.popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, errors="replace") as process:
-                def release():
+                def release(process):
                     # The check's exit ends what it left running, which would otherwise hold the output open.
                     process.wait()
                     process_tree.ended(process)
-                reaper = threading.Thread(target=release)
+                # A daemon: interrupted, this process exits at once, and its jobs end the checks with it.
+                reaper = threading.Thread(target=release, args=(process,), daemon=True)
                 reaper.start()
                 for line in process.stdout:
                     step.output += line
