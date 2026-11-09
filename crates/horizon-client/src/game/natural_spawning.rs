@@ -840,7 +840,7 @@ impl<'a> Game<'a> {
         let mut pending = Vec::new();
         let last_state;
         {
-            let level = self.natural_level_with_players(players);
+            let level = self.natural_level();
             laps.lap("sn_level");
             let counted = self.mobs.iter().map(|m| Counted {
                 entity: &m.kind.id,
@@ -857,7 +857,7 @@ impl<'a> Game<'a> {
             scratch.spawn_players.clear();
             scratch
                 .spawn_players
-                .extend(level.players.iter().map(|p| SpawnPlayer {
+                .extend(players.iter().map(|p| SpawnPlayer {
                     position: [p.position.x, p.position.y, p.position.z],
                     spectator: p.spectator,
                 }));
