@@ -1860,13 +1860,25 @@ fn compiles_outside_the_players_cargo_configuration(rust: &Toolchain) {
 fn the_game_build_is_the_official_game_where_the_revision_has_it() {
     let stage = dir("official-game");
     // A revision from before horizon-official: horizon-client's game, as its release shipped.
-    assert_eq!(api::game_package(&stage, Target::Client, false), "horizon-client");
+    assert_eq!(
+        api::game_package(&stage, Target::Client, false),
+        "horizon-client"
+    );
     fs::create_dir_all(stage.join("crates/horizon-official")).unwrap();
     fs::write(stage.join("crates/horizon-official/Cargo.toml"), "").unwrap();
-    assert_eq!(api::game_package(&stage, Target::Client, false), api::OFFICIAL);
+    assert_eq!(
+        api::game_package(&stage, Target::Client, false),
+        api::OFFICIAL
+    );
     // The server build has no Horizon parts; trait mods build their generated executable.
-    assert_eq!(api::game_package(&stage, Target::Server, false), "horizon-client");
-    assert_eq!(api::game_package(&stage, Target::Client, true), api::PACKAGE);
+    assert_eq!(
+        api::game_package(&stage, Target::Server, false),
+        "horizon-client"
+    );
+    assert_eq!(
+        api::game_package(&stage, Target::Client, true),
+        api::PACKAGE
+    );
     for rust in toolchains("/rust/1.99.1-x") {
         let cmd = compile(
             &rust,

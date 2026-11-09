@@ -433,7 +433,7 @@ pub(super) fn stage(
         game.join("src/main.rs"),
         main_rs(&ids, names_mods(stage), official),
     )
-        .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?;
     let root = stage.join("Cargo.toml");
     let mut workspace = read(&root)?;
     let list = workspace
@@ -653,7 +653,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|f| f.as_str() == Some("official")));
-        assert_eq!(features["official"][0].as_str(), Some("dep:horizon-official"));
+        assert_eq!(
+            features["official"][0].as_str(),
+            Some("dep:horizon-official")
+        );
         let main = main();
         let register = main
             .find("#[cfg(feature = \"official\")]\n    horizon_official::register();")

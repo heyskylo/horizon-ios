@@ -2537,7 +2537,8 @@ fn pipeline(
                 _ => Failed::Other(error),
             }
         })?;
-        api::as_client(&stage, target, has_api, &target_dir.join(compiled.cargo().0))?;
+        let out = target_dir.join(compiled.cargo().0);
+        api::as_client(&stage, target, has_api, &out)?;
         if let Some(expected) = platform.machine {
             let executable = target_dir.join(compiled.cargo().0).join(backend::CLIENT);
             let actual = pe_machine(&executable).map_err(|error| {
