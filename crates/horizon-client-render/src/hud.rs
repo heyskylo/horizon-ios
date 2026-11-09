@@ -116,7 +116,8 @@ pub struct HudAtlas {
     /// Of the shared atlas's textures, their LabPBR normal and specular maps as paged maps
     /// (`paged_maps.rs`), read while loading for shader packs (`sprites::labpbr_maps`).
     pub material_maps: std::sync::Arc<[Option<crate::paged_maps::PagedMap>; 2]>,
-    white: Rect,
+    /// The white texel flat fills sample (also `hud_kit::shapes`).
+    pub(crate) white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
 pub const GLYPH_ROWS: u32 = 512;
@@ -1672,6 +1673,8 @@ fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -
         v.pos = [mix(a.pos[0], b.pos[0]), mix(a.pos[1], b.pos[1])];
         v.uv = [mix(a.uv[0], b.uv[0]), mix(a.uv[1], b.uv[1])];
         v.depth = mix(a.depth, b.depth);
+        // A shaded shape (a gradient, `hud_kit::shapes`) keeps its colours across the cut.
+        v.color = crate::hud_kit::shapes::mix_colour(a.color, b.color, t);
         v.glint_uv = [
             mix(a.glint_uv[0], b.glint_uv[0]),
             mix(a.glint_uv[1], b.glint_uv[1]),
@@ -1687,11 +1690,8 @@ fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -
             out.push(*a);
         }
         if ia != ib {
-            out.push(lerp(
-                a,
-                b,
-                (limit - a.pos[axis]) / (b.pos[axis] - a.pos[axis]),
-            ));
+            let t = (limit - a.pos[axis]) / (b.pos[axis] - a.pos[axis]);
+            out.push(lerp(a, b, t));
         }
     }
     out
@@ -1754,8 +1754,8 @@ pub struct EndPortalFill {
     pub sprites: [[f32; 4]; 2],
     pub game_time: f32,
 }
-pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    u32::from(a) << 24 | u32::from(b) << 16 | u32::from(g) << 8 | u32::from(r)
+pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    (a as u32) << 24 | (b as u32) << 16 | (g as u32) << 8 | r as u32
 }
 impl HudBatch {
     /// Window.calculateScale: the largest scale keeping >= 320x240 GUI pixels,
