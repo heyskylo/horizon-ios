@@ -1,9 +1,11 @@
 //! A level's world settings for native server mods, through a `LevelRef`
 //! (docs/native-mods.md, "Entity and level handles", #7387): the seed, the
-//! difficulty, game rules and weather. They return `None` on a client or for
-//! a handle of an earlier open.
+//! difficulty, game rules and weather, and the setters of its time, game rules
+//! and weather. The readers return `None` on a client or for a handle of an
+//! earlier open; the setters return false.
 use super::Game;
 use horizon_client::command::vanilla::DIFFICULTIES;
+use horizon_client::gamerules;
 use horizon_client::mod_api::{GameRuleValue, LevelRef};
 
 /// `Level.isRaining` and `isThundering` from the rain and thunder levels.
@@ -54,6 +56,64 @@ impl Game<'_> {
     /// API @API:level_world@.
     pub(super) fn native_level_is_thundering(&self, level: LevelRef) -> Option<bool> {
         Some(weather_flags(self.native_level_weather(level)?).1)
+    }
+    /// Sets the time of day, as `/time set <ticks>` does on the overworld clock: mods hear
+    /// `time_skip` (cause `mod`) first and can keep the old time, and the clock's fraction of a
+    /// tick restarts. False for a negative time, for a handle that isn't this open's on the
+    /// server, or when a mod kept the old time; a time the clock already shows is true and
+    /// changes nothing. API @API:level_world_setters@.
+    pub(super) fn native_level_set_day_time(&mut self, level: LevelRef, time: i64) -> bool {
+        if time < 0 || self.native_level_world(level).is_none() {
+            return false;
+        }
+        let clock = "minecraft:overworld";
+        let total = self.command_clock_time(clock);
+        total == time || self.jump_clock(clock, total, time, "mod")
+    }
+    /// Sets game rule `rule` (`minecraft:advance_time` or `advance_time`) as `/gamerule` does,
+    /// so `advance_time` and `advance_weather` freeze and unfreeze the day clock and the weather
+    /// cycle. False for an unknown rule, a value of the wrong kind or out of the rule's range,
+    /// or a handle that isn't this open's on the server. API @API:level_world_setters@.
+    pub(super) fn native_level_set_game_rule(
+        &mut self,
+        level: LevelRef,
+        rule: &str,
+        value: GameRuleValue,
+    ) -> bool {
+        let Some(rule) = gamerules::rule(rule) else {
+            return false;
+        };
+        if self.native_level_world(level).is_none() || !self.ui.rules.clone().set(rule.name, value)
+        {
+            return false;
+        }
+        self.set_game_rule(rule, value);
+        true
+    }
+    /// Sets the weather as `/weather` does (`ServerLevel.setWeatherParameters`): `clear_time`
+    /// ticks of clear weather, then `weather_time` ticks of the new state (rain, thunder or
+    /// neither) as `raining` and `thundering` say. Mods hear `weather_change` and
+    /// `thunder_change` first and can keep the old state. False for a negative time, a level that
+    /// can't have weather (the Nether, the End) or isn't the one in place, a handle that isn't
+    /// this open's on the server, or when a mod kept the old state. API
+    /// @API:level_world_setters@.
+    pub(super) fn native_level_set_weather(
+        &mut self,
+        level: LevelRef,
+        clear_time: i32,
+        weather_time: i32,
+        raining: bool,
+        thundering: bool,
+    ) -> bool {
+        if clear_time < 0
+            || weather_time < 0
+            || level.dimension() != self.dim.id()
+            || self.native_level_world(level).is_none()
+            || !self.can_have_weather()
+        {
+            return false;
+        }
+        self.apply_weather(clear_time, weather_time, raining, thundering)
     }
 }
 

@@ -2167,7 +2167,7 @@ impl Game<'_> {
     }
     /// `ServerClockManager.getInstance`: commands address clock-keyed state.
     /// Keep the existing Overworld clock tied to the world's canonical day time.
-    fn command_clock_time(&self, clock: &str) -> i64 {
+    pub(super) fn command_clock_time(&self, clock: &str) -> i64 {
         if clock == "minecraft:overworld" {
             self.world.day_time
         } else {
@@ -2197,6 +2197,17 @@ impl Game<'_> {
                 .1
         }
     }
+    /// `/time set` on `clock`: the mods hear `time_skip` first and can keep `from`; the clock's
+    /// fraction of a tick restarts. False when they did.
+    pub(super) fn jump_clock(&mut self, clock: &str, from: i64, to: i64, cause: &str) -> bool {
+        let mut cancel = false;
+        self.native_time_skip(self.dim.id(), from, to, cause, &mut cancel);
+        if !cancel {
+            self.set_command_clock_time(clock, to);
+            self.command_clock_state(clock).partial = 0.0;
+        }
+        !cancel
+    }
     /// `TimeCommand.getDefaultClock`: explicit registered clocks and dimension defaults are
     /// separate; built-in timelines and markers belong only to Overworld.
     fn cmd_time(&mut self, id: &str, ctx: &Context) -> R<i32> {
@@ -2220,12 +2231,7 @@ impl Game<'_> {
                 if total == t {
                     return Err(err("commands.time.set.already_at_time", &[&clock, &t]));
                 }
-                let mut cancel = false;
-                self.native_time_skip(self.dim.id(), total, t, "command", &mut cancel);
-                if !cancel {
-                    self.set_command_clock_time(&clock, t);
-                    self.command_clock_state(&clock).partial = 0.0;
-                }
+                self.jump_clock(&clock, total, t, "command");
                 self.feedback(Text::tr("commands.time.set.absolute", &[&clock, &t]));
                 Ok(t as i32)
             }
@@ -2353,36 +2359,16 @@ impl Game<'_> {
             _ => Ok(0),
         }
     }
-    fn cmd_weather(&mut self, ctx: &Context) -> R<i32> {
-        let duration = Self::int(ctx, "duration");
-        let sample = |min: i32, max: i32, r: &mut horizon_core::random::LegacyRandom| {
-            min + r.next_int_bound(max - min + 1).unwrap_or(0)
-        };
-        let (key, clear, time, raining, thundering) = if ctx.has("clear") {
-            (
-                "commands.weather.set.clear",
-                duration.unwrap_or_else(|| sample(12_000, 180_000, &mut self.world.random)),
-                0,
-                false,
-                false,
-            )
-        } else if ctx.has("rain") {
-            (
-                "commands.weather.set.rain",
-                0,
-                duration.unwrap_or_else(|| sample(12_000, 24_000, &mut self.world.random)),
-                true,
-                false,
-            )
-        } else {
-            (
-                "commands.weather.set.thunder",
-                0,
-                duration.unwrap_or_else(|| sample(3_600, 15_600, &mut self.world.random)),
-                true,
-                true,
-            )
-        };
+    /// `ServerLevel.setWeatherParameters`, as `/weather` and the mods' weather setter call it: the
+    /// mods hear `weather_change` and `thunder_change` first and can keep the old state. False when
+    /// they did.
+    pub(super) fn apply_weather(
+        &mut self,
+        clear: i32,
+        time: i32,
+        raining: bool,
+        thundering: bool,
+    ) -> bool {
         let previous = (
             self.world.weather.clear_time,
             self.world.weather.rain_time,
@@ -2418,6 +2404,39 @@ impl Game<'_> {
                 w.thundering = old_thundering;
             }
         }
+        !cancel
+    }
+    fn cmd_weather(&mut self, ctx: &Context) -> R<i32> {
+        let duration = Self::int(ctx, "duration");
+        let sample = |min: i32, max: i32, r: &mut horizon_core::random::LegacyRandom| {
+            min + r.next_int_bound(max - min + 1).unwrap_or(0)
+        };
+        let (key, clear, time, raining, thundering) = if ctx.has("clear") {
+            (
+                "commands.weather.set.clear",
+                duration.unwrap_or_else(|| sample(12_000, 180_000, &mut self.world.random)),
+                0,
+                false,
+                false,
+            )
+        } else if ctx.has("rain") {
+            (
+                "commands.weather.set.rain",
+                0,
+                duration.unwrap_or_else(|| sample(12_000, 24_000, &mut self.world.random)),
+                true,
+                false,
+            )
+        } else {
+            (
+                "commands.weather.set.thunder",
+                0,
+                duration.unwrap_or_else(|| sample(3_600, 15_600, &mut self.world.random)),
+                true,
+                true,
+            )
+        };
+        self.apply_weather(clear, time, raining, thundering);
         self.feedback(Text::translate(key, &[]));
         Ok(duration.unwrap_or(-1))
     }
