@@ -5276,7 +5276,12 @@ impl Game<'_> {
         }
     }
     /// Dispatch with the projectile's actual owner context, including a guest shooter.
-    pub(super) fn projectile_shoot_event(&mut self, owner: Option<Who>, guest: Option<u32>, at: [f64; 3]) {
+    pub(super) fn projectile_shoot_event(
+        &mut self,
+        owner: Option<Who>,
+        guest: Option<u32>,
+        at: [f64; 3],
+    ) {
         if let Some(conn) = guest.filter(|conn| self.lan_acting != Some(*conn)) {
             let dispatched = if let Some(mut host) = self.lan.take() {
                 let result = self.as_guest(&mut host, conn, |g| {
@@ -10056,7 +10061,11 @@ mod loaded_arrow_shot_tests {
             assert!(game.run_command(
                 "summon firework_rocket 9.5 201.5 10.5 {LifeTime:100,HasBeenShot:1b}"
             ));
-            assert!(game.rockets.iter().all(|r| r.has_been_shot == (r.position.x == 9.5)));
+            assert!(
+                game.rockets
+                    .iter()
+                    .all(|r| r.has_been_shot == (r.position.x == 9.5))
+            );
             game.audio.heard.clear();
             start_events();
             game.tick_rockets();
@@ -10064,7 +10073,10 @@ mod loaded_arrow_shot_tests {
             game.tick_rockets();
             let second = take_shots();
             stop_events();
-            assert_eq!(first, vec![("minecraft:projectile_shoot", [6.5, 201.5, 10.5], None)]);
+            assert_eq!(
+                first,
+                vec![("minecraft:projectile_shoot", [6.5, 201.5, 10.5], None)]
+            );
             assert!(second.is_empty());
             assert!(game.rockets.iter().all(|r| r.has_been_shot));
             // Only the rocket that isn't silent launches with a sound.
@@ -10245,7 +10257,10 @@ mod loaded_arrow_shot_tests {
             // Projectile.tick: where the rocket is, with the player as owner.
             let at = game.rockets[0].position.components();
             game.tick_rockets();
-            assert_eq!(take_shots(), vec![("minecraft:projectile_shoot", at, Some(Who::Player))]);
+            assert_eq!(
+                take_shots(),
+                vec![("minecraft:projectile_shoot", at, Some(Who::Player))]
+            );
             game.tick_rockets();
             assert!(take_shots().is_empty());
             stop_events();
