@@ -117,7 +117,7 @@ fn fallback_spawn(own: Option<Vec3>, world: Option<[i32; 3]>) -> Vec3 {
 pub(super) struct EndState {
     /// Ticks until the player can use a gateway again (TheEndGatewayBlockEntity cooldown).
     gateway_cooldown: u32,
-    pub(super) gateways: HashMap<u32, horizon_client::end_gateway::Traveller>,
+    gateways: HashMap<u32, horizon_client::end_gateway::Traveller>,
     /// The entities that went through a gateway, waiting for its exit.
     arrivals: Vec<GatewayArrival>,
     /// The chunks kept loaded for those arrivals.
@@ -1537,15 +1537,8 @@ impl Game<'_> {
             if self.restart_portal_cooldown(id) {
                 continue;
             }
-            let delay = self.entity_portal_delay(id);
-            self.end
-                .gateways
-                .entry(id)
-                .or_default()
-                .enter_with_delay(pos, delay);
+            self.end.gateways.entry(id).or_default().enter(pos);
         }
-        // ThrowableProjectile applies the gateway's block effect before Entity.tick.
-        self.handle_end_gateway_portals_phase(true);
     }
 
     /// `ThrownEnderpearl.onInsideBlock` in an End gateway: its owner's
@@ -1567,11 +1560,7 @@ impl Game<'_> {
     /// `Entity.handlePortal` for the entities in an End gateway: they go
     /// through to the gateway's exit, where they wait for its chunks.
     pub(super) fn handle_end_gateway_portals(&mut self) {
-        self.handle_end_gateway_portals_phase(false);
-    }
-
-    fn handle_end_gateway_portals_phase(&mut self, after_move: bool) {
-        // Nobody in a gateway: nothing to look up.
+        // Nobody in a gateway (nearly always): nothing to look up.
         if self.remote.is_some() || self.dim != Dim::End || self.end.gateways.is_empty() {
             return;
         }
@@ -1619,25 +1608,11 @@ impl Game<'_> {
             if !ticking {
                 continue;
             }
-            // Only an entity in a gateway has a state: skip the others before
-            // the per-id lookups below, which walk the entity lists.
-            if !self.end.gateways.contains_key(&id) {
-                continue;
-            }
-            let is_pearl = self
-                .creatures
-                .projectiles
-                .iter()
-                .any(|p| p.id == id && matches!(p.kind, ProjectileKind::EnderPearl));
-            if is_pearl != after_move {
-                continue;
-            }
-            let delay = self.entity_portal_delay(id);
             let Some(state) = self.end.gateways.get_mut(&id) else {
                 continue;
             };
             // The End gateway has no transition time (Portal.getPortalTransitionTime).
-            if let Some(entry) = state.travel_with_delay(allowed, delay) {
+            if let Some(entry) = state.travel(allowed) {
                 leaving.push((id, entry));
             }
             if state.is_done() {

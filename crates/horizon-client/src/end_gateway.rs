@@ -18,28 +18,13 @@ impl Traveller {
     /// `Entity.setAsInsidePortal`: the entity is in the gateway and goes
     /// through it on the next tick.
     pub fn enter(&mut self, gateway: BlockPos) {
-        self.enter_with_delay(gateway, ENTITY_DELAY);
-    }
-
-    /// Enter with the traveller's `Entity.getDimensionChangingDelay`.
-    pub fn enter_with_delay(&mut self, gateway: BlockPos, delay: i32) {
-        self.state.set_inside(gateway, delay);
+        self.state.set_inside(gateway, ENTITY_DELAY);
     }
 
     /// `Entity.handlePortal`: the entity goes through the gateway it entered
     /// (the End gateway has no transition time), or stays where it is.
     pub fn travel(&mut self, allowed: bool) -> Option<BlockPos> {
-        self.travel_with_delay(allowed, ENTITY_DELAY)
-    }
-
-    /// Travel with the entity-specific portal cooldown.
-    pub fn travel_with_delay(&mut self, allowed: bool, delay: i32) -> Option<BlockPos> {
-        self.state.handle(allowed, 0, delay)
-    }
-
-    /// `Entity.load` updates its counter without replacing the portal process.
-    pub fn set_cooldown(&mut self, cooldown: i32) {
-        self.state.cooldown = cooldown;
+        self.state.handle(allowed, 0, ENTITY_DELAY)
     }
 
     /// Whether the entity's travel is over: it has no portal process left and
@@ -184,27 +169,6 @@ mod tests {
         // Its portal cooldown keeps it from going back at once.
         assert_eq!(traveller.cooldown(), ENTITY_DELAY);
         assert!(!traveller.is_done());
-    }
-
-    #[test]
-    fn entity_specific_cooldowns_refresh_then_expire_outside_the_gateway() {
-        let gateway = BlockPos::new(702, 100, 0);
-        for delay in [2, 10, 300] {
-            let mut traveller = Traveller::default();
-            traveller.enter_with_delay(gateway, delay);
-            assert_eq!(traveller.travel_with_delay(true, delay), Some(gateway));
-            assert_eq!(traveller.cooldown(), delay);
-            // Continuing contact refreshes the counter, without another trip.
-            traveller.enter_with_delay(gateway, delay);
-            assert_eq!(traveller.travel_with_delay(true, delay), None);
-            assert_eq!(traveller.cooldown(), delay - 1);
-            for _ in 1..delay {
-                assert_eq!(traveller.travel_with_delay(true, delay), None);
-            }
-            assert!(traveller.is_done());
-            traveller.enter_with_delay(gateway, delay);
-            assert_eq!(traveller.travel_with_delay(true, delay), Some(gateway));
-        }
     }
 
     #[test]

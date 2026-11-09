@@ -940,13 +940,7 @@ macro_rules! save_lists {
     (($game:expr, $keys:expr, $out:expr)
      $($kind:ident($ty:ty) $field:ident: $($list:ident).+,)*) => {
         $(for i in 0..$game$(.$list)+.len() {
-            if let Some((key, mut tag)) = <$ty as $crate::game::entity::Entity>::save_nbt($game, i, $keys) {
-                let id = $game$(.$list)+[i].id();
-                if $game$(.$list)+[i].portal_size().is_some()
-                    || $game.end.gateways.contains_key(&id)
-                {
-                    $game.write_portal_cooldown(id, &mut tag);
-                }
+            if let Some((key, tag)) = <$ty as $crate::game::entity::Entity>::save_nbt($game, i, $keys) {
                 $out.entry(key).or_default().push((
                     $game$(.$list)+[i].join_seq(),
                     tag,

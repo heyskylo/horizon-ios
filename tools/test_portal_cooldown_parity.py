@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Actual vanilla Entity counter methods versus in-memory production Game portal handlers.
+"""Compare actual vanilla portal cadence with silent in-memory Game handlers.
 
-No world/server bootstrap. Destination chunk resolution and the full entity tick
-loop remain outside this method-level fixture; grounded arrows are not covered.
+No server/world bootstrap; full entity loops and destination resolution are not covered.
 """
 import argparse
 import json
@@ -36,10 +35,8 @@ def main():
     dependency_path = os.pathsep.join(map(str, [jars['server'], *libraries]))
     def run(command, name, env=None):
         with (build / (name + '.log')).open('w', encoding='utf-8') as log:
-            result = subprocess.run(list(map(str, command)), cwd=lab.ROOT, env=env,
-                                    stdout=log, stderr=subprocess.STDOUT)
-        if result.returncode:
-            raise SystemExit(f'{name} failed ({result.returncode}); see {build / (name + ".log")}')
+            subprocess.run(list(map(str, command)), cwd=lab.ROOT if name == 'build-native' else build, env=env,
+                           stdout=log, stderr=subprocess.STDOUT, check=True)
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none',
          '-cp', dependency_path, '-d', classes, source], 'compile-java')
     run(['java', '-Xmx512M', '-cp', str(classes) + os.pathsep + dependency_path,
@@ -58,29 +55,26 @@ def main():
                        HORIZON_PORTAL_REPORT=(build / 'native.json').resolve())
     run(['cargo', 'test', '-p', 'horizon-client', '--lib', '--no-run',
          '--message-format=json'], 'build-native', env)
-    executables = [row['executable']
-                   for line in (build / 'build-native.log').read_text(encoding='utf-8').splitlines()
-                   if line.startswith('{')
-                   and (row := json.loads(line)).get('reason') == 'compiler-artifact'
+    records = (json.loads(line) for line in (build / 'build-native.log').read_text(encoding='utf-8').splitlines()
+               if line.startswith('{'))
+    executables = [row['executable'] for row in records if row.get('reason') == 'compiler-artifact'
                    and row.get('executable') and row.get('profile', {}).get('test')]
     if len(executables) != 1:
         raise SystemExit(f'expected one production test binary, got {executables}')
     with tempfile.TemporaryDirectory(prefix='horizon-portal-cooldown-') as scratch:
         with (build / 'native.log').open('w', encoding='utf-8') as log:
-            result = subprocess.run([executables[0], TEST, '--ignored', '--exact', '--nocapture'],
-                                    cwd=scratch, env=env, stdout=log, stderr=subprocess.STDOUT)
-        if result.returncode:
-            raise SystemExit(f'native failed ({result.returncode}); see {build / "native.log"}')
+            subprocess.run([executables[0], TEST, '--ignored', '--exact', '--nocapture'],
+                           cwd=scratch, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
     output = (build / 'native.log').read_text(encoding='utf-8', errors='replace')
     if not re.search(r'test result: ok\. 1 passed; 0 failed;', output):
         raise SystemExit('native test did not execute exactly one passing production regression')
     native = json.loads((build / 'native.json').read_text())
-    for field in ('runtime', 'nbt', 'saved'):
+    for field in ('runtime',):
         if native[field] != observed['contact']:
             raise SystemExit(f'{field} differs from actual vanilla methods')
     if native['handoff'] != observed['delays']:
         raise SystemExit('arrival handoff differs from actual vanilla delays')
-    print('Production contact, live NBT, save and arrival handoff match actual vanilla counters', flush=True)
+    print('Production contact and arrival handoff match actual vanilla counters', flush=True)
 
 
 if __name__ == '__main__':

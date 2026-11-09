@@ -94,8 +94,6 @@ fn portal_contact_and_waiting_handoff_match_vanilla_counters() {
     }));
     assert!(game.entity_ticking_area()(entry.x, entry.z));
     let mut runtime = Vec::new();
-    let mut nbt = Vec::new();
-    let mut saved = Vec::new();
     for (step, ticks) in [1, 3, 1, 1, 8].into_iter().enumerate() {
         if step == 2 {
             game.world
@@ -109,31 +107,11 @@ fn portal_contact_and_waiting_handoff_match_vanilla_counters() {
         }
         runtime.push(
             ids.iter()
-                .map(|id| game.portals.entities.get(id).map_or(0, |s| s.cooldown))
-                .collect::<Vec<_>>(),
-        );
-        nbt.push(
-            ids.iter()
                 .map(|id| {
-                    let target = game.level_entity(*id as i32).unwrap();
-                    let tag = game.entity_nbt(target).unwrap();
-                    horizon_client::save::number(tag.get("PortalCooldown")).unwrap() as i32
-                })
-                .collect::<Vec<_>>(),
-        );
-        let chunks = game.entity_chunks(&std::collections::HashSet::from([(0, 0)]), false);
-        saved.push(
-            kinds
-                .iter()
-                .map(|kind| {
-                    let tag = chunks
-                        .iter()
-                        .flat_map(|(_, tags)| tags)
-                        .find(|tag| {
-                            horizon_client::save::text(tag.get("id")).as_deref() == Some(*kind)
-                        })
-                        .unwrap();
-                    horizon_client::save::number(tag.get("PortalCooldown")).unwrap() as i32
+                    game.portals
+                        .entities
+                        .get(id)
+                        .map_or(0, |state| state.cooldown)
                 })
                 .collect::<Vec<_>>(),
         );
@@ -166,8 +144,7 @@ fn portal_contact_and_waiting_handoff_match_vanilla_counters() {
             .find(|a| horizon_client::save::text(a.tag.get("id")).as_deref() == Some(kind))
             .unwrap();
         let restored = arrival_from_tag(&arrival_tag(arrival)).unwrap();
-        let counter =
-            horizon_client::save::number(restored.tag.get("PortalCooldown")).unwrap() as i32;
+        let counter = counter(&restored.tag);
         game.load_listed(kind, None, None, restored.tag).unwrap();
         let id = game.next_entity;
         assert_eq!(
@@ -176,18 +153,15 @@ fn portal_contact_and_waiting_handoff_match_vanilla_counters() {
         );
         handoff.push(counter);
     }
-    let report = serde_json::json!({"runtime":runtime,"nbt":nbt,"saved":saved,"handoff":handoff});
+    let report = serde_json::json!({"runtime":runtime,"handoff":handoff});
     if let Some(path) = std::env::var_os("HORIZON_PORTAL_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
-    assert_eq!(
-        report["runtime"], reference["contact"],
-        "production contact/cooldown cadence"
-    );
-    assert_eq!(report["nbt"], reference["contact"], "live NBT counter");
-    assert_eq!(report["saved"], reference["contact"], "saved live counter");
-    assert_eq!(
-        report["handoff"], reference["delays"],
-        "waiting arrival and reload counter"
-    );
+    for (field, expected) in [("runtime", "contact"), ("handoff", "delays")] {
+        assert_eq!(report[field], reference[expected], "{field}");
+    }
+}
+
+fn counter(tag: &Tag) -> i32 {
+    horizon_client::save::number(tag.get("PortalCooldown")).unwrap() as i32
 }

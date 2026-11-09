@@ -65,23 +65,8 @@ impl Game<'_> {
     /// `NbtPredicate.getEntityTagToCompare`: the entity as saved. An entity
     /// in another level is read in the level that holds it.
     pub(in crate::game) fn entity_nbt(&mut self, t: Target) -> Option<Tag> {
-        self.in_target_level(t, |g| {
-            let mut tag = g.entity_nbt_in_level(t)?;
-            if let Target::Mob(id)
-            | Target::Item(id)
-            | Target::Orb(id)
-            | Target::Boat(id)
-            | Target::Cart(id)
-            | Target::Projectile(id)
-            | Target::Trident(id)
-            | Target::Rocket(id)
-            | Target::Tnt(id) = t
-            {
-                g.write_portal_cooldown(id, &mut tag);
-            }
-            Some(tag)
-        })
-        .flatten()
+        self.in_target_level(t, |g| g.entity_nbt_in_level(t))
+            .flatten()
     }
     /// The acting player's own UUID: a guest's turn (the window's player on
     /// the server thread) keeps the world owner's in `level`.
@@ -768,7 +753,6 @@ impl Game<'_> {
                     }
                 }
             }
-            self.restore_portal_cooldown(id, &tag);
             self.persist.raw.insert(id, tag);
         }
         Ok(())

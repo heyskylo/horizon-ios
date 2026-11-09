@@ -729,35 +729,20 @@ impl Game<'_> {
         }
     }
     /// `Entity.load`: the saved `PortalCooldown` (an entity that just came
-    /// through stands in its exit portal until its own cooldown expires).
+    /// through stands in its exit portal for 300 ticks without going back).
     pub(super) fn restore_portal_cooldown(&mut self, id: u32, tag: &Tag) {
-        let cooldown = tag
+        if let Some(cooldown) = tag
             .get("PortalCooldown")
             .and_then(horizon_client::nbt_path::int_value)
-            .unwrap_or(0);
-        if let Some(traveller) = self.end.gateways.get_mut(&id) {
-            traveller.set_cooldown(cooldown);
-        }
-        if cooldown != 0 || self.portals.entities.contains_key(&id) {
-            // Entity.load updates the counter, without replacing an existing process.
-            let state = self.portals.entities.entry(id).or_default();
-            state.cooldown = cooldown;
-            if cooldown == 0 && state.process.is_none() {
-                self.portals.entities.remove(&id);
-            }
-        }
-    }
-    /// `Entity.saveWithoutId` reads the live cooldown, rather than the original load tag.
-    pub(super) fn write_portal_cooldown(&self, id: u32, tag: &mut Tag) {
-        let cooldown = self
-            .end
-            .gateways
-            .get(&id)
-            .map(|state| state.cooldown())
-            .or_else(|| self.portals.entities.get(&id).map(|state| state.cooldown))
-            .unwrap_or(0);
-        if let Tag::Compound(fields) = tag {
-            fields.insert("PortalCooldown".into(), Tag::Int(cooldown));
+            && cooldown != 0
+        {
+            self.portals.entities.insert(
+                id,
+                PortalState {
+                    cooldown,
+                    process: None,
+                },
+            );
         }
     }
     /// The live entity's `getDimensionChangingDelay`; unknown ids use Entity's default.
@@ -1635,24 +1620,22 @@ mod tests {
 
     #[test]
     fn legacy_arrivals_keep_explicit_positive_counters_without_type_migration() {
-        let mut tag = Tag::compound([
-            ("id", Tag::String("minecraft:oak_boat".into())),
-            ("PortalCooldown", Tag::Int(5)),
-        ]);
-        preserve_arrival_cooldown(&mut tag);
-        let arrival = Arrival {
-            plan: Plan::end_portal(Dim::Overworld, BlockPos::new(0, 64, 0), 1.375, 0.5625),
-            tag,
-        };
-        let restored = arrival_from_tag(&arrival_tag(&arrival)).unwrap();
-        assert_eq!(restored.tag.get("PortalCooldown"), Some(&Tag::Int(5)));
-        for old in [None, Some(0), Some(-1)] {
-            let mut tag = Tag::Compound(Default::default());
+        for old in [None, Some(0), Some(-1), Some(5)] {
+            let mut tag = Tag::compound([("id", Tag::String("minecraft:oak_boat".into()))]);
             if let (Some(old), Tag::Compound(fields)) = (old, &mut tag) {
                 fields.insert("PortalCooldown".into(), Tag::Int(old));
             }
             preserve_arrival_cooldown(&mut tag);
-            assert_eq!(tag.get("PortalCooldown"), Some(&Tag::Int(ENTITY_DELAY)));
+            let arrival = Arrival {
+                plan: Plan::end_portal(Dim::Overworld, BlockPos::new(0, 64, 0), 1.375, 0.5625),
+                tag,
+            };
+            let restored = arrival_from_tag(&arrival_tag(&arrival)).unwrap();
+            let expected = old.filter(|n| *n > 0).unwrap_or(ENTITY_DELAY);
+            assert_eq!(
+                restored.tag.get("PortalCooldown"),
+                Some(&Tag::Int(expected))
+            );
         }
     }
 
