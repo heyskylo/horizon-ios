@@ -38,8 +38,8 @@ use horizon_world::{
 };
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
-/// GameEvent types (ClientboundGameEventPacket).
 mod acknowledgements;
+/// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
 pub mod chat_filter;
 
