@@ -167,13 +167,22 @@ impl Banners {
             .then(|| self.dyes.get(&stack.item).cloned())
             .flatten()
     }
-    /// `LoomMenu.isPatternItem`.
+    /// `LoomMenu.isPatternItem`: the item tag and a present
+    /// `provides_banner_patterns` component (the stack's, else the item's).
     pub fn is_pattern_item(&self, items: &Items, stack: &ItemStack) -> bool {
-        items
+        if !items
             .item_tags
             .get("minecraft:loom_patterns")
             .is_some_and(|t| t.contains(&*stack.item))
-            && self.provided.contains_key(&stack.item)
+        {
+            return false;
+        }
+        let data = stack.data();
+        if data.is_some_and(|d| d.other("!minecraft:provides_banner_patterns").is_some()) {
+            return false;
+        }
+        data.is_some_and(|d| d.other("minecraft:provides_banner_patterns").is_some())
+            || self.provided.contains_key(&stack.item)
     }
     /// `LoomMenu.getSelectablePatterns`.
     pub fn selectable(&self, pattern_item: Option<&ItemStack>) -> Vec<Arc<str>> {
@@ -243,6 +252,24 @@ mod tests {
         assert_eq!(b.selectable(None).len(), 1);
         let item = ItemStack::new("minecraft:flower_banner_pattern", 1);
         assert_eq!(&*b.selectable(Some(&item))[0], "minecraft:flower");
+    }
+    #[test]
+    fn prepared_pattern_component_presence() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let items = Items::tags_only(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        let b = Banners::load(&root);
+        let mut pattern = ItemStack::new("minecraft:globe_banner_pattern", 1);
+        assert!(b.is_pattern_item(&items, &pattern));
+        pattern.data_mut().set_other(
+            "!minecraft:provides_banner_patterns",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(!b.is_pattern_item(&items, &pattern));
     }
     #[test]
     fn banner_colour_comes_from_the_item() {
