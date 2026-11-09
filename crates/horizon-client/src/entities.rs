@@ -2322,7 +2322,7 @@ impl ArmorStand {
             position,
             previous: position,
             velocity: Vec3::ZERO,
-            on_ground: true,
+            on_ground: false,
             yaw,
             previous_yaw: yaw,
             equipment: Default::default(),
