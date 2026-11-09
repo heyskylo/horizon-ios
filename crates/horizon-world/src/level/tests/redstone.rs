@@ -1089,3 +1089,30 @@ fn water_advances_one_block_every_five_ticks() {
     }
     assert_eq!(arrived[8], None, "and never the eighth block");
 }
+
+/// `LavaFluid.getDropOff` is 2 outside the Nether (1 in an ultrawarm dimension): lava
+/// loses two levels a block and reaches only three, at levels 2, 4 and 6.
+#[test]
+fn lava_spreads_three_blocks_on_a_floor_in_the_overworld() {
+    let mut w = world!();
+    w.floor(0, 12, "stone");
+    w.set(BlockPos::new(0, 1, 0), w.id("lava", &[]));
+    // Long enough for 30-tick steps, including the random slowdown of a rising level.
+    for _ in 0..800 {
+        w.tick();
+    }
+    for (d, level) in [(1, "2"), (2, "4"), (3, "6")] {
+        let pos = BlockPos::new(d, 1, 0);
+        assert_eq!(
+            w.prop(pos, "level"),
+            level,
+            "lava at distance {d}: {}",
+            w.name(pos)
+        );
+    }
+    assert_eq!(
+        w.get(BlockPos::new(4, 1, 0)),
+        w.b().air(),
+        "the fourth block is dry"
+    );
+}
