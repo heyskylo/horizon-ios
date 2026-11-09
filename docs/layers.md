@@ -476,7 +476,7 @@ fn container_press(&self, c: &mut dyn Container, slot: Option<SlotId>, right: bo
 fn container_drag(&self, c: &mut dyn Container, slot: Option<SlotId>) -> bool;  // the cursor moved, a button held
 fn container_release(&self, c: &mut dyn Container);
 fn container_wheel(&self, c: &mut dyn Container, slot: Option<SlotId>, steps: f32) -> bool;
-fn container_key(&self, c: &mut dyn Container, key: &str) -> bool;              // `key.keyboard.r`, `key.mouse.middle`
+fn container_key(&self, c: &mut dyn Container, slot: Option<SlotId>, key: &str) -> bool;  // `key.keyboard.r`, `key.mouse.middle`
 fn container_draw(&self, c: &dyn Container, canvas: &mut dyn hud::Canvas);    // over the panel, from its corner
 ```
 
