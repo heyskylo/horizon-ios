@@ -1253,9 +1253,13 @@ impl Loading {
                 self.menu.win = None;
             }
         } else if self.menu.options_open {
+            let output = self
+                .renderer
+                .as_ref()
+                .map_or(Default::default(), |r| *r.output());
             self.menu
                 .options
-                .draw(&self.settings, batch, &gui.atlas, self.menu.cursor);
+                .draw(&self.settings, output, batch, &gui.atlas, self.menu.cursor);
         } else if let Some(title) = &mut self.menu.title {
             title.poll_backup();
             if std::mem::take(&mut title.onboarding_finished) {

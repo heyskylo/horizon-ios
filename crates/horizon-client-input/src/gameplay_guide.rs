@@ -392,21 +392,38 @@ pub fn resolve_menu(f: &MenuFacts) -> Guide {
 /// A row's height and the view's margin, in GUI pixels.
 pub const ROW_HEIGHT: f32 = 11.0;
 const MARGIN: f32 = 2.0;
+/// GUI px kept between the two columns where a row had to be cut to fit beside the other.
+pub const COLUMN_GAP: f32 = 4.0;
+
+/// The most a row may be on a view `width` GUI px wide: the view less its margins.
+pub fn row_room(width: f32) -> f32 {
+    width - 2.0 * MARGIN
+}
+
+/// How wide a left-column row may be cut to beside right-column rows up to `right` GUI px wide
+/// (0 with none): what they leave, less the gap between the columns.
+pub fn left_room(width: f32, right: f32) -> f32 {
+    row_room(width) - COLUMN_GAP - right
+}
 
 fn overlap(a: &Rect, b: &Rect) -> bool {
     a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3]
 }
 
-/// Where a column's rows go, down from a top corner of the `[width, height]` view: under whatever
-/// a row would overlap in `taken`, or nowhere when that leaves the view's upper three quarters (the
-/// row is dropped: the rows come in the order they matter). The placed rows join `taken`.
+/// Where a column's rows go, down from a top corner of the `[width, height]` view. A row goes as
+/// wide as `widths` says where it overlaps nothing in `taken`, else cut to `room` (its caption
+/// gets shorter) where that overlaps nothing, else under whatever it would overlap; nowhere
+/// when that leaves the view's upper three quarters (the row is dropped: the rows come in the
+/// order they matter). A row wider than the view is always cut to it. The placed rows join
+/// `taken`; each rect's width is the row's, cut or not.
 pub fn place_column(
     view: [f32; 2],
     left: bool,
     widths: &[f32],
+    room: f32,
     taken: &mut Vec<Rect>,
 ) -> Vec<Option<Rect>> {
-    place(view, left, false, widths, taken)
+    place(view, left, false, widths, room, taken)
 }
 
 /// `place_column`'s rows up from a bottom corner, over what they would overlap, within the view's
@@ -415,9 +432,10 @@ pub fn place_column_up(
     view: [f32; 2],
     left: bool,
     widths: &[f32],
+    room: f32,
     taken: &mut Vec<Rect>,
 ) -> Vec<Option<Rect>> {
-    place(view, left, true, widths, taken)
+    place(view, left, true, widths, room, taken)
 }
 
 fn place(
@@ -425,6 +443,7 @@ fn place(
     left: bool,
     up: bool,
     widths: &[f32],
+    room: f32,
     taken: &mut Vec<Rect>,
 ) -> Vec<Option<Rect>> {
     let mut y = if up {
@@ -432,16 +451,26 @@ fn place(
     } else {
         MARGIN
     };
+    let most = row_room(view[0]);
     widths
         .iter()
         .map(|&width| {
-            if width > view[0] - 2.0 * MARGIN {
-                return None;
-            }
-            let x = if left {
-                MARGIN
+            // As it is (no wider than the view), then cut to `room`: the narrowest last, to go
+            // past what even that overlaps.
+            let whole = width.min(most);
+            let cut = whole.min(room).max(0.0);
+            let tries = if cut < whole {
+                vec![whole, cut]
             } else {
-                view[0] - MARGIN - width
+                vec![whole]
+            };
+            let rect = |width: f32, at: f32| {
+                let x = if left {
+                    MARGIN
+                } else {
+                    view[0] - MARGIN - width
+                };
+                [x, at, width, ROW_HEIGHT]
             };
             let mut at = y;
             loop {
@@ -453,22 +482,26 @@ fn place(
                 if outside {
                     return None;
                 }
-                let rect = [x, at, width, ROW_HEIGHT];
-                let hit = taken.iter().filter(|t| overlap(&rect, t));
-                let past = if up {
-                    hit.map(|t| t[1]).fold(f32::INFINITY, f32::min)
-                } else {
-                    hit.map(|t| t[1] + t[3]).fold(f32::NEG_INFINITY, f32::max)
-                };
-                if past.is_infinite() {
-                    taken.push(rect);
+                let free = tries
+                    .iter()
+                    .map(|&w| rect(w, at))
+                    .find(|r| !taken.iter().any(|t| overlap(r, t)));
+                if let Some(placed) = free {
+                    taken.push(placed);
                     y = if up {
                         at - ROW_HEIGHT - 1.0
                     } else {
                         at + ROW_HEIGHT + 1.0
                     };
-                    return Some(rect);
+                    return Some(placed);
                 }
+                let narrowest = rect(cut, at);
+                let hit = taken.iter().filter(|t| overlap(&narrowest, t));
+                let past = if up {
+                    hit.map(|t| t[1]).fold(f32::INFINITY, f32::min)
+                } else {
+                    hit.map(|t| t[1] + t[3]).fold(f32::NEG_INFINITY, f32::max)
+                };
                 at = if up {
                     past.floor() - ROW_HEIGHT - 1.0
                 } else {
@@ -740,10 +773,16 @@ mod tests {
     #[test]
     fn rows_stack_from_their_corner() {
         let mut taken = Vec::new();
-        let left = place_column([200.0, 200.0], true, &[50.0, 30.0], &mut taken);
+        let left = place_column(
+            [200.0, 200.0],
+            true,
+            &[50.0, 30.0],
+            f32::INFINITY,
+            &mut taken,
+        );
         assert_eq!(left[0], Some([2.0, 2.0, 50.0, 11.0]));
         assert_eq!(left[1], Some([2.0, 14.0, 30.0, 11.0]));
-        let right = place_column([200.0, 200.0], false, &[40.0], &mut taken);
+        let right = place_column([200.0, 200.0], false, &[40.0], f32::INFINITY, &mut taken);
         assert_eq!(right[0], Some([158.0, 2.0, 40.0, 11.0]));
     }
 
@@ -751,7 +790,13 @@ mod tests {
     fn a_row_goes_under_what_it_would_overlap() {
         // The effect icons in the top right corner.
         let mut taken = vec![[150.0, 1.0, 50.0, 24.0]];
-        let right = place_column([200.0, 200.0], false, &[40.0, 40.0], &mut taken);
+        let right = place_column(
+            [200.0, 200.0],
+            false,
+            &[40.0, 40.0],
+            f32::INFINITY,
+            &mut taken,
+        );
         assert_eq!(right[0], Some([158.0, 26.0, 40.0, 11.0]));
         assert_eq!(right[1], Some([158.0, 38.0, 40.0, 11.0]));
     }
@@ -762,8 +807,8 @@ mod tests {
         let view = [160.0, 90.0];
         let bar = [0.0, 12.0, 160.0, 19.0];
         let mut taken = vec![bar];
-        let right = place_column(view, false, &[90.0, 90.0, 90.0], &mut taken);
-        let left = place_column(view, true, &[90.0; 6], &mut taken);
+        let right = place_column(view, false, &[90.0, 90.0, 90.0], f32::INFINITY, &mut taken);
+        let left = place_column(view, true, &[90.0; 6], f32::INFINITY, &mut taken);
         let placed: Vec<Rect> = right.iter().chain(&left).flatten().copied().collect();
         for (i, a) in placed.iter().enumerate() {
             assert!(a[1] + a[3] <= 67.5 && a[0] >= 0.0 && a[0] + a[2] <= 160.0);
@@ -778,14 +823,45 @@ mod tests {
     }
 
     #[test]
+    fn a_left_row_that_would_overlap_the_right_column_is_cut_beside_it() {
+        // The narrow view above, without the bar: rows 90 wide don't fit two abreast.
+        let view = [160.0, 90.0];
+        let mut taken = Vec::new();
+        let right = place_column(view, false, &[90.0; 3], row_room(view[0]), &mut taken);
+        let room = left_room(view[0], 90.0);
+        assert_eq!(room, 62.0);
+        // The last left row is short: it keeps its width.
+        let left = place_column(view, true, &[90.0, 90.0, 40.0], room, &mut taken);
+        // Every row in its corner, in order, none pushed under the other column.
+        for (k, (r, l)) in right.iter().zip(&left).enumerate() {
+            let y = 2.0 + 12.0 * k as f32;
+            assert_eq!(*r, Some([68.0, y, 90.0, 11.0]));
+            assert_eq!(l.map(|l| l[1]), Some(y));
+        }
+        assert_eq!(left[0].unwrap()[2], 62.0);
+        assert_eq!(left[2].unwrap()[2], 40.0);
+    }
+
+    #[test]
+    fn a_row_keeps_its_width_where_it_overlaps_nothing() {
+        // A long left row below a short right column: nothing beside it, so nothing to cut.
+        let view = [320.0, 240.0];
+        let mut taken = Vec::new();
+        place_column(view, false, &[100.0], row_room(view[0]), &mut taken);
+        let room = left_room(view[0], 100.0);
+        let left = place_column(view, true, &[50.0, 250.0], room, &mut taken);
+        assert_eq!(left[1], Some([2.0, 14.0, 250.0, 11.0]));
+    }
+
+    #[test]
     fn rows_stack_up_from_a_bottom_corner_and_drop_above_its_quarter() {
         let view = [200.0, 100.0];
         let mut taken = vec![[0.0, 80.0, 60.0, 5.0]];
-        let left = place_column_up(view, true, &[50.0, 50.0], &mut taken);
+        let left = place_column_up(view, true, &[50.0, 50.0], f32::INFINITY, &mut taken);
         assert_eq!(left[0], Some([2.0, 87.0, 50.0, 11.0]));
         // Over the panel at 80 would be 68, under the lower quarter's 75.
         assert_eq!(left[1], None);
-        let right = place_column_up(view, false, &[40.0], &mut taken);
+        let right = place_column_up(view, false, &[40.0], f32::INFINITY, &mut taken);
         assert_eq!(right[0], Some([158.0, 87.0, 40.0, 11.0]));
     }
 
@@ -883,11 +959,23 @@ mod tests {
     }
 
     #[test]
-    fn a_row_wider_than_the_view_is_dropped() {
+    fn a_row_wider_than_the_view_is_cut_to_it() {
         let mut taken = Vec::new();
         assert_eq!(
-            place_column([50.0, 200.0], true, &[60.0, 20.0], &mut taken),
-            [None, Some([2.0, 2.0, 20.0, 11.0])]
+            place_column(
+                [50.0, 200.0],
+                true,
+                &[60.0, 20.0],
+                f32::INFINITY,
+                &mut taken
+            ),
+            [Some([2.0, 2.0, 46.0, 11.0]), Some([2.0, 14.0, 20.0, 11.0])]
+        );
+        // To the view, not to a smaller room, with nothing beside it.
+        let mut taken = Vec::new();
+        assert_eq!(
+            place_column([50.0, 200.0], true, &[60.0], 30.0, &mut taken),
+            [Some([2.0, 2.0, 46.0, 11.0])]
         );
     }
 }

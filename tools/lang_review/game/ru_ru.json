@@ -1,0 +1,6 @@
+{
+  "Particle Culling": "Отсечение частиц",
+  "Draws every particle.": "Рисует каждую частицу.",
+  "Skips offscreen, subpixel and terrain-hidden particles.": "Пропускает частицы за экраном, субпиксельные и скрытые ландшафтом.",
+  "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work.": "Пропускает частицы за экраном, субпиксельные и скрытые ландшафтом с меньшей нагрузкой на поток рендеринга."
+}
