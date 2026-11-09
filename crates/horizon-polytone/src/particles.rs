@@ -450,17 +450,22 @@ pub struct BlockEmitters {
     pub priority: i32,
     pub particle_emitters: Vec<Emitter>,
     pub sound_emitters: Vec<SoundEmitter>,
+    /// `disable_particles`: the block's own particles (its `Block.animateTick`, as a torch's
+    /// flame) don't spawn (observed on the real mod); the emitters of block modifiers are apart.
+    pub disable_particles: bool,
 }
 
 impl BlockEmitters {
-    /// `None` when the file has no emitters (it modifies other things) or is switched off.
+    /// `None` when the file neither has emitters nor disables the block's particles (it modifies
+    /// other things), or is switched off.
     pub fn parse(json: &Json, implicit: Option<&str>) -> Result<Option<Self>, String> {
         if json.get("polytone_ignore").and_then(Json::as_bool) == Some(true) {
             return Ok(None);
         }
         let particle_emitters = emitters(json.get("particle_emitters"))?;
         let sound_emitters = sound_emitters(json.get("sound_emitters"))?;
-        if particle_emitters.is_empty() && sound_emitters.is_empty() {
+        let disable_particles = json.get("disable_particles").and_then(Json::as_bool) == Some(true);
+        if particle_emitters.is_empty() && sound_emitters.is_empty() && !disable_particles {
             return Ok(None);
         }
         Ok(Some(Self {
@@ -468,6 +473,7 @@ impl BlockEmitters {
             priority: json.get("priority").and_then(Json::as_i64).unwrap_or(0) as i32,
             particle_emitters,
             sound_emitters,
+            disable_particles,
         }))
     }
 }

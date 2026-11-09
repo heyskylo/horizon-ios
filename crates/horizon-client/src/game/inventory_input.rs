@@ -197,7 +197,8 @@ impl Game<'_> {
                 && self.carried.is_some()
                 && self.last_inv_click.is_some_and(|(at, last, was_right)| {
                     last == slot && !was_right && now.duration_since(at).as_millis() < 250
-                });
+                })
+                && self.pick_all_allowed(slot);
             self.last_inv_click = Some((now, slot, right));
             if double && self.menu_click(Some(slot), 0, Input::PickupAll) {
                 self.last_inv_click = None;
@@ -268,6 +269,18 @@ impl Game<'_> {
         {
             slots.push(slot);
         }
+    }
+    /// `AbstractContainerMenu.canTakeItemForPickAll` for Horizon slot `slot`
+    /// of the open menu: false for a crafting result (a mod menu type's too),
+    /// whose quick second click is another craft, not a PICKUP_ALL. True for a
+    /// screen the menu engine doesn't model.
+    fn pick_all_allowed(&mut self, slot: usize) -> bool {
+        let mut allowed = true;
+        self.menu_session(|menu, _, to_menu| {
+            allowed = to_menu(slot).is_none_or(|i| menu.can_take_for_pick_all(i));
+            Some(false)
+        });
+        allowed
     }
     /// The hovered slot and whether the cursor is outside the window.
     pub(super) fn inventory_target(&self) -> (Option<usize>, bool) {

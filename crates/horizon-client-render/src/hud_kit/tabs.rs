@@ -1,6 +1,6 @@
 //! A collapsed page strip: the selected page's name between `‹ ›` arrows, with a pip per page
-//! under it. A page list with more pages than room (Shaders' screens, `shader_ui`) shows them
-//! this way instead of leaving some out.
+//! under it. A page list with more pages than room (the settings shell's, `settings_shell`)
+//! shows them this way instead of leaving some out.
 //!
 //! [`collapsed`] only lays out (pure, testable); [`draw`] paints a laid-out strip. It knows
 //! nothing of clicks or bumpers: the screen using it decides what each part does.

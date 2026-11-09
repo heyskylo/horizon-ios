@@ -347,7 +347,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let fluid = self
             .dripstone_fluid_above(tip_state, tip)
             .map(|(_, f, _)| f)
-            .filter(|f| matches!(f, FluidKind::Water | FluidKind::Lava))
+            .filter(|f| matches!(*f, FluidKind::Water | FluidKind::Lava))
             .unwrap_or(FluidKind::Empty);
         if fluid == FluidKind::Empty || !self.cauldron_can_receive(state, fluid) {
             return;

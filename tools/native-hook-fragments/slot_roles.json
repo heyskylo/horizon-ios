@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "menu_slot_roles",
+      "target": "horizon_client::game::native_slot_roles::Game<'_>::native_menu_slot_roles"
+    }
+  ],
+  "rust_summary": "what each slot of the open menu is for (`native_menu_slot_roles`): hotbar, inventory, equipment, storage, crafting grid, result or input.",
+  "doc_summary": "`native_menu_slot_roles()` (client, `host.menu_slot_roles()`) gives the role of each slot of the menu the server opened for the window, by the server's slot number as `menu_stacks` lists the stacks: `NativeSlotRole::Hotbar`, `Inventory`, `Equipment`, `Storage` (chests, barrels, shulker boxes, ender chests, hoppers, dispensers, droppers, a mount's chest, a mod menu type's `links`), `CraftingGrid` (the crafting table's, the inventory's, the crafter's, a mod menu type's `crafting` grid), `Result` (crafting and furnace results, a mod menu type's `results`) or `Input` (any other slot). None on a server and while no server-opened menu is up. Bundles need \"hooks\": @API:slot_roles@.",
+  "comments": ["crates/horizon-client/src/game/native_slot_roles.rs"]
+}
