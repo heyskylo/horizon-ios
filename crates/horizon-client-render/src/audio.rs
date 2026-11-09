@@ -2719,7 +2719,11 @@ mod tests {
             mixer.channels.insert(1, source);
             let mut data = [0.0; 4];
             mix(&mut mixer, &mut data, 2, 48_000);
-            assert_eq!(mixer.channels[&1].state, State::Stopped, "{samples:?} {looping}");
+            assert_eq!(
+                mixer.channels[&1].state,
+                State::Stopped,
+                "{samples:?} {looping}"
+            );
         }
     }
 
