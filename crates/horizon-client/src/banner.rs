@@ -307,7 +307,6 @@ mod tests {
         if !root.join("items.json").exists() {
             return;
         }
-        let items = Items::tags_only(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
         let b = Banners::load(&root);
         let mut pattern = ItemStack::new("minecraft:globe_banner_pattern", 1);
         assert_eq!(&*b.selectable(Some(&pattern))[0], "minecraft:globe");
