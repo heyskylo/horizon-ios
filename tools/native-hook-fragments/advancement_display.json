@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "advancement_display", "target": "horizon_client::game::advancements::Game<'_>::native_advancement_display"}
+  ],
+  "rust_summary": "an advancement's display: title, description, frame, chat announcement and hidden flag (`native_advancement_display`).",
+  "doc_summary": "`native_advancement_display(id)` returns the `AdvancementDisplay` of an advancement in the loaded tree: `title` and `description` as text, `frame` as `task`, `goal` or `challenge`, `announce_to_chat` and `hidden`; None for an unknown id or one without a display. API @API:advancement_display@.",
+  "comments": ["crates/horizon-client/src/game/advancements.rs"]
+}

@@ -70,6 +70,7 @@ impl Game<'_> {
         };
         self.world.block_entities.get_or_insert_with(key, || entity);
         self.container = Some(key);
+        self.open_container_slots = Some((key, self.container_size()));
         self.screen = super::Screen::Inventory;
         self.capture(false);
         self.right = false;
@@ -209,13 +210,17 @@ impl Game<'_> {
             _ => false,
         }
     }
-    /// Closing it copies the items back and leaves no block-entity contents.
+    /// Closing it copies the items back and keeps the block entity, as vanilla's
+    /// `EnderChestBlockEntity` persists across open/close (`close_ender_chest`
+    /// must not remove it, or `/data get block` loses it after a use).
     pub(super) fn close_ender_chest(&mut self) {
         let Some(key) = self.ender_open.take() else {
             return;
         };
-        if let Some(BlockEntity::Chest(items)) = self.world.block_entities.remove(&key) {
-            self.ender_items = items;
+        // The items go back to the player: an `EnderChestBlockEntity` holds none, so
+        // nothing of theirs stays in the chunk or in `/data get block`.
+        if let Some(BlockEntity::Chest(items)) = self.world.block_entities.get_mut(&key) {
+            self.ender_items = std::mem::replace(items, vec![None; 27]);
         }
     }
 }
@@ -383,6 +388,18 @@ impl Game<'_> {
             .container
             .is_none_or(|k| k.1 == super::minecarts::CART_KEY_Y)
         {
+            return;
+        }
+        // `Container.stillValidBlockEntity`: the menu holds a block entity per
+        // part, and a part that went away (`getBlockEntity(pos) != this`) ends
+        // it. A double chest whose other half broke would otherwise show a
+        // shorter container.
+        if self.open_container_slots.is_some_and(|(open, slots)| {
+            self.container == Some(open) && self.container_size() < slots
+        }) {
+            self.close_container();
+            self.screen = super::Screen::Playing;
+            self.capture(true);
             return;
         }
         let range = self.reach() + 4.0;
@@ -608,6 +625,58 @@ mod tests {
         assert!(is_shulker_box("minecraft:red_shulker_box"));
         assert!(is_shulker_box("minecraft:shulker_box"));
         assert!(!is_shulker_box("minecraft:chest"));
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{containers::BlockEntity, motion::PlayerMotion};
+    use horizon_core::geometry::Vec3;
+
+    /// `Container.stillValidBlockEntity` for a double chest (`CompoundContainer`
+    /// asks both halves): breaking the half the player did not click ends the
+    /// six-row menu instead of leaving a three-row one.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn breaking_the_other_half_closes_the_open_double_chest() {
+        let mut game = server_game();
+        game.player = Some(
+            PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5)).expect("a player position"),
+        );
+        let registry = game.pack.assets.registry;
+        let half = |kind: &str| {
+            let mut state = registry
+                .state(registry.default_state("minecraft:chest").unwrap())
+                .unwrap()
+                .clone();
+            state.properties.insert("type".into(), kind.into());
+            state.properties.insert("facing".into(), "north".into());
+            registry.id(&state).unwrap()
+        };
+        let left = (8, 64, 8);
+        let right = (9, 64, 8);
+        game.world
+            .set(left.0, left.1, left.2, half("left"))
+            .unwrap();
+        game.world
+            .set(right.0, right.1, right.2, half("right"))
+            .unwrap();
+        for key in [left, right] {
+            game.world
+                .block_entities
+                .insert(key, BlockEntity::Chest(vec![None; 27]));
+        }
+        game.open_menu([8, 64, 8]);
+        assert_eq!(game.container, Some(left), "the double chest opened");
+
+        game.destroy_block_dropping([9, 64, 8])
+            .expect("the other half breaks");
+        game.tick_container_reach();
+        assert_eq!(
+            game.container, None,
+            "the open double chest kept a menu after its other half broke"
+        );
     }
 }
 

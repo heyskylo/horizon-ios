@@ -276,6 +276,9 @@ pub(super) trait Entity: EntityRules {
     /// `Entity.move`, for the kinds that keep the flag: on a server it runs
     /// for every push, sideways ones and those the collision turned away included.
     fn set_piston_on_ground(&mut self, _on_ground: bool) {}
+    /// `Entity.setOnGround` from outside the entity's own move (`/tp`'s
+    /// `TeleportCommand.performTeleport`); kinds that keep no ground flag ignore it.
+    fn set_on_ground(&mut self, _on_ground: bool) {}
     /// `PistonMovingBlockEntity.causeBounce`: a slime block sets the velocity
     /// along the movement axis.
     fn piston_slime_bounce(&mut self, movement: Direction) {
@@ -598,10 +601,9 @@ impl Game<'_> {
             heights,
             entity_boxes,
             Some(self.border.geometry()),
+            Some(&self.res.motion().blocks),
         );
-        if let Some(pos) =
-            item.vertical_contact(&self.world, self.collision, &self.res.motion().blocks, step)
-        {
+        if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
             let mut discarded = false;
@@ -1040,6 +1042,9 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     /// `Entity.move(MoverType.PISTON, ...)` ends in `setPos`, which `Shulker`
     /// overrides to snap to the block centre.
     fn move_by_piston(&mut self, movement: Vec3) {
@@ -1164,6 +1169,9 @@ impl Entity for Mob {
 }
 
 impl Entity for ItemEntity {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1230,6 +1238,9 @@ impl Entity for ItemEntity {
 }
 
 impl Entity for ExperienceOrb {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1294,6 +1305,9 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1363,6 +1377,9 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1442,6 +1459,9 @@ fn armor_stand_size(stand: &ArmorStand) -> (f64, f64) {
 }
 
 impl Entity for ArmorStand {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1549,6 +1569,9 @@ impl Entity for ArmorStand {
 }
 
 impl Entity for PrimedTnt {
+    fn set_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1631,6 +1654,13 @@ impl Entity for FallingBlock {
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
+    fn on_ground(&self) -> bool {
+        self.on_ground
+    }
+    /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
@@ -1679,6 +1709,13 @@ impl Entity for Projectile {
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
     }
+    fn on_ground(&self) -> bool {
+        self.on_ground
+    }
+    /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn native_type(&self) -> Cow<'static, str> {
         self.entity_type().into()
     }
@@ -1701,7 +1738,7 @@ impl Entity for Projectile {
                 game.load_arrow(tag, uuid, player_uuid)
             }
             "minecraft:llama_spit" | "minecraft:shulker_bullet" => {
-                game.load_spit_or_bullet(tag, player_uuid)
+                game.load_spit_or_bullet(tag, uuid, player_uuid)
             }
             "minecraft:fireball"
             | "minecraft:small_fireball"
@@ -1782,6 +1819,13 @@ impl Entity for Rocket {
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
+    fn on_ground(&self) -> bool {
+        self.on_ground
+    }
+    /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
+    }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:firework_rocket".into()
     }
@@ -1839,6 +1883,13 @@ impl Entity for ThrownTrident {
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
+    }
+    fn on_ground(&self) -> bool {
+        self.on_ground
+    }
+    /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn native_type(&self) -> Cow<'static, str> {
         "minecraft:trident".into()

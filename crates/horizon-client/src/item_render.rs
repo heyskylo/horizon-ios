@@ -743,7 +743,15 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
-        Self::load_tables(root, library, true)
+        Self::load_tables(root, library, true, None)
+    }
+    /// Reuse the parsed entity-model document from the shared startup batch.
+    pub fn load_with_library_and_entity_models(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+        document: &crate::mobs::EntityModelDocument,
+    ) -> crate::Result<Self> {
+        Self::load_tables(root, library, true, Some(document))
     }
     /// What a dedicated server reads: the item prototypes (the stacks'
     /// default components) and ids, without the client item definitions,
@@ -753,12 +761,13 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
-        Self::load_tables(root, library, false)
+        Self::load_tables(root, library, false, None)
     }
     fn load_tables(
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
         drawn: bool,
+        entity_models: Option<&crate::mobs::EntityModelDocument>,
     ) -> crate::Result<Self> {
         let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::shared(root)?
             .iter()
@@ -786,7 +795,10 @@ impl ItemRenderer {
                 .unwrap_or_default(),
         );
         let parts = if drawn {
-            special::load_parts(root)
+            entity_models.map_or_else(
+                || special::load_parts(root),
+                special::load_parts_from_document,
+            )
         } else {
             HashMap::new()
         };

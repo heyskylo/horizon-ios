@@ -19,8 +19,11 @@ pub struct ShaderOptions {
     pub chosen: BTreeMap<String, String>,
     /// The screens opened from the main one, innermost last.
     pub path: Vec<String>,
-    /// Something changed since the page opened.
+    /// The values differ from those the pack's file holds (`saved`): saving them loads the pack
+    /// again.
     pub changed: bool,
+    /// The values the pack's file holds, as read or as last saved.
+    saved: BTreeMap<String, String>,
 }
 
 impl ShaderOptions {
@@ -39,12 +42,26 @@ impl ShaderOptions {
             chosen: BTreeMap::new(),
             path: Vec::new(),
             changed: false,
+            saved: BTreeMap::new(),
         };
         for (name, value) in chosen {
             out.set(&name, value);
         }
+        out.saved = out.chosen.clone();
         out.changed = false;
         out
+    }
+
+    /// The values back to `chosen` (Undo): changed while they differ from the file's.
+    pub fn restore(&mut self, chosen: BTreeMap<String, String>) {
+        self.chosen = chosen;
+        self.changed = self.chosen != self.saved;
+    }
+
+    /// The pack's file holds `saved` now, saved by another way than this page's.
+    pub fn saved_as(&mut self, saved: BTreeMap<String, String>) {
+        self.saved = saved;
+        self.changed = self.chosen != self.saved;
     }
 
     /// The screen shown: the innermost opened, else the main one.
@@ -74,7 +91,7 @@ impl ShaderOptions {
         } else {
             self.chosen.insert(name.to_owned(), value);
         }
-        self.changed = true;
+        self.changed = self.chosen != self.saved;
     }
 
     /// The option's next value (the previous one with `back`), wrapping around.
@@ -123,9 +140,8 @@ impl ShaderOptions {
 
     /// Option `name` back at the pack's default.
     pub fn reset_option(&mut self, name: &str) {
-        if self.chosen.remove(name).is_some() {
-            self.changed = true;
-        }
+        self.chosen.remove(name);
+        self.changed = self.chosen != self.saved;
     }
 
     /// The profile after the current one (the first when none matches) with its values.
@@ -150,10 +166,8 @@ impl ShaderOptions {
     }
 
     pub fn reset(&mut self) {
-        if !self.chosen.is_empty() {
-            self.chosen.clear();
-            self.changed = true;
-        }
+        self.chosen.clear();
+        self.changed = self.chosen != self.saved;
     }
 
     fn named(&self, key: &str, or: &str) -> Text {

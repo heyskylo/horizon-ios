@@ -295,6 +295,7 @@ impl WorldRequest {
         .fast_lava;
         world.game_time = level.time;
         world.day_time = options.time.unwrap_or(level.day_time);
+        world.end_clock = level.end_clock.unwrap_or(level.time);
         world.weather = level.weather;
         if let Some(w) = options.weather.as_deref() {
             // /weather: clear, rain or thunder for a long duration.
@@ -893,12 +894,19 @@ pub(super) fn make_streaming(
         }
         // Chunks an older version saved: the new chunks around them blend in.
         if dim == Dim::Overworld {
-            inner.set_old_world(Arc::new(horizon_client::old_world::SavedOldWorld::new(
+            let old = Arc::new(horizon_client::old_world::SavedOldWorld::new(
                 save.clone(),
                 pack.assets.clone(),
                 res.biomes().clone(),
                 inner.generator_data().clone(),
-            )));
+            ));
+            // Saves of this folder take the old chunks' calculated blending data when
+            // they are requested; a weak link, as the old world holds the folder.
+            let weak = Arc::downgrade(&old);
+            save.set_blending_lookup(Box::new(move |x, z| {
+                weak.upgrade().and_then(|old| old.calculated(x, z))
+            }));
+            inner.set_old_world(old);
         }
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",

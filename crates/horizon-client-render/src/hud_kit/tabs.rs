@@ -1,8 +1,8 @@
 //! Page strips. [`collapsed`]: the selected page's name between `‹ ›` arrows, with a pip per
-//! page under it; a page list with more pages than room (Shaders' screens, `shader_ui`) shows
-//! them this way instead of leaving some out. [`tab_strip`]: a row of page names across an area,
-//! the selected one white and centred, its neighbours peeking in on each side and fading with
-//! distance (the radial dial's page header); when three tabs don't fit it falls back to the
+//! page under it; a page list with more pages than room (the settings shell's, `settings_shell`)
+//! shows them this way instead of leaving some out. [`tab_strip`]: a row of page names across an
+//! area, the selected one white and centred, its neighbours peeking in on each side and fading
+//! with distance (the radial dial's page header); when three tabs don't fit it falls back to the
 //! collapsed strip.
 //!
 //! [`collapsed`] and [`tab_strip`] only lay out (pure, testable); [`draw`] and [`draw_tabs`]

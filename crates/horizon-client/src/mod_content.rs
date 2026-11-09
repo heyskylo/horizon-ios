@@ -17,7 +17,7 @@
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{
-    Block, BlockShapes, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity,
+    Block, BlockShapes, Content, CreativeTab, EntityType, Fluid, MenuType, MobEffect, Rarity,
     StateProperty, StateValues,
 };
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
@@ -79,6 +79,14 @@ pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
     let mut effects: Vec<&MobEffect> = mods.iter().flat_map(|m| &m.content.effects).collect();
     effects.sort_by(|a, b| a.id.cmp(&b.id));
     effects
+}
+
+/// The mods' fluids in registry order, by id as effects are. Each takes two
+/// network ids after vanilla's, its source's then its flowing form's.
+pub fn fluids(mods: &[ContentMod]) -> Vec<&Fluid> {
+    let mut fluids: Vec<&Fluid> = mods.iter().flat_map(|m| &m.content.fluids).collect();
+    fluids.sort_by(|a, b| a.id.cmp(&b.id));
+    fluids
 }
 
 /// the mods' entity types in registry order, by id as effects are.
@@ -656,6 +664,7 @@ struct Plan<'a> {
     /// Every vanilla item id, including items omitted from the search tab.
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
+    fluids: Vec<&'a Fluid>,
     entity_types: Vec<&'a EntityType>,
     menu_types: Vec<&'a MenuType>,
     /// Vanilla's state count (the tables' length before).
@@ -1237,6 +1246,7 @@ impl<'a> Plan<'a> {
             items,
             vanilla_items,
             effects: mob_effects(mods),
+            fluids: fluids(mods),
             entity_types: entity_types(mods),
             menu_types: menu_types(mods),
             states: names.len(),
@@ -1602,6 +1612,14 @@ impl<'a> Plan<'a> {
                     let new_effects = self.effects.iter().map(|e| e.id.clone());
                     registries.push(("minecraft:mob_effect", new_effects.collect()));
                 }
+                // Fluid tags go by these ids: a mod fluid's source, then its flowing form.
+                if !self.fluids.is_empty() {
+                    let new_fluids = self
+                        .fluids
+                        .iter()
+                        .flat_map(|f| [f.id.clone(), f.flowing_id()]);
+                    registries.push(("minecraft:fluid", new_fluids.collect()));
+                }
                 if !self.entity_types.is_empty() {
                     let new_types = self.entity_types.iter().map(|t| t.id.clone());
                     registries.push(("minecraft:entity_type", new_types.collect()));
@@ -1660,6 +1678,14 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:mob_effect/ids") {
                     ids.extend(new_effects());
+                }
+                // Fluid tag files and fluid arguments.
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:fluid/ids") {
+                    ids.extend(
+                        self.fluids
+                            .iter()
+                            .flat_map(|f| [J::Str(f.id.clone()), J::Str(f.flowing_id())]),
+                    );
                 }
                 // entity type arguments and `type=` in selectors.
                 let new_types = || self.entity_types.iter().map(|t| J::Str(t.id.clone()));
@@ -3083,10 +3109,11 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         )?;
     }
     // clients must agree on the block states and the items', mob effects',
-    // entity types' and menu types' network ids.
+    // fluids', entity types' and menu types' network ids.
     if !plan.blocks.is_empty()
         || !plan.items.is_empty()
         || !plan.effects.is_empty()
+        || !plan.fluids.is_empty()
         || !plan.entity_types.is_empty()
         || !plan.menu_types.is_empty()
     {
@@ -3205,6 +3232,7 @@ pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
     if !content.blocks.is_empty()
         || !content.items.is_empty()
         || !content.effects.is_empty()
+        || !content.fluids.is_empty()
         || !content.entity_types.is_empty()
         || !content.menu_types.is_empty()
         || !content.creative_tabs.is_empty()
