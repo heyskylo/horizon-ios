@@ -131,6 +131,26 @@ struct View {
 fn window(w: f32, h: f32) -> (f32, f32) {
     (((w - 252.0) / 2.0).floor(), ((h - 140.0) / 2.0).floor())
 }
+/// `ServerboundSeenAdvancementsPacket.openedTab`: `ClientAdvancements.setSelectedTab`
+/// with `showToast` true — the player picked a tab — tells the server which
+/// one, so a LAN server can keep it (`handleSeenAdvancements`) and answer with
+/// the tab to reopen. The tab the screen opens on is picked without the flag
+/// and says nothing.
+pub(super) fn opened_tab(id: &str) -> horizon_protocol::packets::play::SeenAdvancements {
+    horizon_protocol::packets::play::SeenAdvancements {
+        action: 0,
+        tab: Some(id.to_owned()),
+    }
+}
+/// `ServerboundSeenAdvancementsPacket.closedScreen()` (`AdvancementsScreen.removed`):
+/// action 1, which carries no tab.
+pub(super) fn closed_screen() -> horizon_protocol::packets::play::SeenAdvancements {
+    horizon_protocol::packets::play::SeenAdvancements {
+        action: 1,
+        tab: None,
+    }
+}
+
 impl Game<'_> {
     pub(super) fn open_advancements(&mut self, from_pause: bool) {
         self.load_advancements();
@@ -145,6 +165,8 @@ impl Game<'_> {
         self.capture(false);
     }
     pub(super) fn close_advancements(&mut self) {
+        // AdvancementsScreen.removed: the server hears the screen closed.
+        self.send(horizon_protocol::packets::play::Serverbound::SeenAdvancements(closed_screen()));
         if self.adv_ui.from_pause {
             self.screen = Screen::Paused;
         } else {
@@ -779,6 +801,13 @@ impl Game<'_> {
             let (x, y) = (left + x, top + y);
             let (cx, cy) = self.cursor;
             if cx > x && cx < x + ty.1 && cy > y && cy < y + ty.2 {
+                // `ClientAdvancements.setSelectedTab(tab, true)`: the packet
+                // goes out before the tab is compared, so a click on the tab
+                // already open tells the server again.
+                let id = self.adv.tree.list[t].id.clone();
+                self.send(
+                    horizon_protocol::packets::play::Serverbound::SeenAdvancements(opened_tab(&id)),
+                );
                 if self.adv_ui.tab != Some(t) {
                     self.adv_ui.tab = Some(t);
                     self.adv_ui.scroll = None;
