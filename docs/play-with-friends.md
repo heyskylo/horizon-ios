@@ -26,7 +26,7 @@ that finds the port takes the session.
 ## How it works
 
 **Hosting.** The pause menu's Friends button (vanilla's icon, beside Player Reporting) opens **Play
-with Friends** (`friends_screen.rs`); its **Start Sharing** opens the world to LAN if it isn't (Open to
+with Friends** (`game/friends/screen.rs`); its **Start Sharing** opens the world to LAN if it isn't (Open to
 LAN's defaults), then the host's game, on its own:
 
 1. listens on its **direct port**, TCP 25580 by default (the same port every time, so a port forwarded
