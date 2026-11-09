@@ -78,7 +78,10 @@ pub enum Play {
     Multiplayer,
     /// Their world is open to LAN or friends; `players` counts the host, `max` is how many may
     /// join.
-    Hosting { players: usize, max: usize },
+    Hosting {
+        players: usize,
+        max: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,7 +252,12 @@ mod tests {
         for open in [false, true, true, true, false, false] {
             engine::published(open);
         }
-        for now in [Activity::Menus, Activity::Menus, Activity::Hidden, Activity::Hidden] {
+        for now in [
+            Activity::Menus,
+            Activity::Menus,
+            Activity::Hidden,
+            Activity::Hidden,
+        ] {
             engine::activity(now);
         }
         engine::shutdown();
