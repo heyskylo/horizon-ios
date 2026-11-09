@@ -5832,7 +5832,7 @@ impl Game<'_> {
         self.draw_debug_overlay(&mut batch, size);
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
-        self.draw_pad_cursor(&mut batch);
+        self.draw_pad_over_hud(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -5963,6 +5963,7 @@ impl Game<'_> {
             if self.camera_type.first_person()
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
+                && !self.overlay_holds_view()
             {
                 let attack = (indicator == 1).then_some(strength);
                 let full = attack.is_some_and(|a| {
@@ -6092,6 +6093,7 @@ impl Game<'_> {
                     Some(draws) => draws,
                     None => self.health_hud.layout(&inputs, wi, hi),
                 };
+                self.keep_status_rows(&draws, wi, hi);
                 // The rows draw in one pass here, so a mod's `player_health`
                 // layer stands for the armor, food and air rows too.
                 self.gui_layer("minecraft:player_health", &mut batch, |g, batch| {
@@ -6191,7 +6193,9 @@ impl Game<'_> {
         if self.screen == Screen::Chat {
             self.draw_chat(&mut batch);
         } else if show_hud {
-            self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
+            if !self.overlay_holds_view() {
+                self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
+            }
             self.gui_layer("minecraft:tab_list", &mut batch, |g, batch| {
                 g.draw_tab_list(batch);
             });
@@ -6262,11 +6266,7 @@ impl Game<'_> {
         // after this point and so over what a mod drew.
         self.fire_screen_render_post(&mut batch);
         self.draw_saving_indicator(&mut batch);
-        // ToastManager.extractRenderState: F1 hides the toasts too.
-        self.draw_toasts(&mut batch, !show_hud);
-        self.draw_tutorial_toasts(&mut batch, !show_hud);
-        self.draw_pack_toasts(&mut batch, !show_hud);
-        self.draw_music_toast(&mut batch, !show_hud);
+        self.draw_every_toast(&mut batch, !show_hud);
         if self.server_packs.prompt.is_none() {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
@@ -9424,6 +9424,7 @@ impl Game<'_> {
             self.camera_type.first_person(),
             self.ui.hide_gui,
             self.shows_panorama(),
+            self.overlay_holds_view(),
         ) {
             let scale = HudBatch::new(size).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
@@ -9979,10 +9980,8 @@ impl Game<'_> {
                 &mut self.toggles,
                 [self.settings.toggle_crouch, self.settings.toggle_sprint],
                 [
-                    self.pad
-                        .holds_action(&self.settings.controller, "key.sneak"),
-                    self.pad
-                        .holds_action(&self.settings.controller, "key.sprint"),
+                    self.pad.holds_action("key.sneak"),
+                    self.pad.holds_action("key.sprint"),
                 ],
             );
             self.sync_toggle(SNEAK);

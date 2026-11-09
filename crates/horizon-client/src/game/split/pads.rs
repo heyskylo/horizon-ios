@@ -130,6 +130,12 @@ impl Split<'_> {
         }
     }
 
+    /// The furthest a player's pad leant its sticks since the last frame: nothing for a pad just
+    /// joined whose buttons are still being let go.
+    fn pad_peaks(&self, pad: Option<PadId>) -> [[f32; 2]; 2] {
+        pad.filter(|id| !self.fresh.contains(id))
+            .map_or([[0.0; 2]; 2], |id| self.pads.peaks(id))
+    }
     /// The pad's state for its player: nothing while the press that gave it is still held.
     fn pad_state(&mut self, pad: Option<PadId>) -> PadState {
         let Some(id) = pad else {
@@ -282,14 +288,16 @@ impl Split<'_> {
             self.pads.report_status(&mut self.host.pad, owner);
         }
         let state = self.pad_state(owner);
-        self.host.pad.feed_from(owner, state);
+        let peaks = self.pad_peaks(owner);
+        self.host.pad.feed_from(owner, state, peaks);
         for i in 0..self.guests.len() {
             let pad = self.guests[i].pad;
             if self.guests[i].game.control.is_some() {
                 self.pads.report_status(&mut self.guests[i].game.pad, pad);
             }
             let state = self.pad_state(pad);
-            self.guests[i].game.pad.feed_from(pad, state);
+            let peaks = self.pad_peaks(pad);
+            self.guests[i].game.pad.feed_from(pad, state, peaks);
         }
         joins
     }

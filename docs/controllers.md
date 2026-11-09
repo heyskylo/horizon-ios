@@ -64,11 +64,13 @@ once per loop iteration next to winit's events.
 | Change camera | View | Create / Share | `key.togglePerspective` |
 | Pick block | D-pad left | D-pad left | `key.pickItem` |
 | Chat | D-pad up | D-pad up | `key.chat` |
+| Radial menu (hold) | D-pad right | D-pad right | Horizon `pad.radial` |
 | Pause / back | Menu | Options | Escape (fixed) |
 
-Advancements and the player list have no button of their own, and are
-bindable. A settings file from before these defaults keeps its buttons where
-they were.
+Advancements has no button of its own: it is on the radial menu's first page,
+and bindable, as the player list is. A settings file from before these defaults
+keeps its buttons where they were and leaves the menu unbound (Controller Settings > Bindings
+offers it).
 
 Also bindable, with no default button: fullscreen, player social, quick actions, the save and load
 toolbar activators and hotbar slots 1 to 9. They act in play only: in a menu or a prompt the button
@@ -89,6 +91,162 @@ toggles by default (holding a stick in while steering the camera is
 awkward, which is why Bedrock does the same) and acts like vanilla's toggle
 crouch: a screen stands you up while it is open and closing it crouches you
 again. The controls options can make it hold-to-sneak.
+
+## Radial menu
+
+Hold the opener and the right stick points at one of eight slots, clockwise
+from the top; letting the opener go runs the selected action, once. It isn't a
+screen: the world goes on behind it, and neither the selecting stick nor the mouse
+turns the view while it is open (the stick not until it has been let go). With
+the default opener, D-pad Right, the left thumb is on the D-pad, so the player
+stands still while picking; with the opener on a bumper, a trigger or View the
+stick that doesn't select still walks or turns the view.
+Every hold opens on the first page, so a flick aimed blind always lands on the
+same slot.
+
+Two settings change how it is held and aimed, saved as `radialMode` and
+`radialStick` in `horizon-controller.txt`:
+
+- Radial Menu: Hold (the default) or Toggle (`radialMode:hold|toggle`). In
+  Toggle a press opens it, shown at once, and it stays open with the opener up:
+  A or a second press of the opener runs what is selected, B cancels, and with
+  nothing selected nothing runs.
+- Radial Menu Selects With: Right Stick (the default), Left Stick or Either
+  (`radialStick:right|left|either`). The selecting stick neither walks nor
+  turns the view while the menu is open; with Either, the last stick to lean
+  past the select tilt selects, and neither moves anything. While the menu is
+  open a stick takes over only once it has been at rest since the open, so a
+  thumb left on the walking stick can't commit for the other. Its tilts follow
+  that stick's own deadzone.
+
+- The overlay shows once the opener has been held 120 ms (`DRAW_DELAY`); the
+  stick counts from the press, so a quick flick-and-release works without it,
+  and a tap that selected nothing shows nothing and does nothing. A flick
+  between two frames still counts: the pad's own events give the furthest the
+  stick leant since the last poll.
+- The slots are eight tiles (vanilla's game mode switcher slots, each with its
+  action's icon from the player's own resources) on a ring at true 45 degree
+  steps, where the stick selects them; the selected sector lights up behind
+  its tile. The hub in the middle names the selection; for Perspective, Hide
+  HUD and Cinematic Camera it gives the state and what a press turns it to,
+  and for a slot that can't run, why (`Needs cosmetics on`). An empty slot is
+  a pip, one that can't run is dimmed and slashed, and a missing action (an id
+  this game doesn't know) says Missing. Along the top, the pages are tabs
+  between the bumpers' glyphs, the current one white; on a narrow view they
+  collapse to the name between arrows, with the bumpers naming the pages they
+  turn to. With a bumper for the opener only the other shows, and with one page
+  only its name. B's Cancel sits at the lower right when the view has room. The
+  header stays below vanilla's boss bars and the ring above the status rows
+  over the hotbar (armour, health with absorption, food, a mount's hearts);
+  while the menu shows, the chat lines, the toasts, the crosshair, the guide
+  and the first-person hand give way (none of them blink on a quick tap,
+  which draws nothing). Sizes follow the
+  view's height (`radial_overlay::Layout`), so 1280x720, 854x480 and a quarter
+  of a large window look the same, and smaller views drop the state chips and
+  the Cancel hint first. Its motion is quiet and never selects: a quick fade in,
+  the lit sector easing to a new slot, the tiles sliding in on a page turn, the
+  chosen tile flashing on a commit (`hud_kit::motion`, settled while the game
+  is paused or recording).
+- Bumpers change the page, around the ends, and clear the selection; with a
+  bumper for the opener, the other one turns the pages on. A stick held through
+  the page turn selects nothing until it moves. One that had leant past rest
+  for 90 ms before the opener went down (`LEAN_BEFORE_OPEN`, a stick turning the
+  camera) selects nothing until it has been at rest, page turns included; one
+  that moved only just before is a flick aimed at the menu, and selects.
+  Meanwhile the sector stays dark and the hub says "Let go of the stick".
+- A selected slot stays selected a little past its wedge and under the tilt, so
+  a light hold or a stick on a boundary doesn't flicker. The tilts are tuned at
+  the default look deadzone and keep their share of the travel past a raised
+  one (`radial::Tilt`): a selection always lets go above the deadzone, so a
+  drifting stick never keeps one, and no slot ever needs more than a 0.93 lean,
+  which a worn stick still reaches.
+- With vibration on: reaching a slot that would run gives a tick (45 ms on the
+  light motor), a page turn a shorter one, twice when the pages go round an
+  end, and a release that runs nothing after something was selected a soft
+  buzz. A commit that runs an action plays the button click.
+- With the narrator on, it says the page's name as the overlay shows and after
+  each page turn, and a slot's caption once the selection has stayed 150 ms
+  (`NARRATE_SETTLE`), so a sweep across slots says only where it stops.
+- A stick let go keeps its selection for 250 ms (`NEUTRAL_RETENTION`), so it can
+  spring back before the opener comes up; then the selection clears. Latched
+  open in Toggle the selection stays with the stick let go, so the thumb can
+  move to A: only another slot, a page turn or a cancel changes it. A slot the
+  thumb crosses on its way to A, selected less than 90 ms before A goes down
+  (`A_SETTLE`), doesn't count: A runs the one it had settled on.
+- A release with nothing selected, or on an empty slot, does nothing. An empty
+  slot is a faint outline with no caption; only the selected action takes the
+  accent.
+- An action that can't run now is drawn dimmed. It can be selected, but its
+  release does nothing: no action, no click. The game decides which: Emote
+  opens the emote wheel only with cosmetics on, Quick Actions only when the
+  server gave a dialog for it, and Social only on a server. Social is the one
+  exception to doing nothing: in single player its release goes through its key,
+  which shows vanilla's "not available" message on the action bar, as
+  `Gui.handleKeybinds` does (pressing its key does the same). A Missing action
+  never runs. The others always run.
+- B, Start, a disconnect, losing the window's focus (with Play in Background on
+  too), the player being replaced (a death with immediate respawn, the End's
+  exit) or anything that opens over gameplay cancels, also during those 250 ms.
+  RT or LT pressed while it is open cancels it and goes on to attack or use in
+  the same poll; so does any key or mouse button, which isn't swallowed. No
+  other press made while it is open reaches a mapping, and a press in the same
+  poll as the opener's release, held back to the next tick or not, comes first,
+  so B still cancels. Buttons held since before it opened keep their action and
+  release it as usual, so a held sneak stays held. Moving the mouse neither
+  cancels it nor takes control back from the pad, nor turns the view.
+- After it closes on a D-pad opener, a press of another D-pad button that starts
+  within 100 ms reaches nothing, and nor does its release (`DPAD_SETTLE`): a
+  thumb rolling off the opener doesn't drop or open the chat. The opener itself
+  opens the menu again at once. A drop held through it starts
+  its wait again as it closes, rather than throwing the rest of the stack. F3's
+  3D crosshair gives way to it, as the 2D one does.
+- Menus, the on-screen keyboard and prompts come first: there the opener's
+  button does what the screen says (or its other action, if it shares one).
+- The opener is never under a thumb that selects, as holding it and steering
+  are two jobs for one thumb, nor on B, which cancels (`gamepad::opener_refused`):
+  selecting with the right stick, not A, X, Y or R3; with the left, not the D-pad
+  or L3 (A, X and Y are free); with either, neither set, leaving the bumpers,
+  the triggers and View. In the binds list a refused button cancels the capture
+  as Start does, and a file with one reads as if it had no opener saved (D-pad
+  Right, unless another action is there or the stick refuses it). Changing the
+  stick so that the opener is under the selecting thumb unbinds it; back on the
+  right stick an unbound opener takes D-pad Right again if it is free. A bumper
+  can be the opener; the other bumper then turns the pages on, round the end.
+
+The default pages hold only actions with no button of their own that always
+run, so the menu adds to the pad instead of repeating it, on the straight
+directions: General has Advancements (up), Commands (right) and Social (down);
+Camera has Screenshot (up), Hide HUD (right) and Cinematic Camera (down). The
+rest start empty. Slots hold actions from a fixed list
+(`radial::RadialAction`), those that do everything on their press (Fullscreen,
+Quick Actions and the F3 debug screen besides those of the default pages), each shown
+by a short caption (`horizon.radial.action.*`). Its rules are in
+`horizon-client-input/src/radial.rs`, the overlay in
+`horizon-client-render/src/radial_overlay.rs`.
+
+Pages live in `horizon-controller.txt`, written once they differ from the
+defaults, so each splitscreen profile has its own, after `radialLayout:1` (the
+version of the default page list they were written against). A page the player
+hasn't changed is written as its preset, `radial_<page>_preset:general` or
+`camera`, and reads back as that default page as it is now: changing one slot
+of General leaves Camera following the defaults. Setting a slot or a name to
+what it already is changes nothing, and a page edited back to its default (or
+read from its slots as that) is its preset again; an edited page drops a preset
+id this game doesn't know, which would otherwise replace it. A page of the player's own is
+`radial_<page>_slots` (eight ids, by commas) and its name as
+`radial_<page>_name` (a name Horizon gave it, by language key) or
+`radial_<page>_label` (the player's own text, kept as typed);
+`radial_<page>_kind:hotbar` is read and kept for a hotbar page, which this
+version shows with empty slots. Slot ids are vanilla key mappings by name
+(`key.chat`) and Horizon's own in its namespace (`horizon:emote`,
+`horizon:hotbar_next`, `horizon:hotbar_previous`); the ids they had before
+(`key.emote`, `pad.hotbarNext`, `pad.hotbarPrevious`) read through an alias
+table. An id this game doesn't know (a newer Horizon's, a mod's) stays in its
+slot, drawn as Missing and dimmed, and never runs, so a slot can't run a
+command. Fields and kinds it doesn't read stay too. A file can hold up to 16
+pages (`PARSE_MAX`), and the lines of any past them are kept; the menu and the
+editor show the first six, and a page deleted there brings the next forward.
+Removing an action empties its slot and moves no other.
 
 A Nintendo pad's face buttons can go by their places, as the table and SDL's
 layout have them (B, at the bottom, jumps and confirms), or by their letters,
@@ -469,9 +627,9 @@ The picture's texture is 32 pixels tall, drawn 16 GUI pixels tall with a clear e
 glyph shows 12 tall, as a text glyph does: a square picture 12 wide, a bumper or trigger 20. A declared
 button's label leaves room for it.
 
-Art shows on declared buttons and a focused field's A, in notices, the gameplay guide and splitscreen's
-strips. What runs inside a line of text stays text: the recipe tooltip, the on-screen keyboard's hint line and the buttons on
-the Bindings page. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
+Art shows on declared buttons and a focused field's A, in notices, the gameplay guide, the radial
+menu's hints and splitscreen's strips. What runs inside a line of text stays text: the recipe tooltip,
+the on-screen keyboard's hint line and the buttons on the Bindings page. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
 
 The inventory crosshair is `crosshair_inv` in the same folder, drawn at 16 GUI pixels on the point it
 clicks (`pad_cursor.rs`).
@@ -525,11 +683,13 @@ bind_key.jump:south
 craftOnServers:false
 gameplayGuide:full
 bind_pad.hotbarNext:rb
-bindLayout:1
+bindLayout:2
 ```
 
 Only bindings that differ from the defaults are written. A file without `bindLayout` comes from before the
-current defaults and keeps its buttons where they were.
+current defaults and keeps its buttons where they were. A file below `bindLayout:2` comes from before the radial
+menu's opener: on its first load the opener stays off D-pad Right if the player had put another action there.
+That happens once; from layout 2 on, a conflict the player makes in the binds list stays as they made it.
 
 Deadzones are radial (the stick's length, so diagonals aren't clipped) and the
 remaining range is rescaled to 0..1. Look uses a squared curve for precise
@@ -552,7 +712,9 @@ button, has no row. The mouse or keyboard taking over hides them, as do a menu, 
 Gameplay Guide option. They read what a click would do from the client's own answers
 (`remote_block_reacts`, `remote_mob_takes`), and a use only a fluid ray or the server can tell (an
 empty bucket) shows nothing. The rows step around what the HUD drew (effect icons, boss bars, the
-sidebar, chat, toasts, splitscreen's badge), and in a small view the last rows drop.
+sidebar, chat, toasts, splitscreen's badge), and in a small view the last rows drop. The left
+column's last row names the radial menu's opener, as nothing else in play says it's there (for a
+spectator too, who can open it).
 
 An inventory or creative screen the pad drives has rows of its own, from its bottom corners, under
 the same option, and what's under the crosshair decides them: a slot, by whether it holds anything
