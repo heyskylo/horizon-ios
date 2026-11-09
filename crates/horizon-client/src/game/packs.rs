@@ -366,6 +366,9 @@ impl Game<'_> {
             ui_metadata,
             language,
         } = staged;
+        // The packs' Polytone creative tab modifiers.
+        let tab_modifiers = horizon_client::polytone_creative_tabs::TabModifier::read_all(&root);
+        self.creative_screen.set_pack_modifiers(tab_modifiers);
         // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
