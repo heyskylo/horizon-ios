@@ -395,8 +395,8 @@ impl PlayerDraw for DrawPlayer<'_, '_> {
 }
 
 impl Game<'_> {
-    /// What crates draw on player model `m` in the world pass (`creatures.rs`), then the
-    /// cosmetics still drawn here: see [`DrawPlayer`]. The bounds of what went to the GPU.
+    /// What crates draw on player model `m` in the world pass (`creatures.rs`): see
+    /// [`DrawPlayer`]. The bounds of what went to the GPU.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn player_layers_geometry(
         &self,
@@ -412,40 +412,29 @@ impl Game<'_> {
             self.serving.is_none(),
             "a server thread calls no client hook"
         );
-        let kind = kind(m)?;
-        let mut bounds = None;
-        if engine::any() {
-            let model = model(m, kind, self.remote_player_uuid(m.id));
-            let mut draw = DrawPlayer {
-                game: self,
-                m,
-                pass: Pass::World,
-                base,
-                camera,
-                alpha,
-                light,
-                gpu,
-                out: &mut *out,
-                bounds: None,
-                body: None,
-                poses: Poses::pooled(),
-            };
-            engine::player_layers(&model, &mut draw);
-            bounds = draw.bounds;
-        }
-        let worn = super::cosmetics::enabled()
-            .then(|| self.cosmetics_fx_of(m, false, base, camera, alpha, light, gpu, out))
-            .flatten();
-        match (bounds, worn) {
-            (Some((l, h)), Some((lo, hi))) => Some((l.min(lo), h.max(hi))),
-            (b, w) => b.or(w),
-        }
+        let kind = kind(m).filter(|_| engine::any())?;
+        let model = model(m, kind, self.remote_player_uuid(m.id));
+        let mut draw = DrawPlayer {
+            game: self,
+            m,
+            pass: Pass::World,
+            base,
+            camera,
+            alpha,
+            light,
+            gpu,
+            out,
+            bounds: None,
+            body: None,
+            poses: Poses::pooled(),
+        };
+        engine::player_layers(&model, &mut draw);
+        draw.bounds
     }
 
     /// What crates draw on the window's own model `m` (its vertices to `out`): in the world in
-    /// third person (`Pass::World`, then the cosmetics' companion, trail and aura still drawn
-    /// here), or in the inventory's picture of it (`Pass::Picture`). `camera`: the world view's
-    /// camera, or the picture's.
+    /// third person (`Pass::World`), or in the inventory's picture of it (`Pass::Picture`).
+    /// `camera`: the world view's camera, or the picture's.
     pub(super) fn own_layers_geometry(
         &self,
         m: &Mob,
@@ -459,36 +448,29 @@ impl Game<'_> {
             self.serving.is_none(),
             "a server thread calls no client hook"
         );
-        let fx = pass == Pass::World && super::cosmetics::enabled();
-        if !engine::any() && !fx {
+        if !engine::any() {
             return;
         }
-        let base = render::base_transform(m, alpha, camera);
-        if engine::any() {
-            let model = model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile()));
-            let mut draw = DrawPlayer {
-                game: self,
-                m,
-                pass,
-                base,
-                camera,
-                alpha,
-                light,
-                gpu: false,
-                out: &mut *out,
-                bounds: None,
-                body: None,
-                poses: Poses::pooled(),
-            };
-            engine::player_layers(&model, &mut draw);
-        }
-        if fx {
-            self.cosmetics_fx_of(m, true, base, camera, alpha, light, false, out);
-        }
+        let model = model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile()));
+        let mut draw = DrawPlayer {
+            game: self,
+            m,
+            pass,
+            base: render::base_transform(m, alpha, camera),
+            camera,
+            alpha,
+            light,
+            gpu: false,
+            out,
+            bounds: None,
+            body: None,
+            poses: Poses::pooled(),
+        };
+        engine::player_layers(&model, &mut draw);
     }
 
     /// After every player (`game.rs`): what crates draw around the window's own model in first
-    /// person, the cosmetics' fx still drawn here, then what was drawn see-through, in one span.
+    /// person, then what was drawn see-through, in one span.
     pub(super) fn players_after_geometry(
         &self,
         camera: glam::DVec3,
@@ -518,7 +500,6 @@ impl Game<'_> {
             };
             engine::first_person(&own, &mut draw);
         }
-        self.cosmetics_fx_geometry(camera, alpha, out);
         let _ = SEE_THROUGH.try_with(|v| {
             let mut v = v.borrow_mut();
             if !v.is_empty() {
