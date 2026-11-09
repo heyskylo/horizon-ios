@@ -516,12 +516,18 @@ def run_windows(steps, verbose):
         try:
             with process_tree.popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, errors="replace") as process:
+                def release():
+                    # The check's exit ends what it left running, which would otherwise hold the output open.
+                    process.wait()
+                    process_tree.ended(process)
+                reaper = threading.Thread(target=release)
+                reaper.start()
                 for line in process.stdout:
                     step.output += line
                     if verbose:
                         print("    " + line, end="", file=sys.stderr)
-                status = process.wait()
-                process_tree.ended(process)
+                reaper.join()
+                status = process.returncode
             step.status = "pass" if status == 0 else "fail"
         except OSError as error:
             step.status, step.detail = "fail", str(error)

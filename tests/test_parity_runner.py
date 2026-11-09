@@ -721,6 +721,7 @@ class LeftProcessTests(unittest.TestCase):
             self.assertTrue(child_released(tmp / "held"), "the harness's child outlived it")
             return finished[0]
 
+    @unittest.skipUnless(os.name == "nt" or hasattr(os, "waitid"), "macOS before Python 3.13 has no os.waitid")
     def test_a_finished_harness_takes_what_it_left_running(self):
         _, _, passed, *_ = self.run_harness(hang=False, timeout=120)
         self.assertTrue(passed)

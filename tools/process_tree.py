@@ -125,7 +125,12 @@ def popen(arguments, **options):
     job = _job()
     if job is None:
         return subprocess.Popen(arguments, **options)
-    process = subprocess.Popen(arguments, creationflags=options.pop("creationflags", 0) | CREATE_SUSPENDED, **options)
+    try:
+        process = subprocess.Popen(arguments, creationflags=options.pop("creationflags", 0) | CREATE_SUSPENDED,
+                                   **options)
+    except BaseException:
+        kernel32.CloseHandle(job)
+        raise
     try:
         if _assign(job, process.pid):
             process.job = job
