@@ -20,7 +20,7 @@ use horizon_mods::content::{
     Block, BlockShapes, Content, CreativeTab, EntityType, Fluid, MenuType, MobEffect, Rarity,
     StateProperty, StateValues,
 };
-use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
+use horizon_world::nbt::{self, Compound, JavaString, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -79,14 +79,6 @@ pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
     let mut effects: Vec<&MobEffect> = mods.iter().flat_map(|m| &m.content.effects).collect();
     effects.sort_by(|a, b| a.id.cmp(&b.id));
     effects
-}
-
-/// The mods' fluids in registry order, by id as effects are. Each takes two
-/// network ids after vanilla's, its source's then its flowing form's.
-pub fn fluids(mods: &[ContentMod]) -> Vec<&Fluid> {
-    let mut fluids: Vec<&Fluid> = mods.iter().flat_map(|m| &m.content.fluids).collect();
-    fluids.sort_by(|a, b| a.id.cmp(&b.id));
-    fluids
 }
 
 /// the mods' entity types in registry order, by id as effects are.
@@ -2339,6 +2331,9 @@ pub fn biome_modifiers_over_packs(
 
 #[path = "mod_content_biomes.rs"]
 mod biomes;
+#[path = "mod_content_tables.rs"]
+mod tables;
+use tables::{table_jobs, tables};
 
 /// The overlay being written: `out` mirrors `base` through links, and a
 /// directory becomes real only when something inside it is written.
@@ -2764,77 +2759,6 @@ impl TagMerge {
     }
 }
 
-/// Threads rewriting the tables at once. Each holds a whole table as a tree
-/// (gameplay-facts.json's is over a gigabyte with ATM10's mods), so more
-/// would mostly add memory.
-const TABLE_THREADS: usize = 3;
-
-/// The base's per-state tables, the largest first, with their directories
-/// made real in the overlay: [`tables`]' threads then only write files.
-fn table_jobs(base: &Path, overlay: &Overlay<'_>) -> Result<Vec<(&'static str, u64)>> {
-    let mut jobs: Vec<(&str, u64)> = JSON_TABLES
-        .iter()
-        .chain(&NBT_TABLES)
-        .filter_map(|name| Some((*name, fs::metadata(base.join(name)).ok()?.len())))
-        .collect();
-    jobs.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
-    for (name, _) in &jobs {
-        if let Some(parent) = Path::new(name).parent() {
-            overlay.dir(parent)?;
-        }
-    }
-    Ok(jobs)
-}
-
-/// Rewrites the base's per-state tables (`jobs`, from [`table_jobs`]) for
-/// the mods' states into the overlay. They are independent:
-/// [`TABLE_THREADS`] threads take them, the largest first.
-fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>, jobs: &[(&str, u64)]) -> Result<()> {
-    let table = |name: &str| -> Result<()> {
-        let path = base.join(name);
-        let bytes = if name == "entity-types.json" {
-            plan.entity_types_json(&fs::read(&path)?)
-                .map_err(|e| format!("{name}: {e}"))?
-        } else if JSON_TABLES.contains(&name) {
-            let mut doc = read_json(&path)?;
-            plan.json(name, &mut doc)
-                .map_err(|e| format!("{name}: {e}"))?;
-            serde_json::to_vec(&doc)?
-        } else {
-            let (mut named, _) = nbt::read_named(&fs::read(&path)?, Limits::tables())
-                .map_err(|e| format!("{name}: {e}"))?;
-            plan.nbt(&mut named.tag);
-            if name == "cached-collision.nbt" || name == "worldgen/blocks/cached-collision.nbt" {
-                plan.collision_shapes(&mut named.tag)?;
-            }
-            nbt::write_named(&named, Limits::tables()).map_err(|e| format!("{name}: {e}"))?
-        };
-        overlay.write(name, &bytes)
-    };
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = horizon_threads::worker_count();
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads.min(TABLE_THREADS))
-            .map(|_| {
-                scope.spawn(|| -> std::result::Result<(), String> {
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((name, _)) = jobs.get(i) else {
-                            return Ok(());
-                        };
-                        table(name).map_err(|e| e.to_string())?;
-                    }
-                })
-            })
-            .collect();
-        workers.into_iter().try_for_each(|w| {
-            w.join()
-                .unwrap_or_else(|_| Err("a table thread panicked".into()))
-        })
-    })?;
-    Ok(())
-}
-
 /// Builds the content root for `mods` over `base` in `out`. Returns the
 /// warnings for the log: the shared tags a mod replaced.
 pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>> {
@@ -2852,7 +2776,10 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     }
     // The overlay links to the base: a relative base would leave them dangling.
     let base = &std::path::absolute(base)?;
-    let plan = Plan::new(base, mods)?;
+    let plan = {
+        let _step = crate::spans::startup::step("mods.plan");
+        Plan::new(base, mods)?
+    };
     let overlay = Overlay::new(base, out)?;
     // Mod files, and every tag addition gathered per tag file.
     let mut copies = Vec::new();
@@ -2862,78 +2789,100 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     let mut additions: BTreeMap<&str, Vec<Addition>> = BTreeMap::new();
     let mut modifiers = Vec::new();
     let mut atlases: BTreeMap<String, Vec<J>> = BTreeMap::new();
-    for m in mods {
-        let declarations = format!("data/{}/horizon/", m.id);
-        let mut reader = m.content.reader()?;
-        for file in &m.content.files {
-            let is_tag = file.starts_with("data/") && file.contains("/tags/");
-            // Most files (textures, models...) only go into the overlay: copied, not read and
-            // written again, they take a fraction of the time (Chipped alone has 10k textures).
-            let plain = !(is_tag && file.ends_with(".json"))
-                && !(file.starts_with("assets/minecraft/atlases/") && file.ends_with(".json"))
-                && !file.starts_with(&declarations)
-                && !biomes::is_modifier(file)
-                && worldgen_entry(file).is_none()
-                && !(file.starts_with("data/") && file.contains("/structure/"));
-            if plain && let Some(from) = reader.path(file)? {
-                copies.push((file.clone(), from));
-                continue;
-            }
-            let bytes = reader.read(file)?;
-            if is_tag && file.ends_with(".json") {
-                let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
-                let Some(J::Arr(values)) = doc.get("values") else {
-                    return Err(format!("{}: {file}: no values", m.id).into());
-                };
-                let replace = doc.get("replace") == Some(&J::Bool(true));
-                let ns = file.split('/').nth(1).unwrap_or_default();
-                let shared = !m.content.namespaces.iter().any(|n| n == ns);
-                let merge = tags.entry(file.clone()).or_default();
-                warnings.extend(merge.add(&m.id, file, replace, shared, values));
-            } else if file.starts_with("assets/minecraft/atlases/") && file.ends_with(".json") {
-                let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
-                let Some(J::Arr(sources)) = doc.get("sources") else {
-                    return Err(format!("{}: {file}: no sources", m.id).into());
-                };
-                atlases
-                    .entry(file.clone())
-                    .or_default()
-                    .extend(sources.iter().cloned());
-            } else if !file.starts_with(&declarations) {
-                overlay.write(file, &bytes)?;
-                if biomes::is_modifier(file) {
-                    let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
-                    modifiers.extend(biomes::Modifier::read(&m.id, file, &text, &mut warnings)?);
-                } else if let Some((bundle, id)) = worldgen_entry(file) {
-                    let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
-                    let entries = worldgen.entry(bundle).or_default();
-                    match Addition::read(bundle, &text).map_err(|e| format!("{file}: {e}"))? {
-                        Some(addition) => additions.entry(bundle).or_default().push(addition),
-                        None => entries.push((id, text)),
-                    }
-                } else if let Some(template) = file
-                    .strip_prefix("data/")
-                    .and_then(|r| r.split_once("/structure/"))
-                    .filter(|(_, path)| path.ends_with(".nbt"))
-                {
-                    // The worldgen loader's templates: worldgen/structure/<ns>/<path>.nbt.
-                    let (ns, path) = template;
-                    overlay.write(&format!("worldgen/structure/{ns}/{path}"), &bytes)?;
-                }
-            }
-        }
-    }
-    // The tables are rewritten on threads of their own while the files are copied: the
-    // two write different folders, each made real here first.
+    // The tables are rewritten on threads of their own while the mods' files are read and
+    // copied: they need only the plan, and write the folders made real here first, which
+    // no mod file goes to (those are under assets/, data/ and worldgen/structure/).
     let jobs = table_jobs(base, &overlay)?;
     std::thread::scope(|scope| -> Result<()> {
-        let tables =
-            scope.spawn(|| tables(base, &plan, &overlay, &jobs).map_err(|e| e.to_string()));
-        let copied = overlay.copy_all(&copies);
+        let tables = scope.spawn(|| {
+            let _step = crate::spans::startup::step("mods.tables");
+            tables(base, &plan, &overlay, &jobs).map_err(|e| e.to_string())
+        });
+        let files = (|| -> Result<()> {
+            let _step = crate::spans::startup::step("mods.files");
+            for m in mods {
+                let declarations = format!("data/{}/horizon/", m.id);
+                let mut reader = m.content.reader()?;
+                for file in &m.content.files {
+                    let is_tag = file.starts_with("data/") && file.contains("/tags/");
+                    // Most files (textures, models...) only go into the overlay: copied, not read and
+                    // written again, they take a fraction of the time (Chipped alone has 10k textures).
+                    let plain = !(is_tag && file.ends_with(".json"))
+                        && !(file.starts_with("assets/minecraft/atlases/")
+                            && file.ends_with(".json"))
+                        && !file.starts_with(&declarations)
+                        && !biomes::is_modifier(file)
+                        && worldgen_entry(file).is_none()
+                        && !(file.starts_with("data/") && file.contains("/structure/"));
+                    if plain && let Some(from) = reader.path(file)? {
+                        copies.push((file.clone(), from));
+                        continue;
+                    }
+                    let bytes = reader.read(file)?;
+                    if is_tag && file.ends_with(".json") {
+                        let doc: J =
+                            serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
+                        let Some(J::Arr(values)) = doc.get("values") else {
+                            return Err(format!("{}: {file}: no values", m.id).into());
+                        };
+                        let replace = doc.get("replace") == Some(&J::Bool(true));
+                        let ns = file.split('/').nth(1).unwrap_or_default();
+                        let shared = !m.content.namespaces.iter().any(|n| n == ns);
+                        let merge = tags.entry(file.clone()).or_default();
+                        warnings.extend(merge.add(&m.id, file, replace, shared, values));
+                    } else if file.starts_with("assets/minecraft/atlases/")
+                        && file.ends_with(".json")
+                    {
+                        let doc: J =
+                            serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
+                        let Some(J::Arr(sources)) = doc.get("sources") else {
+                            return Err(format!("{}: {file}: no sources", m.id).into());
+                        };
+                        atlases
+                            .entry(file.clone())
+                            .or_default()
+                            .extend(sources.iter().cloned());
+                    } else if !file.starts_with(&declarations) {
+                        overlay.write(file, &bytes)?;
+                        if biomes::is_modifier(file) {
+                            let text =
+                                String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
+                            modifiers.extend(biomes::Modifier::read(
+                                &m.id,
+                                file,
+                                &text,
+                                &mut warnings,
+                            )?);
+                        } else if let Some((bundle, id)) = worldgen_entry(file) {
+                            let text =
+                                String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
+                            let entries = worldgen.entry(bundle).or_default();
+                            match Addition::read(bundle, &text)
+                                .map_err(|e| format!("{file}: {e}"))?
+                            {
+                                Some(addition) => {
+                                    additions.entry(bundle).or_default().push(addition)
+                                }
+                                None => entries.push((id, text)),
+                            }
+                        } else if let Some(template) = file
+                            .strip_prefix("data/")
+                            .and_then(|r| r.split_once("/structure/"))
+                            .filter(|(_, path)| path.ends_with(".nbt"))
+                        {
+                            // The worldgen loader's templates: worldgen/structure/<ns>/<path>.nbt.
+                            let (ns, path) = template;
+                            overlay.write(&format!("worldgen/structure/{ns}/{path}"), &bytes)?;
+                        }
+                    }
+                }
+            }
+            overlay.copy_all(&copies)
+        })();
         let tables = tables
             .join()
             .unwrap_or_else(|_| Err("a table thread panicked".into()));
-        copied?;
+        files?;
         Ok(tables?)
     })?;
     // A reload appends every pack's sources for an atlas to the ones below it.
@@ -3108,6 +3057,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
+    fluids::write_table(&overlay, &plan.fluids)?;
     // clients must agree on the block states and the items', mob effects',
     // fluids', entity types' and menu types' network ids.
     if !plan.blocks.is_empty()
@@ -3311,6 +3261,10 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
+
+#[path = "mod_content_fluids.rs"]
+mod fluids;
+pub use fluids::fluids;
 
 #[cfg(test)]
 #[path = "mod_content_tests.rs"]

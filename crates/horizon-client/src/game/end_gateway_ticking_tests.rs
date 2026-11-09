@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 fn item(id: u32, at: Vec3) -> ItemEntity {
     ItemEntity {
+        random: horizon_core::random::LegacyRandom::new(0),
         rotation: [0.0, 0.0],
         join: Default::default(),
         no_gravity: true,
@@ -33,6 +34,7 @@ fn item(id: u32, at: Vec3) -> ItemEntity {
         on_ground: false,
         vertical_collision: false,
         horizontal_collision: false,
+        fall_distance: 0.0,
         age: 97,
         pickup_delay: 0,
         bob_offset: 0.0,
@@ -89,4 +91,38 @@ fn items_past_the_simulation_distance_enter_no_end_gateway() {
     // It waits there: the gateways' pass leaves it alone.
     game.handle_end_gateway_portals();
     assert!(game.dropped.iter().any(|d| d.id == 2));
+}
+
+/// `TheEndGatewayBlockEntity.portalTick` counts the Age up in the block entity
+/// itself, so `/data get block` reads 0, then 5, then 25 (#13202), also far
+/// from the player, where nothing draws the gateway.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_ticking_gateway_counts_its_age_in_its_block_entity() {
+    use horizon_client::containers::BlockEntity;
+    let mut game = server_game();
+    game.dim = Dim::End;
+    game.player = Some(
+        horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 65.0, 8.5)).unwrap(),
+    );
+    game.world
+        .chunks
+        .insert((2, 0), Arc::new(Chunk::empty(2, 0)));
+    assert!(game.run_command("setblock 40 64 8 minecraft:end_gateway{Age:0L}"));
+    game.update_chunk_tickets();
+    assert!(game.block_ticking_area()(40, 8));
+    // What `/data get block` and the chunk save encode (`TheEndGatewayBlockEntity.saveAdditional`).
+    let age = |game: &super::super::Game<'_>| match game.world.block_entities.get(&(40, 64, 8)) {
+        Some(BlockEntity::EndGateway(g)) => Some(g.age),
+        _ => None,
+    };
+    assert_eq!(age(&game), Some(0));
+    for _ in 0..5 {
+        game.tick_block_entities().unwrap();
+    }
+    assert_eq!(age(&game), Some(5));
+    for _ in 0..20 {
+        game.tick_block_entities().unwrap();
+    }
+    assert_eq!(age(&game), Some(25));
 }

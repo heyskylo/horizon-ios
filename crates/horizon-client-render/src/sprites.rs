@@ -27,6 +27,10 @@ impl SpriteAnimation {
         let frames = self.materials[kind].as_ref()?;
         Some(&frames[self.frame(tick) % frames.len()])
     }
+    /// Polytone's `mode` on this animation, when it has one.
+    pub fn mode(&self) -> Option<&horizon_assets::animation::ClipMode> {
+        self.clip.mode()
+    }
     pub fn frame(&self, tick: u64) -> usize {
         self.clip.sample(tick).frame as usize
     }
@@ -34,7 +38,21 @@ impl SpriteAnimation {
     /// `interpolate` mixes the frame with the next one by
     /// `(int)(subFrame / time * 1000)` thousandths; others show the frame.
     pub fn blend(&self, tick: u64) -> FrameBlend {
-        let sample = self.clip.sample(tick);
+        self.blend_sample(self.clip.sample(tick))
+    }
+    /// [`Self::blend`], or what a Polytone `mode` (time of day, weather, an expression) picks
+    /// from `inputs` for an animation that has one.
+    pub fn blend_with(
+        &self,
+        tick: u64,
+        inputs: Option<&horizon_assets::animation::ModeInputs>,
+    ) -> FrameBlend {
+        match inputs.and_then(|i| self.clip.sample_mode(i)) {
+            Some(sample) => self.blend_sample(sample),
+            None => self.blend(tick),
+        }
+    }
+    fn blend_sample(&self, sample: horizon_assets::animation::AnimationSample) -> FrameBlend {
         let frame = sample.frame as usize;
         let next = sample.next_frame as usize;
         if self.clip.interpolates() && sample.interpolation_millis > 0 && next != frame {

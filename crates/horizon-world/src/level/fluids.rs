@@ -29,6 +29,12 @@ const POSSIBLE_FLOW_DIRECTIONS: [Direction; 5] = [
 fn is_water(kind: FluidKind) -> bool {
     kind.template() == FluidTemplate::Water
 }
+/// Vanilla's lava, flowing or not: only it is `LavaFluid`, with lava's
+/// overrides (water to stone, the random slowdown, fizzing). A mod fluid
+/// copying lava is a `BaseFlowingFluid` with lava's numbers, not lava.
+fn is_vanilla_lava(kind: FluidKind) -> bool {
+    kind.source() == FluidKind::Lava
+}
 fn source_of(kind: FluidKind) -> FluidKind {
     kind.source()
 }
@@ -171,12 +177,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         other: FluidKind,
         direction: Direction,
     ) -> bool {
-        match fluid.kind() {
-            FluidKind::Empty => true,
-            FluidKind::Water | FluidKind::FlowingWater => {
-                direction == Direction::Down && !is_water(other)
-            }
-            _ => self.fluid_height(fluid, pos) >= 0.444_444_45 && is_water(other),
+        let kind = fluid.kind();
+        if kind == FluidKind::Empty {
+            return true;
+        }
+        match kind.source() {
+            FluidKind::Water => direction == Direction::Down && !is_water(other),
+            FluidKind::Lava => self.fluid_height(fluid, pos) >= 0.444_444_45 && is_water(other),
+            // `BaseFlowingFluid.canBeReplacedWith`: a mod fluid is never replaced by another.
+            _ => false,
         }
     }
 
@@ -559,7 +568,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         {
             return;
         }
-        if !is_water(kind)
+        if is_vanilla_lava(kind)
             && direction == Direction::Down
             && b.is_water_fluid(self.fluid_at(pos).kind())
         {
@@ -573,10 +582,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.place_liquid(pos, state, target, false);
         } else {
             if !b.is_air(state) {
-                if is_water(kind) {
-                    self.drop_resources(state, pos);
-                } else {
+                // `beforeDestroyingBlock`: lava fizzes; water and mod fluids
+                // (`BaseFlowingFluid`) drop the block's resources.
+                if is_vanilla_lava(kind) {
                     self.level_event(1501, pos, 0);
+                } else {
+                    self.drop_resources(state, pos);
                 }
             }
             let legacy = b.legacy_block(target);
@@ -638,10 +649,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let new_fluid = self.new_liquid(kind, pos, state);
             let delay = self.spread_delay(kind, pos, fluid, new_fluid);
             if new_fluid != fluid {
-                let name = match kind.template() {
-                    FluidTemplate::Water => "water",
-                    FluidTemplate::Lava => "lava",
-                    FluidTemplate::Empty => return,
+                // Vanilla's by their short names, a mod fluid by its id.
+                let name = match kind.source() {
+                    FluidKind::Water => "water",
+                    FluidKind::Lava => "lava",
+                    FluidKind::Empty => return,
+                    source => source.name(),
                 };
                 if !self.level.allow_fluid_level_change(
                     pos,
@@ -673,7 +686,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         new: FluidState,
     ) -> i32 {
         let delay = self.fluid_tick_delay(kind);
-        if is_water(kind) {
+        // `LavaFluid.getSpreadDelay`'s random slowdown is lava's own.
+        if !is_vanilla_lava(kind) {
             return delay;
         }
         if old.kind() != FluidKind::Empty
