@@ -394,6 +394,47 @@ mod knockback_sync_tests {
         assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
         assert!(m.needs_sync);
     }
+    /// `TemptGoal` scales its range by the player's visibility: an invisible
+    /// player five blocks away does not tempt a sulfur cube.
+    #[test]
+    fn an_invisible_player_tempts_a_sulfur_cube_only_within_two_blocks() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for invisible in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(5.5, 64.0, 0.5));
+                p.main_hand = Some("minecraft:iron_ingot".into());
+                p.invisible = invisible;
+                world.player = Some(p);
+                let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+                kind.species = Species::SulfurCube;
+                kind.tempt = Arc::from(vec!["minecraft:iron_ingot".to_string()]);
+                let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(1, SulfurTempt { player: None });
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("SulfurTempt"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a visible player tempts at five; an invisible one does not"
+        );
+    }
 }
 /// Added controls (H192): the attribute part of `collectEquipmentChanges` on
 /// the cube's own map, with the amounts and ids of the pinned 26.3
