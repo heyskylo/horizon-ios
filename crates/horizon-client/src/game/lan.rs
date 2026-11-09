@@ -1443,11 +1443,7 @@ impl Game<'_> {
                 .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&self.pack.assets)))
                 .clone(),
         );
-        encoder.mod_update_tag = Some(|pos, entity| {
-            let mut tag = None;
-            Game::native_block_entity_update_tag(pos, entity, &mut tag);
-            tag
-        });
+        self.lan_update_tag_sources(&mut encoder);
         let far = (net.lod_distance > 0)
             .then(|| horizon_client::lod_net::Service::new(net.lod_distance, biome_names.clone()));
         let lan = Lan::start_with(sync.clone(), net)?;

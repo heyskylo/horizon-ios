@@ -119,6 +119,33 @@ impl Game<'_> {
             .put(key, BlockEntity::TrialSpawner(spawner));
         result
     }
+    /// What the LAN encoder builds update tags from beyond the block entity:
+    /// the mods' hook (`native_block_entity_update_tag`), and the block
+    /// states with `trial_spawner_state=active`, the only ones whose tag
+    /// holds `next_mob_spawns_at` (`TrialSpawnerStateData.getUpdateTag`).
+    pub(super) fn lan_update_tag_sources(
+        &self,
+        encoder: &mut horizon_client::lan::chunks::ChunkEncoder,
+    ) {
+        encoder.mod_update_tag = Some(|pos, entity| {
+            let mut tag = None;
+            Game::native_block_entity_update_tag(pos, entity, &mut tag);
+            tag
+        });
+        let registry = self.pack.assets.registry;
+        encoder.trial_active = (0..registry.len() as u32)
+            .filter(|&i| {
+                registry
+                    .state(horizon_world::registry::BlockStateId(i))
+                    .is_some_and(|b| {
+                        b.name == "minecraft:trial_spawner"
+                            && b.properties
+                                .get("trial_spawner_state")
+                                .is_some_and(|s| s == TrialState::Active.name())
+                    })
+            })
+            .collect();
+    }
     /// The trial spawner block at `key`: its state and ominous flag.
     pub(super) fn trial_spawner_block(&self, key: Pos) -> Option<(TrialState, bool)> {
         let block = self
