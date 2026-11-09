@@ -597,6 +597,9 @@ impl Game<'_> {
             .push_by_fluid(&self.world, &self.res.motion().fluids)
             .0
             > 0.0;
+        // Entity.move: a long move through water or a reset block resets it first.
+        self.boats[i].fall_distance =
+            self.vehicle_fall_reset(self.boats[i].fall_distance, old, resolved);
         let fall = if in_water {
             0.0
         } else {

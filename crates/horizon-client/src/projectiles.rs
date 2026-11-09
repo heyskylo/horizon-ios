@@ -251,6 +251,12 @@ pub struct Projectile {
     /// `Entity.remainingFireTicks`: a thrown projectile that flew through a
     /// fire block burns for 160 ticks, with the flame drawn over it.
     pub fire_ticks: i32,
+    /// `Entity.DATA_AIR_SUPPLY_ID`, saved as a short but tracked as an int.
+    pub air_supply: i32,
+    /// `Entity.hasVisualFire`: an optional saved flag independent of burning.
+    pub has_visual_fire: bool,
+    /// `Entity.DATA_SHARED_FLAGS_ID`'s fire bit, set by the server's base tick.
+    pub synced_fire: bool,
     /// `Fireball.DATA_ITEM_STACK`: the item a fireball is drawn as, a fire
     /// charge until [`Projectile::set_item`] gives it another. None for the
     /// kinds that are no `Fireball` (a wither skull, a wind charge).
@@ -465,6 +471,9 @@ impl Projectile {
             no_gravity: false,
             on_ground: false,
             fire_ticks: 0,
+            air_supply: 300,
+            has_visual_fire: false,
+            synced_fire: false,
             item,
             arrow: kind_is_arrow.then(|| {
                 // The arrow's own random (`Entity.random`).
@@ -560,9 +569,10 @@ impl Projectile {
                 | ProjectileKind::Thrown(_)
         )
     }
-    /// `Entity.isOnFire`.
+    /// `Entity.isOnFire`. `WitherSkull.isOnFire` always returns false.
     pub fn on_fire(&self) -> bool {
-        self.fire_ticks > 0
+        !matches!(self.kind, ProjectileKind::WitherSkull { .. })
+            && (self.fire_ticks > 0 || self.synced_fire)
     }
     /// `Entity.igniteForTicks`: the longer fire wins.
     pub fn ignite_for_ticks(&mut self, ticks: i32) {
@@ -574,21 +584,47 @@ impl Projectile {
     pub fn clear_fire(&mut self) {
         self.fire_ticks = self.fire_ticks.min(0);
     }
-    /// `ThrowableProjectile.tick`'s `applyEffectsFromBlocks` and the fire phase
-    /// of `Entity.baseTick`: a fire block the box is in ignites the projectile
-    /// for 160 ticks (`BaseFireBlock.fireIgnite`), water puts it out, and one
-    /// tick is counted down every tick.
-    fn fire_tick(&mut self, w: &impl ProjectileWorld) {
-        if !self.is_thrown() {
+    /// `Entity.baseTick` counts down active fire after block effects. The two
+    /// item fireballs then renew their own flame in `AbstractHurtingProjectile.tick`.
+    fn fire_tick(&mut self, w: &impl ProjectileWorld, client_side: bool) {
+        if !(self.is_thrown()
+            || self.kind == ProjectileKind::ExperienceBottle
+            || self.is_fireball())
+        {
             return;
         }
+        let previous_fire_ticks = self.fire_ticks;
         if self.in_fire(w) {
-            self.ignite_for_ticks(160);
+            // BaseFireBlock.fireIgnite: a non-player counts up to zero before
+            // it can catch fire again.
+            if self.fire_ticks < 0 {
+                self.fire_ticks += 1;
+            }
+            if self.fire_ticks >= 0 {
+                self.ignite_for_ticks(160);
+            }
         }
         if w.in_water(self.bounds()) {
             self.clear_fire();
-        } else if self.fire_ticks > 0 {
+        }
+        let sync_fire = !client_side && self.kind != ProjectileKind::LlamaSpit;
+        let burning =
+            self.fire_ticks > 0 && !matches!(self.kind, ProjectileKind::WitherSkull { .. });
+        if sync_fire && !burning && self.fire_ticks <= previous_fire_ticks {
+            // Entity.applyEffectsFromBlocks resets fire immunity when the entity
+            // is not burning and no block ignited it. A skull always reports
+            // isOnFire=false, even when its saved remainingFireTicks is positive.
+            self.fire_ticks = 0;
+        }
+        if self.fire_ticks > 0 {
             self.fire_ticks -= 1;
+        }
+        if sync_fire {
+            // Entity.setSharedFlagOnFire runs before the fireball's own ignition.
+            self.synced_fire = self.fire_ticks > 0 || self.has_visual_fire;
+        }
+        if self.kind.is_item_fireball() {
+            self.ignite_for_ticks(20);
         }
     }
     /// `Entity.checkInsideBlocks`: the blocks under the box, deflated by 1e-7
@@ -1077,14 +1113,14 @@ impl Projectile {
 
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.tick_with(w, true)
+        self.tick_with(w, true, false)
     }
     /// One tick of a server's projectile on its client: [`tick`](Self::tick),
     /// whose bubble columns push it on the client too, so a pearl held in a
     /// stasis chamber hovers between the server's updates instead of sinking
     /// and snapping back.
     pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.tick(w)
+        self.tick_with(w, true, true)
     }
     /// The projectiles whose tick applies the effects of the blocks they moved
     /// through (`applyEffectsFromBlocks`), bubble columns among them:
@@ -1197,9 +1233,14 @@ impl Projectile {
     /// canceled (`ProjectileImpactEvent`). The projectile goes the whole way of its
     /// motion and flies on, with no hit to act on.
     pub fn tick_through(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.tick_with(w, false)
+        self.tick_with(w, false, false)
     }
-    fn tick_with(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
+    fn tick_with(
+        &mut self,
+        w: &impl ProjectileWorld,
+        impact: bool,
+        client_side: bool,
+    ) -> (bool, Hit) {
         // LlamaSpit and ShulkerBullet call Projectile.tick before moving;
         // ThrowableProjectile and AbstractHurtingProjectile call it afterwards.
         let base_first = matches!(
@@ -1228,7 +1269,7 @@ impl Projectile {
             self.position,
             self.bounds(),
         );
-        self.fire_tick(w);
+        self.fire_tick(w, client_side);
         self.stuck_tick(w, from);
         if !base_first {
             self.tick_shoot_event();
@@ -1777,22 +1818,50 @@ mod tests {
         });
         assert_eq!(wet.fire_ticks, 0, "water puts the snowball out");
     }
-    /// A fireball is an `AbstractHurtingProjectile`: it does not apply the
-    /// effects of the blocks it flies through, so the fire block leaves it cold.
+    /// `AbstractHurtingProjectile.tick` renews the fire after the base
+    /// countdown, without shortening a longer fire.
     #[test]
-    fn a_fireball_is_not_ignited_by_a_fire_block() {
+    fn a_fireball_renews_its_fire_after_the_base_countdown() {
         let mut p = Projectile::new(
             ProjectileKind::SmallFireball,
             Vec3::new(0.5, 99.5, 0.5),
             None,
         );
-        p.velocity = Vec3::ZERO;
+        let air = Empty(vec![]);
+        p.tick(&air);
+        assert_eq!(p.fire_ticks, 20);
+        assert!(
+            !p.synced_fire,
+            "the first renewal comes after the shared fire bit"
+        );
+        p.tick(&air);
+        assert_eq!(p.fire_ticks, 20);
+        assert!(p.synced_fire);
         p.tick(&Fire {
             targets: vec![],
             water: false,
         });
-        assert_eq!(p.fire_ticks, 0);
+        assert_eq!(p.fire_ticks, 159);
+        p.tick(&air);
+        assert_eq!(p.fire_ticks, 158);
     }
+
+    #[test]
+    fn visual_fire_stays_on_when_a_pearls_fire_ticks_expire() {
+        let mut server = Projectile::new(ProjectileKind::EnderPearl, Vec3::ZERO, None);
+        server.fire_ticks = 1;
+        server.has_visual_fire = true;
+        let air = Empty(vec![]);
+        server.tick(&air);
+        assert_eq!(server.fire_ticks, 0);
+        assert!(server.synced_fire);
+
+        let mut client = Projectile::new(ProjectileKind::EnderPearl, Vec3::ZERO, None);
+        client.synced_fire = server.synced_fire;
+        client.tick_remote(&air);
+        assert!(client.on_fire());
+    }
+
     #[test]
     fn throwables_in_water_leave_bubbles_behind_them() {
         let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.5, 60.0, 0.5), None);
