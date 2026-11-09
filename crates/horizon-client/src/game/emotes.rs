@@ -7,6 +7,8 @@
 use super::Game;
 use super::perspective::CameraType;
 use horizon_cosmetics::account::OwnedEmote;
+use horizon_client::mobs::Mob;
+use horizon_client::mobs::anim::BodyPose;
 use horizon_cosmetics::{Item, Playing, Slot};
 use std::sync::Arc;
 
@@ -38,6 +40,39 @@ impl Emotes {
         let p = self.playing.as_ref().filter(|p| p.stop.is_none())?;
         let looping = p.item.emote.as_ref().is_some_and(|e| e.looping);
         Some((p.item.id.clone(), looping))
+    }
+}
+
+/// An emote on a player's model: the engine's pose hook (`Mob::emote`), which names no cosmetics
+/// type.
+#[derive(Debug)]
+struct EmotePose(Playing);
+
+impl BodyPose for EmotePose {
+    fn pose(&self, age: f32, at_rest: &[[f32; 9]; 6], poses: &mut [[f32; 9]; 6]) -> bool {
+        let (Some(emote), Some((t, weight))) = (&self.0.item.emote, self.0.at(age)) else {
+            return false;
+        };
+        emote.pose_body(t, weight, at_rest, poses);
+        true
+    }
+}
+
+/// The emote `m` plays, if any.
+pub(super) fn playing(m: &Mob) -> Option<&Playing> {
+    let any: &dyn std::any::Any = &**m.emote.as_ref()?;
+    any.downcast_ref::<EmotePose>().map(|e| &e.0)
+}
+
+/// Makes `m` play `next`, unless it plays that already (a new one allocates).
+pub(super) fn set_playing(m: &mut Mob, next: Option<Playing>) {
+    let same = match (playing(m), &next) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(&a.item, &b.item) && a.start == b.start && a.stop == b.stop,
+        _ => false,
+    };
+    if !same {
+        m.emote = next.map(|p| Arc::new(EmotePose(p)) as Arc<dyn BodyPose>);
     }
 }
 
@@ -145,7 +180,7 @@ impl Game<'_> {
     fn tick_emote(&mut self) {
         if self.emotes.playing.is_none() {
             if let Some(m) = self.player_model.as_mut() {
-                m.emote = None;
+                set_playing(m, None);
             }
             return;
         }
@@ -186,7 +221,7 @@ impl Game<'_> {
             }
         }
         if let Some(m) = self.player_model.as_mut() {
-            m.emote = self.emotes.playing.clone();
+            set_playing(m, self.emotes.playing.clone());
         }
     }
 
@@ -224,5 +259,46 @@ impl Game<'_> {
         }
         let t = ((m.age as f32 + partial - p.start) / 5.0).clamp(0.0, 1.0);
         0.35 + 0.65 * t * t * (3.0 - 2.0 * t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_emote_poses_the_body_over_the_animation_until_it_ends() {
+        // The right arm up to 90° about z at tick 10, the body hopping 4 px.
+        let item = Item::parse(
+            br#"{"format": 1, "id": "up", "slot": "emote", "parts": [],
+                "emote": {"length": 20, "blend": 0, "tracks": [
+                  {"part": "right_arm", "keys": [{"t": 10, "rotation": [0, 0, 90]}]},
+                  {"part": "root", "keys": [{"t": 0, "offset": [0, -4, 0]}]}]}}"#,
+        )
+        .unwrap();
+        let rest = |x: f32, y: f32| [x, y, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut at_rest = [rest(0.0, 0.0); 6];
+        at_rest[2] = rest(-5.0, 2.0);
+        // What the walk animation did: the head looks aside, the arm swings.
+        let mut poses = at_rest;
+        poses[0][4] = 0.4;
+        poses[2][3] = 0.7;
+        let pose = EmotePose(Playing {
+            item: Arc::new(item),
+            start: 100.0,
+            stop: None,
+        });
+        assert!(pose.pose(110.0, &at_rest, &mut poses));
+        let arm = poses[2];
+        assert!(
+            (arm[5] - std::f32::consts::FRAC_PI_2).abs() < 1e-5 && arm[3].abs() < 1e-5,
+            "{arm:?}"
+        );
+        assert!((arm[0] + 5.0).abs() < 1e-5 && (arm[1] - (2.0 - 4.0)).abs() < 1e-5);
+        // The head keeps looking aside, lifted with the body.
+        let head = poses[0];
+        assert!((head[4] - 0.4).abs() < 1e-5 && (head[1] + 4.0).abs() < 1e-5);
+        // Past its end the emote poses nothing.
+        assert!(!pose.pose(125.0, &at_rest, &mut poses));
     }
 }

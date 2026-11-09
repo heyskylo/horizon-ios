@@ -95,7 +95,6 @@
     "horizon-client-lib -> horizon-anticheat",
     "horizon-client-lib -> horizon-bench",
     "horizon-client-lib -> horizon-chat-filter",
-    "horizon-client-lib -> horizon-cosmetics",
     "horizon-client-lib -> horizon-dualsense",
     "horizon-client-lib -> horizon-friends",
     "horizon-client-lib -> horizon-hdr",
