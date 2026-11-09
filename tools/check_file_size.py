@@ -40,7 +40,7 @@ STRING_REST = re.compile(r'(?:[^"\\]|\\.)*"', re.S)
 
 
 def git(*args):
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=True, cwd=ROOT).stdout
+    return subprocess.run(["git", *args], capture_output=True, encoding="utf-8", check=True, cwd=ROOT).stdout
 
 
 def lines(text):
