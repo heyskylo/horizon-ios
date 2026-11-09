@@ -670,6 +670,39 @@ pub fn with_horizon_icon(
     attributes
 }
 
+/// The screen a window is on: its size in physical pixels, its refresh rate where the OS gives
+/// it, and its scale. For `horizon-ctl status` and the performance statistics' `system.display`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Display {
+    pub width: u32,
+    pub height: u32,
+    pub refresh_hz: Option<u32>,
+    pub scale: f64,
+}
+
+/// The screen `window` is on, else the primary one, else the only one: right after the window
+/// is made, Wayland doesn't say yet which screen it is on.
+pub fn monitor(window: &winit::window::Window) -> Option<winit::monitor::MonitorHandle> {
+    let only = || {
+        let mut all = window.available_monitors();
+        all.next().filter(|_| all.next().is_none())
+    };
+    window
+        .current_monitor()
+        .or_else(|| window.primary_monitor())
+        .or_else(only)
+}
+
+/// [`monitor`]'s size, refresh rate and scale.
+pub fn display(window: &winit::window::Window) -> Option<Display> {
+    monitor(window).map(|m| Display {
+        width: m.size().width,
+        height: m.size().height,
+        refresh_hz: m.refresh_rate_millihertz().map(|r| r.div_ceil(1000)),
+        scale: m.scale_factor(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

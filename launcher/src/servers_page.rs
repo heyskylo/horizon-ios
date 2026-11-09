@@ -59,8 +59,6 @@ pub(super) enum Field {
     PostExit,
     /// Home's memory row (`launch_page.rs`).
     MemoryLimit,
-    /// Settings' new offline name (`switch_page.rs`).
-    OfflineName,
     DeleteServer,
     /// Settings' accent as hex (`themes_page.rs`).
     AccentHex,
@@ -69,7 +67,7 @@ pub(super) enum Field {
 }
 
 impl Field {
-    const ALL: [Field; 25] = [
+    const ALL: [Field; 24] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -91,7 +89,6 @@ impl Field {
         Field::LaunchEnv,
         Field::PostExit,
         Field::MemoryLimit,
-        Field::OfflineName,
         Field::DeleteServer,
         Field::AccentHex,
         Field::ShopGift,
@@ -402,13 +399,9 @@ pub(super) fn keep_running_through_update() {
     STARTED_HERE.lock().unwrap().clear();
 }
 
-/// The player's own name, to let them in on a friends-only server: the Microsoft account that plays,
-/// else the name the game made up for them (`horizon-player.txt`).
+/// The player's own name, to let them in on a friends-only server: the Microsoft account that plays.
 fn own_name(accounts: &Accounts) -> Option<String> {
-    accounts
-        .selected()
-        .map(|a| a.name.clone())
-        .or_else(crate::offline_name)
+    accounts.selected().map(|a| a.name.clone())
 }
 
 fn bytes(n: u64) -> String {
@@ -1131,7 +1124,7 @@ impl Launcher {
                         .font_weight(FontWeight::MEDIUM)
                 })
                 // The friend field sits in its chip, on the chip's fill.
-                .when(matches!(f, Field::Players | Field::OfflineName), |d| {
+                .when(matches!(f, Field::Players), |d| {
                     d.h_full().px(px(14.)).bg(gpui::transparent_black())
                 })
                 // The server's command line: the field is the line's middle, on its fill, in mono.
@@ -1146,9 +1139,7 @@ impl Launcher {
                 // The mockup's focus ring (`:focus-visible`, 2 px of the accent's soft shade) on a
                 // field of its own, drawn inside its edge: GPUI has no outline.
                 .when(
-                    focused
-                        && !invalid
-                        && !matches!(f, Field::Players | Field::OfflineName | Field::Command),
+                    focused && !invalid && !matches!(f, Field::Players | Field::Command),
                     |d| {
                         let small = matches!(
                             f,
@@ -1293,7 +1284,6 @@ impl Launcher {
                 self.save_launch()
             }
             Field::MemoryLimit => self.memory_enter(),
-            Field::OfflineName => self.offline_name_enter(),
             Field::ShopGift => self.shop.find_soon = true,
             Field::ServerName | Field::ServerAddress => self.add_server(),
         }

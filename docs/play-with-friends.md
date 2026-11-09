@@ -49,12 +49,14 @@ LAN's defaults), then the host's game, on its own:
 Horizon host gets the handshake, the others are dropped. On the same LAN, over a VPN, with IPv6, with a
 router that opened the port, or with a forwarded port, that's it: no server took part.
 
-**In the code.** The engine knows only the address form `friend:<code>` and a hook, `net::tunnel`
-(horizon-client-lib): a resolver registered at startup reads codes and opens the tunnel, which the join
-then reaches on a loopback port like any server. Play with Friends registers its resolver
-(`game/friends/tunnel.rs`) when the `friends` feature is on (it comes with `horizon-extras`); without one
-a `friend:` address is refused. Hosting needs no hook: the host end connects to the world's LAN port
-over loopback, so tunnelled guests are LAN guests.
+**In the code.** The engine knows only the address form `friend:<code>` and a hook, `Hooks::tunnel`
+(`horizon_hooks::tunnel`, `horizon_platform::hooks::tunnel` for the Horizon layer): the resolver a hook offers
+reads codes and opens the tunnel, which the join (`net.rs`) then reaches on a loopback port like any server.
+horizon-friends' `game` side offers it, and the official executable (`horizon-official`) registers it;
+horizon-client's own executable has none, so there a `friend:` address is refused. Hosting needs no hook: the
+host end connects to the world's LAN port over loopback, so tunnelled guests are LAN guests. It still lives in
+horizon-client (`game/friends.rs`, `game/friends/screen.rs`, the `friends` feature, which comes with
+`horizon-extras`) until the pause menu and `horizon-ctl` offer entries to crates above the engine.
 
 **Codes.** Crockford base32 (`0-9 A-Z` without `I L O U`; input ignores case, spaces and dashes and reads
 `O` as `0`, `I`/`L` as `1`) in groups of five, with a 16-bit checksum so a typo is caught before
@@ -113,8 +115,8 @@ run at once there, and each must finish within 10 seconds however slowly its byt
 
 Like LAN, and like vanilla's `IntegratedServer`: a host signed in with a Microsoft account runs the world
 in online mode, so each guest signs in through Mojang's session servers and arrives with their own
-UUID, skin and cape. A host playing under an offline name runs it in offline mode, where a guest joins
-with the name their game uses. Either way the host's own profile is reserved. Every tunnelled guest
+UUID, skin and cape. A host playing without a session (the services couldn't be reached at Play) runs it in
+offline mode, where a guest joins with the name their game uses. Either way the host's own profile is reserved. Every tunnelled guest
 reaches the integrated server from `127.0.0.1`.
 
 ## Relays (optional)
@@ -178,12 +180,14 @@ Settings, all optional:
 | `RELAY_SESSION_KBPS` | 1024 | KiB/s each way per relayed stream |
 | `RELAY_TOTAL_MBPS` | 100 | Mbit/s for everything relayed |
 | `RELAY_GLOBAL_UNKNOWN_PER_MIN` | 120 | unknown short codes a minute, all clients together; each IPv4 /24 or IPv6 /48 also has its own budget, 24 a minute (burst 6), checked first |
+| `RELAY_NAMEPLATE_UNKNOWN_PER_MIN` | 5 | unknown short codes a minute for one short code, from every client together (burst 10, `RELAY_NAMEPLATE_UNKNOWN_BURST`), checked before the lookup so one address set cannot spend the global budget on a single short code. Only joins whose short code is unknown count; a wrong secret for a code that exists is the host's limit, five and then it retires the code |
 | `RELAY_PER_ADDRESS_LIMITS` | 1 | per-address rate limits (see below) |
 | `RELAY_PROXY_PROTOCOL` | 0 | read the client address from a PROXY protocol v1 line |
 | `RELAY_PROXY_FROM` | none | with `RELAY_PROXY_PROTOCOL=1`, required: the load balancers' addresses or CIDR ranges (`10.0.0.0/8,fd00::/8`). Connections from anywhere else are closed unanswered; the relay refuses to start with the protocol on and this empty |
 
 Fixed limits: per client address (IPv6 by /64), 6 host registrations a minute (burst 3), 12 joins a
-minute (burst 6), 5 unknown short codes in 10 minutes block joins for 10 minutes; a relayed stream idle
+minute (burst 6), 5 unknown short codes in 10 minutes block joins for 10 minutes, and 5 unknown short
+codes a minute for one short code from every client together (burst 10); a relayed stream idle
 for 120 s is closed (the game's keep-alive sends every 15 s); the first line must be complete within 10 s;
 hosts answer pings within 60 s; five wrong secrets on a short code and the host retires it for a new one,
 waiting 1 s before registering again, then twice as long for each code it retires (at most 5 minutes);
