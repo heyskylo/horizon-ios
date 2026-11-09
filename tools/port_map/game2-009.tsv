@@ -17,7 +17,7 @@ PotionContents.withEffectAdded	inline	crates/horizon-client/src/game/dragon.rs::
 PotionContents.getColorOptional	port	crates/horizon-client-core/src/potions.rs::potion_color	amplifier-weighted mix; base colour when there are no effects
 PotionContents.hasEffects	inline	crates/horizon-client/src/game/potions.rs::Game::splash	a lingering cloud is made only when the potion has effects
 PotionContents.getPotionDescription	port	crates/horizon-client-render/src/brewing.rs::tooltip	effect name with potency; joined with a space, not the potion.withAmplifier translation
-PotionContents.onConsume	port	crates/horizon-client/src/game/potions.rs::Game::tick_drinking	gap: minor: duration scale is always 1.0; POTION_DURATION_SCALE is not read
+PotionContents.onConsume	inline	crates/horizon-client/src/game/potions.rs::Game::finish_drinking	the potion's and custom effects at the stack's potion_duration_scale (stack.potion_duration_scale), then the bottle swap; instant effects run at once
 AttackRange.defaultFor	inline	crates/horizon-client/src/game/hand.rs::attack_range_contains	gap: minor: fixed reach 0 to 3 with a 0.3 margin; no entity interaction range attribute
 AttackRange.getClosesetHit	port	crates/horizon-client/src/game/hand.rs::GameHands::hit	gap: minor: uses the crosshair's entity or block, not the closest hit along the attack range
 AttackRange.effectiveMaxRange	inline	crates/horizon-client/src/game/hand.rs::attack_range_contains	creative or survival reach; the mob factor is not used
