@@ -178,7 +178,7 @@ fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
     ] {
         c.remove(&key.into());
     }
-    entity_nbt::put_brain(&mut c, m, dimension);
+    crate::mobs::brain_nbt::put_brain(&mut c, m, dimension);
     let riders: Vec<Tag> = (0..mobs.len())
         .filter(|&j| mobs[j].0.extra.mount == Some(m.id))
         .map(|j| Tag::Compound(tree(mobs, j, dimension)))

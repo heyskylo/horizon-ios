@@ -18,6 +18,7 @@ pub mod bat;
 pub mod bee;
 pub mod body_anim;
 pub mod brain;
+pub mod brain_nbt;
 pub mod breeze;
 pub mod camel;
 pub mod caravan;

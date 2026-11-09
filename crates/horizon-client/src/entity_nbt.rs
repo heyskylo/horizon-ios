@@ -1488,10 +1488,8 @@ pub fn mob_to_nbt(
         }
         _ => {}
     }
-    // `Frog`'s `IS_PREGNANT` memory: `Brain.Packed` saves every memory, and
-    // `mob_from_nbt` reads this one back into the frog's memories.
     if m.species() == S::Frog {
-        write_frog_memories(m, map);
+        crate::mobs::brain_nbt::write_frog(m, map);
     }
     // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
     if m.species() == S::Bogged {
@@ -1886,42 +1884,6 @@ fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
     }
 }
 /// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
-pub fn put_brain(map: &mut Compound, m: &Mob, dimension: &str) {
-    if m.extra.memories.is_empty() {
-        return;
-    }
-    let mut memories = match map.get(&"Brain".into()).and_then(|b| b.get("memories")) {
-        Some(Tag::Compound(c)) => c.clone(),
-        _ => Compound::new(),
-    };
-    for &(name, value, ttl) in &m.extra.memories {
-        let value = match name {
-            "hunted_recently" => Tag::Byte(value as i8),
-            // `Unit` memories save an empty compound.
-            "is_pregnant" => Tag::Compound(Compound::new()),
-            "home" => match m.extra.home {
-                Some(p) => Tag::compound([
-                    ("dimension", string(dimension)),
-                    ("pos", Tag::IntArray(p.to_vec())),
-                ]),
-                None => continue,
-            },
-            _ => Tag::Int(value as i32),
-        };
-        let mut memory = vec![("value", value)];
-        if ttl != i64::MAX {
-            memory.push(("ttl", Tag::Long(ttl)));
-        }
-        memories.insert(
-            format!("minecraft:{name}").as_str().into(),
-            Tag::compound(memory),
-        );
-    }
-    map.insert(
-        "Brain".into(),
-        Tag::compound([("memories", Tag::Compound(memories))]),
-    );
-}
 /// `CustomName`: a text component saved as a string or a `{text: ..}` compound.
 fn custom_name(tag: &Tag) -> Option<String> {
     match tag.get("CustomName")? {
@@ -6521,35 +6483,6 @@ fn write_axolotl_memories(m: &Mob, map: &mut Compound) {
         } else {
             memories.remove(&key.into());
         }
-    }
-}
-/// `Frog`'s brain memory `IS_PREGNANT`, which `Brain.Packed` writes beside the
-/// other memories and `mob_from_nbt` reads back into the frog's memories. The
-/// memory is a `Unit`: its value is an empty compound, with no TTL.
-fn write_frog_memories(m: &Mob, map: &mut Compound) {
-    let brain = map
-        .entry("Brain".into())
-        .or_insert_with(|| Tag::Compound(Compound::new()));
-    if !matches!(brain, Tag::Compound(_)) {
-        *brain = Tag::Compound(Compound::new());
-    }
-    let Tag::Compound(brain) = brain else { return };
-    let memories = brain
-        .entry("memories".into())
-        .or_insert_with(|| Tag::Compound(Compound::new()));
-    if !matches!(memories, Tag::Compound(_)) {
-        *memories = Tag::Compound(Compound::new());
-    }
-    let Tag::Compound(memories) = memories else {
-        return;
-    };
-    if crate::mobs::frog::is_pregnant(m) {
-        memories.insert(
-            "minecraft:is_pregnant".into(),
-            Tag::compound([("value", Tag::Compound(Compound::new()))]),
-        );
-    } else {
-        memories.remove(&"minecraft:is_pregnant".into());
     }
 }
 /// Saved variants and fish/axolotl bucket flags. Missing variants use a
