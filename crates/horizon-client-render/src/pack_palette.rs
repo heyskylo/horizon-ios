@@ -72,6 +72,13 @@ impl Default for PackColors {
     }
 }
 
+impl PackColors {
+    /// Whether entities draw their round shadow, as far as the packs say.
+    pub fn entity_shadows(&self) -> bool {
+        self.entity_shadows
+    }
+}
+
 /// 0 is unset, else `1 << 32 | rgb`.
 static DIFFUSE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static TEXT: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
