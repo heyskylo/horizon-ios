@@ -30,7 +30,7 @@ pub fn main() -> horizon_client::Result<()> {
     let names = horizon_client::creative::Names::load(root);
     let translate = |k: &str| names.get(k).map(str::to_owned);
     let tooltip = |s: &horizon_client::items::ItemStack| {
-        horizon_client::item_tooltip::lines(s, items.get(&s.item), &translate)
+        horizon_client::item_tooltip::lines(s, items.get(&s.item), &items.enchantments, &translate)
     };
     let mut out = String::new();
     for line in cases.lines() {

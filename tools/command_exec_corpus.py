@@ -6265,6 +6265,52 @@ def scheduled_item_birth():
     return ops
 
 
+def projectile_saved_ground():
+    """Entity.load/saveWithoutId's OnGround on projectiles and falling blocks.
+
+    Summoned frozen with OnGround:1b (and once with 0b), a projectile or falling block saves what it
+    loaded; unfrozen over stone, the ones that fall are read again after they come down.
+    """
+    x0, y0, z0 = 3520, 300, 3520
+    chunk = [[x0 >> 4, z0 >> 4]]
+    kinds = [('arrow', ''), ('spectral_arrow', ''), ('trident', ''), ('snowball', ''), ('egg', ''),
+             ('ender_pearl', ''), ('experience_bottle', ''),
+             ('splash_potion', ',Item:{id:"minecraft:splash_potion",count:1}'),
+             ('fireball', ''), ('small_fireball', ''), ('dragon_fireball', ''), ('wither_skull', ''),
+             ('wind_charge', ''), ('breeze_wind_charge', ''), ('firework_rocket', ''), ('llama_spit', ''),
+             ('shulker_bullet', ''), ('falling_block', ',BlockState:{Name:"minecraft:sand"},Time:1')]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    for n, (kind, body) in enumerate(kinds, 1):
+        for g in (1, 0):
+            ops.append(cmd(f'/summon {kind} {x0 + 0.5 + (n % 8) * 2} {y0 + 3 + g * 4} {z0 + 0.5 + (n // 8) * 4} '
+                           f'{{UUID:[I;12900,{g},{n},1],Motion:[0d,0d,0d],OnGround:{g}b{body}}}',
+                           expect_result=1))
+    # FireworkRocketEntity.tick moves by Entity.move: one shot at an angle lands and stays on the
+    # stone; one that rises lands too, then its climb (+0.04 a tick) lifts it off again.
+    for n, body in enumerate(('ShotAtAngle:1b,Motion:[0d,-0.4d,0d]', 'Motion:[0d,-1d,0d]'), 1):
+        ops.append(cmd(f'/summon firework_rocket {x0 + 2.5 + n * 4} {y0 + 3} {z0 + 13.5} '
+                       f'{{UUID:[I;12900,2,{n},1],LifeTime:400,{body}}}', expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(kinds, 1):
+            for g in (1, 0):
+                ops.append(cmd(f'/data get entity 00003264-0000-000{g}-0000-{n:04x}00000001 OnGround'))
+        for n in (1, 2):
+            ops.append(cmd(f'/data get entity 00003264-0000-0002-0000-{n:04x}00000001 OnGround'))
+
+    reads()
+    # Only the arrows, the trident and the falling block fall; the rest hang or fly on.
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 10}, cmd('/tick freeze', False)]
+    ops += [cmd(f'/data get entity 00003264-0000-0002-0000-{n:04x}00000001 OnGround') for n in (1, 2)]
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 30}, cmd('/tick freeze', False)]
+    reads()
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 3} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def piston_push_ground():
     """#12029, #12100: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
     on the server, so a push sets an item's, primed TNT's or experience orb's OnGround to whether
@@ -6273,10 +6319,20 @@ def piston_push_ground():
     moves it (#9337), so the reading after each tick is the push's. Only
     OnGround is compared: the float air drags (#11794) shift Motion."""
     ops = []
-    for kind, fields in (('item', 'Item:{id:"minecraft:diamond",count:1},PickupDelay:32767s'),
-                         ('tnt', 'fuse:200s'), ('experience_orb', 'Value:1s')):
+    both = ('sideways', 'down')
+    # Projectiles and a falling block only go down, loaded on the ground (#12898): a free push clears it,
+    # and so does one toward stone that stops short of it. A falling block's own move clears it first.
+    # Off the ground sideways they would fall or fly on.
+    down = ('down', 'onto')
+    for kind, fields, cases in (('item', 'Item:{id:"minecraft:diamond",count:1},PickupDelay:32767s', both),
+                                ('tnt', 'fuse:200s', both), ('experience_orb', 'Value:1s', both),
+                                ('arrow', 'pickup:0b,OnGround:1b', down), ('trident', 'pickup:0b,OnGround:1b', down),
+                                ('snowball', 'Motion:[0d,0d,0d],OnGround:1b', down),
+                                ('small_fireball', 'Motion:[0d,0d,0d],OnGround:1b', down),
+                                ('firework_rocket', 'ShotAtAngle:1b,LifeTime:200,Motion:[0d,0d,0d],OnGround:1b', down),
+                                ('falling_block', 'BlockState:{Name:"minecraft:sand"},Time:1,OnGround:1b', down)):
         selector = f'@e[type=minecraft:{kind},tag=piston_ground,limit=1]'
-        for case in ('sideways', 'down'):
+        for case in cases:
             ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
                          '/fill 28 209 28 36 209 34 stone')
             if case == 'sideways':
@@ -6285,6 +6341,8 @@ def piston_push_ground():
                              f'{{{fields},Motion:[-0.05d,0.0d,0.0d],Tags:["piston_ground"]}}')
                 power = '/setblock 30 211 31'
             else:
+                if case == 'onto':
+                    ops += setup('/setblock 32 212 31 stone')
                 ops += setup('/setblock 32 216 31 piston[facing=down]', '/setblock 32 215 31 stone',
                              f'/summon minecraft:{kind} 32.5 213.9 31.5 '
                              f'{{{fields},NoGravity:1b,Tags:["piston_ground"]}}')
@@ -6729,6 +6787,78 @@ ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
 ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
 
 
+def vehicle_fall_clip():
+    """#13005: `Entity.move` resets a fall when a move of a block or more passes a
+    `fall_damage_resetting` block (a full block for the ray) or water, before the move's own
+    drop counts. Boats and minecarts fall fast past a vine on a wall; one column has no vine. A boat
+    falls through one block of water and ends the move below it, out of the water's own reset.
+    """
+    x0, y0, z0 = 3648, 260, 3648
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    subjects = [('oak_boat', 'vine'), ('minecart', 'vine'), ('command_block_minecart', 'vine'),
+                ('oak_boat', None), ('minecart', None), ('oak_boat', 'water')]
+    for n, (kind, block) in enumerate(subjects, 1):
+        x, z = x0 + 1 + (n - 1) * 3 % 15, z0 + 4 + (n - 1) // 5 * 6
+        ops.append(cmd(f'/fill {x - 1} {y0 + 10} {z} {x - 1} {y0 + 30} {z} stone', expect_result=21))
+        if block == 'vine':
+            ops.append(cmd(f'/setblock {x} {y0 + 18} {z} vine[west=true]', expect_result=1))
+        y, dy = y0 + 20, '-1.2d'
+        if block == 'water':
+            ops.append(cmd(f'/setblock {x} {y0 + 19} {z} water', expect_result=1))
+            y, dy = y0 + 21, '-2.5d'
+        ops.append(cmd(f'/summon {kind} {x}.7 {y} {z}.5 {{UUID:[I;13005,0,{n},1],'
+                       f'fall_distance:5d,Motion:[0d,{dy},0d]}}', expect_result=1))
+
+    def reads():
+        # The water boat floats after it: only its fall is read.
+        for n, (_, block) in enumerate(subjects, 1):
+            for key in ('fall_distance',) if block == 'water' else ('fall_distance', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 000032cd-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(4):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def boat_float_height():
+    """#13022: `AbstractBoat.checkInWater` and `isUnderwater` sum a block's y and its water height
+    in float (`y + FluidState.getHeight`), and `floatBoat` lands a falling boat at the float
+    `getWaterLevelAbove() - getBbHeight()`, with `waterLevel = getY(1.0)`. Boats fall into a
+    single water block in the air, a pool two deep and a flowing edge, high up where a float is
+    coarse, and are read for 10 ticks.
+    """
+    x0, y0, z0 = 3776, 279, 3776
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False)]
+    # (x, water blocks to set, boat y, motion y)
+    cases = [(1, [f'{x0 + 1} {y0} {z0 + 4} water'], y0 + 2, '-2.5d'),
+             (5, [f'{x0 + 4} {y0 - 2} {z0 + 3} {x0 + 6} {y0 - 3} {z0 + 5} stone',
+                  f'{x0 + 4} {y0 - 1} {z0 + 3} {x0 + 6} {y0} {z0 + 5} water'], y0 + 3, '0d'),
+             (9, [f'{x0 + 8} {y0 - 1} {z0 + 3} {x0 + 10} {y0 - 1} {z0 + 5} stone',
+                  f'{x0 + 9} {y0} {z0 + 4} water[level=3]'], y0 + 2, '0d')]
+    for n, (dx, waters, y, dy) in enumerate(cases, 1):
+        for w in waters:
+            ops.append(cmd(f'/fill {w}' if w.count(' ') > 4 else f'/setblock {w}', False))
+        ops.append(cmd(f'/summon oak_boat {x0 + dx}.5 {y} {z0 + 4}.5 {{UUID:[I;13022,0,{n},1],'
+                       f'Motion:[0d,{dy},0d]}}', expect_result=1))
+    for _ in range(10):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        for n in range(1, len(cases) + 1):
+            for key in ('Pos[1]', 'Motion[1]'):
+                ops.append(cmd(f'/data get entity 000032de-0000-0000-0000-{n:04x}00000001 {key}'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/fill {x0} {y0 - 4} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -6746,6 +6876,10 @@ def groups():
         from .vehicle_container_corpus import vehicle_containers
     except ImportError:
         from vehicle_container_corpus import vehicle_containers
+    try:
+        from .vehicle_boolean_corpus import other_entity_boolean_flags, vehicle_boolean_flags
+    except ImportError:
+        from vehicle_boolean_corpus import other_entity_boolean_flags, vehicle_boolean_flags
     try:
         from .data_literal_corpus import storage_literals
     except ImportError:
@@ -6801,6 +6935,7 @@ def groups():
         from .passenger_teleport_corpus import passenger_teleports
         from .gateway_passenger_corpus import gateway_passengers
         from .gateway_item_motion_corpus import gateway_item_motion
+        from .item_honey_bounce_corpus import item_honey_bounce
         from .item_merge_corpus import stack_limit_merges
         from .conduit_table_entity_corpus import conduit_table_entities
     except ImportError:
@@ -6814,6 +6949,7 @@ def groups():
         from passenger_teleport_corpus import passenger_teleports
         from gateway_passenger_corpus import gateway_passengers
         from gateway_item_motion_corpus import gateway_item_motion
+        from item_honey_bounce_corpus import item_honey_bounce
         from item_merge_corpus import stack_limit_merges
         from conduit_table_entity_corpus import conduit_table_entities
     result = [
@@ -6822,6 +6958,8 @@ def groups():
         ('spectral saved duration', spectral_saved_duration(cmd, setup)),
         ('item Health short load', item_health_load(cmd, setup)),
         ('vehicle container saved fields', vehicle_containers(cmd)),
+        ('vehicle boolean save flags', vehicle_boolean_flags(cmd)),
+        ('other entity boolean save flags', other_entity_boolean_flags(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
@@ -6918,6 +7056,7 @@ def groups():
         ('ominous spawner saved Motion', ominous_spawner_saved_motion()),
         ('gateway passengers', gateway_passengers(cmd, setup)),
         ('gateway item motion', gateway_item_motion(cmd, setup)),
+        ('item honey bounce', item_honey_bounce(cmd, setup)),
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
@@ -6992,6 +7131,9 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
+        ('boat float height', boat_float_height()),
+        ('vehicle fall clip', vehicle_fall_clip()),
+        ('projectile saved ground', projectile_saved_ground()),
         ('teleport lands', teleport_lands()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),

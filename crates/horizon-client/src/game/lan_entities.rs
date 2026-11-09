@@ -645,7 +645,7 @@ impl Game<'_> {
                 "minecraft:falling_block",
                 at(f.position),
                 0.0,
-                false,
+                f.on_ground,
             );
             e.velocity = at(f.velocity);
             // getAddEntityPacket: the block state; DATA_START_POS.
@@ -666,7 +666,7 @@ impl Game<'_> {
                 Some(g) => g.entity_id,
                 None => owner(p.owner),
             };
-            let e = add_state(out, p.id, kind, at(p.position), p.yaw, false);
+            let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.on_ground);
             e.pitch = p.pitch;
             e.velocity = at(p.velocity);
             e.needs_sync = p.needs_sync;
@@ -676,8 +676,12 @@ impl Game<'_> {
             // Entity.DATA_SHARED_FLAGS_ID's FLAG_ONFIRE: Entity.baseTick's
             // `setSharedFlagOnFire(remainingFireTicks > 0)`, which a client's
             // isOnFire reads to draw the flames (a Flame bow's arrow).
-            if p.arrow.as_ref().is_some_and(|a| a.on_fire()) {
+            let fire = p.arrow.as_ref().map_or(p.synced_fire, |a| a.on_fire());
+            if fire {
                 e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
+            if p.air_supply != 300 {
+                e.meta.push((1, serializer::INT, Value::Int(p.air_supply)));
             }
             match &p.kind {
                 K::Arrow { critical, .. } => {
@@ -802,7 +806,14 @@ impl Game<'_> {
                 Some(g) => g.entity_id,
                 None => owner(Some(horizon_client::mobs::Who::Player)),
             };
-            let e = add_state(out, t.id, "minecraft:trident", at(t.position), t.yaw, false);
+            let e = add_state(
+                out,
+                t.id,
+                "minecraft:trident",
+                at(t.position),
+                t.yaw,
+                t.on_ground,
+            );
             e.pitch = t.pitch;
             e.velocity = at(t.velocity);
             // Projectile.getAddEntityPacket: the owner's id, the guest's that
@@ -841,7 +852,7 @@ impl Game<'_> {
                 "minecraft:firework_rocket",
                 at(r.position),
                 0.0,
-                false,
+                r.on_ground,
             );
             e.velocity = at(r.velocity);
             // DATA_ID_FIREWORKS_ITEM once set from a stack, DATA_ATTACHED_TO_TARGET,

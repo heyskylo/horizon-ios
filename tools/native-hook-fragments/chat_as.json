@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "chat_as", "target": "horizon_client::game::native_server::Game<'_>::native_chat_as"}
+  ],
+  "rust_summary": "a disguised chat line as a player who is on (`native_chat_as`), with styled text.",
+  "doc_summary": "`chat_as(uuid, line)` sends `line` in chat as that player, unsigned and named as they are shown, to every player who shows chat; `line` may carry click and hover events. False when they aren't on, and inside a player's hook, where the hub is out of reach. Bundles need \"hooks\": @API:chat_as@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

@@ -61,8 +61,9 @@ Cases:
   turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
 - shell_choice_step: on Graphics, Left and Right on a focused choice (Preset) step it back and on, from the D-pad
   and the arrow keys alike, and the focus stays; up and down leave the row, and LB goes to the page list.
-- shader_screens: Shaders with a pack of more screens than its page list has rows for: they collapse into one
-  `‹ Name ›` strip, RB walks every one and round to the pack list, LB from the first goes back to it.
+- shader_screens: Shaders, on the settings shell, with a pack of more screens than its page list has rows for: they
+  collapse into one `‹ Name ›` strip, RB walks every one and round to the pack list, LB from the first goes back to
+  it, and Undo shows once the pack is picked.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
@@ -1853,7 +1854,8 @@ def shader_screens(args, name):
         game.ctl('options', 'shader-packs')
         time.sleep(SETTLE)
         game.wait_targets()
-        pack = next((w for w in game.widgets() if w.get('label') == 'ManyScreens'), None)
+        # On the settings shell a pack is a tick box: "ManyScreens: Off".
+        pack = next((w for w in game.widgets() if (w.get('label') or '').startswith('ManyScreens')), None)
         check(pack is not None, f'no ManyScreens pack: {labels(game)}')
         game.ctl('click', pack['id'])
         time.sleep(SETTLE)
@@ -1868,6 +1870,8 @@ def shader_screens(args, name):
         game.pad('rb')
         game.pad('lb')
         check(open_tab(game) == packs, f'LB from {walked[0]} went to {open_tab(game)}')
+        # Picking the pack is a change the shell's Undo puts back.
+        check(has_label(game, 'Undo'), f'no Undo after picking a pack: {labels(game)}')
     finally:
         game.quit()
     return check.failures

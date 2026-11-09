@@ -1,0 +1,10 @@
+[package]
+name = "horizon-addresses"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+description = "Every built-in address of an outside service vanilla doesn't contact, in one place (docs/layers.md#built-in-addresses)"
+
+[lints]
+workspace = true

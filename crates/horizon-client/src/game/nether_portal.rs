@@ -661,19 +661,23 @@ impl Game<'_> {
         let mut waiting: Vec<u32> = Vec::new();
         let tracked = &self.portals.entities;
         for_each_entity!(entity_lists_of!(self), entity => {
-            if entity.portal_size().is_some() && entity.is_vehicle() == vehicles {
+            let can_sweep = entity.portal_size().is_some();
+            let has_portal_state = tracked.contains_key(&entity.id());
+            // Entity.processPortalCooldown still runs for entities this
+            // portal pass cannot send, such as an ender pearl.
+            if entity.is_vehicle() == vehicles && (can_sweep || has_portal_state) {
                 let at = entity.position();
                 if !entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
-                    if tracked.contains_key(&entity.id()) {
+                    if has_portal_state {
                         waiting.push(entity.id());
                     }
                     continue;
                 }
-                if entity.portal_from().is_none() {
+                if can_sweep && entity.portal_from().is_none() {
                     before.insert(entity.id(), entity.position());
                 }
-                if tracked.contains_key(&entity.id()) {
-                    ids.push((entity.id(), entity.can_use_portal(self)));
+                if has_portal_state {
+                    ids.push((entity.id(), can_sweep && entity.can_use_portal(self)));
                 }
             }
         });
@@ -721,16 +725,36 @@ impl Game<'_> {
     /// `Entity.load`: the saved `PortalCooldown` (an entity that just came
     /// through stands in its exit portal for 300 ticks without going back).
     pub(super) fn restore_portal_cooldown(&mut self, id: u32, tag: &Tag) {
-        if let Some(Tag::Int(cooldown)) = tag.get("PortalCooldown")
-            && *cooldown > 0
+        if let Some(cooldown) = tag
+            .get("PortalCooldown")
+            .and_then(horizon_client::nbt_path::int_value)
+            && cooldown != 0
         {
             self.portals.entities.insert(
                 id,
                 PortalState {
-                    cooldown: *cooldown,
+                    cooldown,
                     process: None,
                 },
             );
+        }
+    }
+    /// `Entity.saveWithoutId`: the modeled non-arrow projectile codecs
+    /// share the live cooldown between command reads and chunk writes.
+    pub(super) fn save_projectile_portal_cooldown(
+        &self,
+        projectile: &horizon_client::projectiles::Projectile,
+        tag: &mut Tag,
+    ) {
+        if projectile.arrow.is_none()
+            && let Tag::Compound(fields) = tag
+        {
+            let cooldown = self
+                .portals
+                .entities
+                .get(&projectile.id)
+                .map_or(0, |portal| portal.cooldown);
+            fields.insert("PortalCooldown".into(), Tag::Int(cooldown));
         }
     }
     /// `Entity.setAsInsidePortal` on an entity that is still on its portal
@@ -1307,6 +1331,7 @@ impl Game<'_> {
             f.drop_item,
             f.damage,
             f.fall_distance,
+            f.on_ground,
             f.rotation,
             uuid,
         );
