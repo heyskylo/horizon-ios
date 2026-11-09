@@ -162,7 +162,7 @@ impl Game<'_> {
             0.0
         } else {
             self.held()
-                .map_or(0.0, |stack| self.items().weapon_disable_blocking(&stack))
+                .map_or(0.0, |stack| self.items().weapon_disable_blocking(stack))
         };
         Some(PlayerStab {
             victim,
