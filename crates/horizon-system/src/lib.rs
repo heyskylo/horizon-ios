@@ -1,13 +1,13 @@
-//! The machine as an item describes it ([`System`]): what the OS says, read the same way on
-//! every start. The game adds the GPU (its name, maker, kind, driver and backend, then
-//! [`vram_mb`] for it) and the screen.
+//! The machine the game runs on, as the OS describes it ([`Machine`]), read the same way on every
+//! start: the OS and its version, the CPU, memory, the drive under the game folder, power and
+//! form, plus the GPU's maker and memory ([`gpu_vendor`], [`vram_mb`]). The crash report and the
+//! renderer's GPU info read it; the platform re-exports it (`horizon_platform::system`) for the
+//! Horizon layer (docs/layers.md#engine).
 //!
-//! Only what explains performance: no serial number, host name, user name or path is read into
-//! an item. The slower probes (a command to run) are read once per process.
+//! Only what explains performance: no serial number, host name, user name or path is read. The
+//! slower probes (a command to run) are read once per process.
 use std::path::Path;
 use std::sync::OnceLock;
-
-use crate::payload::System;
 
 /// What `program args` prints, trimmed, when it succeeds and prints something. On Windows the
 /// program opens no console window: a GUI launcher or a game started without one would flash a
@@ -686,9 +686,34 @@ fn fixed() -> &'static Fixed {
     })
 }
 
-impl System {
-    /// This machine, without the GPU and the screen. `home` is the game folder, for the kind of
-    /// drive it is on.
+/// This machine, without the GPU and the screen: what [`Machine::detect_in`] reads. Empty
+/// strings and zeros where the OS doesn't say.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Machine {
+    /// `linux`, `macos` or `windows`.
+    pub os: String,
+    /// The distribution or system version (`macOS 26.0`, `Fedora Linux 43`).
+    pub os_version: String,
+    pub arch: String,
+    pub cpu: String,
+    pub threads: u16,
+    /// Physical cores.
+    pub cores: u16,
+    /// The CPU's base and top boost clock, where the OS says.
+    pub cpu_base_mhz: u32,
+    pub cpu_boost_mhz: u32,
+    /// Installed memory, rounded to the GiB.
+    pub ram_gb: u16,
+    /// The drive under the game folder: `nvme`, `ssd` or `hdd`.
+    pub storage: &'static str,
+    /// `ac` or `battery`, now.
+    pub power: &'static str,
+    /// `laptop` or `desktop`.
+    pub form: &'static str,
+}
+
+impl Machine {
+    /// This machine. `home` is the game folder, for the kind of drive it is on.
     pub fn detect_in(home: Option<&Path>) -> Self {
         const GIB: f64 = (1u64 << 30) as f64;
         static STORAGE: OnceLock<&'static str> = OnceLock::new();
@@ -703,17 +728,13 @@ impl System {
             cpu_base_mhz: fixed.base,
             cpu_boost_mhz: fixed.boost,
             ram_gb: ram_bytes().map_or(0, |b| (b as f64 / GIB).round() as u16),
-            storage: home
-                .map(|h| *STORAGE.get_or_init(|| storage(h).unwrap_or("")))
-                .unwrap_or("")
-                .to_owned(),
-            power: power().unwrap_or("").to_owned(),
-            form: fixed.form.to_owned(),
-            ..Self::default()
+            storage: home.map_or("", |h| *STORAGE.get_or_init(|| storage(h).unwrap_or(""))),
+            power: power().unwrap_or(""),
+            form: fixed.form,
         }
     }
 
-    /// [`System::detect_in`] without the drive.
+    /// [`Machine::detect_in`] without the drive.
     pub fn detect() -> Self {
         Self::detect_in(None)
     }
@@ -973,28 +994,15 @@ mod tests {
         assert_eq!(gpu_vendor("llvmpipe (LLVM 19)", 0x10005), "software");
     }
 
-    /// `cargo test -p horizon-telemetry -- --ignored --nocapture what_this_machine_sends`
-    #[test]
-    #[ignore]
-    fn what_this_machine_sends() {
-        let home = std::env::current_dir().unwrap();
-        let mut system = System::detect_in(Some(&home));
-        system.vram_mb = vram_mb("nvidia").or_else(|| vram_mb("amd")).unwrap_or(0);
-        println!("{}", serde_json::to_string_pretty(&system).unwrap());
-    }
-
     #[test]
     fn this_machine_is_described() {
-        let system = System::detect();
-        assert_eq!(system.os, std::env::consts::OS);
-        assert!(system.threads > 0);
-        assert!(system.gpu.is_empty(), "the game fills the GPU in");
-        assert!(system.cores == 0 || system.cores <= system.threads);
-        assert!(["", "ac", "battery"].contains(&system.power.as_str()));
-        assert!(["", "laptop", "desktop"].contains(&system.form.as_str()));
+        let machine = Machine::detect();
+        assert_eq!(machine.os, std::env::consts::OS);
+        assert!(machine.threads > 0);
+        assert!(machine.cores == 0 || machine.cores <= machine.threads);
+        assert!(["", "ac", "battery"].contains(&machine.power));
+        assert!(["", "laptop", "desktop"].contains(&machine.form));
         let dir = std::env::temp_dir();
-        assert!(
-            ["", "nvme", "ssd", "hdd"].contains(&System::detect_in(Some(&dir)).storage.as_str())
-        );
+        assert!(["", "nvme", "ssd", "hdd"].contains(&Machine::detect_in(Some(&dir)).storage));
     }
 }
