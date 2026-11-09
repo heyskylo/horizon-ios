@@ -61,4 +61,23 @@ def cases(cmd, setup):
             *get(near('pig', 2, z), 'Rotation'),
             *setup('/kill @e[type=!player]', f'/setblock 1 201 {z} minecraft:air'),
         )],
+        # Entity.random makes the UUID first; LivingEntity.<init> then draws the yaw (which the summon's load
+        # replaces), and Chicken.<init> the egg timer.
+        sync(8), *setup('/summon chicken 1.5 201 1.5 {NoAI:1b}'),
+        *get(near('chicken', 1, 1), 'UUID', 'EggLayTime'),
+        # Without NBT the summon finalizes the pig; its UUID is still its own random's first draws.
+        sync(9), *setup('/summon pig 4.5 201 1.5'), *get(near('pig', 4, 1), 'UUID'),
+        sync(10), *setup('/summon armor_stand 12.5 201 1.5'), *get(near('armor_stand', 12, 1), 'UUID'),
+        # DispenserBlock with a spawn egg (EntityType.spawn) and with an armor stand: made by EntityType.create.
+        *setup('/setblock 13 201 4 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:"minecraft:pig_spawn_egg",count:1}]}'),
+        sync(11), {'op': 'crafter_tick', 'pos': [13, 201, 4]},
+        *get('@e[type=pig,x=13.5,y=202,z=4.5,distance=..2,limit=1]', 'UUID'),
+        *setup('/setblock 13 201 10 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:"minecraft:armor_stand",count:1}]}'),
+        sync(12), {'op': 'crafter_tick', 'pos': [13, 201, 10]},
+        *get('@e[type=armor_stand,x=13.5,y=202,z=10.5,distance=..2,limit=1]', 'UUID'),
+        # A chicken due to lay lays on its first tick and draws the next egg time from its own random, which carries
+        # on through the load of a summon's NBT.
+        sync(13), *setup('/summon chicken 7.5 201 13.5 {NoAI:1b,EggLayTime:1}'), {'op': 'tick'},
+        *get(near('chicken', 7, 13), 'EggLayTime'),
+        *setup('/kill @e[type=!player]', '/fill 0 201 0 15 202 15 minecraft:air'),
     ]

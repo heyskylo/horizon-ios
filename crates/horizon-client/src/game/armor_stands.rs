@@ -505,6 +505,8 @@ impl Game<'_> {
         // ArmorStandItem.useOn turns the stand to face the player.
         self.world.random.next_float();
         self.next_entity += 1;
+        let (_, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(stand.id, uuid);
         self.audio.play(
             "minecraft:entity.armor_stand.place",
             Some([foot.x, foot.y, foot.z]),
