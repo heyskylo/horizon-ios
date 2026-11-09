@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "own_inventory",
+      "target": "horizon_client::game::native_menu_stacks::Game<'_>::native_own_inventory"
+    }
+  ],
+  "rust_summary": "the local player's own inventory on a client (`native_own_inventory`): the hotbar and the main inventory, slots 0-35, whichever menu is open.",
+  "doc_summary": "on a client, `host.own_inventory()` gives the player's own 36 inventory slots (0-8 the hotbar, 9-35 the main inventory), with their components, whether or not a server-opened menu is up. Bundles need \"hooks\": @API:client_own_inventory@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_menu_stacks.rs"
+  ]
+}

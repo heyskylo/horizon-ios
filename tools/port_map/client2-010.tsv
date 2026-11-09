@@ -105,6 +105,7 @@ EditBox.setMaxLength	port	crates/horizon-client-render/src/ui.rs::Caret::sync	ga
 EditBox.setFocused	port	crates/horizon-client-render/src/ui.rs::Caret::draw	focus restarts the blink clock here; gap: minor: no IME or narration side effects
 EditBox.setEditable	missing		minor: unsure: no read-only flag on the box in ui.rs; a box vanilla locks would accept typing
 EditBox.setHighlightPos	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	sets the highlight and scrolls
+EditBox.setCentered	port	crates/horizon-client-render/src/ui.rs::EditBox::text_start_x	the text and a click start (width - text width) / 2 in; BookSignScreen's title box sets it
 EditBox.setHint	inline	crates/horizon-client/src/title/create_world.rs::Title::create_field	the hint is passed when the box is made and drawn while it is empty and unfocused
 FittingMultiLineTextWidget.setWidth	skip:ui		layout: wrap width
 FittingMultiLineTextWidget.minimizeHeight	skip:ui		layout: height to content

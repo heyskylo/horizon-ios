@@ -205,7 +205,7 @@ fn an_instance_follows_the_players_answers() {
     put(&main.join("options.txt"), "fov:90\n");
     put(&main.join("horizon-player.txt"), "name:Player123\n");
     put(&main.join("telemetry/consent.json"), r#"{"version":1}"#);
-    horizon_core::no_ai::set(&main, true).unwrap();
+    horizon_platform::no_ai::set(&main, true).unwrap();
     put(&own.join("options.txt"), "fov:70\n");
     follow_player(&main, &own);
     assert_eq!(
@@ -220,10 +220,10 @@ fn an_instance_follows_the_players_answers() {
         fs::read_to_string(own.join("telemetry/consent.json")).unwrap(),
         r#"{"version":1}"#
     );
-    assert!(horizon_core::no_ai::is_on(&own));
-    horizon_core::no_ai::set(&main, false).unwrap();
+    assert!(horizon_platform::no_ai::is_on(&own));
+    horizon_platform::no_ai::set(&main, false).unwrap();
     follow_player(&main, &own);
-    assert!(!horizon_core::no_ai::is_on(&own));
+    assert!(!horizon_platform::no_ai::is_on(&own));
     fs::remove_dir_all(&root).unwrap();
 }
 
