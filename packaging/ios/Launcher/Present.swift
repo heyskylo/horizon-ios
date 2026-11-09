@@ -47,6 +47,7 @@ private func present(attempts: Int) {
 
     )
     host.modalPresentationStyle = .fullScreen
+    host.modalPresentationCapturesStatusBarAppearance = true
     host.modalTransitionStyle = .crossDissolve
     Task { @MainActor in
         // iOS 16 can retain the game's landscape geometry if presentation and
@@ -108,4 +109,5 @@ private final class LauncherHostingController: UIHostingController<AnyView> {
             .first(where: { $0.activationState == .foregroundActive })?.interfaceOrientation ?? .portrait
     }
     override var preferredStatusBarStyle: UIStatusBarStyle { .default }
+    override var prefersStatusBarHidden: Bool { true }
 }

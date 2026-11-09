@@ -118,6 +118,9 @@ impl Loading {
             attributes,
             winit::platform::ios::ValidOrientations::Landscape,
         );
+        #[cfg(target_os = "ios")]
+        let attributes =
+            winit::platform::ios::WindowAttributesExtIOS::with_prefers_status_bar_hidden(attributes, true);
         // On iOS winit makes the UIWindow's frame out of the inner size, so a desktop size larger than the
         // screen in points crops the game off the right and bottom; with none the window is the screen.
         #[cfg(not(target_os = "ios"))]
