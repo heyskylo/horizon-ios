@@ -7474,6 +7474,9 @@ impl Game<'_> {
         if solid_bucket && !self.creative {
             *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
         }
+        // ItemStack.useOn applies the pre-use stack's component side effects
+        // after the successful placement and its hand replacement.
+        self.apply_use_cooldown(&stack);
         Ok(true)
     }
     fn apply_consume_effect(&mut self, effect: &horizon_client::items::ConsumeEffect) {
