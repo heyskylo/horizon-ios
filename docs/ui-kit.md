@@ -14,7 +14,7 @@ The kit grows a piece at a time, each with something on screen that needs it:
 
 | Piece | What it gives |
 |---|---|
-| `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
+| `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars and status rows |
 | `hud_kit::plate` | `Plate`: the box behind a notice's text, or a guide row's backing |
 | `hud_kit::shapes` | triangles, fans, arcs, discs and radial gradients for `HudBatch`; `alpha_since`, `translate_since` |
 | `hud_kit::motion` | `Clock` and `Tween`: quiet motion as pure functions of the frame's time |
@@ -64,6 +64,23 @@ assert_eq!(room.below_top(18.0), 38.0); // below two bars
 The other HUD boxes (the minimap, the PvP & HUD widgets, mods' corner panels) don't use the room
 yet. Chat, the hotbar, effect icons and subtitles aren't keep-outs yet either. #10125 asks for
 these push-aside points for mods.
+
+### Overlays that hold the view
+
+Some overlays take the middle of the view for themselves, as the radial menu does once it shows.
+What vanilla draws there gives way to them through one query, `Game::overlay_holds_view()`
+(`crates/horizon-client/src/game/hud_room.rs`), not a check per overlay in each piece:
+
+| Gives way | Where |
+|---|---|
+| the 2D crosshair and F3's crosshair | `hud_layers`, `debug_crosshair_drawn` (`game.rs`) |
+| the chat's lines (an open chat still draws) | `hud_layers` (`game.rs`) |
+| every toast: advancements, recipes, tutorials, packs, music | `Game::draw_every_toast` (`hud_room.rs`); they go on timing out, as under F1 |
+| the first-person hands | `Game::hands_shown` (`hud_room.rs`), which `hand_geometry` reads (`game/frame_geometry.rs`) |
+
+A new overlay that holds the view adds its own condition to `overlay_holds_view`. Ask from the moment
+it shows, not from when it owns the pad ([Pad capture](#pad-capture)): a quick tap of the radial
+menu's opener owns the pad for a frame and draws nothing, so nothing should blink.
 
 ### Plates
 
@@ -220,10 +237,13 @@ in one priority order:
 | `Prompt` | a prompt is over the world (a server dialog, the code of conduct, a link, command or resource pack prompt) |
 | `Radial` | the radial menu is held open |
 
-Code that routes the pad's presses and sticks, and HUD pieces that give way (the crosshair, the
-controller guide), ask `pad_radial_captures()` or `pad_keyboard_captures()` rather than the
-overlays themselves. A new overlay that takes the pad adds its variant here, in its place in the
-order. Screens are not overlays: `pad_in_menu` says when one has the pad.
+Code that routes the pad's presses and sticks (`pad.rs`, `pad_actions.rs`, `pad_menu.rs`,
+`window_handler.rs`), and the controller guide, which gives way to the keyboard, ask
+`pad_radial_captures()` or `pad_keyboard_captures()` rather than the overlays themselves. A new
+overlay that takes the pad adds its variant here, in its place in the order, and a check that asks
+about it gets a `pad_<overlay>_captures()` beside these. What vanilla draws under an overlay gives
+way through `overlay_holds_view` instead ([Overlays that hold the view](#overlays-that-hold-the-view)).
+Screens are not overlays: `pad_in_menu` says when one has the pad.
 
 One change came with it: a prompt that arrives while the radial menu is open owns the pad from that
 poll, so a B in the same poll answers the prompt instead of cancelling the menu (which the prompt
