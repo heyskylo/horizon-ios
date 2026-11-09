@@ -1334,6 +1334,8 @@ pub enum Page {
     ShaderPacks,
     /// The picked pack's options: the shader screen (`shader_ui`) at the pack's main screen.
     ShaderOptions,
+    /// The selected resource packs' Polytone options (`pack_options_ui`), from the pack screen.
+    PackOptions,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
     GraphicsAdvanced,
@@ -1486,6 +1488,12 @@ fn matches_focus(id: &FocusId, i: usize, wd: &Widget) -> bool {
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// The Pack Options page closed with changes: the player's choices of its entries, the
+    /// ones that differ from their defaults (the others went back to theirs).
+    PackOptions {
+        entries: Vec<String>,
+        chosen: std::collections::BTreeMap<String, horizon_polytone::pack::ConfigValue>,
+    },
     /// An accepted button press or the release of a slider.
     ButtonClick,
     /// Horizon's own: download the Modrinth hit at this index of the pack
@@ -1663,6 +1671,10 @@ pub struct OptionsUi {
     /// Horizon Extras, on the settings shell.
     extras: shell::Shell<crate::extras_ui::ExtrasScreen>,
     pub shader: crate::shader_ui::ShaderUi,
+    /// The Pack Options page, and the packs' Polytone config entries by pack id (the game
+    /// fills them beside `pack_infos`).
+    pub pack_options: crate::pack_options_ui::PackOptionsUi,
+    pub pack_configs: std::collections::BTreeMap<String, horizon_polytone::pack::Configs>,
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// HDR calibration while its page is open.
     pub calibration: Option<crate::hdr_calibration::Calibration>,
@@ -1741,6 +1753,8 @@ impl Default for OptionsUi {
             controller: Default::default(),
             extras: Default::default(),
             shader: Default::default(),
+            pack_options: Default::default(),
+            pack_configs: Default::default(),
             split_profiles: Default::default(),
             calibration: None,
             calibration_fullscreen: None,
@@ -2378,6 +2392,7 @@ impl OptionsUi {
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
             Page::ShaderOptions => "horizon.pages.shader_options",
+            Page::PackOptions => "horizon.pack.options.title",
             Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
                 "options.videoTitle"
             }
@@ -3684,6 +3699,10 @@ impl OptionsUi {
             self.shader.draw(s, batch, atlas, cursor, self.in_world);
             return;
         }
+        if self.page() == Page::PackOptions {
+            self.pack_options.draw(batch, atlas, cursor, self.in_world);
+            return;
+        }
         let waiting = self.waiting();
         let in_world = self.in_world;
         if let Some(shell) = self.shell_mut() {
@@ -4060,8 +4079,24 @@ impl OptionsUi {
             return self.shell_events(s, outputs);
         }
         if Self::shader_page(self.page()).is_some() {
-            let actions = self.shader.click(s, (x, y), size, drag, right, self.shift);
+            let actions = self
+                .shader
+                .click(s, atlas, (x, y), size, drag, right, self.shift);
             return self.shader_events(s, actions);
+        }
+        if self.page() == Page::PackOptions {
+            let mut events = Vec::new();
+            for action in self
+                .pack_options
+                .click((x, y), size, drag, right || self.shift)
+            {
+                match action {
+                    crate::pack_options_ui::Action::ButtonClick => events.push(Event::ButtonClick),
+                    crate::pack_options_ui::Action::SliderDrag => {}
+                    crate::pack_options_ui::Action::Done => events.extend(self.back(s)),
+                }
+            }
+            return events;
         }
         if self.page() == Page::Packs {
             let mut events = Vec::new();
@@ -4090,6 +4125,14 @@ impl OptionsUi {
                 crate::pack_screen::Action::Done => events.extend(self.back(s)),
                 crate::pack_screen::Action::BrowsePick(i) => {
                     events.push(Event::DownloadPack(i));
+                }
+                crate::pack_screen::Action::Options(id) => {
+                    let mut configs = horizon_polytone::pack::Configs::default();
+                    if let Some(own) = self.pack_configs.get(&id) {
+                        configs.merge(own);
+                    }
+                    self.pack_options = crate::pack_options_ui::PackOptionsUi::open(configs);
+                    self.push(Page::PackOptions);
                 }
                 crate::pack_screen::Action::None => {}
             }
@@ -4330,6 +4373,7 @@ impl OptionsUi {
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
         let (shader_slider, shader_pack) = self.shader.release();
+        self.pack_options.release();
         let shell_slider = self.shell_mut().is_some_and(|shell| shell.release());
         let graphics_slider = shader_slider | shell_slider;
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
@@ -4424,6 +4468,10 @@ impl OptionsUi {
             self.shader.scroll(s, size, amount);
             return Vec::new();
         }
+        if self.page() == Page::PackOptions {
+            self.pack_options.scroll(size, amount);
+            return Vec::new();
+        }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
         if !plain {
@@ -4511,6 +4559,10 @@ impl OptionsUi {
             self.shader.scroll(s, size, amount);
             return;
         }
+        if self.page() == Page::PackOptions {
+            self.pack_options.scroll(size, amount);
+            return;
+        }
         match &mut self.pack_screen {
             Some(p) if self.stack.last() == Some(&Page::Packs) => {
                 p.scroll(cursor.0 as f64, cursor.1 as f64, amount as f64)
@@ -4576,7 +4628,19 @@ impl OptionsUi {
                 self.pack_screen = Some(screen);
             }
         }
-        self.pack_screen.as_mut().expect("made above")
+        // The cards of packs with Polytone options carry their button (data packs have none).
+        let with_options = if self.data_pack_dir.is_none() {
+            self.pack_configs
+                .iter()
+                .filter(|(_, c)| !c.entries().is_empty())
+                .map(|(id, _)| id.clone())
+                .collect()
+        } else {
+            Default::default()
+        };
+        let screen = self.pack_screen.as_mut().expect("made above");
+        screen.with_options = with_options;
+        screen
     }
     /// Escape or Done: leave the current page, applying page results.
     /// After an input on HDR calibration: Save keeps what it landed on, Cancel what was
@@ -4633,6 +4697,16 @@ impl OptionsUi {
         self.language_search.focused = false;
         self.can_change_value = false;
         match page {
+            Page::PackOptions => {
+                let ui = std::mem::take(&mut self.pack_options);
+                if ui.changed {
+                    let entries = ui.configs.entries().keys().cloned().collect();
+                    events.push(Event::PackOptions {
+                        entries,
+                        chosen: ui.configs.chosen(),
+                    });
+                }
+            }
             Page::ShaderOptions | Page::ShaderPacks => {
                 if s.shader_options.as_ref().is_some_and(|o| o.changed) {
                     events.push(Event::ShaderOptions);
@@ -4857,7 +4931,7 @@ impl OptionsUi {
         }
         if Self::shader_page(self.page()).is_some() {
             let size = (self.size.0.max(480.0), self.size.1.max(240.0));
-            let (actions, handled) = self.shader.key_modifiers(s, key, text, shift, size);
+            let (actions, handled) = self.shader.key_modifiers(s, atlas, key, text, shift, size);
             let mut events = self.shader_events(s, actions);
             // Escape leaves a screen a link opened first, then the shader screen.
             if key == K::Escape && !handled {

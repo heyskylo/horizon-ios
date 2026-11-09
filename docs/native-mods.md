@@ -1797,6 +1797,13 @@ API 412 adds `native_force_chunk(owner, chunk, hold)` holds a chunk of the level
 
 API 413 adds `native_force_chunk_in(owner, dimension, chunk, hold)`, `native_force_chunk` for a named level, which opens and ticks a level not open yet, so a mod can pre-generate the Nether and the End with nobody there. Bundles need "hooks": 413.
 
+API 414 adds a held world through `native_world_hold`: once a frame a client mod can hold the terrain's picture, all of it or
+only inside circles; sections on screen that change are meshed and uploaded but wait beside the ones drawn, and
+letting go shows them all on one frame ([Holding the world's picture](#holding-the-worlds-picture)). Bundles need
+`"hooks": 414`.
+
+API 415 adds a world warp through `native_world_warp`: once a frame a client mod may give WGSL (`world_warp(pos, section) -> Warped`, and optionally `world_fragment(f) -> Painted` after a line `// [fragments]`) that every terrain vertex, far terrain's tiles included, and entity vertex goes through, with sixteen floats it reads as `warp.params`. While it is on the frame culls nothing by where it was. A frame without one costs nothing more ([World warps](#world-warps)). Bundles need "hooks": 415.
+
 ## What the launcher does
 
 **Developing a mod?** Run `horizon-launcher settings native-profile dev` once, or pick "Dev build" in the Mods page's
@@ -4053,6 +4060,15 @@ Bundles need `"hooks": @API:toast_add@`.
 
 ### Toasts a mod shows
 
+`native_push_voice(mod_id, source, samples, sample_rate, at)` (client, `host.push_voice`) plays a
+mod's own audio, such as a proximity voice chat's: mono samples from -1 to 1 at `sample_rate` hertz.
+`source` is the mod's own id for a speaker (a player's UUID, say): each source's blocks play one
+after another, in the order they were pushed, while different sources play at the same time. `at`
+is where they were spoken, for direction and a linear fade to silence at 48 blocks; none plays them
+centred. A source holds at most two seconds, and a burst past that is refused rather than delayed;
+at most 64 sources play at once. False when nothing was queued: on a server, without an audio
+device, with nothing to play or past a cap. Bundles need `"hooks": @API:push_voice@`.
+
 `native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own
 in the five slots the advancement, recipe and system toasts share, drawn as vanilla's `AdvancementToast`: the item
 `icon` at 16 pixels (an unknown item draws none), `title` where the advancement toast's frame label goes ("Advancement
@@ -4651,7 +4667,7 @@ fn world_hold(&self, _host: &dyn Host, event: &mut WorldHoldEvent<'_>) {
 - Each player's game is asked for itself (splitscreen: one hold per player). The debug census lists
   `held_section_vertices`.
 
-Bundles need `"hooks": @API:world_hold@`.
+Bundles need `"hooks": 414`.
 
 ### Block textures
 
@@ -4882,6 +4898,13 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+The package may depend on the bundle's own `[[crate]]`s by path, a sibling folder of the package in the bundle
+(`shared = { path = "../shared" }` from `engine/`, where `shared` is a `[[crate]]` with `path = "shared"`). The
+launcher points that dependency at the crate's staged copy, `native-crates/<mod>/<crate>`, so the crate is built once
+with the game, as a `[[crate]]`'s own is. Any other path is refused, since only the package's folder is copied.
+A crate used this way follows the same rules as a `[[crate]]`: no `horizon-client`, and only crates in Horizon's
+`Cargo.lock`.
 
 Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
 on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
@@ -5301,3 +5324,7 @@ unchanged. The list has already been shuffled; entity knockback and the shuffle'
 random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
 This is separate from `explosion_detonate`, and does not cancel the burst's sound,
 particles or entity effects. The pending fragment assigns its API number at merge.
+
+### Advancement displays
+
+The pending `advancement_display` helper (`host.advancement_display`) returns an `AdvancementDisplay` for an advancement id in the loaded tree: `title` and `description` as `Text` (the components as the datapack wrote them), `frame` as `task`, `goal` or `challenge`, `announce_to_chat` and `hidden`. It is None for an unknown id or one without a display. The helper loads the tree on first use, so it is for server-side reads, not hot paths. The pending fragment assigns its API number at merge (`@API:advancement_display@`).

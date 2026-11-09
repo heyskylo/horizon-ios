@@ -229,8 +229,7 @@ fn collect(part: Part, tag: &Tag) -> Option<(&'static str, Option<Tag>)> {
         }
         Part::Waxed => (
             "minecraft:waxed",
-            matches!(tag.get("is_waxed"), Some(Tag::Byte(1)))
-                .then(|| Tag::Compound(Compound::new())),
+            crate::entity_nbt::flag(tag, "is_waxed").then(|| Tag::Compound(Compound::new())),
         ),
         Part::PotItem => {
             let slots = match tag.get("item") {
