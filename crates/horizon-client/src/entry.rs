@@ -13,8 +13,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
     horizon_threads::configure_allocator();
-    // The windows' icon: Horizon's, given to the engine's window code (docs/layers.md).
-    horizon_client::window::set_icon_png(horizon_theme::ICON_PNG);
+    crate::horizon_look::give();
     // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
     if !cfg!(feature = "horizon-extras") {
         horizon_client::options_ui::HORIZON_EXTRAS
