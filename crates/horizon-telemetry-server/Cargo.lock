@@ -238,10 +238,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-addresses"
+version = "0.1.0"
+
+[[package]]
+name = "horizon-hooks"
+version = "0.1.0"
+
+[[package]]
+name = "horizon-platform"
+version = "0.1.0"
+dependencies = [
+ "horizon-hooks",
+ "horizon-system",
+]
+
+[[package]]
+name = "horizon-system"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-telemetry"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "horizon-addresses",
+ "horizon-platform",
  "ruzstd",
  "serde",
  "serde_json",

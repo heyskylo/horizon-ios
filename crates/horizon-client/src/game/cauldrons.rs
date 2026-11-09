@@ -96,6 +96,11 @@ impl Game<'_> {
                 1.0,
             );
         }
+        // `fillBucket`/`emptyBucket` and the bottle's two interactions end with
+        // `level.gameEvent(null, GameEvent.FLUID_PICKUP or FLUID_PLACE, pos)`.
+        if let Some(event) = result.fluid_event {
+            self.post_block_game_event(event, pos, None, None);
+        }
         Ok(true)
     }
 }

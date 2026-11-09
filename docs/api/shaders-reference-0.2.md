@@ -23,13 +23,23 @@ the frame stores gamma (`[frame] blend`, below).
 - **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
   them: `block_light_color` and `colored_light` are linear. `block_light_colors` holds them as written; read it through
   `block_light_color`.
-- **Alpha is coverage only.** A post pass's alpha is ignored.
+- **Alpha is coverage only**, never light: brightness is in rgb alone. A post pass's alpha is ignored.
+
+## Room to grow
+
+`Frame`, the stage inputs (`SkyInput`, `VertexInput`, `MaterialInput`, `DisplacementInput`, `WeatherInput`,
+`PostInput`, `TonemapInput`) and `surface_at`'s `SurfaceData` may gain fields in later releases. Read their fields and
+pass them along, but don't construct them: `horizon-shader check` refuses `PostInput(...)` and the like. `Surface` is
+yours to construct and keeps its one field; later material outputs come as helpers.
 
 ## The display
 
-`frame.hdr`, `headroom`, `paper_white`, `peak` and `black_level` describe the display. Until HDR output is served for
-0.2 packs (a later step), a 0.2 pack sees SDR values with HDR on too: `hdr` 0, `headroom` 1, `paper_white` and `peak`
-80, `black_level` 0, and its picture is shown at paper white with nothing lifted.
+`frame.hdr`, `headroom`, `paper_white`, `peak` and `black_level` describe the display, read again every frame. With HDR
+on, where the device keeps the HUD on a layer of its own, a 0.2 pack sees the display's: `hdr` 1, `paper_white` and
+`peak` in nits, `headroom` the peak over paper white (at least 1) and `black_level` the display's black in nits.
+Otherwise it sees SDR: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0, and its picture ends on an
+8-bit frame, clipped at white, before the camera overlays and the HUD draw. Horizon lifts the shadows onto
+`black_level` after `[tonemap]`: read it, but don't apply it.
 
 ## `[frame] blend`
 
@@ -136,7 +146,7 @@ What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`;
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `color` | `vec4<f32>` | The lit colour, linear light (more than 1 is brighter than white), with its alpha. |
+| `color` | `vec4<f32>` | The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha its coverage. |
 
 Under `[displacement]` the stage also defines `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the faces near the camera are cut into; the corner moves along the face's normal by the depth it gives at the point's height less the depth at the texture's mean height, pinned at the face's edges and easing out over the last quarter of the distance.
 
@@ -264,12 +274,12 @@ pass reads a blank one in place of the target it writes).
 
 ### `TonemapInput`
 
-One pixel of the window, for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the display: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).
+One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `uv` | `vec2<f32>` | Where the pixel is, 0..1 from the top left. |
-| `pixel` | `vec2<f32>` | The pixel's centre, in pixels from the top left of the window. |
+| `pixel` | `vec2<f32>` | The pixel's centre, in pixels from the top left of the output (the window). |
 | `color` | `vec3<f32>` | The post chain's picture here (the world's without one), linear light, never negative or NaN. |
 
 Resources (bind group 3):
@@ -281,9 +291,15 @@ Resources (bind group 3):
 | 4 | `var linear_sampler: sampler` | Bilinear filtering, clamped to the edges. |
 | 5 | `var nearest_sampler: sampler` | Nearest texel, clamped to the edges. |
 
-It runs once per pixel at the window's size, after the post chain and before the camera overlays and
-the HUD. A pack without it gets Horizon's: a clip at white in SDR, a roll-off into the headroom in HDR.
-Horizon holds the result to 0 to `frame.headroom`.
+It is a pure mapping from the scene's light to the output its `frame` describes, run once per pixel of
+each output, after the post chain and before the camera overlays and the HUD. Today the display is the
+only output; Horizon may add others for the same frame, such as an SDR screenshot or icon, where `frame`'s
+display fields describe SDR (`hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0). Its
+only output is the colour it returns, so nothing carries from one call to the next. A pack without it gets
+Horizon's: a clip at white in SDR, and in HDR the curve Horizon uses without a pack, which keeps light up
+to 60% of the peak as it is and rolls it off into the peak above. Either runs once: Horizon doesn't map a pack's
+result again. Horizon holds the result to 0 to `frame.headroom`, then lifts the shadows onto
+`frame.black_level`.
 
 ## The frame
 

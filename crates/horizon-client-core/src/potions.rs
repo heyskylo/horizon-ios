@@ -1,7 +1,10 @@
 //! The `MobEffects` and `Potions` registries (code in vanilla, ported as
 //! tables): each effect's colour and category, each potion's effects, and the
 //! potion colour mix. horizon-client re-exports them from `brewing`.
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{OnceLock, RwLock},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
@@ -17,6 +20,22 @@ pub struct EffectDef {
     pub color: u32,
     pub category: Category,
     pub instant: bool,
+}
+/// The colours resource packs give effects (Polytone's `effect.<id>`), by the table's id.
+static PACK_COLORS: RwLock<Option<HashMap<String, u32>>> = RwLock::new(None);
+/// Takes the packs' effect colours (none: vanilla's).
+pub fn set_pack_colors(colors: Vec<(String, u32)>) {
+    let colors = (!colors.is_empty()).then(|| colors.into_iter().collect());
+    *PACK_COLORS.write().unwrap_or_else(|e| e.into_inner()) = colors;
+}
+impl EffectDef {
+    /// `MobEffect.getColor` as the packs show it: potions, tipped arrows and effect particles.
+    pub fn shown_color(&self) -> u32 {
+        let pack = PACK_COLORS.read().unwrap_or_else(|e| e.into_inner());
+        pack.as_ref()
+            .and_then(|colors| colors.get(self.id))
+            .map_or(self.color, |c| c & 0xFF_FFFF)
+    }
 }
 const fn fx(id: &'static str, color: u32, category: Category) -> EffectDef {
     EffectDef {
@@ -309,9 +328,10 @@ pub fn effects_color<'a>(effects: impl Iterator<Item = (&'a str, i32)>) -> u32 {
     for (e, amp) in effects {
         let Some(e) = effect(e) else { continue };
         let w = amp as u32 + 1;
-        r += w * (e.color >> 16 & 255);
-        g += w * (e.color >> 8 & 255);
-        b += w * (e.color & 255);
+        let color = e.shown_color();
+        r += w * (color >> 16 & 255);
+        g += w * (color >> 8 & 255);
+        b += w * (color & 255);
         total += w;
     }
     match (

@@ -1,6 +1,71 @@
 use super::*;
 use crate::gfx::hud_coverage;
 
+#[test]
+fn standalone_picture_draw_order_and_screen_exit_release() {
+    let Some(mut gpu) = Gpu::new() else { return };
+    let image = Arc::new(pictures::Picture {
+        id: u64::MAX,
+        width: 1,
+        height: 1,
+        pixels: vec![255, 0, 0, 255],
+        flags: TextureFlags::default(),
+    });
+    let weak = Arc::downgrade(&image);
+    let mut batch = HudBatch::new([4, 2]);
+    batch.pictures.push(image.clone());
+    let rect = Rect {
+        u0: 0.0,
+        v0: 0.0,
+        u1: 1.0,
+        v1: 1.0,
+        w: 1,
+        h: 1,
+    };
+    batch.rect_uv(0.0, 0.0, 4.0, 2.0, rect, u32::MAX);
+    batch.blend_since(0, Blend::Picture(image.id));
+    batch.rect_uv(
+        2.0,
+        0.0,
+        2.0,
+        2.0,
+        Rect {
+            u0: 0.0,
+            u1: 0.5,
+            ..rect
+        },
+        rgba(0, 255, 0, 255),
+    );
+    let mut uploads = crate::gfx::upload::Uploads::new(&gpu.device);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    gpu.hud
+        .prepare_pictures(&gpu.device, &mut uploads, &mut encoder, &batch);
+    uploads.finish(&encoder);
+    gpu.queue.submit([encoder.finish()]);
+    let (pixels, mask) = gpu.draw(&batch, 0.0, 0.0, true);
+    for row in pixels.as_chunks::<16>().0 {
+        assert_eq!(&row[..8], &[255, 0, 0, 255, 255, 0, 0, 255]);
+        assert_eq!(&row[8..], &[0, 255, 0, 255, 0, 255, 0, 255]);
+    }
+    assert!(mask.iter().all(|v| *v == 255));
+    drop(image);
+    drop(batch);
+    assert!(weak.upgrade().is_some());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    gpu.hud.prepare_pictures(
+        &gpu.device,
+        &mut uploads,
+        &mut encoder,
+        &HudBatch::new([4, 2]),
+    );
+    assert!(gpu.hud.pictures.is_empty());
+    assert!(
+        weak.upgrade().is_none(),
+        "closing the screen releases pixels and the GPU bind group"
+    );
+    eprintln!("standalone picture GPU rendering and release exercised");
+}
+
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -43,7 +108,8 @@ impl Gpu {
         let view = atlas.create_view(&Default::default());
         let hud = HudRenderer::new(
             &device,
-            wgpu::TextureFormat::Rgba16Float,
+            hud_coverage::HUD_FORMAT,
+            &view,
             &view,
             &view,
             &device.create_sampler(&Default::default()),
@@ -70,8 +136,16 @@ impl Gpu {
         })
     }
 
-    fn draw(&self, batch: &HudBatch, initial: f64, coverage: bool) -> (Vec<u8>, Vec<u8>) {
-        let frame = self.texture(wgpu::TextureFormat::Rgba16Float);
+    /// `batch` drawn on the HUD's target cleared to `backdrop`, with coverage cleared to
+    /// `initial`: the target's and the coverage's 8-bit texels.
+    fn draw(
+        &self,
+        batch: &HudBatch,
+        backdrop: f64,
+        initial: f64,
+        coverage: bool,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let frame = self.texture(hud_coverage::HUD_FORMAT);
         let mask = self.texture(hud_coverage::FORMAT);
         let depth = self.texture(wgpu::TextureFormat::Depth32Float);
         let [frame_view, mask_view, depth_view] =
@@ -84,7 +158,7 @@ impl Gpu {
             bytemuck::bytes_of(&HudUniform::new([4.0, 2.0, 1.0, 0.75], batch.end_portal, 0)),
         );
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        for (view, value) in [(&frame_view, 0.3), (&mask_view, initial)] {
+        for (view, value) in [(&frame_view, backdrop), (&mask_view, initial)] {
             let mut attachment = hud_coverage::attachment(view);
             attachment.ops.load = wgpu::LoadOp::Clear(wgpu::Color {
                 r: value,
@@ -139,7 +213,7 @@ impl Gpu {
         (
             color
                 .chunks(256)
-                .flat_map(|r| r[..32].iter().copied())
+                .flat_map(|r| r[..16].iter().copied())
                 .collect(),
             mask.chunks(256)
                 .flat_map(|r| r[..4].iter().copied())
@@ -148,8 +222,8 @@ impl Gpu {
     }
 
     fn check(&self, batch: &HudBatch, initial: f64, expected: [u8; 4]) {
-        let (plain, _) = self.draw(batch, initial, false);
-        let (color, mask) = self.draw(batch, initial, true);
+        let (plain, _) = self.draw(batch, 0.3, initial, false);
+        let (color, mask) = self.draw(batch, 0.3, initial, true);
         assert_eq!(color, plain, "coverage changed the primary colour or alpha");
         for (got, want) in mask.iter().zip(expected.repeat(2)) {
             assert!(
@@ -219,6 +293,46 @@ fn coverage_follows_hud_blends_discard_scissor_and_depth_without_changing_colour
     gpu.check(&batch, 0.0, [0, 128, 0, 0]);
 }
 
+/// The HUD's target is 8-bit as vanilla's frame is, so each draw clips at white before the
+/// next blends over it: a text highlight added over a light backdrop, then a 50% black panel.
+#[test]
+fn each_hud_draw_clips_at_white_as_on_an_8_bit_frame() {
+    let Some(gpu) = Gpu::new() else {
+        return;
+    };
+    let mut batch = HudBatch::new([4, 2]);
+    quad(
+        &mut batch,
+        Blend::Additive,
+        rgba(128, 128, 128, 255),
+        0.0,
+        0.25,
+    );
+    quad(&mut batch, Blend::Alpha, rgba(0, 0, 0, 128), 0.0, 0.25);
+    // Vanilla's frame in integers: 204 + 128 clips at 255, then the panel keeps 127/255 of it.
+    let (backdrop, highlight, panel) = (204u32, 128u32, 128u32);
+    let clipped = (backdrop + highlight).min(255);
+    let want = ((clipped * (255 - panel)) as f64 / 255.0).round() as u8;
+    assert_eq!(want, 127);
+    // The HUD layer's target, and the 8-bit frame a 0.2 pack finishes on in SDR, where the
+    // HUD draws without coverage.
+    for coverage in [true, false] {
+        let (color, mask) = gpu.draw(&batch, f64::from(backdrop) / 255.0, 0.0, coverage);
+        // Unclipped, the panel would have kept 127/255 of 332: 165.
+        for pixel in [0, 1, 4, 5] {
+            assert_eq!(
+                color[pixel * 4..pixel * 4 + 3],
+                [want; 3],
+                "{coverage}: {color:?}"
+            );
+        }
+        // The highlight hides nothing; the panel hides half of what is under it.
+        if coverage {
+            assert_eq!(mask[0], 128, "{mask:?}");
+        }
+    }
+}
+
 #[test]
 fn coverage_preserves_each_cit_blend_and_its_destination_alpha() {
     let Some(mut gpu) = Gpu::new() else {
@@ -279,7 +393,7 @@ fn coverage_uses_pack_texts_final_alpha_and_discard() {
         return;
     };
     // A translated-style struct result and early return; no dependency on game resources.
-    let program = horizon_shaders::CoreProgram {
+    let program = crate::core_shader::CoreProgram {
         vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p.x / 2.0 - 1.0, 1.0 - p.y, 0.0, 1.0); }").unwrap(),
         fragment: naga::front::wgsl::parse_str("struct Result { @location(0) color: vec4<f32> } @fragment fn main(@builtin(position) p: vec4<f32>) -> Result { if p.x > 2.0 { discard; } return Result(vec4(0.4, 0.2, 0.1, 0.5)); }").unwrap(),
     };
@@ -300,7 +414,7 @@ fn a_pack_text_shader_without_a_colour_output_is_dropped_not_wrapped() {
     let Some(mut gpu) = Gpu::new() else {
         return;
     };
-    let program = horizon_shaders::CoreProgram {
+    let program = crate::core_shader::CoreProgram {
         vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p, 0.0, 1.0); }").unwrap(),
         fragment: naga::front::wgsl::parse_str("@fragment fn main() -> @location(1) vec4<f32> { return vec4(1.0); }").unwrap(),
     };

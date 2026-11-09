@@ -107,7 +107,7 @@ ShapelessCraftingRecipeDisplay.isEnabled	skip:data		feature flags: Horizon's rec
 SlotDisplays.bootstrap	skip:data		registry bootstrap
 ConditionalEffect.codec	skip:java		
 ConditionalEffect.matches	inline	crates/horizon-client/src/game/enchant_effects.rs::Game::post_attack	the requirements check is repeated per hook: post_attack, post_attack_bursts, thorns_damage, projectile_spawned_ignite
-ItemEnchantments.addToTooltip	port	crates/horizon-client/src/game/stations.rs::Game::stack_tooltip_lines	enchantment lines; stored enchantments for books
+ItemEnchantments.addToTooltip	port	crates/horizon-items/src/enchant.rs::Enchantments::tooltip	ordered enchantment lines used by both hover tooltips and search
 ItemEnchantments.equals	skip:java		
 ItemEnchantments.getTagOrEmpty	skip:java		
 TargetedConditionalEffect.equipmentDropsCodec	skip:java		

@@ -383,9 +383,6 @@ impl Game<'_> {
             self.tick_bell_servers();
         }
         let Some(r) = &self.renderer else {
-            if self.remote.is_none() {
-                self.tick_gateway_servers();
-            }
             return;
         };
         // Sorted by position: the order they tick in, and a quick lookup.
@@ -496,18 +493,10 @@ impl Game<'_> {
                 }
                 Ticker::Pot => {}
                 Ticker::Gateway => {
-                    // The server copy's portalTick runs first; its block event
-                    // reaches the client copy before the client ticks it.
+                    // The server's portalTick (`tick_end_gateway`) already ran:
+                    // its block event reaches this copy before it ticks.
                     let initial = self.gateway_loaded(pos);
-                    let anims = &mut self.be_anims;
-                    let server = anims.gateway_servers.entry(pos).or_insert(initial);
-                    // A server sends its copy's block event instead.
-                    let triggered = self.remote.is_none() && server.portal_tick();
-                    let client = anims.gateways.entry(pos).or_insert(initial);
-                    if triggered {
-                        client.trigger_event(1, 0);
-                    }
-                    client.tick();
+                    self.be_anims.gateways.entry(pos).or_insert(initial).tick();
                 }
             }
         }
@@ -702,12 +691,26 @@ impl Game<'_> {
     /// `ConduitBlockEntity.updateAndAttackTarget`: while the conduit hunts
     /// (42 frame blocks) its target stays until it dies or leaves the 8
     /// blocks, else a random enemy in water or rain is chosen; the target
-    /// takes 4 magic damage.
+    /// takes 4 magic damage. The target is the block entity's (`Target`), so
+    /// a saved or `/data` one is kept or dropped as vanilla's reference is.
     fn conduit_attack(&mut self, conduit: &mut ConduitServer, pos: [i32; 3], hunting: bool) {
-        conduit.target = match conduit.target {
+        let key = (pos[0], pos[1], pos[2]);
+        let saved = match self.world.block_entities.get(&key) {
+            Some(BlockEntity::Conduit(target)) => Some(*target),
+            _ => None,
+        };
+        // EntityReference.getLivingEntity: a reference no loaded mob answers
+        // is no target, and no new one is chosen in its place this time.
+        let current = match saved {
+            Some(Some(uuid)) => Some(self.mob_by_uuid(uuid)),
+            Some(None) => None,
+            None => conduit.target.map(Some),
+        };
+        conduit.target = match current {
             _ if !hunting => None,
             None => self.conduit_new_target(pos),
-            Some(id) => self
+            Some(None) => None,
+            Some(Some(id)) => self
                 .mobs
                 .iter()
                 .find(|m| m.id == id && !m.removed)
@@ -723,6 +726,16 @@ impl Game<'_> {
                 })
                 .map(|m| m.id),
         };
+        if saved.is_some() {
+            let target = conduit.target.map(|id| self.mob_uuid(id));
+            if saved != Some(target)
+                && let Some(BlockEntity::Conduit(saved)) = self.world.block_entities.get_mut(&key)
+            {
+                // `sendBlockUpdated`: the new target reaches the clients.
+                *saved = target;
+                self.mark_block_entity_updated(key);
+            }
+        }
         let Some(m) = conduit
             .target
             .and_then(|id| self.mobs.iter_mut().find(|m| m.id == id))
@@ -777,29 +790,22 @@ impl Game<'_> {
             height: m.height(),
         })
     }
-    /// `TheEndGatewayBlockEntity.portalTick` (the server ticker) of the
-    /// gateways a server keeps a copy of, in block-ticking chunks
-    /// (`Level.tickBlockEntities`): the cooldown an entry started runs out,
-    /// and every 2400 ticks `triggerCooldown` sends its block event.
-    fn tick_gateway_servers(&mut self) {
-        let ticking = self.block_ticking_area();
-        let mut positions: Vec<[i32; 3]> = self
-            .be_anims
-            .gateway_servers
-            .keys()
-            .copied()
-            .filter(|p| ticking(p[0], p[2]))
-            .collect();
-        positions.sort_unstable();
-        for pos in positions {
-            let triggered = self
-                .be_anims
-                .gateway_servers
-                .get_mut(&pos)
-                .is_some_and(EndGateway::portal_tick);
-            if triggered {
-                self.gateway_cooldown_event(pos);
-            }
+    /// `TheEndGatewayBlockEntity.portalTick` (the server ticker), from
+    /// `Level.tickBlockEntities`: the age counts up in the block entity itself,
+    /// which `/data get block` and the chunk save read; the cooldown an entry
+    /// started runs out, and every 2400 ticks `triggerCooldown` sends its
+    /// block event.
+    pub(super) fn tick_end_gateway(&mut self, pos: (i32, i32, i32)) {
+        let key = [pos.0, pos.1, pos.2];
+        let initial = self.gateway_loaded(key);
+        let server = self.be_anims.gateway_servers.entry(key).or_insert(initial);
+        let triggered = server.portal_tick();
+        let age = server.age;
+        if let Some(BlockEntity::EndGateway(g)) = self.world.block_entities.get_mut(&pos) {
+            g.age = age;
+        }
+        if triggered {
+            self.gateway_cooldown_event(key);
         }
     }
     /// Whether the gateway at `pos` can be entered (`!isCoolingDown`).
@@ -836,10 +842,14 @@ impl Game<'_> {
         self.block_entity_event(pos, 1, 0);
         self.lan_block_event(pos, 1, 0);
     }
-    /// The End gateway at `pos` as its chunk was loaded: `Age` from the saved
-    /// block entity (`getUpdateTag`), or a new gateway.
+    /// The End gateway at `pos`: `Age` from its block entity, else from the
+    /// saved one as its chunk was loaded (`getUpdateTag`), or a new gateway.
     fn gateway_loaded(&self, pos: [i32; 3]) -> EndGateway {
-        let age = self.saved_tag(pos).and_then(|t| number(t.get("Age")));
+        let live = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+            Some(BlockEntity::EndGateway(g)) => Some(g.age),
+            _ => None,
+        };
+        let age = live.or_else(|| self.saved_tag(pos).and_then(|t| number(t.get("Age"))));
         EndGateway {
             age: age.unwrap_or(0),
             teleport_cooldown: 0,
