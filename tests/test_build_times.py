@@ -477,6 +477,21 @@ class RunTests(unittest.TestCase):
         self.assertEqual(Path(build["CARGO_TARGET_DIR"]), ours)
         self.assertTrue(any("CARGO_TARGET_DIR is set" in w for w in report["warnings"]))
 
+    def test_relative_target_dir_uses_the_invocation_directory(self):
+        caller = Path(self.tmp.name)
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(caller)
+            code, report, _, _ = self.report("--profiles", "dev", "--only", "cold", "--target-dir", "benchmark")
+        finally:
+            os.chdir(previous_cwd)
+        self.assertEqual(code, 0)
+        target = caller / "benchmark/target-dev"
+        self.assertTrue((target / bt.MARKER).is_file())
+        self.assertTrue((target / "built").is_file())
+        self.assertIsNotNone(report["cold"]["dev"]["timings"])
+        self.assertFalse((self.root / "benchmark").exists())
+
     def test_cold_build_empties_only_its_own_target_folder(self):
         ours = self.root / ".local/build-times/target-dev"
         self.report("--profiles", "dev", "--only", "cold")
