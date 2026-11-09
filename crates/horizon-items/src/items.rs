@@ -1278,6 +1278,26 @@ impl Items {
         }
         self.get(&stack.item)?.tool_damage_per_block
     }
+    /// `Weapon.itemDamagePerAttack`: the stack's `weapon` component, else the
+    /// item's prototype. A removed component leaves no weapon.
+    pub fn weapon_damage(&self, stack: &ItemStack) -> Option<u32> {
+        if stack.count == 0 || &*stack.item == "minecraft:air" {
+            return None;
+        }
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:weapon").is_some())
+        {
+            return None;
+        }
+        if let Some(weapon) = stack.data().and_then(|d| d.other("minecraft:weapon")) {
+            return Some(
+                horizon_world::datafix::dynamic::as_int(weapon.get("item_damage_per_attack"), 1)
+                    .max(0) as u32,
+            );
+        }
+        self.get(&stack.item)?.weapon_damage
+    }
     /// Mining wear on an already durable item prototype. Custom durability on
     /// non-durable items needs item-aware DAMAGE-presence decoding first.
     pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
@@ -2931,6 +2951,28 @@ mod tests {
         assert!(items.songs.contains_key("minecraft:cat"));
         assert!(!items.songs.contains_key("minecraft:tune"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn weapon_damage_comes_from_the_stack() {
+        let items = Items::for_tests(HashMap::new());
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        sword.data_mut().set_other(
+            "minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound([(
+                "item_damage_per_attack",
+                horizon_world::nbt::Tag::Int(3),
+            )])),
+        );
+        assert_eq!(items.weapon_damage(&sword), Some(3));
+        sword.data_mut().set_other(
+            "!minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(items.weapon_damage(&sword), None);
     }
 
     #[test]
