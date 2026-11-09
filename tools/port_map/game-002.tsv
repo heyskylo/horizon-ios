@@ -141,6 +141,6 @@ ServerPlayer.getChatSession	skip:java		getter with an expiry check
 ServerPlayer.startRiding	inline	crates/horizon-client/src/game/lan_entities.rs::Game::lan_riding	gap: minor: SetPassengers goes out, but the mount's active effects (a horse's speed) are not sent to the rider
 ServerPlayer.removeVehicle	inline	crates/horizon-client/src/game/lan_entities.rs::Game::lan_riding	gap: minor: SetPassengers updates, vehicle effects are not removed from the rider
 ServerPlayer.getKnownSpeed	port	crates/horizon-client/src/game/spear.rs::Game::known_player_movement	a rider's speed is its root vehicle's (mob_speed walks up the mounts); a guest's is the movement it last reported
-ServerPlayer.onEquippedItemBroken	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: only the held item counts toward the broken statistic; breaking armour is not counted
+ServerPlayer.onEquippedItemBroken	port	crates/horizon-client/src/game/item_durability.rs::Game::damage_held	gap: minor: only the held item counts toward the broken statistic; breaking armour is not counted
 ServerPlayer.registerAndUpdateEnderPearlTicket	missing		minor: a thrown ender pearl holds no chunk of its own (no ENDER_PEARL ticket); it is saved only with a chunk that saves, so one in an unloaded chunk is gone
 ServerPlayer.debugSubscriptions	skip:debug		debug subscriptions for the debug screen

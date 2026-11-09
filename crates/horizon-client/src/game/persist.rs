@@ -28,7 +28,7 @@ use std::{
 
 /// `Entity.saveWithoutId`: materialize the mandatory fields of an entity
 /// whose simulation state is still represented by its loaded compound.
-fn write_static_entity_fields(tag: &mut Tag) {
+pub(super) fn write_static_entity_fields(tag: &mut Tag) {
     use horizon_client::{nbt_path::int_value, save::float};
 
     let int = |key, default| tag.get(key).and_then(int_value).unwrap_or(default);
@@ -819,7 +819,7 @@ impl Game<'_> {
     /// A saved thrown trident.
     pub(super) fn load_trident(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         if let Some(n) = entity_nbt::trident_from_nbt(&tag) {
-            let mut t = super::trident::ThrownTrident::from_nbt(n);
+            let mut t = super::trident::ThrownTrident::from_nbt(n, &tag, self.pack.assets.registry);
             t.id = self.take_entity_id();
             // One that came through a portal keeps its cooldown.
             let id = t.id;
@@ -1023,8 +1023,13 @@ impl Game<'_> {
 
     /// A saved painting, or its compound when its variant is unknown.
     pub(super) fn load_painting(&mut self, tag: Tag, uuid: Option<[i32; 4]>, key: ChunkKey) {
+        // Painting.defineSynchedData: a painting without a saved variant keeps
+        // VariantUtils.getAny, the registry's first one.
         if let Some((pos, facing, variant)) = entity_nbt::painting_from_nbt(&tag)
-            && let Some(v) = self.painting_variants.get(&variant).cloned()
+            && let Some(v) = match variant {
+                Some(variant) => self.painting_variants.get(&variant).cloned(),
+                None => self.painting_variants.all.first().cloned(),
+            }
         {
             self.next_entity += 1;
             let id = self.next_entity;
@@ -2097,6 +2102,8 @@ impl Game<'_> {
     fn live_entity_ids(&self) -> HashSet<u32> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
         let mut alive: HashSet<u32> = self.entity_ids_off_walk().collect();
+        // The natural fence knots a lead still holds (game/leads.rs).
+        alive.extend(self.natural_knot_ids());
         for_each_entity!(entity_lists_of!(self), entity => {
             alive.insert(entity.id());
         });
@@ -2344,8 +2351,8 @@ impl Game<'_> {
     ) -> Option<(ChunkKey, Tag)> {
         let (id, at) = (self.tridents[i].id, self.tridents[i].position);
         keys.contains(&chunk_of(at)).then(|| {
-            let uuid = self.uuid_for(id);
-            let tag = self.tridents[i].to_nbt(uuid, self.persist.raw.get(&id));
+            let (uuid, reg) = (self.uuid_for(id), self.pack.assets.registry);
+            let tag = self.tridents[i].to_nbt(uuid, reg, self.persist.raw.get(&id));
             (chunk_of(at), tag)
         })
     }
@@ -6106,221 +6113,11 @@ mod camel_pose_saved_tests {
 }
 
 #[cfg(test)]
-mod mob_hurt_cooldown_tests {
-    use super::*;
-    use crate::game::{Audio, Options, Progress, Settings, load_resources};
-    use horizon_client::motion::PlayerMotion;
-
-    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.game_dir = Some(
-            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
-                .join(format!("h248-{:?}", std::thread::current().id())),
-        );
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.build_registries();
-        game.set_allow_commands(true);
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.block_ticks
-            .add_empty_chunk(ChunkPos::new(0, 0))
-            .unwrap();
-        assert!(game.run_command("forceload add 0 0"));
-        assert!(game.run_command("difficulty normal"));
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
-        game.creative = true;
-        test(&mut game);
-    }
-    /// The pig with `[I;0,248,0,n]`: its health and its hurt cooldown state
-    /// (`invulnerableTime`, `lastHurt`).
-    fn pig(game: &Game<'_>, n: i32) -> (f32, i32, f32) {
-        let m = game
-            .mobs
-            .iter()
-            .find(|m| game.persist.uuid_of(m.id) == Some([0, 248, 0, n]))
-            .unwrap();
-        (m.health, m.invulnerable, m.last_hurt)
-    }
-    fn summon(game: &mut Game<'_>, n: i32, x: i32) -> String {
-        assert!(game.run_command(&format!(
-            "summon minecraft:pig {x}.5 200 4.5 {{UUID:[I;0,248,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,attributes:[{{id:\"minecraft:max_health\",base:40.0d}}],Health:40f}}"
-        )));
-        format!("@e[type=minecraft:pig,nbt={{UUID:[I;0,248,0,{n}]}},limit=1]")
-    }
-
-    /// Expected values from the official 26.3 server (LivingEntity.hurtServer):
-    /// inside the cooldown a hit is compared, and lastHurt kept, by its amount
-    /// before armor and Resistance; actuallyHurt reduces only the difference.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
-    fn the_hurt_cooldown_compares_the_incoming_damage_before_its_reductions() {
-        with_game(|game| {
-            let full = summon(game, 1, 2);
-            assert!(game.run_command(&format!(
-                "effect give {full} minecraft:resistance 30 4 true"
-            )));
-            let armored = summon(game, 2, 8);
-            assert!(game.run_command(&format!("attribute {armored} minecraft:armor base set 10")));
-            let mut failures = Vec::new();
-            let check = |failures: &mut Vec<String>,
-                         label: &str,
-                         got: (f32, i32, f32),
-                         want: (f32, i32, f32)| {
-                if (got.0 - want.0).abs() >= 1e-4 || got.1 != want.1 || got.2 != want.2 {
-                    failures.push(format!(
-                        "{label}: (health, invulnerable, last_hurt) {got:?}, expected {want:?}"
-                    ));
-                }
-            };
-            // Full Resistance: every hit loses no health.
-            let accepted = game.run_command(&format!("damage {full} 1 minecraft:generic"));
-            check(
-                &mut failures,
-                &format!("full 1 accepted {accepted}"),
-                pig(game, 1),
-                (40.0, 20, 1.0),
-            );
-            let accepted = game.run_command(&format!("damage {full} 2 minecraft:generic"));
-            if !accepted {
-                failures.push("full: the stronger hit 2 was refused".into());
-            }
-            check(&mut failures, "full 2", pig(game, 1), (40.0, 20, 2.0));
-            let accepted = game.run_command(&format!("damage {full} 2 minecraft:generic"));
-            if accepted {
-                failures.push("full: the equal hit 2 was taken".into());
-            }
-            check(&mut failures, "full equal 2", pig(game, 1), (40.0, 20, 2.0));
-            // Armor 10 (cactus is not #bypasses_armor): 4 then 8 deal 2.72 each.
-            assert!(game.run_command(&format!("damage {armored} 4 minecraft:cactus")));
-            check(&mut failures, "armor 4", pig(game, 2), (37.28, 20, 4.0));
-            assert!(game.run_command(&format!("damage {armored} 8 minecraft:cactus")));
-            check(&mut failures, "armor 8", pig(game, 2), (34.56, 20, 8.0));
-            assert!(failures.is_empty(), "hurt cooldown: {failures:#?}");
-        });
-    }
-}
+#[path = "mob_hurt_cooldown_tests.rs"]
+mod mob_hurt_cooldown_tests;
 
 /// TraderLlama.maybeDespawn discards the llama in the tick its delay runs out
 /// (H182): it leaves the level's entity list in that tick.
 #[cfg(test)]
-mod trader_llama_discard_tests {
-    use super::*;
-    use crate::game::{Audio, Options, Progress, Settings, load_resources};
-    use horizon_client::motion::PlayerMotion;
-
-    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.game_dir = Some(
-            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
-                .join(format!("h182-{:?}", std::thread::current().id())),
-        );
-        // A fixed name: no generated horizon-player.txt in the working directory.
-        options.player_name = Some("H182".into());
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.build_registries();
-        game.set_allow_commands(true);
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.block_ticks
-            .add_empty_chunk(ChunkPos::new(0, 0))
-            .unwrap();
-        assert!(game.run_command("forceload add 0 0"));
-        assert!(game.run_command("difficulty normal"));
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
-        game.creative = true;
-        test(&mut game);
-    }
-
-    /// Expected values from the official 26.3 server: a delay of 5 is gone
-    /// after the fifth tick and a delay of 0 after the first; a tame and a
-    /// persistent llama stay.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
-    fn a_trader_llama_leaves_the_level_in_the_tick_its_delay_runs_out() {
-        with_game(|game| {
-            for (n, extra) in [
-                (1, "DespawnDelay:5"),
-                (2, "DespawnDelay:0"),
-                (3, "DespawnDelay:5,Tame:1b"),
-                (4, "DespawnDelay:5,PersistenceRequired:1b"),
-            ] {
-                assert!(game.run_command(&format!(
-                    "summon minecraft:trader_llama {}.5 200 8.5 {{UUID:[I;0,182,0,{n}],NoAI:0b,Silent:1b,{extra}}}",
-                    2 + 3 * n
-                )));
-            }
-            let present = |game: &Game<'_>| -> [bool; 4] {
-                [1, 2, 3, 4].map(|n| {
-                    game.mobs.iter().any(|m| {
-                        game.persist.uuid_of(m.id) == Some([0, 182, 0, n])
-                            && &*m.kind.id == "minecraft:trader_llama"
-                    })
-                })
-            };
-            let mut failures = Vec::new();
-            for tick in 1..=6 {
-                game.tick_world(true).unwrap();
-                let want = [tick < 5, false, true, true];
-                let got = present(game);
-                if got != want {
-                    failures.push(format!(
-                        "after tick {tick}: in the list {got:?}, expected {want:?}"
-                    ));
-                }
-            }
-            assert!(failures.is_empty(), "trader llama discard: {failures:#?}");
-        });
-    }
-}
+#[path = "trader_llama_discard_tests.rs"]
+mod trader_llama_discard_tests;

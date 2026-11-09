@@ -345,6 +345,15 @@ are adapted from the touch layout and touch helpers of
 (`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
 Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
 
+`crates/horizon-client-render/src/keypad.rs` is adapted from Starling's keypad profile
+(`crates/horizon-client-render/src/keypad.rs`) at the same commit.
+
 `crates/horizon-client-render/src/android_gamepad.rs` is adapted from Starling's controller decoder
 (`crates/horizon-client-render/src/android_gamepad.rs`) and the input-mode part of its
 `android_runtime.rs`, at the same commit.
+
+`crates/horizon-client-render/src/touch.rs` and `touch/tests/` are adapted from the touch input
+state of Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+
+`crates/horizon-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
+input part of Starling's `crates/horizon-client-render/src/android_runtime.rs` at the same commit.

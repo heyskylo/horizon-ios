@@ -562,17 +562,19 @@ impl Game<'_> {
     }
     /// `ItemStack.hurtAndBreak(amount)` without an entity.
     fn hurt_and_break(&mut self, mut stack: ItemStack, amount: u32) -> Option<ItemStack> {
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(0, |i| i.max_damage);
-        if max == 0 {
+        if !horizon_client::stations::is_damageable(world_items!(self), &stack) {
             return Some(stack);
         }
-        stack.damage += self.durability_loss(&stack, amount);
-        if stack.damage >= max {
-            return shrink(ItemStack { damage: 0, ..stack });
+        let max = horizon_client::stations::max_damage(world_items!(self), &stack);
+        let loss = self.durability_loss(&stack, amount);
+        if loss == 0 {
+            return Some(stack);
+        }
+        stack.damage = (stack.damage.min(max as u32) as i32)
+            .wrapping_add(loss as i32)
+            .clamp(0, max) as u32;
+        if stack.damage >= max as u32 {
+            return shrink(stack);
         }
         Some(stack)
     }
@@ -640,6 +642,10 @@ impl Game<'_> {
             | "minecraft:axolotl_bucket"
             | "minecraft:tadpole_bucket"
             | "minecraft:sulfur_cube_bucket" => self.dispense_filled_bucket(pos, facing, stack)?,
+            // A mod fluid's bucket (`DispensibleContainerItem`).
+            mod_bucket if horizon_world::fluid::FluidKind::of_bucket(mod_bucket).is_some() => {
+                self.dispense_filled_bucket(pos, facing, stack)?
+            }
             "minecraft:bucket" => self.dispense_empty_bucket(pos, facing, stack)?,
             "minecraft:flint_and_steel" => self.dispense_flint_and_steel(pos, facing, stack)?,
             "minecraft:bone_meal" => self.dispense_bone_meal(pos, facing, stack)?,
@@ -700,7 +706,12 @@ impl Game<'_> {
             }
             return Ok((self.default_execute(pos, facing, stack), CLICK));
         }
-        if stack.item.ends_with("_spawn_egg") {
+        // DispenserBlock.getDefaultDispenseMethod: an egg without ENTITY_DATA drops as an item.
+        if stack.item.ends_with("_spawn_egg")
+            && stack
+                .data()
+                .is_none_or(|data| data.other("!minecraft:entity_data").is_none())
+        {
             return self.dispense_spawn_egg(pos, facing, stack);
         }
         Ok((self.default_execute(pos, facing, stack), CLICK))
@@ -996,13 +1007,14 @@ impl Game<'_> {
         }
         self.mob_ambient(id)
     }
+    /// `SpawnEggItemBehavior.execute`: spawn the type selected by the stack's entity data.
     fn dispense_spawn_egg(
         &mut self,
         pos: Pos,
         facing: Direction,
         stack: ItemStack,
     ) -> Result<Dispensed> {
-        let kind = stack.item.trim_end_matches("_spawn_egg").to_owned();
+        let (kind, _) = horizon_client::block_entity_item::spawn_egg_on_spawner(&stack, false);
         let front = offset(pos, facing);
         let Some(id) = self.spawn_mob_at(&kind, front, facing != Direction::Up) else {
             return Ok((Some(stack), CLICK));
@@ -2016,7 +2028,7 @@ impl Game<'_> {
                                     count: 1,
                                     ..stack.clone()
                                 };
-                                self.spawn_at_location(at, height, one);
+                                self.spawn_item_own(one, [at.x, at.y + height, at.z], 0);
                             }
                         }
                     }
