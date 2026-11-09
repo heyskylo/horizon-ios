@@ -131,7 +131,7 @@ Run by the orchestrator, in this order. Until step 3, nothing is published.
 4. Let the game bridge become stable on its normal schedule: about 6 hours after it was published, the promote run
    makes it *latest*. Do not force it (`promote` with `force=true`): it carries about 43 player-facing pull requests
    from the freeze and needs its beta like any release. Check it is *latest*:
-   `gh api repos/horizon-rust/horizon/releases/latest --jq .tag_name`.
+   `gh api repos/heyskylo/horizon-ios/releases/latest --jq .tag_name`.
 5. Only then merge the update channels pull request (the launcher's Stable and Alpha, the daily promotion), then
    mark the switch pull request (#1132) ready and merge it (`.github/release-line.txt` = `0.2`, and the
    docs that talk about 0.2). On the next run, about 10 minutes, the train publishes `v0.2.0` as a beta and

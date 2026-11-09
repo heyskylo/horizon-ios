@@ -21,6 +21,8 @@ concurrency:
 env:
   HORIZON_TELEMETRY_URL: "off"
   IOS_TARGET: aarch64-apple-ios
+  # Public application ID embedded in the official Horizon launcher release.
+  HORIZON_MSA_CLIENT_ID: "331e08f8-172d-43b9-835a-3108c2fcdbf3"
   # `--release` with the `fast` profile's codegen: the release profile's single codegen unit and LTO cost minutes
   # and the unsigned bundle is a test build.
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
@@ -54,15 +56,11 @@ jobs:
         with:
           shared-key: ios-${{ env.IOS_TARGET }}
       - name: Build the game
-        # The Microsoft sign-in app (msa.rs): a repository variable overrides the built-in one; unset, it stays.
-        env:
-          HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
+        # The public Microsoft sign-in app is shared by the Rust executable and native launcher.
         # The defaults minus `controllers` (GameController reads pads), with `audio`: project.yml's Cargo phase
         # uses the same flags, so HORIZON_GAME_PREBUILT below finds this build.
         run: cargo build --release --locked --target "$IOS_TARGET" -p horizon-client --no-default-features --features audio,horizon-extras
       - name: Bundle it
-        env:
-          HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
         run: |
           set -euo pipefail
           command -v xcodegen >/dev/null || brew install xcodegen

@@ -36,6 +36,7 @@ final class MicrosoftAccount: ObservableObject {
         (Bundle.main.object(forInfoDictionaryKey: "HorizonMSAClientID") as? String)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 }
+            ?? "331e08f8-172d-43b9-835a-3108c2fcdbf3"
     }
     init(defaults: UserDefaults = .standard, vault: AccountVault = KeychainAccountVault(),
          session: URLSession = .shared, clock: @escaping () -> Date = Date.init,

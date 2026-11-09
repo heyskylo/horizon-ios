@@ -1,5 +1,7 @@
 # The roadmap
 
+> This directory contains the inherited **upstream engine roadmap and website tooling**. For the mobile port’s bugs and feature requests, use [heyskylo/horizon-ios/issues](https://github.com/heyskylo/horizon-ios/issues). Upstream issue numbers and hub URLs below identify the original roadmap data; they do not route new mobile reports.
+
 `roadmap.toml` is the one source of the roadmap. `tools/roadmap.py build` turns it into
 [ROADMAP.md](../ROADMAP.md); the website's hub (playhorizon.dev/hub) and Kira read the same items. The work
 board stays the task-level view (every issue and pull request); the roadmap is the overview, and each pull

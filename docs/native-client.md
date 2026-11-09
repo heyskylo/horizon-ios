@@ -1,5 +1,7 @@
 # Horizon native client
 
+> For iOS/iPadOS installation, use the [mobile setup guide](../README.md) and [mobile releases](https://github.com/heyskylo/horizon-ios/releases). This shared engine guide also describes desktop builds and commands. Its upstream desktop download links do not provide an iOS IPA. Report mobile bugs in [the fork’s issues](https://github.com/heyskylo/horizon-ios/issues).
+
 `horizon-client` is the playable Rust client for Minecraft Java Edition 26.3.
 It streams a world around the player on worker threads, renders every vanilla
 block model with smooth lighting and biome tints, and runs the validated player
@@ -8,7 +10,7 @@ hardness/tool rules, collect drops from the block loot tables, place blocks,
 craft in the 2x2 inventory grid or on a crafting table, and save and reload worlds
 in vanilla's Anvil format.
 
-**Status:** playable; players get it through [the launcher](../launcher/README.md). The [harness table](../README.md#project-status)
+**Status:** playable; players get it through [the launcher](../launcher/README.md). The [harness table](../README.md#current-limitations)
 in the README scores each subsystem against vanilla and lists what is still
 missing; [Rust rewrite status](rust-parity.md) has the details.
 

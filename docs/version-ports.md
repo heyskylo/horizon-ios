@@ -305,7 +305,7 @@ To turn it on, on the Mac mini (as Ludovic, once approved):
 
 ```sh
 # 1. The label publish files issues under (once):
-gh label create version-port --repo horizon-rust/horizon --color 5319e7 \
+gh label create version-port --repo heyskylo/horizon-ios --color 5319e7 \
   --description "Work to port Horizon to a new Minecraft release (tools/version_port.py publish)"
 # 2. The script, as a copy from main (it updates its own worktree, so it never runs from a checkout):
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/tools/ci/version-port-daily.sh \

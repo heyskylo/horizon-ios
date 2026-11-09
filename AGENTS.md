@@ -4,6 +4,12 @@ Minecraft: Java Edition 26.3 rewritten in Rust (wgpu). Vanilla is the specificat
 feature. Read [CONTRIBUTING.md](CONTRIBUTING.md) once; this page tells you where things are.
 Feature → files → harness for the most-changed areas: [docs/architecture.md](docs/architecture.md).
 
+## Mobile repository routing
+
+This checkout is the [iOS/iPadOS fork](https://github.com/heyskylo/horizon-ios). New mobile issues and feature requests belong in [the fork’s tracker](https://github.com/heyskylo/horizon-ios/issues); pull requests target [the fork](https://github.com/heyskylo/horizon-ios/pulls). Use `--repo heyskylo/horizon-ios` for GitHub commands when remote selection is ambiguous.
+
+Upstream issue numbers, commits, license provenance and dependencies still identify the original engine’s records. Preserve those references instead of changing a numbered upstream link to an unrelated mobile issue.
+
 ## Rules that bite
 
 - **Never commit Mojang's files**: game jars, assets, decompiled source, prepared resources (`.local/`).
@@ -33,7 +39,7 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - Small PRs (< ~500 lines). Labels: `feature` (players get something new), `skip-release` (they see no
   change), none for a fix. Agents never add `release-now`: the maintainer decides it. Merges ship in batches of 5, or after
   6 hours ([docs/release-flow.md](docs/release-flow.md)).
-- Contributors first: `gh pr list --state open --search <area>` before you start; never duplicate theirs.
+- Contributors first: `gh pr list --repo heyskylo/horizon-ios --state open --search <area>` before you start; never duplicate theirs.
 - **No hardcoded user-facing strings.** Keep UI translation-ready from the start. In the launcher (`launcher/`), wrap visible text with `tr("...")` or `trf("... {arg} ...", &[("arg", &val)])` from `crate::i18n` instead of raw string literals or `format!`. In the game, use translation keys (`Text::tr`, `lang::get`), never hardcoded English strings.
 - **Claim before you start**: comment `/claim` on the issue (no issue yet: open one, then claim it). An assigned
   issue is taken, and so is one labelled `in progress` (claimed on Discord): pick another. `/unclaim` when you stop;

@@ -1,5 +1,7 @@
 # Running Horizon from another launcher
 
+> This is the inherited **desktop launcher integration API**. Its upstream build archives and executable examples describe desktop clients. For iOS/iPadOS IPAs and setup, use the [mobile README](../../README.md); report mobile bugs in [the fork](https://github.com/heyskylo/horizon-ios/issues).
+
 From picking a build to playing, for a launcher that isn't `horizon-launcher` (Prism Launcher, MultiMC,
 ATLauncher, Modrinth App, HMCL or your own). The contract it relies on is the [Launch API](launch.md); the options
 are in [launch-reference.md](launch-reference.md). `horizon-launcher` does all of this and is the reference

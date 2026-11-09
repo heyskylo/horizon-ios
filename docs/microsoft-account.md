@@ -1,14 +1,15 @@
 # Microsoft account sign-in and online-mode play
 
+> For this mobile fork, sign in through the native account sheet. iOS builds read `HorizonMSAClientID` from the app’s Info.plist; the mobile workflow fills it from `HORIZON_MSA_CLIENT_ID`, using the official public application ID by default. Use [the mobile issue tracker](https://github.com/heyskylo/horizon-ios/issues) for sign-in problems. The desktop and registration details below are shared engine reference.
+
 Horizon signs players in with their Microsoft account in the launcher and joins online-mode
 (authenticated) servers like vanilla 26.3 does. The launcher plays only with an account that owns
 Minecraft: Java Edition ([the owner gate](#the-owner-gate)); offline names, LAN and offline-mode
-servers play behind it. This note is the design, the status of each part and what Ludovic has to
-register.
+servers play behind it. This note describes the shared engine flow and the application registration maintained for a build.
 
-## What Ludovic registers (needs his accounts)
+## What the build maintainers configure
 
-Nothing below can be done by an agent: the app registrations belong to Ludovic. A build without
+Application registrations belong to their maintainers. Use the client ID provided for your build, or register an application you control. A build without
 the client ID can't sign in, so its launcher can't start the game ("This build of the launcher has
 no Microsoft sign-in"); release builds have it.
 
@@ -28,17 +29,16 @@ no Microsoft sign-in"); release builds have it.
    `api.minecraftservices.com/authentication/login_with_xbox` (HTTP 403, "Invalid app registration")
    until Mojang approves them. Apply with the form linked from https://aka.ms/mce-reviewappid
    (Minecraft Java "App ID review"), giving the client ID above, the app name, the project URL
-   (https://github.com/horizon-rust/horizon) and a short description ("open-source Minecraft Java
+   (https://github.com/heyskylo/horizon-ios) and a short description ("open-source Minecraft Java
    Edition client written in Rust; signs players in to join online-mode servers"). Approval takes
    days to weeks; sign-in fails at the Minecraft step with "This app is not approved by Mojang yet"
    until then.
 3. **Where the ID goes**:
-   - Release builds: the GitHub repository variable (not a secret: client IDs are public)
-     `HORIZON_MSA_CLIENT_ID`; the launcher's build reads it with `option_env!` at compile time.
-   - Any build, at run time: the environment variable `HORIZON_MSA_CLIENT_ID` overrides the built-in
-     value (empty or unset = not configured).
+   - This mobile fork includes Horizon’s public application ID by default. Its iOS workflow passes `HORIZON_MSA_CLIENT_ID` at build time and writes `HorizonMSAClientID` into the app’s Info.plist. The native SwiftUI account sheet reads that plist value, with the same public default as a fallback.
+   - Custom Rust game builds may override the default with the build-time environment variable `HORIZON_MSA_CLIENT_ID`; empty or unset retains the public mobile default. The native account sheet does not read a runtime shell environment override.
+   - The separate upstream desktop launcher has its own configuration: its release workflow reads a repository variable and its desktop process can accept a runtime environment override.
 
-Never use another application's client ID (the official launcher's or another launcher's).
+Do not borrow the Minecraft launcher’s or an unrelated application’s client ID. The public default used by this port is the official **Horizon** application ID, documented in [Mobile public client ID](#mobile-public-client-id).
 
 ## Flow (launcher)
 
@@ -395,3 +395,7 @@ Microsoft rejecting the refresh credential asks the user to sign in again.
 
 The simulator authentication tests use intercepted networking, an in-memory vault,
 and isolated preferences. They do not access real Microsoft accounts or credentials.
+
+## Mobile public client ID
+
+The mobile port defaults to `331e08f8-172d-43b9-835a-3108c2fcdbf3`, embedded in the [official Horizon launcher release](https://github.com/horizon-rust/horizon/releases/tag/launcher%400.2.56). Client IDs are public application identifiers, not client secrets. The same default is used by the native account sheet, the game and mobile CI builds. Custom build tooling can supply an explicit ID. Existing accounts may require a new sign-in when moving between application registrations; refresh tokens belong to the registration that issued them.

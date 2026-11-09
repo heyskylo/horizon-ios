@@ -1,5 +1,7 @@
 # Release flow
 
+> This page includes inherited desktop-engine release automation. For mobile artifacts, use [this fork’s releases](https://github.com/heyskylo/horizon-ios/releases) and [iOS workflow](https://github.com/heyskylo/horizon-ios/actions/workflows/ios.yml); see the [mobile installation guide](../README.md#install-a-build). Desktop workflow and release-label behavior below is upstream reference, not a promise that those jobs run for mobile.
+
 How a change gets from a pull request to players: the checks a pull request passes, how it merges, and the
 automatic releases that follow. Releases are automatic and frequent so the latest Horizon is always playable.
 Since 2026-10-28 Horizon ships only the **Nightly** (Ludovic's decision; the Team proposed it): the batch train builds
@@ -154,10 +156,10 @@ paths, `lan_e2e`, a screenshot for anything visible) before it merges. Risky mea
 
 Unsure? Add `needs-proof`: it costs a few hours, a broken release costs more.
 
-`parity` becomes required once it has run green on pull requests for a while (a week without a false failure):
+For this mobile fork, choose required status checks from successful runs of its actual iOS workflow in GitHub’s branch rules. Do not require an inherited desktop parity job that the fork does not run. Inspect the mobile workflow’s recent runs with:
 
 ```sh
-gh api -X POST repos/horizon-rust/horizon/branches/main/protection/required_status_checks/contexts -f 'contexts[]=parity / parity'
+gh run list --repo heyskylo/horizon-ios --workflow ios.yml
 ```
 
 A skipped `parity` (a fork's pull request without the label) counts as passed, so requiring it never blocks a

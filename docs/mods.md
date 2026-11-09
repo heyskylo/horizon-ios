@@ -38,9 +38,9 @@ Benchmarks (`--benchmark`) never load mods.
 
 ```sh
 # A prebuilt binary for Linux x86_64/aarch64, macOS x86_64/arm64 or Windows x86_64 (#2120):
-cargo binstall --git https://github.com/horizon-rust/horizon cargo-horizon-mod
+cargo binstall --git https://github.com/heyskylo/horizon-ios cargo-horizon-mod
 # Or build it from source, without cargo-binstall:
-cargo install --git https://github.com/horizon-rust/horizon cargo-horizon-mod
+cargo install --git https://github.com/heyskylo/horizon-ios cargo-horizon-mod
 cargo horizon-mod new my-mod        # a content mod: manifest, one block with its model, loot and recipe
 cd my-mod
 cargo horizon-mod run               # build my-mod.hmod, then start the game with it turned on

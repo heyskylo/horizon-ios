@@ -1,6 +1,8 @@
 # Horizon documentation
 
-To play, use [the launcher](../launcher/README.md); the project site is [playhorizon.dev](https://playhorizon.dev). These pages are for developers. What is being done now and next, the work board and how to help: [the hub](https://playhorizon.dev/hub) ([ROADMAP.md](../ROADMAP.md), [roadmap/README.md](../roadmap/README.md) for keeping it current).
+For iPhone and iPad installation, accounts, packs and troubleshooting, start with the [mobile README](../README.md). Download builds from [this fork’s releases](https://github.com/heyskylo/horizon-ios/releases) or [iOS workflow](https://github.com/heyskylo/horizon-ios/actions/workflows/ios.yml). Report bugs and request features in [heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios/issues).
+
+These pages also include shared engine and desktop reference material inherited from upstream. Numbered upstream issue, PR and commit links remain attached to their original records. The [engine roadmap](../ROADMAP.md) describes upstream work rather than a mobile release commitment.
 
 ## Build and run
 

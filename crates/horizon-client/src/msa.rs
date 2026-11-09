@@ -1,7 +1,7 @@
 //! Microsoft account sign-in inside the game, from the title screen: the OAuth device-code flow, then Xbox
 //! Live, XSTS, the Minecraft services, the ownership check and the profile (docs/microsoft-account.md). The
-//! same requests the phone's SwiftUI launcher made before the game took them over. The Azure app is Horizon
-//! iOS's own (`HORIZON_MSA_CLIENT_ID` at build time overrides it); the refresh token is kept in the game's home,
+//! same requests the phone's SwiftUI launcher made before the game took them over. The Azure app is Horizon's
+//! official public application (`HORIZON_MSA_CLIENT_ID` at build time overrides it); the refresh token is kept in the game's home,
 //! readable by its owner only, so the next start signs in again without a code. Tokens are never logged.
 use crate::auth::{self, AuthSession};
 use std::{
@@ -16,7 +16,7 @@ use std::{
 /// The Azure app the game signs in with (an empty `HORIZON_MSA_CLIENT_ID`, an unset CI variable, keeps it).
 pub const CLIENT_ID: &str = match option_env!("HORIZON_MSA_CLIENT_ID") {
     Some(id) if !id.is_empty() => id,
-    _ => "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb",
+    _ => "331e08f8-172d-43b9-835a-3108c2fcdbf3",
 };
 const SCOPE: &str = "XboxLive.signin offline_access";
 const DEVICE_CODE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";

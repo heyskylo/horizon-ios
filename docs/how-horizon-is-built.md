@@ -1,8 +1,10 @@
 # How Horizon is built
 
+> Mobile installation, signing and support are documented in the [iOS/iPadOS README](../README.md). The desktop launcher, release-signature and infrastructure details below are shared upstream background; report mobile problems in [the mobile fork](https://github.com/heyskylo/horizon-ios/issues).
+
 Who writes Horizon, how changes are checked, and why it is safe to run. You can check every claim on this page in the repository, and anything not done yet is marked as not done.
 
-This page is also on the website: [playhorizon.dev/docs/how-horizon-is-built](https://playhorizon.dev/docs/how-horizon-is-built). The longer version, with what is still missing, is [Security](security.md).
+Upstream background is available on the engine’s website: [playhorizon.dev/docs/how-horizon-is-built](https://playhorizon.dev/docs/how-horizon-is-built). The longer version, with what is still missing, is [Security](security.md).
 
 ## Who builds it
 
@@ -21,8 +23,8 @@ Not every line is read by a person. Instead, every change is checked against the
 
 ## Why it's safe to run
 
-- **Open source.** All of the code is public on [GitHub](https://github.com/horizon-rust/horizon), under the MIT licence.
-- **Built from the public code.** Releases are built by GitHub Actions, the build service of GitHub, from the public source. Linux and Windows are built on GitHub's machines, and macOS on Ludovic's Mac mini, which runs GitHub Actions jobs. Every build log is [public](https://github.com/horizon-rust/horizon/actions/workflows/release.yml).
+- **Open source.** All of the code is public on [GitHub](https://github.com/heyskylo/horizon-ios), under the MIT licence.
+- **Built from the public code.** Releases are built by GitHub Actions, the build service of GitHub, from the public source. This fork’s iOS/iPadOS builds use its iOS workflow; upstream desktop builds have their own infrastructure. Every build log is [public](https://github.com/heyskylo/horizon-ios/actions/workflows/ios.yml).
 - **Signed checksums.** Every release has a `SHA256SUMS` file, a fingerprint of each download, and `SHA256SUMS.sig`, a signature of that list made with Horizon's release key, which only release builds from main can use. The launcher and `horizon-server update` check both before they install anything, and refuse a file that does not match. The very first server install with `install.sh` checks the fingerprint but not the signature.
 - **Not yet signed by Apple or Microsoft.** The macOS app is not notarized by Apple, because it is not signed with a paid Apple developer account, so macOS asks you to confirm the first time ([Install](https://playhorizon.dev/docs/install#download-the-launcher) shows how). The Windows programs are not code-signed either, so Windows may warn you too.
 - **Mods are off by default, and reviewed.** A content mod is data and runs no code. A native mod is Rust code with your rights, not sandboxed: the launcher builds it only after a warning and your OK, in a game of its own, and the registry lists one only after a maintainer has read its source. See [Mods](mods.md) and [Native mods](native-mods.md).
@@ -35,7 +37,7 @@ Not every line is read by a person. Instead, every change is checked against the
 
 ## Check it yourself
 
-- **Read the code and its checks.** [The source](https://github.com/horizon-rust/horizon), [the checks on every pull request](https://github.com/horizon-rust/horizon/actions/workflows/ci.yml) and [the release builds](https://github.com/horizon-rust/horizon/actions/workflows/release.yml).
+- **Read the code and its checks.** [The source](https://github.com/heyskylo/horizon-ios), [the mobile build checks](https://github.com/heyskylo/horizon-ios/actions/workflows/ios.yml) and [the iOS build workflow](https://github.com/heyskylo/horizon-ios/actions/workflows/ios.yml).
 - **Compare the fingerprints.** Put a release's files and its `SHA256SUMS` in one folder and run `sha256sum -c SHA256SUMS --ignore-missing` (on macOS `shasum -a 256 -c SHA256SUMS --ignore-missing`, on Windows `Get-FileHash <file>` in PowerShell). Each file should say `OK`.
 - **Check the signature.** Download a whole release into a folder, then from a clone of the repository run `cargo run -p horizon-release-sign -- verify --tag <tag> <folder>`. The public key is in `crates/horizon-release-sign/release-keys.txt`.
 - **Build it yourself.** The README explains how to [build from source](../README.md#build-from-source).

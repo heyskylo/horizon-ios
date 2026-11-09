@@ -1,5 +1,7 @@
 # Windows ARM64
 
+> This is an upstream **Windows ARM64 reference**, not an iPhone/iPad installation guide. The Windows archives linked below are upstream desktop builds. For the mobile port, use the [mobile README](../README.md), [mobile releases](https://github.com/heyskylo/horizon-ios/releases) and [mobile issue tracker](https://github.com/heyskylo/horizon-ios/issues).
+
 Horizon builds the game and launcher as native Windows ARM64 executables for
 `aarch64-pc-windows-msvc`. GitHub Actions builds and checks them on a Windows ARM64 runner.
 

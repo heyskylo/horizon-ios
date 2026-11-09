@@ -1,5 +1,7 @@
 # CI runners
 
+> This is a shared infrastructure reference; this mobile fork’s active iOS build is [.github/workflows/ios.yml](../.github/workflows/ios.yml). Commands below target the mobile repository, but the described upstream self-hosted machines are not provided by the fork.
+
 GitHub gives the organisation 20 hosted jobs at a time, shared by every pull request, every push to main and the
 bots. On 2026-11-03 that pool had 283–351 jobs waiting (median wait 43–55 minutes) for jobs that work 1–18
 minutes, and the bots' two small runners had 327–371 waiting. Since then (the maintainer's decision: "use everything
@@ -46,8 +48,8 @@ for):
 | `off` | GitHub's | GitHub's: everything back, in one switch |
 
 ```sh
-gh variable set SELF_HOSTED_CI --body light --repo horizon-rust/horizon   # or all, off
-gh variable delete SELF_HOSTED_CI --repo horizon-rust/horizon             # the default
+gh variable set SELF_HOSTED_CI --body light --repo heyskylo/horizon-ios   # or all, off
+gh variable delete SELF_HOSTED_CI --repo heyskylo/horizon-ios             # the default
 ```
 
 Set `light` when the desktop is paused (the maintainer uses it), `off` when playhorizon is down or moves: the bots
@@ -72,14 +74,7 @@ A fork's pull request is code nobody here wrote. It may run on the checks runner
 
 ## On playhorizon
 
-Installed by `tools/ci/checks-runners.sh` (run it there; it reads the registration token on stdin, so the token never
-touches the disk or the screen):
-
-```sh
-gh api -X POST repos/horizon-rust/horizon/actions/runners/registration-token --jq .token |
-  ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh install'
-ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh status'
-```
+The details below describe upstream’s existing machines. For this fork, register any self-hosted runner through **heyskylo/horizon-ios → Settings → Actions → Runners**, using a machine controlled by the fork’s maintainers. Do not send the fork’s runner-registration token to upstream infrastructure.
 
 - Each runner is a systemd user service (`horizon-runner-ci-<n>`, `horizon-runner-light-<n>`) in
   `~/.actions-runners/horizon-{ci,light}-<n>`, with its own work folder and `HOME`. `LIGHT_RUNNERS` (default 12) and

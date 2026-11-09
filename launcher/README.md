@@ -1,5 +1,7 @@
 # Horizon launcher
 
+> This is the inherited **desktop launcher** reference. The iOS/iPadOS app uses its native SwiftUI launcher; see the [mobile setup guide](../README.md). File mobile reports in [the mobile fork](https://github.com/heyskylo/horizon-ios/issues). Desktop version/download descriptions below refer to upstream.
+
 A small desktop app that installs Horizon builds, prepares them from your own copy of
 Minecraft, and starts the client or a dedicated server. Built with [GPUI Fast](https://github.com/longbridge/gpui-fast),
 a fork of Zed's UI framework [GPUI](https://www.gpui.rs) that draws unchanged views from the last frame;

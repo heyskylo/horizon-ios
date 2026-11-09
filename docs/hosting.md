@@ -1,5 +1,7 @@
 # Host a server
 
+> This shared guide covers hosting a server on a computer. For playing on iPhone/iPad, use the [mobile README](../README.md). Report mobile-client problems in [heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios/issues).
+
 `horizon-server` hosts a Minecraft Java Edition 26.3 server with Horizon's own game as the engine: one native
 program, no Java, one settings file, a command line, and a web panel. Vanilla 26.3 clients and Horizon clients
 can join it. This page covers what works on `main` today and says plainly what doesn't yet. The design and the
@@ -654,7 +656,7 @@ No image is published: build one from the repository. The image holds none of Mi
 folder you prepared (step 2) read-only.
 
 ```sh
-git clone https://github.com/horizon-rust/horizon && cd horizon
+git clone https://github.com/heyskylo/horizon-ios.git horizon && cd horizon
 docker build -f packaging/server/Dockerfile -t horizon-server .
 
 docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
@@ -679,10 +681,10 @@ docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
 ## 10. How fast is it
 
 The latest bot benchmark compares Horizon with vanilla 26.3, Paper and Fabric + Lithium:
-[benchmarks/server-four-way-2026-10-19](https://github.com/horizon-rust/horizon/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
+[benchmarks/server-four-way-2026-10-19](https://github.com/heyskylo/horizon-ios/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
 It ran release v2026.10.19 on a 4-thread laptop CPU (i7-7500U), with 1 to 50 players walking, exploring and
 standing around spawn, the bots on another machine. All four servers did the same work. Earlier
-measurements are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/docs/server.md). In
+measurements are in [docs/server.md](https://github.com/heyskylo/horizon-ios/blob/main/docs/server.md). In
 short:
 
 - **Memory:** 0.7 GB with one player and 1.1 GB with 50, against 3.4 to 4.5 GB for the Java servers

@@ -2,16 +2,15 @@
 
 Thanks for helping. Horizon is Minecraft: Java Edition 26.3 rewritten in Rust, and the one rule that shapes
 everything is that **it plays exactly like vanilla**. This page is the short version of how we work; questions are
-welcome on [Discord](https://discord.gg/playhorizon).
+welcome on [Discord](https://discord.gg/kellyinc).
 
 This repository holds the game and the launcher, plus the tools, tests and docs that build, check and release them.
 The website (playhorizon.dev) is built in a separate repository from this one's README, `docs/api/` and roadmap. Anything
 else (videos, Discord and other community material) lives elsewhere.
 
-**Where to start: [playhorizon.dev/hub](https://playhorizon.dev/hub).** It shows what is being done now and next
-([ROADMAP.md](ROADMAP.md) in the repository), the work board, good first tasks, and the forms to report a bug or
-suggest something. A pull request for a roadmap item carries its `roadmap:<id>` label; ideas go to the suggestion
-queue (the hub, or `/suggest` on Discord) rather than to issues, which are for bugs.
+**Where to start: [the mobile fork’s issues](https://github.com/heyskylo/horizon-ios/issues).** Report iOS/iPadOS bugs and propose mobile improvements there. Submit changes through [this fork’s pull requests](https://github.com/heyskylo/horizon-ios/pulls).
+
+The shared engine’s [upstream roadmap](ROADMAP.md) is background for engine work. Its numbered upstream issue links identify that work; they are not the place to file a new mobile-port report.
 
 ## Build it
 
@@ -174,8 +173,3 @@ The `verify` check (formatting, lints, tests) runs on every pull request. The `p
 harnesses on a maintainer's machine, which holds the game files, so it never runs a fork's code on its own: a
 maintainer reads your change, then adds the `run-parity` label, which runs it once on your current commit. After
 new pushes, we add it again.
-
-## Talk to us
-
-[Discord](https://discord.gg/playhorizon) for questions and ideas, [issues](https://github.com/horizon-rust/horizon/issues)
-for bugs. To take something on, `/claim` its issue ([above](#claim-before-you-start)).
