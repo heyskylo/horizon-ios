@@ -293,6 +293,8 @@ fn an_interact_packet_clicks_the_entity_it_names_not_the_nearest() {
     assert_eq!(Game::named_entity(&cows, 31, |c| c.0), None);
 }
 
+#[path = "building_cache_tests.rs"]
+mod building_cache_tests;
 /// The id path keeps the crosshair pick's filters, so a packet cannot name
 /// a mob the pick would refuse: one in its death animation, the one the
 /// player rides, or the camera entity. Without them a guest could shear,

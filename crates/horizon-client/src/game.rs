@@ -79,8 +79,6 @@ mod books;
 mod bossbars;
 mod breezes;
 mod brush;
-#[cfg(test)]
-mod building_cache_tests;
 mod building_players;
 mod bundles;
 mod campfire;
