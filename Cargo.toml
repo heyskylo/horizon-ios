@@ -28,6 +28,8 @@ members = [
     "crates/horizon-theme",
     "crates/horizon-prepare",
     "crates/horizon-telemetry",
+    "crates/horizon-system",
+    "crates/horizon-platform",
     "crates/horizon-bench",
     "crates/horizon-friends",
     "crates/horizon-relay",

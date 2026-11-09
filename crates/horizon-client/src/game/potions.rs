@@ -1586,9 +1586,15 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+            let mut cancel = false;
             if item != "minecraft:experience_bottle" {
-                self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                self.native_potion_splash_v2(&item, [at.x, at.y, at.z], &mut cancel);
+            }
+            if !cancel {
+                self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+                if item != "minecraft:experience_bottle" {
+                    self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                }
             }
         }
     }
@@ -1946,8 +1952,17 @@ impl Game<'_> {
                 (p.y + 0.2125).floor() as i32,
                 p.z.floor() as i32,
             );
+            // Frame generation and temporal upscaling follow its own flight; one not yet
+            // given an id (0) can't be told apart from another, so it keeps the camera's.
+            let motion = if t.id == 0 {
+                0
+            } else {
+                Self::MOTION_OBJECT | u64::from(t.id)
+            };
+            self.mark_motion(out.len(), motion);
             self.submit_item_world(&state, pose, vertex_light(light), out);
         }
+        self.mark_motion(out.len(), 0);
     }
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` with a source (a
     /// potion or a cloud): indirectMagic, not plain magic, credited to the

@@ -234,6 +234,13 @@ fn the_debug_crosshair_is_gone_once_the_world_is() {
     assert!(!debug_crosshair_drawn(true, true, false, true));
 }
 
+/// Opening a world in front of a block left its outline over Loading terrain's panorama (#12872).
+#[test]
+fn the_block_outline_stays_off_the_panorama() {
+    assert!(block_outline_drawn(false, false, true, false));
+    assert!(!block_outline_drawn(false, false, true, true));
+}
+
 /// Snuffing a candle or a candle cake draws one smoke per
 /// `getParticleOffsets`: by `candles` for a candle, a block up for a cake.
 #[test]

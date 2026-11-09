@@ -100,8 +100,8 @@ Unknown keys are refused, so a typo is an error, not a silently ignored permissi
 A content mod has capability `registries` and carries `assets/` and `data/` in the `.hmod`. It adds blocks and items
 by declaring them in `data/<id>/horizon/block/*.json` and `data/<id>/horizon/item/*.json`, each copying a vanilla
 template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-mob-effects)), and creative tabs, mob
-effects, entity types and menu types (each below) in `creative_tab/`, `mob_effect/`, `entity_type/` and `menu/` beside
-them. LAN and dedicated server players play with them when they run the same mods: a client whose mods add different
+effects, fluids, entity types and menu types (each below) in `creative_tab/`, `mob_effect/`, `fluid/`, `entity_type/`
+and `menu/` beside them. LAN and dedicated server players play with them when they run the same mods: a client whose mods add different
 content is refused when it joins, with the reason.
 
 A server that has content mods on also checks them one by one (`horizon_protocol::mod_list`, channel
@@ -342,6 +342,26 @@ dedicated server players who run the same mods (its network id follows vanilla's
 as vanilla's; without one it draws as the missing texture). It does nothing on its own yet: no tick behaviour and no
 attribute modifiers. A world opened without the mod drops the effect from its players and mobs. Clients join a server
 only with the same mods' effects, as with its blocks.
+
+A mod fluid is declared in `data/<id>/horizon/fluid/<name>.json`. It copies `minecraft:water` or `minecraft:lava`
+(`template`) with NeoForge's `FluidType` and `BaseFlowingFluid.Properties` numbers in snake case, each optional (left
+out, it is the template's): `light_level` (0 to 15), `density`, `viscosity`, `temperature`, `motion_scale`,
+`fall_distance_modifier`, `can_push_entity`, `can_swim`, `can_drown`, `can_extinguish`, `can_convert_to_source`,
+`supports_boating`, `can_hydrate`, `tick_rate` (1 or more), `slope_find_distance` (1 to 8), `level_decrease_per_block`
+(1 to 7) and `explosion_resistance`. `bucket` names one of the mod's items and `block` one of its blocks, both optional.
+`still` and `flowing` (required) and `overlay` are its textures in the block atlas, `tint` an ARGB colour over them:
+
+```json
+{ "template": "minecraft:water", "viscosity": 6000, "tick_rate": 20, "bucket": "ruby:honey_bucket",
+  "still": "ruby:block/honey_still", "flowing": "ruby:block/honey_flow" }
+```
+
+Like vanilla's, it is two fluids: the source `<id>:<name>` and the flowing `<id>:flowing_<name>`
+(`ruby:molten/iron` flows as `ruby:molten/flowing_iron`). Both take network ids after vanilla's, by id, so fluid tags
+in `data/<id>/tags/fluid/` may name them, and clients join a server only with the same mods' fluids, as with its
+blocks. Native mods' tanks hold them by these ids. It is a declaration only yet: the world has no blocks of it, the
+bucket doesn't pour it, and nothing draws it ([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these
+step by step).
 
 A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
 `minecraft:snowball`, a thrown item projectile, or a living mob (below). A thrown type's `item` is one of the mod's own

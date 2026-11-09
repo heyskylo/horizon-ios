@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "create_player_file",
+      "target": "horizon_client::game::native_inventories::Game<'_>::native_create_player_file"
+    }
+  ],
+  "rust_summary": "a saved player file made for a player who has never played here (`native_create_player_file`).",
+  "doc_summary": "`native_create_player_file(uuid, name)` makes the saved file of a player who has never played here, with a new player's state (full health and food, no items, no position), so that the inventory helpers can read and change it before they first join; when they join, the file loads as a returning player's. Err `NativeInventoryError` when there is no world, the player is on the server, or a file exists already, or the file cannot be written. Bundles need \"hooks\": @API:create_player_file@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_inventories.rs"
+  ]
+}
