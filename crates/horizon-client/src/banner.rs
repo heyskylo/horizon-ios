@@ -101,19 +101,22 @@ impl Banners {
             });
         }
         banners.no_item_required = read_tag(root, "no_item_required", 0);
-        let mut tag_files: Vec<_> = fs::read_dir(root.join("data/minecraft/tags/banner_pattern"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-            .collect();
-        tag_files.sort();
-        for path in tag_files {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                banners
-                    .pattern_tags
-                    .insert(format!("minecraft:{stem}"), read_tag(root, stem, 0));
+        // Every tag, `pattern_item/globe` included, for a component naming one.
+        let tags = root.join("data/minecraft/tags/banner_pattern");
+        let mut dirs = vec![tags.clone()];
+        while let Some(dir) = dirs.pop() {
+            for path in fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "json")
+                    && let Some(name) = path
+                        .strip_prefix(&tags)
+                        .ok()
+                        .and_then(|p| p.with_extension("").to_str().map(|s| s.replace('\\', "/")))
+                {
+                    let members = read_tag(root, &name, 0);
+                    banners.pattern_tags.insert(format!("minecraft:{name}"), members);
+                }
             }
         }
         let owned_defaults;
@@ -185,13 +188,22 @@ impl Banners {
             .then(|| self.dyes.get(&stack.item).cloned())
             .flatten()
     }
-    /// `LoomMenu.isPatternItem`.
+    /// `LoomMenu.isPatternItem`: the item tag and a present
+    /// `provides_banner_patterns` component (the stack's, else the item's).
     pub fn is_pattern_item(&self, items: &Items, stack: &ItemStack) -> bool {
-        items
+        if !items
             .item_tags
             .get("minecraft:loom_patterns")
             .is_some_and(|t| t.contains(&*stack.item))
-            && self.provided.contains_key(&stack.item)
+        {
+            return false;
+        }
+        let data = stack.data();
+        if data.is_some_and(|d| d.other("!minecraft:provides_banner_patterns").is_some()) {
+            return false;
+        }
+        data.is_some_and(|d| d.other("minecraft:provides_banner_patterns").is_some())
+            || self.provided.contains_key(&stack.item)
     }
     /// `LoomMenu.getSelectablePatterns`.
     pub fn selectable(&self, pattern_item: Option<&ItemStack>) -> Vec<Arc<str>> {
@@ -225,16 +237,21 @@ impl Banners {
         }
     }
     fn provides_one(&self, value: &str) -> Vec<Arc<str>> {
-        match value.strip_prefix('#') {
-            Some(tag) => {
-                let key = if tag.contains(':') {
-                    tag.to_owned()
-                } else {
-                    format!("minecraft:{tag}")
-                };
-                self.pattern_tags.get(&key).cloned().unwrap_or_default()
+        // `Identifier.parse`: an id or tag without a namespace is `minecraft`'s.
+        let namespaced = |id: &str| {
+            if id.contains(':') {
+                id.to_owned()
+            } else {
+                format!("minecraft:{id}")
             }
-            None => vec![Arc::from(value)],
+        };
+        match value.strip_prefix('#') {
+            Some(tag) => self
+                .pattern_tags
+                .get(&namespaced(tag))
+                .cloned()
+                .unwrap_or_default(),
+            None => vec![Arc::from(namespaced(value))],
         }
     }
 }
@@ -300,6 +317,24 @@ mod tests {
         assert_eq!(&*b.selectable(Some(&item))[0], "minecraft:flower");
     }
     #[test]
+    fn prepared_pattern_component_presence() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let items = Items::tags_only(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        let b = Banners::load(&root);
+        let mut pattern = ItemStack::new("minecraft:globe_banner_pattern", 1);
+        assert!(b.is_pattern_item(&items, &pattern));
+        pattern.data_mut().set_other(
+            "!minecraft:provides_banner_patterns",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(!b.is_pattern_item(&items, &pattern));
+    }
+    #[test]
     fn prepared_pattern_component_selection() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
@@ -315,6 +350,17 @@ mod tests {
             Some(Tag::List(vec![Tag::String("minecraft:creeper".into())])),
         );
         assert_eq!(&*b.selectable(Some(&pattern))[0], "minecraft:creeper");
+        // One id without its namespace, or a tag, as `HolderSet`'s codec reads them.
+        pattern.data_mut().set_other(
+            "minecraft:provides_banner_patterns",
+            Some(Tag::String("creeper".into())),
+        );
+        assert_eq!(b.selectable(Some(&pattern)), [Arc::from("minecraft:creeper")]);
+        pattern.data_mut().set_other(
+            "minecraft:provides_banner_patterns",
+            Some(Tag::String("#pattern_item/globe".into())),
+        );
+        assert_eq!(b.selectable(Some(&pattern)), [Arc::from("minecraft:globe")]);
         pattern.data_mut().set_other(
             "!minecraft:provides_banner_patterns",
             Some(Tag::compound(Vec::<(&str, Tag)>::new())),
