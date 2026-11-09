@@ -47,7 +47,7 @@ impl Game<'_> {
         // and the arrows (the mobs and other entities are added in `with_level`
         // below).
         scratch.inside.clear();
-        let guests = self.lan_block_trigger_boxes();
+        let guests = self.lan_block_trigger_boxes().into_iter().map(|(_, b)| b);
         let boxes = self
             .player
             .iter()

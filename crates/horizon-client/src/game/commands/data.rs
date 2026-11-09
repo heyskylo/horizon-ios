@@ -282,6 +282,8 @@ impl Game<'_> {
                     },
                     uuid,
                 );
+                // Entity.saveWithoutId's common fields, also for a cloud never saved.
+                crate::game::persist::write_static_entity_fields(&mut tag);
                 set_key(&mut tag, "Age", Tag::Int(c.age));
                 set_key(&mut tag, "Duration", Tag::Int(c.duration));
                 set_key(&mut tag, "Radius", Tag::Float(c.radius.to_bits()));
@@ -323,7 +325,7 @@ impl Game<'_> {
             Target::Trident(id) => {
                 let uuid = self.uuid_for(id);
                 let t = self.tridents.iter().find(|t| t.id == id)?;
-                t.to_nbt(uuid, self.persist.raw.get(&id))
+                t.to_nbt(uuid, self.pack.assets.registry, self.persist.raw.get(&id))
             }
             Target::Spawner(id) => {
                 let s = self.ominous_spawners.iter().find(|s| s.id == id)?;
@@ -645,7 +647,7 @@ impl Game<'_> {
                     .iter_mut()
                     .find(|trident| trident.id == id)
                     .ok_or_else(stale)?
-                    .load_nbt(loaded);
+                    .load_nbt(loaded, &tag, self.pack.assets.registry);
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
             Target::Rocket(id) => {
