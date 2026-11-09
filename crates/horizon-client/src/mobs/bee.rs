@@ -353,7 +353,6 @@ pub fn sting(m: &mut Mob, who: Who, cx: &mut Cx) {
         attacker: Some(Who::Mob(m.id)),
         from: Some(from),
         attacker_species: Some(Species::Bee),
-        attacker_uuid: None,
     };
     match who {
         Who::Player => {

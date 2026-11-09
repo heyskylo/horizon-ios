@@ -199,7 +199,6 @@ impl Game<'_> {
     /// `LivingEntity.hurtServer` of the mob at `index` by the player's hit:
     /// the weapon's `armor_effectiveness` enchantments (Breach) thin its armor.
     pub(super) fn hurt_by_player(&mut self, index: usize, amount: f32, source: Damage) -> bool {
-        let source = source.with_attacker_uuid(self.player_uuid_of(self.lan_acting));
         let player_uuid = (source.attacker == Some(horizon_client::mobs::Who::Player))
             .then(|| self.owner_damage_uuid())
             .flatten();
@@ -279,9 +278,6 @@ impl Game<'_> {
         }
         if hurt && self.mobs[index].health != old_health {
             self.mob_damage_event(self.mobs[index].id);
-        }
-        if hurt {
-            self.flush_villager_reputation(self.mobs[index].id);
         }
         hurt
     }

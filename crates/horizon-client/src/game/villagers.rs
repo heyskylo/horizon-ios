@@ -408,144 +408,65 @@ impl Game<'_> {
         };
         Some(horizon_client::lan::playerdata::uuid_ints(uuid))
     }
-    /// Capture a causing entity's identity before its damage is deferred.
-    pub(super) fn damage_attacker_uuid(
-        &mut self,
-        who: Option<horizon_client::mobs::Who>,
-        guest: Option<u32>,
-    ) -> Option<[i32; 4]> {
-        match who {
-            Some(horizon_client::mobs::Who::Player) => self.player_uuid_of(guest),
-            Some(horizon_client::mobs::Who::Mob(id)) => {
-                if let Some(uuid) = self.persist.uuids.get(&id) {
-                    Some(*uuid)
-                } else if self.mobs.iter().any(|m| m.id == id && !m.removed) {
-                    Some(self.mob_uuid(id))
-                } else {
-                    None
-                }
-            }
-            None => None,
-        }
-    }
-    /// Flush only notifications for this merchant. The causing UUID was
-    /// captured with the accepted hit; an actor swap never reconstructs it.
-    pub(super) fn flush_villager_reputation(&mut self, id: u32) {
-        if !self
-            .mobs
-            .iter()
-            .find(|m| m.id == id)
-            .and_then(villager::ext)
-            .is_some_and(|e| !e.reputation_events.is_empty())
-        {
-            return;
-        }
-        if self.lan_acting.is_some() {
-            if !self.pending_villager_reputation.contains(&id) {
-                self.pending_villager_reputation.push(id);
-            }
-            return;
-        }
-        let changes = self.take_villager_reputation_events(id);
-        for uuid in changes {
-            self.merchant_refresh_local(id, Some(uuid));
-            if let Some(mut host) = self.lan.take() {
-                self.lan_merchant_refresh(&mut host, id, Some(uuid));
-                self.lan = Some(host);
-            }
-        }
-    }
-    fn take_villager_reputation_events(&mut self, id: u32) -> Vec<[i32; 4]> {
-        self.mobs
-            .iter_mut()
-            .find(|m| m.id == id)
-            .and_then(|m| m.extra.villager.as_deref_mut())
-            .map(|e| std::mem::take(&mut e.reputation_events))
-            .unwrap_or_default()
-    }
-    /// Run after the guest's inventory, effects and merchant record are back
-    /// in the hub, so refreshes see their actual current trading session.
-    pub(super) fn flush_guest_villager_reputation(&mut self, host: &mut super::lan::LanHost) {
-        // A nested return restores an outer borrowed player, whose merchant
-        // and effects are still outside the hub. Wait for its canonical restore.
-        if self.lan_acting.is_some() {
-            return;
-        }
-        for id in std::mem::take(&mut self.pending_villager_reputation) {
-            for uuid in self.take_villager_reputation_events(id) {
-                self.merchant_refresh_local(id, Some(uuid));
-                self.lan_merchant_refresh(host, id, Some(uuid));
-            }
-        }
-    }
-    /// Deliver accepted mob hurts whose UUID could not be captured in the
-    /// low-level damage pipeline. Player identities are never reconstructed here.
+    /// `Villager.setLastHurtByMob` and `ServerLevel.onReputationEvent`: a hit
+    /// from a player counts against that player with the villager that was hit.
     pub(super) fn villager_reputation_tick(&mut self) {
-        let mut pending = Vec::new();
-        for m in &mut self.mobs {
-            if let Some(e) = m.extra.villager.as_deref_mut() {
-                for who in std::mem::take(&mut e.hurts) {
-                    pending.push((m.id, who));
-                }
+        let mut angry = Vec::new();
+        for i in 0..self.mobs.len() {
+            let m = &self.mobs[i];
+            if m.species() != Species::Villager
+                || m.ai.last_hurt_by != Some(horizon_client::mobs::Who::Player)
+            {
+                continue;
             }
-        }
-        for (id, who) in pending {
-            let horizon_client::mobs::Who::Mob(attacker) = who else {
+            let time = m.ai.last_hurt_by_time;
+            let alive = m.alive();
+            let at = m.id;
+            if villager::ext(m).is_some_and(|e| e.hurt_seen == time) {
+                continue;
+            }
+            let hurt_by = self.last_hurt_by_player.get(&at).copied().flatten();
+            let Some(uuid) = self.player_uuid_of(hurt_by) else {
                 continue;
             };
-            let Some(uuid) =
-                self.damage_attacker_uuid(Some(horizon_client::mobs::Who::Mob(attacker)), None)
-            else {
-                continue;
-            };
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                villager::reputation_event(m, uuid, GossipType::MinorNegative);
+            let e = villager::ext_mut(&mut self.mobs[i]);
+            e.hurt_seen = time;
+            e.gossips.add(
+                uuid,
+                GossipType::MinorNegative,
+                gossip::REPUTATION_CHANGE_PER_EVENT,
+            );
+            if alive {
+                angry.push(at);
             }
         }
-        let changed: Vec<_> = self
-            .mobs
-            .iter()
-            .filter(|m| villager::ext(m).is_some_and(|e| !e.reputation_events.is_empty()))
-            .map(|m| m.id)
-            .collect();
-        for id in changed {
-            self.flush_villager_reputation(id);
+        // Villager.setLastHurtByMob: entity event 13.
+        for id in angry {
+            self.mob_event_particles(id, 13);
         }
     }
-    /// `Villager.tellWitnessesThatIWasMurdered`: cached witnesses remember
-    /// the actual causing entity, including a mob.
-    pub(super) fn villager_murdered(&mut self, victim: &Mob) {
-        if victim.species() != Species::Villager {
+    /// `Villager.tellWitnessesThatIWasMurdered`: the villagers that saw a
+    /// player kill one remember it as a major wrong.
+    /// `killer` is the guest connection that last hurt it (None: the host).
+    pub(super) fn villager_murdered(&mut self, victim: &Mob, by_player: bool, killer: Option<u32>) {
+        if victim.species() != Species::Villager || !by_player {
             return;
         }
-        let Some(attacker) = victim.last_damage.and_then(|(source, _)| source.attacker) else {
+        let Some(uuid) = self.player_uuid_of(killer) else {
             return;
-        };
-        let uuid = match victim
-            .last_damage
-            .and_then(|(source, _)| source.attacker_uuid)
-        {
-            Some(uuid) => uuid,
-            None => match attacker {
-                horizon_client::mobs::Who::Mob(id) => {
-                    let Some(uuid) =
-                        self.damage_attacker_uuid(Some(horizon_client::mobs::Who::Mob(id)), None)
-                    else {
-                        return;
-                    };
-                    uuid
-                }
-                horizon_client::mobs::Who::Player => return,
-            },
         };
         let snapshot: Vec<_> = self.mobs.iter().map(|m| m.seen(None)).collect();
         let witnesses =
             villager_brain::murder_witnesses(&mut victim.clone(), &self.mob_world_base(&snapshot));
         for id in witnesses {
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                villager::reputation_event(m, uuid, GossipType::MajorNegative);
-            }
-            self.flush_villager_reputation(id);
+            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                continue;
+            };
+            villager::ext_mut(m).gossips.add(
+                uuid,
+                GossipType::MajorNegative,
+                gossip::REPUTATION_CHANGE_PER_EVENT,
+            );
         }
     }
     /// Retain the accepted trade's actual player until the eligible mob AI
@@ -660,5 +581,5 @@ mod entity_event_particle_tests {
 }
 
 #[cfg(test)]
-#[path = "villager_reputation_tests.rs"]
-mod reputation_tests;
+#[path = "villager_witness_tests.rs"]
+mod witness_tests;

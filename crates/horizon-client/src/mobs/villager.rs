@@ -274,6 +274,10 @@ pub struct Ext {
     /// (`hasFirstWaveSpawned && !isBetweenWaves`).
     pub raid_wave: bool,
     /// What the villager remembers of players (`gossips`).
+    /// Visibility inputs for another villager's noncombat sensor.
+    pub invisible: bool,
+    pub crouching: bool,
+    pub armor: [Option<std::sync::Arc<str>>; 4],
     pub gossips: crate::gossip::Gossips,
     /// `Villager.lastTradedPlayer`: the most recent trader, consumed by the
     /// next customServerAiStep. This is runtime state, not saved gossip.
@@ -291,10 +295,8 @@ pub struct Ext {
     pub sleeping_pos: Option<[i32; 3]>,
     /// `GOLEM_DETECTED_RECENTLY` expires at this game time.
     pub golem_until: i64,
-    /// Accepted hurts awaiting identity resolution by the owning game.
-    pub hurts: Vec<super::Who>,
-    /// Source identities for applied reputation events awaiting the menu bridge.
-    pub reputation_events: Vec<[i32; 4]>,
+    /// The `last_hurt_by_time` of the player's hit already counted.
+    pub hurt_seen: i32,
     /// A zombie villager's cure under way.
     pub cure: Option<super::zombie_villager::Cure>,
     /// `ZombieVillager.villagerDataFinalized`: only a save with
@@ -310,14 +312,6 @@ pub fn ext(m: &Mob) -> Option<&Ext> {
 }
 pub fn ext_mut(m: &mut Mob) -> &mut Ext {
     m.extra.villager.get_or_insert_with(Box::default)
-}
-/// `Villager.onReputationEventFrom`: retain the source identity until the
-/// game can refresh that same player's active merchant menu.
-pub fn reputation_event(m: &mut Mob, uuid: [i32; 4], kind: crate::gossip::GossipType) {
-    let e = ext_mut(m);
-    e.gossips
-        .add(uuid, kind, crate::gossip::REPUTATION_CHANGE_PER_EVENT);
-    e.reputation_events.push(uuid);
 }
 /// The raid where the villager stands (`RAID_NONE` ... `RAID_LOSS`).
 pub fn raid_status(m: &Mob) -> u8 {
@@ -619,10 +613,6 @@ impl Ext {
 /// reads the other villager itself).
 #[derive(Clone, Debug, Default)]
 pub struct Seen {
-    /// Visibility inputs for another villager's noncombat sensor.
-    pub invisible: bool,
-    pub crouching: bool,
-    pub armor: [Option<std::sync::Arc<str>>; 4],
     pub gossips: crate::gossip::Gossips,
     pub last_gossip_time: i64,
     /// `countFoodPointsInInventory`.

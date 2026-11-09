@@ -1766,7 +1766,7 @@ impl Game<'_> {
         // neither its owner's heroism nor a murder by them.
         let slain_by_player = by_player && !killed_by_mob(m);
         self.raider_died(m, slain_by_player, killer.flatten());
-        self.villager_murdered(m);
+        self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
         // LAST_DAMAGE_PLAYER only while the player is still in the world and
@@ -2137,11 +2137,6 @@ impl Game<'_> {
     }
     /// Melee or ranged damage to another mob; whether the hit landed.
     pub(super) fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
-        if source.attacker_uuid.is_none()
-            && let Some(Who::Mob(id)) = source.attacker
-        {
-            source.attacker_uuid = self.damage_attacker_uuid(Some(Who::Mob(id)), None);
-        }
         if source.attacker_species.is_none()
             && let Some(Who::Mob(id)) = source.attacker
         {
@@ -2197,9 +2192,6 @@ impl Game<'_> {
         }
         if killed && let Some(Who::Mob(killer)) = source.attacker {
             self.zombie_killed(killer, target);
-        }
-        if hurt {
-            self.flush_villager_reputation(target);
         }
         hurt
     }
@@ -2908,7 +2900,6 @@ impl Game<'_> {
                                 attacker: Some(Who::Mob(attacker)),
                                 from: Some(from),
                                 attacker_species: Some(Species::Warden),
-                                attacker_uuid: None,
                             };
                             let hurt = self.mob_hits_mob(id, 10.0, source);
                             let resistance = self
@@ -5338,18 +5329,9 @@ impl Game<'_> {
         self.target_block_hit(&hook, pos, at, face);
     }
     pub(super) fn projectile_hit(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
-        let reputation_target = match &hit {
-            Hit::Entity {
-                who: Who::Mob(id), ..
-            } => Some(*id),
-            _ => None,
-        };
         let result = self.projectile_hit_inner(p, hit);
         // LivingEntity.actuallyHurt credits the shooter (a ServerPlayer) with the absorbed damage.
         self.settle_dealt_absorbed(p.owner == Some(Who::Player));
-        if let Some(id) = reputation_target {
-            self.flush_villager_reputation(id);
-        }
         result?;
         // The hit's hurt teleports an enderman or a shulker now (`hurtServer`).
         self.settle_hurt_teleports()
@@ -5520,7 +5502,6 @@ impl Game<'_> {
             attacker: p.owner,
             from: Some([p.previous.x, p.previous.y, p.previous.z]),
             attacker_species,
-            attacker_uuid: self.damage_attacker_uuid(p.owner, p.guest),
         };
         let aim = self.attacker_aim(source.attacker);
         match (&p.kind, hit) {
@@ -8261,7 +8242,51 @@ fn breeding_credit(
 }
 
 #[cfg(test)]
-mod shulker_arrow_tests;
+mod shulker_arrow_tests {
+    use super::*;
+    use horizon_client::arrows::{ArrowEvent, deflect_reverse};
+    use horizon_core::random::LegacyRandom;
+
+    /// `AbstractArrow.onHitEntity` after `hurtOrSimulate` fails and the target
+    /// still takes a projectile's side effects: `deflect(REVERSE, …, 0.2)`,
+    /// and no hit sound. A closed shulker's refusal is that miss
+    /// (`shulker::tests`). An enderman's teleport is `Dodged`, not this.
+    #[test]
+    fn a_refused_arrow_reverses_without_a_hit_sound() {
+        assert_eq!(arrow_miss(false), EntityHit::Refused);
+        assert_eq!(arrow_miss(true), EntityHit::Dodged);
+
+        let mut arrow = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 1.0, 0.0),
+            Some(Who::Player),
+        )
+        .with_arrow_random(LegacyRandom::new(7));
+        arrow.velocity = Vec3::new(3.0, -1.0, 2.0);
+        arrow.yaw = 15.0;
+        let mut oracle = LegacyRandom::new(7);
+        let expect_yaw = 15.0 + 170.0 + oracle.next_float() * 20.0;
+        let mut state = arrow.arrow.take().expect("an arrow");
+        deflect_reverse(&mut arrow.velocity, &mut arrow.yaw, &mut state);
+        // power 0.2, and REVERSE multiplies by -power * 0.5.
+        assert!((arrow.velocity.x - -0.3).abs() < 1e-6);
+        assert!((arrow.velocity.y - 0.1).abs() < 1e-6);
+        assert!((arrow.velocity.z - -0.2).abs() < 1e-6);
+        assert!((arrow.yaw - expect_yaw).abs() < 1e-4);
+        assert!(!state.removed, "the reversed arrow stays in the world");
+        assert!(
+            state
+                .events
+                .iter()
+                .all(|e| !matches!(e, ArrowEvent::Sound { .. })),
+            "the deflect branch plays no hit sound"
+        );
+    }
+}
 
 #[cfg(test)]
 mod breeding_tests {

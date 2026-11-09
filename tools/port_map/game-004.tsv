@@ -1,4 +1,4 @@
-DamageSources.source	port	crates/horizon-client/src/mobs/damage.rs::Damage::of	a damage source is a DamageKind plus attacker and origin; type ids are resolved in creatures.rs::damage_type
+DamageSources.source	port	crates/horizon-client/src/mobs.rs::Damage::of	a damage source is a DamageKind plus attacker and origin; type ids are resolved in creatures.rs::damage_type
 DamageSources.fireball	inline	crates/horizon-client/src/game/creatures.rs::damage_type	gap: minor: always minecraft:fireball; an owner-less fireball is not the unattributed_fireball type (death message and loot condition only)
 DamageSources.explosion	inline	crates/horizon-client/src/game/creatures.rs::damage_type	gap: minor: player_explosion only when the attacker is the player; vanilla uses it whenever a causing entity exists (a creeper too), so that death message differs
 FallLocation.blockToFallLocation	port	crates/horizon-client/src/game/combat.rs::Game::fall_location	gap: minor: trapdoors are not mapped to the ladder location, they count as other_climbable

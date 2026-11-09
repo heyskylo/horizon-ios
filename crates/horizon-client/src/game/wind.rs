@@ -157,7 +157,6 @@ impl Game<'_> {
                     attacker: p.owner,
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
                     attacker_species: owner_breeze.then_some(Species::Breeze),
-                    attacker_uuid: self.damage_attacker_uuid(p.owner, p.guest),
                 };
                 let mut hurt = false;
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
@@ -175,7 +174,6 @@ impl Game<'_> {
                 if p.owner == Some(Who::Player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
                 }
-                self.flush_villager_reputation(id);
                 if hurt {
                     self.shot_post_attack(p, who, p.kind.id(), "minecraft:wind_charge");
                 }

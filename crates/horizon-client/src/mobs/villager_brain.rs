@@ -613,7 +613,6 @@ fn sense_living(m: &mut Mob, w: &MobWorld) {
         cache: Vec::new(),
     });
 }
-
 /// The visible-entities memory's line-of-sight test, cached per memory.
 fn visible_test(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
     if let Some(v) = mem_ref(m).and_then(|mm| mm.visible_mobs.get()) {
@@ -645,7 +644,6 @@ fn visible_contains(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
     };
     list && visible_test(m, w, who)
 }
-
 /// `PlayerSensor`.
 fn sense_players(m: &mut Mob, w: &MobWorld) {
     let range = m.attrs.follow_range;
@@ -4602,8 +4600,8 @@ pub fn seen_memories(
 }
 
 #[cfg(test)]
-mod reputation_witness_tests;
-
-#[cfg(test)]
 #[path = "villager_trades_tests.rs"]
 mod trades_tests;
+
+#[cfg(test)]
+mod reputation_witness_tests;

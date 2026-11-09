@@ -802,7 +802,6 @@ fn the_damage_hook_names_the_source() {
             attacker,
             from: None,
             attacker_species: None,
-            attacker_uuid: None,
         });
         (s.damage_type, s.causing, s.direct)
     };

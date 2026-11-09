@@ -30,7 +30,6 @@ pub mod copper_golem;
 pub mod creaking;
 pub mod creaking_heart;
 pub mod cube;
-mod damage;
 pub mod data;
 pub mod dolphin;
 pub mod doors;
@@ -108,7 +107,6 @@ pub mod warden;
 pub mod warden_brain;
 pub mod witch;
 pub mod wither;
-pub use damage::Damage;
 mod world;
 pub use world::{TargetInfo, single_player_pos, visual_clip};
 pub mod dragon_contacts;
@@ -861,6 +859,206 @@ pub struct Aim {
     pub eye: [f64; 3],
     pub look: [f64; 3],
     pub feet: [f64; 3],
+}
+/// A damage source: its type, the attacking entity and where it came from.
+#[derive(Clone, Copy, Debug)]
+pub struct Damage {
+    pub kind: DamageKind,
+    pub attacker: Option<Who>,
+    pub from: Option<[f64; 3]>,
+    pub attacker_species: Option<Species>,
+}
+impl Damage {
+    pub fn fall() -> Self {
+        Self {
+            kind: DamageKind::Fall,
+            attacker: None,
+            from: None,
+            attacker_species: None,
+        }
+    }
+    pub fn of(kind: DamageKind) -> Self {
+        Self {
+            kind,
+            attacker: None,
+            from: None,
+            attacker_species: None,
+        }
+    }
+    pub fn player(from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::PlayerAttack,
+            attacker: Some(Who::Player),
+            from: Some(from),
+            attacker_species: None,
+        }
+    }
+    /// `DamageSources.mace`: a player's smash attack.
+    pub fn mace(from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::MaceSmash,
+            attacker: Some(Who::Player),
+            from: Some(from),
+            attacker_species: None,
+        }
+    }
+    /// `DamageSources.spear`: a player's stab with a spear.
+    pub fn spear(from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::Spear,
+            attacker: Some(Who::Player),
+            from: Some(from),
+            attacker_species: None,
+        }
+    }
+    /// `DamageSources.indirectMagic(potion, owner)`: `attacker` is the owner
+    /// (none for a dispenser's potion), `from` the potion's position, which
+    /// the knockback pushes away from.
+    pub fn indirect_magic(attacker: Option<Who>, from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::IndirectMagic,
+            attacker,
+            from: Some(from),
+            attacker_species: None,
+        }
+    }
+    /// `DamageSources.fireworks(rocket, owner)`: `attacker` is the owner
+    /// (none for a rocket nobody fired), `from` the rocket's position, which
+    /// the knockback pushes away from (`calculateHorizontalHurtKnockbackDirection`).
+    pub fn fireworks(attacker: Option<Who>, from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::Fireworks,
+            attacker,
+            from: Some(from),
+            attacker_species: None,
+        }
+    }
+    pub fn mob(id: u32, from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::MobAttack,
+            attacker: Some(Who::Mob(id)),
+            from: Some(from),
+            attacker_species: None,
+        }
+    }
+    pub fn with_species(mut self, species: Species) -> Self {
+        self.attacker_species = Some(species);
+        self
+    }
+    /// DamageTypeTags.PANIC_CAUSES
+    pub fn causes_panic(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::PANIC_CAUSES);
+        }
+        !matches!(
+            self.kind,
+            DamageKind::Fall
+                | DamageKind::Drown
+                | DamageKind::DryOut
+                | DamageKind::Generic
+                | DamageKind::InWall
+                | DamageKind::SweetBerryBush
+                | DamageKind::OutOfWorld
+                | DamageKind::FallingBlock
+                | DamageKind::FallingAnvil
+                | DamageKind::Cramming
+                | DamageKind::GenericKill
+                | DamageKind::OutsideBorder
+                | DamageKind::Spit
+                | DamageKind::Stalagmite
+                | DamageKind::Starve
+                | DamageKind::Campfire
+        )
+    }
+    /// DamageTypeTags.BYPASSES_ARMOR
+    pub fn bypasses_armor(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::BYPASSES_ARMOR);
+        }
+        matches!(
+            self.kind,
+            DamageKind::Fall
+                | DamageKind::FlyIntoWall
+                | DamageKind::OnFire
+                | DamageKind::Drown
+                | DamageKind::Magic
+                | DamageKind::IndirectMagic
+                | DamageKind::InWall
+                | DamageKind::Generic
+                | DamageKind::SonicBoom
+                | DamageKind::Freeze
+                | DamageKind::OutOfWorld
+                | DamageKind::Cramming
+                | DamageKind::GenericKill
+                | DamageKind::OutsideBorder
+                | DamageKind::Stalagmite
+                | DamageKind::Starve
+                | DamageKind::Wither
+        )
+    }
+    pub fn is_fire(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::IS_FIRE);
+        }
+        matches!(
+            self.kind,
+            DamageKind::OnFire
+                | DamageKind::InFire
+                | DamageKind::Campfire
+                | DamageKind::HotFloor
+                | DamageKind::Lava
+                | DamageKind::Fireball
+                | DamageKind::SulfurCubeHot
+        )
+    }
+    /// DamageTypeTags.NO_KNOCKBACK
+    pub fn no_knockback(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::NO_KNOCKBACK);
+        }
+        matches!(
+            self.kind,
+            DamageKind::Explosion
+                | DamageKind::Fall
+                | DamageKind::FlyIntoWall
+                | DamageKind::OnFire
+                | DamageKind::InFire
+                | DamageKind::Campfire
+                | DamageKind::HotFloor
+                | DamageKind::Lava
+                | DamageKind::Drown
+                | DamageKind::DryOut
+                | DamageKind::Magic
+                | DamageKind::Cactus
+                | DamageKind::SweetBerryBush
+                | DamageKind::Generic
+                | DamageKind::InWall
+                | DamageKind::Freeze
+                | DamageKind::OutOfWorld
+                | DamageKind::LightningBolt
+                | DamageKind::Cramming
+                | DamageKind::GenericKill
+                | DamageKind::OutsideBorder
+                | DamageKind::Stalagmite
+                | DamageKind::Starve
+                | DamageKind::SulfurCubeHot
+                | DamageKind::Wither
+                | DamageKind::Spear
+        )
+    }
+    pub fn is_projectile(&self) -> bool {
+        if let DamageKind::Named(named) = self.kind {
+            return named.has(NamedDamage::IS_PROJECTILE);
+        }
+        matches!(
+            self.kind,
+            DamageKind::Arrow
+                | DamageKind::Thrown
+                | DamageKind::Fireball
+                | DamageKind::WindCharge
+                | DamageKind::WitherSkull
+        )
+    }
 }
 /// Per-mob attribute base values (the type's defaults unless changed).
 #[derive(Clone, Copy, Debug)]
@@ -3537,10 +3735,6 @@ impl Mob {
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
         player_uuid: Option<[i32; 4]>,
     ) -> bool {
-        let mut source = source;
-        if source.attacker == Some(Who::Player) && player_uuid.is_some() {
-            source.attacker_uuid = player_uuid;
-        }
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
         // SulfurCube.hurtServer: the priming and a block's immune knockback
@@ -3745,25 +3939,6 @@ impl Mob {
         if let Some(who) = source.attacker {
             self.ai.last_hurt_by = Some(who);
             self.ai.last_hurt_by_time = self.age as i32;
-            if self.species() == Species::Villager {
-                if let Some(uuid) = source.attacker_uuid {
-                    villager::reputation_event(
-                        self,
-                        uuid,
-                        crate::gossip::GossipType::MinorNegative,
-                    );
-                } else {
-                    villager::ext_mut(self).hurts.push(who);
-                }
-                // Villager.setLastHurtByMob checks health before death protection.
-                if who == Who::Player && self.alive() {
-                    self.outbox.push(MobEvent::EntityEvent {
-                        mob: self.id,
-                        event: 13,
-                        at: [self.position.x, self.position.y, self.position.z],
-                    });
-                }
-            }
             if who == Who::Player {
                 self.ai.last_hurt_by_player = 100;
             }
@@ -5501,7 +5676,6 @@ mod fire_resistance_damage_tests {
             attacker: Some(Who::Player),
             from: None,
             attacker_species: None,
-            attacker_uuid: None,
         };
         assert!(mob.damage(1.0, source));
         assert_eq!(mob.health, 10.0);
@@ -5565,7 +5739,6 @@ mod magic_absorb_tests {
             attacker: Some(Who::Player),
             from: Some([4.0, 2.0, 3.0]),
             attacker_species: None,
-            attacker_uuid: None,
         };
         let sounds = |m: &Mob| -> Vec<(&'static str, [f64; 3], f32, f32)> {
             m.outbox
@@ -5633,7 +5806,6 @@ mod magic_absorb_tests {
             attacker: Some(Who::Mob(m.id)),
             from: None,
             attacker_species: Some(Species::Witch),
-            attacker_uuid: None,
         };
         m.damage(20.0, own);
         assert_eq!(m.health, 10.0);
@@ -5703,7 +5875,6 @@ mod armor_hurt_tests {
             attacker: None,
             from: None,
             attacker_species: None,
-            attacker_uuid: None,
         };
         let mut m = horse();
         m.extra.body = Some("minecraft:diamond_horse_armor".into());
@@ -6464,120 +6635,6 @@ mod visibility_percent_tests {
         assert_eq!(
             sneaking.visibility_percent(Some("minecraft:skeleton"), Some(&items)),
             0.4
-        );
-    }
-}
-
-#[cfg(test)]
-mod villager_reputation_tests {
-    use super::*;
-
-    fn villager() -> Mob {
-        let mut kind = sensor_scan_tests::kind();
-        let k = Arc::make_mut(&mut kind);
-        k.id = "minecraft:villager".into();
-        k.species = Species::Villager;
-        Mob::new(91, kind, Vec3::ZERO, 0.0)
-    }
-    fn reputation(m: &Mob, uuid: [i32; 4]) -> i32 {
-        villager::ext(m).map_or(0, |e| e.gossips.reputation(uuid))
-    }
-    #[test]
-    #[ignore = "requires actual vanilla reputation oracle output"]
-    fn accepted_reputation_events_match_vanilla() {
-        let path = std::env::var_os("HORIZON_REPUTATION_ORACLE").expect("oracle output");
-        let expected = std::fs::read_to_string(path).unwrap();
-        let mut m = villager();
-        let a = [0, 0, 0, 11];
-        let b = [0, 0, 0, 12];
-        let mob = [0, 0, 0, 19];
-        let source = Damage::player([2.0, 0.0, 0.0]);
-        assert!(m.damage_with_player_uuid(1.0, source, a, None));
-        assert!(m.damage_with_player_uuid(2.0, source, b, None));
-        assert!(m.damage_with_player_uuid(3.0, source, a, None));
-        assert!(
-            m.damage(
-                100.0,
-                Damage::indirect_magic(Some(Who::Mob(19)), [2.0, 0.0, 0.0])
-                    .with_attacker_uuid(Some(mob))
-            )
-        );
-        let angry = m
-            .outbox
-            .iter()
-            .filter(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
-            .count();
-        let actual = format!(
-            "hurt {} {} {} {}",
-            reputation(&m, a),
-            reputation(&m, b),
-            reputation(&m, mob),
-            angry
-        );
-        assert_eq!(expected.lines().next().unwrap(), actual);
-    }
-    #[test]
-    fn accepted_player_hurts_keep_each_uuid_and_same_tick_hit() {
-        let mut m = villager();
-        let a = [1, 2, 3, 4];
-        let b = [5, 6, 7, 8];
-        let source = Damage::player([2.0, 0.0, 0.0]);
-        assert!(m.damage_with_player_uuid(1.0, source, a, None));
-        assert!(m.damage_with_player_uuid(2.0, source, b, None));
-        assert!(m.damage_with_player_uuid(3.0, source, a, None));
-        assert_eq!(reputation(&m, a), -50);
-        assert_eq!(reputation(&m, b), -25);
-        assert!(!m.damage_with_player_uuid(3.0, source, b, None));
-        assert_eq!(
-            reputation(&m, b),
-            -25,
-            "rejected invulnerability hit adds nothing"
-        );
-        assert_eq!(
-            m.outbox
-                .iter()
-                .filter(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
-                .count(),
-            3
-        );
-    }
-    #[test]
-    fn deferred_potion_hurts_use_the_captured_guest_and_mob_uuid() {
-        let mut m = villager();
-        let guest = [11, 12, 13, 14];
-        let zombie = [21, 22, 23, 24];
-        let splash = Damage::indirect_magic(Some(Who::Player), [2.0, 0.0, 0.0])
-            .with_attacker_uuid(Some(guest));
-        assert!(m.damage_by(1.0, splash, "minecraft:splash_potion"));
-        let cloud = Damage::indirect_magic(Some(Who::Player), [2.0, 0.0, 0.0])
-            .with_attacker_uuid(Some(guest));
-        assert!(m.damage_by(2.0, cloud, "minecraft:area_effect_cloud"));
-        assert_eq!(reputation(&m, guest), -50);
-        let mob = Damage::indirect_magic(Some(Who::Mob(19)), [2.0, 0.0, 0.0])
-            .with_attacker_uuid(Some(zombie));
-        assert!(m.damage(100.0, mob));
-        assert_eq!(reputation(&m, zombie), -25);
-        assert_eq!(m.last_damage.unwrap().0.attacker_uuid, Some(zombie));
-        assert!(villager::ext(&m).unwrap().hurts.is_empty());
-        assert_eq!(
-            m.outbox
-                .iter()
-                .filter(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
-                .count(),
-            2,
-            "a nonplayer killing hit emits no angry particle event"
-        );
-    }
-    #[test]
-    fn fatal_hurt_records_reputation_without_angry_particles() {
-        let mut m = villager();
-        let uuid = [1, 2, 3, 4];
-        assert!(m.damage_with_player_uuid(100.0, Damage::player([2.0, 0.0, 0.0]), uuid, None));
-        assert_eq!(reputation(&m, uuid), -25);
-        assert!(
-            !m.outbox
-                .iter()
-                .any(|e| matches!(e, MobEvent::EntityEvent { event: 13, .. }))
         );
     }
 }

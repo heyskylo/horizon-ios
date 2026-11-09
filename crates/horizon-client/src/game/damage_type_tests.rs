@@ -13,7 +13,6 @@ fn named_damage_keeps_its_registry_id_with_or_without_an_attacker() {
                 attacker,
                 from: None,
                 attacker_species: None,
-                attacker_uuid: None,
             }),
             "example:fan_fire"
         );
@@ -29,7 +28,6 @@ fn a_creeper_blast_is_a_player_explosion() {
         attacker,
         from: Some([0.0; 3]),
         attacker_species: None,
-        attacker_uuid: None,
     };
     let creeper = blast(Some(Who::Mob(7)));
     assert_eq!(source_damage_type(creeper), "minecraft:player_explosion");

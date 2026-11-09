@@ -569,7 +569,6 @@ impl Game<'_> {
             attacker: None,
             from: Some(b.at),
             attacker_species: None,
-            attacker_uuid: None,
         };
         let mut struck = Vec::new();
         let mut events = Vec::new();

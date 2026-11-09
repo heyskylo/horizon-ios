@@ -33,7 +33,6 @@ pub fn contact_part(m: &mut Mob, f: &Frame, teams_allow: bool, part: usize) -> b
         attacker: Some(Who::Mob(f.dragon_id)),
         from: Some([f.origin.x, f.origin.y, f.origin.z]),
         attacker_species: None,
-        attacker_uuid: None,
     };
     if part < 2 {
         if f.wings[part].intersects(bounds) {

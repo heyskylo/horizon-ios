@@ -141,7 +141,6 @@ impl Goal for GuardianAttack {
                         attacker: Some(Who::Mob(m.id)),
                         from: Some(from),
                         attacker_species: Some(m.species()),
-                        attacker_uuid: None,
                     },
                 }),
             }
@@ -316,7 +315,6 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                     attacker: Some(Who::Mob(m.id)),
                     from: Some(from),
                     attacker_species: Some(m.species()),
-                    attacker_uuid: None,
                 },
             }),
             None => {}

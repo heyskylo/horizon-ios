@@ -1640,7 +1640,6 @@ impl Game<'_> {
         source: &Text,
         (owner, guest): (Option<Who>, Option<u32>),
     ) {
-        let attacker_uuid = self.damage_attacker_uuid(owner, guest);
         // `indirectMagic(cloud, owner)` names the cloud in the death message
         // (it gives no kill credit).
         let cloud_owner = PotionOwner {
@@ -1691,8 +1690,7 @@ impl Game<'_> {
                             };
                             if (*id == "instant_damage") != inverted {
                                 // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(cloud, owner).
-                                let source = Damage::indirect_magic(owner, at)
-                                    .with_attacker_uuid(attacker_uuid);
+                                let source = Damage::indirect_magic(owner, at);
                                 if m.damage_by(amount(6), source, "minecraft:area_effect_cloud")
                                     && owner == Some(Who::Player)
                                 {
@@ -1721,7 +1719,6 @@ impl Game<'_> {
                         }
                     }
                 }
-                self.flush_villager_reputation(mob);
             }
         }
     }
@@ -1929,7 +1926,6 @@ impl Game<'_> {
         silent: bool,
         motion: Vec3,
     ) {
-        let attacker_uuid = self.damage_attacker_uuid(owner.who(), owner.guest);
         let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
         if &*stack.item == "minecraft:experience_bottle" {
             // ThrownExperienceBottle.onHit: the water-coloured splash (level
@@ -1955,7 +1951,7 @@ impl Game<'_> {
         if let Some((cell, face)) = hit {
             self.potion_hit_block(stack, cell, face);
         }
-        self.affect_entities_around(stack, at, owner.player, attacker_uuid);
+        self.affect_entities_around(stack, at, owner.player);
         let lingering = &*stack.item == "minecraft:lingering_potion";
         // AbstractThrownPotion.onHit: level event 2007 and sound 1054 for a
         // potion with instant effects, 2002 and 1053 otherwise.
@@ -2078,8 +2074,7 @@ impl Game<'_> {
                 } else if harm {
                     // HealOrHarmMobEffect.applyInstantaneousEffect: indirectMagic(potion, owner).
                     let harm = (intensity * f64::from(6 << amp) + 0.5) as i32 as f32;
-                    let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z])
-                        .with_attacker_uuid(attacker_uuid);
+                    let source = Damage::indirect_magic(owner.who(), [at.x, at.y, at.z]);
                     if m.damage_by(harm, source, "minecraft:splash_potion") && owner.player {
                         let id = m.id;
                         self.last_hurt_by_player.insert(id, owner.guest);
@@ -2087,9 +2082,6 @@ impl Game<'_> {
                 } else {
                     m.heal((intensity * f64::from(4 << amp) + 0.5) as i32 as f32);
                 }
-            }
-            if let Some(m) = self.mobs.get(i) {
-                self.flush_villager_reputation(m.id);
             }
         }
     }
@@ -2528,7 +2520,79 @@ pub(super) fn sound_on_added(effect: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-mod sound_on_added_tests;
+mod sound_on_added_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::effects::EffectInstance;
+
+    /// `LivingEntity.addEffect` → `MobEffect.onEffectAdded`: Bad Omen, Trial
+    /// Omen and Raid Omen sound once when they are new on the player, at its
+    /// feet; a renewal and any other effect are silent (#11373).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_new_omen_sounds_once_at_the_feet() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(10.5, 64.0, -3.25),
+            )
+            .unwrap(),
+        );
+        game.audio.capture = Some(Vec::new());
+        for (id, amplifier) in [
+            ("bad_omen", 0),
+            ("bad_omen", 1),
+            ("speed", 0),
+            ("trial_omen", 0),
+            ("raid_omen", 0),
+        ] {
+            game.add_player_effect(EffectInstance::new(id, 2400, amplifier));
+        }
+        let played: Vec<(String, [f64; 3])> = game
+            .audio
+            .capture
+            .take()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.event, s.position))
+            .collect();
+        let feet = [10.5, 64.0, -3.25];
+        assert_eq!(
+            played,
+            [
+                ("minecraft:event.mob_effect.bad_omen".to_owned(), feet),
+                ("minecraft:event.mob_effect.trial_omen".to_owned(), feet),
+                ("minecraft:event.mob_effect.raid_omen".to_owned(), feet),
+            ]
+        );
+    }
+}
 
 #[cfg(test)]
 #[path = "xp_bottle_tests.rs"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare accepted villager hurt dispatch and cached witnesses without starting a server."""
+"""Compare cached villager witnesses without starting a server."""
 import argparse
 import json
 import os
@@ -22,29 +22,18 @@ def main(argv=None):
     lab.GAME = args.game
     lab.config = lambda: (json.loads(lab.LOCK.read_text(encoding='utf-8')), args.game)
     lock, jars, libraries = base.verify_artifacts()
-    build = lab.LOCAL / 'villager-reputation-parity'
+    build = lab.LOCAL / 'villager-witness-parity'
     classes = build / 'classes'
     classes.mkdir(parents=True, exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaVillagerReputationOracle.java'
+    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaVillagerWitnessOracle.java'
     sources = [Path(__file__), oracle,
-               lab.ROOT / 'crates/horizon-client/src/mobs.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/damage.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation_witness_tests.rs',
-               lab.ROOT / 'crates/horizon-client/src/game.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/melee.rs',
                lab.ROOT / 'crates/horizon-client/src/mobs/villager.rs',
                lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain.rs',
+               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation.rs',
+               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation_witness_tests.rs',
                lab.ROOT / 'crates/horizon-client/src/game/villagers.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/villager_reputation_tests.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/villager_reputation_fixture.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/villager_reputation_baseline_tests.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/lan_actions.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/trading.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/lan_trading.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/commands/world_cmds.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/potions.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/mace.rs']
+               lab.ROOT / 'crates/horizon-client/src/game/villager_witness_tests.rs',
+               lab.ROOT / 'crates/horizon-client/src/game/kill_die_vibration_tests.rs']
     hashes = base.source_hashes(sources)
     clean = dict(os.environ)
     for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
@@ -56,10 +45,10 @@ def main(argv=None):
                     '-cp', cp, '-d', str(classes), str(oracle)], cwd=scratch, env=env, check=True)
     expected = build / 'vanilla.txt'
     subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + cp,
-                    'dev.horizonlab.parity.VanillaVillagerReputationOracle', str(expected)],
+                    'dev.horizonlab.parity.VanillaVillagerWitnessOracle', str(expected)],
                    cwd=scratch, env=env, check=True)
     rows = expected.read_text(encoding='utf-8').splitlines()
-    if [line.split()[0] for line in rows] != ['hurt', 'witnesses', 'cached', 'fresh', 'prices', 'cap', 'nested']:
+    if [line.split()[0] for line in rows] != ['witnesses', 'cached', 'fresh']:
         raise AssertionError('Missing/extra actual Java records')
     if args.java_only:
         base.ensure_sources_unchanged(sources, hashes)
@@ -69,10 +58,8 @@ def main(argv=None):
     artifacts = {}
     executed = {}
     for package, group, count in [
-        ('horizon-client-lib', 'mobs::villager_reputation_tests', 4),
         ('horizon-client-lib', 'mobs::villager_brain::reputation_witness_tests', 1),
-        ('horizon-client', 'game::villagers::reputation_tests', 1),
-        ('horizon-client', 'game::lan::reputation_baseline_tests', 1),
+        ('horizon-client', 'game::villagers::witness_tests', 1),
     ]:
         if package not in artifacts:
             source = (lab.ROOT / 'crates/horizon-client/src' / ('client_lib.rs' if package == 'horizon-client-lib' else 'lib.rs')).resolve()
@@ -102,8 +89,8 @@ def main(argv=None):
         executed[group] = count
     base.ensure_sources_unchanged(sources, hashes)
     lab.write_json(build / 'report.json', {'minecraft': lock['minecraft']['version'],
-        'sources_sha256': hashes, 'executed_tests': executed, 'java_records': len(rows), 'scope': 'Actual accepted-hurt reputation dispatch and lazy cached witness visibility; isolated entities, no server/world loop.'})
-    print('Accepted hurt UUIDs and cached witnesses match vanilla; rejected/fatal-hit regressions pass')
+        'sources_sha256': hashes, 'executed_tests': executed, 'java_records': len(rows), 'scope': 'Actual lazy cached witness visibility; isolated entities, no server/world loop.'})
+    print('Cached witness candidates and visibility match vanilla')
 
 
 if __name__ == '__main__':

@@ -1291,7 +1291,6 @@ mod tests {
             attacker: None,
             from: Some([3.0, 0.0, 0.0]),
             attacker_species: None,
-            attacker_uuid: None,
         };
         // Canceled: no damage, cooldown, sound or knockback.
         let mut kept = mob(9001);
@@ -1418,7 +1417,6 @@ mod tests {
             attacker: None,
             from: Some([3.0, 0.0, 0.0]),
             attacker_species: None,
-            attacker_uuid: None,
         };
         let mut plain = mob(9201);
         assert!(plain.damage(2.0, hit));

@@ -512,7 +512,6 @@ impl Game<'_> {
                 attacker: Some(Who::Player),
                 from: Some([p.position.x, p.position.y, p.position.z]),
                 attacker_species: None,
-                attacker_uuid: None,
             };
             let alive = g.mobs[index].alive();
             if g.hurt_by_player(index, damage, source) {
@@ -793,7 +792,6 @@ impl Game<'_> {
                             attacker: Some(Who::Mob(wearer)),
                             from: Some(from),
                             attacker_species: Some(m.species()),
-                            attacker_uuid: None,
                         };
                         self.mob_hits_mob(id, damage, source);
                     }

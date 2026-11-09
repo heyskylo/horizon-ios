@@ -489,45 +489,4 @@ impl Game<'_> {
         }
         self.lan_open_station(host, conn, &station);
     }
-    /// `Villager.updateSpecialPrices` for current guest traders, optionally
-    /// restricted to the reputation event's source UUID. Guest state must be
-    /// restored before this reads their inventory and active effects.
-    pub(super) fn lan_merchant_refresh(
-        &mut self,
-        host: &mut LanHost,
-        id: u32,
-        source_uuid: Option<[i32; 4]>,
-    ) {
-        let players: Vec<_> = host
-            .play
-            .iter()
-            .filter_map(|(conn, play)| {
-                let merchant = play.merchant.as_ref()?;
-                if merchant.merchant.mob != Some(id) {
-                    return None;
-                }
-                let guest = host
-                    .hub
-                    .guests
-                    .iter()
-                    .find(|g| g.conn == *conn && host.hub.here(g))?;
-                let uuid = uuid_words(guest.uuid);
-                if source_uuid.is_some_and(|source| source != uuid) {
-                    return None;
-                }
-                Some((*conn, uuid, guest.effects.amplifier("hero_of_the_village")))
-            })
-            .collect();
-        for (conn, uuid, hero) in players {
-            let reputation = self.villager_reputation_of(id, uuid);
-            self.lan_merchant_op(host, conn, None, |menu, env| {
-                if let Some(session) = menu.merchant.as_mut() {
-                    session.reputation = reputation;
-                    session.hero = hero;
-                    session.update_special_prices();
-                }
-                menu.merchant_update(env);
-            });
-        }
-    }
 }

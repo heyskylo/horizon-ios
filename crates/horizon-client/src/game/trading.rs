@@ -126,35 +126,6 @@ impl merchant::MapMaker for GameMaps<'_> {
 }
 
 impl Game<'_> {
-    /// `Villager.updateSpecialPrices` for the current local trading player.
-    /// Reputation events refresh only their source player; restocks use `None`.
-    pub(super) fn merchant_refresh_local(&mut self, id: u32, source_uuid: Option<[i32; 4]>) {
-        let trading = self
-            .station
-            .as_ref()
-            .and_then(|s| s.merchant.as_ref())
-            .is_some_and(|m| m.mob == Some(id));
-        if !trading {
-            return;
-        }
-        let Some(trader_uuid) = self.player_uuid_of(self.lan_acting) else {
-            return;
-        };
-        if source_uuid.is_some_and(|source| source != trader_uuid) {
-            return;
-        }
-        let reputation = self.villager_reputation_of(id, trader_uuid);
-        let hero = self.hero_amplifier();
-        self.menu_session(|menu, env, _| {
-            if let Some(session) = menu.merchant.as_mut() {
-                session.reputation = reputation;
-                session.hero = hero;
-                session.update_special_prices();
-            }
-            menu.merchant_update(env);
-            Some(true)
-        });
-    }
     pub(super) fn random_sequences_path(&self) -> std::path::PathBuf {
         self.world_root.join("data/minecraft/random_sequences.dat")
     }
