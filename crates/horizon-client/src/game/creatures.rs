@@ -119,10 +119,8 @@ pub(super) struct Creatures {
     /// what the passes after the loop do for a mob's `aiStep`, goals or brain
     /// (pickups, item searches) is for these alone.
     pub ticked: horizon_client::fast_hash::FxHashSet<u32>,
-    /// While the mob ticks' own events are handled, after the loop: a hit
-    /// one mob's tick deals another then lands after the target's tick, not
-    /// inside the attacker's as in vanilla (see `catch_up_countdowns`).
-    deferred_hits: bool,
+    /// While the mob loop's own events are handled (`catch_up_countdowns`).
+    pub deferred_hits: bool,
     /// The wandering trader spawner's clock.
     pub trader: super::wandering_trader::Spawner,
     /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
@@ -2213,38 +2211,6 @@ impl Game<'_> {
         }
     }
     /// `Mob.doHurtTarget` and the other melee callers of post-attack effects.
-    fn mob_attacks_mob(&mut self, target: u32, amount: f32, source: Damage) -> bool {
-        let hurt = self.mob_hits_mob(target, amount, source);
-        if hurt {
-            self.mob_post_attack(
-                target,
-                source.attacker,
-                None,
-                Some(damage_type(source.kind, false)),
-            );
-        }
-        hurt
-    }
-    /// Whether a hit from a mob's tick on `target`, handled after the mob
-    /// loop, comes after a tick of the target that vanilla runs after the hit:
-    /// `ServerLevel.tick` ticks entities in list order and the attacker deals
-    /// the hit in its own tick, so a target later in the list counts its
-    /// `HurtTime` and invulnerability down once more that tick. PARTIAL: the
-    /// rest of that tick (its movement, its own goals) still ran before the hit.
-    fn catch_up_countdowns(&self, attacker: Option<Who>, target: u32) -> bool {
-        let Some(Who::Mob(attacker)) = attacker else {
-            return false;
-        };
-        let ticked = &self.creatures.ticked;
-        if !self.creatures.deferred_hits || !ticked.contains(&attacker) || !ticked.contains(&target)
-        {
-            return false;
-        }
-        // The mobs added during the tick come first in `self.mobs`; the
-        // ticked ones keep their tick order after them.
-        let at = |id: u32| self.mobs.iter().position(|m| m.id == id);
-        matches!((at(attacker), at(target)), (Some(a), Some(t)) if a < t)
-    }
     /// Melee or ranged damage to another mob; whether the hit landed.
     pub(super) fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
         if source.attacker_species.is_none()
@@ -2263,8 +2229,7 @@ impl Game<'_> {
             let hit = t.damage_aimed(amount, source, aim);
             hurt = hit;
             if hit && catch_up {
-                // `LivingEntity.baseTick`'s countdowns, which vanilla runs
-                // after this hit in the target's own tick.
+                // `LivingEntity.baseTick`'s countdowns, run after the hit in vanilla.
                 t.hurt_time = (t.hurt_time - 1).max(0);
                 t.invulnerable = (t.invulnerable - 1).max(0);
             }
