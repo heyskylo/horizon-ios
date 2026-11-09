@@ -181,3 +181,73 @@ fn a_polytone_colormap_tints_by_biome_and_keeps_the_biome_colour_where_transpare
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn a_biome_colormap_blends_over_a_biome_edge_as_the_vanilla_water_tint_does() {
+    let (plains_water, desert_water) = (0x3F_76E4, 0x32_A598);
+    let biomes = Biomes::from_jsons(&[
+        (
+            "minecraft:plains",
+            serde_json::json!({"effects": {"water_color": plains_water}}),
+        ),
+        (
+            "minecraft:desert",
+            serde_json::json!({"effects": {"water_color": desert_water}}),
+        ),
+    ]);
+    let rgba = |c: u32| [(c >> 16) as u8, (c >> 8) as u8, c as u8, 255];
+    // Each biome's column holds its own water colour, so the blended map must give vanilla's
+    // blended water tint (ClientLevel.calculateBlockTint) everywhere.
+    let colormap = |blend: &str| {
+        let json = format!(
+            r#"{{"x_axis": "biome_id", "y_axis": 0, {blend}
+                "biome_id_mapper": {{"minecraft:desert": 1, "texture_size": 2}}}}"#
+        );
+        let root = pack(&[
+            (
+                "assets/mypack/polytone/colormaps/water.png",
+                png_row(&[rgba(plains_water), rgba(desert_water)]),
+            ),
+            (
+                "assets/mypack/polytone/colormaps/water.json",
+                json.into_bytes(),
+            ),
+        ]);
+        let map = crate::environment::Colormap::load(&root, "mypack:water").unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        vec![Arc::new(map)]
+    };
+    let (desert, plains) = (biomes.id("minecraft:desert"), biomes.id("minecraft:plains"));
+    // The west neighbours are desert, the section and the rest plains: an edge at x = 0.
+    let chunks: Vec<Vec<Chunk>> = (0..3)
+        .map(|rz| {
+            (0..3)
+                .map(|rx| filled(rx - 1, rz - 1, if rx == 0 { desert } else { plains }))
+                .collect()
+        })
+        .collect();
+    let region: [[Option<&Chunk>; 3]; 3] =
+        std::array::from_fn(|rz| std::array::from_fn(|rx| Some(&chunks[rz][rx])));
+    let blended = colormap("");
+    let unblended = colormap(r#""biome_blend": false,"#);
+    let mut edge_differs = false;
+    for radius in [1, 3] {
+        let tints = || {
+            let mut t = Tints::new(&region, &biomes, BiomeZoom::new(7), radius, [0, 0, 64]);
+            t.water_colormap = Some(0);
+            t
+        };
+        let (mut map, mut plain, mut vanilla) = (tints(), tints(), tints());
+        map.colormaps = &blended;
+        plain.colormaps = &unblended;
+        vanilla.water_colormap = None;
+        for z in 0..16 {
+            for x in 0..16 {
+                let expected = vanilla.water(x, 4, z);
+                assert_eq!(map.water(x, 4, z), expected, "r{radius} at {x} {z}");
+                edge_differs |= plain.water(x, 4, z) != expected;
+            }
+        }
+    }
+    assert!(edge_differs, "the square must cross the edge somewhere");
+}
