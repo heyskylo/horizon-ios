@@ -440,6 +440,65 @@ pub struct NativeStack {
     pub components: String,
 }
 
+/// What a mod asks the recipe viewer to do with a stack
+/// (`native_show_recipes`, heard as `native_recipe_lookup`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeRecipeLookup {
+    /// The recipes that make it (JEI's R, a left click).
+    Recipes,
+    /// The recipes it is used in (JEI's U, a right click).
+    Uses,
+    /// A key (vanilla's name, `key.keyboard.a`) went down while the pointer
+    /// was on the stack in a screen the mod draws: the viewer acts on it as
+    /// over its own list (its recipe, uses and bookmark keys, as the player
+    /// bound them).
+    Key(String),
+}
+
+/// A category of a mod's own recipes for recipe viewers
+/// (`native_recipe_categories`): what a fishing spot, a sieve or a machine
+/// turns its inputs into, each output with its odds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeRecipeCategory {
+    /// Its id (`mymod:sifting`).
+    pub id: String,
+    /// Its name, as the mod words it in the player's language.
+    pub title: String,
+    /// One short line under the name, or "".
+    pub subtitle: String,
+    /// The tab's icon.
+    pub icon: NativeStack,
+    /// The items and blocks that do it (a rod, a sieve), as JEI's catalysts.
+    pub catalysts: Vec<NativeStack>,
+    pub recipes: Vec<NativeCategoryRecipe>,
+}
+
+/// One recipe of a [`NativeRecipeCategory`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeCategoryRecipe {
+    /// Its input slots, each with the stacks it takes; none for a recipe
+    /// with no input (a catch).
+    pub inputs: Vec<Vec<NativeStack>>,
+    pub outputs: Vec<NativeChanceOutput>,
+    /// Lines about the whole recipe.
+    pub notes: Vec<String>,
+}
+
+/// An output of a [`NativeCategoryRecipe`] that comes with a chance.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeChanceOutput {
+    pub stack: NativeStack,
+    /// The chance it comes, 0 to 1, each time the recipe runs (a catch, a
+    /// block broken).
+    pub chance: f32,
+    /// How many come when it does.
+    pub min: u32,
+    pub max: u32,
+    /// Lines about this output (`needs a brush`).
+    pub notes: Vec<String>,
+}
+
 /// What the player did on a native mod's panel (`native_panel_event`).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]

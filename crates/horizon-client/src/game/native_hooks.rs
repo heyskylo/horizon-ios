@@ -1017,6 +1017,7 @@ pub(crate) use horizon_client::mod_api::{
     ClientboundPlayPacket, NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap,
     NativeMod, NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
 };
+pub(crate) use horizon_client::mod_api::{NativeRecipeCategory, NativeRecipeLookup};
 use horizon_client::{
     atlas_sources::qualified,
     biome::{BiomeColors, SpawnEntry},
@@ -3334,6 +3335,29 @@ impl Game<'_> {
     /// act on it when it is yours. API 2.
     pub(super) fn native_panel_event(&mut self, mod_id: &str, event: &NativePanelEvent) {
         mod_api::dispatch_panel_event(self, mod_api::mods(), mod_id, event);
+    }
+    /// A mod asked the recipe viewer to show `stack` (`native_show_recipes`):
+    /// its recipes, its uses, or what a key over it does in the viewer
+    /// (`NativeRecipeLookup`). A recipe viewer acts on it and sets `handled`,
+    /// so no other viewer does. Heard at the start of the frame after the ask,
+    /// once for each, in the order asked. Client-side. API @API:recipe_lookup@.
+    pub(super) fn native_recipe_lookup(
+        &mut self,
+        stack: &NativeStack,
+        lookup: &NativeRecipeLookup,
+        handled: &mut bool,
+    ) {
+        mod_api::dispatch_recipe_lookup(self, mod_api::mods(), stack, lookup, handled);
+    }
+    /// A recipe viewer asks for the mods' own recipe categories
+    /// (`native_collect_recipe_categories`): push yours, each with its id,
+    /// title, icon, catalysts and recipes, the outputs with their chances (a
+    /// fishing spot, a sieve, a machine). Asked again whenever a viewer wants
+    /// them; call `native_recipe_categories_changed` when yours change (the
+    /// server's data came), so viewers ask again. Client-side. API
+    /// @API:recipe_categories@.
+    pub(super) fn native_recipe_categories(&mut self, categories: &mut Vec<NativeRecipeCategory>) {
+        mod_api::dispatch_recipe_categories(self, mod_api::mods(), categories);
     }
     /// Block `block` (`mymod:machine`) gets a block entity
     /// (`EntityBlock.newBlockEntity`): set `entity` to its id and saved
@@ -11797,6 +11821,48 @@ impl Game<'_> {
     /// hotbar, then the inventory. The count is cut to one stack.
     pub(super) fn native_give(&mut self, item: &str, count: u32) -> Result<(), String> {
         self.recipe_give(item, count)
+    }
+    /// Asks the recipe viewer to show `stack`: its recipes (`Recipes`), its
+    /// uses (`Uses`), or to act on a key that went down over it in a screen
+    /// the mod draws (`Key`, so its recipe, uses and bookmark keys work there
+    /// as over its own list). The viewer hears it at the start of the next
+    /// frame (`native_recipe_lookup`), so a screen hook may ask; with no
+    /// viewer installed nothing happens. Client-side. API @API:recipe_lookup@.
+    pub(super) fn native_show_recipes(&self, stack: NativeStack, lookup: NativeRecipeLookup) {
+        let mut lookups = self
+            .recipe_tables
+            .lookups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // A burst of asks (a held key) keeps the newest few.
+        if lookups.len() >= 16 {
+            lookups.remove(0);
+        }
+        lookups.push((stack, lookup));
+    }
+    /// Every mod's own recipe categories, as `native_recipe_categories`
+    /// collects them: for a recipe viewer. Client-side. API
+    /// @API:recipe_categories@.
+    pub(super) fn native_collect_recipe_categories(&mut self) -> Vec<NativeRecipeCategory> {
+        let mut categories = Vec::new();
+        self.native_recipe_categories(&mut categories);
+        categories
+    }
+    /// A mod's recipe categories changed: recipe viewers see
+    /// `native_recipe_categories_version` move and collect them again.
+    /// Client-side. API @API:recipe_categories@.
+    pub(super) fn native_recipe_categories_changed(&self) {
+        self.recipe_tables
+            .categories_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// A number that changes each time a mod says its recipe categories
+    /// changed (`native_recipe_categories_changed`). Client-side. API
+    /// @API:recipe_categories@.
+    pub(super) fn native_recipe_categories_version(&self) -> u64 {
+        self.recipe_tables
+            .categories_version
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
