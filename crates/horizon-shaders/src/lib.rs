@@ -40,8 +40,8 @@ pub use biomes::{
 pub use block_ids::BlockIds;
 pub use condition::eval_condition;
 pub use config::{
-    BUFFERS, Buffer, Config, Format, HALF_LIVES, Kind, SHADOW_COLORS, Shadow, buffer_index,
-    draw_buffers, shadow_color,
+    BUFFERS, Buffer, Config, Format, HALF_LIVES, Kind, ReadConfig, SHADOW_COLORS, Shadow,
+    buffer_index, draw_buffers, shadow_color,
 };
 pub use core_shader::{BLOCKS, CoreProgram, Glue, SAMPLERS, translate_core};
 pub use custom::{Custom, Val};

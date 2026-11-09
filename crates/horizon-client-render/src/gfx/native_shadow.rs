@@ -6,8 +6,8 @@
 //! draw lists (`ShadowView`) serve both; the map's texels are distorted toward the camera as the
 //! prelude's `shadow_position` undoes.
 
+use horizon_render_pipeline::Shadow;
 use horizon_shader_api::{Api, Frame as FrameInputs, manifest::Shadow as Settings, stages::GROUP};
-use horizon_shaders::Shadow;
 
 use super::native_material::TerrainShape;
 use super::wgsl_prefix::{TERRAIN, prefixed, section};

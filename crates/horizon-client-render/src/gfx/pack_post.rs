@@ -18,7 +18,8 @@
 use std::collections::HashMap;
 
 use glam::{DMat4, DVec3};
-use horizon_shaders::{Format, Group, Kind, Post, SHADOW_COLORS};
+use horizon_render_pipeline::{Format, Kind, SHADOW_COLORS};
+use horizon_shaders::{Group, Post};
 use smallvec::SmallVec;
 
 use super::pack_draw::DrawUniforms;
@@ -28,7 +29,7 @@ use super::pack_sky::PackSky;
 use super::pack_textures;
 use super::pack_uniforms::{self, FrameUniforms, PackInputs};
 
-const BUFFERS: usize = horizon_shaders::BUFFERS;
+const BUFFERS: usize = horizon_render_pipeline::BUFFERS;
 
 mod packed;
 
@@ -890,7 +891,7 @@ fn depth_linear(interface: &horizon_shaders::Interface, linear: u8) -> [f32; 4] 
 }
 
 fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) -> Source {
-    let shadow_color = horizon_shaders::shadow_color(name);
+    let shadow_color = horizon_render_pipeline::shadow_color(name);
     let shadow_depth = match name {
         "shadowtex0" | "watershadow" | "shadowtex0HW" => Some(0),
         "shadowtex1" | "shadowtex1HW" => Some(1),
@@ -909,7 +910,7 @@ fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) 
             };
         }
     }
-    if shadow_space && horizon_shaders::buffer_index(name).is_some() {
+    if shadow_space && horizon_render_pipeline::buffer_index(name).is_some() {
         // colortex buffers are not this pass's.
         return Source::Dummy;
     }
@@ -923,7 +924,7 @@ fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) 
         "normals" => Source::Normals,
         "specular" => Source::Specular,
         horizon_shaders::WATER_MASK => Source::WaterMask,
-        n => horizon_shaders::buffer_index(n).map_or(Source::Dummy, Source::Color),
+        n => horizon_render_pipeline::buffer_index(n).map_or(Source::Dummy, Source::Color),
     }
 }
 
@@ -1580,7 +1581,7 @@ fn bindings(
             !unbound
                 && (t.stage != pack_textures::stage(group)
                     || released.0 != t.stage
-                    || horizon_shaders::buffer_index(&t.name)
+                    || horizon_render_pipeline::buffer_index(&t.name)
                         .is_none_or(|b| released.1 & 1 << b == 0))
         });
         let image = pack
@@ -2522,7 +2523,7 @@ impl PackPost {
         let shadow_config = post.config.shadow.clone();
         let noise_size = post.config.noise_resolution.unwrap_or(256);
         let half_lives = post.config.half_lives;
-        for (name, ticks) in horizon_shaders::HALF_LIVES.iter().zip(half_lives) {
+        for (name, ticks) in horizon_render_pipeline::HALF_LIVES.iter().zip(half_lives) {
             if let Some(t) = ticks {
                 notes.push(format!("`{name}` is {t} ticks"));
             }

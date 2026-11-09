@@ -15830,11 +15830,11 @@ mod shadow_caster_tests {
     #[test]
     fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
         let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
-            let shadow = horizon_shaders::Shadow {
+            let shadow = horizon_render_pipeline::Shadow {
                 distance: 128.0,
                 near,
                 far,
-                ..horizon_shaders::Shadow::default()
+                ..horizon_render_pipeline::Shadow::default()
             };
             let camera = DVec3::new(13.5, y + 1.62, -13.5);
             let view = pack_post::ShadowView {

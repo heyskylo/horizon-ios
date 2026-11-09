@@ -24,6 +24,7 @@
     "horizon-narrator": "engine",
     "horizon-prepare": "engine",
     "horizon-protocol": "engine",
+    "horizon-render-pipeline": "engine",
     "horizon-server-files": "engine",
     "horizon-system": "engine",
     "horizon-threads": "engine",
