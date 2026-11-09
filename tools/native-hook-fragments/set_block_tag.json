@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_block_tag", "target": "horizon_client::game::native_world_edit::Game<'_>::native_set_block_tag"}
+  ],
+  "rust_summary": "`native_set_block_tag(dimension, pos, tag)`: a block entity's data set from a compound, in any loaded level.",
+  "doc_summary": "`native_set_block_tag(dimension, pos, tag)` gives the block entity at `pos` in the loaded level `dimension` the data `tag` (a compound, as `save` writes a block entity: no id or position, which stay), as a paste or a schematic restores a chest's items or a sign's text once the block is placed. True when its data changed; false also when it already holds `tag`, when there is no block entity at `pos`, and on a client. Bundles need \"hooks\": @API:set_block_tag@.",
+  "comments": ["crates/horizon-client/src/game/native_world_edit.rs"]
+}

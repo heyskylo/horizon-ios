@@ -4331,10 +4331,19 @@ impl Mob {
         through
     }
     /// `LivingEntity.actuallyHurt`: the absorption amount takes the damage first;
-    /// what is left reaches the health.
+    /// what is left reaches the health. `setAbsorptionAmount` stores the rest
+    /// with `Mth.clamp(amount, 0, getMaxAbsorption())`, so absorption above
+    /// `max_absorption` (from the mob's data, with no Absorption effect) is gone
+    /// after the hit.
     pub fn soak_absorption(&mut self, damage: f32) -> f32 {
         let through = (damage - self.absorption).max(0.0);
-        self.absorption = (self.absorption - (damage - through)).max(0.0);
+        let left = self.absorption - (damage - through);
+        // `Mth.clamp(float, float, float)`: `value < min ? min : Math.min(value, max)`.
+        self.absorption = if left < 0.0 {
+            0.0
+        } else {
+            left.min(armor::max_absorption(self))
+        };
         through
     }
     /// `LivingEntity.checkTotemDeathProtection`: the first hand with a
@@ -6635,75 +6644,8 @@ mod visibility_percent_tests {
 /// the hurt cooldown, and keeps `lastHurt`, by its incoming amount; the
 /// reductions (`actuallyHurt`) get only the accepted difference.
 #[cfg(test)]
-mod hurt_cooldown_incoming_tests {
-    use super::*;
-
-    fn mob(species: Species) -> Mob {
-        let mut kind = (*sensor_scan_tests::kind()).clone();
-        kind.species = species;
-        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
-        m.attrs.max_health = 40.0;
-        m.health = 40.0;
-        m
-    }
-
-    #[test]
-    fn full_resistance_keeps_the_incoming_amounts_and_takes_a_stronger_hit() {
-        let mut m = mob(Species::Pig);
-        m.extra.effects.push(("minecraft:resistance", 600, 4));
-        assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
-        assert_eq!((m.health, m.invulnerable, m.last_hurt), (40.0, 20, 1.0));
-        assert!(!m.damage(1.0, Damage::of(DamageKind::Generic)));
-        assert!(m.damage(2.0, Damage::of(DamageKind::Generic)));
-        assert_eq!((m.health, m.invulnerable, m.last_hurt), (40.0, 20, 2.0));
-        assert!(!m.damage(1.5, Damage::of(DamageKind::Generic)));
-        assert_eq!(m.last_hurt, 2.0);
-    }
-
-    #[test]
-    fn the_armor_effectiveness_callback_runs_only_for_accepted_hits() {
-        let mut m = mob(Species::Pig);
-        m.extra.chest = Some("minecraft:iron_chestplate".into());
-        let mut calls = 0;
-        let mut breach = |f: f32| {
-            calls += 1;
-            f
-        };
-        assert!(m.damage_with(4.0, Damage::of(DamageKind::Cactus), Some(&mut breach)));
-        assert!(!m.damage_with(4.0, Damage::of(DamageKind::Cactus), Some(&mut breach)));
-        assert!(m.damage_with(8.0, Damage::of(DamageKind::Cactus), Some(&mut breach)));
-        assert_eq!(calls, 2);
-        assert_eq!(m.last_hurt, 8.0);
-    }
-
-    #[test]
-    fn absorption_soaks_the_accepted_difference() {
-        let mut m = mob(Species::Pig);
-        m.absorption = 1.5;
-        assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
-        assert_eq!((m.health, m.absorption), (40.0, 0.5));
-        // 3 after 1: the difference 2, the last 0.5 absorption first.
-        assert!(m.damage(3.0, Damage::of(DamageKind::Generic)));
-        assert_eq!((m.health, m.absorption, m.last_hurt), (38.5, 0.0, 3.0));
-    }
-
-    #[test]
-    fn a_horse_armor_wears_by_the_accepted_difference() {
-        let mut m = mob(Species::Horse);
-        m.extra.body = Some("minecraft:iron_horse_armor".into());
-        assert!(m.damage(4.0, Damage::of(DamageKind::Cactus)));
-        assert!(m.damage(8.0, Damage::of(DamageKind::Cactus)));
-        let worn: Vec<f32> = m
-            .outbox
-            .iter()
-            .filter_map(|e| match e {
-                MobEvent::ArmorHurt { amount, .. } => Some(*amount),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(worn, [4.0, 4.0]);
-    }
-}
+#[path = "hurt_cooldown_incoming_tests.rs"]
+mod hurt_cooldown_incoming_tests;
 
 #[cfg(test)]
 mod hidden_speed_mob_tick_tests {

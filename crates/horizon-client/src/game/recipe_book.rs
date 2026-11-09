@@ -1179,7 +1179,9 @@ impl Game<'_> {
         self.recipe_ui.ghost.clear();
         self.place_recipe(BookType::Crafting, index, all);
     }
-    pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32) {
+    /// A viewer's transfer of one set of ingredients, or with `all` as many as
+    /// the items allow (vanilla's Shift placement, `useMaxItems`).
+    pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32, all: bool) {
         self.panel.transfer_warning = None;
         if !self.mod_recipe_screen()
             || (self.creative && self.craft_size != 3 && !self.mod_crafting_open())
@@ -1189,7 +1191,7 @@ impl Game<'_> {
         }
         if self.remote.as_ref().is_some_and(|r| !r.recipe_transfer) {
             // Older Horizon and vanilla servers still accept book clicks.
-            if self.recipe_place(display_id, false).is_err() {
+            if self.recipe_place(display_id, all).is_err() {
                 self.show_transfer_result(4);
             }
             return;
@@ -1213,6 +1215,11 @@ impl Game<'_> {
             let mut request = horizon_protocol::buf::Writer::new();
             request.varint(self.remote_menu_id());
             request.string(&id);
+            // A trailing flag asks for as many as fit; a single transfer
+            // sends none, so servers from before it still take it.
+            if all {
+                request.u8(1);
+            }
             self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
                 horizon_protocol::packets::configuration::CustomPayload {
                     channel: horizon_client::lan::recipes::TRANSFER_CHANNEL.into(),
@@ -1224,7 +1231,7 @@ impl Game<'_> {
         use horizon_client::menu::place::TransferError;
         let mut result = Err(TransferError::Unavailable);
         self.menu_session(|menu, env, _| {
-            result = menu.transfer_recipe(env, &id);
+            result = menu.transfer_recipe(env, &id, all);
             Some(result.is_ok())
         });
         self.show_transfer_result(match result {
