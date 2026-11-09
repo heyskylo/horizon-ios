@@ -13,8 +13,9 @@ use horizon_client::{
 };
 use horizon_world::nbt::Tag;
 
-/// Item context of the existing mob leash success. Holder detach is
-/// `InteractionResult.Success.withoutItem`; other branches retain their path.
+/// The item context of a leash success (`InteractionResult.Success`): tying
+/// held mobs to this one and the holder's detach are `withoutItem`, so item
+/// criteria see an empty hand; shears and a new lead keep the used item.
 pub(super) enum LeashInteraction {
     WithItem,
     WithoutItem,
@@ -423,7 +424,7 @@ impl Game<'_> {
             if self.tie_player_leads(center, Holder::Mob(id), Some(index)) {
                 self.lead_game_event("minecraft:entity_action", at);
                 self.lead_sound("tied", at);
-                return Some(LeashInteraction::WithItem);
+                return Some(LeashInteraction::WithoutItem);
             }
         }
         if item == "minecraft:shears" {
