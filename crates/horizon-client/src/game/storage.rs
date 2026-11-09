@@ -210,13 +210,17 @@ impl Game<'_> {
             _ => false,
         }
     }
-    /// Closing it copies the items back and leaves no block-entity contents.
+    /// Closing it copies the items back and keeps the block entity, as vanilla's
+    /// `EnderChestBlockEntity` persists across open/close (`close_ender_chest`
+    /// must not remove it, or `/data get block` loses it after a use).
     pub(super) fn close_ender_chest(&mut self) {
         let Some(key) = self.ender_open.take() else {
             return;
         };
-        if let Some(BlockEntity::Chest(items)) = self.world.block_entities.remove(&key) {
-            self.ender_items = items;
+        // The items go back to the player: an `EnderChestBlockEntity` holds none, so
+        // nothing of theirs stays in the chunk or in `/data get block`.
+        if let Some(BlockEntity::Chest(items)) = self.world.block_entities.get_mut(&key) {
+            self.ender_items = std::mem::replace(items, vec![None; 27]);
         }
     }
 }

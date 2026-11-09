@@ -22,6 +22,7 @@ use horizon_client::{
     random_source,
     text::Text,
 };
+use horizon_client_core::nbt_value;
 use horizon_core::position::BlockPos;
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
@@ -1369,7 +1370,9 @@ impl Game<'_> {
                 6.0,
                 interaction,
                 false,
-                super::explosion::ExplosionSource::default().with_silence(self.entity_silent(c.id)),
+                super::explosion::ExplosionSource::default()
+                    .with_silence(self.entity_silent(c.id))
+                    .with_entity(c.id, "minecraft:end_crystal"),
             );
             self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
@@ -3678,16 +3681,17 @@ impl Dragon {
         let (position, velocity, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
         let mut d = Self::new(position, yaw, seed);
         d.velocity = velocity;
-        if let Some(Tag::Float(h)) = tag.get("Health") {
-            d.health = f32::from_bits(*h);
+        // Vanilla getFloatOr/getIntOr accept any numeric tag type.
+        if let Some(h) = nbt_value::float(tag.get("Health")) {
+            d.health = h as f32;
         }
-        if let Some(Tag::Int(p)) = tag.get("DragonPhase") {
-            d.phase = Phase::from_id(*p);
+        if let Some(p) = nbt_value::number(tag.get("DragonPhase")) {
+            d.phase = Phase::from_id(p as i32);
         }
-        if let Some(Tag::Int(t)) = tag.get("DragonDeathTime") {
-            d.death_time = *t;
+        if let Some(t) = nbt_value::number(tag.get("DragonDeathTime")) {
+            d.death_time = t as i32;
         }
-        d.no_ai = matches!(tag.get("NoAI"), Some(Tag::Byte(b)) if *b != 0);
+        d.no_ai = horizon_client::entity_nbt::flag(tag, "NoAI");
         Some(d)
     }
 }
@@ -3719,13 +3723,13 @@ impl Crystal {
         Some(Self {
             id: 0,
             position,
-            show_bottom: !matches!(tag.get("ShowBottom"), Some(Tag::Byte(0))),
+            show_bottom: horizon_client::entity_nbt::flag_or(tag, "ShowBottom", true),
             time,
             beam: match tag.get("beam_target") {
                 Some(Tag::IntArray(v)) if v.len() == 3 => Some([v[0], v[1], v[2]]),
                 _ => None,
             },
-            invulnerable: matches!(tag.get("Invulnerable"), Some(Tag::Byte(1))),
+            invulnerable: horizon_client::entity_nbt::flag(tag, "Invulnerable"),
         })
     }
 }
@@ -4391,7 +4395,8 @@ impl Game<'_> {
                     super::explosion::BlockInteraction::Keep,
                     false,
                     super::explosion::ExplosionSource::default()
-                        .with_silence(self.entity_silent(c.id)),
+                        .with_silence(self.entity_silent(c.id))
+                        .with_entity(c.id, "minecraft:end_crystal"),
                 );
             }
         }
@@ -4903,6 +4908,25 @@ mod tests {
             ),
             Vec3::new(feet[0], feet[1], feet[2]),
         )
+    }
+
+    /// `Entity.load` and `EndCrystal.readAdditionalSaveData` read their booleans with
+    /// `getBooleanOr`: any number, `ShowBottom` true when absent.
+    #[test]
+    fn a_crystal_reads_its_flags_from_any_number() {
+        let crystal = |fields: Vec<(&str, Tag)>| {
+            let pos = [0.5f64, 64.0, 0.5].map(|v| Tag::Double(v.to_bits()));
+            let mut all = vec![("Pos", Tag::List(pos.to_vec()))];
+            all.extend(fields);
+            Crystal::from_nbt(&Tag::compound(all), 0).unwrap()
+        };
+        let c = crystal(vec![
+            ("Invulnerable", Tag::Byte(2)),
+            ("ShowBottom", Tag::Int(0)),
+        ]);
+        assert!(c.invulnerable && !c.show_bottom);
+        let c = crystal(Vec::new());
+        assert!(!c.invulnerable && c.show_bottom);
     }
 
     /// Under `HORIZON_STILL` a crystal's spin and bob start from its position, whichever order
