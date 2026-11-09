@@ -39,7 +39,7 @@ EndFlashState.flashStartedThisTick	inline	crates/horizon-client/src/game/end.rs:
 FaceInfo.Extent.select	skip:data		corner selection; Horizon's unit-cube corner table PORTAL_FACES in block_entity_render.rs has the same order
 FaceInfo.VertexInfo.select	skip:data		corner selection; Horizon's unit-cube corner table PORTAL_FACES in block_entity_render.rs has the same order
 FirstPersonHandsAndItemsRenderer.calculateMapTilt	inline	crates/horizon-client/src/game/maps.rs::Game::two_handed_map_geometry	tilt computed inline with the calculateMapTilt comment
-FirstPersonHandsAndItemsRenderer.renderPlayerHand	port	crates/horizon-client/src/game.rs::Game::hand_geometry	empty main hand's arm model with the player skin
+FirstPersonHandsAndItemsRenderer.renderPlayerHand	port	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	empty main hand's arm model with the player skin
 FirstPersonHandsAndItemsRenderer.renderMapHand	port	crates/horizon-client/src/first_person.rs::map_arm_poses	both arms behind a two-handed map, at the jar's rotations and offsets
 FirstPersonHandsAndItemsRenderer.renderOneHandedMap	port	crates/horizon-client/src/first_person.rs::one_handed_map_pose	gap: player: the arm holding a map is not drawn; the map hand branch skips the arm
 FirstPersonHandsAndItemsRenderer.renderTwoHandedMap	port	crates/horizon-client/src/game/maps.rs::Game::two_handed_map_geometry	gap: player: the arms that hold a two-handed map are not drawn
@@ -48,7 +48,7 @@ FirstPersonHandsAndItemsRenderer.applyEatTransform	port	crates/horizon-client/sr
 FirstPersonHandsAndItemsRenderer.applyBrushTransform	port	crates/horizon-client/src/first_person.rs::brush_transform	the brush sweep while brushing, term for term
 FirstPersonHandsAndItemsRenderer.applyItemArmAttackTransform	port	crates/horizon-client/src/first_person.rs::item_pose	attack swing rotation in the Swing pose
 FirstPersonHandsAndItemsRenderer.applyItemArmTransform	port	crates/horizon-client/src/first_person.rs::item_pose	base item-in-arm translation
-FirstPersonHandsAndItemsRenderer.submitHandsWithItems	port	crates/horizon-client/src/game.rs::Game::hand_geometry	sway, both hands, empty-hand arm and item pose
+FirstPersonHandsAndItemsRenderer.submitHandsWithItems	port	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	sway, both hands, empty-hand arm and item pose
 FirstPersonHandsAndItemsRenderer.swingArm	port	crates/horizon-client/src/first_person.rs::item_pose	attack swing translation and arm rotation
 GameRenderer.<init>	port	crates/horizon-client-render/src/gfx.rs::Renderer::new	lightmap, hand target, debug crosshair and screen effects are built here
 GameRenderer.close	skip:other		GPU resource teardown; wgpu drops the renderer's objects
