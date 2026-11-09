@@ -3,8 +3,27 @@
 //! draws with it yet. Without the variable, and in a build without `horizon-extras` (a Horizon
 //! extra, docs/layers.md), the device is opened exactly as before.
 
+/// The terrain's acceleration structures (step 2).
+#[path = "ray_scene.rs"]
+pub(in crate::gfx) mod ray_scene;
+
 /// The ray query feature.
 const RAY_QUERY: wgpu::Features = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
+
+/// Whether `device` was opened with ray queries.
+pub(in crate::gfx) fn on(device: &wgpu::Device) -> bool {
+    device.features().contains(RAY_QUERY)
+}
+
+/// What buffers that BLAS builds read need on top of their own usage: nothing without ray
+/// queries, so the off path's buffers are main's.
+pub(in crate::gfx) fn blas_input(device: &wgpu::Device) -> wgpu::BufferUsages {
+    if on(device) {
+        wgpu::BufferUsages::BLAS_INPUT
+    } else {
+        wgpu::BufferUsages::empty()
+    }
+}
 
 /// Whether the player asked for ray tracing (the device needs the feature from its creation).
 fn requested() -> bool {

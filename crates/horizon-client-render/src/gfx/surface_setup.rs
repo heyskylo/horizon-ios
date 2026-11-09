@@ -7,7 +7,7 @@ use super::{
 };
 // Ray tracing on request, which the device needs from its creation (gfx.rs may not grow).
 #[path = "ray_query.rs"]
-mod ray_query;
+pub(super) mod ray_query;
 use std::sync::Arc;
 use winit::window::Window;
 

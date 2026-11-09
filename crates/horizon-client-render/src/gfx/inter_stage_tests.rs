@@ -149,6 +149,12 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             vec!["terrain.wgsl", "visbuffer.wgsl"],
             super::terrain_shader() + include_str!("../visbuffer.wgsl"),
         ),
+        // Ray tracing's unpacking of compact sections (gfx/ray_scene.rs's `Unpacker`).
+        (
+            "ray tracing unpack",
+            vec!["terrain.wgsl", "rt_unpack.wgsl"],
+            super::surface_setup::ray_query::ray_scene::unpack_shader(),
+        ),
         // A native mod's world warp (gfx/world_warp.rs): its copies with the plainest warp.
         (
             "world warp terrain",
