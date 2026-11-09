@@ -677,7 +677,7 @@ impl Game<'_> {
             0.0
         }
     }
-    /// `Entity.move`'s fall reset for a vehicle that keeps a fall and moves on
+    /// `Entity.move`'s fall reset for an entity that keeps a fall and moves on
     /// by `moved` from `from`: a move of a block or more casts up to 8 blocks
     /// of it (`ClipContext.Block.FALLDAMAGE_RESETTING`, `ClipContext.Fluid.WATER`)
     /// and a hit resets the fall, before the move's own drop counts.

@@ -282,6 +282,8 @@ impl Game<'_> {
                     },
                     uuid,
                 );
+                // Entity.saveWithoutId's common fields, also for a cloud never saved.
+                crate::game::persist::write_static_entity_fields(&mut tag);
                 set_key(&mut tag, "Age", Tag::Int(c.age));
                 set_key(&mut tag, "Duration", Tag::Int(c.duration));
                 set_key(&mut tag, "Radius", Tag::Float(c.radius.to_bits()));
@@ -323,7 +325,7 @@ impl Game<'_> {
             Target::Trident(id) => {
                 let uuid = self.uuid_for(id);
                 let t = self.tridents.iter().find(|t| t.id == id)?;
-                t.to_nbt(uuid, self.persist.raw.get(&id))
+                t.to_nbt(uuid, self.pack.assets.registry, self.persist.raw.get(&id))
             }
             Target::Spawner(id) => {
                 let s = self.ominous_spawners.iter().find(|s| s.id == id)?;
@@ -335,6 +337,29 @@ impl Game<'_> {
                     s.uuid,
                     s.raw.as_deref(),
                 )
+            }
+            // LeashFenceKnotEntity saves nothing of its own: the common
+            // entity fields, as an explicitly summoned knot's.
+            Target::Knot(id) => {
+                let fence = self.natural_knot(id)?;
+                let uuid = *self.persist.uuids.get(&id)?;
+                let knot = super::OtherEntity {
+                    id,
+                    kind: "minecraft:leash_knot".into(),
+                    position: horizon_client::mobs::leash::knot_state(fence).position,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    item_transformation: None,
+                    interaction: None,
+                    knot_check: None,
+                    eye: None,
+                };
+                let mut tag = self.other_to_nbt(&knot, uuid);
+                // Entity.saveWithoutId writes `remainingFireTicks` always; the
+                // knot's never changes (BlockAttachedEntity.tick has no
+                // baseTick).
+                set_key(&mut tag, "Fire", Tag::Short(0));
+                tag
             }
         })
     }
@@ -446,9 +471,10 @@ impl Game<'_> {
             Target::Item(id) => {
                 let new = entity_nbt::item_entity_from_nbt(&tag, id, 0.0).ok_or_else(stale)?;
                 if let Some(slot) = self.dropped.iter_mut().find(|e| e.id == id) {
-                    let bob = slot.bob_offset;
-                    *slot = new;
-                    slot.bob_offset = bob;
+                    // `/data` loads into the same entity: its bobOffs and own random stay.
+                    let kept = std::mem::replace(slot, new);
+                    slot.bob_offset = kept.bob_offset;
+                    slot.random = kept.random;
                 }
             }
             Target::Fangs(id) => {
@@ -622,6 +648,18 @@ impl Game<'_> {
                     .iter_mut()
                     .find(|trident| trident.id == id)
                     .ok_or_else(stale)?
+                    .load_nbt(loaded, &tag, self.pack.assets.registry);
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
+            Target::Rocket(id) => {
+                let player = self.saved_player_uuid();
+                let loaded =
+                    entity_nbt::firework_rocket_from_nbt(&tag, player).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                self.rockets
+                    .iter_mut()
+                    .find(|r| r.id == id)
+                    .ok_or_else(stale)?
                     .load_nbt(loaded);
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
@@ -698,6 +736,7 @@ impl Game<'_> {
         | Target::Orb(id)
         | Target::Cushion(id)
         | Target::Trident(id)
+        | Target::Rocket(id)
         | Target::Other(id)
         | Target::Fangs(id)
         | Target::Projectile(id) = t
@@ -717,6 +756,59 @@ impl Game<'_> {
             self.persist.raw.insert(id, tag);
         }
         Ok(())
+    }
+    /// The block entity part of `BlockInput.place`: load the block entity
+    /// from the argument's tag (read; `load_block_entity_nbt` reads SNBT); true when its saved data changed.
+    pub(in crate::game) fn load_block_entity_tag(
+        &mut self,
+        pos: [i32; 3],
+        mut tag: horizon_world::nbt::Tag,
+    ) -> bool {
+        use horizon_world::nbt::Tag;
+        if self.pot_data(pos).is_some() {
+            return self.set_pot_data(pos, &tag).unwrap_or(false);
+        }
+        let key = (pos[0], pos[1], pos[2]);
+        let was_auto = self.command_block_auto(key);
+        let Some(e) = self.world.block_entities.get(&key) else {
+            return false;
+        };
+        let name = self.data_block_name(pos);
+        let before = horizon_client::save::encode_block_entity(key, e, &name);
+        if let Tag::Compound(c) = &mut tag {
+            for k in ["id", "x", "y", "z"] {
+                if let Some(v) = before.get(k) {
+                    c.insert(k.into(), v.clone());
+                }
+            }
+        }
+        let Some((_, mut new)) = self.decode_block_entity_at(key, &tag) else {
+            return false;
+        };
+        let rolled = self.take_loot_table(key, &tag, &mut new);
+        let after = horizon_client::save::encode_block_entity(key, &new, &name);
+        // The lock is outside the model: a tag that only changes it still
+        // changes the block entity.
+        let lock_changed = self.world.block_lock(key) != tag.get("lock");
+        // So is the custom name.
+        let name_changed = self.load_block_name(key, &new, &tag);
+        let cooldown_changed = if name == "minecraft:hopper" {
+            let state = super::super::machines::HopperState::load(&tag);
+            let changed = self.hoppers.get(&key).map_or(-1, |s| s.cooldown) != state.cooldown;
+            self.hoppers.insert(key, state);
+            changed
+        } else {
+            false
+        };
+        if after == before && !rolled && !lock_changed && !name_changed && !cooldown_changed {
+            return false;
+        }
+        self.world.block_entities.insert(key, new);
+        self.world.set_block_lock(key, &tag);
+        self.update_spawner_display(key);
+        self.command_block_loaded(key, was_auto);
+        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        true
     }
     pub(in crate::game) fn data_block_name(&self, p: [i32; 3]) -> String {
         let state = self.world.block(p[0], p[1], p[2]);
@@ -965,7 +1057,8 @@ impl Game<'_> {
                     self.mark_block_entity_updated(key);
                     return Ok(());
                 }
-                if let Some((_, mut new)) = save::decode_block_entity(&tag) {
+                if let Some((_, mut new)) = self.decode_block_entity_at(key, &tag) {
+                    let was_auto = self.command_block_auto(key);
                     if self.data_block_name(*p) == "minecraft:hopper" {
                         self.hoppers
                             .insert(key, super::super::machines::HopperState::load(&tag));
@@ -986,6 +1079,7 @@ impl Game<'_> {
                     }
                     self.world.set_block_lock(key, &tag);
                     self.update_spawner_display(key);
+                    self.command_block_loaded(key, was_auto);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),
                     // even when the block state itself stays the same.
                     self.mark_block_entity_updated(key);
@@ -1272,6 +1366,12 @@ impl Game<'_> {
             name: String::new(),
             text: g.target_name(t),
             display: None,
+        };
+        // A natural knot is listed but keeps no tags yet: `tag add`/`remove` leave it out.
+        let targets = if matches!(id, "tag.add" | "tag.remove") {
+            super::without_knots(targets)?
+        } else {
+            targets
         };
         let mut all: Vec<String> = Vec::new();
         for &t in &targets {

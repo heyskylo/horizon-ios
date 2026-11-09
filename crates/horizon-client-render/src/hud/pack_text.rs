@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use horizon_shaders::{CoreProgram, Glue};
+use crate::core_shader::{CoreProgram, Glue};
 
 use super::{HudBatch, HudVertex};
 use crate::gfx::hud_coverage::Pipeline;
@@ -64,7 +64,7 @@ pub(super) fn load_core(
         let path = format!("assets/{namespace}/{path}");
         read(root, &path).or_else(|| read(defaults, &path))
     };
-    match horizon_shaders::translate_core(&vertex, &fragment, defines, &include, glue) {
+    match crate::core_shader::translate_core(&vertex, &fragment, defines, &include, glue) {
         Ok(program) => {
             log::info!("the resource pack's {name} shader is used");
             Some(Arc::new(program))
@@ -74,6 +74,21 @@ pub(super) fn load_core(
             None
         }
     }
+}
+
+/// The packs' core shaders the atlas carries (text, block outline, sky, stars).
+pub(super) fn load_shaders(atlas: &mut super::HudAtlas, root: &Path, defaults: &Path) {
+    atlas.text_shader = load(root, defaults);
+    atlas.lines_shader = load_core(
+        root,
+        defaults,
+        "rendertype_lines",
+        &[],
+        &crate::gfx::core_lines::GLUE,
+    );
+    let sky = |name| load_core(root, defaults, name, &[], &crate::gfx::core_sky::GLUE);
+    atlas.sky_shader = sky("sky");
+    atlas.stars_shader = sky("stars");
 }
 
 /// Each uniform block's offset in the one buffer (`core_shader::BLOCKS` order).
@@ -117,7 +132,7 @@ impl PackText {
                 count: None,
             })
             .collect();
-        for (_, binding) in horizon_shaders::SAMPLERS {
+        for (_, binding) in crate::core_shader::SAMPLERS {
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility,
@@ -160,7 +175,7 @@ impl PackText {
                 }),
             })
             .collect();
-        for (_, binding) in horizon_shaders::SAMPLERS {
+        for (_, binding) in crate::core_shader::SAMPLERS {
             resources.push(wgpu::BindGroupEntry {
                 binding,
                 resource: wgpu::BindingResource::TextureView(atlas),

@@ -474,7 +474,14 @@ public final class VanillaDispenserOracle {
             line.append(' ').append(num(e.getX())).append(' ').append(num(e.getY())).append(' ').append(num(e.getZ()));
             var v = e.getDeltaMovement();
             line.append(' ').append(num(v.x)).append(' ').append(num(v.y)).append(' ').append(num(v.z));
-            if (e instanceof ItemEntity item) line.append(' ').append(ParityData.canon(item.getItem()));
+            if (e instanceof ItemEntity item) {
+                line.append(' ').append(ParityData.canon(item.getItem()));
+                if (f.has("pickup_delay") && f.get("pickup_delay").getAsBoolean()) {
+                    Field delay = ItemEntity.class.getDeclaredField("pickupDelay");
+                    delay.setAccessible(true);
+                    result.add("pickup " + ParityData.canon(item.getItem()) + " " + delay.getInt(item));
+                }
+            }
             if (e instanceof PrimedTnt tnt) line.append(" fuse=").append(tnt.getFuse());
             if (e instanceof ExperienceOrb orb) line.append(" value=").append(orb.getValue());
             // An orb that took others in (ExperienceOrb.tryMergeToExisting) prints once per

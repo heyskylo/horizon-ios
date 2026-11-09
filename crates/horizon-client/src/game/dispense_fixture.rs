@@ -472,6 +472,15 @@ impl Game<'_> {
             ));
         }
         self.fixture_entities(&old_mobs, &old_stands, &old_vehicles, &mut out);
+        if case["pickup_delay"].as_bool().unwrap_or(false) {
+            for item in &self.dropped {
+                out.push(format!(
+                    "pickup {} {}",
+                    canon_stack(Some(&item.stack)),
+                    item.pickup_delay
+                ));
+            }
+        }
         for (i, t) in targets.iter().enumerate() {
             out.push(self.fixture_describe(i, t));
             self.fixture_vehicle_items(i, t, &mut out);
