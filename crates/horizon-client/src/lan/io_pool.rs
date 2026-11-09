@@ -2,7 +2,7 @@
 //! cores, each polling its players' sockets (epoll, kqueue or Windows' AFD,
 //! through mio), where every player used to have a reader and a writer thread
 //! of its own. The game thread only queues packet bodies in a player's
-//! [`Outbox`] (bounded by [`MAX_PENDING`] bytes); framing, compression,
+//! [`Outbox`] (over the network, bounded by [`MAX_PENDING`] bytes); framing, compression,
 //! encryption, the socket writes, reading and the keep-alives happen here. A
 //! connection stays on one thread, so its bytes keep their order. The
 //! integrated server's own player, over an in-memory pipe, is served the same
@@ -124,6 +124,9 @@ pub(super) struct Outbox {
     queue: Mutex<Queue>,
     /// The bytes queued and not framed yet (`PlayerSender::pending`).
     pending: Arc<AtomicUsize>,
+    /// Whether [`MAX_PENDING`] applies. A client in this process (a memory connection) reads
+    /// what it is sent as it comes, and a join's first view can pass the limit in one burst.
+    capped: bool,
     worker: Arc<Worker>,
     /// While counting: each play packet framed (sent) and read (received) since the game last
     /// took them, as (id, body bytes).
@@ -131,7 +134,7 @@ pub(super) struct Outbox {
 }
 impl Outbox {
     /// An outbox on the least busy network thread, started the first time.
-    pub(super) fn new(pending: Arc<AtomicUsize>) -> Result<Arc<Self>, String> {
+    pub(super) fn new(pending: Arc<AtomicUsize>, capped: bool) -> Result<Arc<Self>, String> {
         let workers = &pool()?.workers;
         let worker = workers
             .iter()
@@ -140,6 +143,7 @@ impl Outbox {
         Ok(Arc::new(Self {
             queue: Mutex::default(),
             pending,
+            capped,
             worker: worker.clone(),
             tally: Mutex::default(),
         }))
@@ -162,7 +166,7 @@ impl Outbox {
     }
     /// Queue `bodies` (already counted in `pending`), then `end`. Nothing
     /// follows an end, but a close overrides a disconnect still writing.
-    /// Past [`MAX_PENDING`] the connection closes. The thread to wake, if
+    /// Past [`MAX_PENDING`] a capped connection closes. The thread to wake, if
     /// this is the first news it has since it last looked.
     pub(super) fn push(&self, bodies: Vec<Vec<u8>>, end: Option<End>) -> Option<&Arc<Worker>> {
         let mut q = self.queue();
@@ -174,7 +178,7 @@ impl Outbox {
                 } else {
                     q.bodies.extend(bodies);
                 }
-                q.end = if self.pending.load(Ordering::Relaxed) > MAX_PENDING {
+                q.end = if self.capped && self.pending.load(Ordering::Relaxed) > MAX_PENDING {
                     Some(End::Close)
                 } else {
                     end
@@ -767,8 +771,16 @@ mod tests {
         probe: impl FnOnce(Sender<Seen>) -> Probe,
         timeout: Duration,
     ) -> Served {
+        serve_with(server, probe, timeout, true)
+    }
+    fn serve_with(
+        server: Connection,
+        probe: impl FnOnce(Sender<Seen>) -> Probe,
+        timeout: Duration,
+        capped: bool,
+    ) -> Served {
         let pending = Arc::new(AtomicUsize::new(0));
-        let outbox = Outbox::new(pending.clone()).unwrap();
+        let outbox = Outbox::new(pending.clone(), capped).unwrap();
         let (tx, seen) = channel();
         let (socket, reader, writer) = server.detach();
         adopt(
@@ -818,7 +830,7 @@ mod tests {
     /// The tally keeps each way apart, stops at its cap and empties when taken.
     #[test]
     fn the_tally_keeps_both_ways_up_to_its_cap() {
-        let outbox = Outbox::new(Arc::new(AtomicUsize::new(0))).unwrap();
+        let outbox = Outbox::new(Arc::new(AtomicUsize::new(0)), true).unwrap();
         outbox.tally(0, [(0x27, 10), (0x08, 3)]);
         outbox.tally(1, [(0x1a, 5)]);
         assert_eq!(
@@ -978,5 +990,18 @@ mod tests {
             assert_eq!(served.next(), Seen::Left("Disconnected".into()));
             assert_eq!(served.next(), Seen::Closed);
         }
+    }
+
+    /// A client in this process takes a join's whole first view at once: queued past the
+    /// limit, it is served and stays connected.
+    #[test]
+    fn an_uncapped_connection_outlasts_too_much_queued() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        let served = serve_with(Connection::local(b), quiet, Duration::from_secs(30), false);
+        served.pending.store(MAX_PENDING, Ordering::Relaxed);
+        served.send(vec![body(3, 10)], None);
+        assert_eq!(client.recv().unwrap().0, 3);
+        assert!(served.seen.try_recv().is_err());
     }
 }
