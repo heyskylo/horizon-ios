@@ -727,6 +727,8 @@ MASKS = [
     (re.compile(r'Average time per tick: [0-9.]+ms'), 'Average time per tick: <ms>'),
     (re.compile(r'P50: [0-9.]+ms P95: [0-9.]+ms P99: [0-9.]+ms'), 'P50: <ms> P95: <ms> P99: <ms>'),
     (re.compile(r'debug/client-[0-9_.-]+\.(jfr|json)'), 'debug/client-<time>'),
+    # BaseCommandBlock.sendSystemMessage stamps the last output with the wall clock.
+    (re.compile(r'\[\d\d:\d\d:\d\d\] '), '[<time>] '),
 ]
 
 
