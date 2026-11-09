@@ -250,6 +250,11 @@ pub fn puff_scale(state: i32) -> f64 {
         _ => 1.0,
     }
 }
+/// `Bucketable.fromBucket` of a fish or an axolotl; a tadpole's is always true
+/// (`Tadpole.setFromBucket` does nothing).
+pub fn from_bucket(m: &Mob) -> bool {
+    m.extra.from_bucket || m.species() == Species::Tadpole
+}
 /// `Tadpole.setAgeLockedData`: a golden dandelion flips the lock, puts the
 /// age back to 0 and starts the particle timer (40 ticks).
 pub fn set_age_locked_data(m: &mut Mob) {

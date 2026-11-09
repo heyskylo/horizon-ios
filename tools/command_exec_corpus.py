@@ -1822,6 +1822,49 @@ def dispensed_spawn_egg_persistence():
                        f'/forceload remove {x} {z} {x + 15} {z + 15}')
 
 
+def dispensed_bucket_mobs():
+    """`MobBucketItem.spawn` loads the bucket's entity data into the mob (`loadFromBucketTag`:
+    a sulfur cube's lowercase `age`, absent meaning 0, and a tadpole's `Age`) and calls
+    `setFromBucket(true)`, never `setPersistenceRequired`: a sulfur cube saves `from_bucket:1b`
+    and `PersistenceRequired:0b`, keeping the size 2 its finalizeSpawn gave it even as a baby. A
+    tadpole's `fromBucket()` is always true, so `requiresCustomPersistence` keeps every tadpole
+    far from the player, a summoned one too, and saves `PersistenceRequired:0b`."""
+    x, z, y = 5376, 5120, 300
+    # (dispenser x, bucket, its entity data, mob)
+    buckets = [(x + 2, 'sulfur_cube_bucket', '{age:-24000,NoAI:1b}', 'sulfur_cube'),
+               (x + 6, 'sulfur_cube_bucket', '{NoAI:1b}', 'sulfur_cube'),
+               (x + 10, 'tadpole_bucket', '{Age:100,AgeLocked:1b,NoAI:1b}', 'tadpole')]
+    ops = [*setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+           {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+           *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
+    for bx, bucket, data, _ in buckets:
+        ops += [cmd(f'/setblock {bx} {y} {z + 4} minecraft:dispenser[facing=south]'
+                    f'{{Items:[{{Slot:0b,id:"minecraft:{bucket}",count:1,'
+                    f'components:{{"minecraft:bucket_entity_data":{data}}}}}]}}', expect_result=1),
+                cmd(f'/setblock {bx} {y + 1} {z + 4} minecraft:redstone_block', expect_result=1)]
+    ops += [cmd(f'/summon minecraft:tadpole {x + 14}.5 {y} {z + 10}.5 {{NoAI:1b,Tags:["summoned_tadpole"]}}',
+                expect_result=1),
+            {'op': 'tick', 'n': 6}]
+    for bx, _, data, kind in buckets:
+        box = f'type=minecraft:{kind},x={bx - 1},y={y - 2},z={z + 4},dx=3,dy=4,dz=3,limit=1'
+        mob = f'@e[{box}]'
+        ops += [cmd(f'/execute if entity {mob}', expect_result=1),
+                cmd(f'/data get entity {mob} PersistenceRequired', expect_result=0)]
+        if kind == 'sulfur_cube':
+            ops += [cmd(f'/data get entity {mob} from_bucket', expect_result=1),
+                    cmd(f'/data get entity {mob} Size', expect_result=1),
+                    cmd(f'/execute {"unless" if "age" in data else "if"} entity @e[{box},nbt={{Age:0}}]', expect_result=1)]
+        else:
+            ops += [cmd(f'/data get entity {mob} FromBucket', expect_result=1),
+                    cmd(f'/data get entity {mob} Age')]
+    tadpole = '@e[type=minecraft:tadpole,tag=summoned_tadpole,limit=1]'
+    ops += [cmd(f'/execute if entity {tadpole}', expect_result=1),
+            cmd(f'/data get entity {tadpole} PersistenceRequired', expect_result=0)]
+    return ops + setup(f'/kill @e[type=!minecraft:player,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/fill {x} {y - 1} {z} {x + 15} {y + 1} {z + 15} minecraft:air',
+                       f'/forceload remove {x} {z} {x + 15} {z + 15}')
+
+
 
 
 def summoned_fangs_lifetime():
@@ -7475,6 +7518,7 @@ def groups():
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('dispensed spawn egg persistence', dispensed_spawn_egg_persistence()),
+        ('dispensed bucket mobs', dispensed_bucket_mobs()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
         ('seed sync proof', seed_sync_proof(cmd, setup)),
