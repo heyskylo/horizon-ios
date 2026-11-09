@@ -3037,6 +3037,12 @@ console (which waits for the next tick and does nothing inside a player's hook).
   `eject`). `native_entity_mount` may refuse each. Inside a player's hook only the acting player and mobs are reached.
   True when it rides, got off, or one got off; false otherwise and on a client. Server-side. Bundles need
   `"hooks": @API:mount@`.
+- Helpers **`native_vehicle_of(entity)`** and **`native_passengers_of(entity)`** (`host.vehicle_of`, `host.passengers_of`),
+  by entity id in the level in place: the boat, minecart or mob a server player or mob sits on (Bukkit's `getVehicle`), and
+  the server players and mobs riding a boat, minecart or mob, in vanilla's `getPassengers` order (the controlling
+  passenger first; players, then mobs). Read-only: they change nothing. None or empty when nothing rides, for an entity
+  not reached (inside another player's hook only the acting player and mobs are), and on a client. Server-side. Bundles
+  need `"hooks": @API:riding_getters@`.
 - Helper **`native_set_flight(uuid, allow, flying)`** (`host.set_flight`): lets a server player fly in any game mode
   (`allow`) or not, and sets whether they fly now (`flying`), as Bukkit's `Player.setAllowFlight` and `setFlying`
   (`Abilities.mayfly` and `flying`); their client is told, and the server's flying check no longer kicks them. A player

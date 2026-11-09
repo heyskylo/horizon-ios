@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "vehicle_of", "target": "horizon_client::game::native_travel::Game<'_>::native_vehicle_of"},
+    {"name": "passengers_of", "target": "horizon_client::game::native_travel::Game<'_>::native_passengers_of"}
+  ],
+  "rust_summary": "the vehicle a server player or mob sits on, and the riders of a boat, minecart or mob (`native_vehicle_of`, `native_passengers_of`), as Bukkit's `Entity.getVehicle` and `getPassengers`.",
+  "doc_summary": "`native_vehicle_of(entity)` and `native_passengers_of(entity)` read what a server player or mob rides and who rides a boat, minecart or mob, by entity id in the level in place, in vanilla's `getPassengers` order (the controlling passenger first). Read-only; None or empty off a server. Bundles need \"hooks\": @API:riding_getters@.",
+  "comments": ["crates/horizon-client/src/game/native_travel.rs"]
+}
