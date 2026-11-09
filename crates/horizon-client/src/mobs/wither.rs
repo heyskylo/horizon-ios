@@ -413,7 +413,13 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
             let mut found: Vec<i32> = w
                 .others
                 .iter()
-                .filter(|s| s.alive && s.id != m.id && !undead(s.species) && near(s.position))
+                .filter(|s| {
+                    s.alive
+                        && s.id != m.id
+                        && !undead(s.species)
+                        && near(s.position)
+                        && m.sees(w, Who::Mob(s.id))
+                })
                 .map(|s| s.id as i32)
                 .collect();
             if let Some(pl) = &w.player
@@ -421,6 +427,7 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
                 && !pl.creative
                 && !pl.spectator
                 && near(pl.position)
+                && m.sees(w, Who::Player)
             {
                 found.push(-1);
             }
