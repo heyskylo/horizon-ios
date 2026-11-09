@@ -151,13 +151,13 @@ fn damage_immunity_on_worn_boots_refuses_campfire_but_not_in_fire_or_wrong_slot(
     assert!(fire.ends_with(": 100s"), "{fire}");
 
     // Frost Walker on a helmet (head) is not in an active slot for the enchantment.
-    let mut game = game();
+    let mut helmeted = self::game();
     summon(
-        &mut game,
+        &mut helmeted,
         r#",equipment:{head:{id:"minecraft:diamond_helmet",count:1,components:{"minecraft:enchantments":{"minecraft:frost_walker":1}}}}"#,
     );
-    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:campfire")));
-    let (_, fire) = say(&mut game, &format!("data get entity {STAND} Fire"));
+    assert!(!helmeted.run_command(&format!("damage {STAND} 1 minecraft:campfire")));
+    let (_, fire) = say(&mut helmeted, &format!("data get entity {STAND} Fire"));
     assert!(fire.ends_with(": 100s"), "{fire}");
 }
 

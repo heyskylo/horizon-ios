@@ -1292,20 +1292,21 @@ impl Game<'_> {
             .raw
             .get(&id)
             .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
-        let refused = (
-            tagged("minecraft:is_explosion"),
-            tagged("minecraft:ignites_armor_stands"),
-            tagged("minecraft:burns_armor_stands"),
-        );
+        // Entity.isInvulnerableTo: the flag, then EnchantmentHelper.isImmuneToDamage.
         let a = &self.armor_stands[i];
         if (invulnerable && !creative)
             || a.invisible
             || a.marker
             || self.stand_immune_to_damage(i, damage_type, causing)
-            || self.command_damage_stand_refused(i, id, refused, causing)
         {
             return false;
         }
+        // ArmorStand.hurtServer attributes its game events to the source
+        // entity: the player, a LAN guest or the mob.
+        let by = match causing {
+            Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
+            _ => None,
+        };
         let (explosion, ignites, burns) = (
             tagged("minecraft:is_explosion"),
             tagged("minecraft:ignites_armor_stands"),
@@ -1316,21 +1317,26 @@ impl Game<'_> {
             tagged("minecraft:always_kills_armor_stands"),
         );
         if explosion {
-            self.break_armor_stand_by_anything(i);
+            self.break_armor_stand_with_source(i, by);
             return false;
         }
         if ignites {
             if self.armor_stands[i].fire_ticks > 0 {
-                self.cause_stand_damage(i, 0.15);
+                self.cause_stand_damage(i, 0.15, by);
             } else {
-                // igniteForSeconds(5.0f): at least 100 ticks.
+                // igniteForSeconds(5.0f): at least 100 ticks, and
+                // Entity.igniteForTicks calls clearFreeze.
                 let a = &mut self.armor_stands[i];
                 a.fire_ticks = a.fire_ticks.max(100);
+                if let Some(horizon_world::nbt::Tag::Compound(map)) = self.persist.raw.get_mut(&id)
+                {
+                    map.remove(&"TicksFrozen".into());
+                }
             }
             return false;
         }
         if burns && self.armor_stands[i].health > 0.5 {
-            self.cause_stand_damage(i, 4.0);
+            self.cause_stand_damage(i, 4.0, by);
             return false;
         }
         if !breaks && !always_kills {
@@ -1345,58 +1351,7 @@ impl Game<'_> {
         if !may_build {
             return false;
         }
-        // ArmorStand.hurtServer attributes its game events to the source
-        // entity: the player, a LAN guest or the mob.
-        let by = match causing {
-            Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
-            _ => None,
-        };
         self.break_armor_stand_by_hit(i, creative, always_kills, by)
-    }
-    /// `ArmorStand.causeDamage`: the health less `amount`, broken by anything
-    /// at 0.5 or less.
-    fn cause_stand_damage(&mut self, i: usize, amount: f32) {
-        self.cause_stand_damage_by(i, amount, None);
-    }
-    /// `ArmorStand.hurtServer` for the sources that act on the stand and still
-    /// return false (`#is_explosion`, `#ignites_armor_stands` and
-    /// `#burns_armor_stands`), with `causing` attributed on their game events.
-    fn command_damage_stand_refused(
-        &mut self,
-        i: usize,
-        id: u32,
-        (explosion, ignites, burns): (bool, bool, bool),
-        causing: Option<super::commands::Target>,
-    ) -> bool {
-        use super::commands::Target;
-        let by = match causing {
-            Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
-            _ => None,
-        };
-        if explosion {
-            self.break_armor_stand_with_source(i, by);
-            return true;
-        }
-        if ignites {
-            if self.armor_stands[i].fire_ticks > 0 {
-                self.cause_stand_damage_by(i, 0.15, by);
-            } else {
-                // igniteForSeconds(5.0f): at least 100 ticks, and
-                // LivingEntity.setRemainingFireTicks calls clearFreeze.
-                let a = &mut self.armor_stands[i];
-                a.fire_ticks = a.fire_ticks.max(100);
-                let raw = self.persist.raw.get_mut(&id);
-                if let Some(horizon_world::nbt::Tag::Compound(map)) = raw {
-                    map.remove(&"TicksFrozen".into());
-                }
-            }
-            return true;
-        }
-        if burns && self.armor_stands[i].health > 0.5 {
-            self.cause_stand_damage_by(i, 4.0, by);
-            return true;
-        }
-        false
     }
     /// `EnchantmentHelper.isImmuneToDamage` for the stand at `i`: whether an
     /// enchantment on an active equipment slot has a `minecraft:damage_immunity`
@@ -1467,12 +1422,7 @@ impl Game<'_> {
     }
     /// `ArmorStand.causeDamage`: the health less `amount`, broken by anything
     /// at 0.5 or less, else `gameEvent(ENTITY_DAMAGE, damageSource.getEntity())`.
-    fn cause_stand_damage_by(
-        &mut self,
-        i: usize,
-        amount: f32,
-        by: Option<super::commands::Target>,
-    ) {
+    fn cause_stand_damage(&mut self, i: usize, amount: f32, by: Option<super::commands::Target>) {
         let health = self.armor_stands[i].health - amount;
         if health <= 0.5 {
             self.break_armor_stand_with_source(i, by);
