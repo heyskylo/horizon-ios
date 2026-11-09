@@ -1640,9 +1640,11 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         {
             super::raider::state_mut(m).patrol_leader = true;
         }
+        // PatrollingMonster.finalizeSpawn: the leader wears
+        // `Raid.getOminousBannerInstance`, the patterned stack clients draw.
         if super::raider::state(m).is_some_and(|s| s.patrol_leader) {
             set_item(m, HEAD, super::raider::BANNER);
-            set_drop_chance(m, HEAD, 2.0);
+            super::raider::wear_banner(m);
         }
         if reason == Reason::Patrol {
             super::raider::state_mut(m).patrolling = true;
