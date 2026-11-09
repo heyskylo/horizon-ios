@@ -301,16 +301,31 @@ impl Split<'_> {
         }
         let profile = profiles.join(&name);
         let options = profile.join("options.txt");
-        let mut settings = if options.exists() {
-            horizon_client::settings::Settings::load(&options)
+        let made = if options.exists() {
+            None
         } else {
             std::fs::create_dir_all(&profile)?;
             let mut new = self.host.settings.clone();
             // The Controller setting is P1's, as on the profile page (`join`).
             new.controller.enabled |= self.guests[i].pad.is_some();
+            // On P1's seat, so the crates' settings stores write P1's values too.
+            let turn = horizon_hooks::seat();
+            horizon_hooks::engine::set_seat(0);
             new.save(&options);
-            new
+            horizon_hooks::engine::set_seat(turn);
+            Some(new)
         };
+        // The crates' stores load into the guest's seat, before its turn starts below.
+        let turn = horizon_hooks::seat();
+        horizon_hooks::engine::set_seat(self.guests[i].seat - 1);
+        let mut settings = match made {
+            Some(new) => {
+                horizon_client::settings::Settings::load_stores(&options);
+                new
+            }
+            None => horizon_client::settings::Settings::load(&options),
+        };
+        horizon_hooks::engine::set_seat(turn);
         // A profile an earlier join saved with P1's off, or the player's pad would be dead.
         settings.controller.enabled |= self.guests[i].pad.is_some();
         // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
