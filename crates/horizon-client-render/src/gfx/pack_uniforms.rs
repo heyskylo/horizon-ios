@@ -28,7 +28,7 @@
 //! [-w, w], and the depth buffers packs read hold GL window depth.
 
 use glam::{DMat4, DVec3, Mat4, Vec3, Vec4};
-use horizon_shaders::Shadow;
+use horizon_render_pipeline::Shadow;
 
 use super::Frame;
 
@@ -440,7 +440,7 @@ pub struct FrameUniforms {
     center_depth: Option<f32>,
     /// The pack's shadow settings (7.1).
     pub shadow: Shadow,
-    /// The pack's smoothing half-lives in ticks (`horizon_shaders::HALF_LIVES`).
+    /// The pack's smoothing half-lives in ticks (`horizon_render_pipeline::HALF_LIVES`).
     pub half_lives: [Option<f32>; 4],
 }
 

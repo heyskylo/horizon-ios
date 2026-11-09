@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use horizon_shaders::{BufferObject, CustomImage, Format, Kind};
+use horizon_render_pipeline::{Format, Kind};
+use horizon_shaders::{BufferObject, CustomImage};
 
 pub(super) struct PackImage {
     pub(super) def: CustomImage,

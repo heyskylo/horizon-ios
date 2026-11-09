@@ -37,6 +37,52 @@ impl Game<'_> {
 }
 
 impl Screen {
+    /// `Screen.isPauseScreen`: whether this screen, open in a single-player
+    /// world, stops the world ticking (`Gui.isPausing` -> `Minecraft.pause`).
+    /// The class default is true. 26.3's false overrides are
+    /// `AbstractContainerScreen` (creative and inventory), `ChatScreen`,
+    /// `DeathScreen`, `GameModeSwitcherScreen`, `SocialInteractionsScreen`
+    /// and `LecternScreen`; Horizon's own screens over the world follow
+    /// them. The book in hand (`BookViewScreen`, true), the win screen
+    /// (`WinScreen`, `!poem`) and a dialog (`DialogScreen`, its `pause`)
+    /// answer from their own state, so `Game::pauses_game` reads those where
+    /// they live and `Win` is not decided here.
+    pub(super) fn is_pause_screen(self) -> bool {
+        match self {
+            // AbstractContainerScreen.isPauseScreen.
+            Self::Creative | Self::Inventory
+            // ChatScreen.isPauseScreen.
+            | Self::Chat
+            // DeathScreen.isPauseScreen.
+            | Self::Dead
+            // GameModeSwitcherScreen.isPauseScreen.
+            | Self::GameModeSwitcher
+            // SocialInteractionsScreen.isPauseScreen.
+            | Self::Social
+            // No screen over the world, and Horizon's own screens that
+            // draw over it (the emote wheel, a native mod's screen and
+            // Studio) leave it running as they always have.
+            | Self::Playing | Self::EmoteWheel | Self::Mod | Self::Studio
+            // WinScreen.isPauseScreen is `!poem`: Game::win_screen_pauses.
+            | Self::Win => false,
+            // Every other screen, and the game-master block editors
+            // (StructureBlockEditScreen and its siblings), inherit Screen's
+            // true.
+            Self::Paused
+            | Self::Options
+            | Self::Stats
+            | Self::Advancements
+            | Self::WorldOptions
+            | Self::Friends
+            | Self::ServerLinks
+            | Self::ConfirmLink
+            | Self::DialogWarning
+            | Self::CommandBlock
+            | Self::BlockEditor
+            | Self::DebugOptions
+            | Self::HudEditor => true,
+        }
+    }
     /// Screen.extractBackground for non-isInGameUi screens, and
     /// PauseScreen.extractBackground only when showPauseMenu is true.
     pub(super) fn blurs_background(self, pause_menu: bool) -> bool {
@@ -906,6 +952,46 @@ mod tests {
         ] {
             assert!(!screen.blurs_background(true));
             assert!(!screen.blurs_background(false));
+        }
+    }
+
+    /// `Screen.isPauseScreen` per 26.3: the class default is true, and only
+    /// these classes override it false; the game-master editors keep the
+    /// default. A world with one of the true screens open stops ticking
+    /// (`Minecraft.pause` through `Gui.isPausing`).
+    #[test]
+    fn only_the_screens_that_override_is_pause_screen_keep_the_world_running() {
+        for screen in [
+            Screen::Creative,
+            Screen::Inventory,
+            Screen::Chat,
+            Screen::Dead,
+            Screen::GameModeSwitcher,
+            Screen::Social,
+            Screen::Playing,
+            Screen::EmoteWheel,
+            Screen::Mod,
+            Screen::Studio,
+            Screen::Win,
+        ] {
+            assert!(!screen.is_pause_screen(), "{}", screen.id());
+        }
+        for screen in [
+            Screen::Paused,
+            Screen::Options,
+            Screen::Stats,
+            Screen::Advancements,
+            Screen::WorldOptions,
+            Screen::Friends,
+            Screen::ServerLinks,
+            Screen::ConfirmLink,
+            Screen::DialogWarning,
+            Screen::CommandBlock,
+            Screen::BlockEditor,
+            Screen::DebugOptions,
+            Screen::HudEditor,
+        ] {
+            assert!(screen.is_pause_screen(), "{}", screen.id());
         }
     }
 
