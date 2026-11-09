@@ -4958,6 +4958,53 @@ def sulfur_cube_loaded_health():
     return lines
 
 
+def sulfur_cube_size_attributes():
+    """#13801: `SulfurCube.setSize` (`setCubeMobHealth`) sets the max_health (4 per size) and
+    movement_speed (0.2F + 0.1F * size) bases, so the save holds both from the load on, after the
+    first tick and across a chunk reload, and so does a cube released from a bucket
+    (`finalizeSpawn`'s size 2). A saved base wins over the size: `LivingEntity`'s load applies it
+    after `AbstractCubeMob.readAdditionalSaveData` sizes the cube. Entries are read by id: the
+    list's order is the attribute map's."""
+    x, z = 4096, 4096
+    chunk = [[x >> 4, z >> 4]]
+    cases = ['', ',Size:2', ',attributes:[{id:"minecraft:movement_speed",base:0.25d}]',
+             ',Size:1,attributes:[{id:"minecraft:max_health",base:10.0d}]']
+
+    def reads(uuid):
+        return [cmd(f'/data get entity {uuid} attributes[{{id:"minecraft:{a}"}}].base')
+                for a in ('max_health', 'movement_speed')] + [cmd(f'/data get entity {uuid} Health')]
+
+    uuids = [f'00000000-0000-0000-0000-0315{n + 1:08x}' for n in range(len(cases))]
+    ops = setup(f'/forceload add {x} {z}')
+    ops.append({'op': 'wait_chunks', 'chunks': chunk})
+    ops += setup(f'/fill {x} 299 {z} {x + 15} 299 {z + 15} stone')
+    for n, extra in enumerate(cases):
+        ops += setup(f'/summon sulfur_cube {x + 2 + 3 * n}.5 300 {z + 3}.5 '
+                     f'{{UUID:[I;0,0,789,{n + 1}],NoAI:1b,PersistenceRequired:1b{extra}}}')
+    for step in ('loaded', 'tick', 'reload'):
+        if step == 'tick':
+            ops.append({'op': 'tick', 'n': 1})
+        if step == 'reload':
+            ops += setup(f'/forceload remove {x} {z}')
+            ops.append({'op': 'tick', 'n': 60})
+            ops.append(cmd(f'/execute unless loaded {x} 300 {z}', expect_result=1))
+            ops += setup(f'/forceload add {x} {z}')
+            ops.append({'op': 'wait_chunks', 'chunks': chunk})
+        for uuid in uuids:
+            ops += reads(uuid)
+    ops += [cmd(f'/attribute {uuid} minecraft:movement_speed get 1000') for uuid in uuids]
+    ops += setup('/kill @e[type=sulfur_cube]', f'/forceload remove {x} {z}')
+    # A real bucket release, looking down at the floor (the bucket's own use, not useOn).
+    ops += setup('/forceload add 0 0 15 15', '/fill 0 199 0 12 210 12 air', '/fill 0 199 0 12 199 12 stone',
+                 '/gamemode survival', '/tp @s 4.5 200 4.5 0 90',
+                 '/item replace entity @s weapon.mainhand with minecraft:sulfur_cube_bucket')
+    ops.append({'op': 'settle'})
+    ops.append({'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 90.0})
+    ops += reads('@e[type=sulfur_cube,limit=1]')
+    ops += setup('/kill @e[type=sulfur_cube]', '/fill 0 199 0 12 199 12 air', '/gamemode creative', '/clear @s',
+                 '/tp @s 8.5 230 8.5', '/forceload remove 0 0 15 15')
+    return ops
+
 
 def numeric_array_edits(include_storage_side_effects=False):
     """Replay list/string controls before the finite numeric-array edit cases."""
@@ -7367,6 +7414,7 @@ def groups():
         ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
+        ('sulfur cube size attributes', sulfur_cube_size_attributes()),
         ('function return feedback', function_return_feedback()),
         ('fork function feedback', fork_function_feedback_cases()),
         ('function condition fallthrough', function_condition_fallthrough()),
