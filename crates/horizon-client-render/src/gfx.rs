@@ -1536,6 +1536,10 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
+    /// The graphics driver this window's HDR output starts on (`output::driver_fingerprint`):
+    /// what the marker names, and what a failed start holds HDR output back on. `None`
+    /// offscreen, which never writes the marker or holds HDR back.
+    hdr_driver: Option<String>,
     /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
     hdr_lighting_setting: bool,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
@@ -3033,11 +3037,13 @@ impl Renderer {
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),
         );
+        let hdr_driver = surface.is_some().then(|| output::driver_fingerprint(&info));
         let output_caps = output::OutputCapabilities {
             hdr: hdr_output,
             wide_frame: wide_ok,
             float_frame: float_ok,
             hud_layer: coverage_ok,
+            held: output::held(settings, hdr_driver.as_deref()),
         };
         let frame = output::resolve_frame(settings, request, output_caps, display, config.format);
         let (frame_format, hud_coverage, overlay_format) =
@@ -5398,6 +5404,7 @@ impl Renderer {
             output: output::resolve_output(settings, output_caps, display, frame, false),
             frame_kept_logged: false,
             hdr_marker: None,
+            hdr_driver,
             pack_post: None,
             pack_loading: None,
             native: None,
@@ -7209,10 +7216,23 @@ impl Renderer {
         output::resolve_frame(
             settings,
             request,
-            self.output_caps,
+            self.caps_for(settings),
             self.reading,
             self.config.format,
         )
+    }
+    /// What this renderer's destination offers for `settings`: HDR output held back on a window
+    /// whose graphics driver a start failed on (`output::held`).
+    fn caps_for(&self, settings: &crate::graphics::Graphics) -> output::OutputCapabilities {
+        output::OutputCapabilities {
+            held: output::held(settings, self.hdr_driver.as_deref()),
+            ..self.output_caps
+        }
+    }
+    /// The graphics driver this window's HDR output starts on (`output::driver_fingerprint`);
+    /// `None` offscreen.
+    pub fn hdr_driver(&self) -> Option<&str> {
+        self.hdr_driver.as_deref()
     }
     /// Follows the selected mode even when Auto currently wants SDR. Off never asks
     /// the system about the display; selecting On or Auto starts a fresh watch.
@@ -7248,6 +7268,18 @@ impl Renderer {
         marker: &std::path::Path,
     ) {
         self.watch_hdr(settings.hdr);
+        self.output_caps = self.caps_for(settings);
+        if self.output_caps.held
+            && let Some(driver) = &self.hdr_driver
+        {
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| {
+                log::warn!(
+                    "Horizon renderer: HDR output is held back: the last start with this graphics driver ({driver}) ended before HDR output showed a frame. Choose an HDR mode on the HDR page to try again (or remove hdrFailedStart from {})",
+                    crate::graphics::FILE
+                )
+            });
+        }
         let next = output::resolve_output(
             settings,
             self.output_caps,
@@ -7258,10 +7290,12 @@ impl Renderer {
         let [paper_white, peak, black] = next.nits;
         if next.encoding.is_some() != self.hdr.is_some() {
             // If the game dies before HDR output shows a frame, the marker is still there at
-            // the next start, which then comes up with HDR off.
+            // the next start, which then holds HDR output back on this driver.
             if next.encoding.is_some() {
-                if self.surface.is_some() {
-                    let _ = std::fs::write(marker, "HDR output was being switched on\n");
+                if self.surface.is_some()
+                    && let Some(driver) = &self.hdr_driver
+                {
+                    let _ = std::fs::write(marker, crate::graphics::hdr_marker_text(driver));
                     self.hdr_marker = Some(marker.to_owned());
                 }
             } else if let Some(marker) = self.hdr_marker.take() {

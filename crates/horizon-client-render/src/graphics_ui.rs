@@ -708,6 +708,10 @@ fn setup_of(g: &crate::graphics::Graphics, reported: bool) -> Setup {
         Setup::Changed
     }
 }
+/// What the HDR page says while HDR output is held back on this window's graphics driver
+/// (`EffectiveOutput::held`): picking a mode tries again (`H::cycle`).
+const HDR_HELD: &str = "HDR output stopped the game the last time it started with this graphics driver. Choose a mode to try again.";
+
 /// The description beside `item` where it depends on [`setup`]; `text` otherwise.
 fn description(
     item: Item,
@@ -716,6 +720,7 @@ fn description(
     text: &'static str,
 ) -> &'static str {
     match (item, setup(s, out)) {
+        (Item::Horizon(H::Hdr), _) if out.held => HDR_HELD,
         (Item::Horizon(H::HdrCalibrate), Setup::Unknown) => {
             "Your display didn't say how bright it gets: calibrate to set it up."
         }
@@ -1086,7 +1091,9 @@ impl H {
             H::FrameGeneration => {
                 g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
+            // Any choice tries HDR output again on a driver a start failed on.
             H::Hdr => {
+                g.hdr_failed_start = None;
                 g.hdr = step(&HdrMode::ALL, g.hdr, back);
                 if g.hdr == HdrMode::On && !out.hdr_offered() {
                     g.hdr = step(&HdrMode::ALL, g.hdr, back);
@@ -1155,7 +1162,11 @@ impl Item {
                 | H::HdrUiBrightness
                 | H::HdrLighting
                 | H::HdrSmoothGradients,
-            ) if !out.requests_hdr(s.horizon.hdr) => Some("Turn HDR on to use it."),
+            ) if !out.requests_hdr(s.horizon.hdr) => Some(if out.held {
+                HDR_HELD
+            } else {
+                "Turn HDR on to use it."
+            }),
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
             {

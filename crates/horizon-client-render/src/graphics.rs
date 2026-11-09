@@ -5,9 +5,23 @@
 use std::{fs, path::Path};
 
 pub const FILE: &str = "horizon-graphics.txt";
-/// Written beside it before HDR output is switched on and removed once the first HDR frame is
-/// presented. Found at the next start, it means HDR output took the game down, so HDR starts off.
+/// Written beside it before a window's HDR output is switched on, naming the graphics driver it
+/// starts on ([`hdr_marker_text`]), and removed once the first HDR frame is presented. Found at
+/// the next start, it means HDR output took the game down there: HDR output is held back on
+/// that driver ([`Graphics::hdr_failed_start`]), and the mode stays as the player chose it.
 pub const HDR_MARKER: &str = "horizon-hdr-pending";
+/// The marker's text for a window whose HDR output starts on `driver`
+/// (`gfx::output::driver_fingerprint`).
+pub fn hdr_marker_text(driver: &str) -> String {
+    format!("driver:{driver}\n")
+}
+/// The driver a marker names; empty for one written before markers named it.
+fn marker_driver(text: &str) -> &str {
+    text.lines()
+        .find_map(|line| line.strip_prefix("driver:"))
+        .unwrap_or_default()
+        .trim()
+}
 
 /// What the system reports for the display HDR output goes to, in nits in HDR output's
 /// scale: where its SDR white sits (the desktop's white) and the peak. Each renderer keeps its
@@ -809,6 +823,11 @@ pub struct Graphics {
     pub hdr_lighting: bool,
     /// A vanilla key name (`HDR_KEY`): opens HDR's settings from the game. Unbound by default.
     pub hdr_key: String,
+    /// The graphics driver whose last start ended before HDR output showed a frame (the
+    /// marker found, [`HDR_MARKER`]): a window on it stays SDR whatever the mode, until the
+    /// mode is changed or the window starts on another driver ([`Graphics::hdr_held`]).
+    /// Empty for a marker that named no driver: the first one seen holds it.
+    pub hdr_failed_start: Option<String>,
     /// Battery mode: at most 60 frames per second in a world and 30 in menus
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
@@ -884,6 +903,7 @@ impl Default for Graphics {
             hdr_ui_brightness: 100,
             hdr_lighting: true,
             hdr_key: "key.keyboard.unknown".into(),
+            hdr_failed_start: None,
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
@@ -909,14 +929,37 @@ impl Graphics {
                 Vec::new()
             }
         };
-        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr != HdrMode::Off {
-            g.hdr = HdrMode::Off;
+        let marker = dir.join(HDR_MARKER);
+        if let Ok(text) = fs::read_to_string(&marker)
+            && fs::remove_file(&marker).is_ok()
+            && g.hdr != HdrMode::Off
+        {
+            g.hdr_failed_start = Some(marker_driver(&text).to_owned());
             g.save(dir);
             log::warn!(
-                "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
+                "the last start ended before HDR output showed a frame; HDR output stays off with that graphics driver until the HDR mode is changed (graphics option hdrFailedStart, in {FILE})"
             );
         }
         g
+    }
+    /// Whether HDR output is held back on a window whose graphics driver is `driver`
+    /// (`gfx::output::driver_fingerprint`): the last start on it ended before HDR output
+    /// showed a frame ([`Graphics::hdr_failed_start`]).
+    pub fn hdr_held(&self, driver: &str) -> bool {
+        self.hdr_failed_start
+            .as_deref()
+            .is_some_and(|failed| failed.is_empty() || failed == driver)
+    }
+    /// The window's renderer runs on `driver`: a failed start that named no driver is this
+    /// one's now, and another driver's (a driver update, another GPU) is dropped, so HDR output
+    /// is tried again. True when it changed.
+    pub fn settle_failed_start(&mut self, driver: &str) -> bool {
+        match self.hdr_failed_start.as_deref() {
+            Some("") => self.hdr_failed_start = Some(driver.to_owned()),
+            Some(failed) if failed != driver => self.hdr_failed_start = None,
+            _ => return false,
+        }
+        true
     }
     pub fn parse(text: &str) -> Self {
         let mut g = Self::default();
@@ -1026,6 +1069,7 @@ impl Graphics {
                     g.hdr_ui_brightness = number(g.hdr_ui_brightness).clamp(25, 100)
                 }
                 "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
+                "hdrFailedStart" => g.hdr_failed_start = Some(value.to_owned()),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
@@ -1104,6 +1148,9 @@ impl Graphics {
             bool_text(self.hdr_smooth_gradients),
             self.gpu_culling.key(),
         );
+        if let Some(driver) = &self.hdr_failed_start {
+            text += &format!("hdrFailedStart:{driver}\n");
+        }
         text += &self.blue_map.serialize();
         text
     }
@@ -1243,6 +1290,85 @@ mod tests {
         }
     }
 
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A start that finds the marker (HDR output took the last one down) keeps the mode the
+    /// player chose and saves the driver the marker names; HDR Off saves nothing.
+    #[test]
+    fn a_marker_keeps_the_mode_and_holds_the_driver_it_names() {
+        let driver = "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57";
+        for mode in HdrMode::ALL {
+            let dir = scratch(&format!("hdr-marker-{mode:?}"));
+            let saved = Graphics {
+                hdr: mode,
+                ..Graphics::default()
+            };
+            saved.save(&dir);
+            fs::write(dir.join(HDR_MARKER), hdr_marker_text(driver)).unwrap();
+            let g = Graphics::load(&dir);
+            let failed = (mode != HdrMode::Off).then(|| driver.to_owned());
+            assert_eq!((g.hdr, &g.hdr_failed_start), (mode, &failed), "{mode:?}");
+            assert!(!dir.join(HDR_MARKER).exists(), "{mode:?}");
+            // Saved for good: the next start, without a marker, reads the same.
+            let again = Graphics::load(&dir);
+            assert_eq!((again.hdr, again.hdr_failed_start), (mode, failed));
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Today's marker names no driver: it holds whichever driver the window starts on first,
+    /// and is that driver's from then on.
+    #[test]
+    fn a_marker_without_a_driver_holds_the_first_one_seen() {
+        let dir = scratch("hdr-marker-legacy");
+        Graphics {
+            hdr: HdrMode::Auto,
+            ..Graphics::default()
+        }
+        .save(&dir);
+        fs::write(dir.join(HDR_MARKER), "HDR output was being switched on\n").unwrap();
+        let mut g = Graphics::load(&dir);
+        assert_eq!(
+            (g.hdr, g.hdr_failed_start.as_deref()),
+            (HdrMode::Auto, Some(""))
+        );
+        let (first, second) = (
+            "Vulkan 10de:2684 GPU; NVIDIA; 1",
+            "Dx12 1002:744c GPU; AMD; 2",
+        );
+        assert!(g.hdr_held(first) && g.hdr_held(second));
+        assert!(g.settle_failed_start(first));
+        assert!(g.hdr_held(first) && !g.hdr_held(second));
+        assert!(!g.settle_failed_start(first));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The window starting on another driver (an update, another GPU) drops the hold, so HDR
+    /// output is tried again; on the same driver it stays.
+    #[test]
+    fn another_driver_drops_the_hold() {
+        let held = "Vulkan 10de:2684 GPU; NVIDIA; 581.57";
+        let mut g = Graphics {
+            hdr: HdrMode::On,
+            hdr_failed_start: Some(held.into()),
+            ..Graphics::default()
+        };
+        assert!(!g.settle_failed_start(held));
+        assert!(g.hdr_held(held));
+        assert!(g.settle_failed_start("Vulkan 10de:2684 GPU; NVIDIA; 582.02"));
+        assert_eq!((g.hdr, g.hdr_failed_start), (HdrMode::On, None));
+        assert!(!Graphics::default().hdr_held(held));
+    }
+
     #[test]
     fn round_trips() {
         let g = Graphics {
@@ -1295,6 +1421,9 @@ mod tests {
             hdr_ui_brightness: 60,
             hdr_lighting: false,
             hdr_key: "key.keyboard.h".into(),
+            hdr_failed_start: Some(
+                "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57".into(),
+            ),
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
@@ -1303,6 +1432,15 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        // A legacy marker's hold, which names no driver, round-trips too; none writes no line.
+        for failed in [Some(String::new()), None] {
+            let graphics = Graphics {
+                hdr_failed_start: failed,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+        }
+        assert!(!Graphics::default().serialize().contains("hdrFailedStart"));
         for mode in EntityCullingMode::ALL {
             let graphics = Graphics {
                 entity_culling: mode,
