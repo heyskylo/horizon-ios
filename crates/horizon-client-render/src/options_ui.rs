@@ -8,6 +8,7 @@ pub use crate::settings::Opt;
 
 use crate::{
     gamepad::{self, GlyphStyle},
+    hdr_calibration::Picture,
     hud::{HudAtlas, HudBatch, rgba},
     keybinds::{self, CATEGORIES, KeyBinds, all_mappings},
     lang::{self, LanguageInfo},
@@ -1682,8 +1683,8 @@ pub struct OptionsUi {
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// HDR calibration while its page is open.
     pub calibration: Option<crate::hdr_calibration::Calibration>,
-    /// Whether the window was fullscreen before calibration made it so (the game keeps it).
-    pub calibration_fullscreen: Option<bool>,
+    /// The window as calibration found it before making it fullscreen (the game keeps it).
+    pub calibration_window: Option<crate::hdr_calibration::WindowState>,
     pub split_setup: crate::split_ui::SplitUi,
     pub studio: crate::studio_ui::StudioUi,
     /// The AI Agent page's status lines (set by the game while it shows).
@@ -1762,7 +1763,7 @@ impl Default for OptionsUi {
             pack_configs: Default::default(),
             split_profiles: Default::default(),
             calibration: None,
-            calibration_fullscreen: None,
+            calibration_window: None,
             split_setup: Default::default(),
             studio: Default::default(),
             agent_status: Vec::new(),
@@ -4030,7 +4031,7 @@ impl OptionsUi {
             if right {
                 return Vec::new();
             }
-            let outcome = c.click((x, y), size, drag);
+            let outcome = c.click(&atlas.font, (x, y), size, drag);
             return self.calibration_outcome(s, outcome);
         }
         if self.shell().is_some() {
@@ -4632,13 +4633,12 @@ impl OptionsUi {
             }
         }
     }
-    /// HDR calibration's test picture, while its page is open: the step, its nits and
-    /// where the controls start (a share of the height `h`).
-    pub fn calibration_picture(&self, h: f32) -> Option<(crate::hdr_calibration::Step, f32, f32)> {
+    /// HDR calibration's test picture, while its page is open, in a GUI of `size`.
+    pub fn calibration_picture(&self, atlas: &HudAtlas, size: (f32, f32)) -> Option<Picture> {
         self.calibration
             .as_ref()
             .filter(|_| self.page() == Page::HdrCalibration)
-            .map(|c| c.picture(h))
+            .map(|c| c.picture(&atlas.font, size))
     }
     pub fn back(&mut self, s: &mut Settings) -> Vec<Event> {
         let mut events = Vec::new();

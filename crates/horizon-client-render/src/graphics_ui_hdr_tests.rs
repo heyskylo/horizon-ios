@@ -129,3 +129,68 @@ fn hdr_setup_follows_what_the_system_reported() {
     assert_eq!(setup_of(&g, true), Setup::Changed);
     assert_eq!(setup_of(&g, false), Setup::Unknown);
 }
+
+/// While HDR output is held back on this window's driver, the HDR row says so and keeps
+/// the mode; any change of the mode drops the hold, and HDR is asked for again.
+#[test]
+fn a_held_hdr_start_is_said_on_the_page_and_a_mode_change_tries_again() {
+    use crate::gfx::{HdrOutput, output::tests};
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::Auto;
+    s.horizon.hdr_failed_start = Some("Vulkan 10de:2684 GPU; driver; 1.0".into());
+    let (mut caps, reading) = tests::window(Some(HdrOutput::Pq), Some(true));
+    caps.held = true;
+    let out = tests::snapshot(&s.horizon, Default::default(), caps, reading);
+    let hdr = Item::Horizon(H::Hdr);
+    let setting = h(
+        H::Hdr,
+        Cost::None,
+        "Lava, fire and sunlight shine brighter than white.",
+    );
+    let held = super::row(setting, &s, &out);
+    assert_eq!(held.chosen.as_deref(), Some(HDR_HELD));
+    assert_eq!(held.why, None);
+    assert_eq!(hdr.label(&s, &out).plain(), "HDR: Auto");
+    assert_eq!(Item::Horizon(H::HdrPeak).blocked(&s, &out), Some(HDR_HELD));
+    // Not held, the row says what HDR does.
+    caps.held = false;
+    let free = tests::snapshot(&s.horizon, Default::default(), caps, reading);
+    assert_eq!(super::row(setting, &s, &free).chosen, None);
+    // Any step of the mode, either way, tries again.
+    for back in [false, true] {
+        let mut s = s.clone();
+        hdr.cycle(&mut s, back, FB, &out);
+        assert_ne!(s.horizon.hdr, HdrMode::Auto);
+        assert_eq!(s.horizon.hdr_failed_start, None);
+    }
+}
+
+/// Undo never brings the hold back: held Auto, changed to On (HDR tried again), then
+/// undone, is Auto without the hold. With the mode left alone, it keeps the hold as it is.
+#[test]
+fn undo_never_restores_a_held_hdr_start() {
+    let mut screen = GraphicsScreen {
+        framebuffer: FB,
+        output: NONE,
+    };
+    let mut opened = Settings::default();
+    opened.horizon.hdr = HdrMode::Auto;
+    opened.horizon.hdr_failed_start = Some("Vulkan 10de:2684 GPU; driver; 1.0; os".into());
+    let mut s = opened.clone();
+    let out = offering(true, Some(true));
+    Item::Horizon(H::Hdr).cycle(&mut s, true, FB, &out);
+    assert_eq!(
+        (s.horizon.hdr, &s.horizon.hdr_failed_start),
+        (HdrMode::On, &None)
+    );
+    screen.undo(&mut s, &opened);
+    assert_eq!(
+        (s.horizon.hdr, &s.horizon.hdr_failed_start),
+        (HdrMode::Auto, &None)
+    );
+    // Another row changed and undone: the hold stays.
+    let mut s = opened.clone();
+    s.horizon.fxaa = !s.horizon.fxaa;
+    screen.undo(&mut s, &opened);
+    assert_eq!(s.horizon, opened.horizon);
+}

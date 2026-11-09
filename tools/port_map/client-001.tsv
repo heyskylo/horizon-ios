@@ -7,7 +7,7 @@ AccountProfileKeyPairManager.fetchProfileKeyPair	port	crates/horizon-client-rend
 AccountProfileKeyPairManager.parsePublicKey	port	crates/horizon-client-render/src/auth.rs::parse_certificates	publicKeySignatureV2, expiresAt
 CacheSlot.compute	skip:java		memo slot for a computed value; Horizon has no per-context cache slot
 ChunkBatchSizeCalculator.onBatchFinished	missing		minor: Horizon answers every ChunkBatchFinished with a fixed 64 chunks per tick (remote.rs), so the server's batch pace is never tuned to batch timing
-ClientAdvancements.setSelectedTab	port	crates/horizon-client/src/game/advancements_screen.rs::Game::advancements_mouse	gap: minor: the tab change is local; the openedTab packet to the server is not sent
+ClientAdvancements.setSelectedTab	port	crates/horizon-client/src/game/advancements_screen.rs::Game::advancements_mouse	openedTab goes out before the tab is compared, so a click on the open tab tells the server again; the screen's initial tab is picked without the flag and says nothing
 ClientAdvancements.setListener	skip:ui		listener plumbing for the advancements screen; Horizon's screen reads its state each frame
 ClientAdvancements.get	port	crates/horizon-client/src/advancements.rs::Tree::get	returns the advancement by id; holder wrapper is not needed
 ClientChunkCache.isValidChunk	skip:other		chunks are stored by position, so there is no ring slot to check
@@ -89,8 +89,8 @@ ClientLevel.<init>	port	crates/horizon-client/src/game/remote.rs::Game::enter_re
 ClientLevel.addEnvironmentAttributeLayers	port	crates/horizon-client/src/game.rs::Game::render	sky colour and sky light move during a lightning flash
 ClientLevel.pollLightUpdates	skip:other		light is applied when it arrives or relit at once (light.rs relight); there is no queue to poll
 ClientLevel.getPrecipitationAt	port	crates/horizon-client/src/game.rs::GameLevel::precipitation	the column's biome decides; no column, no answer (the chunk lookup fails, as vanilla answers none for an unloaded column)
-ClientLevel.removeBlockBreakingProgress	inline	crates/horizon-client/src/game.rs::Game::destroy_block_progress	minor: the 400-tick expiry runs on every update, not every 20 ticks
-ClientLevel.removeProgress	inline	crates/horizon-client/src/game.rs::Game::destroy_block_progress	cracks are keyed by breaker id, so there are no per-position sets to tidy
+ClientLevel.removeBlockBreakingProgress	inline	crates/horizon-client/src/game/block_breaking.rs::Game::destroy_block_progress	minor: the 400-tick expiry runs on every update, not every 20 ticks
+ClientLevel.removeProgress	inline	crates/horizon-client/src/game/block_breaking.rs::Game::destroy_block_progress	cracks are keyed by breaker id, so there are no per-position sets to tidy
 ClientLevel.shouldTickDeath	missing		minor: death animations tick for every remote mob held; no simulation-distance check
 ClientLevel.tickNonPassenger	port	crates/horizon-client/src/game/remote.rs::Game::tick_remote_entities	ticks each remote entity
 ClientLevel.tickPassenger	port	crates/horizon-client/src/game/passengers.rs::Game::position_riders	gap: minor: passengers are placed on their vehicle; no per-passenger tick
@@ -106,7 +106,7 @@ ClientLevel.fillReportDetails	skip:debug		crash report details only
 ClientLevel.playPlayerSound	skip:other		no caller in the 26.3 client sources
 ClientLevel.playSound	port	crates/horizon-client-render/src/audio.rs::Audio::play_distance_delayed	a sound over 10 blocks from the camera starts sqrt(distance)/40 s later (Audio::play_after)
 ClientLevel.getRelativeTickSpeed	skip:other		no caller in the 26.3 client sources
-ClientLevel.destroyBlockProgress	port	crates/horizon-client/src/game.rs::Game::destroy_block_progress	sets or clears another player's crack on a block
+ClientLevel.destroyBlockProgress	port	crates/horizon-client/src/game/block_breaking.rs::Game::destroy_block_progress	sets or clears another player's crack on a block
 ClientLevel.addAlwaysVisibleParticle	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::add_with	always-show flag set
 ClientLevel.doAddParticle	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::add_with	drops particles beyond 32 blocks and at minimal particle level
 ClientLevel.getSkyFlashTime	inline	crates/horizon-client/src/game.rs::Game::render	the flash check with the hideLightningFlashes option
