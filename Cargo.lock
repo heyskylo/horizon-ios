@@ -1450,6 +1450,7 @@ dependencies = [
  "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mod-api-gen",
  "horizon-mods",
@@ -1527,8 +1528,8 @@ dependencies = [
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
- "horizon-cosmetics",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mcp",
  "horizon-mods",
@@ -1589,6 +1590,7 @@ dependencies = [
  "horizon-optifine",
  "horizon-polytone",
  "horizon-protocol",
+ "horizon-render-pipeline",
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
@@ -1673,6 +1675,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-game"
+version = "0.1.0"
+dependencies = [
+ "horizon-client",
+ "horizon-mods",
+ "horizon-threads",
+]
+
+[[package]]
 name = "horizon-hdr"
 version = "0.1.0"
 dependencies = [
@@ -1682,6 +1693,19 @@ dependencies = [
  "wayland-protocols",
  "wgpu",
 ]
+
+[[package]]
+name = "horizon-heartbeat"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "horizon-telemetry",
+ "log",
+]
+
+[[package]]
+name = "horizon-hooks"
+version = "0.1.0"
 
 [[package]]
 name = "horizon-items"
@@ -1764,6 +1788,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-official"
+version = "0.1.0"
+dependencies = [
+ "horizon-game",
+ "horizon-heartbeat",
+ "horizon-platform",
+ "log",
+ "winresource",
+]
+
+[[package]]
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
@@ -1777,7 +1812,13 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-core",
+ "horizon-hooks",
+ "horizon-prepare",
+ "horizon-protocol",
+ "horizon-server-files",
  "horizon-system",
+ "horizon-world",
 ]
 
 [[package]]
@@ -1849,6 +1890,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-render-pipeline"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
@@ -1859,11 +1904,9 @@ dependencies = [
  "horizon-anticheat",
  "horizon-bench",
  "horizon-chat-filter",
- "horizon-core",
  "horizon-mcp",
+ "horizon-platform",
  "horizon-release-sign",
- "horizon-server-files",
- "horizon-world",
  "libc",
  "p12-keystore",
  "png",
@@ -1912,6 +1955,7 @@ version = "0.1.0"
 dependencies = [
  "half",
  "horizon-core",
+ "horizon-render-pipeline",
  "naga",
  "png",
  "zip",

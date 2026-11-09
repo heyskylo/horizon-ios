@@ -144,6 +144,13 @@ impl Game<'_> {
 
     /// The loop ended: close the pads' output, save the world, write the perf report.
     pub(super) fn shut_down(&mut self) {
+        // Closing without an error before HDR output showed a frame (the window minimized, say)
+        // isn't HDR output taking the game down: the next start mustn't hold it back.
+        if self.error.is_none()
+            && let Some(renderer) = &mut self.renderer
+        {
+            renderer.drop_hdr_marker();
+        }
         self.end_screenshot_sequence(Err("cancelled: the game is closing".into()));
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
@@ -215,8 +222,10 @@ impl Game<'_> {
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.settle_after_run(event_loop);
         self.pause_if_inactive();
-        if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
-            self.error = Some("frame-limited run timed out".into());
+        if let Some(limit) = self.options.time_limit()
+            && self.started.elapsed() > limit
+        {
+            self.error = Some(format!("run timed out after {} s", limit.as_secs()).into());
             event_loop.exit();
             return;
         }
