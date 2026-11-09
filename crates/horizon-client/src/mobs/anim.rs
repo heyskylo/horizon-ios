@@ -772,7 +772,14 @@ fn swim(p: &mut Poses, pos: f32, h: &Hum) {
     );
 }
 /// The player model's parts a [`BodyPose`] poses, in its order.
-pub const BODY_PARTS: [&str; 6] = ["head", "body", "right_arm", "left_arm", "right_leg", "left_leg"];
+pub const BODY_PARTS: [&str; 6] = [
+    "head",
+    "body",
+    "right_arm",
+    "left_arm",
+    "right_leg",
+    "left_leg",
+];
 
 /// A pose a higher layer lays over the player model's body after its vanilla animation (Horizon's
 /// emotes, docs/cosmetics.md), handed to the model through [`Mob::emote`]. The engine names no
