@@ -26,10 +26,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 try:
-    from . import lab, lra_schem, test_rust_parity as base
+    from . import lab, lra_schem, parity_shard, test_rust_parity as base
 except ImportError:
     import lab
     import lra_schem
+    import parity_shard
     import test_rust_parity as base
 
 ARCHIVE = 'mattbatwings/Logical-Redstone-Archive'
@@ -214,9 +215,9 @@ def main():
     parser.add_argument('--full', action='store_true', help='every entry, larger sweeps (exhaustive up to 16 bits)')
     parser.add_argument('--only', help='comma separated codes')
     args = parser.parse_args()
+    shard, shards = parity_shard.parse(os.environ.get('PARITY_SHARD', '1/1'))
     lock, jars, libraries = base.verify_artifacts()
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
-    shard, shards = map(int, os.environ.get('PARITY_SHARD', '1/1').split('/'))
     work = lab.LOCAL / 'redstone-catalog-parity' / (f'shard-{shard}' if shards > 1 else 'all')
     work.mkdir(parents=True, exist_ok=True)
     entries = load_catalog()

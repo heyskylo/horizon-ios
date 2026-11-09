@@ -98,10 +98,16 @@ pub(super) enum BlockInteraction {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ExplosionSource {
     silent: bool,
+    /// The entity that exploded and its kind (`Explosion.getDirectSourceEntity`), when known.
+    entity: Option<(u32, &'static str)>,
 }
 impl ExplosionSource {
     pub(super) fn with_silence(mut self, silent: bool) -> Self {
         self.silent = silent;
+        self
+    }
+    pub(super) fn with_entity(mut self, id: u32, kind: &'static str) -> Self {
+        self.entity = Some((id, kind));
         self
     }
 }
@@ -781,9 +787,28 @@ impl Game<'_> {
         // Frames, paintings, cushions and armour stands last: vanilla lists
         // the entities in reach before hurting any, so the items they drop
         // here are neither destroyed nor pushed by the same blast.
+        // BlockAttachedEntity.kill / ArmorStand.kill credit DamageSource.getEntity.
+        // VehicleEntity.destroy above uses Entity.kill and keeps the vehicle as source.
         self.explosion_breaks_frames(center, diameter, interaction);
         self.explosion_breaks_decorations(center, diameter, interaction);
         pushed
+    }
+    /// `ServerExplosion.getIndirectSourceEntity`: the causing living entity,
+    /// including a TNT igniter or the player who broke an end crystal.
+    pub(super) fn explosion_kill_credit(&self) -> Option<super::commands::Target> {
+        use super::commands::Target;
+        // A primed TNT's owner (a player) names the blast before any mob does.
+        if self.combat.blast_owner.is_some() {
+            return Some(
+                self.combat
+                    .blast_guest
+                    .map_or(Target::Player, Target::Guest),
+            );
+        }
+        if let Some((id, _)) = self.blast_attacker() {
+            return Some(Target::Mob(id));
+        }
+        self.crystal_blast_player()
     }
     /// `blast_spares_decorations` for the blast going off now: its causing
     /// mob (`blast_attacker`) is the source's entity.
@@ -836,7 +861,7 @@ impl Game<'_> {
             if !super::armor_stands::spared_by_blast(a)
                 && blast_reaches(center, diameter, [p.x, p.y, p.z])
             {
-                self.break_armor_stand_by_anything(i);
+                self.break_armor_stand_with_source(i, self.explosion_kill_credit());
             } else {
                 i += 1;
             }
@@ -851,7 +876,9 @@ impl Game<'_> {
             let (lo, hi) = self.paintings[i].bounds();
             let at = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
             // A painting a mod keeps stays at `i`.
-            if !(blast_reaches(center, diameter, at) && self.break_painting(i, false)) {
+            if !(blast_reaches(center, diameter, at)
+                && self.break_painting_by(i, false, self.explosion_kill_credit()))
+            {
                 i += 1;
             }
         }
@@ -859,7 +886,7 @@ impl Game<'_> {
         while i < self.cushions.len() {
             let p = self.cushions[i].position;
             if blast_reaches(center, diameter, [p.x, p.y, p.z]) {
-                self.break_cushion(i, false);
+                self.break_cushion_by(i, false, self.explosion_kill_credit());
             } else {
                 i += 1;
             }
@@ -964,7 +991,7 @@ impl Game<'_> {
         self.post_game_event("minecraft:explode", center, ctx);
         let mut targets = self.exploded_positions(center, radius, resists);
         let dimension = self.dim.id();
-        self.native_explosion_detonate(dimension, center, &mut targets);
+        self.native_explosion_detonate(dimension, center, source.entity, &mut targets);
         let pushed =
             self.explosion_hurt_entities(center, radius, damage_type, interaction, &targets);
         if interaction != BlockInteraction::Keep {

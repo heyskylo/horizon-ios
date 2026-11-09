@@ -2,6 +2,27 @@
 //! shader pack's translucent layers, and the far terrain (LOD) distances.
 use super::*;
 
+#[derive(Default)]
+pub(super) struct FrameAttempt(Option<FrameKey>);
+
+/// HDR wanted, HDR output offered, Smooth Gradients' wide frame, the pick's path, its outcome.
+type FrameKey = (
+    bool,
+    bool,
+    bool,
+    PathBuf,
+    Option<Option<horizon_shader_api::Api>>,
+);
+
+impl FrameAttempt {
+    // Remember attempts, including failures, until the requested configuration changes.
+    fn changed(&mut self, key: FrameKey) -> bool {
+        let changed = self.0.as_ref() != Some(&key);
+        self.0 = Some(key);
+        changed
+    }
+}
+
 impl Game<'_> {
     pub(super) fn renderer_for(
         &self,
@@ -28,7 +49,7 @@ impl Game<'_> {
     }
     /// Under `HORIZON_HDR_FRAME=float` the frame follows what draws the picture
     /// (docs/design/hdr-linear-light.md, "When it changes"): when HDR, Smooth Gradients or the
-    /// pack picked call for another frame than the renderer's, the renderer is made again before
+    /// pick (unless refused) call for another frame than the renderer's, it is made again before
     /// this frame draws. Without the switch a frame stays until the next start, as before.
     pub(super) fn follow_frame(&mut self) {
         if !native_shaders::linear_frame_switch()
@@ -37,17 +58,30 @@ impl Game<'_> {
         {
             return;
         }
-        let horizon = &self.settings.horizon;
-        let key = (
-            horizon.hdr,
-            horizon.wide_frame(),
-            shader_packs::picked_pack(&self.settings).to_owned(),
+        let picked = shader_packs::picked_pack(&self.settings);
+        let path = self.native_shaders.resolve_path(
+            &Self::shader_packs_dir(),
+            picked,
+            shader_packs::dev_pack().is_some(),
         );
-        if self.frame_followed.as_ref() == Some(&key) {
+        let available = path.exists()
+            && path.file_name().is_none_or(|f| {
+                !shader_packs::active_pack(&f.to_string_lossy(), &self.settings.mods).is_empty()
+            });
+        let outcome = if available {
+            native_shaders::outcome(&path)
+        } else {
+            Some(None)
+        };
+        let horizon = &self.settings.horizon;
+        let wide_frame = horizon.wide_frame();
+        // On wants HDR whether or not it is offered; the offer can change while the game runs
+        // (Vulkan's formats follow desktop HDR and the window's output), and the frame with it.
+        let offered = horizon_client::graphics::hdr_offered();
+        let key = (horizon.hdr_wanted(), offered, wide_frame, path, outcome);
+        if !self.frame_attempted.changed(key) {
             return;
         }
-        let wide_frame = key.1;
-        self.frame_followed = Some(key);
         let shape = shader_packs::picked_pack_shape(&self.settings);
         if self
             .renderer
@@ -182,5 +216,35 @@ impl Game<'_> {
         } else {
             self.streaming.radius
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameAttempt;
+    use horizon_shader_api::Api;
+
+    #[test]
+    fn failed_frame_attempt_waits_for_a_policy_or_setting_change() {
+        let mut attempts = FrameAttempt::default();
+        let mut rebuilds = 0;
+        for key in [
+            (true, false, true, "p", None),
+            (true, false, true, "p", None),
+            // HDR output offered later, with HDR On: the frame is looked at again.
+            (true, true, true, "p", None),
+            (true, true, true, "p", Some(Some(Api::V0_2))),
+            (true, true, true, "p", Some(Some(Api::V0_2))),
+            (true, true, true, "p", Some(None)),
+            (true, true, true, "p", Some(None)),
+            (true, true, true, "q", None),
+            (false, true, false, "q", None),
+        ] {
+            if attempts.changed((key.0, key.1, key.2, key.3.into(), key.4)) {
+                // A replacement fails: no success is recorded, just the attempted key.
+                rebuilds += 1;
+            }
+        }
+        assert_eq!(rebuilds, 6);
     }
 }

@@ -8,6 +8,8 @@ impl Game<'_> {
     /// as the screen's constructor and `containerTick` do.
     pub(super) fn refresh_creative_tabs(&mut self) {
         let permissions = self.can_use_game_master_blocks() && self.settings.operator_items_tab;
+        let enchantments = Arc::clone(self.enchantments());
+        self.creative_screen.set_enchantments(enchantments);
         self.creative_screen
             .set_permissions(permissions, &self.pack.names);
     }
@@ -37,12 +39,7 @@ impl Game<'_> {
     /// Vanilla tooltip: dark box with a purple gradient border, laid out and
     /// drawn like an item tooltip (4 px of padding on every side).
     pub(super) fn tooltip(&self, batch: &mut HudBatch, text: &str, x: f32, y: f32) {
-        let atlas = &self.gui.atlas;
-        let lines = vec![(horizon_client::text::Text::literal(text), u32::MAX)];
-        let (x, y, w, h) =
-            Self::tooltip_geometry(atlas, &lines, (x, y), (batch.width, batch.height), [0.0; 2]);
-        self.tooltip_box(batch, None, x, y, w, h);
-        Self::tooltip_text(batch, atlas, &lines, x, y);
+        self.draw_tooltip_lines(batch, &[(text, u32::MAX)], x, y);
     }
     /// `CreativeModeInventoryScreen.getTooltipFromContainerItem`: the lines
     /// that follow the item's name, none for a category tab's own grid slots
