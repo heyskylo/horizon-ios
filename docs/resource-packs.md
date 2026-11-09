@@ -45,28 +45,28 @@ harness named checks that loader against vanilla).
 | Blinking textures (ETF): `<texture>_blink.png` and `_blink2.png`, `blinkLength`/`blinkFrequency` | `textures/entity/`, random variants' folders | works | `horizon-optifine` `blink` tests, `mobs::render` blink test; sleeping villagers keep their eyes shut |
 | Textures, any resolution (16x to 512x) | `textures/` | works | atlases stitched from the overlay; Faithful 32x, Default HD 128x and FPBR checked |
 | Texture animation: frames, frame time, frame size | `*.png.mcmeta` `animation` | works | `test_sprite_animation_parity` |
-| Texture animation: `interpolate` | `*.png.mcmeta` `animation` | **no** | frames step instead of blending (vanilla's own prismarine, magma, stems, lit furnaces and campfires, command blocks, sculk too): fix in progress |
+| Texture animation: `interpolate` | `*.png.mcmeta` `animation` | works | `sprites.rs` blends each frame towards the next (`interpolated_animations_blend_towards_the_next_frame`) |
 | Mipmap strategy, alpha cutoff bias | `*.png.mcmeta` `texture` | works | `test_mipmap_parity` |
-| `blur` / `clamp` | `*.png.mcmeta` `texture` | partly | vanilla's own files (vignette, pumpkin blur, shadow, glint, nausea) are drawn with their vanilla sampling; a pack that changes the flags is ignored |
+| `blur` / `clamp` | `*.png.mcmeta` `texture` | works | `hud.rs` `TextureFlags` reads them from the overlay, and `screen_effects.rs` samples the screen overlays with them |
 | Atlases and sprite sources: `directory`, `single`, `filter`, `unstitch`, `paletted_permutations` | `atlases/` | works | `test_resource_pack_parity` (merged source lists), `atlas_sources.rs` tests |
 | GUI sprites | `textures/gui/sprites/` | works | `test_hud_parity`, `test_screen_layout_parity` |
 | GUI sprite scaling: `nine_slice` border | `*.png.mcmeta` `gui` | works | `ui.rs` reads the border; vanilla's buttons, sliders and frames use it |
-| GUI sprite scaling: `width`/`height`, `stretch_inner`, `tile`, `stretch` | `*.png.mcmeta` `gui` | partly | the border is taken in texels, so HD GUI sprites get thin borders; `stretch_inner` (vanilla's tooltip frame) and `tile` aren't read |
+| GUI sprite scaling: `width`/`height`, `stretch_inner`, `tile`, `stretch` | `*.png.mcmeta` `gui` | partly | `ui.rs` reads a `nine_slice` sprite's size in GUI pixels and its `stretch_inner` (vanilla's tooltip frame); the `tile` and `stretch` scaling types aren't read |
 | Fonts: `bitmap`, `space`, `unihex`, `reference` | `font/*.json`, `textures/font/` | works | `test_resource_pack_parity` (merged provider lists) |
-| Fonts: `ttf` | `font/*.json` | **no** | no TrueType rasteriser yet |
-| Fonts picked by text components (`"font": "..."`, custom fonts) | `font/` | partly | the default font and the enchanting table's `alt` glyphs are drawn; other fonts named by a text component use the default |
+| Fonts: `ttf` | `font/*.json` | works | `font.rs` rasterises them with `ab_glyph` (`TrueTypeGlyphProvider`) |
+| Fonts picked by text components (`"font": "..."`, custom fonts) | `font/` | works | `component.rs` reads the `font` key and `font.rs` (`glyph_styled`) draws with the font it names |
 | Languages, translations | `lang/*.json` | works | `test_resource_pack_parity` (key by key, as `ClientLanguage`) |
 | New languages | `pack.mcmeta` `language` | works | `lang.rs` reads every pack's `language` section into the language list |
 | Sounds and sound events (`replace`, weights, streams, event references) | `sounds.json`, `sounds/` | works | `test_resource_pack_parity`, `test_sound_event_parity`, `test_sound_engine_parity` |
 | Splashes | `texts/splashes.txt` | works | `title.rs` reads it from the overlay |
-| Credits, end poem | `texts/credits.json`, `end.txt`, `postcredits.txt` | **no** | Horizon has no credits screen yet (Options → *Credits & Attribution* opens nothing) |
+| Credits, end poem | `texts/credits.json`, `end.txt`, `postcredits.txt` | works | `game/win.rs` (`WinScreen`): after the End, and from Options → *Credits & Attribution* |
 | Grass, foliage and dry foliage colours | `textures/colormap/` | works | `biome.rs` reads the overlay; `test_section_mesh_parity` checks the tints |
 | Entity textures and variants | `textures/entity/` | works | `test_entity_model_parity`, loaded from the overlay |
 | Block entities: chests, signs, beds, banners, shields, shulker boxes, decorated pots | `atlases/`, `textures/entity/` | works | `test_block_entity_render_parity` |
-| Villager hats | `*.png.mcmeta` `villager` | **no** | the type layer's hat is always drawn; vanilla hides it under a profession hat marked `full`/`partial` |
+| Villager hats | `*.png.mcmeta` `villager` | works | `mobs/villager_hats.rs` reads the `villager.hat` metadata from the overlay |
 | Equipment (armour, horse/llama/wolf/nautilus armour, wings, dyeable layers) | `equipment/`, `textures/entity/equipment/` | works | `game/armor_stands.rs`, `mobs/render.rs` read the overlay |
 | Armour trims on items | `atlases/items.json`, `textures/trims/items/` | works | `paletted_permutations` (`atlas_sources.rs` tests) |
-| Armour trims on worn armour | `textures/trims/entity/`, `textures/palettes/`, `palette` metadata | **no** | worn trims aren't drawn yet (`PalettedTextureManager`) |
+| Armour trims on worn armour | `textures/trims/entity/`, `textures/palettes/`, `palette` metadata | works | `trims.rs` (`PalettedTextureManager`), drawn by `game/armor_stands.rs` and the mob renderer |
 | Particles | `particles/`, `textures/particle/` | works | `test_particle_providers_parity` |
 | Sky: sun, moon phases, stars, end sky, clouds, rain and snow | `atlases/celestials.json`, `textures/environment/` | works | `test_environment_render_parity`, `test_cloud_render_parity`, `test_weather_render_parity` |
 | Title panorama | `textures/gui/title/background/` | works | `gfx/panorama.rs` loads it from the overlay |
@@ -74,29 +74,22 @@ harness named checks that loader against vanilla).
 | Enchantment glint | `textures/misc/enchanted_glint_*` | works | `item_render/gui.rs`, `hud/cit_glint.rs`, `entity.wgsl` |
 | Maps: background, decorations | `textures/map/`, `atlases/map_decorations.json` | works | loaded from the overlay |
 | Paintings, mob effect icons | `atlases/paintings.json`, `textures/mob_effect/` | works | loaded from the overlay |
-| Locator bar styles | `waypoint_style/` | **no** | the locator bar isn't drawn yet |
-| Post effects (spectating a creeper, spider or enderman; glowing outlines) | `post_effect/`, `shaders/post/` | **no** | Horizon's effects are WGSL; a pack's GLSL post chain isn't run |
-| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects) and `core/rendertype_lines` the block outline (both strokes of a high contrast one; hitboxes, chunk borders and other debug lines still draw natively), translated by naga (`horizon-shaders` `core_shader.rs`, `hud/pack_text.rs`, `gfx/core_lines.rs`); the other core shaders aren't run |
+| Locator bar styles | `waypoint_style/` | works | `locator_bar.rs` loads `waypoint_style/*.json` (`WaypointStyleManager`); `game/locator_bar.rs` draws the bar |
+| Post effects (spectating a creeper, spider or enderman; glowing outlines) | `post_effect/`, `shaders/post/` | works | `post_chain.rs` reads `post_effect/*.json` and `post_glsl.rs` translates the `shaders/post/*.vsh`/`.fsh` with naga, with depth inputs, persistent targets and `TextureInput` |
+| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects), `core/rendertype_lines` the block outline (both strokes of a high contrast one; hitboxes, chunk borders and other debug lines still draw natively), and `core/sky` and `core/stars` the overworld's sky disc and stars, translated by naga (`horizon-shaders` `core_shader.rs`, `hud/pack_text.rs`, `gfx/core_lines.rs`, `gfx/core_sky.rs`); the other core shaders aren't run (#13218) |
 | OptiFine / CIT Resewn custom item textures (`type=item`: `texture`, `model`, `texture.<name>`, `model.<name>`; `type=armor`: `texture`, `texture.<layer>` with the pre-1.21.2 layer names such as `diamond_layer_1`, `leather_layer_2_overlay`; `type=elytra`: `texture`; `type=enchantment` layers on GUI items; `useGlint=false` in `cit.properties`, which removes vanilla's glint from items) | `optifine/cit/`, `mcpatcher/cit/`, `citresewn/cit/` | partly | `item_render/cit.rs`, `cit_armor.rs`, `cit_glint.rs` and `hud/cit_glint.rs` tests; enchantment layers on held, dropped, framed and worn items, and `anim/` glints, come later; special renderers (heads, shields, banners) keep their vanilla look; only players and armour stands wear CIT armour and elytra, other mobs keep vanilla's; worn trims are unchanged; armour textures above 1024x512 (16 times vanilla's 64x32) draw vanilla |
 | GPU warn list, regional compliance | `gpu_warnlist.json`, `regional_compliancies.json` | n/a | OpenGL driver warnings and play-time notices for some regions; not used |
 
-Summary: 46 rows; 32 work, 5 partly, 7 don't (interpolated animation, TrueType fonts, credits and end poem,
-villager hats, trims on worn armour, locator bar styles, post effects), 2 don't apply. Except the
-shaders, the missing pieces are missing vanilla features too, and each vanilla parity fix covers the pack case as well.
+Summary: 50 rows; 42 work, 7 partly (OptiFine/EMF entity models, random entity textures, connected textures,
+emissive textures, CIT, GUI sprite scaling, core shaders), 1 doesn't apply. Every vanilla loader in the list above
+reads the pack; what is left is the GUI scaling types and the core shaders, plus the OptiFine-format extras.
 
 ## Gaps and their work
 
 | Gap | Size | Where |
 | --- | --- | --- |
-| Animation `interpolate` | small | fix PR (`gfx.rs` `animate_sprites`) |
-| GUI scaling `width`/`height`, `stretch_inner`, `tile`, `stretch` | small | next fix PR (`ui.rs`) |
-| Villager hats | small | [#334](https://github.com/horizon-rust/horizon/issues/334) |
-| `blur`/`clamp` from packs | small | [#335](https://github.com/horizon-rust/horizon/issues/335) |
-| Text component fonts, TrueType fonts | medium | [#336](https://github.com/horizon-rust/horizon/issues/336) |
-| Trims on worn armour (paletted textures) | medium | [#337](https://github.com/horizon-rust/horizon/issues/337) |
-| Credits and end poem screen | medium | [#338](https://github.com/horizon-rust/horizon/issues/338) |
-| Locator bar | medium | [#339](https://github.com/horizon-rust/horizon/issues/339) |
-| Post effects, core shaders but GUI text and the block outline | large | none yet |
+| GUI scaling `tile`, `stretch` | small | `ui.rs` |
+| Core shaders but GUI text, the block outline, the sky and the stars | large | [#13218](https://github.com/horizon-rust/horizon/issues/13218) |
 
 ## Testing a pack
 
