@@ -61,4 +61,4 @@ def piston_bounce(cmd, setup):
                 ops.append(cmd(f'/data get block {x} 204 {z} progress'))
     return ops + setup('/kill @e[type=!player]', '/fill 0 200 0 15 208 15 air',
                        '/scoreboard objectives remove piston_bounce', '/forceload remove 0 0',
-                       '/tick unfreeze')
+                       '/tick unfreeze', '/tp @s 8.5 230 8.5 0 0')
