@@ -702,7 +702,7 @@ impl Game<'_> {
             host.hub
                 .chat_filter
                 .as_ref()
-                .is_none_or(|g| !g.filter.matches(text)),
+                .is_none_or(|g| !g.matches(text)),
         )
     }
     /// A system line in every player's chat and the server's log.

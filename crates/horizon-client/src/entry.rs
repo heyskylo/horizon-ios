@@ -13,6 +13,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
     horizon_threads::configure_allocator();
+    // The platform's features the dedicated server loads from server.toml, through the engine's hooks.
+    horizon_chat_filter::install();
     // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
     if !cfg!(feature = "horizon-extras") {
         horizon_client::options_ui::HORIZON_EXTRAS
