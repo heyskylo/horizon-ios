@@ -169,3 +169,33 @@ fn a_held_hdr_start_is_said_on_the_page_and_a_mode_change_tries_again() {
         assert_eq!(s.horizon.hdr_failed_start, None);
     }
 }
+
+/// Undo never brings the hold back: held Auto, changed to On (HDR tried again), then
+/// undone, is Auto without the hold. With the mode left alone, it keeps the hold as it is.
+#[test]
+fn undo_never_restores_a_held_hdr_start() {
+    let mut screen = GraphicsScreen {
+        framebuffer: FB,
+        output: NONE,
+    };
+    let mut opened = Settings::default();
+    opened.horizon.hdr = HdrMode::Auto;
+    opened.horizon.hdr_failed_start = Some("Vulkan 10de:2684 GPU; driver; 1.0; os".into());
+    let mut s = opened.clone();
+    let out = offering(true, Some(true));
+    Item::Horizon(H::Hdr).cycle(&mut s, true, FB, &out);
+    assert_eq!(
+        (s.horizon.hdr, &s.horizon.hdr_failed_start),
+        (HdrMode::On, &None)
+    );
+    screen.undo(&mut s, &opened);
+    assert_eq!(
+        (s.horizon.hdr, &s.horizon.hdr_failed_start),
+        (HdrMode::Auto, &None)
+    );
+    // Another row changed and undone: the hold stays.
+    let mut s = opened.clone();
+    s.horizon.fxaa = !s.horizon.fxaa;
+    screen.undo(&mut s, &opened);
+    assert_eq!(s.horizon, opened.horizon);
+}

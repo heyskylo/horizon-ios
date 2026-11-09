@@ -1533,7 +1533,14 @@ impl Screen for GraphicsScreen {
     /// one `horizon-ctl options-set` changed meanwhile), nor fullscreen, which F11 and the
     /// window manager change.
     fn undo(&mut self, s: &mut Settings, b: &Settings) -> Vec<Output> {
-        s.horizon = b.horizon.clone();
+        // Never the hold on a driver HDR output failed to start on: Undo keeps it as it is now,
+        // and drops it when it changes the mode, as any change of the mode does.
+        let failed_start = std::mem::take(&mut s.horizon.hdr_failed_start)
+            .filter(|_| s.horizon.hdr == b.horizon.hdr);
+        s.horizon = crate::graphics::Graphics {
+            hdr_failed_start: failed_start,
+            ..b.horizon.clone()
+        };
         s.render_distance = b.render_distance;
         s.simulation_distance = b.simulation_distance;
         s.gamma = b.gamma;
