@@ -1781,7 +1781,12 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-core",
+ "horizon-prepare",
+ "horizon-protocol",
+ "horizon-server-files",
  "horizon-system",
+ "horizon-world",
 ]
 
 [[package]]
@@ -1863,11 +1868,9 @@ dependencies = [
  "horizon-anticheat",
  "horizon-bench",
  "horizon-chat-filter",
- "horizon-core",
  "horizon-mcp",
+ "horizon-platform",
  "horizon-release-sign",
- "horizon-server-files",
- "horizon-world",
  "libc",
  "p12-keystore",
  "png",
