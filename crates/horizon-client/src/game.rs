@@ -6382,7 +6382,7 @@ impl Game<'_> {
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
-        self.pad.guide_shown.clear();
+        self.input_hud_begin();
         let mut batch = HudBatch::new(size);
         batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
@@ -11116,7 +11116,7 @@ impl Game<'_> {
                 )
             )
         {
-            self.pad.keyboard_took_over = true;
+            self.input_keyboard_used();
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed

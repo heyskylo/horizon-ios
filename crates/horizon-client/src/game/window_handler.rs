@@ -107,9 +107,9 @@ impl Game<'_> {
                 state: ElementState::Pressed,
                 ..
             }
-        ) && !self.pad.menu.synthetic
+        ) && !self.input_made_pointer_event()
         {
-            self.pad.keyboard_took_over = true;
+            self.input_keyboard_used();
         }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {

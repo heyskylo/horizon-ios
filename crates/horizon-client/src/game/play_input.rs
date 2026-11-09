@@ -467,6 +467,34 @@ impl Game<'_> {
         self.pad_look(seconds);
     }
 
+    /// The keyboard or mouse acted in play (a key or button pressed): it has control again, though
+    /// only moving the mouse takes a pad out of use.
+    pub(super) fn input_keyboard_used(&mut self) {
+        self.pad.keyboard_took_over = true;
+    }
+
+    /// Whether the pointer event being handled is one a device made (a pad's menu cursor
+    /// clicking), not the mouse's.
+    pub(super) fn input_made_pointer_event(&self) -> bool {
+        self.pad.menu.synthetic
+    }
+
+    /// A new player entity took over (spawn, respawn, a server joined, a dimension change).
+    pub(super) fn input_player_replaced(&mut self) {
+        self.pad.player_replaced();
+    }
+
+    /// Whether the drop about to happen is a device's whole-stack drop (it has no Control key to
+    /// hold). Asking answers once.
+    pub(super) fn input_takes_stack_drop(&mut self) -> bool {
+        std::mem::take(&mut self.pad.drop_stack)
+    }
+
+    /// The HUD starts a frame: what a device drew on the last one is gone.
+    pub(super) fn input_hud_begin(&mut self) {
+        self.pad.guide_shown.clear();
+    }
+
     /// Something happened to the player that a device may let them feel.
     pub(super) fn input_feedback(&mut self, event: horizon_client::input_source::Feedback) {
         self.pad_rumble(event.into());

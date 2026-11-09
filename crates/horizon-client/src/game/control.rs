@@ -644,7 +644,7 @@ impl Game<'_> {
                     .into());
                 }
                 if arg(2)? != "up" {
-                    self.pad.keyboard_took_over = true;
+                    self.input_keyboard_used();
                 }
                 // The command confirmation takes the keys; none go past it.
                 if self.command_prompt.is_some() {
