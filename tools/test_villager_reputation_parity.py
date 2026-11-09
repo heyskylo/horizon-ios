@@ -28,6 +28,11 @@ def main(argv=None):
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaVillagerReputationOracle.java'
     sources = [Path(__file__), oracle,
                lab.ROOT / 'crates/horizon-client/src/mobs.rs',
+               lab.ROOT / 'crates/horizon-client/src/mobs/damage.rs',
+               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation.rs',
+               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation_witness_tests.rs',
+               lab.ROOT / 'crates/horizon-client/src/game.rs',
+               lab.ROOT / 'crates/horizon-client/src/game/melee.rs',
                lab.ROOT / 'crates/horizon-client/src/mobs/villager.rs',
                lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain.rs',
                lab.ROOT / 'crates/horizon-client/src/game/villagers.rs',

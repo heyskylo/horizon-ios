@@ -9,6 +9,10 @@
 //! the mob's own random drives positions, sounds and jumps. `RunOne` and the
 //! other `GateBehavior`s shuffle with a random of their own, seeded with
 //! `Brain::shuffle_seed` when the brain is built.
+mod reputation;
+pub use reputation::murder_witnesses;
+use reputation::targetable;
+
 use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     brain::{Timed, living_near},
@@ -609,19 +613,7 @@ fn sense_living(m: &mut Mob, w: &MobWorld) {
         cache: Vec::new(),
     });
 }
-/// `Sensor.isEntityTargetable`: `TargetingConditions.forNonCombat()` within
-/// the follow range, in sight.
-fn targetable(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
-    match who {
-        Who::Player => m.can_see_player(w, FOLLOW_RANGE),
-        Who::Mob(id) => {
-            let Some(s) = w.seen(id) else { return false };
-            let visibility = s.villager.as_ref().map_or(1.0, |v| v.visibility(w.items));
-            let range = (m.attrs.follow_range * visibility).max(2.0);
-            s.alive && m.distance_sqr(s.position) <= range * range && m.sees(w, who)
-        }
-    }
-}
+
 /// The visible-entities memory's line-of-sight test, cached per memory.
 fn visible_test(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
     if let Some(v) = mem_ref(m).and_then(|mm| mm.visible_mobs.get()) {
@@ -653,23 +645,7 @@ fn visible_contains(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
     };
     list && visible_test(m, w, who)
 }
-/// `Villager.tellWitnessesThatIWasMurdered`: only the candidates retained
-/// by the last nearest-living scan, with the same lazy visibility cache.
-pub fn murder_witnesses(m: &mut Mob, w: &MobWorld) -> Vec<u32> {
-    let Some(list) = mem_ref(m)
-        .and_then(|mm| mm.visible_mobs.get())
-        .map(|v| v.list.clone())
-    else {
-        return Vec::new();
-    };
-    list.into_iter()
-        .filter_map(|who| {
-            let Who::Mob(id) = who else { return None };
-            (w.seen(id).is_some_and(|s| s.species == Species::Villager) && visible_test(m, w, who))
-                .then_some(id)
-        })
-        .collect()
-}
+
 /// `PlayerSensor`.
 fn sense_players(m: &mut Mob, w: &MobWorld) {
     let range = m.attrs.follow_range;
@@ -4626,102 +4602,7 @@ pub fn seen_memories(
 }
 
 #[cfg(test)]
-mod reputation_witness_tests {
-    use super::*;
-    use std::sync::Arc;
-
-    fn villager(id: u32, x: f64, z: f64, invisible: bool) -> Mob {
-        let mut kind = super::super::sensor_scan_tests::kind();
-        let k = Arc::make_mut(&mut kind);
-        k.id = "minecraft:villager".into();
-        k.species = Species::Villager;
-        let mut m = Mob::new(id, kind, Vec3::new(x, 1.0, z), 0.0);
-        m.invisible = invisible;
-        m
-    }
-    #[test]
-    #[ignore = "requires explicit prepared resources and vanilla oracle output"]
-    fn witnesses_use_sensor_candidates_radius_invisibility_and_cached_results() {
-        let root = std::env::var_os("HORIZON_TEST_RESOURCES").expect("explicit fixture resources");
-        let oracle = std::fs::read_to_string(
-            std::env::var_os("HORIZON_REPUTATION_ORACLE").expect("oracle output"),
-        )
-        .unwrap();
-        let expected: Vec<Vec<u32>> = oracle
-            .lines()
-            .filter(|line| {
-                line.starts_with("witnesses ")
-                    || line.starts_with("cached ")
-                    || line.starts_with("fresh ")
-            })
-            .map(|line| {
-                line.split_once(' ')
-                    .unwrap()
-                    .1
-                    .trim_matches(['[', ']'])
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.parse().unwrap())
-                    .collect()
-            })
-            .collect();
-        let mut candidates = [
-            villager(2, 10.0, 0.0, false),
-            villager(3, 10.0, 0.0, true),
-            villager(4, 15.0, 15.0, false),
-            villager(5, 1.0, 0.0, false), // arrived after the sensor scan
-            villager(6, 1.5, 0.0, true),
-            villager(7, 20.0, 0.0, false),
-        ];
-        let list = || {
-            vec![
-                Who::Mob(2),
-                Who::Mob(3),
-                Who::Mob(4),
-                Who::Mob(6),
-                Who::Mob(7),
-            ]
-        };
-        let mut victim = villager(1, 0.0, 0.0, false);
-        victim.attrs.follow_range = 16.0;
-        let seen: Vec<_> = candidates.iter().map(|m| m.seen(None)).collect();
-        assert!(super::super::world::with_resource_test_world(
-            std::path::Path::new(&root),
-            &seen,
-            true,
-            true,
-            |_, _| {},
-            |w, _| {
-                assert!(murder_witnesses(&mut victim, w).is_empty());
-                mem(&mut victim).visible_mobs.set(Visible {
-                    list: list(),
-                    cache: Vec::new(),
-                });
-                assert_eq!(murder_witnesses(&mut victim, w), expected[0]);
-            },
-        ));
-        candidates[0].invisible = true;
-        candidates[1].invisible = false;
-        let seen: Vec<_> = candidates.iter().map(|m| m.seen(None)).collect();
-        assert!(super::super::world::with_resource_test_world(
-            std::path::Path::new(&root),
-            &seen,
-            true,
-            true,
-            |_, _| {},
-            |w, _| {
-                assert_eq!(murder_witnesses(&mut victim, w), expected[1]);
-                mem(&mut victim).visible_mobs.set(Visible {
-                    list: list(),
-                    cache: Vec::new(),
-                });
-                assert_eq!(murder_witnesses(&mut victim, w), expected[2]);
-                // New candidates remain excluded until the next scan, even in range.
-                assert!(!murder_witnesses(&mut victim, w).contains(&5));
-            },
-        ));
-    }
-}
+mod reputation_witness_tests;
 
 #[cfg(test)]
 #[path = "villager_trades_tests.rs"]
