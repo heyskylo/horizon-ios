@@ -994,6 +994,10 @@ impl Content {
                     "{name}: bucket {bucket:?} is not one of this mod's items"
                 ));
             }
+            // The bucket pours the fluid's liquid block: without one it would place nothing.
+            if fluid.bucket.is_some() && fluid.block.is_none() {
+                return Err(format!("{name}: a bucket needs the fluid's block to pour"));
+            }
             if let Some(block) = &fluid.block {
                 let Some(found) = self.blocks.iter().find(|b| &b.id == block) else {
                     return Err(format!(
@@ -1994,6 +1998,19 @@ capabilities = ["registries"]
             let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
             assert!(e.contains(why), "{case}: {e}");
         }
+        // A bucket with no liquid block to pour is refused.
+        let body = format!(
+            r#"{{"template": "minecraft:water", "bucket": "ruby:honey_bucket", {textures}}}"#
+        );
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/item/honey_bucket.json",
+                br#"{"template": "minecraft:water_bucket"}"#,
+            ),
+            ("data/ruby/horizon/fluid/a.json", body.as_bytes()),
+        ];
+        let e = hmod("fluid-bucket-block", MANIFEST_TEXT, files).unwrap_err();
+        assert!(e.contains("needs the fluid's block"), "{e}");
         // Without its textures a fluid can't be drawn.
         let files: &[(&str, &[u8])] = &[(
             "data/ruby/horizon/fluid/a.json",

@@ -1105,6 +1105,41 @@ def vehicle_saved_ground_and_fall():
                        f'/forceload remove {x0} {z0}')
 
 
+def ravager_saved_movement_speed():
+    """Ravager.aiStep sets the movement_speed base to 0.0 while biting, stunned or roaring, then lerps it back
+    toward 0.3. The instance exists only from that first aiStep (AttributeMap.getInstance makes it lazily), and
+    AttributeMap.pack saves it with the current base, so a reloaded ravager keeps its speed. Read after
+    summoning, after one and five ticks, after an unload and reload (frozen), and two ticks later.
+    """
+    x0, y0, z0 = 3904, 300, 3904
+    chunk = [[x0 >> 4, z0 >> 4]]
+    subjects = ['RoarTick:7', 'RoarTick:1', 'StunTick:3', 'AttackTick:5', 'AttackTick:0']
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    for n, body in enumerate(subjects):
+        ops.append(cmd(f'/summon ravager {x0 + 2 + 3 * n}.5 {y0} {z0 + 8}.5 '
+                       f'{{Tags:["rav_speed_{n}"],PersistenceRequired:1b,{body}}}', expect_result=1))
+
+    def reads():
+        for n in range(len(subjects)):
+            ops.append(cmd(f'/data get entity @e[tag=rav_speed_{n},limit=1] attributes'))
+
+    reads()
+    ops.append({'op': 'tick', 'n': 1})
+    reads()
+    ops.append({'op': 'tick', 'n': 4})
+    reads()
+    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    reads()
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}]
+    reads()
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def vehicle_ground_and_fall():
     """Entity.load reads OnGround (getBooleanOr) and fall_distance (getDoubleOr) for every entity,
     and Entity.saveWithoutId writes the live values: boats, rafts and minecarts keep both. Frozen
@@ -4569,6 +4604,37 @@ def cube_saved_age():
 
 
 
+def villager_gossip_decay():
+    """Villager.tick decays gossip with or without AI (#13619)."""
+    # A negative LastGossipDecay is due on the first tick at any game time.
+    cases = [
+        ('noai_new', 'NoAI:1b', None),
+        ('noai_pos', 'NoAI:1b,LastGossipDecay:-30000L', ('minor_positive', 25, 24)),
+        ('noai_neg', 'NoAI:1b,LastGossipDecay:-30000L', ('minor_negative', 100, 80)),
+        ('ai_pos', 'LastGossipDecay:-30000L', ('minor_positive', 25, 24)),
+    ]
+    ops = setup('/scoreboard objectives add h13619 dummy')
+    for i, (name, fields, gossip) in enumerate(cases):
+        if gossip:
+            fields += f',Gossips:[{{Target:[I;1,2,3,4],Type:"{gossip[0]}",Value:{gossip[1]}}}]'
+        ops += setup(f'/summon villager {2.5 + 3 * i} 200 2.5 {{UUID:[I;13619,0,0,{i + 1}],'
+                     f'Tags:["h13619_{name}"],NoGravity:1b,PersistenceRequired:1b,{fields}}}')
+    ops.append({'op': 'tick', 'n': 1})
+    for name, fields, gossip in cases:
+        target = f'@e[tag=h13619_{name},limit=1]'
+        ops.append(cmd(f'/execute if entity {target}', expect_result=1))
+        # maybeDecayGossip stamps this tick's game time.
+        ops += setup('/execute store result score #now h13619 run time query gametime',
+                     f'/execute store result score #decay h13619 run data get entity {target} LastGossipDecay')
+        ops.append(cmd('/execute if score #now h13619 = #decay h13619', expect_result=1))
+        if gossip:
+            ops.append(cmd(f'/data get entity {target} Gossips'))
+            ops.append(cmd(f'/execute if entity @e[tag=h13619_{name},nbt={{Gossips:[{{Type:"{gossip[0]}",Value:{gossip[2]}}}]}}]',
+                           expect_result=1))
+    ops += setup('/kill @e[type=villager]', '/scoreboard objectives remove h13619')
+    return ops
+
+
 def villager_wake_rotation():
     """Use the occupied bed through the live player route, then observe pose."""
     ops = setup('/fill 0 199 3 6 199 9 stone', '/gamemode survival', '/tp @s 4.5 200 4.5', '/time set noon')
@@ -6225,6 +6291,14 @@ def moving_piston_presentation_diagnostic():
     return moving_piston_presentation(cmd, setup)
 
 
+def piston_mob_bounce():
+    try:
+        from .piston_bounce_corpus import piston_bounce
+    except ImportError:
+        from piston_bounce_corpus import piston_bounce
+    return piston_bounce(cmd, setup)
+
+
 def piston_entity_tick_order():
     """#9337: entities travel before moving pistons push them, not afterward."""
     ops = []
@@ -6386,6 +6460,31 @@ def piston_push_ground():
     return ops
 
 
+def falling_block_in_moving_piston():
+    """#13793: `FallingBlockEntity.tick` neither places, drops nor discards a block that comes down
+    where a piston is extending (the block there `is(Blocks.MOVING_PISTON)`), before its `cancelDrop`
+    check: it stays a falling block, the piston pushes it on, and it lands a block further a tick
+    later. The piston fires in the tick's block events, before the entity lands. A sideways motion
+    shows the landing's slowdown (0.7) and the air drag it keeps."""
+    ops = []
+    selector = '@e[type=minecraft:falling_block,tag=piston_falling,limit=1]'
+    for piston, fields in (('sticky_piston', ''), ('piston', ''), ('sticky_piston', ',CancelDrop:1b'),
+                           ('piston', ',Motion:[0.0d,0.0d,0.05d]')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
+                     '/fill 28 209 28 36 209 34 stone', f'/setblock 31 210 31 {piston}[facing=east]',
+                     '/summon minecraft:falling_block 32.5 210 31.5 '
+                     f'{{BlockState:{{Name:"minecraft:sand"}},Tags:["piston_falling"]{fields}}}',
+                     '/setblock 30 210 31 redstone_block')
+        for _ in range(3):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {selector} Pos'))
+            ops.append(cmd(f'/data get entity {selector} Motion'))
+            ops.append(cmd('/execute if block 33 210 31 minecraft:sand'))
+            ops.append(cmd('/execute if entity @e[type=minecraft:item,x=28,y=208,z=28,dx=8,dy=10,dz=6]'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
 def primed_tnt_box():
     """#12020: `EntityTypes.TNT` is sized 0.98F, so its box is half 0.49F wide
     and 0.98F tall, both widened from float: TNT stopped by a wall ends 0.49F
@@ -6496,6 +6595,52 @@ def primed_tnt_fall():
     return ops
 
 
+def item_fall_distance():
+    """#13203: a dropped item is an `Entity`: `checkFallDamage` adds each step down,
+    narrowed to a float, to its double `fall_distance` outside water, the ground and water
+    reset it, and `Entity.save` / `load` keep it. A fast fall past a vine on a wall resets it
+    (`Entity.move`'s FALLDAMAGE_RESETTING cast) and a cobweb makes it stuck, which resets it."""
+    sel = '@e[type=minecraft:item,tag=item_fall,limit=1]'
+    ops = [cmd('/forceload add 32 32', False), {'op': 'wait_chunks', 'chunks': [[2, 2]]}]
+
+    def track(ticks):
+        out = []
+        for _ in range(ticks):
+            out.append({'op': 'tick', 'n': 1})
+            for path in ('Pos', 'Motion', 'fall_distance'):
+                out.append(cmd(f'/data get entity {sel} {path}'))
+        return out
+
+    item = 'Item:{id:"minecraft:stone",count:1},PickupDelay:32767,Tags:["item_fall"]'
+    # block at 32 210 32, summon y, fields, ticks recorded. The landing is read once: the
+    # resting item's next Motion still differs (a separate gap).
+    for block, y, fields, ticks in (
+            ('air', 216, 'Motion:[0.0d,-0.3d,0.0d]', 4),
+            ('stone', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 1),
+            ('water', 213, 'fall_distance:2.0d,Motion:[0.0d,-0.5d,0.0d]', 6),
+            ('cobweb', 212, 'Motion:[0.0d,-0.5d,0.0d]', 5)):
+        ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                     '/fill 30 209 30 34 209 34 stone', f'/setblock 32 210 32 {block}',
+                     f'/summon minecraft:item 32.5 {y} 32.5 {{{fields},{item}}}')
+        ops += track(ticks)
+    # Fast past a vine on the wall beside it: the cast of the move resets the fall first.
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                 '/fill 30 209 30 34 209 34 stone', '/fill 31 212 32 31 219 32 stone',
+                 '/setblock 32 215 32 vine[west=true]',
+                 f'/summon minecraft:item 32.5 218 32.5 {{fall_distance:5.0d,Motion:[0.0d,-1.5d,0.0d],{item}}}')
+    ops += track(3)
+    # Load and /data write the field; a frozen item keeps it.
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                 f'/summon minecraft:item 32.5 216 32.5 {{fall_distance:4.5f,NoGravity:1b,{item}}}')
+    ops.append(cmd(f'/data get entity {sel} fall_distance'))
+    ops.append(cmd(f'/data modify entity {sel} fall_distance set value 2.25d'))
+    ops.append(cmd(f'/data get entity {sel} fall_distance'))
+    ops.append(cmd(f'/data merge entity {sel} {{NoGravity:0b,Motion:[0.0d,-0.5d,0.0d]}}'))
+    ops += track(2)
+    return ops + setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air', '/forceload remove 32 32')
+
+
+
 def loaded_dead_mob():
     """#13199: `LivingEntity.readAdditionalSaveData` reads `Health` through `setHealth`, which
     clamps a negative value to 0 and keeps the body: a mob summoned dead is there, `/data` reads
@@ -6525,6 +6670,71 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def falling_block_fall_float():
+    """#13701: `Entity.checkFallDamage` adds each step down narrowed to a float (`fallDistance -= (float)ya`);
+    a falling block never runs `baseTick`, so it is never in water and every step counts."""
+    x0, y0, z0 = 4096 - 64, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    sel = '@e[type=minecraft:falling_block,tag=fb_fall,limit=1]'
+    for block, y in (('sand', y0 + 6.5), ('anvil', y0 + 3.5)):
+        ops.append(cmd(f'/summon falling_block {x0 + 8}.5 {y} {z0 + 8}.5 '
+                       f'{{BlockState:{{Name:"minecraft:{block}"}},Time:1,Tags:["fb_fall"]}}', expect_result=1))
+        for _ in range(6):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {sel} fall_distance'))
+            ops.append(cmd(f'/data get entity {sel} Pos[1]'))
+        ops.append(cmd(f'/kill @e[type=minecraft:falling_block,tag=fb_fall]', False))
+        ops.append(cmd(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', False))
+    return ops + setup(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
+def explosion_infested_blocks():
+    """#11330: `Block.onExplosionHit` calls `spawnAfterBreak` before the drops, so a blast lets an
+    infested block's silverfish out (`InfestedBlock.spawnInfestation`) while `block_drops` is on. The
+    difficulty is not peaceful, where the silverfish would despawn on their first tick. The blast without
+    drops goes first: the explosion's rays draw from the level's random, and a mob's spawn draws differ."""
+    x0, y0, z0 = 3968, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/difficulty normal', False)]
+    for drops in ('false', 'true'):
+        ops += [cmd(f'/gamerule block_drops {drops}', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                # Four blocks right under the TNT, which every ray breaks: how many edge blocks resist
+                # depends on each ray's random intensity.
+                cmd(f'/fill {x0 + 7} {y0} {z0 + 7} {x0 + 8} {y0} {z0 + 7} infested_stone', expect_result=2),
+                cmd(f'/fill {x0 + 7} {y0} {z0 + 8} {x0 + 8} {y0} {z0 + 8} infested_cobblestone', expect_result=2),
+                cmd(f'/summon tnt {x0 + 8} {y0 + 1} {z0 + 8} {{fuse:0}}', expect_result=1),
+                cmd(f'/execute if entity @e[type=tnt,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                {'op': 'tick', 'n': 1},
+                cmd(f'/execute if entity @e[type=tnt,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/execute if entity @e[type=silverfish,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/execute if block {x0 + 7} {y0} {z0 + 7} infested_stone'),
+                {'op': 'tick', 'n': 3},
+                cmd(f'/execute if entity @e[type=silverfish,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]'),
+                cmd(f'/kill @e[type=!player,x={x0},y={y0 - 2},z={z0},dx=16,dy=12,dz=16]', False)]
+    return ops + setup('/gamerule block_drops true',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
+def jigsaw_default_joint():
+    """#13654: `JigsawBlockEntity.loadAdditional` reads `joint`, else `StructureTemplate.getDefaultJointType`:
+    `aligned` when the block's front faces sideways, `rollable` when it faces up or down."""
+    x0, y0, z0 = 4096 - 32, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    cases = [('north_up', '{selection_priority:0}'), ('up_east', '{selection_priority:0}'),
+             ('down_south', '{}'), ('west_up', '{joint:"rollable"}'), ('east_up', '{}')]
+    for n, (orientation, data) in enumerate(cases):
+        x = x0 + 2 + 2 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 4} jigsaw[orientation={orientation}]{data}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 4} joint')]
+    # /data merge without joint loads the block's data again.
+    ops += [cmd(f'/data merge block {x0 + 2} {y0} {z0 + 4} {{selection_priority:3}}'),
+            cmd(f'/data get block {x0 + 2} {y0} {z0 + 4} joint')]
+    return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def command_block_auto_load():
     """#13075: `CommandBlockEntity.loadAdditional` ends with `setAutomatic`, which (with a level:
     `/setblock`, `/data merge block`) schedules the first tick of a block that turned automatic,
@@ -6561,6 +6771,22 @@ def command_block_auto_load():
                        '/scoreboard objectives remove cb_auto', f'/forceload remove {x0} {z0}')
 
 
+def beacon_levels_load():
+    """#13653: `BeaconBlockEntity.saveAdditional` writes `Levels` but `loadAdditional` never reads them:
+    a beacon placed with data reads 0 levels until `updateBase` (every 80 game ticks) sets them."""
+    x0, y0, z0 = 4032, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    for n, levels in enumerate(('-1', '3', '7')):
+        x = x0 + 3 + 3 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 4} beacon{{Levels:{levels}}}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 4} Levels'),
+                cmd(f'/data merge block {x} {y0} {z0 + 4} {{Levels:{levels}}}'),
+                cmd(f'/data get block {x} {y0} {z0 + 4} Levels')]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def zombie_villager_summoned_data():
     """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
     leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
@@ -6581,6 +6807,65 @@ def zombie_villager_summoned_data():
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
 
+
+def projectile_fall_distance():
+    """#13702: `Entity.load` reads `fall_distance` for every entity and `saveWithoutId` writes it; a projectile
+    moves by `setPos`, never through `Entity.move`, so in the air it keeps what it was given."""
+    # Away from the cases at z 3648: unloading this chunk at the end would keep vanilla's chunks two
+    # columns away from entity ticking for a few ticks (the explosion and falling block cases next).
+    x0, y0, z0 = 4096 - 96, 280, 3392
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    kinds = [('fireball', ''), ('wither_skull', ''), ('small_fireball', ''), ('snowball', ''),
+             ('fireball', ',fall_distance:2.5f')]
+    for n, (kind, extra) in enumerate(kinds, 1):
+        fields = extra.lstrip(',') if extra else 'fall_distance:1.0d'
+        uuid = f'000035f0-0000-0000-0000-{n:04x}00000001'
+        ops += [cmd(f'/summon {kind} {x0 + 2 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;13808,0,{n},1],{fields},'
+                    f'Motion:[0.0d,0.0d,0.0d],acceleration_power:0.0d}}', expect_result=1),
+                cmd(f'/data get entity {uuid} fall_distance')]
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+    for n in range(1, len(kinds) + 1):
+        ops.append(cmd(f'/data get entity 000035f0-0000-0000-0000-{n:04x}00000001 fall_distance'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
+
+def living_short_timers():
+    """#13846: `LivingEntity` reads `HurtTime` and `DeathTime` with `getShortOr` and writes them back as `(short)`
+    casts: a negative value stays."""
+    x0, y0, z0 = 4096 - 128, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    for n, (kind, fields) in enumerate([('squid', 'DeathTime:-1s'), ('drowned', 'DeathTime:-7s,HurtTime:-3s'),
+                                        ('pig', 'HurtTime:-1s'), ('cow', 'DeathTime:5s,Health:20.0f')], 1):
+        uuid = f'000036d0-0000-0000-0000-{n:04x}00000001'
+        ops += [cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;14032,0,{n},1],NoAI:1b,{fields}}}',
+                    expect_result=1),
+                cmd(f'/data get entity {uuid} DeathTime'), cmd(f'/data get entity {uuid} HurtTime')]
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
+def command_block_last_output():
+    """#13077: `BaseCommandBlock` keeps the feedback it got as a component (stamped with the time:
+    `Component.literal("[HH:mm:ss] ").append(message)`) and saves it with
+    `ComponentSerialization.CODEC`: a failed command keeps its red, click-to-suggest error."""
+    x0, y0, z0 = 3904, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/scoreboard objectives add cb_out dummy', False)]
+    # Two failures, whose styled feedback (red, click to suggest the command) is what the save must keep.
+    # A success's feedback names an entity, a new score holder or a bracketed value, whose components
+    # the two engines build differently (or which change later groups' scoreboard lists).
+    commands = ['say', 'scoreboard players get #nobody cb_out']
+    at = [(x0 + 2 + 3 * n, y0, z0 + 4) for n in range(len(commands))]
+    for command, (x, y, z) in zip(commands, at):
+        ops.append(cmd(f'/setblock {x} {y} {z} minecraft:command_block{{Command:"{command}"}}', expect_result=1))
+        ops.append(cmd(f'/setblock {x} {y + 1} {z} minecraft:redstone_block', expect_result=1))
+    ops.append({'op': 'tick', 'n': 3})
+    for x, y, z in at:
+        ops.append(cmd(f'/data get block {x} {y} {z} LastOutput'))
+    return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
+                       '/scoreboard objectives remove cb_out', f'/forceload remove {x0} {z0}')
 
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
@@ -6899,7 +7184,8 @@ ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
 ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
+ISOLATED_POT_HOPPER = frozenset({'hopper pot saved slot'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER
 
 
 def vehicle_fall_clip():
@@ -6928,13 +7214,53 @@ def vehicle_fall_clip():
                        f'fall_distance:5d,Motion:[0d,{dy},0d]}}', expect_result=1))
 
     def reads():
-        # The water boat floats after it: only its fall is read.
-        for n, (_, block) in enumerate(subjects, 1):
-            for key in ('fall_distance',) if block == 'water' else ('fall_distance', 'Pos[1]'):
+        for n, _ in enumerate(subjects, 1):
+            for key in ('fall_distance', 'Pos[1]'):
                 ops.append(cmd(f'/data get entity 000032cd-0000-0000-0000-{n:04x}00000001 {key}'))
 
     reads()
     for _ in range(4):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def mob_fall_clip():
+    """Entity.move on a mob: a move of a block or more casts along it (FALLDAMAGE_RESETTING as a full
+    block, WATER) and a hit resets the fall before the move's own drop counts. Pigs and husks fall
+    fast past a vine on a wall and with nothing in the way; a husk falls through one block of water.
+    """
+    x0, y0, z0 = 4160, 260, 4160
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    # A pig in water floats up at random (FloatGoal): only the husk falls through it.
+    subjects = [('pig', 'vine'), ('husk', 'vine'), ('pig', None), ('husk', None), ('husk', 'water')]
+    for n, (kind, block) in enumerate(subjects, 1):
+        x, z = x0 + 1 + (n - 1) % 5 * 3, z0 + 4 + (n - 1) // 5 * 6
+        ops.append(cmd(f'/fill {x - 1} {y0 + 10} {z} {x - 1} {y0 + 30} {z} stone', expect_result=21))
+        if block == 'vine':
+            ops.append(cmd(f'/setblock {x} {y0 + 18} {z} vine[west=true]', expect_result=1))
+        # A move of 2.5 passes the vine's block or the water whole (in it, a climbable or the water would
+        # reset the fall anyway).
+        y = y0 + 20
+        if block == 'water':
+            ops.append(cmd(f'/setblock {x} {y0 + 19} {z} water', expect_result=1))
+            y = y0 + 21
+        dy = '-2.5d'
+        ops.append(cmd(f'/summon {kind} {x}.7 {y} {z}.5 {{UUID:[I;14000,0,{n},1],'
+                       f'fall_distance:5d,Motion:[0d,{dy},0d],PersistenceRequired:1b}}', expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(subjects, 1):
+            for key in ('fall_distance', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 000036b0-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(3):
         ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
         reads()
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
@@ -7016,6 +7342,10 @@ def groups():
     except ImportError:
         from guest_close_event_corpus import cases as guest_close_events
     try:
+        from .pot_hopper_corpus import cases as pot_hopper_cases
+    except ImportError:
+        from pot_hopper_corpus import cases as pot_hopper_cases
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -7075,6 +7405,7 @@ def groups():
         ('vehicle container saved fields', vehicle_containers(cmd)),
         ('vehicle boolean save flags', vehicle_boolean_flags(cmd)),
         ('other entity boolean save flags', other_entity_boolean_flags(cmd)),
+        ('hopper pot saved slot', pot_hopper_cases(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
@@ -7158,14 +7489,24 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('piston mob bounce', piston_mob_bounce()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('command block last output', command_block_last_output()),
+        ('living short timers', living_short_timers()),
+        ('projectile fall distance', projectile_fall_distance()),
+        ('item fall distance', item_fall_distance()),
+        ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('falling block fall float', falling_block_fall_float()),
+        ('explosion infested blocks', explosion_infested_blocks()),
+        ('jigsaw default joint', jigsaw_default_joint()),
         ('command block auto load', command_block_auto_load()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
+        ('falling block in a moving piston', falling_block_in_moving_piston()),
         ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
@@ -7199,6 +7540,7 @@ def groups():
         ('summoned eye of ender', summoned_eye_of_ender()),
         ('awake villager saved position', awake_villager_saved_position()),
         ('villager wake rotation', villager_wake_rotation()),
+        ('villager gossip decay', villager_gossip_decay()),
         ('cube saved Age', cube_saved_age()),
         ('mob baby attribute reads', mob_baby_attribute_reads()),
         ('mob partial block suffocation', mob_partial_block_suffocation()),
@@ -7254,8 +7596,10 @@ def groups():
         ('projectile saved ground', projectile_saved_ground()),
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
+        ('mob fall clip', mob_fall_clip()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
+        ('ravager saved movement speed', ravager_saved_movement_speed()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]

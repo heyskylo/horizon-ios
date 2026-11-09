@@ -944,9 +944,9 @@ impl Goal for PufferfishPuff {
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let area = m.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
         let player =
-            cx.w.player
-                .as_ref()
-                .is_some_and(|p| p.alive && !p.creative && area.intersects(p.bounds));
+            cx.w.player.as_ref().is_some_and(|p| {
+                p.alive && !p.creative && !p.spectator && area.intersects(p.bounds)
+            });
         // TARGETING_CONDITIONS: not #not_scary_for_pufferfish, and alive.
         let mob = cx.w.others_near(area).any(|s| {
             s.id != m.id
@@ -1609,6 +1609,44 @@ mod pufferfish_sting_tests {
                 assert_eq!(mobs[2].extra.effects[0].1, 120, "pig B receives poison");
             }
         });
+    }
+
+    /// `Pufferfish.PufferfishPuffGoal.canUse` targets players with
+    /// `TargetingConditions.forNonCombat()`, which never picks a spectator.
+    #[test]
+    fn a_spectator_does_not_puff_a_pufferfish() {
+        use crate::mobs::world::{test_player, with_test_world};
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:pufferfish"].clone());
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(0.5, 64.0, 0.5));
+                p.spectator = spectator;
+                world.player = Some(p);
+                let mut fish = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                fish.no_gravity = true;
+                fish.ai.goals.add(1, PufferfishPuff);
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut fish.ai.goals);
+                goals.tick(&mut fish, &mut cx);
+                outcomes.push(goals.is_running("PufferfishPuff"));
+                fish.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player puffs it; a spectator does not"
+        );
     }
 }
 

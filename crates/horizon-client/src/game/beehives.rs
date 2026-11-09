@@ -77,6 +77,9 @@ impl HiveHost for GameHive<'_, '_> {
             .audio
             .play(&format!("minecraft:{name}"), Some(at), 1.0, 1.0);
     }
+    fn set_changed(&mut self, at: [i32; 3]) {
+        self.game.world.modified.insert((at[0] >> 4, at[2] >> 4));
+    }
 }
 
 impl Game<'_> {
@@ -490,5 +493,91 @@ mod stay_tests {
         game.world.day_time = 1_000;
         game.tick_beehive(key);
         assert_eq!((inside(&game), game.mobs.len()), (0, 3), "day");
+    }
+}
+
+#[cfg(test)]
+mod changed_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{
+        beehive::{Beehive, Occupant},
+        containers::BlockEntity,
+        mobs::Mob,
+    };
+    use horizon_core::geometry::Vec3;
+    use horizon_world::nbt::Tag;
+
+    fn hive_at(game: &mut super::Game<'_>, key: (i32, i32, i32), hive: Beehive) {
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:beehive")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world
+            .block_entities
+            .put(key, BlockEntity::Beehive(Box::new(hive)));
+    }
+
+    /// `BeehiveBlockEntity.serverTick` -> `tickOccupants` calls `setChanged`
+    /// when a bee leaves. The hive's saved `bees` list lost an entry, and
+    /// nothing else in the tick changed a block state.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_released_bee_marks_the_chunk() {
+        let mut game = server_game();
+        let key = (8, 64, 8);
+        hive_at(
+            &mut game,
+            key,
+            Beehive {
+                bees: vec![Occupant {
+                    entity_data: Tag::compound([("id", Tag::String("minecraft:bee".into()))]),
+                    ticks_in_hive: 601,
+                    min_ticks_in_hive: 600,
+                }],
+                flower: None,
+            },
+        );
+        game.world.day_time = 1_000;
+        game.world.modified.clear();
+
+        game.tick_beehive(key);
+
+        let Some(BlockEntity::Beehive(h)) = game.world.block_entities.get(&key) else {
+            panic!("no hive");
+        };
+        assert!(h.bees.is_empty(), "the ready bee was let out");
+        assert_eq!(game.mobs.len(), 1, "the bee reached the level");
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "a released bee left the chunk unmarked"
+        );
+    }
+
+    /// `BeehiveBlockEntity.addOccupant` ends with `setChanged`: the hive
+    /// stored the bee and the mob is gone, which no block state shows.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_bee_going_in_marks_the_chunk() {
+        let mut game = server_game();
+        let key = (8, 64, 8);
+        hive_at(&mut game, key, Beehive::default());
+        let kind = game.res.mob_types().get("minecraft:bee").unwrap().clone();
+        game.mobs
+            .push(Mob::new(42, kind, Vec3::new(8.0, 64.0, 8.0), 0.0));
+        game.world.modified.clear();
+
+        game.bee_enter_hive(42, [8, 64, 8]);
+
+        let Some(BlockEntity::Beehive(h)) = game.world.block_entities.get(&key) else {
+            panic!("no hive");
+        };
+        assert_eq!(h.bees.len(), 1, "the bee went in");
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "a stored bee left the chunk unmarked"
+        );
     }
 }

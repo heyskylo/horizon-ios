@@ -16,6 +16,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Velocity forwarding](velocity-forwarding.md): the player-information exchange behind a Velocity proxy and how it was checked.
 - [The anticheat](anticheat.md): the dedicated server's own checks, off unless `server.toml`'s `[anticheat]` turns them on: violation levels, setback, alerts, kicks, the log, and how to write a check.
 - [The chat filter](chat-filter.md): the dedicated server refuses hate slurs in chat, message commands, signs, anvil names and book titles: the list and its normalising, mutes, temporary bans, `[chat_filter]`.
+- [Nix and NixOS](nix.md): the flake's packages: server, engine, prepare, client and launcher.
 - [Hosting a server: design](server.md): `horizon-server`, the design and the plan: install, `server.toml`, the CLI, the web panel, backups, services, Docker, and the bot benchmark against vanilla.
 - [The next server: design](server-next.md): Horizon's dedicated server against vanilla and Pumpkin (measured), the targets, parallel ticking that keeps vanilla's order, the network front, the Horizon fast path, the plugin API and the plan.
 - [Survival multiplayer](smp.md): the official server's `smp` native mod (economy, market, trades, games of chance, spawn, homes, teleport requests, warps, land claims) and the server hook points it needs; not part of Horizon's own server.
@@ -23,6 +24,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Agent control](agent-control.md): what AI agents can drive in the launcher and the game, and the design of the control socket, `horizon-ctl` and MCP.
 - [horizon-ctl commands](horizon-ctl-commands.md): every command `horizon-ctl` takes, its CLI arguments, and the corresponding MCP tools for driving the game.
 - [Graphics](graphics.md): the graphics settings screen (pages, search, descriptions), the graphics benchmark and what it measured.
+- [HDR and render passes](hdr-passes.md): what a pass on the world's picture (upscaling, anti-aliasing, frame generation, post effects, captures) keeps so HDR works, and how to check it.
 - [Server against Pumpkin](performance/server-vs-pumpkin.md): Horizon's server and Pumpkin (Rust) under the same bots at 0, 20, 60 and 100 players: tick time, CPU, memory, chunks, join; where Horizon loses, and how to run it again.
 - [Benchmark](benchmark.md): Horizon against vanilla 26.3 and vanilla with performance mods, on the same machine, world, path and settings: what is measured, how it is kept fair, how to reproduce it.
 - [Extras](extras.md): optional zoom, minimap, FPS and keystroke overlays and auto-reconnect, all off by default.
@@ -30,6 +32,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Cosmetics](cosmetics.md): wearable items drawn only by Horizon clients (hats, back items, shoulder pets, name tag styles), with no gameplay effect, client-side visibility toggles and the JSON item format.
 - [Layers](layers.md): engine, platform and Horizon: what belongs to each, where a new feature goes, the dependency rule, every built-in outside address.
 - [Forking](forking.md): the `horizon-extras` feature that holds Horizon's own extras (cosmetics, Friends, its settings pages...), and building the game without them.
+- [Translations](translations.md): where Horizon's own text and its ~85 languages live, the unreviewed mark on machine-written strings, and how a native speaker reviews a language in #translations on Discord.
 - [Narrator](narrator.md): vanilla's text-to-speech (Ctrl+B): the voices per platform, how screens record what they narrate, `horizon-ctl narration`, and where it still differs from vanilla.
 - [Shader packs](shaders.md): Horizon's own WGSL shader packs, how to make and check one (`horizon-shader`).
 - [Shader-pack clean room](cleanroom/README.md): how Java shader-pack support was rebuilt without another loader's code: the [format specification](cleanroom/shader-packs-spec.md) and the [provenance log](cleanroom/provenance-log.md) of every source read.

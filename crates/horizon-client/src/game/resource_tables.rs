@@ -190,7 +190,7 @@ impl PackResources {
                 let clouds = named_scope(scope, "pack.clouds", || load_clouds(root));
                 let forcefield = named_scope(scope, "pack.forcefield", || load_forcefield(root));
                 let custom_sky = named_scope(scope, "pack.custom_sky", || {
-                    horizon_client::custom_sky::CustomSky::load(root)
+                    horizon_client::custom_sky::load(root)
                 });
                 let environments =
                     named_scope(scope, "pack.environments", || pack_environments(root));
@@ -246,11 +246,11 @@ impl PackResources {
             names: Arc::new(names),
             clouds: Arc::new(clouds),
             forcefield: Arc::new(forcefield),
-            custom_sky: Arc::new(custom_sky),
+            custom_sky,
             environments,
             polytone_particles,
             polytone_post,
-            polytone_colors: Arc::new(horizon_client::polytone_colors::PackColors::read(root)),
+            polytone_colors: Arc::new(read_colors(root)),
         }
     }
 }
@@ -289,4 +289,11 @@ fn pack_particles(
     ));
     let registry = horizon_client::particles::polytone::Registry::read(root, configs, blocks);
     (!registry.is_empty()).then(|| Arc::new(registry))
+}
+
+/// The packs' custom colours; their dye and sheep colours go to the draw paths' table.
+fn read_colors(root: &std::path::Path) -> horizon_client::pack_palette::PackColors {
+    let colors = horizon_client::pack_palette::read(root);
+    horizon_client::brewing::set_pack_colors(colors.effects.clone());
+    colors
 }
