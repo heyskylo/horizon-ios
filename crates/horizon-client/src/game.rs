@@ -16611,16 +16611,30 @@ impl Game<'_> {
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Win => {
                     self.win_key(&event)?
                 }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Social => {
+                // These screens consume presses; releases still reach the
+                // bound gameplay mapping below, so a movement key pressed
+                // before the screen opened doesn't stay held after it closes.
+                WindowEvent::KeyboardInput { event, .. }
+                    if self.screen == Screen::Social && event.state == ElementState::Pressed =>
+                {
                     self.social_key(&event)
                 }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
+                WindowEvent::KeyboardInput { event, .. }
+                    if self.screen == Screen::CommandBlock
+                        && event.state == ElementState::Pressed =>
+                {
                     self.command_block_key(&event)
                 }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::DebugOptions => {
+                WindowEvent::KeyboardInput { event, .. }
+                    if self.screen == Screen::DebugOptions
+                        && event.state == ElementState::Pressed =>
+                {
                     self.debug_options_key(&event)
                 }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::BlockEditor => {
+                WindowEvent::KeyboardInput { event, .. }
+                    if self.screen == Screen::BlockEditor
+                        && event.state == ElementState::Pressed =>
+                {
                     self.block_editor_key(&event)
                 }
                 // Options consumes presses; releases still reach the bound
