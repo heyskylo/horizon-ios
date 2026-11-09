@@ -1155,7 +1155,6 @@ pub fn mob_to_nbt(
         }
         "minecraft:zombie_villager" => {
             map.insert("VillagerData".into(), villager_data(m));
-            map.insert("VillagerDataFinalized".into(), Tag::Byte(1));
             let xp = m.extra.trade.as_deref().map_or(0, |t| t.xp);
             map.insert("Xp".into(), Tag::Int(xp));
             put_offers(map, m);

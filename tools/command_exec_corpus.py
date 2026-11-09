@@ -6571,6 +6571,61 @@ def loaded_dead_mob():
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+def command_block_auto_load():
+    """#13075: `CommandBlockEntity.loadAdditional` ends with `setAutomatic`, which (with a level:
+    `/setblock`, `/data merge block`) schedules the first tick of a block that turned automatic,
+    is not powered and is no chain block (`scheduleTick`: `markConditionMet`, then a tick)."""
+    x0, y0, z0 = 3840, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/scoreboard objectives add cb_auto dummy', False), cmd('/tick freeze', False)]
+    run = 'Command:"scoreboard players add @p cb_auto 1"'
+    blocks = [('command_block', f'{{auto:1b,{run}}}'),
+              ('repeating_command_block', f'{{auto:1b,{run}}}'),
+              ('chain_command_block', f'{{auto:1b,{run}}}'),
+              ('command_block', f'{{auto:1b,powered:1b,{run}}}'),
+              ('command_block', f'{{auto:0b,{run}}}')]
+    at = [(x0 + 2 + 3 * n, y0, z0 + 4) for n in range(len(blocks))]
+    for (block, data), (x, y, z) in zip(blocks, at):
+        ops.append(cmd(f'/setblock {x} {y} {z} minecraft:{block}{data}', expect_result=1))
+
+    def reads():
+        for x, y, z in at:
+            for key in ('conditionMet', 'SuccessCount'):
+                ops.append(cmd(f'/data get block {x} {y} {z} {key}'))
+        ops.append(cmd('/scoreboard players get @p cb_auto'))
+
+    reads()
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 3}, cmd('/tick freeze', False)]
+    reads()
+    # /data merge turns the last one automatic.
+    x, y, z = at[-1]
+    ops.append(cmd(f'/data merge block {x} {y} {z} {{auto:1b}}'))
+    reads()
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 3}, cmd('/tick freeze', False)]
+    reads()
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       '/scoreboard objectives remove cb_auto', f'/forceload remove {x0} {z0}')
+
+
+def zombie_villager_summoned_data():
+    """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
+    leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
+    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob."""
+    x0, y0, z0 = 3776, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    subjects = ['NoAI:1b', 'NoAI:1b,VillagerDataFinalized:1b',
+                'NoAI:1b,VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}']
+    for n, fields in enumerate(subjects, 1):
+        uuid = f'000033ce-0000-0000-0000-{n:04x}00000001'
+        ops.append(cmd(f'/summon zombie_villager {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13262,0,{n},1],{fields}}}',
+                       expect_result=1))
+        ops.append(cmd(f'/data get entity {uuid} VillagerDataFinalized'))
+        ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
+        if n == 3:
+            ops.append(cmd(f'/data get entity {uuid} VillagerData'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
 
 
 def loaded_ticket_removal(blocks=False):
@@ -7152,7 +7207,9 @@ def groups():
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('item fall distance', item_fall_distance()),
+        ('zombie villager summoned data', zombie_villager_summoned_data()),
         ('loaded dead mob', loaded_dead_mob()),
+        ('command block auto load', command_block_auto_load()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
