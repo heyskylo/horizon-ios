@@ -255,7 +255,7 @@ impl Game<'_> {
         }
     }
 
-    /// Once a tick: my emote (the others' are `cosmetics::Service::tick`'s, a hook's).
+    /// Once a tick: my emote (the others' are `cosmetics::Seat::tick`'s, a hook's).
     pub(in crate::game) fn tick_emotes(&mut self) {
         if let Some(done) = self
             .cosmetics

@@ -56,7 +56,7 @@ impl Baked {
 
 #[derive(Default)]
 pub(super) struct Cosmetics {
-    /// The hooks' client (`Service`), taken once it started.
+    /// The hooks' client (`Seat`), taken once it started.
     client: Option<Arc<horizon_cosmetics::Cosmetics>>,
     /// By the item's address; each entry holds its item, so the address isn't reused.
     baked: RefCell<FxHashMap<usize, Baked>>,
@@ -444,7 +444,7 @@ pub(super) fn enabled() -> bool {
 /// What the cosmetics' hooks keep for one splitscreen player (`horizon_hooks::seat`): the
 /// service's client, the emote feed and what the account tells the service.
 #[derive(Default)]
-struct Service {
+struct Seat {
     client: Option<Arc<horizon_cosmetics::Cosmetics>>,
     /// Item files from a folder (`HORIZON_COSMETICS_LOCAL`).
     local: bool,
@@ -478,15 +478,15 @@ struct Said {
     first: Option<Arc<Item>>,
 }
 
-/// One [`Service`] per seat.
-static SERVICES: Mutex<Vec<Service>> = Mutex::new(Vec::new());
+/// One [`Seat`] per splitscreen player.
+static SERVICES: Mutex<Vec<Seat>> = Mutex::new(Vec::new());
 
-/// Runs `f` on this seat's [`Service`]. Never called inside itself.
-fn service<R>(f: impl FnOnce(&mut Service) -> R) -> R {
+/// Runs `f` on this seat's [`Seat`]. Never called inside itself.
+fn service<R>(f: impl FnOnce(&mut Seat) -> R) -> R {
     let seat = horizon_hooks::seat();
     let mut all = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
     if all.len() <= seat {
-        all.resize_with(seat + 1, Service::default);
+        all.resize_with(seat + 1, Seat::default);
     }
     f(&mut all[seat])
 }
@@ -497,7 +497,7 @@ pub(super) static HOOKS: Hooks = Hooks;
 
 impl horizon_hooks::Hooks for Hooks {
     fn frame(&self, _frame: &Frame) {
-        service(Service::frame);
+        service(Seat::frame);
     }
 
     fn tick(&self, models: &mut dyn PlayerModels) {
@@ -505,7 +505,7 @@ impl horizon_hooks::Hooks for Hooks {
     }
 }
 
-impl Service {
+impl Seat {
     /// Once a frame: starts the service's client on first use, asks whether the account owns a
     /// cosmetic, and tells the service what the account shows.
     fn frame(&mut self) {
@@ -1314,14 +1314,14 @@ mod tests {
             )
             .unwrap(),
         );
-        let mut service = Service {
+        let mut service = Seat {
             local: true,
             said: Said {
                 others_shown: true,
                 first: Some(item.clone()),
                 ..Said::default()
             },
-            ..Service::default()
+            ..Seat::default()
         };
         let model = |id, kind, uuid| (PlayerModel::new(id, kind, uuid, 50, false), None);
         let mut view = View(vec![
