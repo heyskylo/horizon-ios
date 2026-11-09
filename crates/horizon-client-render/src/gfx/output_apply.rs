@@ -164,7 +164,8 @@ pub(super) fn graced(
 
 /// Whether the output resolves again at `now`: a due poll (`read`, with the surface's
 /// `offer`; on Wayland, an event) changed `reading` or `caps`, or Auto's grace `since` is
-/// over. Its end reads the display once more first, however long until the next poll.
+/// over. Its end reads the display once more first, however long until the next poll, unless
+/// a read since the deadline did (the last read is a `DISPLAY_POLL` before the next).
 fn poll_display(
     watch: Option<&mut DisplayWatch>,
     reading: &mut DisplayReading,
@@ -178,7 +179,9 @@ fn poll_display(
     let Some(watch) = watch else {
         return over;
     };
-    if over && let Some(next) = &mut watch.polled {
+    if let (Some(since), Some(next)) = (since.filter(|_| over), &mut watch.polled)
+        && *next < since + AUTO_OFF_DELAY + super::DISPLAY_POLL
+    {
         *next = now;
     }
     let Some(read) = watch.poll(*reading, now, read) else {
@@ -311,10 +314,16 @@ impl Renderer {
         settings: &crate::graphics::Graphics,
         marker: &std::path::Path,
     ) {
+        let now = Instant::now();
         self.watch_hdr(settings.hdr);
+        // Auto's grace ends on a fresh read, also where a settings change comes before the
+        // frame's `display_changed`.
+        if grace_over(self.auto_off_since, now) {
+            self.read_display(now);
+        }
         self.hold_hdr_back(settings);
         let reading = auto_grace(
-            Instant::now(),
+            now,
             settings.hdr,
             self.output_caps.hdr,
             self.reading,
@@ -402,13 +411,18 @@ impl Renderer {
         if std::mem::take(&mut self.display_fresh) {
             return true;
         }
+        self.read_display(Instant::now())
+    }
+
+    /// The display read where a poll is due or Auto's grace is over (`poll_display`).
+    fn read_display(&mut self, now: Instant) -> bool {
         let (surface, adapter) = (self.surface.as_deref(), &self.adapter);
         poll_display(
             self.display.as_mut(),
             &mut self.reading,
             &mut self.output_caps,
             self.auto_off_since,
-            Instant::now(),
+            now,
             || DisplayReading::read(surface, adapter),
             || offer(surface, adapter),
         )
@@ -678,6 +692,12 @@ mod tests {
         }
         /// A frame at `ms`.
         fn frame(&mut self, ms: u64) {
+            if self.read_display(ms) {
+                self.update(ms);
+            }
+        }
+        /// `Renderer::read_display` at `ms`.
+        fn read_display(&mut self, ms: u64) -> bool {
             let now = self.start + Duration::from_millis(ms);
             let (report, offer, reads) = (self.report, Some(self.caps.hdr), &mut self.reads);
             let read = || {
@@ -685,7 +705,7 @@ mod tests {
                 report
             };
             let (reading, caps) = (&mut self.reading, &mut self.caps);
-            if poll_display(
+            poll_display(
                 Some(&mut self.watch),
                 reading,
                 caps,
@@ -693,9 +713,7 @@ mod tests {
                 now,
                 read,
                 || offer,
-            ) {
-                self.update(ms);
-            }
+            )
         }
         /// Frames from `from` to `to` ms, every 10 ms.
         fn frames(&mut self, from: u64, to: u64) {
@@ -721,9 +739,12 @@ mod tests {
             self.reading = self.report;
             self.update(ms);
         }
-        /// `update_output` at `ms`.
+        /// `update_output` at `ms`, in its order.
         fn update(&mut self, ms: u64) {
             let now = self.start + Duration::from_millis(ms);
+            if grace_over(self.since, now) {
+                self.read_display(ms);
+            }
             let applied = &self.applied;
             let reading = auto_grace(
                 now,
@@ -819,6 +840,29 @@ mod tests {
             }
             auto.frames(2010, 2490);
             assert_eq!(auto.applied.encoding, Some(Pq), "never before the deadline");
+            auto.frames(2500, 4990);
+            assert_eq!(auto.reads, [0, 2000, 2500, 4500], "back {back}");
+            let after = if back { vec![] } else { vec![None] };
+            assert_eq!(auto.presented(), after, "back {back}");
+        }
+    }
+
+    /// A settings change at the deadline, before the frame's poll (a slider, F11), reads the
+    /// display before the grace ends, and the frame after reads it no more: the display came
+    /// back meanwhile, so HDR stays; where it didn't, HDR turns off then, once.
+    #[test]
+    fn a_settings_change_at_the_deadline_reads_the_display_first() {
+        for back in [true, false] {
+            let mut auto = Auto::new(true);
+            auto.frames(0, 1990);
+            auto.reports(Some(false), Some(Pq));
+            auto.frame(2000);
+            if back {
+                auto.reports(Some(true), Some(Pq));
+            }
+            auto.frames(2010, 2490);
+            auto.update(2500);
+            assert_eq!(auto.applied.hdr_on(), back, "back {back}");
             auto.frames(2500, 4990);
             assert_eq!(auto.reads, [0, 2000, 2500, 4500], "back {back}");
             let after = if back { vec![] } else { vec![None] };
