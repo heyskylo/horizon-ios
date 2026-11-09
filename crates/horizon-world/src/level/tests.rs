@@ -9,7 +9,6 @@ use std::{
     path::PathBuf,
     sync::OnceLock,
 };
-
 struct Fixture {
     registry: BlockRegistry,
     behaviours: Behaviours,
@@ -75,6 +74,10 @@ pub(crate) struct TestLevel {
     pub shulker_closed: HashMap<BlockPos, bool>,
     /// The containers `container_open` reports as open.
     pub opened: HashSet<BlockPos>,
+    /// Players standing in every plate and tripwire, by UUID.
+    pub occupants: Vec<u128>,
+    /// Occupants a mod's physical-trigger hook cancels.
+    pub spared: HashSet<u128>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -99,10 +102,24 @@ impl TestLevel {
             opener_rechecks: Vec::new(),
             shulker_closed: HashMap::new(),
             opened: HashSet::new(),
+            occupants: Vec::new(),
+            spared: HashSet::new(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn count_entities_at(
+        &self,
+        _pos: BlockPos,
+        _block: &str,
+        _area: Aabb,
+        _query: EntityQuery,
+    ) -> usize {
+        self.occupants
+            .iter()
+            .filter(|p| !self.spared.contains(p))
+            .count()
+    }
     fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
         self.block_events_ready
     }
@@ -4154,28 +4171,5 @@ fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
     }
 }
 
-#[test]
-fn fresh_chunk_sculk_charge_does_not_wait_for_ticking_readiness() {
-    for (ticketed, ready) in [(true, false), (false, true), (true, true), (false, false)] {
-        let mut w = world!();
-        w.level.tick_ready = ready;
-        w.level.block_events_ready = ticketed;
-        let origin = BlockPos::new(0, 1, 0);
-        let mut spreader = sculk::SculkSpreader::default();
-        let mut cursor = sculk::ChargeCursor::new(origin, 5);
-        cursor.update_delay = 2;
-        spreader.add_cursor(cursor);
-        w.f.behaviours.sculk_update_cursors(
-            &mut w.level,
-            &mut w.ticks,
-            &mut spreader,
-            origin,
-            false,
-        );
-        assert_eq!(
-            spreader.cursors[0].update_delay,
-            if ticketed { 1 } else { 2 },
-            "ticketed={ticketed}, ticking={ready}"
-        );
-    }
-}
+mod barrel;
+mod trigger_tests;

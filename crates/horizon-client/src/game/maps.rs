@@ -1037,6 +1037,15 @@ impl Game<'_> {
         let Some(map) = horizon_client::structure_blocks::take_pending_map(item) else {
             return true;
         };
+        self.materialize_exploration_map(item, &map, origin)
+    }
+    /// The existing exploration-map materialization, shared with command modifiers.
+    pub(super) fn materialize_exploration_map(
+        &mut self,
+        item: &mut ItemStack,
+        map: &horizon_world::loot::ExplorationMap,
+        origin: [f64; 3],
+    ) -> bool {
         let names = self.structure_tag(&map.destination);
         let from = origin.map(|v| v.floor() as i32);
         let found = self
@@ -1320,6 +1329,21 @@ impl Game<'_> {
                 && let Some(s) = self.stack_in_mut(slot)
             {
                 s.data_mut().set_other(
+                    "minecraft:lodestone_tracker",
+                    Some(Tag::Compound(Default::default())),
+                );
+            }
+        }
+        // `LivingEntity.tick` ticks `EntityEquipment` (the armour slots) as
+        // well as the inventory, so a compass worn there loses its target too.
+        let gone = self.armor.each_ref().map(|stack| {
+            stack
+                .as_ref()
+                .is_some_and(|s| lodestone_target_gone(self, s, dim))
+        });
+        for (stack, gone) in self.armor.iter_mut().zip(gone) {
+            if gone && let Some(stack) = stack {
+                stack.data_mut().set_other(
                     "minecraft:lodestone_tracker",
                     Some(Tag::Compound(Default::default())),
                 );
@@ -2162,3 +2186,6 @@ mod tests {
         assert!(game.map(map_id).unwrap().banners.is_empty());
     }
 }
+
+#[cfg(test)]
+mod command_exploration_map_test_file;
