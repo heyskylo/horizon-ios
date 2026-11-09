@@ -1459,6 +1459,7 @@ dependencies = [
  "horizon-server-files",
  "horizon-shader-api",
  "horizon-shaders",
+ "horizon-system",
  "horizon-telemetry",
  "horizon-theme",
  "horizon-threads",
@@ -1771,8 +1772,8 @@ dependencies = [
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
- "horizon-bench",
  "horizon-core",
+ "horizon-system",
  "log",
  "regex",
 ]
