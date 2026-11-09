@@ -32,6 +32,34 @@ enum CommandCheck {
     PermissionsRequired,
 }
 
+impl Game<'_> {
+    /// `ChatListener.showMessageToPlayer`'s line and narration of a player
+    /// message: none when its sender is hidden in the Social Interactions
+    /// screen (`Minecraft.isBlocked`) or the server filtered all of it; a
+    /// partial filter mask shows and narrates `applyWithFormatting(signedContent)`
+    /// instead of the decorated `line` and `narration`.
+    pub(super) fn shown_player_chat(
+        &mut self,
+        p: &play::PlayerChat,
+        line: Text,
+        narration: String,
+    ) -> Option<(Text, String)> {
+        use super::remote::Decoration;
+        let filtered = horizon_client::chat::filtered_message(&p.content, &p.filter)?;
+        if self.social_hides(p.sender) {
+            return None;
+        }
+        if p.filter.0 != 2 {
+            return Some((line, narration));
+        }
+        Some((
+            self.decorate_chat(&p.chat_type, &filtered, Decoration::Chat),
+            self.decorate_chat(&p.chat_type, &filtered, Decoration::Narration)
+                .plain(),
+        ))
+    }
+}
+
 /// ClientPacketListener.verifyCommand over the tree the server sent.
 fn verify_command(tree: &Dispatcher, registries: &Registries, command: &str) -> CommandCheck {
     let parse = tree.parse(command, registries);

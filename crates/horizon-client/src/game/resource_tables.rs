@@ -295,6 +295,7 @@ fn pack_particles(
 fn read_colors(root: &std::path::Path) -> horizon_client::polytone_colors::PackColors {
     let colors = horizon_client::polytone_colors::PackColors::read(root);
     horizon_client::pack_palette::set(&colors);
+    horizon_client::pack_palette::set_item_bars(root);
     horizon_client::brewing::set_pack_colors(colors.effects());
     colors
 }
