@@ -2271,6 +2271,7 @@ impl Game<'_> {
         if let (Some(shot), Tag::Compound(map)) = (shot, &mut tag) {
             map.insert("HasBeenShot".into(), shot);
         }
+        self.save_projectile_portal_cooldown(p, &mut tag);
         Some((chunk_of(p.position), tag))
     }
     /// The UUID a save writes for a reference to `who`, as `mob_to_nbt`'s
