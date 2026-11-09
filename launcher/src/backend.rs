@@ -2,6 +2,7 @@
 //! updates. The GUI, the CLI and the MCP server all go through this module. Functions here
 //! block; the GUI runs them on threads and reads their messages.
 use crate::{account, mojang, sources};
+use horizon_platform::{prepare, prepared_files};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -1620,11 +1621,11 @@ const LEGACY_EXPORTERS: [&str; 18] = [
 ];
 
 /// A version folder's preparer as the launchers before `OUTPUT_VERSION` compared it: the digest
-/// of its sources (`horizon_platform::prepare::sources_sha256`) and of the exporters it ran, line endings
+/// of its sources (`prepare::sources_sha256`) and of the exporters it ran, line endings
 /// as checked out ignored.
 fn legacy_fingerprint(dir: &Path) -> Option<String> {
     use sha2::Digest;
-    let sources = horizon_platform::prepare::sources_sha256(&dir.join(PREPARER_CRATE))?;
+    let sources = prepare::sources_sha256(&dir.join(PREPARER_CRATE))?;
     let mut hash = sha2::Sha256::new();
     hash.update(sources.as_bytes());
     for name in LEGACY_EXPORTERS {
@@ -1726,7 +1727,7 @@ pub(crate) fn copy_dir_except(from: &Path, to: &Path, skip: Option<&Path>) -> st
         if entry.file_type()?.is_dir() {
             copy_dir_except(&entry.path(), &target, skip)?;
         } else {
-            horizon_platform::prepare::clone_or_copy(&entry.path(), &target)?;
+            prepare::clone_or_copy(&entry.path(), &target)?;
         }
     }
     Ok(())
@@ -1762,7 +1763,7 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
         let partial = to.with_file_name(format!(".{version}.partial-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&partial);
         // Without the data file: it names its own root, so the copy could not use it.
-        let data_file = from.join(horizon_platform::prepared_files::FILE_NAME);
+        let data_file = from.join(prepared_files::FILE_NAME);
         let copied = copy_dir_except(&from, &partial, Some(&data_file)).and_then(|_| {
             if to.join(RESOURCES_MANIFEST).exists() {
                 return Ok(false); // Prepared meanwhile, by another copy or the player.
@@ -1806,7 +1807,6 @@ pub(crate) fn reuse_prepared_for(tag: &str) {
 /// The game still writes it when this didn't finish. Only looks for the file, as
 /// `prepared_files::open` keeps it open for the whole run, which would stop a removal on Windows.
 fn write_data_file(resources: &Path) -> std::io::Result<()> {
-    use horizon_platform::prepared_files;
     if !prepared_at(resources) || resources.join(prepared_files::FILE_NAME).exists() {
         return Ok(());
     }
@@ -1905,12 +1905,12 @@ fn complete_reports(versions: &Path, tag: &str) -> bool {
 
 /// What a prepared version may lack that the launcher adds without preparing again, each copied
 /// from the player's own Minecraft asset store as `horizon-prepare <kind>` does: what the
-/// player misses without it, its kind (`horizon_platform::prepare::missing_extras`, the same check as
+/// player misses without it, its kind (`prepare::missing_extras`, the same check as
 /// `horizon-prepare --check`), and the copy.
 type Completion = (
     &'static str,
     &'static str,
-    fn(&Path, Option<&Path>, horizon_platform::prepare::Log) -> Result<PathBuf, String>,
+    fn(&Path, Option<&Path>, prepare::Log) -> Result<PathBuf, String>,
 );
 
 const COMPLETIONS: [Completion; 5] = [
@@ -1918,27 +1918,15 @@ const COMPLETIONS: [Completion; 5] = [
     (
         "Programmer Art and High Contrast",
         "packs",
-        horizon_platform::prepare::packs,
+        prepare::packs,
     ),
     // A preparation that could not read the asset store keeps the client jar's 1x1 grey
     // placeholders, its English alone, and no sounds (#1867: Prism Launcher installs prepared
     // since 0.2.48).
-    (
-        "The title panorama",
-        "panorama",
-        horizon_platform::prepare::panorama,
-    ),
-    (
-        "The Unifont glyphs",
-        "fonts",
-        horizon_platform::prepare::fonts,
-    ),
-    (
-        "The languages",
-        "languages",
-        horizon_platform::prepare::languages,
-    ),
-    ("The sounds", "sounds", horizon_platform::prepare::sounds),
+    ("The title panorama", "panorama", prepare::panorama),
+    ("The Unifont glyphs", "fonts", prepare::fonts),
+    ("The languages", "languages", prepare::languages),
+    ("The sounds", "sounds", prepare::sounds),
 ];
 
 /// Adds what a prepared version lacks of `COMPLETIONS`: a new version reuses the resources of the
@@ -1960,7 +1948,7 @@ fn refill_own_store(tag: &str) {
     let own = data_dir().join("minecraft");
     let resources = resources_at(&versions_dir().join(tag));
     if !own.join("assets/indexes").is_dir()
-        || !horizon_platform::prepare::missing_extras(&resources)
+        || !prepare::missing_extras(&resources)
             .iter()
             .any(|(kind, _)| matches!(*kind, "languages" | "sounds"))
         || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -2001,7 +1989,7 @@ fn complete_assets_in(
         if !resources.join(RESOURCES_MANIFEST).exists() {
             return Vec::new();
         }
-        let missing = horizon_platform::prepare::missing_extras(&resources);
+        let missing = prepare::missing_extras(&resources);
         COMPLETIONS
             .iter()
             .filter(|(_, kind, _)| missing.iter().any(|(m, _)| m == kind))
@@ -2037,7 +2025,7 @@ fn complete_assets_in(
     // The data file answers "missing" for what it lacks, so one from before these copies would
     // hide them. Only when something was added: a version that stays lacking keeps its file.
     if lacking().len() < lacked {
-        let data_file = resources.join(horizon_platform::prepared_files::FILE_NAME);
+        let data_file = resources.join(prepared_files::FILE_NAME);
         if let Err(e) = fs::remove_file(&data_file) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 log(format!("{}: not removed: {e}", data_file.display()));
@@ -2053,7 +2041,7 @@ fn complete_assets_in(
 fn minecraft_folders() -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = Settings::load().minecraft_dir.into_iter().collect();
     folders.extend([
-        horizon_platform::prepare::artifacts::minecraft_dir(None),
+        prepare::artifacts::minecraft_dir(None),
         data_dir().join("linked-minecraft"),
         data_dir().join("minecraft"),
     ]);
@@ -2104,7 +2092,7 @@ fn python() -> Option<&'static str> {
 /// How a version's resources are prepared.
 pub enum Preparer {
     /// horizon-prepare, linked into the launcher: the version ships the same preparer sources.
-    InProcess(horizon_platform::prepare::Options),
+    InProcess(prepare::Options),
     /// The version's own preparer: its horizon-prepare binary when its sources differ from the
     /// launcher's (a newer or older release), or the Python script of versions made before it.
     Process(Command),
@@ -2320,9 +2308,9 @@ fn java(
     log: &dyn Fn(String),
 ) -> Result<PathBuf, String> {
     let find = if compiler {
-        horizon_platform::prepare::java::find
+        prepare::java::find
     } else {
-        horizon_platform::prepare::java::find_runtime
+        prepare::java::find_runtime
     };
     if let Ok(jdk) = find(major, &[]) {
         return Ok(jdk.home());
@@ -2330,7 +2318,7 @@ fn java(
     let mut runtimes: Vec<PathBuf> = Vec::new();
     for home in games
         .iter()
-        .flat_map(|game| horizon_platform::prepare::java::minecraft_runtimes(&game.join("runtime")))
+        .flat_map(|game| prepare::java::minecraft_runtimes(&game.join("runtime")))
     {
         if !runtimes.contains(&home) {
             runtimes.push(home);
@@ -2471,8 +2459,7 @@ pub fn preparer(
     set_prepare_step(PrepareStep::Files);
     let version = game_version(tag);
     let dir = version_dir(tag);
-    let reused =
-        horizon_platform::prepare::artifacts::reuse_imported(&dir, &|line| log(line.to_string()))?;
+    let reused = prepare::artifacts::reuse_imported(&dir, &|line| log(line.to_string()))?;
     let chosen = minecraft.to_path_buf();
     // Resolved even when the game files are reused: the assets still come from the install.
     let minecraft = {
@@ -2544,7 +2531,7 @@ pub fn preparer(
     set_prepare_step(PrepareStep::Java);
     let java_home = java(
         major,
-        !horizon_platform::prepare::exporters::available(&dir),
+        !prepare::exporters::available(&dir),
         &games,
         &manifest,
         log,
@@ -2572,10 +2559,10 @@ pub fn preparer(
             .map_err(|e| e.to_string())?;
     }
     if let Some(binary) = binary {
-        if horizon_platform::prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
-            == Some(horizon_platform::prepare::SOURCES_SHA256)
+        if prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
+            == Some(prepare::SOURCES_SHA256)
         {
-            let options = horizon_platform::prepare::Options {
+            let options = prepare::Options {
                 root: dir,
                 import: !reused,
                 minecraft_dir: Some(minecraft.clone()),
@@ -2613,8 +2600,8 @@ pub fn preparer(
 /// the sounds where the launcher's preparer puts them.
 pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
     let dir = version_dir(tag);
-    let own = horizon_platform::prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
-        == Some(horizon_platform::prepare::SOURCES_SHA256);
+    let own = prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
+        == Some(prepare::SOURCES_SHA256);
     let binary = preparer_binary(&dir).filter(|binary| {
         !own && crate::process::command(binary)
             .arg("--help")
@@ -2644,7 +2631,7 @@ pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
                 }
             }),
         None => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            horizon_platform::prepare::sounds(&dir, Some(minecraft), &|line| log(line.to_string()))
+            prepare::sounds(&dir, Some(minecraft), &|line| log(line.to_string()))
         }))
         .unwrap_or_else(|_| Err("The sound copy stopped unexpectedly".into()))
         .map(|_| ()),
@@ -2657,11 +2644,11 @@ pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
 /// Runs `Preparer::InProcess` on this thread, each progress line to `log`. A panic is an
 /// error like any other, so the window never waits on a preparation that died.
 pub fn prepare_in_process(
-    options: &horizon_platform::prepare::Options,
+    options: &prepare::Options,
     log: &dyn Fn(String),
 ) -> Result<(), String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        horizon_platform::prepare::prepare(options, &|line| log(line.to_string()))
+        prepare::prepare(options, &|line| log(line.to_string()))
     }))
     .unwrap_or_else(|_| Err("The preparation stopped unexpectedly".into()))
     .map(|_| ())
@@ -3153,7 +3140,7 @@ pub fn minecraft_dir(requested: Option<PathBuf>) -> Result<PathBuf, String> {
     Ok(requested
         .or(Settings::load().minecraft_dir)
         .or_else(default_minecraft_dir)
-        .unwrap_or_else(|| horizon_platform::prepare::artifacts::minecraft_dir(None)))
+        .unwrap_or_else(|| prepare::artifacts::minecraft_dir(None)))
 }
 
 /// The server folder: the one given, the one chosen in the launcher, or `server/` in the data folder.
@@ -6760,7 +6747,7 @@ pub fn {f}("
             data.push(n);
             data
         };
-        let mut assets: Vec<(String, Vec<u8>)> = horizon_platform::prepare::BUILT_IN_PACKS
+        let mut assets: Vec<(String, Vec<u8>)> = prepare::BUILT_IN_PACKS
             .iter()
             .map(|name| (name.to_string(), name.as_bytes().to_vec()))
             .collect();
