@@ -3,7 +3,7 @@
 //! `Mob.isWithinHome(target.blockPosition())`. The zombies run their real
 //! goals on the game's ticks; tools/ and vanilla 26.3 measured the same
 //! scene (no home and radius 12 retaliate, radius 3 does not).
-use super::*;
+use super::super::*;
 use horizon_client::{chunk::Chunk, mobs::Who};
 use horizon_core::position::ChunkPos;
 use std::sync::Arc;

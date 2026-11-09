@@ -209,12 +209,9 @@ fn move_up_to_above_solid(w: &MobWorld, mut p: [i32; 3], above: i32) -> [i32; 3]
     }
     p
 }
-/// `Mob.isWithinHome(BlockPos)`.
-pub fn within_home(c: [i32; 3], r: i32, p: [i32; 3]) -> bool {
-    let d = |i: usize| i64::from(c[i] - p[i]);
-    let r = i64::from(r);
-    d(0) * d(0) + d(1) * d(1) + d(2) * d(2) < r * r
-}
+#[path = "home.rs"]
+mod home;
+pub use home::within_home;
 
 impl Mob {
     /// PathfinderMob.getWalkTargetValue.
@@ -1894,21 +1891,13 @@ impl Goal for HurtByTarget {
         let Some(t) = cx.w.target_info(by) else {
             return false;
         };
-        // TargetGoal.canAttack: the attacker's block must be inside the home
-        // (`Mob.isWithinHome(target.blockPosition())`).
-        let target_block = [
-            t.position.x.floor() as i32,
-            t.position.y.floor() as i32,
-            t.position.z.floor() as i32,
-        ];
         t.alive
             && t.can_be_seen_as_enemy
             && !(t.is_player && t.creative)
             // HurtByTargetGoal.canUse ends with canAttack(lastHurtByMob).
             && !m.spares_target(cx.w, by)
-            && m.ai
-                .home
-                .is_none_or(|(center, radius)| within_home(center, radius, target_block))
+            // TargetGoal.canAttack: Mob.isWithinHome(target.blockPosition()).
+            && m.within_home_at(t.position)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.bee && !super::bee::angry(m, cx.w) {
