@@ -307,7 +307,7 @@ impl Game<'_> {
         self.remote.is_some() && self.integrated.is_none()
     }
     pub(super) fn draw_pause_menu(&mut self, batch: &mut HudBatch) {
-        let friends = self.friends_view().shown;
+        let friends = self.friends_shown();
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -375,11 +375,7 @@ impl Game<'_> {
             // The icon has no label: name it for controller focus and the
             // control socket's widget tree.
             if i == FRIENDS_ICON {
-                horizon_client::widgets::record(
-                    horizon_client::friends_screen::TITLE,
-                    [x, y, 20.0, 20.0],
-                    active,
-                );
+                horizon_client::widgets::record(super::friends::TITLE, [x, y, 20.0, 20.0], active);
             }
             ui::button(
                 batch,
@@ -416,7 +412,7 @@ impl Game<'_> {
             batch.sprite_scaled(atlas, sprite, x + 3.0, y + 3.0, 15.0, 15.0, u32::MAX);
             if hover {
                 tooltip = Some(if i == FRIENDS_ICON {
-                    Text::literal(horizon_client::friends_screen::title())
+                    Text::literal(super::friends::title())
                 } else {
                     Text::translate(ICON_LABELS[i], &[])
                 });
@@ -509,9 +505,8 @@ impl Game<'_> {
                 .map(|i| 12 + i as u8)
         })
         .or_else(|| {
-            (self.friends_view().shown
-                && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
-            .then_some(10)
+            (self.friends_shown() && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
+                .then_some(10)
         });
         if let Some(id) = hit {
             self.pause_focus = Some(id);
@@ -539,7 +534,7 @@ impl Game<'_> {
             self.options.split_guest || self.split_hud.menu,
         );
         let mut active_ids: Vec<u8> = buttons.into_iter().filter(|b| b.5).map(|b| b.4).collect();
-        let friends = self.friends_view().shown;
+        let friends = self.friends_shown();
         active_ids.extend(pause_icon_focus_ids(friends));
         if active_ids.is_empty() {
             return Ok(());
@@ -591,7 +586,7 @@ impl Game<'_> {
                     .filter(|b| b.5)
                     .map(|b| (b.4, b.0, b.1, b.2))
                     .collect();
-                let friends = self.friends_view().shown;
+                let friends = self.friends_shown();
                 for (i, (x, y, _)) in pause_icons(
                     w,
                     h,
