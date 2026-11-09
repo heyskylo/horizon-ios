@@ -142,7 +142,7 @@ pub struct EffectiveOutput {
     /// Paper white, peak and black level in nits, as HDR output's last pass and its
     /// metadata take them, while it is on.
     pub(crate) nits: [f32; 3],
-    /// The HUD and menus' brightness, as a share of paper white.
+    /// The HUD and menus' brightness, as a share of paper white: their nits over its.
     pub(crate) ui_brightness: f32,
 }
 impl Default for EffectiveOutput {
@@ -271,7 +271,8 @@ pub(crate) fn resolve_output(
             settings.peak_nits(reading.luminance) as f32,
             settings.black_level_nits(),
         ],
-        ui_brightness: settings.hdr_ui_brightness as f32 / 100.0,
+        ui_brightness: settings.ui_nits(reading.luminance) as f32
+            / settings.paper_white_nits(reading.luminance) as f32,
     }
 }
 
@@ -564,6 +565,39 @@ pub(crate) mod tests {
             resolve_output(&settings, caps, reading, frame, true).nits,
             [250.0, 1500.0, 0.0]
         );
+    }
+
+    /// UI Brightness reaches HDR output as its nits over paper white's: 1 on Auto, whatever
+    /// paper white is; a value set by hand holds its nits, Paper White on Auto or set by hand.
+    #[test]
+    fn ui_brightness_is_its_nits_over_paper_whites() {
+        let (caps, reading) = window(Some(Output::Pq), Some(true));
+        let share = |paper_white, ui_nits, reading| {
+            let settings = Graphics {
+                hdr: HdrMode::On,
+                hdr_paper_white: paper_white,
+                hdr_ui_nits: ui_nits,
+                ..Graphics::default()
+            };
+            let frame = resolve_frame(
+                &settings,
+                FrameRequest::default(),
+                caps,
+                reading,
+                Bgra8Unorm,
+            );
+            resolve_output(&settings, caps, reading, frame, true).ui_brightness
+        };
+        // Auto: the report's 400 nits, 203 without one, or the player's 250.
+        let unreported = DisplayReading::default();
+        for (paper_white, reading) in [(0, reading), (0, unreported), (250, reading)] {
+            assert_eq!(share(paper_white, 0, reading), 1.0);
+        }
+        assert_eq!(share(0, 100, reading), 0.25);
+        assert_eq!(share(0, 480, reading), 1.2);
+        assert_eq!(share(0, 406, unreported), 2.0);
+        assert_eq!(share(250, 100, reading), 0.4);
+        assert_eq!(share(250, 480, reading), 1.92);
     }
 
     /// Two renderers' states, a window's and an offscreen one's, made and changed in turn:
