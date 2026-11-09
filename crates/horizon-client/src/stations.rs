@@ -466,7 +466,11 @@ pub fn anvil_result(
         if naming_cost != price || naming_cost == 0 {
             base = increased_repair_cost(base);
         }
-        r.data_mut().repair_cost = base;
+        // `set(REPAIR_COST, base)` replaces the patch, including a removal
+        // marker the input carried; zero is the component's default.
+        let data = r.data_mut();
+        data.set_other("!minecraft:repair_cost", None);
+        data.repair_cost = base;
         r.set_crafting_enchantments(enchantments);
         r.tidy();
     }
@@ -1675,6 +1679,57 @@ mod tests {
         );
         assert_eq!(increased_repair_cost(0), 1);
         assert_eq!(increased_repair_cost(3), 7);
+    }
+
+    /// Anvil: `set(REPAIR_COST, …)` replaces a removal marker the input had,
+    /// whether the result adds work or only changes the name.
+    #[test]
+    fn anvil_replaces_a_removed_repair_cost() {
+        let e = sample();
+        let items = sample_items();
+        let removed = || Some(Tag::compound(Vec::<(&str, Tag)>::new()));
+        let mut patched = sword(&[]);
+        patched
+            .data_mut()
+            .set_other("!minecraft:repair_cost", removed());
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&patched),
+            Some(&book(&[("minecraft:sharpness", 1)])),
+            Some("Blade"),
+            "Diamond Sword",
+            false,
+        );
+        let out = r.result.expect("the enchantment and name apply");
+        assert_eq!(r.cost, 2);
+        assert_eq!(out.repair_cost(), 1);
+        assert!(
+            out.data()
+                .and_then(|d| d.other("!minecraft:repair_cost"))
+                .is_none()
+        );
+        let mut renamed = sword(&[]);
+        renamed
+            .data_mut()
+            .set_other("!minecraft:repair_cost", removed());
+        let out = anvil_result(
+            &e,
+            &items,
+            Some(&renamed),
+            None,
+            Some("Blade"),
+            "Diamond Sword",
+            false,
+        )
+        .result
+        .expect("the rename applies");
+        assert_eq!(out.repair_cost(), 0);
+        assert!(
+            out.data()
+                .and_then(|d| d.other("!minecraft:repair_cost"))
+                .is_none()
+        );
     }
 
     /// Grindstone: `set(REPAIR_COST, cost)` replaces a removal marker the
