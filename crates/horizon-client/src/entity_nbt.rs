@@ -1280,11 +1280,11 @@ pub fn mob_to_nbt(
                 ));
             }
             // ITEM_PICKUP_COOLDOWN_TICKS (`Codec.INT`), which a throw sets to 60,
-            // while it runs.
-            if m.extra.ints[3] > 0 {
+            // while the memory is there (its value 0 included).
+            if let Some(ticks) = crate::mobs::allay::pickup_cooldown(m) {
                 memories.push((
                     "minecraft:item_pickup_cooldown_ticks",
-                    Tag::compound([("value", Tag::Int(m.extra.ints[3]))]),
+                    Tag::compound([("value", Tag::Int(ticks))]),
                 ));
             }
             // Always written, so a forgotten note block does not come back
@@ -2508,8 +2508,8 @@ pub fn mob_from_nbt_with_random(
         };
         m.extra.ints[2] =
             number(memory("minecraft:liked_noteblock_cooldown_ticks")).unwrap_or(0) as i32;
-        m.extra.ints[3] =
-            number(memory("minecraft:item_pickup_cooldown_ticks")).unwrap_or(0) as i32;
+        let pickup = number(memory("minecraft:item_pickup_cooldown_ticks")).map(|t| t as i32);
+        crate::mobs::allay::set_pickup_cooldown(&mut m, pickup);
         if let Some(st) = m.extra.allay.as_mut()
             && let Some(noteblock) = memory("minecraft:liked_noteblock")
             && let Some(Tag::IntArray(p)) = noteblock.get("pos")

@@ -1415,6 +1415,12 @@ impl Game<'_> {
             }
             let h = self.owner_holder(o);
             tracker.track(&h, changed);
+            // EntityItemAccessor: a player whose slots changed gets
+            // `containerMenu.broadcastChanges` at once, so InventoryChangeTrigger
+            // (and its announcement) comes before the command's message.
+            if changed > 0 && matches!(o, Owner::Entity(Target::Player)) && self.player.is_some() {
+                self.check_inventory_trigger();
+            }
         }
         if selected == 0 {
             return Err(

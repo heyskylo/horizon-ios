@@ -274,6 +274,7 @@ impl Game<'_> {
                     let command = op["cmd"].as_str().unwrap_or("");
                     self.chat_capture = Some(Vec::new());
                     self.cmds.results = Some(Vec::new());
+                    let earlier = self.adv.announced.len();
                     self.harness_owner(|g| {
                         let previous = g.command_source;
                         if op["source"].as_str() == Some("console") {
@@ -290,7 +291,23 @@ impl Game<'_> {
                         g.command_source = previous;
                         Ok(())
                     })?;
-                    let messages = self.chat_capture.take().unwrap_or_default();
+                    // What the command earned is announced before its feedback, as
+                    // a guest's command sends it (`announce_guest_advancements`); what
+                    // earlier ticks earned is left for theirs.
+                    let earned = self
+                        .adv
+                        .announced
+                        .split_off(earlier.min(self.adv.announced.len()));
+                    if let Some(host) = self.lan.as_mut() {
+                        for text in &earned {
+                            host.hub
+                                .system_message(horizon_client::lan::data::component_nbt(
+                                    &text.component(),
+                                ));
+                        }
+                    }
+                    let mut messages = earned;
+                    messages.extend(self.chat_capture.take().unwrap_or_default());
                     let results = self.cmds.results.take().unwrap_or_default();
                     if op["record"].as_bool() != Some(false) || op["trace"].as_bool() == Some(true)
                     {
