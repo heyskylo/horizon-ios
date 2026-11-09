@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     fs,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 #[derive(Clone, Debug)]
@@ -466,6 +466,25 @@ impl Creative {
         self.tabs.iter().map(Tab::header).collect()
     }
     pub fn tab(&self) -> &Tab {
+        if self.tabs.is_empty() {
+            // An empty export (`{"tabs":[]}`) or a rebuild that filtered
+            // every category tab away leaves no tabs. `tabs.len() - 1`
+            // would underflow; return a shared empty tab instead, so
+            // `set_permissions`/`select`/`items` keep working.
+            static EMPTY_TAB: OnceLock<Tab> = OnceLock::new();
+            return EMPTY_TAB.get_or_init(|| Tab {
+                id: String::new(),
+                title: String::new(),
+                icon: "minecraft:stone".to_owned(),
+                items: Vec::new(),
+                top: true,
+                column: 0,
+                search: false,
+                inventory: false,
+                hotbar: false,
+                page: 0,
+            });
+        }
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
     /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
@@ -652,6 +671,9 @@ impl Creative {
     /// Items shown by the selected tab (the search tab filters by `search`),
     /// worked out again only when the tab, the search or the language changed.
     pub fn items(&self, names: &Names) -> Arc<[ItemStack]> {
+        if self.tabs.is_empty() {
+            return Arc::from([]);
+        }
         let tab = self.selected.min(self.tabs.len() - 1);
         let search = if self.tab().search {
             self.search.value.as_str()
@@ -1677,5 +1699,21 @@ mod tests {
         assert!(!Creative::tab_wants_hand(&b, false, (169.0, 140.0)));
         assert!(Creative::tab_wants_hand(&b, false, (170.0, 140.0)));
         assert!(!Creative::tab_wants_hand(&b, false, (180.0, 132.0)));
+    }
+
+    /// An empty export (`{"tabs":[]}`) leaves no tabs. `tab()` and
+    /// `items()` used `tabs.len() - 1`, which underflows and panics;
+    /// both now handle the empty case.
+    #[test]
+    fn empty_creative_tabs_do_not_panic_on_tab_or_items() {
+        let c = Creative::from_json(&serde_json::json!({"tabs": []})).unwrap();
+        assert!(c.tabs.is_empty());
+        // Fallback tab: no panic, empty id, not search.
+        assert_eq!(c.tab().id, "");
+        assert!(!c.tab().search);
+        let names = Names { map: HashMap::new() };
+        assert!(c.items(&names).is_empty());
+        assert!(c.tab_headers().is_empty());
+        assert_eq!(c.search_tab(), None);
     }
 }
