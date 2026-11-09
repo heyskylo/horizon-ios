@@ -292,10 +292,8 @@ fn pack_particles(
 }
 
 /// The packs' custom colours; their dye and sheep colours go to the draw paths' table.
-fn read_colors(root: &std::path::Path) -> horizon_client::polytone_colors::PackColors {
-    let colors = horizon_client::polytone_colors::PackColors::read(root);
-    horizon_client::pack_palette::set(&colors);
-    horizon_client::pack_palette::set_item_bars(root);
-    horizon_client::brewing::set_pack_colors(colors.effects());
+fn read_colors(root: &std::path::Path) -> horizon_client::pack_palette::PackColors {
+    let colors = horizon_client::pack_palette::read(root);
+    horizon_client::brewing::set_pack_colors(colors.effects.clone());
     colors
 }

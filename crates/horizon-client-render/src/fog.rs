@@ -231,8 +231,8 @@ pub struct FogInputs<'a> {
     /// `GameRenderer.nightVisionScale` while Night Vision is on without
     /// Darkness, else 0 (`FogRenderer.computeFogColor`'s brightenFactor).
     pub night_vision: f32,
-    /// The packs' Polytone `environment` fog settings.
-    pub environment: horizon_polytone::colors::Environment,
+    /// The packs' `environment` fog settings (Polytone's).
+    pub environment: crate::pack_palette::Environment,
 }
 
 /// `FogRenderer.setupFog` + `computeFogColor`.
@@ -581,7 +581,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
         };
-        let environment = horizon_polytone::colors::Environment {
+        let environment = crate::pack_palette::Environment {
             powder_snow_fog: Some(0xFF0000),
             blindness_fog_distance: 40.0,
             water_fog_brightening: 0.0,
@@ -613,7 +613,7 @@ mod tests {
     }
     fn inputs_with<'a>(
         input: &FogInputs<'a>,
-        environment: horizon_polytone::colors::Environment,
+        environment: crate::pack_palette::Environment,
     ) -> FogInputs<'a> {
         FogInputs {
             environment,
