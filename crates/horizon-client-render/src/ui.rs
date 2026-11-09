@@ -2609,8 +2609,10 @@ mod tests {
         edit.set_cursor(4, true);
         assert!(!edit.shortcut(EditShortcut::Copy, &mut clipboard));
         assert_eq!(clipboard.0, "name");
-        // An editable box does all of it again.
+        // An editable box does all of it again. (Set the caret past the
+        // selection first: insertion replaces a selection.)
         edit.editable = true;
+        edit.set_cursor(4, false);
         edit.insert_text("x");
         assert_eq!(edit.value, "namex");
         assert!(edit.key(winit::keyboard::KeyCode::Backspace, false, false));
