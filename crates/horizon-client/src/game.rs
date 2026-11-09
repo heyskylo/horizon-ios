@@ -5521,11 +5521,8 @@ impl Game<'_> {
             let at = pos.map(f64::from);
             self.spawn_item_own(stack, at, 10);
         }
-        let correct_tool = self.res.items().has_correct_tool_for_drops(
-            self.held(),
-            facts.requires_tool,
-            &facts.name,
-        );
+        let correct_tool =
+            !facts.requires_tool || self.res.items().correct_for_drops(self.held(), &facts.name);
         let removed = self.with_level(|b, level, ticks| {
             b.player_destroy_block(
                 level,
