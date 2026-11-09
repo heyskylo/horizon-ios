@@ -129,6 +129,8 @@ pub struct TickCtx<'a> {
     pub next_entity: &'a mut u32,
     /// Where new players appear.
     pub spawn: [f64; 3],
+    /// Rotation of the world spawn sent by PlayerList.sendLevelInfo.
+    pub spawn_angle: [f32; 2],
     pub difficulty: i32,
     pub difficulty_locked: bool,
     /// The overworld clock's speed (0 when the day does not advance).
@@ -378,6 +380,9 @@ pub struct Hub {
     /// The names a server mod shows over players' heads
     /// (`native_set_name_tag`), by UUID: their list entries' profile name.
     pub name_tags: std::collections::HashMap<u128, String>,
+    /// The name the server's user cache knew a joining player by, by UUID, looked up before the
+    /// cache learns the new one (PlayerList.placeNewPlayer's `oldName`); taken by the join line.
+    pub former_names: std::collections::HashMap<u128, String>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -551,6 +556,26 @@ impl Hub {
     }
 }
 
+impl Hub {
+    /// PlayerList.placeNewPlayer's join line: `multiplayer.player.joined`, or
+    /// `multiplayer.player.joined.renamed` with the cached old name when the
+    /// player's name changed (ignoring case) since the user cache last saw it.
+    fn joined_line(&mut self, uuid: u128, name: &str) -> Tag {
+        let display = self.player_display_name(uuid, name);
+        match self
+            .former_names
+            .remove(&uuid)
+            .filter(|old| !old.eq_ignore_ascii_case(name))
+        {
+            Some(old) => yellow_names(
+                "multiplayer.player.joined.renamed",
+                vec![display, string(&old)],
+            ),
+            None => yellow_names("multiplayer.player.joined", vec![display]),
+        }
+    }
+}
+
 /// A yellow translation of player names (`multiplayer.player.joined`).
 fn yellow_names(key: &str, names: Vec<Tag>) -> Tag {
     Tag::compound([
@@ -694,7 +719,7 @@ impl Hub {
             sync,
             ticks: 0,
             seat_order: 0,
-            sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
+            sound_seeds: Mutex::new(crate::random_source::create()),
             sound_order: Mutex::default(),
             immediate_respawn: false,
             reduced_debug_info: false,
@@ -747,6 +772,7 @@ impl Hub {
             list_names: std::collections::HashMap::new(),
             display_names: std::collections::HashMap::new(),
             name_tags: std::collections::HashMap::new(),
+            former_names: std::collections::HashMap::new(),
         }
     }
 
@@ -1025,7 +1051,8 @@ impl Hub {
         }));
     }
     /// ListPlayersCommand's reply: the players in join order (the host of a
-    /// LAN world first), as display names or names with ids, joined by
+    /// LAN world first), as display names (Player.getDisplayName, with the
+    /// team's colour and affixes) or names with ids, joined by
     /// gray commas (ComponentUtils.formatList).
     pub fn list_reply(&self, uuids: bool) -> Tag {
         let players: Vec<(u128, &str)> = self
@@ -1047,7 +1074,7 @@ impl Hub {
                     ),
                 ])
             } else {
-                display_name(uuid, name)
+                self.player_display_name(uuid, name)
             }
         };
         let names = match players.len() {
@@ -1453,10 +1480,7 @@ impl Hub {
         // not placed.
         if !held {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(self.guests[i].uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
@@ -1624,10 +1648,7 @@ impl Hub {
         };
         if announce {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
@@ -2087,7 +2108,7 @@ impl Hub {
     /// ClientboundSetDefaultSpawnPositionPacket for the level's respawn data
     /// (the world spawn, in the Overworld wherever the player is), or the
     /// compass target a mod set for that player (`compass_targets`).
-    pub fn default_spawn(&self, uuid: u128, spawn: [f64; 3]) -> C {
+    pub fn default_spawn(&self, uuid: u128, spawn: [f64; 3], angle: [f32; 2]) -> C {
         if let Some(target) = self.compass_targets.get(&uuid) {
             return C::SetDefaultSpawnPosition(play::SetDefaultSpawnPosition {
                 pos: target.clone(),
@@ -2104,8 +2125,8 @@ impl Hub {
                     spawn[2].floor() as i32,
                 ],
             },
-            yaw: 0.0,
-            pitch: 0.0,
+            yaw: angle[0],
+            pitch: angle[1],
         })
     }
 
@@ -2124,7 +2145,7 @@ impl Hub {
         }
         g.send(&C::InitializeBorder(super::border::initialize(ctx.border)));
         g.send(&self.time_packet(ctx.world, ctx.clock_rate));
-        g.send(&self.default_spawn(g.uuid, spawn));
+        g.send(&self.default_spawn(g.uuid, spawn, ctx.spawn_angle));
         let w = &ctx.world.weather;
         if w.raining {
             g.send(&C::GameEvent(play::GameEvent {
@@ -2154,8 +2175,8 @@ impl Hub {
     }
 
     /// ServerClockManager.createFullSyncPacket: every clock. Horizon keeps the
-    /// overworld clock (the day time); the End's clock runs with the game
-    /// time. Clocks do not advance without the advance_time rule.
+    /// overworld clock (the day time) and the End's (`end_clock`). Clocks do not
+    /// advance without the advance_time rule.
     fn time_packet(&self, world: &World, rate: f32) -> C {
         let overworld = self
             .sync
@@ -2177,7 +2198,7 @@ impl Hub {
                     } else {
                         play::ClockState {
                             clock: id,
-                            total_ticks: world.game_time,
+                            total_ticks: world.end_clock,
                             partial_tick: 0.0,
                             rate: if rate > 0.0 { 1.0 } else { 0.0 },
                         }
@@ -2255,6 +2276,8 @@ impl Hub {
                     let Some(g) = self.guest_mut(conn) else {
                         continue;
                     };
+                    // Out of the channel: the network thread may hand this player more.
+                    g.sender.undrained.taken(bytes);
                     // A kicked player's packets wait for nothing.
                     if !g.left_reason.is_empty() {
                         continue;
@@ -3302,6 +3325,8 @@ impl Hub {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            sync_position: false,
+            stepped: false,
             idle: false,
             bare: false,
             minecart_steps: None,
@@ -4979,7 +5004,7 @@ impl Hub {
         g.far_queue.clear();
         g.tracker.clear();
         self.resend_teleport(i, None);
-        let spawn = self.default_spawn(self.guests[i].uuid, ctx.spawn);
+        let spawn = self.default_spawn(self.guests[i].uuid, ctx.spawn, ctx.spawn_angle);
         let g = &mut self.guests[i];
         g.send(&spawn);
         g.send(&C::ChangeDifficulty(play::ChangeDifficulty {
@@ -5116,7 +5141,9 @@ impl Hub {
         g.sent_xp = None;
         g.sent_air = (300, 0.0);
         g.sent_frozen = 0;
-        g.sent_shared = 0;
+        // Not the shared flags: KEEP_ALL_DATA copies the old player's (on fire, invisible,
+        // crouching...) to the client's new one, so a flag that clears after the change still
+        // goes to it (ServerEntity.sendDirtyEntityData), as a fire put out in the new level.
         g.sent_shoulders = [None; 2];
         let (cx, cz) = g.chunk();
         g.send(&C::SetChunkCacheCenter(play::SetChunkCacheCenter {
@@ -5164,10 +5191,10 @@ fn wrap_degrees(degrees: f32) -> f32 {
 const PACKETS_PER_TICK: usize = 400;
 /// The packets a player may have waiting (a second of its budget) before it is
 /// disconnected, as vanilla's rate-limit does: no real client gets near it.
-const INBOX_LIMIT: usize = 20 * PACKETS_PER_TICK;
+pub(crate) const INBOX_LIMIT: usize = 20 * PACKETS_PER_TICK;
 /// The same in bytes on the wire: 8000 full books would hold gigabytes. A
 /// real client's largest packets (a 100-page book) are a few hundred kB.
-const INBOX_BYTES: usize = 16 << 20;
+pub(crate) const INBOX_BYTES: usize = 16 << 20;
 
 /// The `minecraft:gravity` attribute of a player.
 const PLAYER_GRAVITY: f64 = 0.08;
@@ -5569,6 +5596,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -5596,6 +5624,60 @@ mod tests {
                 flags,
             }),
         );
+    }
+
+    /// `ClientboundRespawnPacket.KEEP_ALL_DATA`: a level change keeps the client's copy of the
+    /// player's shared flags, so one that clears afterwards still reaches it. (A creative player
+    /// who leaves lava through a dimension change kept the fire on its screen.)
+    #[test]
+    fn a_shared_flag_cleared_after_a_level_change_reaches_the_player() {
+        let (mut hub, rx) = hub_with_a_guest();
+        let shared_flags_sent = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+            let mut sent = Vec::new();
+            while let Ok(out) = rx.try_recv() {
+                let crate::lan::Out::Packet(body) = out else {
+                    continue;
+                };
+                let mut r = horizon_protocol::buf::Reader::new(&body);
+                let id = r.varint().unwrap();
+                if let Ok(C::SetEntityData(packet)) = C::decode(id, r.rest()) {
+                    sent.extend(packet.values.iter().filter_map(|(index, _, value)| {
+                        match (index, value) {
+                            (0, Value::Byte(flags)) => Some(*flags),
+                            _ => None,
+                        }
+                    }));
+                }
+            }
+            sent
+        };
+        hub.guests[0].sneaking = true;
+        hub.sync_player_state(0);
+        assert_eq!(shared_flags_sent(&rx), [0x02]);
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut next_entity = 2;
+        let border = crate::worldborder::WorldBorder::default();
+        let ctx = TickCtx {
+            world: &mut world,
+            entities: &[],
+            next_entity: &mut next_entity,
+            spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
+            difficulty: 2,
+            difficulty_locked: false,
+            clock_rate: 1.0,
+            tick_rate: 20.0,
+            tick_frozen: false,
+            tick_steps: Default::default(),
+            collision: None,
+            border: &border,
+            streaming: None,
+        };
+        hub.change_level(0, [100.5, 49.0, 0.5], 0.0, None, false, 0, &ctx);
+        let _ = shared_flags_sent(&rx);
+        hub.guests[0].sneaking = false;
+        hub.sync_player_state(0);
+        assert_eq!(shared_flags_sent(&rx), [0]);
     }
 
     /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: a client that says it stands
@@ -5801,6 +5883,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -5987,6 +6070,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -6052,6 +6136,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,

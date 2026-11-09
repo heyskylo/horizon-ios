@@ -2,7 +2,7 @@
 //! from a block face, boosting a gliding player, the 1.15 horizontal
 //! acceleration and 0.04 lift, the flight-duration lifetime, explosion
 //! damage with line of sight, and the client explosion (`createFireworks`).
-use super::{Game, Hit, item_draw::owner_at, view_vector};
+use super::{Game, Hit, dragon::FightWho, item_draw::owner_at, view_vector};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     block_entity_render::vertex_light,
@@ -13,6 +13,7 @@ use horizon_client::{
     mobs::{Damage, Species, Who},
     particles::{FireworkExplosion, ParticleOptions, ParticleType},
     projectiles::ProjectileWorld,
+    random_source,
     text::Text,
 };
 use horizon_core::{
@@ -207,7 +208,7 @@ impl Rocket {
 /// `damageAmount * (float)Math.sqrt((5.0 - this.distanceTo(target)) / 5.0)`
 /// from the rocket at `from` to a target at `to`; `Entity.distanceTo` sums
 /// the squared offsets in floats.
-fn blast_damage(damage: f32, from: Vec3, to: Vec3) -> f32 {
+pub(super) fn blast_damage(damage: f32, from: Vec3, to: Vec3) -> f32 {
     let (x, y, z) = (
         (from.x - to.x) as f32,
         (from.y - to.y) as f32,
@@ -227,7 +228,7 @@ impl Game<'_> {
     pub(super) fn new_rocket(&mut self, at: Vec3, stack: &ItemStack, attached: bool) -> Rocket {
         let (flight, explosions) = fireworks_of(stack);
         // FireworkRocketEntity: motion and lifetime come from the rocket's own random.
-        let r = &mut super::dispenser::entity_random();
+        let r = &mut random_source::entity();
         let tri = |r: &mut horizon_core::random::LegacyRandom| r.triangle(0.0, 0.002297);
         let velocity = Vec3::new(tri(r), 0.05, tri(r));
         let lifetime = 10 * (1 + i32::from(flight))
@@ -381,8 +382,16 @@ impl Game<'_> {
         } else {
             self.rocket_targets()
         };
+        let ticking = self.entity_ticking_area();
         let mut i = 0;
         while i < self.rockets.len() {
+            // ServerLevel.tick: only entities in entity-ticking chunks tick.
+            let at = self.rockets[i].position;
+            if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                self.rockets[i].previous = at;
+                i += 1;
+                continue;
+            }
             let mut r = self.rockets.remove(i);
             r.previous = r.position;
             // Projectile.tick: whether it has left its owner, before it moves.
@@ -550,6 +559,13 @@ impl Game<'_> {
             } else {
                 self.rocket_hurt_mobs(&hits, owner, at, attacker_uuid);
             }
+            // The dragon is a living entity of its own, not one of `mobs`.
+            let reach = r.bounds().inflate(Vec3::new(5.0, 5.0, 5.0));
+            let by = (owner == Some(Who::Player)).then(|| {
+                r.guest
+                    .map_or_else(|| self.acting_player(), FightWho::Guest)
+            });
+            self.rocket_blast_dragon(from, damage, reach, by);
         }
         let camera = self.eye_position().unwrap_or(at);
         let v = [r.velocity.x, r.velocity.y, r.velocity.z];

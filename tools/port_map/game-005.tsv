@@ -66,7 +66,7 @@ Entity.teleportSpectators	inline	crates/horizon-client/src/game/commands/extra.r
 Entity.calculatePassengerTransition	inline	crates/horizon-client/src/game/passengers.rs::Game::position_riders	riders are seated on the vehicle each tick instead of getting an offset transition
 Entity.sendTeleportTransitionToPlayers	inline	crates/horizon-client/src/lan/entity.rs::ServerEntity::send_changes	a LAN guest sees a teleport as an EntityPositionSync when the jump is too big for a relative move; no ClientboundTeleportEntity is sent
 Entity.forceSetRotation	inline	crates/horizon-client/src/game/commands/world_cmds.rs::Game::cmd_rotate	/rotate goes through teleport_to_in_level with the new rotation; the pitch of non-players is not clamped separately
-Entity.placePortalTicket	skip:other		only one dimension is loaded at a time; arriving entities wait in portals.arrivals until resolve_arrivals can place them
+Entity.placePortalTicket	port	crates/horizon-client/src/game/nether_portal.rs::Game::place_portal_ticket	a TicketType.PORTAL ticket of radius 3 on the chunk, 300 ticks, on the server only (a client has no levels of its own); the nether and end travel paths call it on arrival
 Entity.canTeleport	inline	crates/horizon-client/src/game/end.rs::Game::tick_end	leaving the End before the credits have been seen shows the credits instead of teleporting the player
 Entity.fillCrashReportCategory	skip:debug		crash report detail
 Entity.teleportPassengers	inline	crates/horizon-client/src/game/passengers.rs::Game::position_riders	riders and riders of riders are seated again each tick
@@ -131,7 +131,7 @@ EntityType.loadStaticEntity	port	crates/horizon-client/src/entity_nbt.rs::mob_fr
 EntityType.Builder.passengerAttachments	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	per species heights for the vehicles that carry riders; others use the box top
 EntityType.Builder.attach	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	only the PASSENGER point is a table; NAME_TAG and the rest use their defaults
 EntityType.Builder.build	skip:data		entity types are read from entity-types.json (MobType) instead of being built in code
-EquipmentSlot.isArmor	skip:other		slots are plain head, chest, legs and feet constants; armour logic names them (Ctx::armor)
+EquipmentSlot.isArmor	port	crates/horizon-client/src/mobs/equip.rs::Slot::is_armor	the four armour slots, not the hands; slot_for and mob loot replacement read it
 EquipmentSlot.byName	skip:data		slot names are read as strings from data and NBT
 EquipmentSlotGroup.bySlot	inline	crates/horizon-client/src/game/lan_attributes.rs::slot_in_group	a slot is its own group, so the test is group == slot
 EquipmentTable.createForAllSlots	skip:data		drop chances come from the loot and entity data

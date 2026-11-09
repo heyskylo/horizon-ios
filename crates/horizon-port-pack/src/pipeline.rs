@@ -1,7 +1,7 @@
 //! The steps on a work folder, as the command line and the launcher run
 //! them. Each one reads what the earlier steps wrote and says what it did
 //! through `log`, one line at a time.
-use crate::{carry, fetch, import, inventory, modrinth, oracle, report};
+use crate::{carry, datapacks, fetch, import, inventory, modrinth, oracle, report};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -96,6 +96,12 @@ fn vanilla_blocks(resources: &Path) -> Result<BTreeSet<String>, String> {
     Ok(defaults.keys().cloned().collect())
 }
 
+/// The pack's Minecraft version, empty when it can't be read.
+fn minecraft(work: &Path) -> String {
+    read_json::<import::Pack>(&work.join("pack.json"))
+        .map_or_else(|_| String::new(), |p| p.minecraft)
+}
+
 /// Step 4: the content mods with a jar (or the ones in `only`) carried over
 /// into `<work>/mods/<id>/carry/`. Returns how many were.
 pub fn carry(
@@ -130,12 +136,15 @@ pub fn carry(
     });
     let allowed = |b: &str| vanilla.as_ref().is_none_or(|v| v.contains(b));
     let conventions = crate::worldgen::loader_biome_tags(work);
+    let minecraft = minecraft(work);
+    // A data-only jar is a data pack (`datapacks`), never also a content mod.
     let chosen = |r: &inventory::Record| {
-        if only.is_empty() {
-            r.class == "content"
-        } else {
-            only.contains(&r.key)
-        }
+        !datapacks::is_data_only(r, &minecraft)
+            && if only.is_empty() {
+                r.class == "content"
+            } else {
+                only.contains(&r.key)
+            }
     };
     // The mods ported along (carried now or before), for the conditions of
     // the mods' worldgen modifiers.
@@ -342,15 +351,17 @@ pub fn port(
     let fetched = fetch::fetch(work, &records, from, &portable, log)?;
     // The jars tell classes and tiers better than metadata alone.
     let records = inventory(work, true, log)?;
+    let minecraft = minecraft(work);
+    let packs = datapacks::install(work, &records, &minecraft, log)?;
     let only: Vec<String> = records
         .iter()
-        .filter(|r| portable(r) && r.jar.is_some())
+        .filter(|r| portable(r) && r.jar.is_some() && !datapacks::is_data_only(r, &minecraft))
         .map(|r| r.key.clone())
         .collect();
-    if only.is_empty() {
-        log("no portable mod has its jar: nothing to carry over".into());
-    } else {
+    if !only.is_empty() {
         carry(work, resources, &only, log)?;
+    } else if packs == 0 {
+        log("no portable mod has its jar: nothing to carry over".into());
     }
     Ok((fetched, report(work, log)?))
 }

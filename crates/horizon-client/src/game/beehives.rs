@@ -17,13 +17,29 @@ use horizon_world::{nbt::Tag, registry::BlockStateId};
 
 struct GameHive<'g, 'a> {
     game: &'g mut Game<'a>,
+    /// `bees_stay_in_hive`, once asked: the time and weather it reads hold
+    /// for the hive's turn, and every occupant whose time is up asks.
+    stay: std::cell::Cell<Option<bool>>,
+}
+impl<'g, 'a> GameHive<'g, 'a> {
+    fn new(game: &'g mut Game<'a>) -> Self {
+        Self {
+            game,
+            stay: Default::default(),
+        }
+    }
 }
 impl HiveHost for GameHive<'_, '_> {
     fn random(&mut self) -> &mut LegacyRandom {
         &mut self.game.world.random
     }
     fn bees_stay_in_hive(&self, _at: [i32; 3]) -> bool {
-        bee::bees_stay_in_hive(&self.game.mob_world_base(&[]))
+        if let Some(stay) = self.stay.get() {
+            return stay;
+        }
+        let stay = bee::bees_stay_in_hive(&self.game.mob_world_base(&[]));
+        self.stay.set(Some(stay));
+        stay
     }
     fn blocked(&self, at: [i32; 3]) -> bool {
         !self
@@ -112,7 +128,7 @@ impl Game<'_> {
             let state = self.world.block(at[0] + d[0], at[1] + d[1], at[2] + d[2]);
             &*self.res.facts().get(state).name == "minecraft:fire"
         });
-        let mut host = GameHive { game: self };
+        let mut host = GameHive::new(self);
         if fire && !hive.bees.is_empty() {
             hive.release_all(at, facing, honey, Release::Emergency, &mut host);
         }
@@ -146,7 +162,7 @@ impl Game<'_> {
         let Some(BlockEntity::Beehive(mut hive)) = self.world.block_entities.take(&key) else {
             return;
         };
-        let stored = hive.add_occupant(at, tag, flower, &mut GameHive { game: self });
+        let stored = hive.add_occupant(at, tag, flower, &mut GameHive::new(self));
         self.world
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
@@ -177,7 +193,7 @@ impl Game<'_> {
         let Some(BlockEntity::Beehive(mut hive)) = self.world.block_entities.take(&key) else {
             return;
         };
-        hive.release_all(at, facing, None, status, &mut GameHive { game: self });
+        hive.release_all(at, facing, None, status, &mut GameHive::new(self));
         self.world
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
@@ -197,7 +213,7 @@ impl Game<'_> {
             facing,
             honey,
             Release::Emergency,
-            &mut GameHive { game: self },
+            &mut GameHive::new(self),
         );
         let sedated = beehive::smokey(&self.mob_world_base(&[]), at);
         if let Some(p) = self.player_view().map(|p| p.position) {
@@ -303,7 +319,7 @@ impl Game<'_> {
                 facing,
                 None,
                 Release::Emergency,
-                &mut GameHive { game: self },
+                &mut GameHive::new(self),
             );
             self.world
                 .block_entities
@@ -423,5 +439,56 @@ mod honey_overflow_tests {
         assert!(e.velocity.z > 0.2, "thrown ahead: {:?}", e.velocity);
         assert_eq!(e.thrower, None);
         assert_eq!(e.pickup_delay, 40);
+    }
+}
+
+#[cfg(test)]
+mod stay_tests {
+    use super::*;
+    use horizon_client::beehive::Occupant;
+    use horizon_world::nbt::Compound;
+
+    /// `BeehiveBlockEntity.tickOccupants`: every bee whose time is up asks
+    /// `releaseOccupant`, which keeps it in at night (`BEES_STAY_IN_HIVE`)
+    /// and lets it out by day. All of a hive's bees get the same answer in
+    /// one turn, however many ask.
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn every_ready_bee_of_a_hive_turn_gets_the_same_answer() {
+        let mut game = super::super::native_machines::tests::server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:beehive")
+            .unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        let bee = || {
+            let mut tag = Compound::new();
+            tag.insert("id".into(), Tag::String("minecraft:bee".into()));
+            Occupant {
+                entity_data: Tag::Compound(tag),
+                ticks_in_hive: 601,
+                min_ticks_in_hive: 600,
+            }
+        };
+        let hive = Beehive {
+            bees: vec![bee(), bee(), bee()],
+            flower: None,
+        };
+        game.world
+            .block_entities
+            .put(key, BlockEntity::Beehive(Box::new(hive)));
+        let inside = |game: &Game<'_>| match game.world.block_entities.get(&key) {
+            Some(BlockEntity::Beehive(h)) => h.bees.len(),
+            _ => panic!("the hive is gone"),
+        };
+        game.world.day_time = 13_000;
+        game.tick_beehive(key);
+        assert_eq!((inside(&game), game.mobs.len()), (3, 0), "night");
+        game.world.day_time = 1_000;
+        game.tick_beehive(key);
+        assert_eq!((inside(&game), game.mobs.len()), (0, 3), "day");
     }
 }

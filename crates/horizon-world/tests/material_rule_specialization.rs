@@ -9,7 +9,7 @@ use horizon_world::{
         DecodeError,
         anchor::WorldGenerationContext,
         material_condition::{
-            MaterialCondition, MaterialConditions, MaterialRule, MaterialRuleError,
+            BandRule, MaterialCondition, MaterialConditions, MaterialRule, MaterialRuleError,
             MaterialSurfaceQueries,
         },
     },
@@ -225,11 +225,80 @@ fn ore_veins_are_dropped_from_the_bands_where_their_density_is_never_positive() 
     w.update_y(1, 1, i32::MIN, 64);
     // The vein's density is not asked for where it cannot be positive.
     assert_eq!(
-        w.try_apply(variant, BlockPos::new(0, 64, 0)),
+        w.try_apply(variant.rule(), BlockPos::new(0, 64, 0)),
         Ok(Some(BlockStateId(9)))
     );
     assert_eq!(
         w.into_surface().bindings,
         [true, true, false, true, true, false]
     );
+}
+
+/// Vein densities read by position: the first vein's `density` binding is
+/// positive only at y 20, the second's only at y 30.
+struct ScriptedDensities {
+    bindings: usize,
+}
+impl MaterialSurfaceQueries for ScriptedDensities {
+    fn possible_biomes(&self) -> Option<BTreeSet<String>> {
+        None
+    }
+    fn surface_depth(&mut self, _: i32, _: i32) -> i32 {
+        0
+    }
+    fn surface_secondary(&mut self, _: i32, _: i32) -> f64 {
+        0.
+    }
+    fn bind_density(&mut self, _: Arc<dyn DensitySampler>, _: bool) -> Result<usize, DecodeError> {
+        // Six bindings, in the veins' order.
+        self.bindings += 1;
+        Ok(self.bindings - 1)
+    }
+    fn density(&mut self, index: usize, position: BlockPos) -> Result<f32, MaterialRuleError> {
+        Ok(match (index, position.y) {
+            (0, 20) | (3, 30) => 1.0,
+            _ => 0.0,
+        })
+    }
+}
+
+#[test]
+fn run_fill_gives_its_block_exactly_where_no_vein_can_place_one() {
+    let mut w = MaterialConditions::<XoroshiroRandom, _>::new(
+        WorldGenerationContext::new(-64, 384, 63),
+        XoroshiroRandom::new(7).fork_positional(),
+        ScriptedDensities { bindings: 0 },
+    );
+    let rule = w
+        .add_rule(MaterialRule::Sequence(vec![
+            vein([-64, 320]),
+            vein([-64, 320]),
+            MaterialRule::Block(BlockStateId(9)),
+        ]))
+        .unwrap();
+    let mut variants = w.surface_variants(rule).unwrap();
+    let band = variants.band(0);
+    let variant = w.surface_variant(&mut variants, band, false).unwrap();
+    let BandRule::Fill(rule, fill) = variant else {
+        panic!("a sequence of veins then a block is a run fill");
+    };
+    let fill = *variants.fill(fill);
+    assert_eq!(fill.block, BlockStateId(9));
+    assert_eq!(fill.veins(), [0, 3]);
+    w.update_xz(0, 0, 0, 0);
+    for y in 0..=40 {
+        let position = BlockPos::new(0, y, 0);
+        w.update_y(1, 1, i32::MIN, y);
+        let miss = w.veins_miss(&fill, position).unwrap();
+        assert_eq!(miss, y != 20 && y != 30, "{y}");
+        // Wherever every vein misses, applying the rule gives the fill's
+        // block: it neither reads the context nor draws a random.
+        let state = w.try_apply(rule, position).unwrap();
+        if miss {
+            assert_eq!(state, Some(BlockStateId(9)), "{y}");
+        } else {
+            assert!(state.is_some(), "{y}");
+            assert_ne!(state, Some(BlockStateId(9)), "{y}");
+        }
+    }
 }

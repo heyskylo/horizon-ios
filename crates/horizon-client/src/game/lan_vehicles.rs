@@ -284,23 +284,19 @@ impl Game<'_> {
         let cart = self.carts.iter().any(|c| c.id == vehicle);
         let mount = self.mobs.iter().any(|m| m.id == vehicle);
         let cushion = self.cushions.iter().any(|c| c.id == vehicle);
+        let seat = self.seat(vehicle).is_some();
         // The vehicle is gone (broken, in another level) or the rider died:
         // its client drops it with the entity or the death screen.
-        if dead || (boat.is_none() && !cart && !mount && !cushion) {
+        if dead || (boat.is_none() && !cart && !mount && !cushion && !seat) {
             let g = &mut host.hub.guests[gi];
             (g.vehicle, g.vehicle_good) = (None, None);
             return;
         }
         let mut ejected = false;
         if let Some(i) = boat {
-            // AbstractBoat.tick on the server for a boat its rider drives:
-            // only the hurt animation and the damage wear off here.
-            let b = &mut self.boats[i];
-            b.hurt_time = (b.hurt_time - 1).max(0);
-            b.damage = (b.damage - 1.0).max(0.0);
             // `Entity.ejectPassengers`: every player in the boat must see
             // the request; the common boat tick clears it once nobody rides.
-            ejected = b.eject_riders;
+            ejected = self.boats[i].eject_riders;
         }
         // ServerGamePacketListenerImpl.tick: the vehicle's last good position
         // is where it is now, so a move the server made (a piston, a push)
@@ -327,6 +323,12 @@ impl Game<'_> {
                 }
                 let c = game.cushions.iter().find(|c| Some(c.id) == game.riding)?;
                 let p = c.seat();
+                return Some([p.x, p.y, p.z]);
+            }
+            // An armor stand, a display, a marker...: the rider keeps its seat as the vehicle is
+            // moved (/tp, a mod) until it sneaks.
+            if game.riding.is_some_and(|id| game.seat(id).is_some()) {
+                let p = game.tick_seat_riding(keys)?;
                 return Some([p.x, p.y, p.z]);
             }
             if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.riding) {
@@ -388,7 +390,8 @@ impl Game<'_> {
                     .iter()
                     .find(|c| c.id == vehicle)
                     .map(|c| (c.position, c.seat()))
-            });
+            })
+            .or_else(|| self.seat(vehicle).map(|s| (s.position, s.player_seat())));
         if let Some((p, seat)) = at {
             let g = &mut host.hub.guests[gi];
             g.vehicle_good = Some([p.x, p.y, p.z]);
@@ -584,6 +587,22 @@ impl Game<'_> {
         b.previous_yaw = b.yaw;
         b.yaw = p.yaw;
         b.on_ground = p.on_ground;
+        // handleMoveVehicle's `vehicle.move` counts the fall
+        // (AbstractBoat.checkFallDamage); the server's baseTick resets it in
+        // water (updateFluidInteraction), which this boat's skipped tick
+        // doesn't run.
+        use super::entity::Entity as _;
+        let mut probe = self.boats[i].clone();
+        let in_water = probe
+            .push_by_fluid(&self.world, &self.res.motion().fluids)
+            .0
+            > 0.0;
+        let fall = if in_water {
+            0.0
+        } else {
+            self.boat_fall(&self.boats[i], resolved.y)
+        };
+        self.boats[i].fall_distance = fall;
         let seat = self.player_boat_seat(i);
         let g = &mut host.hub.guests[gi];
         g.previous_position = g.position;
@@ -783,6 +802,15 @@ mod controller_tests {
             (game.boats[0].position.x - (start.x + 0.3)).abs() < 1.0e-9,
             "the driver moves the boat: {:?}",
             game.boats[0].position
+        );
+        // handleMoveVehicle's `vehicle.move` runs AbstractBoat.checkFallDamage:
+        // a boat that lands on the ground (a fall loaded from its save, here)
+        // has no fall left.
+        game.boats[0].fall_distance = 5.0;
+        game.guest_move_vehicle(&mut host, 3, &move_to(start.x + 0.6));
+        assert_eq!(
+            game.boats[0].fall_distance, 0.0,
+            "a guest's boat on the ground"
         );
     }
 }

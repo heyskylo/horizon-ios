@@ -32,6 +32,11 @@ fn pack(properties: &str, shadow: Option<&str>, reads_shadow: bool) -> horizon_s
     write("final.fsh", if reads_shadow { SHADOW_READ } else { COLOUR });
     write("gbuffers_entities.vsh", VERTEX);
     write("gbuffers_entities.fsh", COLOUR);
+    // Terrain programs keep the load free of "nothing draws it" notes; no terrain is drawn.
+    for terrain in ["gbuffers_terrain", "gbuffers_water"] {
+        write(&format!("{terrain}.vsh"), VERTEX);
+        write(&format!("{terrain}.fsh"), COLOUR);
+    }
     if let Some(shadow) = shadow {
         write("shadow.vsh", VERTEX);
         write("shadow.fsh", shadow);

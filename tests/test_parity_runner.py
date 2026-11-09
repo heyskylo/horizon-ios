@@ -374,6 +374,14 @@ class ShardTests(unittest.TestCase):
             self.assertEqual(parity.base_name("x#2"), "x")
 
 
+class OracleArgumentTests(unittest.TestCase):
+    def test_an_agent_jar_is_an_input(self):
+        from tools import parity_shim
+        jar, oracle = Path("/w/seed-agent.jar"), Path("/w/out.jsonl")
+        self.assertEqual(parity_shim.named_paths([f"-javaagent:{jar}=a=b", "-Xmx3G", str(oracle)]),
+                         [os.path.abspath(jar), os.path.abspath(oracle)])
+
+
 @unittest.skipIf(os.name == "nt", "oracle PATH shimming uses Unix executable symlink semantics")
 class OracleReuseTests(unittest.TestCase):
     """tools/parity_shim.py replays a run only when its inputs and outputs are as recorded."""

@@ -179,12 +179,54 @@ pub(super) fn player_json(world: &Path, dir: &str, uuid: [i32; 4]) -> PathBuf {
     );
     world.join("players").join(dir).join(format!("{text}.json"))
 }
+/// `FileUtil.isValidPathSegment`: not `.` or `..`, and only the characters
+/// `[-._a-z0-9]`. A player name with a capital letter in it is refused like any
+/// other segment vanilla would not write to disk.
+fn valid_path_segment(segment: &str) -> bool {
+    segment != "."
+        && segment != ".."
+        && segment.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')
+        })
+}
+
+/// `PlayerList.locateStatsFile`: the player's stats file, with the one an older
+/// version named after the player (`stats/<name>.json`) moved to the uuid file the
+/// first time it is asked for. A uuid file that is already there wins, and a move
+/// that fails leaves the old one in place.
+pub(super) fn locate_player_json(world: &Path, dir: &str, uuid: [i32; 4], name: &str) -> PathBuf {
+    let uuid_file = player_json(world, dir, uuid);
+    if uuid_file.exists() {
+        return uuid_file;
+    }
+    let file = format!("{name}.json");
+    if !valid_path_segment(&file) {
+        return uuid_file;
+    }
+    let named = uuid_file.with_file_name(&file);
+    if !named.is_file() {
+        return uuid_file;
+    }
+    match std::fs::rename(&named, &uuid_file) {
+        Ok(()) => uuid_file,
+        Err(e) => {
+            log::warn!(
+                "Horizon: failed to move the {} file {} to {}: {e}",
+                dir,
+                named.display(),
+                uuid_file.display()
+            );
+            named
+        }
+    }
+}
 impl Game<'_> {
     fn stats_path(&self) -> Option<PathBuf> {
-        Some(player_json(
+        Some(locate_player_json(
             &self.world_root,
             "stats",
             self.level.player_uuid?,
+            &self.options.player_name(),
         ))
     }
     /// `ServerStatsCounter.parseLocal`.
@@ -247,12 +289,13 @@ impl Game<'_> {
         self.award_custom_stat("total_world_time", 1);
         if alive {
             self.award_custom_stat("time_since_death", 1);
-            if !sleeping {
-                self.award_custom_stat("time_since_rest", 1);
-            }
         }
         if crouching {
             self.award_custom_stat("sneak_time", 1);
+        }
+        // ServerPlayer.doTick: dead or alive, every tick out of bed.
+        if !sleeping {
+            self.award_custom_stat("time_since_rest", 1);
         }
     }
     fn tick_movement_stats(&mut self) {
@@ -472,6 +515,50 @@ fn phantom_group_size(random: &mut impl RandomSource, difficulty_id: i32) -> i32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `PlayerList.locateStatsFile`: a stats file an older version named after the player is moved
+    /// to the uuid file the first time it is asked for; a uuid file that is already there wins, and
+    /// a name vanilla would not write as a path segment is not looked for at all.
+    #[test]
+    fn an_old_stats_file_named_after_the_player_moves_to_its_uuid() {
+        let world = std::env::temp_dir().join(format!(
+            "horizon-stats-file-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let stats = world.join("players").join("stats");
+        std::fs::create_dir_all(&stats).unwrap();
+        let uuid = [1, 2, 3, 4];
+        let located = player_json(&world, "stats", uuid);
+        // Nothing to move: the uuid name is the answer, and looking writes nothing.
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(!located.exists(), "looking for the file writes none");
+        // The old name-based file is moved onto the uuid name, and not left behind.
+        let old = stats.join("notch.json");
+        std::fs::write(&old, "{}").unwrap();
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(located.is_file(), "the old file landed on the uuid name");
+        assert!(!old.exists(), "and is not left behind");
+        // A uuid file that exists is the answer, whether or not an old one does.
+        std::fs::write(&old, "{}").unwrap();
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(old.is_file(), "the old file is left alone");
+        // FileUtil.isValidPathSegment on the file name: capitals and separators are not a segment,
+        // while a lowercase name with dashes, dots or digits is.
+        for name in ["Notch", "no/tch", "no tch"] {
+            assert!(
+                !valid_path_segment(&format!("{name}.json")),
+                "{name:?} is not a path segment"
+            );
+        }
+        for name in ["notch", "a-b_c.1", "jeb_"] {
+            assert!(
+                valid_path_segment(&format!("{name}.json")),
+                "{name:?} is a path segment"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&world);
+    }
 
     /// ServerPlayer.die zeroes the two timers (and only them) and sends the new zero.
     #[test]

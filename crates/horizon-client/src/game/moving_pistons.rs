@@ -32,6 +32,9 @@ impl Game<'_> {
             let Some((block, base)) = self.moving_piston_blocks(piston, partial) else {
                 continue;
             };
+            // Its own motion run, by the cell it moves to (fixed while it moves), for a shader
+            // pack's `at_velocity`; a finished one keeps that key until the chunk mesh takes over.
+            self.mark_motion(out.len(), super::motion_at(Self::MOTION_MOVING_BLOCK, p));
             let step = piston.movement_direction().normal();
             let at = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
             // `createMovingBlock`'s block position (seed, tint and light): the
@@ -54,6 +57,7 @@ impl Game<'_> {
                 self.moving_block_vertices(base, at, corner - camera, out);
             }
         }
+        self.mark_motion(out.len(), 0);
     }
     /// The section holding the block at `p` (`SectionPos.blockToSection`).
     pub(super) fn section_of(&self, p: [i32; 3]) -> Option<(i32, i32, i32)> {
@@ -63,9 +67,11 @@ impl Game<'_> {
     /// Whether the chunk mesh doesn't show the blocks at `p` yet (edited,
     /// meshing, or waiting for its upload).
     pub(super) fn section_mesh_pending(&self, p: [i32; 3]) -> bool {
-        let Some(section) = self.section_of(p) else {
-            return false;
-        };
+        self.section_of(p)
+            .is_some_and(|section| self.section_mesh_pending_in(section))
+    }
+    /// [`Self::section_mesh_pending`] for a section already found.
+    pub(super) fn section_mesh_pending_in(&self, section: (i32, i32, i32)) -> bool {
         self.world.dirty_sections.contains(&section)
             || self.streaming.is_meshing(section)
             || self.section_upload_pending(section)

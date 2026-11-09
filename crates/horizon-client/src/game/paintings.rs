@@ -7,6 +7,7 @@ use horizon_client::{
     entities::{ItemFrame, Painting},
     items::ItemStack,
     mesher::Vertex,
+    random_source,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -242,7 +243,7 @@ impl Game<'_> {
         };
         fitting.retain(|v| v.width * v.height >= largest);
         // Util.getRandomSafe(variants, candidate.random): the painting's own random.
-        let pick = super::dispenser::entity_random()
+        let pick = random_source::entity()
             .next_int_bound(fitting.len() as i32)
             .unwrap_or(0) as usize;
         let v = &fitting[pick];
@@ -338,6 +339,18 @@ impl Game<'_> {
     /// `Painting.hurtServer` -> kill and `dropItem`. False when a mod kept it
     /// (`native_hanging_break`): it stays at `index`.
     pub(super) fn break_painting(&mut self, index: usize, by_player: bool) -> bool {
+        self.break_painting_by(
+            index,
+            by_player,
+            by_player.then_some(super::commands::Target::Player),
+        )
+    }
+    pub(super) fn break_painting_by(
+        &mut self,
+        index: usize,
+        by_player: bool,
+        source: Option<super::commands::Target>,
+    ) -> bool {
         let pos = self.paintings[index].pos;
         if self.hanging_break_cancelled("minecraft:painting", pos, by_player) {
             return false;
@@ -351,7 +364,7 @@ impl Game<'_> {
         ];
         self.world.modified.insert((p.pos[0] >> 4, p.pos[2] >> 4));
         // BlockAttachedEntity.kill, before dropItem.
-        self.entity_killed_event(at, by_player);
+        self.entity_killed_event_by(at, source);
         if !self.ui.rules.bool("entity_drops") {
             return true;
         }
@@ -443,6 +456,7 @@ impl Game<'_> {
                 1.0 / 32.0,
             );
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(p.id));
             let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let mut quad =
@@ -578,6 +592,7 @@ mod tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
+            random: horizon_client::random_source::entity(),
         };
         for glow in [false, true] {
             f.glow = glow;
