@@ -59,6 +59,72 @@ impl Game<'_> {
         }
         Ok(changed)
     }
+    /// For a server mod: lights the loaded chunks `chunks` (`[x, z]`, block
+    /// coordinates `>> 4`) of the level being ticked again, whole, from their
+    /// blocks, and the loaded chunks beside them, as the lighting of
+    /// `native_edit_blocks` does but at once, so the light is there before the
+    /// chunks are sent (`native_resend_chunk`). A chunk without all eight
+    /// neighbours loaded is left out. The light that changed is saved and
+    /// goes to the players who see that chunk's border as any relight's does;
+    /// the others get it in a resent chunk. Returns how many chunks were lit
+    /// (the ring included); 0 for another dimension, on a client. Lights every
+    /// chunk it is given: call it for the chunks an edit changed, not every
+    /// tick. API @API:chunk_relight_resend@.
+    pub(super) fn native_relight_chunks(&mut self, dimension: &str, chunks: &[[i32; 2]]) -> u32 {
+        if !self.native_level_open(dimension) {
+            return 0;
+        }
+        let mut columns: Vec<(i32, i32)> = chunks
+            .iter()
+            .flat_map(|&[x, z]| {
+                (-1..=1).flat_map(move |dz| {
+                    (-1..=1).map(move |dx| (x.wrapping_add(dx), z.wrapping_add(dz)))
+                })
+            })
+            .filter(|key| self.world.chunks.contains_key(key))
+            .collect();
+        columns.sort_unstable();
+        columns.dedup();
+        self.streaming.relight_now(&mut self.world, &columns) as u32
+    }
+
+    /// For a server mod: the UUIDs of the players who are sent chunk `chunk`
+    /// (`[x, z]`) of the level being ticked and have it, in join order: the
+    /// ones to tell of a change there. Empty for another dimension and on a
+    /// client. API @API:chunk_relight_resend@.
+    pub(super) fn native_chunk_trackers(&self, dimension: &str, chunk: [i32; 2]) -> Vec<u128> {
+        if !self.native_level_open(dimension) {
+            return Vec::new();
+        }
+        match &self.lan {
+            Some(host) => host.hub.chunk_trackers((chunk[0], chunk[1])),
+            None => Vec::new(),
+        }
+    }
+
+    /// For a server mod: sends chunk `chunk` of the level being ticked again,
+    /// whole, with its light, block entities and biomes as they are now, to
+    /// every player who has it, or only to `player` when given and it has the
+    /// chunk. Returns how many players were sent it; 0 for a chunk not
+    /// loaded, a player who does not have it, another dimension, and on a
+    /// client. API @API:chunk_relight_resend@.
+    pub(super) fn native_resend_chunk(
+        &mut self,
+        dimension: &str,
+        chunk: [i32; 2],
+        player: Option<u128>,
+    ) -> u32 {
+        if !self.native_level_open(dimension) {
+            return 0;
+        }
+        match self.lan.as_mut() {
+            Some(host) => {
+                host.hub
+                    .resend_chunk(&self.world, (chunk[0], chunk[1]), player) as u32
+            }
+            None => 0,
+        }
+    }
     /// Whether `dimension` is the authoritative level being ticked: where a server mod's world helpers act.
     pub(super) fn native_level_open(&self, dimension: &str) -> bool {
         (self.serving.is_some() || self.options.dedicated.is_some()) && dimension == self.dim.id()
