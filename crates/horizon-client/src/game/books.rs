@@ -33,6 +33,8 @@ fn book_title_box() -> ui::EditBox {
     edit.bordered = false;
     edit.max_length = 15;
     edit.text_color = BLACK;
+    // BookSignScreen sets the title box centred.
+    edit.centered = true;
     edit.focused = true;
     edit
 }
@@ -1618,6 +1620,19 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
     }
 }
 
+#[cfg(test)]
+mod title_box_tests {
+    use super::book_title_box;
+
+    /// `BookSignScreen` sets its 15 character title box centred and unbordered.
+    #[test]
+    fn the_sign_title_box_is_centred() {
+        let edit = book_title_box();
+        assert!(edit.centered);
+        assert!(!edit.bordered);
+        assert_eq!(edit.max_length, 15);
+    }
+}
 #[cfg(test)]
 mod lectern_books_tag_tests {
     use super::super::native_machines::tests::server_game;
