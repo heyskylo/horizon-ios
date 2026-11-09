@@ -19,18 +19,22 @@ use super::Game;
 const LOOK_EVERY: Duration = Duration::from_millis(500);
 const RED: u32 = 0xFF5555;
 
+/// What a pack the loader took asks of the frame: its shader API line and how its frame blends
+/// (`[frame] blend`; `Gamma` for anything but a 0.2 pack).
+pub(super) type Drawn = (Api, Blend);
+
 thread_local! {
     // Loader outcomes survive renderer replacement; rejected files must not cause a rebuild loop.
-    static OUTCOMES: std::cell::RefCell<std::collections::HashMap<PathBuf, (Option<u64>, Option<Api>)>> =
+    static OUTCOMES: std::cell::RefCell<std::collections::HashMap<PathBuf, (Option<u64>, Option<Drawn>)>> =
         std::cell::RefCell::default();
 }
 
-pub(super) fn outcome(path: &Path) -> Option<Option<Api>> {
-    OUTCOMES.with_borrow(|packs| packs.get(path).map(|(_, api)| *api))
+pub(super) fn outcome(path: &Path) -> Option<Option<Drawn>> {
+    OUTCOMES.with_borrow(|packs| packs.get(path).map(|(_, drawn)| *drawn))
 }
 
-pub(super) fn remember(path: &Path, stamp: Option<u64>, api: Option<Api>) {
-    OUTCOMES.with_borrow_mut(|packs| packs.insert(path.to_owned(), (stamp, api)));
+pub(super) fn remember(path: &Path, stamp: Option<u64>, drawn: Option<Drawn>) {
+    OUTCOMES.with_borrow_mut(|packs| packs.insert(path.to_owned(), (stamp, drawn)));
 }
 
 pub(super) fn refused(path: &Path, stamp: Option<u64>) -> bool {
@@ -162,7 +166,11 @@ impl Game<'_> {
                 .map_err(|e| vec![e])?;
             Ok((pack.manifest, labels, translucent))
         });
-        remember(path, stamp, result.as_ref().ok().map(|(m, _, _)| m.api));
+        remember(
+            path,
+            stamp,
+            result.as_ref().ok().map(|(m, _, _)| (m.api, m.blend)),
+        );
         // The resources were loaded without a native pack, so without the resource packs'
         // LabPBR maps its material stage reads: load them once, now that one runs.
         if result.as_ref().is_ok_and(|(m, _, _)| m.material.is_some())
@@ -198,15 +206,9 @@ impl Game<'_> {
     }
 }
 
-/// Why the game doesn't draw a pack the check may still pass: what it asks of shader API 0.2
-/// (docs/design/hdr-linear-light.md, steps 3 and 4) isn't served yet. 0.2 itself is drawn
+/// Why the game doesn't draw a pack the check may still pass: shader API 0.2 is drawn only
 /// under `HORIZON_HDR_FRAME=float` (`switch`).
 fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
-    if m.blend == Blend::Linear {
-        return Some(
-            "[frame] blend = \"linear\" isn't served yet: leave it out, or set \"gamma\"".into(),
-        );
-    }
     (m.api != Api::V0_1 && !switch).then(|| {
         format!(
             "it is written for shader API {}, which is experimental and drawn only under \
@@ -263,16 +265,17 @@ mod tests {
     #[test]
     fn outcomes_and_refusals_survive_renderer_resets() {
         use super::{Api, NativeShaders, fingerprint, outcome, refused, remember};
+        use horizon_shader_api::Blend;
         let root = std::env::temp_dir().join(format!("horizon-acceptance-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let file = root.join("post.wgsl");
         std::fs::write(&file, "first files").unwrap();
         let stamp = fingerprint(&root);
         assert_eq!(outcome(&root), None);
-        remember(&root, stamp, Some(Api::V0_1));
-        assert_eq!(outcome(&root), Some(Some(Api::V0_1)));
-        remember(&root, stamp, Some(Api::V0_2));
-        assert_eq!(outcome(&root), Some(Some(Api::V0_2)));
+        remember(&root, stamp, Some((Api::V0_1, Blend::Gamma)));
+        assert_eq!(outcome(&root), Some(Some((Api::V0_1, Blend::Gamma))));
+        remember(&root, stamp, Some((Api::V0_2, Blend::Linear)));
+        assert_eq!(outcome(&root), Some(Some((Api::V0_2, Blend::Linear))));
         // Policy, SDK and GPU refusals all reach this same outcome before any resource reload.
         remember(&root, stamp, None);
         for _ in 0..3 {
@@ -283,8 +286,8 @@ mod tests {
         }
         std::fs::write(&file, "repaired files with a different size").unwrap();
         assert!(!refused(&root, fingerprint(&root)));
-        remember(&root, fingerprint(&root), Some(Api::V0_2));
-        assert_eq!(outcome(&root), Some(Some(Api::V0_2)));
+        remember(&root, fingerprint(&root), Some((Api::V0_2, Blend::Gamma)));
+        assert_eq!(outcome(&root), Some(Some((Api::V0_2, Blend::Gamma))));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -352,14 +355,15 @@ mod tests {
     fn shader_api_0_2_is_drawn_only_under_the_switch() {
         for switch in [false, true] {
             assert_eq!(not_drawn(&manifest("0.1", ""), switch), None);
-            let why = not_drawn(&manifest("0.2", "[frame]\nblend = \"linear\"\n"), switch);
-            assert!(why.unwrap().contains("blend = \"linear\" isn't served yet"));
         }
-        let why = not_drawn(&manifest("0.2", ""), false).unwrap();
-        assert!(
-            why.contains("drawn only under HORIZON_HDR_FRAME=float"),
-            "{why}"
-        );
-        assert_eq!(not_drawn(&manifest("0.2", ""), true), None);
+        // Either blend: `"linear"` is drawn as `"gamma"` is.
+        for frame in ["", "[frame]\nblend = \"linear\"\n"] {
+            let why = not_drawn(&manifest("0.2", frame), false).unwrap();
+            assert!(
+                why.contains("drawn only under HORIZON_HDR_FRAME=float"),
+                "{why}"
+            );
+            assert_eq!(not_drawn(&manifest("0.2", frame), true), None, "{frame}");
+        }
     }
 }

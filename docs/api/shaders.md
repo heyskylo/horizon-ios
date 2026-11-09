@@ -182,7 +182,11 @@ uses the no-pack frame. What it changes from 0.1:
   display out, from 0 to `frame.headroom`, once per pixel of the window. Without it a pack gets Horizon's curve, the
   one HDR uses without a pack; one or the other runs, never both.
 - **`[frame] blend`**: `"gamma"` (the default) or `"linear"`, what the frame stores and so how see-through draws
-  blend. `"linear"` passes the check, but the game doesn't serve it yet.
+  blend. Under `"linear"` the frame holds linear light: the stages' results are stored as they are and Horizon's own
+  draws are decoded, so glass, water and smoke blend as light does and solid surfaces look as under `"gamma"`. A stage
+  sees the same values either way. Where the device can't draw a float frame the pack draws on an 8-bit one, in
+  gamma. Resource packs' `core/sky`, `core/stars` and `core/rendertype_lines` shaders write gamma, so under
+  `"linear"` Horizon's own sky, stars and block outline draw in their place.
 
 ```toml
 api = "0.2"
@@ -228,6 +232,9 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-09: API 0.2 (change, experimental): the game draws `[frame] blend = "linear"` packs instead of refusing
+  them: the frame holds linear light, so see-through draws blend as light does, and a stage sees the same values
+  as under `"gamma"`. API 0.1 is unchanged.
 - 2026-11-08: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float` and HDR on, where the device keeps the
   HUD on a layer of its own, a 0.2 pack is shown in HDR: `Frame`'s display fields are the display's, its `[tonemap]`
   or else Horizon's no-pack curve maps the light once, the HUD is laid over it as without a pack, and F2 writes the

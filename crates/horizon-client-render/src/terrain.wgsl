@@ -776,7 +776,7 @@ fn solid_light(finished: vec4<f32>) -> vec4<f32> {
         if globals.hdr_light.w != 0.0 {
             return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
         }
-        return vec4(finished.rgb, 1.0);
+        return frame_stored(vec4(finished.rgb, 1.0));
     }
     return finished;
 }
@@ -858,7 +858,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
         let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fogged));
         return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_shares), finished.a);
     }
-    return finished;
+    return frame_stored(finished);
 }
 
 // Native still-fluid boxes use block sprites and lightmap without terrain AO/emission
@@ -1064,7 +1064,7 @@ fn sky_finished(color: vec3<f32>) -> vec4<f32> {
         if globals.hdr_light.w != 0.0 {
             return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
         }
-        return vec4(color, 1.0);
+        return frame_stored(vec4(color, 1.0));
     }
     return vec4(color, mark);
 }
@@ -1097,7 +1097,7 @@ struct SunriseOut {
     let d = view_ray(in.ndc);
     let dist = disc_distance(d, -4.0);
     if dist.x < 0.0 { discard; }
-    return vec4(sky_fog(vec3(0.0), dist), 1.0);
+    return frame_stored(vec4(sky_fog(vec3(0.0), dist), 1.0));
 }
 
 // rendertype_lines.vsh: screen-space stroke and camera-space depth separation.
@@ -1135,7 +1135,7 @@ struct LineOut {
     return out;
 }
 @fragment fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    return apply_fog(in.color, in.spherical, in.cylindrical);
+    return frame_stored(apply_fog(in.color, in.spherical, in.cylindrical));
 }
 // Gizmo lines (rendertype_lines with a per-vertex colour and LineWidth in
 // pixels; no layering transform).
@@ -1168,5 +1168,5 @@ struct DebugLineOut {
     return out;
 }
 @fragment fn fs_debug_line(in: DebugLineOut) -> @location(0) vec4<f32> {
-    return apply_fog(in.color, in.spherical, in.cylindrical);
+    return frame_stored(apply_fog(in.color, in.spherical, in.cylindrical));
 }

@@ -151,7 +151,7 @@ pub(super) fn loading_renderer(
         // An 8-bit frame, which HDR output takes as well.
         false,
         false,
-        false,
+        None,
         false,
     ))?;
     if let Some(atlas) = atlas {

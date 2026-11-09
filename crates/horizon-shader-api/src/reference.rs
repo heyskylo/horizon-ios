@@ -81,8 +81,12 @@ Otherwise it sees SDR: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `blac
 
 `blend = \"gamma\"` (the default) keeps the frame in vanilla's gamma, values above 1 kept: Horizon encodes the material,
 sky and weather stages' results before they are stored and blended, so glass, water, clouds and particles blend as
-vanilla's. `blend = \"linear\"` stores linear light, so see-through draws blend as light does. A stage sees the same
-values either way. `\"linear\"` passes the check; the game doesn't serve it yet.
+vanilla's. `blend = \"linear\"` stores linear light, so see-through draws blend as light does: Horizon stores those
+stages' results as they are and decodes its own draws (entities, particles, clouds, weather, the stages a pack leaves
+out), so a solid surface looks as under `\"gamma\"`. A stage sees the same values either way. Where the device can't
+draw a float frame the pack draws on an 8-bit one, in gamma. Under `\"linear\"` resource packs' `core/sky`,
+`core/stars` and `core/rendertype_lines` shaders, which write gamma, give way to Horizon's own sky, stars and block
+outline.
 
 ";
 

@@ -11,7 +11,7 @@ type FrameKey = (
     bool,
     bool,
     PathBuf,
-    Option<Option<horizon_shader_api::Api>>,
+    Option<Option<native_shaders::Drawn>>,
 );
 
 impl FrameAttempt {
@@ -222,7 +222,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::FrameAttempt;
-    use horizon_shader_api::Api;
+    use horizon_shader_api::{Api, Blend};
 
     #[test]
     fn failed_frame_attempt_waits_for_a_policy_or_setting_change() {
@@ -233,8 +233,16 @@ mod tests {
             (true, false, true, "p", None),
             // HDR output offered later, with HDR On: the frame is looked at again.
             (true, true, true, "p", None),
-            (true, true, true, "p", Some(Some(Api::V0_2))),
-            (true, true, true, "p", Some(Some(Api::V0_2))),
+            (true, true, true, "p", Some(Some((Api::V0_2, Blend::Gamma)))),
+            (true, true, true, "p", Some(Some((Api::V0_2, Blend::Gamma)))),
+            // The pack changed its `[frame] blend`.
+            (
+                true,
+                true,
+                true,
+                "p",
+                Some(Some((Api::V0_2, Blend::Linear))),
+            ),
             (true, true, true, "p", Some(None)),
             (true, true, true, "p", Some(None)),
             (true, true, true, "q", None),
@@ -245,6 +253,6 @@ mod tests {
                 rebuilds += 1;
             }
         }
-        assert_eq!(rebuilds, 6);
+        assert_eq!(rebuilds, 7);
     }
 }

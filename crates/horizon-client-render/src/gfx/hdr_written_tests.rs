@@ -478,7 +478,7 @@ impl<'a> Draw<'a> {
             Vec::new(),
             Default::default(),
             None,
-            api,
+            (api, false),
         );
         self.queue.write_buffer(
             &frame.buffer,
