@@ -990,6 +990,7 @@
 //! Bodies have no `cfg` and no macros: horizon-mixins refuses a target with
 //! either (`tests::hook_points_stay_hookable`).
 use super::native_data_maps::NativeDataMapType;
+use super::native_guards::{box_meets, finite, finite_params, mod_image_fits};
 use super::native_item_energy::ItemEnergyBuffer;
 use super::native_world_edit::{property_change, with_property};
 use super::{
@@ -1410,6 +1411,34 @@ impl GameLevel<'_> {
         cancel: &mut bool,
     ) {
         mod_api::dispatch_bell_ring(self, mod_api::mods(), dimension, player, pos, cancel);
+    }
+
+    /// On an authoritative server, `player` stands in a pressure plate or tripwire
+    /// `block` (`minecraft:stone_pressure_plate`...) at `pos` and would set it off
+    /// (Bukkit's `PlayerInteractEvent` with `Action.PHYSICAL`). Asked each time
+    /// the block counts what is inside it, before the effect, for every player in
+    /// it, so a plate a player keeps standing on asks each check. Set `cancel` and
+    /// that player does not count: a plate stays unpowered and a wire untripped for
+    /// them, while others still set it off. Farmland and turtle eggs landed on are
+    /// `native_trample` and `native_entity_change_block_v2`. @API:player_physical_trigger@.
+    #[inline(always)]
+    pub(super) fn native_player_physical_trigger(
+        &self,
+        dimension: LevelDimension,
+        player: u128,
+        pos: BlockPos,
+        block: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_player_physical_trigger(
+            self,
+            mod_api::mods(),
+            dimension,
+            player,
+            pos,
+            block,
+            cancel,
+        );
     }
 
     /// On an authoritative server, a cauldron at `pos` is about to change
@@ -2506,10 +2535,10 @@ impl Game<'_> {
     /// draw here to put something below the layer, or set `canceled` to hide
     /// it. `layer` is the layer's id, in the order Horizon draws them:
     /// `minecraft:crosshair`, `hotbar`, `effects`, `boss_overlay`,
-    /// `vehicle_health` (only riding a mount), `contextual_info_bar` (the
+    /// `vehicle_health` (only riding a mount), `player_health` (the health,
+    /// armor, food and air rows, drawn in one pass), `contextual_info_bar` (the
     /// mount's jump bar, the locator bar or the experience bar, with the level
-    /// number), `player_health` (the health, armor, food and air rows, drawn in
-    /// one pass), `selected_item_name`, `sleep_overlay`, `overlay_message`
+    /// number), `selected_item_name`, `sleep_overlay`, `overlay_message`
     /// (the action bar), `title`, `scoreboard_sidebar`, `subtitle_overlay`,
     /// `chat` and `tab_list`. A layer F1 hides fires nothing, and the chat
     /// screen draws the focused chat itself, so `chat` is only the unfocused
@@ -12673,16 +12702,6 @@ impl Game<'_> {
     }
 }
 
-/// Whether `rgba` is a whole `width` x `height` image that fits a
-/// `slot_width` x `slot_height` atlas slot (a native mod's `mod_image`).
-fn mod_image_fits(width: u32, height: u32, rgba: usize, slot_width: u32, slot_height: u32) -> bool {
-    width > 0
-        && height > 0
-        && width <= slot_width
-        && height <= slot_height
-        && rgba == width as usize * height as usize * 4
-}
-
 /// Whether F3's debug screen, open when `debug`, covers `corner`
 /// (`DebugScreenOverlay.extractRenderState`): its left and right columns
 /// the top corners, and its charts the bottom corners `charts` (bottom left,
@@ -12712,12 +12731,6 @@ fn config_dir(game_dir: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// `params` with each value that isn't finite as 0, so a mod's mistake can't
-/// put a NaN in every pixel of a pack's picture.
-fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
-    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
-}
-
 /// Whether `native_play_local_sound` takes these values: a sound event's id
 /// (`sound_id`, as `native_play_sound` takes), a finite position, a volume
 /// and pitch at or above 0, and a delay of a minute at most.
@@ -12731,11 +12744,6 @@ fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32
         && (0..=1200).contains(&delay)
 }
 
-/// `v` within `lo..=hi`; `lo` when it is not a number.
-fn finite(v: f32, lo: f32, hi: f32) -> f32 {
-    if v.is_finite() { v.clamp(lo, hi) } else { lo }
-}
-
 /// An item entity as `native_item_entities` lists it. API 42.
 /// Read by mods only.
 #[derive(Clone, Debug)]
@@ -12747,17 +12755,6 @@ pub struct NativeItemEntity {
     /// Ticks before a player may pick it up (`ItemEntity.pickupDelay`);
     /// hoppers take it whatever this is.
     pub pickup_delay: u32,
-}
-
-/// `AABB.intersects`: the boxes overlap, touching faces excluded.
-fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> bool {
-    let (lo, hi) = (b.min_position(), b.max_position());
-    lo.x < max[0]
-        && hi.x > min[0]
-        && lo.y < max[1]
-        && hi.y > min[1]
-        && lo.z < max[2]
-        && hi.z > min[2]
 }
 
 /// What `native_mod_screen_open(mod_id)` does over `screen` (`blocked`: an

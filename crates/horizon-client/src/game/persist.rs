@@ -28,7 +28,7 @@ use std::{
 
 /// `Entity.saveWithoutId`: materialize the mandatory fields of an entity
 /// whose simulation state is still represented by its loaded compound.
-fn write_static_entity_fields(tag: &mut Tag) {
+pub(super) fn write_static_entity_fields(tag: &mut Tag) {
     use horizon_client::{nbt_path::int_value, save::float};
 
     let int = |key, default| tag.get(key).and_then(int_value).unwrap_or(default);
@@ -819,7 +819,7 @@ impl Game<'_> {
     /// A saved thrown trident.
     pub(super) fn load_trident(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         if let Some(n) = entity_nbt::trident_from_nbt(&tag) {
-            let mut t = super::trident::ThrownTrident::from_nbt(n);
+            let mut t = super::trident::ThrownTrident::from_nbt(n, &tag, self.pack.assets.registry);
             t.id = self.take_entity_id();
             // One that came through a portal keeps its cooldown.
             let id = t.id;
@@ -2351,8 +2351,8 @@ impl Game<'_> {
     ) -> Option<(ChunkKey, Tag)> {
         let (id, at) = (self.tridents[i].id, self.tridents[i].position);
         keys.contains(&chunk_of(at)).then(|| {
-            let uuid = self.uuid_for(id);
-            let tag = self.tridents[i].to_nbt(uuid, self.persist.raw.get(&id));
+            let (uuid, reg) = (self.uuid_for(id), self.pack.assets.registry);
+            let tag = self.tridents[i].to_nbt(uuid, reg, self.persist.raw.get(&id));
             (chunk_of(at), tag)
         })
     }

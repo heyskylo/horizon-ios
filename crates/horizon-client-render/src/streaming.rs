@@ -8,7 +8,7 @@ use crate::{
     chunk::Chunk,
     chunk_map::ChunkMembershipDelta,
     graphics::LeafCullingMode,
-    light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
+    light::{LightChanges, LightTables, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
 };
@@ -1062,6 +1062,7 @@ pub struct WorkerContext {
     pub biomes: Arc<crate::biome::Biomes>,
     pub light: Arc<LightTables>,
 }
+mod relight_now;
 impl Streaming {
     pub fn new<G: ChunkGenerator>(
         generator: Arc<G>,
@@ -1722,38 +1723,7 @@ impl Streaming {
                     }
                     self.lighting.remove(&(x, z));
                     let snapshot = self.light_snapshots.remove(&(x, z)).unwrap_or(u64::MAX);
-                    if let Some(chunk) = world.chunks.get_mut(&(x, z)) {
-                        let chunk = Arc::make_mut(chunk);
-                        // Keep blocks edited since the snapshot; take only light.
-                        // A chunk relit (a neighbour loaded or changed) remeshes
-                        // only around the light that changed, as vanilla's light
-                        // updates dirty only their sections (#270).
-                        let first = self.lit.insert((x, z));
-                        let mut changed = LightChanges::default();
-                        if first {
-                            apply_lighting(chunk, sections);
-                        } else {
-                            apply_relighting(chunk, sections, &mut changed);
-                        }
-                        // Saved unlit (at the edge of what was loaded), or its light
-                        // changed: saved again.
-                        if (first && !chunk.light_loaded) || !changed.is_empty() {
-                            world.modified.insert((x, z));
-                        }
-                        chunk.lit = true;
-                        if first {
-                            for dz in -1..=1 {
-                                for dx in -1..=1 {
-                                    for sy in 0..world.layout().sections() as i32 {
-                                        world.dirty_sections.insert((x + dx, sy, z + dz));
-                                    }
-                                }
-                            }
-                        } else {
-                            Self::mark_light_changes(world, &changed);
-                        }
-                        self.replay_light_edits(world, x, z, snapshot);
-                    }
+                    self.apply_lit(world, x, z, sections, snapshot);
                 }
                 Done::Meshed(x, sy, z, mesh, seq) => {
                     if self.meshing.get(&(x, sy, z)) != Some(&seq) {
