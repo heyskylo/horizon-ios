@@ -59,7 +59,7 @@ pub fn loaded_motion(tag: &Tag) -> Vec3 {
 pub fn rotation(tag: &Tag) -> [f32; 2] {
     read_doubles::<2>(tag.get("Rotation")).map_or([0.0; 2], |r| [r[0] as f32, r[1] as f32])
 }
-/// `NumericTag.byteValue`'s nonzero test for entity NBT, defaulting to false.
+/// `TagValueInput.getBooleanOr`: a numeric tag's byteValue is nonzero, with a false default.
 pub fn flag(tag: &Tag, key: &str) -> bool {
     flag_or(tag, key, false)
 }
@@ -70,6 +70,33 @@ pub fn flag_or(tag: &Tag, key: &str, default: bool) -> bool {
         .and_then(int_value)
         .map_or(default, |value| value as i8 != 0)
 }
+
+/// `Entity.saveWithoutId`: write the movement flags and the flags retained
+/// from `Entity.load` as booleans. Only OnGround and Invulnerable write false.
+pub fn write_saved_flags(tag: &mut Tag, on_ground: bool, no_gravity: bool) {
+    let invulnerable = flag(tag, "Invulnerable");
+    let optional = [
+        ("NoGravity", no_gravity),
+        ("CustomNameVisible", flag(tag, "CustomNameVisible")),
+        ("Silent", flag(tag, "Silent")),
+        ("Glowing", flag(tag, "Glowing")),
+        ("HasVisualFire", flag(tag, "HasVisualFire")),
+    ];
+    let Tag::Compound(map) = tag else {
+        return;
+    };
+    map.insert("OnGround".into(), Tag::Byte(i8::from(on_ground)));
+    map.insert("Invulnerable".into(), Tag::Byte(i8::from(invulnerable)));
+    for (key, value) in optional {
+        let key = key.into();
+        if value {
+            map.insert(key, Tag::Byte(1));
+        } else {
+            map.remove(&key);
+        }
+    }
+}
+
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
     id: &'a str,
@@ -118,6 +145,8 @@ impl Base<'_> {
                 map.entry(key.into()).or_insert(value);
             }
         }
+        let no_gravity = flag(&tag, "NoGravity");
+        write_saved_flags(&mut tag, self.on_ground, no_gravity);
         tag
     }
     /// Preserve Entity data without flags owned by Mob's save writer.
@@ -1963,10 +1992,22 @@ pub fn mob_from_nbt(
     id: u32,
     registry: Option<&BlockRegistry>,
 ) -> Option<Mob> {
+    let position = position(tag)?;
+    let random = crate::mobs::entity_random(id, position);
+    mob_from_nbt_with_random(tag, types, id, registry, random)
+}
+/// `mob_from_nbt` for a mob with its own random given (`Mob::with_random`).
+pub fn mob_from_nbt_with_random(
+    tag: &Tag,
+    types: &HashMap<String, Arc<MobType>>,
+    id: u32,
+    registry: Option<&BlockRegistry>,
+    random: horizon_core::random::LegacyRandom,
+) -> Option<Mob> {
     let kind = types.get(&self::kind(tag)?)?.clone();
     let position = position(tag)?;
     let [yaw, pitch] = rotation(tag);
-    let mut m = Mob::new(id, kind, position, yaw);
+    let mut m = Mob::with_random(id, kind, position, yaw, random);
     m.velocity = motion(tag);
     m.head_pitch = pitch;
     // LivingEntity.readAdditionalSaveData: `setSharedFlag(7, getBooleanOr(FallFlying, false))`.
@@ -1978,10 +2019,9 @@ pub fn mob_from_nbt(
     // the health, the max health when there is none.
     if let Some(Tag::List(attrs)) = tag.get("attributes") {
         for a in attrs {
-            let (Some(id), Some(Tag::Double(bits))) = (text(a.get("id")), a.get("base")) else {
+            let (Some(id), Some(v)) = (text(a.get("id")), float(a.get("base"))) else {
                 continue;
             };
-            let v = f64::from_bits(*bits);
             // A mount's rolled health and speed stay attribute bases, which
             // the server syncs (its hearts over the rider's hotbar).
             let equine = crate::mobs::equine::is_equine(m.species());
@@ -2341,11 +2381,11 @@ pub fn mob_from_nbt(
             .map(Into::into);
         if let Some(Tag::List(attrs)) = tag.get("attributes") {
             for a in attrs {
-                let (Some(id), Some(Tag::Double(bits))) = (text(a.get("id")), a.get("base")) else {
+                let (Some(id), Some(v)) = (text(a.get("id")), float(a.get("base"))) else {
                     continue;
                 };
                 if id == "minecraft:jump_strength" {
-                    m.extra.vector[0] = f64::from_bits(*bits);
+                    m.extra.vector[0] = v;
                 }
             }
         }
@@ -2881,10 +2921,17 @@ fn item_entity_to_nbt_saved(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>, i
 /// `PrimedTnt.readAdditionalSaveData`: `explosion_power`, 4 by default and
 /// clamped to 0..128.
 pub fn tnt_power(tag: &Tag) -> f32 {
-    match tag.get("explosion_power") {
-        Some(Tag::Float(bits)) => f32::from_bits(*bits).clamp(0.0, 128.0),
+    // `getFloatOr` accepts any numeric tag, not only a float.
+    let power = match tag.get("explosion_power") {
+        Some(Tag::Byte(v)) => f32::from(*v),
+        Some(Tag::Short(v)) => f32::from(*v),
+        Some(Tag::Int(v)) => *v as f32,
+        Some(Tag::Long(v)) => *v as f32,
+        Some(Tag::Float(bits)) => f32::from_bits(*bits),
+        Some(Tag::Double(bits)) => f64::from_bits(*bits) as f32,
         _ => 4.0,
-    }
+    };
+    power.clamp(0.0, 128.0)
 }
 
 /// `PrimedTnt.addAdditionalSaveData`: its `fuse` and, when it is not the
@@ -3156,7 +3203,7 @@ pub fn arrow_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: a.fall_distance,
     };
     let mut tag = base.tag(raw);
@@ -3243,6 +3290,7 @@ pub fn arrow_from_nbt(
     p.left_owner = flag(tag, "LeftOwner");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -3299,7 +3347,7 @@ pub fn fireball_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3309,12 +3357,8 @@ pub fn fireball_to_nbt(
         Tag::Double(p.acceleration.to_bits()),
     );
     put_projectile(&mut tag, p, owner);
-    // AbstractHurtingProjectile.tick: shouldBurn is true for both fireballs, so
-    // once ticked they igniteForSeconds(1) every tick. WitherSkull.shouldBurn is
-    // false, so a skull never saves a fire.
-    if p.age > 0 && p.kind.is_item_fireball() {
-        let fire = number(tag.get("Fire")).unwrap_or(0).max(20);
-        put(&mut tag, "Fire", Tag::Short(fire as i16));
+    if p.is_fireball() {
+        put_projectile_entity_fields(&mut tag, p);
     }
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
@@ -3329,6 +3373,27 @@ pub fn fireball_to_nbt(
         put(&mut tag, "Item", item_to_nbt(item));
     }
     Some(tag)
+}
+
+/// `Entity.load`: fire is read as a short, air as an int and the visual
+/// fire flag as a byte-valued boolean. Portal state lives on the level.
+fn load_projectile_entity_fields(p: &mut Projectile, tag: &Tag) {
+    p.fire_ticks = i32::from(tag.get("Fire").and_then(int_value).unwrap_or(0) as i16);
+    p.air_supply = tag.get("Air").and_then(int_value).unwrap_or(p.air_supply);
+    p.has_visual_fire = flag(tag, "HasVisualFire");
+}
+
+/// `Entity.saveWithoutId`: save the current fire and air as shorts, and
+/// only write the optional visual fire flag when it is true.
+fn put_projectile_entity_fields(tag: &mut Tag, p: &Projectile) {
+    put(tag, "Fire", Tag::Short(p.fire_ticks as i16));
+    put(tag, "Air", Tag::Short(p.air_supply as i16));
+    if let Tag::Compound(map) = tag {
+        map.remove(&"HasVisualFire".into());
+    }
+    if p.has_visual_fire {
+        put(tag, "HasVisualFire", Tag::Byte(1));
+    }
 }
 
 /// `Projectile.addAdditionalSaveData`: Owner, LeftOwner only when set, and
@@ -3433,11 +3498,12 @@ pub fn throwable_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
+    put_projectile_entity_fields(&mut tag, p);
     // Entity.saveWithoutId writes NoGravity only when set.
     if p.no_gravity {
         put(&mut tag, "NoGravity", Tag::Byte(1));
@@ -3474,6 +3540,8 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    load_projectile_entity_fields(&mut p, tag);
+    p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3519,6 +3587,7 @@ pub fn spit_or_bullet_from_nbt(
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3543,7 +3612,7 @@ pub fn spit_or_bullet_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3612,6 +3681,10 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    if p.is_fireball() {
+        load_projectile_entity_fields(&mut p, tag);
+    }
+    p.on_ground = flag(tag, "OnGround");
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
         p.set_item(item);
@@ -3631,6 +3704,7 @@ pub struct RocketNbt {
     pub angled: bool,
     pub owner: Option<Who>,
     pub left_owner: bool,
+    pub on_ground: bool,
 }
 pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<RocketNbt> {
     let owner = uuid_from_tag(tag.get("Owner"));
@@ -3643,6 +3717,7 @@ pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<R
         angled: flag(tag, "ShotAtAngle"),
         owner: (player.is_some() && owner == player).then_some(Who::Player),
         left_owner: flag(tag, "LeftOwner"),
+        on_ground: flag(tag, "OnGround"),
     })
 }
 
@@ -3658,6 +3733,8 @@ pub struct RocketSave<'a> {
     pub angled: bool,
     pub owner: Option<[i32; 4]>,
     pub left_owner: bool,
+    /// `Entity.onGround`, from the rocket's last `Entity.move`.
+    pub on_ground: bool,
 }
 pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = Base {
@@ -3666,7 +3743,7 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
         position: r.position,
         motion: r.motion,
         rotation: r.rotation,
-        on_ground: false,
+        on_ground: r.on_ground,
         fall_distance: 0.0,
     }
     .tag(raw);
@@ -3703,6 +3780,8 @@ pub struct TridentSave<'a> {
     pub has_been_shot: bool,
     pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
+    /// `Entity.onGround`: a trident moves by `setPos`, so it keeps the loaded one.
+    pub on_ground: bool,
     pub fire_ticks: i32,
     pub item: &'a crate::items::ItemStack,
 }
@@ -3714,7 +3793,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         position: t.position,
         motion: t.motion,
         rotation: [t.yaw, t.pitch],
-        on_ground: false,
+        on_ground: t.on_ground,
         fall_distance: 0.0,
     }
     .tag(raw);
@@ -3770,6 +3849,7 @@ pub struct TridentNbt {
     pub has_been_shot: bool,
     pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
+    pub on_ground: bool,
     pub fire_ticks: i32,
     pub item: crate::items::ItemStack,
 }
@@ -3790,6 +3870,7 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         has_been_shot: flag(tag, "HasBeenShot"),
         owner: owner_uuid(tag),
         no_gravity: flag(tag, "NoGravity"),
+        on_ground: flag(tag, "OnGround"),
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         item: tag
             .get("item")
@@ -3808,6 +3889,7 @@ pub fn falling_block_to_nbt(
     drop_item: bool,
     damage: crate::falling_block::Damage,
     fall_distance: f64,
+    on_ground: bool,
     rotation: [f32; 2],
     uuid: [i32; 4],
 ) -> Tag {
@@ -3817,7 +3899,7 @@ pub fn falling_block_to_nbt(
         position,
         motion,
         rotation,
-        on_ground: false,
+        on_ground,
         fall_distance,
     };
     let mut tag = base.tag(None);
@@ -3905,21 +3987,23 @@ fn attached_block_pos(tag: &Tag) -> Option<[i32; 3]> {
         }
     }
 }
-/// The block position, facing and variant of a saved painting.
-pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, String)> {
+/// The block position, facing and variant (if saved) of a painting.
+pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, Option<String>)> {
     let pos = attached_block_pos(tag)?;
     let facing = (number(tag.get("facing")).unwrap_or(0) & 3) as u8;
-    Some((pos, facing, text(tag.get("variant"))?))
+    Some((pos, facing, text(tag.get("variant"))))
 }
-/// Cushion.addAdditionalSaveData: the block it sits on and its colour.
+/// `Cushion.addAdditionalSaveData`: the block it sits on and its colour.
 pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    // A block-attached cushion does not update these movement flags.
+    let on_ground = raw.is_some_and(|tag| flag(tag, "OnGround"));
     let base = Base {
         id: "minecraft:cushion",
         uuid,
         position: c.position,
         motion: Vec3::ZERO,
         rotation: [c.yaw, 0.0],
-        on_ground: false,
+        on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3962,51 +4046,8 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
 }
 
 #[cfg(test)]
-mod cushion_tests {
-    use super::*;
-
-    #[test]
-    fn flags_take_any_number_and_fall_back_when_absent() {
-        let tag = Tag::compound([
-            ("byte", Tag::Byte(2)),
-            ("int", Tag::Int(1)),
-            ("wrapped", Tag::Int(256)),
-            ("short", Tag::Short(0)),
-            ("text", string("1")),
-        ]);
-        assert!(flag(&tag, "byte"));
-        assert!(flag(&tag, "int"));
-        assert!(!flag(&tag, "wrapped"));
-        assert!(!flag_or(&tag, "short", true));
-        assert!(flag_or(&tag, "text", true));
-        assert!(flag_or(&tag, "absent", true));
-        assert!(!flag(&tag, "absent"));
-    }
-
-    #[test]
-    fn cushion_save_preserves_color_anchor_rotation_and_unknown_data() {
-        let cushion = Cushion {
-            id: 7,
-            position: Vec3::new(-1.5, 64.5, 3.5),
-            pos: [-2, 64, 3],
-            yaw: 270.0,
-            color: 14,
-            check_interval: 55,
-            custom_name: None,
-        };
-        let raw = Tag::compound([("CustomName", string("Seat"))]);
-        let tag = cushion_to_nbt(&cushion, [1, 2, 3, 4], Some(&raw));
-        assert_eq!(text(tag.get("CustomName")).as_deref(), Some("Seat"));
-        let loaded = cushion_from_nbt(&tag, 8).unwrap();
-        assert_eq!(loaded.id, 8);
-        assert_eq!(loaded.position, cushion.position);
-        assert_eq!(loaded.pos, cushion.pos);
-        assert_eq!(loaded.yaw, cushion.yaw);
-        assert_eq!(loaded.color_name(), "red");
-        assert_eq!(loaded.check_interval, 0);
-        assert_eq!(loaded.bounds(), cushion.bounds());
-    }
-}
+#[path = "cushion_tests.rs"]
+mod cushion_tests;
 /// ItemFrame.addAdditionalSaveData.
 pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let (lo, hi) = f.bounds();
@@ -4503,6 +4544,17 @@ mod tnt_power_tests {
         assert_eq!(tnt_power(&with(Some(10.0))), 10.0);
         assert_eq!(tnt_power(&with(Some(200.0))), 128.0);
         assert_eq!(tnt_power(&with(Some(-3.0))), 0.0);
+        // Any numeric tag type counts, as with `getFloatOr`.
+        let numeric = |tag: Tag| {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("explosion_power".into(), tag);
+            Tag::Compound(map)
+        };
+        assert_eq!(tnt_power(&numeric(Tag::Int(50))), 50.0);
+        assert_eq!(tnt_power(&numeric(Tag::Byte(7))), 7.0);
+        assert_eq!(tnt_power(&numeric(Tag::Short(9))), 9.0);
+        assert_eq!(tnt_power(&numeric(Tag::Long(500))), 128.0);
+        assert_eq!(tnt_power(&numeric(Tag::Double(12.5f64.to_bits()))), 12.5);
         // And it round-trips through the save, which writes it only when it is
         // not the default.
         let saved = tnt_to_nbt(
@@ -5258,12 +5310,16 @@ mod tests {
                 angled: true,
                 owner: None,
                 left_owner: false,
+                on_ground: true,
             },
             [1, 2, 3, 4],
             None,
         );
         let r = firework_rocket_from_nbt(&tag, None).unwrap();
-        assert_eq!((r.life, r.lifetime, r.angled), (7, 31, true));
+        assert_eq!(
+            (r.life, r.lifetime, r.angled, r.on_ground),
+            (7, 31, true, true)
+        );
         assert_eq!(r.position, Vec3::new(1.5, 70.0, -3.25));
         let trident = ItemStack::new("minecraft:trident", 1);
         let tag = trident_to_nbt(
@@ -5281,6 +5337,7 @@ mod tests {
                 has_been_shot: true,
                 owner: Some([5, 6, 7, 8]),
                 no_gravity: true,
+                on_ground: true,
                 fire_ticks: 0,
                 item: &trident,
             },
@@ -5291,6 +5348,9 @@ mod tests {
         // `Entity.saveWithoutId` writes NoGravity only when set.
         assert!(t.no_gravity);
         assert!(matches!(tag.get("NoGravity"), Some(Tag::Byte(1))));
+        // Entity.load/saveWithoutId: OnGround as it was.
+        assert!(t.on_ground);
+        assert_eq!(tag.get("OnGround"), Some(&Tag::Byte(1)));
         assert_eq!((t.in_ground, t.life, t.shake), (true, 9, 3));
         assert_eq!((t.dealt_damage, t.pickup), (true, Pickup::CreativeOnly));
         assert!(t.left_owner && t.has_been_shot);
@@ -5459,6 +5519,7 @@ mod tests {
             false,
             crate::falling_block::Damage::default(),
             distance,
+            false,
             [0.0, 0.0],
             [96, 0, 0, 1],
         );
@@ -5518,6 +5579,7 @@ mod tests {
             false,
             damage,
             19.75,
+            true,
             [0.0, 0.0],
             [1, 2, 3, 4],
         );
@@ -6265,6 +6327,7 @@ mod tests {
                 has_been_shot: loaded.has_been_shot,
                 owner: loaded.owner,
                 no_gravity: false,
+                on_ground: false,
                 fire_ticks: 0,
                 item: &trident,
             },
@@ -8376,8 +8439,14 @@ mod fireball_nbt_tests {
         ]);
         assert_eq!(
             painting_from_nbt(&painting),
-            Some(([28, 80, 6], 3, "minecraft:kebab".to_string()))
+            Some(([28, 80, 6], 3, Some("minecraft:kebab".to_string())))
         );
+        // No variant saved (a bare summon): the position and facing still load.
+        let mut bare = painting.clone();
+        if let Tag::Compound(m) = &mut bare {
+            m.remove(&"variant".into());
+        }
+        assert_eq!(painting_from_nbt(&bare), Some(([28, 80, 6], 3, None)));
         let frame = Tag::compound([
             ("id", Tag::String("minecraft:item_frame".into())),
             ("Pos", doubles(&[-0.5, 80.0, 6.5])),

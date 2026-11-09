@@ -487,8 +487,8 @@ plain = """Speeding up the code that reads and writes the blocks of the world, w
 goes through: generation, lighting, meshing and ticking."""
 dev = """`PalettedContainer` and `PackedStorage` find an entry's word by multiply and shift instead of an integer \
 division (#1790, #1794); meshing looks up baked models by index, not by name (#1747). Each change keeps the paletted \
-storage harnesses identical and shows its microbenchmark (docs/performance/paletted-container-access-results.md)."""
-links = ["#1790", "#1794", "#1747", "docs/performance/paletted-container-access-results.md"]
+storage harnesses identical and shows its microbenchmark in its pull request."""
+links = ["#1790", "#1794", "#1747"]
 
 [[item]]
 id = "server-clients"

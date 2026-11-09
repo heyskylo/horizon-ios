@@ -1908,6 +1908,17 @@ pub enum MobEvent {
         source: u32,
         state: horizon_world::registry::BlockStateId,
     },
+    /// `Level.gameEvent` from the block a mob landed on (`FarmlandBlock.turnToBaseBlock`'s
+    /// BLOCK_CHANGE from the mob that trampled it, `TurtleEggBlock.decreaseEggs`' and
+    /// `Level.destroyBlock`'s BLOCK_DESTROY with no source): the game posts it, a
+    /// sculk sensor, a calibrated sensor and a warden hear it.
+    LandingGameEvent {
+        event: &'static str,
+        at: [i32; 3],
+        /// The entity that caused the change, `None` for a destroyed egg.
+        source: Option<u32>,
+        state: horizon_world::registry::BlockStateId,
+    },
     AttackPlayer(f32, [f64; 3]),
     /// `Bee.doHurtTarget` on a player: a sting that lands leaves its stinger
     /// in them and poisons them for `poison_ticks` (none on easy).
@@ -3352,9 +3363,29 @@ pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
     let _ = random.next_int();
     random
 }
+/// The own random (`Entity.random`) of a living entity the server makes, as
+/// `LivingEntity.<init>` leaves it: its first two draws made the UUID
+/// (`Mth.createInsecureUUID`), returned here, and the next one the yaw, which
+/// every spawn path then replaces. Constructor draws of the kind come after.
+pub fn living_random() -> (LegacyRandom, [i32; 4]) {
+    let mut random = crate::random_source::entity();
+    let uuid = crate::save::insecure_uuid(&mut random);
+    let _yaw = random.next_float();
+    (random, uuid)
+}
 impl Mob {
     pub fn new(id: u32, kind: Arc<MobType>, position: Vec3, yaw: f32) -> Self {
-        let random = entity_random(id, position);
+        Self::with_random(id, kind, position, yaw, entity_random(id, position))
+    }
+    /// `new` with the mob's own random given: the kind's constructor draws
+    /// (a chicken's egg timer) come from it.
+    pub fn with_random(
+        id: u32,
+        kind: Arc<MobType>,
+        position: Vec3,
+        yaw: f32,
+        random: LegacyRandom,
+    ) -> Self {
         let mut mob = Self {
             join: Default::default(),
             id,
@@ -4692,7 +4723,7 @@ impl EntityModelDocument {
     }
 
     /// The parsed document, for loaders that read several keys from it.
-    pub(crate) fn value(&self) -> &Value {
+    pub fn value(&self) -> &Value {
         &self.0
     }
 }

@@ -62,6 +62,16 @@ pub fn radius_cells(cloud_range_chunks: i32) -> i32 {
     ((cloud_range_chunks * 16) as f32 / 12.0).ceil() as i32
 }
 
+/// Cells the mesh's origin snaps to. The mesh is a window on the cloud pattern around the
+/// camera's cell, so it used to be rebuilt, and the whole array re-uploaded, on every cell
+/// crossed: 6.5 MB, about 11 ms at the default 128-chunk range, the worst frame of a flight.
+/// Anchoring the origin to a coarser grid rebuilds it once every `SNAP_CELLS` cells instead,
+/// and `Uniform::offset` carries the remaining shift. The ring of cells the shift can leave
+/// uncovered at the far side lies past the cloud fog end, where the cloud fade has already
+/// taken the alpha to 0 (`entity.wgsl`'s `fs_entity`), so the extra cells cost only the
+/// vertices they add.
+const SNAP_CELLS: i64 = 4;
+
 #[derive(Clone)]
 pub struct CellIter {
     radius: i32,
@@ -145,6 +155,10 @@ struct MeshKey {
     // The two vertical face tests include both surfaces at the boundaries.
     top: bool,
     bottom: bool,
+    // The camera's cell within the snapped origin's, for the 3x3 cells whose inward
+    // faces are drawn. Only read while the camera is inside the layer.
+    sub_x: i32,
+    sub_z: i32,
 }
 
 #[repr(C)]
@@ -169,16 +183,30 @@ impl Input<'_> {
         let (tw, th) = (f64::from(*w) * 12.0, f64::from(*h) * 12.0);
         x -= (x / tw).floor() * tw;
         z -= (z / th).floor() * th;
-        let cell_x = (x / 12.0).floor() as i64;
-        let cell_z = (z / 12.0).floor() as i64;
+        let cell_x = (x / 12.0).floor() as i64 / SNAP_CELLS * SNAP_CELLS;
+        let cell_z = (z / 12.0).floor() as i64 / SNAP_CELLS * SNAP_CELLS;
         let bottom = (CLOUD_HEIGHT - self.camera.y) as f32;
+        // The inward faces of the 3x3 cells around the camera are only seen from inside the
+        // layer; outside it they are back-facing, so the mesh need not follow the camera there.
+        let inside_layer = bottom <= 0.0 && bottom + 4.0 >= 0.0;
+        let (sub_x, sub_z) = if inside_layer {
+            (
+                (x / 12.0).floor() as i32 - cell_x as i32,
+                (z / 12.0).floor() as i32 - cell_z as i32,
+            )
+        } else {
+            (0, 0)
+        };
         let key = MeshKey {
             cell_x,
             cell_z,
-            radius: radius_cells(self.range),
+            // One more ring than the range, for the cells the snapped origin can uncover.
+            radius: radius_cells(self.range) + SNAP_CELLS as i32,
             fast: self.fast,
             top: bottom <= 0.0,
             bottom: bottom + 4.0 >= 0.0,
+            sub_x,
+            sub_z,
         };
         let colors = [1.0, 0.7, 0.8, 0.9].map(|shade| {
             let [r, g, b, a] = self.color;
@@ -200,6 +228,10 @@ impl Input<'_> {
     }
 }
 
+/// The cloud cells around a snapped origin, rebuilt when the key changes: once every
+/// [`SNAP_CELLS`] cells the camera crosses, and every cell while the camera is inside the
+/// layer, where the inward faces follow it. The renderer copies the vertices to the GPU on
+/// a rebuild, which is why the origin snaps at all.
 #[derive(Default)]
 pub(crate) struct Mesh {
     key: Option<MeshKey>,
@@ -357,8 +389,8 @@ impl Mesh {
             }
 
             let mask = face_mask(
-                dx,
-                dz,
+                dx - key.sub_x,
+                dz - key.sub_z,
                 bottom,
                 [
                     !filled(cx, cz - 1),
@@ -414,13 +446,16 @@ mod tests {
                 assert_eq!(color[3], 127.0 / 255.0);
             }
         }
+        // One block into the second snap cell: every case below moves the snapped origin, or
+        // another part of the key, so each one rebuilds.
+        let far_cell = SNAP_CELLS as f64 * 12.0 + 1.0;
         for (x, y, z, range, fast) in [
-            (13.0, 101.0, 1.0, 2, false),
-            (13.0, 101.0, -5.0, 2, false),
-            (13.0, 192.33, -5.0, 2, false),
-            (13.0, 196.34, -5.0, 2, false),
-            (13.0, 196.34, -5.0, 3, false),
-            (13.0, 196.34, -5.0, 3, true),
+            (far_cell, 101.0, 1.0, 2, false),
+            (far_cell, 101.0, -5.0, 2, false),
+            (far_cell, 192.33, -5.0, 2, false),
+            (far_cell, 196.34, -5.0, 2, false),
+            (far_cell, 196.34, -5.0, 3, false),
+            (far_cell, 196.34, -5.0, 3, true),
         ] {
             input.camera = glam::DVec3::new(x, y, z);
             input.range = range;
@@ -434,8 +469,14 @@ mod tests {
             );
             assert!(!mesh.prepare(&input).0);
         }
-        // Drift alone crosses a cell, even with a stationary camera.
-        input.time += 400;
+        // Drift alone crosses the snapped origin, even with a stationary camera.
+        input.camera = glam::DVec3::new(1.0, 101.0, 1.0);
+        input.time = 0;
+        input.partial_tick = 0.0;
+        assert!(mesh.prepare(&input).0);
+        assert!(!mesh.prepare(&input).0);
+        // 400 ticks of drift move the clouds 12 blocks: one whole snap cell.
+        input.time = SNAP_CELLS * 400;
         assert!(mesh.prepare(&input).0);
         // Resource reload constructs a new renderer and cache, including empty packs.
         let mut reloaded = Mesh::default();
@@ -444,6 +485,80 @@ mod tests {
         assert!(reloaded.prepare(&input).0);
         assert!(reloaded.vertices.is_empty());
         assert!(!reloaded.prepare(&input).0);
+    }
+
+    #[test]
+    fn a_snap_cell_of_motion_keeps_the_mesh_at_the_same_world_cells() {
+        let texture = (8, 8, (0..64).map(|i| i % 3 != 0).collect());
+        let mut input = Input {
+            texture: &texture,
+            uv: [0.5; 2],
+            camera: glam::DVec3::new(1.0, 100.0, 1.0),
+            time: 0,
+            partial_tick: 0.0,
+            range: 2,
+            fast: false,
+            color: [1.0; 4],
+        };
+        // One snap cell, in blocks.
+        let cell = SNAP_CELLS as f64 * 12.0;
+        let mut mesh = Mesh::default();
+        let (rebuilt, uniform) = mesh.prepare(&input);
+        assert!(rebuilt);
+        // The shader draws a vertex at `camera + position + offset`, so the world cells the
+        // cloud covers are `camera` plus this: the same ones anywhere inside a snap cell.
+        assert_eq!(input.camera.x as f32 + uniform.offset[0], 0.0);
+        for x in [1.5, cell * 0.15, cell * 0.5, cell * 0.75, cell - 1.5] {
+            input.camera.x = x;
+            let (rebuilt, uniform) = mesh.prepare(&input);
+            assert!(!rebuilt, "rebuilt at {x}");
+            assert_eq!(input.camera.x as f32 + uniform.offset[0], 0.0);
+            // The trailing origin still covers the whole range past the camera.
+            let far = mesh
+                .vertices
+                .iter()
+                .map(|v| v.pos[0] + uniform.offset[0])
+                .fold(f32::MIN, f32::max);
+            assert!(far >= 32.0, "clouds end {far} blocks ahead at {x}");
+        }
+        // The next snap cell takes the origin with it.
+        input.camera.x = cell;
+        let (rebuilt, uniform) = mesh.prepare(&input);
+        assert!(rebuilt);
+        assert_eq!(input.camera.x as f32 + uniform.offset[0], cell as f32);
+    }
+
+    #[test]
+    fn only_inside_the_layer_does_the_mesh_follow_the_camera_between_snap_cells() {
+        let texture = (8, 8, (0..64).map(|i| i % 3 != 0).collect());
+        let mut input = Input {
+            texture: &texture,
+            uv: [0.5; 2],
+            camera: glam::DVec3::new(1.0, 101.0, 1.0),
+            time: 0,
+            partial_tick: 0.0,
+            range: 2,
+            fast: false,
+            color: [1.0; 4],
+        };
+        let mut mesh = Mesh::default();
+        assert!(mesh.prepare(&input).0);
+        // Below the layer, cells crossed inside one snap cell change nothing visible.
+        for (x, z) in [(11.9, 11.9), (24.0, 12.0), (35.5, 23.9)] {
+            input.camera.x = x;
+            input.camera.z = z;
+            assert!(
+                !mesh.prepare(&input).0,
+                "rebuilt at {x},{z} below the layer"
+            );
+        }
+        // Inside it, the inward faces around the camera do move with its own cell.
+        input.camera.y = 194.0;
+        assert!(mesh.prepare(&input).0);
+        input.camera.x = 12.0;
+        assert!(mesh.prepare(&input).0);
+        input.camera.y = 101.0;
+        assert!(mesh.prepare(&input).0);
     }
 
     #[test]

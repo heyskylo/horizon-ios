@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "player_leave_message",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_leave_message",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the host chat's \"left the game\" line (`native_player_leave_message`).",
+  "doc_summary": "`native_player_leave_message(player, name, line)` is asked for the \"left the game\" line the host's chat shows: set `line` to `None` to show none, or replace it. Bundles need \"hooks\": @API:player_leave_message@.",
+  "comments": []
+}

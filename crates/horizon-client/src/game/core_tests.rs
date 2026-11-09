@@ -52,6 +52,8 @@ fn a_death_drops_the_off_hand_before_the_armour() {
     assert!(offhand.is_none() && armor.iter().all(Option::is_none));
 }
 
+#[path = "knot_command_view_tests.rs"]
+mod knot_command_view_tests;
 /// `MinecraftServer.computeNextAutosaveInterval`: three hundred seconds of
 /// ticks at the rate the server runs at, never fewer than a hundred.
 #[test]
@@ -202,6 +204,8 @@ fn glfw_modifier_bits_are_glfw_modifier_bits() {
     assert_eq!(glfw_modifiers(ModifiersState::all()), 15);
 }
 
+#[path = "knot_identity_tests.rs"]
+mod knot_identity_tests;
 /// The `button` a native mod's mouse hooks hand over is GLFW's index (0
 /// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number),
 /// the one `keybinds::mouse_name` names (`key.mouse.<index + 1>` from the
@@ -293,6 +297,8 @@ fn an_interact_packet_clicks_the_entity_it_names_not_the_nearest() {
     assert_eq!(Game::named_entity(&cows, 31, |c| c.0), None);
 }
 
+#[path = "building_cache_tests.rs"]
+mod building_cache_tests;
 /// The id path keeps the crosshair pick's filters, so a packet cannot name
 /// a mob the pick would refuse: one in its death animation, the one the
 /// player rides, or the camera entity. Without them a guest could shear,
@@ -310,6 +316,8 @@ fn an_interact_packet_cannot_name_a_mob_the_pick_would_refuse() {
     assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
 }
 
+#[path = "pet_order_tests.rs"]
+mod pet_order_tests;
 /// The packet's location is `EntityHitResult.getLocation() -
 /// entity.position()`, the point the view ray met the box at measured
 /// from the mob's feet (`MultiPlayerGameMode.interact`). The old fixed
