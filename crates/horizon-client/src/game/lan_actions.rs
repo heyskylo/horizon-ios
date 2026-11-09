@@ -5344,7 +5344,13 @@ impl Game<'_> {
                 }
                 MotionEvent::Fall(event) => {
                     let player = host.hub.guest(conn).map(|g| g.uuid);
-                    self.landing_block_updates(player, &event)
+                    // The rule's own game event goes out as the player whose
+                    // landing it was (`FarmlandBlock.turnToBaseBlock`'s change,
+                    // `TurtleEggBlock.decreaseEggs`' destroy): a sculk sensor, a
+                    // calibrated sensor and a warden hear it.
+                    if let Some(vibration) = self.landing_block_updates(player, &event) {
+                        self.as_guest(host, conn, |game| game.post_landing_vibration(vibration));
+                    }
                 }
                 // PowderSnowBlock.entityInside: every player around sees the
                 // snowflake (`ServerLevel.sendParticles`).

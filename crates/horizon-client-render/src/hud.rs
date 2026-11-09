@@ -3,6 +3,7 @@
 //! GUI scale is applied when drawing).
 use crate::Result;
 use horizon_assets::animation::AnimationMetadata;
+use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -1830,12 +1831,31 @@ impl HudBatch {
         }
         out
     }
-    fn runs_in(&self, vertices: std::ops::Range<u32>) -> Vec<(std::ops::Range<u32>, Blend)> {
-        let mut runs = self.runs();
-        for (range, _) in &mut runs {
-            *range = range.start.max(vertices.start)..range.end.min(vertices.end);
+    fn runs_in(
+        &self,
+        vertices: std::ops::Range<u32>,
+    ) -> SmallVec<[(std::ops::Range<u32>, Blend); 16]> {
+        let mut runs = SmallVec::new();
+        let mut at = vertices.start;
+        for (range, blend) in &self.blends {
+            if range.start > at {
+                let start = at.max(vertices.start);
+                let end = range.start.min(vertices.end);
+                if start < end {
+                    runs.push((start..end, Blend::Alpha));
+                }
+            }
+            let start = range.start.max(vertices.start);
+            let end = range.end.min(vertices.end);
+            if start < end {
+                runs.push((start..end, *blend));
+            }
+            at = at.max(range.end);
         }
-        runs.retain(|(range, _)| !range.is_empty());
+        let end = (self.vertices.len() as u32).min(vertices.end);
+        if at < end {
+            runs.push((at.max(vertices.start)..end, Blend::Alpha));
+        }
         runs
     }
     /// `AbstractContainerScreen.init`: center in integer GUI coordinates.
