@@ -329,11 +329,7 @@ impl Game<'_> {
             // The icon has no label: name it for controller focus and the
             // control socket's widget tree.
             if i == FRIENDS_ICON {
-                horizon_client::widgets::record(
-                    super::friends::TITLE,
-                    [x, y, 20.0, 20.0],
-                    active,
-                );
+                horizon_client::widgets::record(super::friends::TITLE, [x, y, 20.0, 20.0], active);
             }
             ui::button(
                 batch,
@@ -463,9 +459,8 @@ impl Game<'_> {
                 .map(|i| 12 + i as u8)
         })
         .or_else(|| {
-            (self.friends_shown()
-                && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
-            .then_some(10)
+            (self.friends_shown() && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
+                .then_some(10)
         });
         if let Some(id) = hit {
             self.pause_focus = Some(id);

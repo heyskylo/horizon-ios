@@ -8,12 +8,7 @@
 //! loopback address. The joining side reads codes and opens tunnels for the engine's
 //! `friend:` addresses (`tunnel`, registered at startup).
 use super::{Game, lan::LanSettings};
-use horizon_client::{
-    Result,
-    hud::HudBatch,
-    lang,
-    text::Text,
-};
+use horizon_client::{Result, hud::HudBatch, lang, text::Text};
 use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
 use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
 use std::time::{Duration, Instant};
