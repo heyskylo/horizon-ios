@@ -972,8 +972,8 @@ mod tests {
     use horizon_protocol::registry::Ids;
     use std::path::Path;
 
-    /// A chestplate a server made a glider: its patch adds `glider` and an
-    /// `equippable` for the chest, or takes `glider` away again.
+    /// `Equippable.equipSound` is the stack's component's own: a replaced
+    /// component without one plays the generic sound, a removed one none.
     #[test]
     fn equippable_equip_sound_comes_from_the_stack() {
         let mut stack = ItemStack::new("minecraft:golden_helmet", 1);
@@ -1004,7 +1004,14 @@ mod tests {
             equip_sound(&stack, &items).as_deref(),
             Some("minecraft:item.armor.equip_gold")
         );
+        stack.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(equip_sound(&stack, &items), None);
     }
+    /// A chestplate a server made a glider: its patch adds `glider` and an
+    /// `equippable` for the chest, or takes `glider` away again.
     #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
