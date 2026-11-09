@@ -1287,9 +1287,12 @@ impl Game<'_> {
             text: g.target_name(t),
             display: None,
         };
-        if matches!(id, "tag.add" | "tag.remove") {
-            super::refuse_knot_change(&targets)?;
-        }
+        // A natural knot is listed but keeps no tags yet: `tag add`/`remove` leave it out.
+        let targets = if matches!(id, "tag.add" | "tag.remove") {
+            super::without_knots(targets)?
+        } else {
+            targets
+        };
         let mut all: Vec<String> = Vec::new();
         for &t in &targets {
             let mut tags = self.tags_of(t);

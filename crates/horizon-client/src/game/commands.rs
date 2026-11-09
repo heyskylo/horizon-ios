@@ -142,11 +142,19 @@ pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
 /// A natural fence knot is only read by commands here: one that would move
 /// or remove it fails as a whole instead of skipping it, so it never
 /// reports a change it did not make (#13036).
-pub(in crate::game) fn refuse_knot_change(targets: &[Target]) -> R<()> {
-    if targets.iter().any(|t| matches!(t, Target::Knot(_))) {
-        return Err(err("command.failed", &[]));
+/// The targets a command that moves or kills entities acts on: a natural leash knot is
+/// listed for selectors and `/data` but not changed yet, so it is left out, as before it was
+/// listed. A selector that found only knots finds no entity.
+pub(in crate::game) fn without_knots(targets: Vec<Target>) -> R<Vec<Target>> {
+    let found = !targets.is_empty();
+    let kept: Vec<Target> = targets
+        .into_iter()
+        .filter(|t| !matches!(t, Target::Knot(_)))
+        .collect();
+    if found && kept.is_empty() {
+        return Err(err("argument.entity.notfound.entity", &[]));
     }
-    Ok(())
+    Ok(kept)
 }
 /// `EntityType.getDescriptionId`: `entity.<namespace>.<path>`.
 fn entity_name_key(id: &str) -> String {
@@ -1916,7 +1924,7 @@ impl Game<'_> {
             }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
-            // The commands refuse to move a natural knot (`refuse_knot_change`).
+            // The commands leave a natural knot out (`without_knots`).
             Target::Knot(_) => {}
         }
         // Entity.teleportSameDimension: the riders go with their vehicle at
@@ -2024,7 +2032,7 @@ impl Game<'_> {
     }
     fn cmd_teleport(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let targets = if id.starts_with("teleport.targets") {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![
                 self.source_entity()
@@ -2047,7 +2055,6 @@ impl Game<'_> {
                 self.in_target_level(targets[0], |game| game.target_name(targets[0]))
                     .unwrap_or_else(Text::empty)
             });
-            refuse_knot_change(&targets)?;
             for &t in &targets {
                 if !self.teleport_across(t, level, pos, rotation, true)? {
                     // TeleportCommand.teleportToEntity: the destination's angles,
@@ -2131,7 +2138,6 @@ impl Game<'_> {
             self.in_target_level(targets[0], |game| game.target_name(targets[0]))
                 .unwrap_or_else(Text::empty)
         });
-        refuse_knot_change(&targets)?;
         for &t in &targets {
             // `facing` teleports with the rotation unchanged (Relative.ROTATION,
             // no turn for the riders), then LookAt.perform turns the target alone.
@@ -2556,7 +2562,7 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
             Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
-            // The commands refuse to kill a natural knot (`refuse_knot_change`).
+            // The commands leave a natural knot out (`without_knots`).
             Target::Knot(_) => {}
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
@@ -2568,7 +2574,7 @@ impl Game<'_> {
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
-            self.entities(ctx, "targets", false)?
+            without_knots(self.entities(ctx, "targets", false)?)?
         } else {
             vec![self.implied_player()]
         };
@@ -2581,7 +2587,6 @@ impl Game<'_> {
             };
             names.push(name);
         }
-        refuse_knot_change(&targets)?;
         for &t in &targets {
             self.kill_target(t);
         }
