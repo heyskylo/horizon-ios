@@ -1357,7 +1357,7 @@ impl Game<'_> {
             // Camera.getNearPlane(fov).getPointOnPlane(invert * 0.525, -0.1).
             let aspect = f64::from(size[0]) / f64::from(size[1].max(1));
             let height =
-                (f64::from(fov * (std::f32::consts::PI / 180.0) as f32) / 2.0).tan() * 0.05;
+                (f64::from(fov * (std::f64::consts::PI / 180.0) as f32) / 2.0).tan() * 0.05;
             let forward = glam::DVec3::from_array(view_vector(self.yaw, self.pitch));
             let left = -forward.cross(glam::DVec3::Y).normalize_or_zero();
             let up = forward.cross(left).normalize_or_zero();
