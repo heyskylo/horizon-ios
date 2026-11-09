@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish an unsigned prerelease (main branch only)
+        description: Publish an unsigned release (main branch only)
         type: boolean
         default: false
   pull_request:
@@ -71,17 +71,9 @@ jobs:
             DEBUG_INFORMATION_FORMAT=dwarf \
             CONFIGURATION_BUILD_DIR="$PWD/build-ios" \
             build > xcode-game-build.log 2>&1 || { tail -60 xcode-game-build.log; exit 1; }
-          python3 - <<'PYCONFIG'
-          import os, plistlib
-          path = 'build-ios/HorizonGame.app/Info.plist'
-          with open(path, 'rb') as file:
-              info = plistlib.load(file)
-          info['HorizonMSAClientID'] = os.environ.get('HORIZON_MSA_CLIENT_ID', '')
-          info['CFBundleVersion'] = os.environ['GITHUB_RUN_NUMBER'] + '.' + os.environ['GITHUB_RUN_ATTEMPT']
-          info['HorizonBuildCommit'] = os.environ['GITHUB_SHA']
-          with open(path, 'wb') as file:
-              plistlib.dump(info, file)
-          PYCONFIG
+          python3 tools/ci/ios_release.py --stamp-app build-ios/HorizonGame.app \
+            --run-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expect-commit "$GITHUB_SHA" --client-id "$HORIZON_MSA_CLIENT_ID"
           rm -rf game-xcode && mkdir -p game-xcode/Payload
           cp -a build-ios/HorizonGame.app game-xcode/Payload/
           ( cd game-xcode && zip -qry ../Horizon-game-unsigned.ipa Payload )
@@ -94,7 +86,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
       - name: Audit the unsigned distributable
-        run: python3 tools/ci/ios_release.py Horizon-game-unsigned.ipa --expect-commit "$GITHUB_SHA"
+        run: python3 tools/ci/ios_release.py Horizon-game-unsigned.ipa --expect-commit "$GITHUB_SHA" --run-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT"
       - uses: actions/upload-artifact@v4
         with:
           name: horizon-ios-game
@@ -153,8 +145,8 @@ jobs:
         id: asset
         run: |
           python3 tools/ci/ios_release.py ipa-artifact/Horizon-game-unsigned.ipa \
-            --expect-commit "$GITHUB_SHA" --output-dir release-assets >> "$GITHUB_OUTPUT"
-      - name: Publish unsigned prerelease
+            --expect-commit "$GITHUB_SHA" --run-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT" --output-dir release-assets >> "$GITHUB_OUTPUT"
+      - name: Publish unsigned release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

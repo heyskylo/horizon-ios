@@ -20,6 +20,36 @@ OTHER_MACHO = {b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce",
                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
 
 
+# Run 88 was the first release in this sequence. Retries change only the build.
+BASE_RUN = 88
+BASE_PATCH = 44
+
+
+def release_version(run, attempt):
+    if not re.fullmatch(r"[1-9][0-9]*", str(run)) or not re.fullmatch(r"[1-9][0-9]*", str(attempt)):
+        raise ValueError("Invalid workflow run or attempt")
+    # Fresh forks have independent counters; keep their preview builds at the base.
+    patch = BASE_PATCH + max(0, int(run) - BASE_RUN)
+    return f"0.1.{patch}", f"{run}.{attempt}"
+
+
+def stamp_app(app, run, attempt, commit, client_id):
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Invalid source commit")
+    version, build = release_version(run, attempt)
+    paths = [app / "Info.plist", *sorted((app / "Frameworks").glob("*.framework/Info.plist"))]
+    # Read all metadata before changing any file.
+    records = [(path, plistlib.loads(path.read_bytes())) for path in paths]
+    for path, info in records:
+        info["CFBundleShortVersionString"] = version
+        info["CFBundleVersion"] = build
+        if path == app / "Info.plist":
+            info["HorizonBuildCommit"] = commit
+            info["HorizonMSAClientID"] = client_id
+        path.write_bytes(plistlib.dumps(info))
+    return version, build
+
+
 def unsigned_macho(stream):
     magic = stream.read(4)
     if magic in OTHER_MACHO:
@@ -57,6 +87,7 @@ def audit(ipa, expected_commit=None):
             raise ValueError("Duplicate IPA entries")
         binaries = {}
         infos = []
+        frameworks = []
         for entry in archive.infolist():
             path = PurePosixPath(entry.filename)
             parts = {p.lower() for p in path.parts}
@@ -80,6 +111,10 @@ def audit(ipa, expected_commit=None):
                 if entry.file_size > 1 << 20:
                     raise ValueError("Oversized app Info.plist")
                 infos.append((path.parent, plistlib.loads(archive.read(entry))))
+            if name == "info.plist" and path.parent.suffix == ".framework":
+                if entry.file_size > 1 << 20:
+                    raise ValueError("Oversized framework Info.plist")
+                frameworks.append(plistlib.loads(archive.read(entry)))
         if archive.testzip() is not None:
             raise ValueError("The IPA contains a corrupt ZIP entry")
         if len(infos) != 1:
@@ -93,6 +128,9 @@ def audit(ipa, expected_commit=None):
         version, build = info.get("CFBundleShortVersionString"), info.get("CFBundleVersion")
         if not all(isinstance(v, str) and VERSION.fullmatch(v) for v in (version, build)):
             raise ValueError("Invalid app version or build number")
+        for framework in frameworks:
+            if (framework.get("CFBundleShortVersionString"), framework.get("CFBundleVersion")) != (version, build):
+                raise ValueError("Framework version does not match the app")
         if expected_commit is not None:
             if not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
                 raise ValueError("Invalid source commit")
@@ -118,10 +156,25 @@ def prepare(ipa, output, expected_commit):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("ipa", type=Path)
+    parser.add_argument("ipa", type=Path, nargs="?")
+    parser.add_argument("--stamp-app", type=Path)
+    parser.add_argument("--run-number")
+    parser.add_argument("--run-attempt")
+    parser.add_argument("--client-id", default="")
     parser.add_argument("--expect-commit", required=True)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.stamp_app:
+        if args.ipa or args.output_dir or not args.run_number or not args.run_attempt:
+            parser.error("--stamp-app requires run number and attempt, without an IPA/output directory")
+        stamp_app(args.stamp_app, args.run_number, args.run_attempt, args.expect_commit, args.client_id)
+        return
+    if not args.ipa:
+        parser.error("an IPA or --stamp-app is required")
+    if args.run_number or args.run_attempt:
+        expected = release_version(args.run_number, args.run_attempt)
+        if audit(args.ipa, args.expect_commit) != expected:
+            raise ValueError("IPA version does not match this workflow run")
     result = (prepare(args.ipa, args.output_dir, args.expect_commit) if args.output_dir
               else dict(zip(("version", "build"), audit(args.ipa, args.expect_commit))))
     for key, value in result.items():
