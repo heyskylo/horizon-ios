@@ -52,6 +52,7 @@
     "horizon-bench": "horizon",
     "horizon-cosmetics": "horizon",
     "horizon-friends": "horizon",
+    "horizon-heartbeat": "horizon",
     "horizon-launcher": "horizon",
     "horizon-mod-registry": "horizon",
     "horizon-official": "horizon",
