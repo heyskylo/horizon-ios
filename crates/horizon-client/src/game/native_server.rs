@@ -381,6 +381,7 @@ fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> Nativ
         selected_slot: g.selected as u8,
         nickname: host.hub.nicknames.get(&g.uuid).cloned(),
         hidden: host.hub.hidden.get(&g.uuid).copied(),
+        fake: g.fake,
         using_item,
         blocking,
         sprinting: g.sprinting,
@@ -409,6 +410,16 @@ impl Game<'_> {
     /// the acting player; false when they aren't on.
     pub(super) fn native_tell(&mut self, uuid: u128, line: Text) -> bool {
         self.native_send(uuid, system_chat(&line))
+    }
+    /// A line in chat as that player, disguised: no signature, named as the player is shown, to
+    /// every player who shows chat (a mod's character, a bot's line). `line` keeps its styling,
+    /// so click and hover events work as in `native_tell`. False when the player isn't on, and
+    /// inside a player's hook, where the hub is out of reach. API @API:chat_as@.
+    pub(super) fn native_chat_as(&self, uuid: u128, line: Text) -> bool {
+        let Some(host) = &self.lan else {
+            return false;
+        };
+        host.hub.chat_as(uuid, component_nbt(&line.component()))
     }
     /// A line over that player's hotbar (the action bar), also inside a
     /// player's hook for the acting player; false when they aren't on. API 21.
@@ -707,14 +718,39 @@ impl Game<'_> {
         } else {
             log::info!("{plain}");
         }
+        self.send_system_line(&line);
+    }
+    /// A system line in every player's chat, as `native_broadcast` sends it
+    /// but neither in the server's log nor past the mods' `broadcast_message`
+    /// hook (a mod's own line, which it logs itself). API @API:join_leave_helpers@.
+    pub(super) fn native_broadcast_quiet(&self, line: Text) {
+        self.send_system_line(&line);
+    }
+    fn send_system_line(&self, line: &Text) {
         let Some(host) = &self.lan else {
             return;
         };
-        let packet = system_chat(&line);
+        let packet = system_chat(line);
         for g in host.hub.guests.iter().filter(|g| g.placed) {
             host.hub.send_to(g.conn, &packet);
         }
     }
+    /// The server's motd from server.properties, as the list ping shows it;
+    /// empty when no server runs. API @API:join_leave_helpers@.
+    pub(super) fn native_motd(&self) -> String {
+        self.lan
+            .as_ref()
+            .map(|lan| lan.hub.lan.shared.motd())
+            .unwrap_or_default()
+    }
+    /// Whether a player has played on the open world before: their player
+    /// data file is there (`players/data/<uuid>.dat`). False when no world
+    /// is open. API @API:join_leave_helpers@.
+    pub(super) fn native_has_played_before(&self, uuid: u128) -> bool {
+        !self.world_root.as_os_str().is_empty()
+            && horizon_client::lan::playerdata::path(&self.world_root, uuid).is_file()
+    }
+
     /// Writes a line to the server's log at `level` (`INFO`, `WARN` or
     /// `ERROR`), in the console's format on a dedicated server. API @API:server_log@.
     pub(super) fn native_log(&self, level: &str, line: &str) {
@@ -829,6 +865,7 @@ impl Game<'_> {
             selected_slot: self.selected as u8,
             nickname: hub.as_ref().and_then(|h| h.nickname.clone()),
             hidden: hub.as_ref().and_then(|h| h.hidden),
+            fake: false,
             address: hub.map(|h| h.address).unwrap_or_default(),
             using_item: self.using.is_some(),
             blocking: self.using.is_some()

@@ -37,6 +37,8 @@ pub struct Registry {
     blocks: &'static BlockRegistry,
     /// Each custom particle type's colormap (`colormap`), by type id.
     tints: HashMap<String, Arc<Tint>>,
+    /// Each model particle type's faces (`model`), by type id.
+    models: HashMap<String, Arc<super::polytone_model::ParticleModel>>,
     /// Sound ids as the engine's sound queue holds them, interned once.
     sound_names: Mutex<HashMap<String, &'static str>>,
     /// Sounds the custom particles played this tick (`ParticleEngine::tick` plays them).
@@ -238,6 +240,12 @@ impl Registry {
                     .clone()
             })
             .collect();
+        let models = super::polytone_model::read_models(
+            pack_root,
+            types
+                .iter()
+                .filter_map(|(id, def)| Some((id, def.render.get("model")?))),
+        );
         let tints = types
             .iter()
             .filter_map(|(id, def)| {
@@ -261,6 +269,7 @@ impl Registry {
             configs,
             blocks,
             tints,
+            models,
             sound_names: Mutex::default(),
             sounds: Mutex::default(),
             particle_modifiers,
@@ -712,7 +721,7 @@ impl Host for Ctx<'_> {
             (CAMERA, "x" | "y" | "z") => num(frame.camera[axis(name)]),
             (CAMERA, "viewDistance") => num(f64::from(frame.render_distance * 16)),
             (CAMERA, _) => self.positional(ParticleLevel::block_at(frame.camera), name, args),
-            (GLOBAL, "rain") => num(f64::from(frame.rain)),
+            (GLOBAL, "rain") => num(frame.global_rain()),
             (GLOBAL, "time") => num(frame.game_time as f64),
             (GLOBAL, "dayTime") => num(frame.day_time as f64),
             (GLOBAL, "skyType") => num(f64::from(frame.sky_type)),
@@ -1178,13 +1187,19 @@ pub(super) fn make(
     particle.gravity = 0.0;
     particle.has_physics = def.has_physics;
     let mut frames = 0;
-    // A model particle (`model`) isn't drawn yet: it still ticks and emits. A GPU particle is
-    // drawn from its record instead (`polytone_gpu`).
+    // A model particle draws its model's faces; one whose model is missing still ticks and
+    // emits. A GPU particle is drawn from its record instead (`polytone_gpu`).
+    let model = registry.models.get(name).cloned();
     let hidden = def.render_type == RenderType::Invisible
-        || def.render.contains_key("model")
+        || (def.render.contains_key("model") && model.is_none())
         || def.gpu.is_some();
-    match engine.mod_sets.get(name) {
-        Some(&(set, _)) => {
+    // A mod's sprite set, or for a type replacing a vanilla one, that type's.
+    let set = engine.mod_sets.get(name).map(|&(set, _)| set).or_else(|| {
+        let vanilla = name.strip_prefix("minecraft:")?;
+        engine.sets.get(&ParticleType::from_name(vanilla)?).copied()
+    });
+    match set {
+        Some(set) => {
             let sprites = engine.set_sprites.get(set as usize)?;
             frames = sprites.len();
             particle.set = Some(set);
@@ -1196,9 +1211,15 @@ pub(super) fn make(
             particle.sprite = Sprite::Index(*sprites.get(pick).or(sprites.first())?);
         }
         None if hidden => {}
+        None if model.is_some() => {}
         None => return None,
     }
     particle.no_render = hidden;
+    if let Some(model) = model {
+        // The sprite lookup that admits a particle to drawing: its first face's.
+        particle.sprite = Sprite::Named(model.quads[0].sprite.clone());
+        particle.model = Some(model);
+    }
     particle.orientation = super::polytone_gpu::Orientation::parse(&def.rotation_mode);
     particle.additive = def.render_type == RenderType::AdditiveTranslucent;
     // `light_level`: the block light the particle gives itself (wiki "Custom Particle Types"),
@@ -2071,6 +2092,32 @@ mod tests {
         p.stopped_by_collision = true;
         engine.tick_particle(&mut p, &level);
         assert!(p.removed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_pack_custom_particle_replaces_the_vanilla_type_of_its_id() {
+        let root = pack(&[(
+            "assets/minecraft/polytone/custom_particles/flame.json",
+            serde_json::json!({"has_physics": false, "initializer": {"lifetime": "33", "size": "0.75"}}),
+        )]);
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks()));
+        // The vanilla flame's sprite set (what the pack's particles/flame.json lists).
+        engine.sets.insert(ParticleType::Flame, 1);
+        engine.set_sprites.push(vec![20, 21]);
+        engine.create(
+            &ParticleOptions::simple(ParticleType::Flame),
+            [1.0, 65.0, 1.0],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.len(), 1);
+        let p = &engine.pending[0];
+        assert!(
+            p.controller.is_some(),
+            "the pack's particle, not vanilla's flame"
+        );
+        assert_eq!((p.lifetime, p.size), (33, 0.75));
+        assert!(matches!(p.sprite, Sprite::Index(20)));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

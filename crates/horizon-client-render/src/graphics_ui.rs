@@ -1472,6 +1472,8 @@ impl Screen for GraphicsScreen {
                         .collect(),
                 })
                 .collect(),
+            listed: true,
+            heading: None,
         };
         rows().into_iter().map(sheet).collect()
     }
@@ -1519,7 +1521,7 @@ impl Screen for GraphicsScreen {
     /// settings and the vanilla options on its rows. Not the other options (the narrator, or
     /// one `horizon-ctl options-set` changed meanwhile), nor fullscreen, which F11 and the
     /// window manager change.
-    fn undo(&mut self, s: &mut Settings, b: &Settings) {
+    fn undo(&mut self, s: &mut Settings, b: &Settings) -> Vec<Output> {
         s.horizon = b.horizon.clone();
         s.render_distance = b.render_distance;
         s.simulation_distance = b.simulation_distance;
@@ -1556,6 +1558,7 @@ impl Screen for GraphicsScreen {
             }
         }
         s.file.fullscreen_resolution = b.file.fullscreen_resolution.clone();
+        Vec::new()
     }
     /// Calibration can change what Undo puts back, as a row does.
     fn changes(&self, outputs: &[Output]) -> bool {
@@ -1805,7 +1808,7 @@ mod tests {
         assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
         assert_eq!(s.horizon.chunk_updates, 16);
         assert!(ui.changes_value());
-        assert!(!ui.release());
+        assert!(ui.release().is_none());
         // At the track's end: the most, then dragged to its start.
         assert_eq!(press(&mut ui, &mut s, (tx + tw, r[1] + 4.0)), [DRAGGED]);
         assert_eq!(H::ChunkUpdates.slider(&s), Some(1.0));
@@ -1814,8 +1817,8 @@ mod tests {
             [DRAGGED]
         );
         assert_eq!(H::ChunkUpdates.slider(&s), Some(0.0));
-        assert!(ui.release());
-        assert!(!ui.release());
+        assert!(ui.release().is_some());
+        assert!(ui.release().is_none());
     }
 
     #[test]
@@ -1956,7 +1959,7 @@ mod tests {
         assert_eq!(ui.scroll_amount(), content - (cols.bottom - cols.top));
         drag(&mut ui, &mut s, cols.top - 50.0, true);
         assert_eq!(ui.scroll_amount(), 0.0);
-        assert!(!ui.release());
+        assert!(ui.release().is_none());
         drag(&mut ui, &mut s, cols.bottom + 50.0, true);
         assert_eq!(ui.scroll_amount(), 0.0);
     }
