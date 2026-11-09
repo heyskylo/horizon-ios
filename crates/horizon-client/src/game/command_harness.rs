@@ -275,6 +275,7 @@ impl Game<'_> {
                     self.chat_capture = Some(Vec::new());
                     self.cmds.results = Some(Vec::new());
                     let earlier = self.adv.announced.len();
+                    self.cmds.broadcast_announced = earlier;
                     self.harness_owner(|g| {
                         let previous = g.command_source;
                         if op["source"].as_str() == Some("console") {
@@ -291,13 +292,14 @@ impl Game<'_> {
                         g.command_source = previous;
                         Ok(())
                     })?;
-                    // What the command earned is announced before its feedback, as
-                    // a guest's command sends it (`announce_guest_advancements`); what
-                    // earlier ticks earned is left for theirs.
-                    let earned = self
-                        .adv
-                        .announced
-                        .split_off(earlier.min(self.adv.announced.len()));
+                    // What the command's own `broadcastChanges` earned is announced
+                    // before its feedback, as a guest's command sends it
+                    // (`announce_guest_advancements`); the rest is left for the tick.
+                    let earned: Vec<_> = {
+                        let len = self.adv.announced.len();
+                        let end = self.cmds.broadcast_announced.clamp(earlier.min(len), len);
+                        self.adv.announced.drain(earlier.min(len)..end).collect()
+                    };
                     if let Some(host) = self.lan.as_mut() {
                         for text in &earned {
                             host.hub
