@@ -7,7 +7,7 @@
 //! the guest, and its own `pick` (eyes and view) finds the block, while the
 //! message goes to the command's issuer
 //! (tools/test_test_pos_guest_parity.py measures the same on vanilla 26.3).
-use super::*;
+use crate::game::*;
 use horizon_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
@@ -65,7 +65,7 @@ fn game() -> Game<'static> {
         ..NetConfig::lan(0, "camel-jump-test".into(), 2)
     };
     game.lan_host(
-        super::lan::LanSettings {
+        crate::game::lan::LanSettings {
             port: 0,
             guest_commands: true,
             force_game_mode: false,
@@ -213,7 +213,7 @@ fn a_jump_without_power_or_saddle_posts_nothing() {
     scene(&mut game, true);
     jump(&mut game, 0);
     assert_eq!(selected(&mut game), None, "no power");
-    let mut game = super::camel_jump_tests::game();
+    let mut game = game();
     scene(&mut game, false);
     jump(&mut game, 100);
     assert_eq!(selected(&mut game), None, "no saddle");
@@ -239,11 +239,11 @@ fn the_scene_sensor_hears_a_mob_beside_it() {
 // refused one (the game events posted, as `dispense_fixture` records them).
 
 fn posted_actions(game: &mut Game<'_>, jumps: &[i32]) -> usize {
-    super::dispense_fixture::start_recording();
+    crate::game::dispense_fixture::start_recording();
     for &data in jumps {
         jump(game, data);
     }
-    super::dispense_fixture::stop_recording()
+    crate::game::dispense_fixture::stop_recording()
         .iter()
         .filter(|line| line.as_str() == "G 8,100,8 minecraft:entity_action")
         .count()
@@ -261,7 +261,7 @@ fn control_each_accepted_jump_posts_one_entity_action() {
         2,
         "two accepted, one refused"
     );
-    let mut game = super::camel_jump_tests::game();
+    let mut game = game();
     scene(&mut game, false);
     assert_eq!(posted_actions(&mut game, &[100]), 0, "refused: no saddle");
 }
