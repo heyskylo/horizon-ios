@@ -128,15 +128,17 @@ impl Present for Applying<'_> {
     fn present(&mut self, output: &EffectiveOutput) -> std::result::Result<(), String> {
         let r = &mut *self.renderer;
         let current = r.hdr.as_ref().map(|hdr| hdr.output);
-        let built = match output.encoding {
-            Some(encoding) if current != Some(encoding) => Some(r.build_hdr(encoding, output)?),
-            _ => None,
-        };
-        // If the game dies before HDR output shows a frame, the marker is still there at the
-        // next start, which then holds HDR output back on this driver.
-        if output.encoding.is_none() || built.is_some() {
+        let switching = output.encoding.is_some_and(|e| current != Some(e));
+        // If the game dies before HDR output shows a frame, its pipelines' build included, the
+        // marker is still there at the next start, which then holds HDR output back on this
+        // driver.
+        if output.encoding.is_none() || switching {
             r.mark_hdr_start(output.encoding.is_some(), self.marker);
         }
+        let built = match output.encoding {
+            Some(encoding) if switching => Some(r.build_hdr(encoding, output)?),
+            _ => None,
+        };
         if let Some(surface) = &r.surface {
             r.frame_gen.stop();
             // The submit thread may still present to the old swapchain.
@@ -282,11 +284,10 @@ impl Renderer {
     }
 
     /// After a new window surface: what it offers, and an output that failed on the old one
-    /// may be tried again. The settings apply again where the offer changed.
+    /// may be tried again. The settings apply again.
     pub(super) fn surface_recreated(&mut self) {
-        let offer = self.output_caps.hdr;
-        self.output_caps.hdr = self.surface_offer().unwrap_or(offer);
-        self.display_fresh |= self.output_caps.hdr != offer;
+        self.output_caps.hdr = self.surface_offer().unwrap_or(self.output_caps.hdr);
+        self.display_fresh = true;
         self.output_rejected = None;
     }
 
@@ -512,5 +513,20 @@ mod tests {
         let published = commit(&mut broken, &pq, next, caps, &mut None);
         assert_eq!((published.encoding, broken.sdr), (None, 1));
         assert_eq!(settings.hdr, HdrMode::On, "the mode stays");
+        // A new surface forgets the failure (`surface_recreated`): the same request on the
+        // same capabilities is tried again.
+        let mut swapchain = Swapchain {
+            fails: vec![Some(ScRgb)],
+            ..Default::default()
+        };
+        let mut rejected = None;
+        let next = candidate(&settings, caps, reading, &pq);
+        for _ in 0..2 {
+            commit(&mut swapchain, &pq, next, caps, &mut rejected);
+        }
+        assert_eq!(swapchain.asked.len(), 2);
+        rejected = None;
+        commit(&mut swapchain, &pq, next, caps, &mut rejected);
+        assert_eq!(swapchain.asked.len(), 4);
     }
 }
