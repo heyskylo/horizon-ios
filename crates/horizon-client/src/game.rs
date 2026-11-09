@@ -17933,6 +17933,7 @@ struct LandingVibration {
 mod allay_pickup_cooldown_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
+#[cfg(test)]
 mod fake_player_tick_tests;
 #[cfg(test)]
 mod fence_leash_force_tests;
