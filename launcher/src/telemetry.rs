@@ -95,7 +95,7 @@ fn official_server() -> String {
 /// (through the address's SRV record), with a 3-second timeout. None when it doesn't answer.
 pub fn server_players(address: &str) -> Option<horizon_telemetry::server_status::Players> {
     let (host, port) = horizon_telemetry::server_status::split_address(address)?;
-    let (host, port) = horizon_protocol::server_redirect(&host, port);
+    let (host, port) = horizon_platform::protocol::server_redirect(&host, port);
     horizon_telemetry::server_status::players_at(
         address,
         (&host, port),
@@ -417,8 +417,10 @@ mod tests {
     #[test]
     #[ignore = "asks the live official server"]
     fn official_count_follows_the_srv_record() {
-        let (host, port) =
-            horizon_protocol::server_redirect(crate::server_list::OFFICIAL_ADDRESS, 25565);
+        let (host, port) = horizon_platform::protocol::server_redirect(
+            crate::server_list::OFFICIAL_ADDRESS,
+            25565,
+        );
         assert_eq!(
             (host.trim_end_matches('.'), port),
             ("play.playhorizon.dev", 24454)
