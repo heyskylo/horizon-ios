@@ -144,6 +144,15 @@ impl Game<'_> {
             | Species::TropicalFish
             | Species::Pufferfish
             | Species::Axolotl => item == "minecraft:water_bucket",
+            // SulfurCube.mobInteract ends in Bucketable.bucketMobPickup, which
+            // also runs on a client: an empty bucket on an unprimed adult
+            // (its swallowable items and shears are answered before that).
+            Species::SulfurCube => {
+                item == "minecraft:bucket"
+                    && !baby
+                    && !horizon_client::mobs::sulfur_cube::primed(m)
+                    && !horizon_client::mobs::sulfur_cube::swallowable(m, item)
+            }
             // Tadpole.mobInteract: frog food (not while age locked), else the bucket.
             Species::Tadpole => {
                 item == "minecraft:water_bucket"

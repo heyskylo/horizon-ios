@@ -1389,7 +1389,7 @@ impl Game<'_> {
     /// the boxes of all of them. Until the potion has left it, none can be hit
     /// (`canHitEntity`: `isPassengerOfSameVehicle`) and any one near keeps it
     /// from leaving (`isOutsideOwnerCollisionRange`).
-    fn thrown_ridden(
+    pub(super) fn thrown_ridden(
         &self,
         owner: Option<Who>,
         players: &[(Who, Aabb)],
@@ -1441,7 +1441,13 @@ impl Game<'_> {
         };
         let mut landed = Vec::new();
         let mut deflected: Vec<u32> = Vec::new();
+        // ServerLevel.tick: only entities in entity-ticking chunks tick.
+        let ticking = self.entity_ticking_area();
         thrown.retain_mut(|t| {
+            if !ticking(t.position.x.floor() as i32, t.position.z.floor() as i32) {
+                t.previous = t.position;
+                return true;
+            }
             t.age += 1;
             // Projectile.tick: whether it has left its thrower's vehicle tree,
             // before it moves.
@@ -1580,9 +1586,15 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+            let mut cancel = false;
             if item != "minecraft:experience_bottle" {
-                self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                self.native_potion_splash_v2(&item, [at.x, at.y, at.z], &mut cancel);
+            }
+            if !cancel {
+                self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+                if item != "minecraft:experience_bottle" {
+                    self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                }
             }
         }
     }
@@ -1608,7 +1620,13 @@ impl Game<'_> {
             .filter(|p| p.alive)
             .collect();
         let mut clouds = std::mem::take(&mut self.breath_clouds);
-        clouds.retain_mut(|c| c.potion.is_none() || self.tick_potion_cloud(c, &players));
+        // ServerLevel.tick: only entities in entity-ticking chunks tick.
+        let ticking = self.entity_ticking_area();
+        clouds.retain_mut(|c| {
+            c.potion.is_none()
+                || !ticking(c.at[0].floor() as i32, c.at[2].floor() as i32)
+                || self.tick_potion_cloud(c, &players)
+        });
         self.breath_clouds.append(&mut clouds);
     }
     /// `AreaEffectCloud.serverTick`: configured lifetime/radius changes and
@@ -1934,8 +1952,17 @@ impl Game<'_> {
                 (p.y + 0.2125).floor() as i32,
                 p.z.floor() as i32,
             );
+            // Frame generation and temporal upscaling follow its own flight; one not yet
+            // given an id (0) can't be told apart from another, so it keeps the camera's.
+            let motion = if t.id == 0 {
+                0
+            } else {
+                Self::MOTION_OBJECT | u64::from(t.id)
+            };
+            self.mark_motion(out.len(), motion);
             self.submit_item_world(&state, pose, vertex_light(light), out);
         }
+        self.mark_motion(out.len(), 0);
     }
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` with a source (a
     /// potion or a cloud): indirectMagic, not plain magic, credited to the

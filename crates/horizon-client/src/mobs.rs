@@ -489,26 +489,47 @@ pub struct MobTypes {
 }
 impl MobTypes {
     pub fn load(root: &Path) -> crate::Result<Self> {
-        Self::load_with_models(root, true, None)
+        Self::load_with_models(root, true, None, None)
+    }
+
+    /// Load client mob data using defaults already decoded by the resource
+    /// bootstrap. This avoids decoding `items.json` a second time for Allay
+    /// inventory limits.
+    pub fn load_with_defaults(
+        root: &Path,
+        defaults: &horizon_world::item_defaults::Defaults,
+    ) -> crate::Result<Self> {
+        Self::load_with_models(root, true, None, Some(defaults))
     }
 
     /// The dedicated server needs entity facts and AI, but never their render
     /// geometry. Keep one empty part for the fields shared with the client
     /// rather than parsing and retaining every entity-model layer.
     pub fn load_for_server(root: &Path) -> crate::Result<Self> {
-        Self::load_with_models(root, false, None)
+        Self::load_with_models(root, false, None, None)
     }
 
     /// The client startup already parsed `entity-models.json` for the handoff
     /// and the other model loaders; read the model layers from that copy.
     pub fn load_with_document(root: &Path, document: &EntityModelDocument) -> crate::Result<Self> {
-        Self::load_with_models(root, true, Some(document))
+        Self::load_with_models(root, true, Some(document), None)
+    }
+
+    /// The client startup already has both the entity model document and the
+    /// item defaults. Reuse both instead of decoding either file again.
+    pub fn load_with_document_and_defaults(
+        root: &Path,
+        document: &EntityModelDocument,
+        defaults: &horizon_world::item_defaults::Defaults,
+    ) -> crate::Result<Self> {
+        Self::load_with_models(root, true, Some(document), Some(defaults))
     }
 
     fn load_with_models(
         root: &Path,
         models_needed: bool,
         document: Option<&EntityModelDocument>,
+        item_defaults: Option<&horizon_world::item_defaults::Defaults>,
     ) -> crate::Result<Self> {
         let bytes = fs::read(root.join("entity-types.json"))?;
         let types: Value = serde_json::from_slice(&bytes)?;
@@ -538,24 +559,43 @@ impl MobTypes {
         };
         // The Allay's InventoryCarrier loading needs item limits before a
         // Game exists. Other mob-only resource sets need no item data.
-        let items: HashMap<String, Value> = if types.get("minecraft:allay").is_some() {
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?
-        } else {
-            HashMap::new()
-        };
-        let item_stack_limits: Arc<HashMap<String, u32>> = Arc::new(
-            items
-                .into_iter()
-                .map(|(id, components)| {
-                    (
-                        id,
-                        components["minecraft:max_stack_size"]
-                            .as_u64()
-                            .unwrap_or(64) as u32,
+        let item_stack_limits: Arc<HashMap<String, u32>> = if types.get("minecraft:allay").is_some()
+        {
+            match item_defaults {
+                Some(items) => Arc::new(
+                    items
+                        .iter()
+                        .map(|(id, components)| {
+                            (
+                                id.clone(),
+                                components["minecraft:max_stack_size"]
+                                    .as_u64()
+                                    .unwrap_or(64) as u32,
+                            )
+                        })
+                        .collect(),
+                ),
+                None => {
+                    let items: HashMap<String, Value> =
+                        serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+                    Arc::new(
+                        items
+                            .into_iter()
+                            .map(|(id, components)| {
+                                (
+                                    id,
+                                    components["minecraft:max_stack_size"]
+                                        .as_u64()
+                                        .unwrap_or(64) as u32,
+                                )
+                            })
+                            .collect(),
                     )
-                })
-                .collect(),
-        );
+                }
+            }
+        } else {
+            Arc::new(HashMap::new())
+        };
         let mut out = HashMap::new();
         // A content mod's living type (its row names a vanilla `template`) is
         // its template's mob under its own id: the template's model, sounds
@@ -721,6 +761,8 @@ pub enum DamageKind {
     Fireball,
     Explosion,
     Fall,
+    /// `fly_into_wall`: gliding into a horizontal collision.
+    FlyIntoWall,
     FallingBlock,
     FallingStalactite,
     OnFire,
@@ -932,6 +974,7 @@ impl Damage {
         matches!(
             self.kind,
             DamageKind::Fall
+                | DamageKind::FlyIntoWall
                 | DamageKind::OnFire
                 | DamageKind::Drown
                 | DamageKind::Magic
@@ -973,6 +1016,7 @@ impl Damage {
             self.kind,
             DamageKind::Explosion
                 | DamageKind::Fall
+                | DamageKind::FlyIntoWall
                 | DamageKind::OnFire
                 | DamageKind::InFire
                 | DamageKind::Campfire
@@ -1493,8 +1537,16 @@ pub struct Mob {
     pub gear_knockback_resistance: Option<f64>,
     pub health: f32,
     pub hurt_time: i32,
+    /// `LivingEntity.damageCooldownTime`: the hurt cooldown, 20 after a hit;
+    /// transient, never saved.
     pub invulnerable: i32,
+    /// `Entity.invulnerableTime`, saved as `invulnerable_time`: while above 0
+    /// the mob is invulnerable as with `Invulnerable` (`isTemporarilyInvulnerable`).
+    pub invulnerable_time: i32,
     pub death_time: i32,
+    /// `LivingEntity.currentImpulseContextResetGraceTime`: ticks left to keep
+    /// the impulse context after a wind charge or mace impulse.
+    pub impulse_grace_time: i32,
     pub age: u32,
     pub limb_position: f32,
     pub limb_speed: f32,
@@ -1554,6 +1606,9 @@ pub struct Mob {
     pub on_climbable: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
+    /// `Entity.isInPowderSnow` as of the last mob tick, for the skeleton's
+    /// freezing tracker read at save time.
+    pub in_powder_snow: bool,
     pub glowing: bool,
     pub air: i32,
     pub last_hurt: f32,
@@ -1853,6 +1908,17 @@ pub enum MobEvent {
         source: u32,
         state: horizon_world::registry::BlockStateId,
     },
+    /// `Level.gameEvent` from the block a mob landed on (`FarmlandBlock.turnToBaseBlock`'s
+    /// BLOCK_CHANGE from the mob that trampled it, `TurtleEggBlock.decreaseEggs`' and
+    /// `Level.destroyBlock`'s BLOCK_DESTROY with no source): the game posts it, a
+    /// sculk sensor, a calibrated sensor and a warden hear it.
+    LandingGameEvent {
+        event: &'static str,
+        at: [i32; 3],
+        /// The entity that caused the change, `None` for a destroyed egg.
+        source: Option<u32>,
+        state: horizon_world::registry::BlockStateId,
+    },
     AttackPlayer(f32, [f64; 3]),
     /// `Bee.doHurtTarget` on a player: a sting that lands leaves its stinger
     /// in them and poisons them for `poison_ticks` (none on easy).
@@ -2030,6 +2096,12 @@ pub enum MobEvent {
     },
     /// Set another mob's attack target (HurtByTargetGoal alerts).
     SetTarget {
+        mob: u32,
+        target: Who,
+    },
+    /// `HoglinAi.broadcastAttackTarget` to one visible adult hoglin: its
+    /// `setAttackTargetIfCloserThanCurrent` (`piglin::receive_attack_target`).
+    HoglinAttackTarget {
         mob: u32,
         target: Who,
     },
@@ -3317,7 +3389,9 @@ impl Mob {
             gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,
+            invulnerable_time: 0,
             death_time: 0,
+            impulse_grace_time: 0,
             age: 0,
             limb_position: 0.0,
             limb_speed: 0.0,
@@ -3349,6 +3423,7 @@ impl Mob {
             on_climbable: false,
             fire_ticks: 0,
             ticks_frozen: 0,
+            in_powder_snow: false,
             glowing: false,
             air: 300,
             last_hurt: 0.0,
@@ -3585,7 +3660,11 @@ impl Mob {
     pub fn refuses_damage(&self, source: &Damage) -> bool {
         !self.alive()
             || self.removed
-            || (self.invulnerable_flag && !source.kind.bypasses_invulnerability())
+            || (self.is_invulnerable() && !source.kind.bypasses_invulnerability())
+    }
+    /// `Entity.isInvulnerable`: `Invulnerable`, or `invulnerable_time` left.
+    pub fn is_invulnerable(&self) -> bool {
+        self.invulnerable_flag || self.invulnerable_time > 0
     }
     /// `LivingEntity.hurtServer`'s partial mob adapter, with health reductions inline.
     /// `damage` by a source with a weapon: `armor_effectiveness` runs the
@@ -3623,7 +3702,7 @@ impl Mob {
         // dead enderman), its hurt sound's pitch included.
         let enderman = self.species() == Species::Enderman
             && !self.removed
-            && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
+            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
         let hurt = self.hurt_server(amount, source, armor_effectiveness, player_uuid);
         if enderman {
             enderman::after_hurt(self, &source);
@@ -3952,7 +4031,7 @@ impl Mob {
         let cloud = self.species() == Species::Enderman
             && direct == "minecraft:area_effect_cloud"
             && !self.removed
-            && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
+            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
         let hurt = self.damage(amount, source);
         if cloud {
             enderman::teleport_chance(self, &source);
@@ -4624,7 +4703,7 @@ impl EntityModelDocument {
     }
 
     /// The parsed document, for loaders that read several keys from it.
-    pub(crate) fn value(&self) -> &Value {
+    pub fn value(&self) -> &Value {
         &self.0
     }
 }

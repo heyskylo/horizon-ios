@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "is_player_fake", "target": "horizon_client::game::native_view_distance::Game<'_>::native_is_player_fake"}
+  ],
+  "rust_summary": "whether a player is a fake player, a mod's bot with no client (`native_is_player_fake`).",
+  "doc_summary": "`native_is_player_fake(uuid)` is true for a fake player, a mod's bot with no client (marked by `native_set_player_fake`, or announced by name with `native_expect_fake_player`); false off a server and for a player not online. It needs no hub borrow beyond a read, so a join hook that gets only a uuid can skip its per-player work for a bot. Bundles need \"hooks\": @API:is_player_fake@.",
+  "comments": ["crates/horizon-client/src/game/native_view_distance.rs"]
+}

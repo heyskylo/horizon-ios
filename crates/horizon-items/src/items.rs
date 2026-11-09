@@ -481,10 +481,22 @@ fn load_instruments(root: &Path) -> HashMap<String, Instrument> {
     }
     instruments
 }
+/// `minecraft`'s songs and, in a content root, the mods' under their own
+/// namespaces: vanilla lists a registry in every namespace
+/// (`ResourceManagerRegistryLoadTask.load`, `FileToIdConverter.registry`).
 fn load_songs(root: &Path) -> HashMap<String, Song> {
     let mut songs = HashMap::new();
-    let Ok(dir) = fs::read_dir(root.join("data/minecraft/jukebox_song")) else {
-        return songs;
+    read_songs(root, "minecraft", &mut songs);
+    for namespace in crate::content_namespaces::namespaces(root) {
+        if namespace != "minecraft" {
+            read_songs(root, &namespace, &mut songs);
+        }
+    }
+    songs
+}
+fn read_songs(root: &Path, namespace: &str, songs: &mut HashMap<String, Song>) {
+    let Ok(dir) = fs::read_dir(root.join(format!("data/{namespace}/jukebox_song"))) else {
+        return;
     };
     for entry in dir.flatten() {
         let path = entry.path();
@@ -500,7 +512,7 @@ fn load_songs(root: &Path) -> HashMap<String, Song> {
             other => other["sound_id"].as_str().unwrap_or("").to_owned(),
         };
         songs.insert(
-            format!("minecraft:{stem}"),
+            format!("{namespace}:{stem}"),
             Song {
                 sound,
                 length_ticks: (v["length_in_seconds"].as_f64().unwrap_or(0.0) as f32 * 20.0).ceil()
@@ -510,7 +522,6 @@ fn load_songs(root: &Path) -> HashMap<String, Song> {
             },
         );
     }
-    songs
 }
 pub fn load_tags(
     root: &Path,
@@ -2883,6 +2894,42 @@ mod tests {
         let mut ids: Vec<&str> = items.loot_table_ids().collect();
         ids.sort();
         assert_eq!(ids, ["mymod:rooms/a", "mypack:b"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A content mod's songs load under its own namespace, beside vanilla's;
+    /// a root without the mods' marker reads `minecraft` only.
+    #[test]
+    fn content_mod_songs_load_under_their_namespace() {
+        let root = std::env::temp_dir().join(format!("horizon-songs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for ns in ["minecraft", "mymod"] {
+            fs::create_dir_all(root.join(format!("data/{ns}/jukebox_song"))).unwrap();
+        }
+        fs::write(root.join("items.json"), "{}").unwrap();
+        let song = json!({"sound_event": "mymod:music_disc.tune", "length_in_seconds": 5.0, "comparator_output": 3, "description": "tune"});
+        fs::write(
+            root.join("data/mymod/jukebox_song/tune.json"),
+            song.to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/minecraft/jukebox_song/cat.json"),
+            json!({"sound_event": "minecraft:music_disc.cat", "length_in_seconds": 185.0, "comparator_output": 2, "description": "cat"}).to_string(),
+        )
+        .unwrap();
+
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        assert!(items.songs.contains_key("minecraft:cat"));
+        assert!(!items.songs.contains_key("mymod:tune"));
+
+        fs::write(root.join(crate::content_namespaces::MARKER), r#"["mymod"]"#).unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let tune = &items.songs["mymod:tune"];
+        assert_eq!(tune.sound, "mymod:music_disc.tune");
+        assert_eq!((tune.length_ticks, tune.comparator), (100, 3));
+        assert!(items.songs.contains_key("minecraft:cat"));
+        assert!(!items.songs.contains_key("minecraft:tune"));
         fs::remove_dir_all(root).unwrap();
     }
 

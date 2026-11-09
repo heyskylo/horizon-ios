@@ -23,6 +23,14 @@ impl Game<'_> {
     ) -> bool {
         self.has_permission_at(player, node, default_level, self.permission_level(player))
     }
+    /// A player's primary group: the first permission group the mods name for them
+    /// (`native_permission_groups`), or None when none names one. Server-side.
+    /// API @API:permission_groups@.
+    pub(super) fn native_primary_group(&self, player: u128) -> Option<String> {
+        let mut groups = Vec::new();
+        self.native_permission_groups(player, &mut groups);
+        groups.into_iter().next()
+    }
     /// Sends a player their command tree again, the mods asked anew
     /// (`native_player_commands_sent`, its v2 and the permission nodes of
     /// the mods' commands), as Bukkit's `Player.updateCommands`: after a
