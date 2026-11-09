@@ -313,7 +313,7 @@ mod tests {
     }
     impl players::Sprites for Atlas {
         fn get(&self, id: u64) -> Option<[f32; 4]> {
-            self.has(id).then_some([0.0, 0.0, 0.5, 0.5])
+            players::SpriteStore::has(self, id).then_some([0.0, 0.0, 0.5, 0.5])
         }
     }
 
