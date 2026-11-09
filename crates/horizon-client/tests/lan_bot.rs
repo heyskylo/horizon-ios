@@ -176,6 +176,7 @@ struct Server {
 impl Server {
     fn tick(&mut self, entities: &[EntityState]) {
         let mut ctx = TickCtx {
+            sea_level: 63,
             world: &mut self.world,
             entities,
             next_entity: &mut self.next_entity,
@@ -1687,6 +1688,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
     let border = horizon_client::worldborder::WorldBorder::default();
     let at = [8.5, f64::from(MIN_Y + 5), 8.5];
     let ctx = TickCtx {
+        sea_level: 63,
         world: &mut s.world,
         entities: &[],
         next_entity: &mut s.next_entity,

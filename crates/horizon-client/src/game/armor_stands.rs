@@ -848,34 +848,20 @@ impl Game<'_> {
             self.armor_stands[i].last_hit = time;
             return true;
         }
-        // brokenByPlayer: the stand item, then brokenByAnything: the equipment.
-        let a = self.armor_stands.remove(i);
-        let (width, height) = stand_box(&a);
-        self.audio
-            .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
-        self.show_breaking_particles(at, f64::from(width), f64::from(height));
-        let center = [at[0], at[1] + if a.small { 0.4875 } else { 0.9875 }, at[2]];
-        let stand = ItemStack {
-            item: Arc::from("minecraft:armor_stand"),
-            count: 1,
-            damage: 0,
-            extra: None,
-        };
-        self.spawn_item(stand, center, [0.0; 3], 10);
-        for stack in a.equipment.into_iter().flatten() {
-            let r = &mut self.world.random;
-            let v = [
-                f64::from(r.next_float()) * 0.2 - 0.1,
-                0.2,
-                f64::from(r.next_float()) * 0.2 - 0.1,
-            ];
-            self.spawn_item(stack, center, v, 10);
+        // brokenByPlayer: the stand item, with the stand's name, pops at its
+        // block, then brokenByAnything: the loot table and the equipment.
+        let (width, height) = stand_box(&self.armor_stands[i]);
+        let p = self.armor_stands[i].position;
+        let pos = [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32];
+        let mut stand = ItemStack::new("minecraft:armor_stand", 1);
+        if let Some(name) = &self.armor_stands[i].custom_name {
+            stand.data_mut().custom_name =
+                Some(horizon_client::scoreboard::component_tag(&name.component()));
         }
+        self.pop_resource(pos, stand);
         // ArmorStand.kill(level, the causing entity), after the drops.
-        self.stand_game_event("minecraft:entity_die", at, by);
-        self.world
-            .modified
-            .insert(((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4));
+        self.break_armor_stand_with_source(i, by);
+        self.show_breaking_particles(at, f64::from(width), f64::from(height));
         true
     }
     /// `Entity.gameEvent(event, attributedTo)` for a stand at `at`: the
@@ -1202,6 +1188,8 @@ impl Game<'_> {
         let a = self.armor_stands.remove(i);
         let at = [a.position.x, a.position.y, a.position.z];
         let a_id = a.id;
+        self.audio
+            .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
         // brokenByAnything's dropAllDeathLoot, before the equipment.
         if !a.small && self.ui.rules.bool("mob_drops") {
             self.armor_stand_death_loot(at, a.fire_ticks > 0);
@@ -1210,8 +1198,6 @@ impl Game<'_> {
         for stack in drops {
             self.pop_resource(pos, stack);
         }
-        self.audio
-            .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
         self.entity_killed_event_by(at, source.or(Some(super::commands::Target::Stand(a_id))));
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
     }

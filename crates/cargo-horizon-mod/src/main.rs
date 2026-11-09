@@ -377,6 +377,13 @@ mod tests {
         zip.finish().unwrap();
         let report = check::check(&hnmod, check::kind_of(&hnmod).unwrap(), None, None).unwrap();
         assert!(report.text().contains("machine_mod"), "{}", report.text());
+        let combined = dir.join("machine_mod.hmod");
+        std::fs::copy(&hnmod, &combined).unwrap();
+        assert_eq!(
+            check::kind_of(&combined),
+            Some(horizon_mods::index::Kind::NativeMod)
+        );
+        assert!(check::check(&combined, check::kind_of(&combined).unwrap(), None, None).is_ok());
         // A pin that is not a commit is refused; with none, the folder builds on the
         // instance's Horizon.
         let bad = [

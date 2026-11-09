@@ -1389,9 +1389,6 @@ impl Game<'_> {
             }
         }
         self.set_mode(mode);
-        if self.screen == Screen::Inventory && (self.creative || self.spectator()) {
-            self.screen = Screen::Playing;
-        }
         true
     }
     fn cmd_gamemode(&mut self, ctx: &Context) -> R<i32> {
@@ -3834,12 +3831,9 @@ impl Game<'_> {
                     return;
                 }
                 g.spawn = None;
-                g.respawn_config = Some(super::respawn_anchor::RespawnConfig {
-                    dim: level,
-                    pos,
-                    yaw,
-                    forced: true,
-                });
+                g.respawn_config = Some(super::respawn_anchor::RespawnConfig::forced(
+                    level, pos, yaw, pitch,
+                ));
             });
         }
         let dim = Text::literal(self.dim.id());
