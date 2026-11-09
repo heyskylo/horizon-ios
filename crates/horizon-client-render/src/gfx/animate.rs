@@ -64,7 +64,7 @@ enum Writer {
     },
 }
 
-pub(super) struct SpriteAnimator {
+pub(crate) struct SpriteAnimator {
     sprites: Vec<Sprite>,
     groups: Vec<Group>,
     writer: Writer,
@@ -86,6 +86,9 @@ struct AnimationModes {
     day_time: i64,
     weather: f32,
     values: std::collections::HashMap<String, f64>,
+    /// The open screen (an identity the game picks) and the ticks it has been open.
+    screen: Option<u64>,
+    screen_time: i64,
 }
 
 impl AnimationModes {
@@ -116,8 +119,15 @@ impl super::Renderer {
         day_time: i64,
         [rain, thunder]: [f32; 2],
         frame: Option<&crate::environment::Frame>,
+        screen: Option<u64>,
     ) {
         let modes = &mut self.animations.modes;
+        // `screen_time`: a tick more while the same screen stays open, from 0 on a new one.
+        modes.screen_time = match (screen, modes.screen) {
+            (Some(open), Some(was)) if open == was => modes.screen_time + 1,
+            _ => 0,
+        };
+        modes.screen = screen;
         modes.day_time = day_time;
         modes.weather = rain + thunder;
         modes.values.clear();
@@ -133,6 +143,16 @@ impl super::Renderer {
 }
 
 impl SpriteAnimator {
+    /// What the modes read this frame, for the GUI atlas's sprites (their expressions aren't
+    /// compiled: those run on ticks).
+    pub(crate) fn mode_inputs(&self) -> horizon_assets::animation::ModeInputs<'static> {
+        horizon_assets::animation::ModeInputs {
+            day_time: self.modes.day_time,
+            screen_time: self.modes.screen_time,
+            weather: self.modes.weather,
+            expression: &|_| None,
+        }
+    }
     /// `textures` are the sprite arrays, `split` layers each, `size` pixels
     /// wide; `animations` hold their frames at that size. `compute`: whether
     /// the device says it runs compute shaders writing storage textures.
@@ -361,6 +381,7 @@ impl SpriteAnimator {
         let expression = |source: &str| values.get(source).copied();
         let inputs = horizon_assets::animation::ModeInputs {
             day_time: self.modes.day_time,
+            screen_time: self.modes.screen_time,
             weather: self.modes.weather,
             expression: &expression,
         };
