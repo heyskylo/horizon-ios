@@ -105,12 +105,17 @@ impl Goal for BlazeAttack {
                 }
                 if self.step > 1 {
                     let sqd = d2.sqrt().sqrt() * 0.5;
-                    cx.events.push(MobEvent::Sound(
-                        "entity.blaze.shoot",
-                        m.center(),
-                        1.0,
-                        (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0,
-                    ));
+                    // LevelEvent 1018 at the blaze's block: the client plays the
+                    // shot (volume 2, its own pitch); nothing is drawn here.
+                    if !m.silent {
+                        let p = m.position;
+                        cx.events.push(MobEvent::LevelEventSound {
+                            sound: "entity.blaze.shoot",
+                            at: [p.x.floor() + 0.5, p.y.floor() + 0.5, p.z.floor() + 0.5],
+                            volume: 2.0,
+                            spread: 0.2,
+                        });
+                    }
                     let dir = [
                         triangle(m, xd, 2.297 * sqd),
                         yd,
@@ -131,34 +136,12 @@ impl Goal for BlazeAttack {
         }
     }
 }
-/// `Blaze.aiStep`: slow falling, the burning sound and smoke.
-pub fn blaze_ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
+/// `Blaze.aiStep`: slow falling. The burning sound and the smoke are its
+/// `isClientSide()` branch, which the window's game makes for itself
+/// (`ambient::client_ai_step`): a server neither plays them nor draws for them.
+pub fn blaze_ai_step(m: &mut Mob) {
     if !m.on_ground && m.velocity.y < 0.0 {
         m.velocity.y *= 0.6;
-    }
-    if m.random.next_int_bound(24).unwrap_or(1) == 0 {
-        let volume = 1.0 + m.random.next_float();
-        let pitch = m.random.next_float() * 0.7 + 0.3;
-        events.push(MobEvent::Sound(
-            "entity.blaze.burn",
-            m.center(),
-            volume,
-            pitch,
-        ));
-    }
-    // getRandomX(0.5), getRandomY(), getRandomZ(0.5), at rest.
-    let (w, h) = (f64::from(m.width()), f64::from(m.height()));
-    for _ in 0..2 {
-        let at = [
-            m.position.x + w * (2.0 * m.random.next_double() - 1.0) * 0.5,
-            m.position.y + h * m.random.next_double(),
-            m.position.z + w * (2.0 * m.random.next_double() - 1.0) * 0.5,
-        ];
-        events.push(MobEvent::Particles {
-            kind: "large_smoke",
-            at,
-            count: 0,
-        });
     }
 }
 /// `Blaze.customServerAiStep`: rise toward a target above the allowed offset.
@@ -173,7 +156,9 @@ pub fn blaze_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         && !(t.is_player && t.creative)
         && t.eye_y > m.eye_y() + m.extra.vector[0]
     {
-        m.velocity.y += (0.3 - m.velocity.y) * 0.3;
+        // (0.3F - y) * 0.3F: the floats widened.
+        let k = f64::from(0.3_f32);
+        m.velocity.y += (k - m.velocity.y) * k;
     }
 }
 /// `BlazeModel.setupAnim`: three rings of rods circling and bobbing.

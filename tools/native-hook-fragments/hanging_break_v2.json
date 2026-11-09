@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "hanging_break_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_hanging_break_v2",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a hanging entity breaking, with its dimension (`native_hanging_break_v2`).",
+  "doc_summary": "`native_hanging_break_v2(player, dimension, kind, pos, cancel)` is asked when a hanging entity (painting, item frame...) of `kind` at `pos` in `dimension` is about to break; set `cancel` to keep it. `native_hanging_break` (v1) is still asked, unchanged. Bundles need \"hooks\": @API:hanging_break_v2@.",
+  "comments": []
+}

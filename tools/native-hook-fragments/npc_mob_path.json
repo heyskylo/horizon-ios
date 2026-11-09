@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "mob_path", "target": "horizon_client::game::native_npcs::Game<'_>::native_mob_path"}
+  ],
+  "rust_summary": "the walkable path a mob would take to a point, from the engine's own pathfinder (`native_mob_path`), without moving the mob.",
+  "doc_summary": "`native_mob_path(dimension, mob, to, reach)` gives the walkable path a mob of the loaded level `dimension` would take to `to` (`PathNavigation.createPath`, the engine's pathfinder for the mob's kind) as its block positions from the mob's own block on, with whether it reaches `to` within `reach` blocks (`reached` false: the path ends at the nearest node vanilla reached). None for no path, a level not loaded, no such living mob or a bad value. The mob is not moved, so a mod walks its NPC along the nodes itself, or uses `mob_navigate` for the engine's own walk. Bundles need \"hooks\": @API:npc_mob_path@.",
+  "comments": ["crates/horizon-client/src/game/native_npcs.rs"]
+}

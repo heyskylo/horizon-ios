@@ -32,6 +32,9 @@ impl Game<'_> {
             return false;
         }
         self.teleport_to(t, pos, rotation, true);
+        // Entity.teleportTo's transition has no motion (TeleportCommand's
+        // ground step is the command's own, not teleportTo's).
+        self.teleport_stops(t);
         true
     }
     /// Turns the entity to `yaw` and `pitch` in degrees (`Entity.setYRot`,
