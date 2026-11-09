@@ -4963,12 +4963,14 @@ def sulfur_cube_size_attributes():
     movement_speed (0.2F + 0.1F * size) bases, so the save holds both from the load on, after the
     first tick and across a chunk reload, and so does a cube released from a bucket
     (`finalizeSpawn`'s size 2). A saved base wins over the size: `LivingEntity`'s load applies it
-    after `AbstractCubeMob.readAdditionalSaveData` sizes the cube. Entries are read by id: the
-    list's order is the attribute map's."""
+    after `AbstractCubeMob.readAdditionalSaveData` sizes the cube, and so does its Health under Health
+    Boost (`setHealth` clamps to the sized maximum). Entries are read by id: the list's order is the
+    attribute map's."""
     x, z = 4096, 4096
     chunk = [[x >> 4, z >> 4]]
     cases = ['', ',Size:2', ',attributes:[{id:"minecraft:movement_speed",base:0.25d}]',
-             ',Size:1,attributes:[{id:"minecraft:max_health",base:10.0d}]']
+             ',Size:1,attributes:[{id:"minecraft:max_health",base:10.0d}]',
+             ',Size:2,Health:12f,active_effects:[{id:"minecraft:health_boost",duration:200}]']
 
     def reads(uuid):
         return [cmd(f'/data get entity {uuid} attributes[{{id:"minecraft:{a}"}}].base')
