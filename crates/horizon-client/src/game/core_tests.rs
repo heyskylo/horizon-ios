@@ -277,6 +277,8 @@ fn equipment_modifiers_follow_their_slot_group() {
     assert!(!equipment_modifier_applies("offhand", "mainhand"));
 }
 
+#[path = "leash_knot_uuid_tests.rs"]
+mod leash_knot_uuid_tests;
 /// A guest's interact packet names its entity and the server keeps it:
 /// `ServerGamePacketListenerImpl.handleInteract` resolves
 /// `packet.entityId()` once and `Player.interactOn` clicks that entity,
