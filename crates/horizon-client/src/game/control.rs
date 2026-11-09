@@ -1610,6 +1610,9 @@ impl Game<'_> {
         let (target, sampled) = self.lod.as_ref().map_or((0, 0), |lod| lod.progress());
         status["lod"]["target_tiles"] = target.into();
         status["lod"]["sampled_target_tiles"] = sampled.into();
+        let (kept, kept_bytes) = self.lod.as_ref().map_or((0, 0), |lod| lod.kept());
+        status["lod"]["kept_tiles"] = kept.into();
+        status["lod"]["kept_mb"] = (kept_bytes >> 20).into();
         let (wanted, refined) = self
             .lod
             .as_ref()

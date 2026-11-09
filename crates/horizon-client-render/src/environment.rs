@@ -169,6 +169,14 @@ pub struct Frame {
     pub downfall: f32,
 }
 
+impl Frame {
+    /// `g.rain`: the mean of the rain and thunder levels, so plain rain is 0.5 and a
+    /// thunderstorm 1 (observed on the real mod: a pack's `g.rain` colormap row).
+    pub fn global_rain(&self) -> f64 {
+        (f64::from(self.rain) + f64::from(self.thunder)) / 2.0
+    }
+}
+
 /// The game side of a pack expression in an attribute value: `g`, `p`, `c`, `o` (the camera's
 /// position) and `r`, `v` (the value so far) and the pack's `config`.
 struct FrameHost<'a> {
@@ -212,7 +220,7 @@ impl horizon_polytone::expr::Host for FrameHost<'_> {
         let on = |root: Root| *target == V::Object(root as u32);
         let num = |n: f64| Ok(V::Num(n));
         match name {
-            "rain" if on(Root::Global) => num(f64::from(f.rain)),
+            "rain" if on(Root::Global) => num(f.global_rain()),
             "time" if on(Root::Global) => num(f.game_time as f64),
             "dayTime" if on(Root::Global) => num(f.day_time as f64),
             "skyType" if on(Root::Global) => num(f64::from(f.sky_type)),
@@ -1182,20 +1190,25 @@ mod tests {
                 r#"{"default_value": 7}"#,
             ),
         ]);
-        let at = |rain: f32, chunks: i32| {
+        let at = |rain: f32, thunder: f32, chunks: i32| {
             env.set_frame(Frame {
                 rain,
+                thunder,
                 render_distance: chunks,
                 ..Frame::default()
             });
             sky_at(&env, "minecraft:plains", 0.0)
         };
         // `c.viewDistance` is in blocks: 16 chunks are 256.
-        assert_eq!(at(0.0, 16).fog_end, 224.0);
-        assert_eq!(at(0.25, 32).fog_end, 498.0);
+        assert_eq!(at(0.0, 0.0, 16).fog_end, 224.0);
+        // `g.rain` is the mean of rain and thunder: half rain is 0.25 (448 + 50), plain rain
+        // 0.5 and a thunderstorm 1, both past the `min` (224 + 100).
+        assert_eq!(at(0.5, 0.0, 32).fog_end, 498.0);
+        assert_eq!(at(1.0, 0.0, 16).fog_end, 324.0);
+        assert_eq!(at(1.0, 1.0, 16).fog_end, 324.0);
         // `v` is the value the layers before gave: the default start 0, and 192.33 for clouds.
-        assert_eq!(at(0.0, 16).fog_start, 7.0);
-        assert_eq!(at(0.0, 16).cloud_height, 192.33 * 0.5);
+        assert_eq!(at(0.0, 0.0, 16).fog_start, 7.0);
+        assert_eq!(at(0.0, 0.0, 16).cloud_height, 192.33 * 0.5);
     }
 
     /// A PNG of RGBA pixels in one row.
@@ -1230,18 +1243,21 @@ mod tests {
             ),
             ("assets/mypack/polytone/colormaps/sky.png", &png),
         ]);
-        let sky = |rain: f32| {
+        let sky = |rain: f32, thunder: f32| {
             env.set_frame(Frame {
                 rain,
+                thunder,
                 ..Frame::default()
             });
             env.sample(&Sample::default()).sky_color
         };
-        assert_eq!(sky(0.0), [1.0, 0.0, 0.0]);
-        assert_eq!(sky(0.3), [0.0, 1.0, 0.0]);
-        assert_eq!(sky(1.0), [0.0, 0.0, 1.0]);
-        // A transparent pixel keeps the colour the layers before gave (the dimension's #808080).
-        assert_eq!(sky(0.7), [128.0 / 255.0; 3]);
+        // `g.rain` 0, 0.3 (rain 0.6), 1 (a thunderstorm).
+        assert_eq!(sky(0.0, 0.0), [1.0, 0.0, 0.0]);
+        assert_eq!(sky(0.6, 0.0), [0.0, 1.0, 0.0]);
+        assert_eq!(sky(1.0, 1.0), [0.0, 0.0, 1.0]);
+        // A transparent pixel keeps the colour the layers before gave (the dimension's #808080):
+        // `g.rain` 0.7.
+        assert_eq!(sky(1.0, 0.4), [128.0 / 255.0; 3]);
     }
 
     #[test]

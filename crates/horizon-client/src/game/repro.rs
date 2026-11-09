@@ -1386,6 +1386,11 @@ impl Game<'_> {
 }
 
 impl Repro {
+    /// A replay is running or waiting for its world.
+    pub(super) fn replaying(&self) -> bool {
+        self.replay.is_some() || self.pending_replay.is_some()
+    }
+
     /// An agent event while recording joins `events.jsonl`.
     pub(super) fn note_event(&mut self, tick: u64, event: &Value) {
         let Some(rec) = self.recording.as_mut() else {
@@ -1428,11 +1433,6 @@ impl Repro {
     /// Whether a recording is running (the AI Agent page's button label).
     pub(super) fn recording_active(&self) -> bool {
         self.recording.is_some()
-    }
-
-    /// Whether a replay runs or waits for its world.
-    pub(super) fn replaying(&self) -> bool {
-        self.replay.is_some() || self.pending_replay.is_some()
     }
 
     /// The AI Agent page's line while a recording or replay runs.

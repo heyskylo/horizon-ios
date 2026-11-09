@@ -27,6 +27,7 @@ horizon-polytone = { path = "../horizon-polytone" }
 horizon-protocol = { path = "../horizon-protocol" }
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-shaders = { path = "../horizon-shaders" }
+horizon-system = { path = "../horizon-system" }
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-theme = { path = "../horizon-theme" }
 horizon-threads = { path = "../horizon-threads" }
