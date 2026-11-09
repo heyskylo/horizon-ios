@@ -5486,6 +5486,7 @@ impl Game<'_> {
             return;
         };
         let m = &mut self.mobs[index];
+        let camel = crate::mobs::camel::is_camel(m.species()).then_some(m.id);
         let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
             return;
         };
@@ -5503,6 +5504,14 @@ impl Game<'_> {
             neutral,
             None,
         );
+        // Camel.handleStartJump, which the helper accepted: after the dash
+        // sound, `gameEvent(GameEvent.ENTITY_ACTION)` from the camel.
+        if let Some(id) = camel {
+            self.post_entity_event(
+                "minecraft:entity_action",
+                horizon_client::mobs::Who::Mob(id),
+            );
+        }
     }
 
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:
