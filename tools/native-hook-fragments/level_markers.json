@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "level_markers", "target": "horizon_client::game::native_npcs::Game<'_>::native_level_markers"}
+  ],
+  "rust_summary": "the `minecraft:marker` entities of any loaded level with their position and `data` (`native_level_markers`).",
+  "doc_summary": "`native_level_markers(dimension)` gives the id, position and `data` compound of each `minecraft:marker` entity of a loaded level, reading only the level's kept entities, not all of them; empty on a client and for a level not loaded. Bundles need \"hooks\": @API:level_markers@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_npcs.rs"
+  ]
+}

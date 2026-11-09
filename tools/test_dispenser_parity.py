@@ -277,6 +277,38 @@ def vehicle_cases(states, seed, only):
         yield case
 
 
+def egg_and_pickup_cases(states, only):
+    if not only or only in 'minecraft:pig_spawn_egg':
+        for facing in DIRECTIONS:
+            dx, dy, dz = STEP[facing]
+            for patch, spawned, count in [(None, 'pig', 2), ('"minecraft:entity_data":{id:"minecraft:cow"}', 'cow', 2),
+                                          ('"minecraft:entity_data":{id:"minecraft:sheep"}', 'sheep', 2),
+                                          ('"minecraft:entity_data":{id:"cow"}', 'cow', 1),
+                                          ('"!minecraft:entity_data":{}', None, 2)]:
+                item = plain('pig_spawn_egg', count) if patch is None else (
+                    '{id:"minecraft:pig_spawn_egg",count:%d,components:{%s}}' % (count, patch))
+                cells = [[0, 0, 0, states.get('dispenser', facing=facing, triggered='false')]]
+                if (dx, dy - 1, dz) != (0, 0, 0):
+                    cells.append([dx, dy - 1, dz, states.get('stone')])
+                yield dict(seed=1, time=0, mode='dispense', pos=[0, 0, 0], cells=cells,
+                           items=[[0, 0, 0, 0, item]],
+                           expected_spawn=['minecraft:' + spawned] if spawned else ['minecraft:item'])
+    if not only or only in 'minecraft:shears mooshroom_pickup':
+        for kind, brown in [('mooshroom', False), ('mooshroom', True), ('sheep', False)]:
+            for baby in (False, True):
+                entity = dict(type='minecraft:' + kind, pos=[0.5, 0.0, -0.5], yaw=0.0)
+                if baby:
+                    entity['baby'] = True
+                if brown:
+                    entity['brown'] = True
+                yield dict(seed=1, time=0, mode='dispense', pos=[0, 0, 0],
+                           cells=[[0, 0, 0, states.get('dispenser', facing='north', triggered='false')]],
+                           items=[[0, 0, 0, 0, plain('shears')]], pickup_delay=True,
+                           expected_pickups=0 if baby else (5 if kind == 'mooshroom' else -1),
+                           expected_pickup_delay=0 if kind == 'mooshroom' else 10,
+                           entities=[entity])
+
+
 def cases(facts, count, seed, only):
     rng = random.Random(seed)
     states = States(facts)
@@ -296,6 +328,23 @@ def cases(facts, count, seed, only):
                 (blocking, '"minecraft:max_stack_size":1', patch)) + '}}'
             yield {'seed': seed, 'pos': [0, 0, 0], 'cells': [], 'items': [],
                    'blocking_wear': {'item': item, 'creative': creative}}
+    for tool in ('shears', 'flint_and_steel', 'brush'):
+        if only and only not in tool:
+            continue
+        for components in ('"minecraft:unbreakable":{}', '"!minecraft:damage":{}',
+                           '"!minecraft:max_damage":{}', '"minecraft:max_damage":1',
+                           '"minecraft:max_damage":3,"minecraft:damage":2',
+                           '"minecraft:max_damage":2147483647,"minecraft:damage":2147483647'):
+            cells = [[0, 0, 0, states.get('dispenser', facing='north', triggered='false')]]
+            if tool == 'shears':
+                cells.append([0, 0, -1, states.get('beehive', honey_level='5', facing='north')])
+            elif tool == 'flint_and_steel':
+                cells.append([0, -1, -1, states.get('stone')])
+            case = dict(seed=1, time=0, mode='dispense', pos=[0, 0, 0], cells=cells,
+                        items=[[0, 0, 0, 0, '{id:"minecraft:%s",count:1,components:{%s}}' % (tool, components)]])
+            if tool == 'brush':
+                case['entities'] = [{'type': 'minecraft:armadillo', 'pos': [0.5, 0.0, -0.5], 'yaw': 0.0}]
+            yield case
     dragon_egg = plain('ender_dragon_spawn_egg')
     if not only or only in dragon_egg:
         # Both the unobstructed position and a fractional collision height must
@@ -310,6 +359,7 @@ def cases(facts, count, seed, only):
             case.pop('thundering', None)
             yield case
     yield from vehicle_cases(states, seed, only)
+    yield from egg_and_pickup_cases(states, only)
     kinds = list(ITEMS)
     for n in range(count):
         kind = kinds[n % len(kinds)]
@@ -398,9 +448,13 @@ FINALIZED = ('_spawn_egg', 'salmon_bucket', 'cod_bucket', 'pufferfish_bucket', '
 
 
 def finalizes(case):
+    if 'expected_spawn' in case:
+        return any(kind != 'minecraft:item' for kind in case['expected_spawn'])
     return any(any(tag in i[4] for tag in FINALIZED) for i in case['items'] if i[:3] == [0, 0, 0])
 
 def spawned_type(case):
+    if case.get('expected_spawn'):
+        return case['expected_spawn'][0]
     item = next(i[4] for i in case['items'] if i[:3] == [0, 0, 0]).split('"')[1].split(':')[1]
     return 'minecraft:' + item.removesuffix('_spawn_egg').removesuffix('_bucket')
 
@@ -489,7 +543,7 @@ def main():
     executable = lab.cargo_target() / ('fast/horizon-client.exe' if os.name == 'nt' else 'fast/horizon-client')
     with tempfile.TemporaryDirectory(prefix='game-', dir=work) as game_dir:
         run([str(executable), '--resources', str(resources), '--game-dir', game_dir], cwd=work,
-            env={**os.environ, 'HORIZON_DISPENSE_FIXTURE': f'{work / "cases.jsonl"},{work / "rust.txt"}'})
+            env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
     # Loot table names (D) are vanilla's bookkeeping; the drops themselves are compared.
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
     native = h.split_cases((work / 'native.txt').read_text(), ignore)
@@ -501,6 +555,16 @@ def main():
         if a and a[0].startswith('error'):
             errors.setdefault(a[0], []).append(case)
             continue
+        for side, lines in [('vanilla', a), ('horizon', b)]:
+            if 'expected_spawn' in case:
+                spawned = [line.split()[1] for line in lines if line.startswith('N ')]
+                assert spawned == case['expected_spawn'], (side, case, spawned)
+            if case.get('pickup_delay'):
+                pickups = [line for line in lines if line.startswith('pickup ')]
+                expected = case['expected_pickups']
+                assert (len(pickups) == expected if expected >= 0 else bool(pickups)), (side, case, pickups)
+                assert all(int(line.rsplit(' ', 1)[1]) == case['expected_pickup_delay']
+                           for line in pickups), (side, case, pickups)
         if finalizes(case):
             unseeded += 1
             # Riders finalizeSpawn adds (a baby zombie's chicken, a spider's

@@ -378,6 +378,21 @@ fn thread_name(side: &str) -> String {
 /// promise to launchers (docs/api/launch.md), so it never changes within a line of that API.
 pub const SAVED_LINE: &str = "Horizon: crash report saved to ";
 
+/// What runs on each report before it is saved ([`on_report`]).
+pub type ReportHook = fn(&Path, &Report);
+
+static REPORT_HOOKS: std::sync::RwLock<Vec<ReportHook>> = std::sync::RwLock::new(Vec::new());
+
+/// Runs `hook` with every crash report, before it is saved: the game folder and the report. An
+/// extension point for what lives above the engine (Horizon's opt-in telemetry keeps the
+/// report). A hook runs inside the crash handler: it must not panic or block.
+pub fn on_report(hook: ReportHook) {
+    REPORT_HOOKS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(hook);
+}
+
 /// Writes the report and tells where it is; the log gets the error too.
 fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
     if REPORTED.swap(true, Ordering::SeqCst) {
@@ -398,7 +413,13 @@ fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
         ),
     );
     crate::logging::flush();
-    crate::telemetry::keep_crash(home, &report);
+    for hook in REPORT_HOOKS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+    {
+        hook(home, &report);
+    }
     // A player of a shared game folder (`--player-dir`) finds the report beside its own log.
     match report.save(crate::logging::player_dir_override().unwrap_or(home)) {
         Ok(path) => {

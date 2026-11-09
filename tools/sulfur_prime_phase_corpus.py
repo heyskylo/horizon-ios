@@ -9,7 +9,10 @@ the power reaches it, after that tick's `tickFuse`.
 
 The world is frozen; ticks are stepped. Each NoAI cube (fixed UUID, a TNT body) stands on stone in its
 own region: `immediate` is summoned on a redstone block; `warmed` is summoned unpowered, stepped 5
-ticks, then a redstone block is set beside it; `unpowered` never has power. Each cube's `fuse` is read
+ticks, then a redstone block is set beside it; `unpowered` never has power; `taken` is warmed like
+`warmed`, then its body is removed (`item replace ... armor.body with air`) in the same frozen instant its
+power is set, so the power check still reads the cached TNT `explosionData` (fuse 120) although the live
+body is gone, and the explosion data it adopts afterwards is empty. Each cube's `fuse` is read
 after every tick, then the immediate cube runs on to its blast (`mob_griefing` off: no block breaks).
 
 Label classes, declared before any native run: `target-` rows read the immediate cube's fuse on its
@@ -20,7 +23,7 @@ or a control (the warmed cube's priming, the unpowered cube, the countdown, the 
 Y = 100
 Z = 8
 # name, UUID tail, x
-CUBES = [('immediate', 1, 4), ('warmed', 2, 20), ('unpowered', 3, 36)]
+CUBES = [('immediate', 1, 4), ('warmed', 2, 20), ('unpowered', 3, 36), ('taken', 4, 52)]
 BODY = 'equipment:{body:{id:"minecraft:tnt",count:1}}'
 
 
@@ -55,12 +58,12 @@ def sulfur_prime_phase(full=False):
     for rule, value in [('random_tick_speed', '0'), ('spawn_mobs', 'false'), ('advance_time', 'false'),
                         ('advance_weather', 'false'), ('mob_griefing', 'false'), ('tnt_explodes', 'true')]:
         cmd(f'/gamerule {rule} {value}', 'rule-' + rule, admission=False)
-    cmd('/forceload add 0 0 47 15', 'force', 3)
-    ops.append({'op': 'settle', 'required_chunks': [[0, 0], [1, 0], [2, 0]]})
-    for c in range(3):
+    cmd('/forceload add 0 0 63 15', 'force', 4)
+    ops.append({'op': 'settle', 'required_chunks': [[0, 0], [1, 0], [2, 0], [3, 0]]})
+    for c in range(4):
         cmd(f'/execute if loaded {c * 16 + 8} {Y} {Z}', f'loaded-{c}', 1)
-    cmd(f'/fill 0 {Y - 2} 0 47 {Y - 1} 15 stone', 'floor', 1536)
-    cmd(f'/fill 0 {Y} 0 47 {Y + 4} 15 air', 'clear', admission=False)
+    cmd(f'/fill 0 {Y - 2} 0 63 {Y - 1} 15 stone', 'floor', 2048)
+    cmd(f'/fill 0 {Y} 0 63 {Y + 4} 15 air', 'clear', admission=False)
     cmd('/kill @e[type=!player]', 'clear-entities', admission=False, diagnostic=True)
     cmd('/kill @e[type=item]', 'clear-items', admission=False, diagnostic=True)
     # The immediate cube's power: the block it stands on.
@@ -87,14 +90,16 @@ def sulfur_prime_phase(full=False):
     step('step-4')
     step('step-5')
     cmd(f'/setblock 21 {Y} {Z} redstone_block', 'warmed-power', 1)
+    cmd(f'/item replace entity {uuid(4)} armor.body with minecraft:air', 'taken-body-off', 1)
+    cmd(f'/setblock 53 {Y} {Z} redstone_block', 'taken-power', 1)
     for t in (6, 7, 8):
         step(f'step-{t}')
-        reads(f't{t}', ('warmed', 'unpowered'))
+        reads(f't{t}', ('warmed', 'unpowered', 'taken'))
     # The immediate cube's countdown to its blast.
     for t in range(9, 131):
         step(f'step-{t}')
         if t % 10 == 0 or t >= 115:
-            reads(f't{t}', ('immediate',))
+            reads(f't{t}', ('immediate', 'taken'))
     cmd('/execute if entity @e[type=sulfur_cube]', 'cubes-after', admission=False)
     cmd('/execute store result score now sp run time query gametime', 'diag-clock-end', admission=False,
         diagnostic=True)
