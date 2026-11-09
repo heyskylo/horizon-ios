@@ -123,7 +123,7 @@ controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-duals
 # tracing on request (`HORIZON_RAY_TRACING=1`). Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
 # every place it gates. Without it (`--no-default-features --features audio,controllers`) the
 # client is best effort: CI builds only the default.
-horizon-extras = ["discord", "friends", "horizon-client-render/horizon-extras"]
+horizon-extras = ["horizon-client-lib/horizon-extras", "horizon-client-render/horizon-extras", "discord", "friends"]
 # Online extras a server or a port can leave out; the server build has none of them. "Playing Horizon"
 # on Discord (game/discord.rs).
 discord = ["horizon-client-lib/discord"]

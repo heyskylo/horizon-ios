@@ -103,6 +103,8 @@ pub mod native_data;
 pub mod net;
 pub mod nether_portal;
 pub mod no_resources;
+#[cfg(feature = "horizon-extras")]
+pub mod official_servers;
 pub mod offline_name;
 pub mod old_world;
 pub mod osk;
