@@ -71,7 +71,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         false,
         false,
         true,
-        false,
+        None,
         false,
     ))?;
     assert!(!renderer.pack_entity_shadows(), "no selected pack");
