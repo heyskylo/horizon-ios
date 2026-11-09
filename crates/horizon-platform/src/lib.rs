@@ -54,7 +54,7 @@ pub mod hooks {
         Look, Mark, Mesh, Motion, NameDecoration, PartPoses, Particle, Pass, PlayerDraw,
         PlayerModel, PlayerModels, Quad, SpriteStore, Sprites, View,
     };
-    pub use horizon_hooks::{Hooks, Started, TooLate, register, seat};
+    pub use horizon_hooks::{Hooks, Started, TooLate, register, seat, tunnel};
 }
 
 /// The settings store (`horizon_hooks::settings`): a crate's own `key:value` lines in the game
