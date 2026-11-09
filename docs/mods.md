@@ -374,7 +374,16 @@ Its block flows in the world as its template does, with the fluid's own `tick_ra
 NeoForge's `BaseFlowingFluid` does: lava's and water's conversions (stone, obsidian, cobblestone) stay theirs, a mod
 fluid copying lava neither fizzes nor turns water to stone, and no fluid replaces a mod fluid. Its `bucket` pours the source and an empty bucket
 picks the source back up (a fluid without one can't be picked up), from a hand or a dispenser, with the template's
-sounds. Not yet: mobs don't swim in it, and it is drawn as its template
+sounds.
+
+It is not water to the game (a zombie in it doesn't become a drowned, nor does it hydrate farmland): as NeoForge tracks
+each `FluidType`, an entity's immersion in it is its own. The player moves in it as in water, whatever its template,
+and its numbers decide the rest: its current pushes the player, dropped items, experience orbs, armour stands and boats
+by `motion_scale` when `can_push_entity`; the player swims and rises in it when `can_swim`, loses air with the eyes in
+it when `can_drown`, is put out when `can_extinguish`, and has the fall distance multiplied by
+`fall_distance_modifier` each tick in it (0 resets it, as water does). Left out, each is its template's: water's
+0.014, all true and 0; lava's 0.0023, only `can_push_entity`, and 0.5. Not yet: mobs and arrows swim and move in it as
+on land, boats don't float on it (`supports_boating`), and it is drawn as its template
 ([#6301](https://github.com/horizon-rust/horizon/issues/6301) adds these step by step).
 
 A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:

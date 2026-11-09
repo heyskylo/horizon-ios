@@ -10,6 +10,17 @@ use horizon_core::geometry::{Aabb, Vec3};
 
 const MAX_ENTITY_SECTION_COVERAGE: i64 = 50;
 
+/// The orb quad is asymmetric about its translated centre: its farthest corner
+/// is sqrt(0.15² + 0.225²) blocks away. A sphere covers every billboard rotation
+/// and pickup-animation position; include rounding of camera-relative vertices.
+fn orb_billboard_radius(origin: glam::Vec3) -> f32 {
+    0.3 + origin.abs().max_element() * f32::EPSILON * 4.0
+}
+
+pub(super) fn orb_in_view(view: &horizon_client::gfx::Frustum, origin: glam::Vec3) -> bool {
+    view.intersects_sphere(origin, orb_billboard_radius(origin))
+}
+
 /// The inclusive range of sections an entity's padded render bounds can touch,
 /// in the layout whose section 0 starts at `bottom_y`. `None` when the bounds
 /// are not finite, hold block coordinates outside `i32`, or span more sections
@@ -638,3 +649,43 @@ mod vanilla_entity_tests {
 #[cfg(test)]
 #[path = "entity_culling_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod orb_tests {
+    use super::orb_billboard_radius;
+
+    #[test]
+    fn sphere_contains_the_asymmetric_billboard_including_vertex_rounding() {
+        use glam::Vec3;
+        use horizon_client::entities::{ORB_QUAD, ORB_QUAD_SCALE};
+
+        for origin in [
+            Vec3::ZERO,
+            Vec3::new(-47.25, 12.5, 81.0),
+            Vec3::new(30_000_000.0, -30_000_000.0, 256.0),
+        ] {
+            let radius = orb_billboard_radius(origin);
+            for yaw in (0..360).step_by(15) {
+                for pitch in [-90.0_f32, -89.99, -45.0, 0.0, 45.0, 89.99, 90.0] {
+                    let (yaw, pitch) = ((yaw as f32).to_radians(), pitch.to_radians());
+                    let forward = Vec3::new(
+                        -yaw.sin() * pitch.cos(),
+                        -pitch.sin(),
+                        yaw.cos() * pitch.cos(),
+                    );
+                    let right = forward.cross(Vec3::Y).normalize_or_zero();
+                    let up = right.cross(forward).normalize_or_zero();
+                    for corner in ORB_QUAD {
+                        let vertex = origin
+                            + right * (corner[0] * ORB_QUAD_SCALE)
+                            + up * (corner[1] * ORB_QUAD_SCALE);
+                        assert!(
+                            vertex.distance(origin) <= radius,
+                            "{origin:?}, yaw {yaw}, pitch {pitch}: {vertex:?} outside {radius}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

@@ -21,6 +21,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
+    // Crates above the engine registered their hooks before this (horizon-official's `main`);
+    // none registers after this point.
+    horizon_hooks::engine::seal();
     horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -303,6 +306,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             game::exit_code::ERROR
         });
     }
+    horizon_hooks::engine::shutdown();
     logging::flush();
 }
 

@@ -744,9 +744,13 @@ decides what happens: only `horizon-mod.toml` with `assets/` and `data/` is a co
 one file: `horizon-mod.toml`, `assets/` and `data/` are its content, checked as a content mod's
 (`horizon_mods::Content`) and left out of the build, and the two manifests name the same mod id. A `.hmod` with
 native code is never a WebAssembly mod: one carrying `mod.wasm` is refused with
-`horizon_mods::index::native::WASM_GONE`. An `.hnmod` (code only) keeps loading as before. The registry keeps
-publishing native mods as `.hnmod` until launchers and the game read native `.hmod`s. Every rule of the file is in
-[api/mod-files.md](api/mod-files.md).
+`horizon_mods::index::native::WASM_GONE`. An `.hnmod` (code only) keeps loading as before. The launcher can install
+native `.hmod` files from the registry, alongside legacy `.hnmod`s. A build validates the content and snapshots it
+under its own `native-content/<id>/`, then the game layers it through the normal content loader before loading
+sounds and textures. Updating the installed archive cannot change an older build's content; rebuilding without a
+mod removes its snapshot, and turning it off excludes its content. Namespace collisions follow the content mod
+rules. Put sound events in `assets/<namespace>/sounds.json` and their files in `assets/<namespace>/sounds/*.ogg`
+at the archive's top level, not under `mixins/`. Every rule of the file is in [api/mod-files.md](api/mod-files.md).
 
 ### Post-build steps
 
@@ -3886,6 +3890,12 @@ with their components, by the server's slot number (the numbers `ContainerSetSlo
 chest's own slots, then the player's inventory, then the hotbar; an empty slot is `None`. Where `NativeScreenView.slots`
 counts the slots, this lists them. It is `None` on a server, while no server-opened menu is up (the window's own
 inventory, creative) and for a menu whose slots the client doesn't lay out (a lectern).
+
+`host.own_inventory()` (client, API @API:client_own_inventory@) gives the player's own inventory, slots 0-35 by Minecraft's
+numbering (0-8 the hotbar, 9-35 the main inventory), with their components; an empty slot is `None`. Unlike `menu_stacks()`
+it answers whichever menu is up, a server-opened one or the window's own inventory. Armor and the off hand are not in it
+(`living.equipment` has them). It is what the server last synced, so before the first sync every slot is `None`, and it is
+`None` itself on a server. Each call copies the 36 slots.
 
 `host.menu_slot_roles()` (client, `native_menu_slot_roles`, API @API:slot_roles@) says what each of those slots is for,
 in the same numbering, so an inventory mod (drags, the wheel, sorting, quick-stack) works in any menu without a list

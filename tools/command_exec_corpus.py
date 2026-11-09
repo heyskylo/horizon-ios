@@ -6490,6 +6490,31 @@ def piston_push_ground():
     return ops
 
 
+def falling_block_in_moving_piston():
+    """#13793: `FallingBlockEntity.tick` neither places, drops nor discards a block that comes down
+    where a piston is extending (the block there `is(Blocks.MOVING_PISTON)`), before its `cancelDrop`
+    check: it stays a falling block, the piston pushes it on, and it lands a block further a tick
+    later. The piston fires in the tick's block events, before the entity lands. A sideways motion
+    shows the landing's slowdown (0.7) and the air drag it keeps."""
+    ops = []
+    selector = '@e[type=minecraft:falling_block,tag=piston_falling,limit=1]'
+    for piston, fields in (('sticky_piston', ''), ('piston', ''), ('sticky_piston', ',CancelDrop:1b'),
+                           ('piston', ',Motion:[0.0d,0.0d,0.05d]')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
+                     '/fill 28 209 28 36 209 34 stone', f'/setblock 31 210 31 {piston}[facing=east]',
+                     '/summon minecraft:falling_block 32.5 210 31.5 '
+                     f'{{BlockState:{{Name:"minecraft:sand"}},Tags:["piston_falling"]{fields}}}',
+                     '/setblock 30 210 31 redstone_block')
+        for _ in range(3):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {selector} Pos'))
+            ops.append(cmd(f'/data get entity {selector} Motion'))
+            ops.append(cmd('/execute if block 33 210 31 minecraft:sand'))
+            ops.append(cmd('/execute if entity @e[type=minecraft:item,x=28,y=208,z=28,dx=8,dy=10,dz=6]'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
 def primed_tnt_box():
     """#12020: `EntityTypes.TNT` is sized 0.98F, so its box is half 0.49F wide
     and 0.98F tall, both widened from float: TNT stopped by a wall ends 0.49F
@@ -6836,6 +6861,21 @@ def projectile_fall_distance():
                        f'/forceload remove {x0} {z0}')
 
 
+def living_short_timers():
+    """#13846: `LivingEntity` reads `HurtTime` and `DeathTime` with `getShortOr` and writes them back as `(short)`
+    casts: a negative value stays."""
+    x0, y0, z0 = 4096 - 128, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False)]
+    for n, (kind, fields) in enumerate([('squid', 'DeathTime:-1s'), ('drowned', 'DeathTime:-7s,HurtTime:-3s'),
+                                        ('pig', 'HurtTime:-1s'), ('cow', 'DeathTime:5s,Health:20.0f')], 1):
+        uuid = f'000036d0-0000-0000-0000-{n:04x}00000001'
+        ops += [cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;14032,0,{n},1],NoAI:1b,{fields}}}',
+                    expect_result=1),
+                cmd(f'/data get entity {uuid} DeathTime'), cmd(f'/data get entity {uuid} HurtTime')]
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7153,7 +7193,8 @@ ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
 ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
+ISOLATED_POT_HOPPER = frozenset({'hopper pot saved slot'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER
 
 
 def vehicle_fall_clip():
@@ -7182,9 +7223,8 @@ def vehicle_fall_clip():
                        f'fall_distance:5d,Motion:[0d,{dy},0d]}}', expect_result=1))
 
     def reads():
-        # The water boat floats after it: only its fall is read.
-        for n, (_, block) in enumerate(subjects, 1):
-            for key in ('fall_distance',) if block == 'water' else ('fall_distance', 'Pos[1]'):
+        for n, _ in enumerate(subjects, 1):
+            for key in ('fall_distance', 'Pos[1]'):
                 ops.append(cmd(f'/data get entity 000032cd-0000-0000-0000-{n:04x}00000001 {key}'))
 
     reads()
@@ -7270,6 +7310,10 @@ def groups():
     except ImportError:
         from guest_close_event_corpus import cases as guest_close_events
     try:
+        from .pot_hopper_corpus import cases as pot_hopper_cases
+    except ImportError:
+        from pot_hopper_corpus import cases as pot_hopper_cases
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -7329,6 +7373,7 @@ def groups():
         ('vehicle container saved fields', vehicle_containers(cmd)),
         ('vehicle boolean save flags', vehicle_boolean_flags(cmd)),
         ('other entity boolean save flags', other_entity_boolean_flags(cmd)),
+        ('hopper pot saved slot', pot_hopper_cases(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
@@ -7414,6 +7459,7 @@ def groups():
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
@@ -7426,6 +7472,7 @@ def groups():
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
+        ('falling block in a moving piston', falling_block_in_moving_piston()),
         ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
