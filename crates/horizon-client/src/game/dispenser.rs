@@ -642,6 +642,10 @@ impl Game<'_> {
             | "minecraft:axolotl_bucket"
             | "minecraft:tadpole_bucket"
             | "minecraft:sulfur_cube_bucket" => self.dispense_filled_bucket(pos, facing, stack)?,
+            // A mod fluid's bucket (`DispensibleContainerItem`).
+            mod_bucket if horizon_world::fluid::FluidKind::of_bucket(mod_bucket).is_some() => {
+                self.dispense_filled_bucket(pos, facing, stack)?
+            }
             "minecraft:bucket" => self.dispense_empty_bucket(pos, facing, stack)?,
             "minecraft:flint_and_steel" => self.dispense_flint_and_steel(pos, facing, stack)?,
             "minecraft:bone_meal" => self.dispense_bone_meal(pos, facing, stack)?,

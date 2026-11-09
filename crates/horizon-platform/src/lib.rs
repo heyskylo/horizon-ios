@@ -9,3 +9,10 @@
 /// The machine the game runs on (`horizon-system`): OS, CPU, memory, drive, power, GPU maker and
 /// memory.
 pub use horizon_system as system;
+
+/// Plugging into the game (`horizon-hooks`): implement [`hooks::Hooks`] and
+/// [`hooks::register`] it before the game starts (docs/layers.md, "How a Horizon crate plugs
+/// in"). The engine's dispatch side is not part of the API.
+pub mod hooks {
+    pub use horizon_hooks::{Hooks, Started, TooLate, register};
+}
