@@ -32,10 +32,24 @@ def generated(text):
     return "@generated" in "\n".join(text.split("\n", 5)[:5])
 
 
-def changes(base):
-    """(path, old path or None) for each Rust file added, changed or renamed since the merge base with `base`,
-    working tree included."""
-    merge_base = git("merge-base", base, "HEAD").strip()
+def comparison_base(base, pr_head=None):
+    """Use the base actually tested by CI, even if main advanced after the PR event."""
+    if pr_head:
+        try:
+            expected = git("rev-parse", "--verify", "--end-of-options", f"{pr_head}^{{commit}}").strip()
+        except subprocess.CalledProcessError as error:
+            raise ValueError(f"Cannot resolve PR head commit: {pr_head}") from error
+        checkout, *parents = git("rev-list", "--parents", "-n", "1", "HEAD").split()
+        if checkout != expected:
+            if len(parents) != 2 or expected not in parents:
+                raise ValueError("Checkout must be the PR head or its two-parent test merge")
+            return next(parent for parent in parents if parent != expected)
+    return git("merge-base", base, "HEAD").strip()
+
+
+def changes(base, pr_head=None):
+    """(path, old path or None) for Rust changes against the selected base, working tree included."""
+    merge_base = comparison_base(base, pr_head)
     out = []
     for line in git("diff", "--name-status", "-M", "--diff-filter=AMR", merge_base, "--", "*.rs").splitlines():
         parts = line.split("\t")
@@ -65,11 +79,19 @@ def problems(entries, limit=LIMIT):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", help="the git ref the branch starts from (CI: the pull request's base)")
+    parser.add_argument("--pr-head", help="the PR head commit, to identify CI's test-merge base parent")
     args = parser.parse_args(argv)
+    if args.pr_head and not args.base:
+        parser.error("--pr-head requires --base")
     if not args.base:
         print("File size: no base to compare with, nothing checked.")
         return 0
-    merge_base, changed = changes(args.base)
+    try:
+        merge_base, changed = changes(args.base, args.pr_head)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.pr_head:
+        print(f"File size comparison base: {merge_base}")
     entries = []
     for path, old in changed:
         file = ROOT / path
