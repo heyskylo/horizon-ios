@@ -835,7 +835,16 @@ pub fn paint(batch: &mut crate::hud::HudBatch, atlas: &crate::hud::HudAtlas, dra
                     r.u0 = u0;
                     r.v0 = v0;
                 }
-                batch.rect_uv(*x as f32, *y as f32, *w as f32, *h as f32, r, abgr(*color));
+                let at = [*x as f32, *y as f32, *w as f32, *h as f32];
+                match crate::hud::sprite_modifiers::draws(atlas, &name, r, at, abgr(*color)) {
+                    // A Polytone screen sprite modifier: the sprite changed, then its overlays.
+                    Some(draws) => {
+                        for d in draws {
+                            batch.rect_uv(d.at[0], d.at[1], d.at[2], d.at[3], d.rect, d.color);
+                        }
+                    }
+                    None => batch.rect_uv(at[0], at[1], at[2], at[3], r, abgr(*color)),
+                }
                 if *blend == Blend::Crosshair {
                     batch.invert_since(start);
                 }

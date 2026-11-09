@@ -76,6 +76,21 @@ pub(super) fn load_core(
     }
 }
 
+/// The packs' core shaders the atlas carries (text, block outline, sky, stars).
+pub(super) fn load_shaders(atlas: &mut super::HudAtlas, root: &Path, defaults: &Path) {
+    atlas.text_shader = load(root, defaults);
+    atlas.lines_shader = load_core(
+        root,
+        defaults,
+        "rendertype_lines",
+        &[],
+        &crate::gfx::core_lines::GLUE,
+    );
+    let sky = |name| load_core(root, defaults, name, &[], &crate::gfx::core_sky::GLUE);
+    atlas.sky_shader = sky("sky");
+    atlas.stars_shader = sky("stars");
+}
+
 /// Each uniform block's offset in the one buffer (`core_shader::BLOCKS` order).
 const BLOCK_OFFSETS: [u64; 4] = [0, 256, 512, 768];
 const BLOCK_SIZES: [u64; 4] = [48, 64, 160, 48];
