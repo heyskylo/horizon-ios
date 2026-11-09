@@ -136,7 +136,7 @@ class Game:
             self.discord.start()
         extra = {'HORIZON_HOME': self.home, 'HORIZON_TELEMETRY_URL': 'off', 'HORIZON_DISCORD_IPC_DIR': self.discord.dir}
         self.env = lab.game_env(**extra)
-        self.ctl_run('launch', '--offscreen', '--game', str(bins / 'horizon-client'), '--resources',
+        self.ctl_run('launch', '--offscreen', '--game', str(bins / 'horizon-official'), '--resources',
                      str(lab.RESOURCES.resolve()), *args)
 
     def ctl_run(self, *words, timeout=600):
@@ -251,14 +251,14 @@ CHECKS = {'single': single, 'lan': lan, 'setting': setting, 'late': late}
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--check', choices=[*CHECKS, 'all'], default='all')
-    parser.add_argument('--bin-dir', help='prebuilt horizon-client and horizon-ctl (default: build with the fast profile)')
+    parser.add_argument('--bin-dir', help='prebuilt horizon-official and horizon-ctl (default: build with the fast profile)')
     args = parser.parse_args()
     if sys.platform == 'win32':
         sys.exit('the fake Discord is a Unix socket: macOS or Linux only')
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib', '--bins'],
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-official', '-p', 'horizon-client-lib', '--bins'],
                        cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
                                          capture_output=True, text=True, check=True).stdout)

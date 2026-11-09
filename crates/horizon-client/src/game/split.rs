@@ -261,6 +261,8 @@ impl<'a> Split<'a> {
                 .get(i.wrapping_sub(1))
                 .map(|g| g.options.clone()),
         );
+        let seat = self.guests.get(i.wrapping_sub(1)).map_or(1, |g| g.seat);
+        horizon_hooks::engine::set_seat(seat - 1);
         self.turn = i;
     }
 

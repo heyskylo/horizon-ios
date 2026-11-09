@@ -1608,6 +1608,16 @@ impl Game<'_> {
         }
     }
 }
+/// `LecternBlock.getAnalogOutputSignal`'s `HAS_BOOK` check.
+pub(super) fn has_book_state(
+    registry: &'static horizon_world::registry::BlockRegistry,
+    state: horizon_world::registry::BlockStateId,
+) -> bool {
+    registry
+        .state(state)
+        .is_some_and(|s| s.properties.get("has_book").is_some_and(|v| v == "true"))
+}
+
 /// `LecternBlockEntity.getRedstoneSignal`.
 pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos) -> Option<i32> {
     match world.block_entities.get(&(pos.x, pos.y, pos.z)) {
@@ -1721,6 +1731,7 @@ mod lectern_signal_tests {
         items::ItemStack,
     };
     use horizon_core::position::BlockPos;
+    use horizon_world::level::LevelAccess;
     use horizon_world::registry::BlockStateId;
 
     fn signal(game: &mut super::Game<'_>, book: Option<ItemStack>, page: i32) -> i32 {
@@ -1736,6 +1747,55 @@ mod lectern_signal_tests {
             .block_entities
             .insert(key, BlockEntity::Lectern(Lectern { book, page }));
         lectern_signal(&game.world, BlockPos::new(key.0, key.1, key.2)).unwrap()
+    }
+
+    /// `LecternBlock.getAnalogOutputSignal` reads the block entity only while
+    /// the state's `HAS_BOOK` is true.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lectern_without_the_has_book_state_feeds_no_comparator() {
+        let mut game = server_game();
+        let key = (8, 64, 8);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world.block_entities.insert(
+            key,
+            BlockEntity::Lectern(Lectern {
+                book: Some(ItemStack::new("minecraft:writable_book", 1)),
+                page: 0,
+            }),
+        );
+        let signal = |game: &mut super::Game<'_>, state| {
+            game.with_level(|_, level, _| {
+                level.block_entity_analog_signal(
+                    BlockPos::new(key.0, key.1, key.2),
+                    state,
+                    horizon_core::geometry::Direction::North,
+                )
+            })
+        };
+        assert_eq!(
+            signal(&mut game, state),
+            0,
+            "the block state says the lectern holds no book"
+        );
+        let registry = game.pack.assets.registry;
+        let mut with_book = registry.state(state).unwrap().clone();
+        with_book
+            .properties
+            .insert("has_book".into(), "true".into());
+        let with_book = registry.id(&with_book).unwrap();
+        game.world.set(key.0, key.1, key.2, with_book).unwrap();
+        assert_eq!(
+            signal(&mut game, with_book),
+            15,
+            "with HAS_BOOK the book's page signal"
+        );
     }
 
     /// `LecternBlockEntity.getRedstoneSignal`: `floor(page / (pageCount - 1)
