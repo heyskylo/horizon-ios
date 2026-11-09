@@ -22,7 +22,6 @@ use crate::{
 use horizon_core::geometry::{Direction, ShapeOp, VoxelShape};
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use std::{
-    cell::RefCell,
     collections::{HashMap, VecDeque},
     path::Path,
     sync::Arc,
@@ -335,8 +334,29 @@ impl SectionScratch {
     }
 }
 
-thread_local! {
-    static SCRATCH: RefCell<LightScratch> = RefCell::new(LightScratch::new());
+/// Lighting scratch (some 4.4 MB at full height) shared by every thread that lights: a job takes one
+/// (or makes one) and gives it back, and at most [`KEPT_SCRATCH`] stay allocated between jobs. One per
+/// thread kept that much on every generation worker for good.
+static SCRATCH_POOL: std::sync::Mutex<Vec<Box<LightScratch>>> = std::sync::Mutex::new(Vec::new());
+const KEPT_SCRATCH: usize = 4;
+
+/// A scratch from the pool, or a new one.
+fn take_scratch() -> Box<LightScratch> {
+    let taken = SCRATCH_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop();
+    taken.unwrap_or_else(|| Box::new(LightScratch::new()))
+}
+
+/// Gives a scratch back to the pool, unless it already keeps [`KEPT_SCRATCH`].
+fn give_scratch(scratch: Box<LightScratch>) {
+    let mut pool = SCRATCH_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pool.len() < KEPT_SCRATCH {
+        pool.push(scratch);
+    }
 }
 
 /// Where a section sits in the 48-wide region.
@@ -449,7 +469,10 @@ pub fn light_chunk(
     tables: &LightTables,
     sky_light: bool,
 ) -> Vec<Light> {
-    SCRATCH.with_borrow_mut(|scratch| light_chunk_with_scratch(region, tables, sky_light, scratch))
+    let mut scratch = take_scratch();
+    let lit = light_chunk_with_scratch(region, tables, sky_light, &mut scratch);
+    give_scratch(scratch);
+    lit
 }
 
 fn light_chunk_with_scratch(
@@ -2389,6 +2412,44 @@ pub(crate) mod tests {
                 assert_eq!(queue, want_queue, "{distinct} values, emitting {emitting}");
             }
         }
+    }
+
+    /// Threads lighting at once each take their own scratch from the pool: every result is what the old
+    /// flood fill gives, and the pool keeps no more than its cap afterwards.
+    #[test]
+    fn pooled_scratch_lights_like_the_old_algorithm_across_threads() {
+        let t = tables();
+        let layout = ColumnLayout::VANILLA;
+        let mut chunks = Vec::new();
+        for cz in -1..=1 {
+            for cx in -1..=1 {
+                let mut c = Chunk::with_layout(cx, cz, layout);
+                for i in 0..256 {
+                    c.set(i & 15, 60, i >> 4, STONE);
+                }
+                c.set(((cx + 1) * 5) & 15, 61, ((cz + 1) * 3) & 15, TORCH);
+                c.set(8, 40, 8, TORCH);
+                c.set(2, 70 + cx * 3, 14, SLAB);
+                chunks.push(c);
+            }
+        }
+        let region: [[Option<&Chunk>; 3]; 3] =
+            std::array::from_fn(|dz| std::array::from_fn(|dx| Some(&chunks[dz * 3 + dx])));
+        let want = old_light_chunk(&region, &t, true);
+        std::thread::scope(|s| {
+            for _ in 0..KEPT_SCRATCH * 2 {
+                s.spawn(|| {
+                    for _ in 0..3 {
+                        let got = light_chunk(&region, &t, true);
+                        assert_eq!(got.len(), want.len());
+                        for (g, w) in got.iter().zip(&want) {
+                            assert!((0..4096).all(|i| g.get(i) == w.get(i)));
+                        }
+                    }
+                });
+            }
+        });
+        assert!(SCRATCH_POOL.lock().unwrap().len() <= KEPT_SCRATCH);
     }
 
     #[test]
