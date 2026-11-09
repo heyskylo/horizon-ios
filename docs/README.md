@@ -29,6 +29,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Extras](extras.md): optional zoom, minimap, FPS and keystroke overlays and auto-reconnect, all off by default.
 - [PvP & HUD](pvp.md): optional client settings for PvP players (custom crosshair, block outline, hit color, HUD widgets), fair-play boundaries, and why each is off by default.
 - [Cosmetics](cosmetics.md): wearable items drawn only by Horizon clients (hats, back items, shoulder pets, name tag styles), with no gameplay effect, client-side visibility toggles and the JSON item format.
+- [Layers](layers.md): engine, platform and Horizon: what belongs to each, where a new feature goes, the dependency rule, every built-in outside address.
 - [Forking](forking.md): the `horizon-extras` feature that holds Horizon's own extras (cosmetics, Friends, its settings pages...), and building the game without them.
 - [Narrator](narrator.md): vanilla's text-to-speech (Ctrl+B): the voices per platform, how screens record what they narrate, `horizon-ctl narration`, and where it still differs from vanilla.
 - [Shader packs](shaders.md): Horizon's own WGSL shader packs, how to make and check one (`horizon-shader`).
@@ -37,7 +38,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Upgrading a 26.2 data pack](datapack-upgrade.md): `horizon-port-pack upgrade-datapack` rewrites a 26.2 worldgen pack in 26.3's formats, and how the rewrite is checked against vanilla.
 - [Modpacks](modpacks.md): porting whole packs (ATM10 and smaller): import, inventory, carry-over, an agent per mod with a harness against the Java original, coverage, and how "10x" is measured.
 - [Launcher](../launcher/README.md): installs, updates and starts builds; its CLI and MCP server; releasing it.
-- [Versioning](versioning.md): how releases are numbered from 0.2 (`v0.2.x`, `launcher@0.2.x`), how installs from before 0.2 get there, and the steps for the day 0.2 ships.
+- [Versioning](versioning.md): how releases are numbered from 0.2 (`v0.2.x`, `launcher@0.2.x`), and how installs from before 0.2 get there.
 - [Reusing pack overlays](reuse-pack-overlays.md): caching completed pack overlays, invalidating changed inputs and measuring reload costs.
 - [Resource packs](resource-packs.md): everything a 26.3 resource pack can change, whether Horizon honours it, and the proof.
 - [Opt-in data collection](telemetry.md): the consent, exactly what is sent, how it is stored and sent.
@@ -70,11 +71,10 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 - [Design system](design-system.md): shared tokens and interface rules for the launcher, website and Horizon-only game overlays.
 - [HUD kit](ui-kit.md): the pieces Horizon's own HUD overlays share: `Room`, which keeps the controller notice and splitscreen's join strip below the boss bars, `Plate`, the box behind their text, and controller glyphs asked for by what the button does, with the Nintendo letter rule.
-- [Offscreen frame compositor](design/compositor.md): sharing a window surface between views, clipping and the standalone splitscreen compositor example.
+- Splitscreen plumbing (#3541): the renderer hands its window surface to a compositor that places each view (`cargo run --profile fast -p horizon-client-render --example compositor [-- --smoke]`), and `Audio::share(owner)` gives each view its own sound engine on one output, playing a world sound once from the nearest camera (`cargo test -p horizon-client-render --lib audio::tests`).
 - [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
 - [Live mod reloading](design/mod-hotload.md): loading, enabling and updating mods from inside the game without a restart.
 - [Mod registry v2](design/registry-v2.md): project kinds, metadata, installation locations and the registry rollout.
-- [Shared audio output](design/shared-audio.md): sound engines on one output, listener ownership and duplicate world-sound handling.
 
 ## Architecture: world generation
 
@@ -112,4 +112,5 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Lighting worker result packaging](performance/lighting-worker-results.md): moving light results instead of cloning them cut packaging and application from 63.948 to 44.397 us/column (1.44x) when sections are uniquely owned and from 65.332 to 53.025 us/column (1.23x) with a retained snapshot.
 - [Paletted container access](performance/paletted-container-access-results.md): one-pass section validation and per-palette unpack dispatch made `BlockSection::set` 1.44x faster (13.15 to 9.12 ns/write), `get` 1.61x faster (2.33 to 1.45 ns/read) and bulk `unpack` 1.04x faster.
 - [Uniform chunk sections when saving](performance/paletted-pack-uniform.md): answering a one-value section from its stored words instead of unpacking 4,096 cells made `pack` 116x faster on a single-value section (3.85 to 0.03 us) and 22x on a global-palette one, with no change for mixed sections, and cut a 256-column save batch from 205,375 to 180,162 us (1.14x).
+- [Item components in one pass](performance/item-components-one-pass.md): finding a stack's modelled components in one walk of the saved compound instead of one map lookup per ID made `decode_components` 2.6x faster on a one-component stack (0.93 to 0.36 us) and cut the decode stage of a 256-column village batch from 106 to 81 ms (1.31x).
 - [Progressive world resources](performance/startup-stage-3.md): stage 3 makes the title screens interactive before core resources finish; an unblocked launch reached core at 4,776 ms, renderer at 5,260 ms and rest at 6,282 ms, with progressive-title RSS about 11% higher in a warm run.

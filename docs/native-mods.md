@@ -395,6 +395,16 @@ alone): it is asked when a chunk holding it is sent and when its block changes, 
 copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
 menus have their own data slots. Bundles that use it need `"hooks": 45`.
 
+Fields meant for the next client update only, not for the save (the items a processing particle shows):
+`ModBlockEntity::set_client_update_fields(Compound)` replaces the pending batch, `clear_client_update_fields` drops it
+and `take_client_update_fields` drains it. The owner adds the drained fields to its `native_block_entity_update_tag`
+result itself; setting them neither schedules an update nor is saved, compared or cloned, and repeated block changes
+may coalesce into one update.
+
+`native_block_clone_item(block, pos, state, &mut stack)` answers a block's `getCloneItemStack` for pick block
+(Ctrl+Pick) with the real state and position; the first mod that fills the stack owns the result, and no answer keeps
+vanilla's. An empty or unregistered stack picks nothing. Ctrl+Pick still adds the block entity's components afterwards.
+
 API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
 depth-tested against terrain. Lights add camera-local RGB illumination to the
@@ -2682,6 +2692,20 @@ server only.
   `native_player_view_distance(uuid)` is the distance the player has now. Both answer false/None for a player not online
   and inside a guest's packet hook, where the hub is taken out: call them from a tick or console hook. API
   @API:player_view_distance@.
+- **`native_set_player_fake(uuid, fake)`** (`native_view_distance.rs`): marks the player as a fake player, a mod's bot
+  with no client, or not. A fake player keeps only a small area loaded and ticking around it (its view distance plus
+  one, at most the server's plus one), its packets are cut to the few a bot needs (position, entity motion, the chunk
+  batch end, keep-alive, ping, combat kill and respawn), and it does not count for natural mob spawning. The mark lasts
+  until the player leaves. False off a server, for a player not online, and inside a guest's packet hook: call it from a
+  tick or console hook. API @API:set_player_fake@.
+- **`native_expect_fake_player(name, fake)`** (`native_view_distance.rs`): says that a player named `name` (any case)
+  will join as a fake player, or not any more. The player is fake from its first packet on, so its join sends and
+  builds nothing a client-less player cannot read (no login records, recipe book, command tree, player list or
+  advancements). False off a server. API @API:expect_fake_player@.
+- **`native_is_player_fake(uuid)`** (`native_view_distance.rs`): whether the player is a fake player, a mod's bot with no
+  client (marked by `native_set_player_fake`, or announced by name with `native_expect_fake_player`, which makes it fake from
+  its first packet on). False off a server and for a player not online; for a join hook that gets only a uuid. API
+  @API:is_player_fake@.
 - **`native_chunk_snapshot(dimension, [x, z])`** (`native_chunk_snapshot.rs`): a `NativeChunkSnapshot` of a loaded
   chunk of a level that is open (in place or with nobody in it), None for a chunk not loaded (nothing is loaded for
   it). It shares the chunk's sections until the level changes them, so it is cheap to take on the server thread and
@@ -3016,6 +3040,8 @@ None.
   and `hidden` level server mods set (Bukkit's `getPing`, `isOnGround`, `getAllowFlight`, `isFlying`,
   `isSneaking`, `getEyeHeight`, `getDisplayName`). For the acting player, `latency`, `nickname`, `hidden` and
   `address` read 0 or None while the hub is out of reach. Bundles need `"hooks": @API:server_player_state@`.
+- **`NativeServerPlayer.fake`** is true for a fake player, a mod's bot with no client (`native_set_player_fake`), so a
+  mod can leave out what only a client would show. Bundles need `"hooks": @API:server_player_fake@`.
 - Helper **`native_player_client(uuid) -> Option<NativeClientInfo>`** (`host.player_client`): the client's brand,
   language, the view distance it asks for, chat visibility, main hand and particle setting, the chunks the server
   sent it and its wire bytes in and out (Paper's `getClientBrandName`, `locale`, `getClientViewDistance`). It
@@ -4060,6 +4086,15 @@ Bundles need `"hooks": @API:toast_add@`.
 
 ### Toasts a mod shows
 
+`native_push_voice(mod_id, source, samples, sample_rate, at)` (client, `host.push_voice`) plays a
+mod's own audio, such as a proximity voice chat's: mono samples from -1 to 1 at `sample_rate` hertz.
+`source` is the mod's own id for a speaker (a player's UUID, say): each source's blocks play one
+after another, in the order they were pushed, while different sources play at the same time. `at`
+is where they were spoken, for direction and a linear fade to silence at 48 blocks; none plays them
+centred. A source holds at most two seconds, and a burst past that is refused rather than delayed;
+at most 64 sources play at once. False when nothing was queued: on a server, without an audio
+device, with nothing to play or past a cap. Bundles need `"hooks": @API:push_voice@`.
+
 `native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own
 in the five slots the advancement, recipe and system toasts share, drawn as vanilla's `AdvancementToast`: the item
 `icon` at 16 pixels (an unknown item draws none), `title` where the advancement toast's frame label goes ("Advancement
@@ -4198,8 +4233,9 @@ Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water 
 than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
 and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
 a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
-cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
-mod's fluid yet, and no buckets of one.
+fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
+and may be named in fluid tags; tanks still take undeclared ids as before. A cauldron takes only water and lava, and the
+world itself has only vanilla's fluids: no source or flowing blocks of a mod's fluid yet, and no buckets of one.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
@@ -4889,6 +4925,13 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+The package may depend on the bundle's own `[[crate]]`s by path, a sibling folder of the package in the bundle
+(`shared = { path = "../shared" }` from `engine/`, where `shared` is a `[[crate]]` with `path = "shared"`). The
+launcher points that dependency at the crate's staged copy, `native-crates/<mod>/<crate>`, so the crate is built once
+with the game, as a `[[crate]]`'s own is. Any other path is refused, since only the package's folder is copied.
+A crate used this way follows the same rules as a `[[crate]]`: no `horizon-client`, and only crates in Horizon's
+`Cargo.lock`.
 
 Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
 on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in

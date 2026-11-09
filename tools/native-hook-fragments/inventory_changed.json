@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "inventory_changed",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_inventory_changed",
+      "neoforge": "none (NeoForge has no inventory-change event; Bukkit's InventoryClickEvent is the nearest)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a player's inventory kind changed, heard once per kind after the players' equipment each tick (`native_inventory_changed`).",
+  "doc_summary": "`native_inventory_changed(uuid, kind)` is heard once for each of a player's inventory kinds (`Player`, `Ender`, `Cursor`, `Crafting`) whose slots differ from what the mods last heard, after the players' equipment in each tick; a player's first tick counts from empty, and a player away is not heard. Any cause is heard (vanilla's clicks and pickups too). It only hears. Bundles that use it need \"hooks\": @API:inventory_changed@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_inventories.rs"
+  ]
+}
