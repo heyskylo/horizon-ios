@@ -968,6 +968,24 @@ mod tests {
     /// A chestplate a server made a glider: its patch adds `glider` and an
     /// `equippable` for the chest, or takes `glider` away again.
     #[test]
+    fn dispensable_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:golden_helmet", 1);
+        stack.data_mut().set_other(
+            "minecraft:equippable",
+            Some(Tag::compound([
+                ("slot", Tag::String("head".into())),
+                ("dispensable", Tag::Byte(0)),
+            ])),
+        );
+        assert!(!dispensable(&stack, true));
+        stack.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(!dispensable(&stack, true));
+    }
+
+    #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
             let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
