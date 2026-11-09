@@ -816,7 +816,7 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
     fs::remove_dir_all(scratch).unwrap();
 }
 
-pub(super) fn prepared() -> Option<PathBuf> {
+fn prepared() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     [
         manifest.join("../../.local/horizon-client/26.3"),
@@ -828,7 +828,7 @@ pub(super) fn prepared() -> Option<PathBuf> {
 
 /// A content mod folder: a full block, a door and an item-less glass from
 /// templates, items, a recipe, a vanilla tag addition and a language file.
-pub(super) fn ruby_mod(dir: &Path) -> ContentMod {
+fn ruby_mod(dir: &Path) -> ContentMod {
     let files: [(&str, &str); 11] = [
         (
             "horizon-mod.toml",
