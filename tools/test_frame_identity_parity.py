@@ -327,41 +327,47 @@ SCENES = {
     'night_lights': ('overworld', 18000, (X + 24.5, Y, Z - 4.5), 0, 20),
     'glass': ('overworld', 6000, (X - 23.5, Y, Z - 3.5), 0, 5),
     'nether': ('the_nether', 18000, (0.5, 61, -4.5), 0, 15),
-    # 🤖 Agent: The HUD over light (HUD below): chat over the morning sun, the hotbar over the sky.
-    'hud_sun': ('overworld', 1000, (X + 0.5, Y + 3, Z - 9.5), -64, -50),
+    # 🤖 Agent: The HUD over light (HUD below): chat over the sun high in the sky, the hotbar over the sky; and the same
+    # view without chat, which shows where the sun's light passes white (hdr_gates).
+    'hud_sun': ('overworld', 4000, (X + 0.5, Y + 3, Z - 9.5), -70, -85),
+    'sun': ('overworld', 4000, (X + 0.5, Y + 3, Z - 9.5), -70, -85),
     # 🤖 Agent: Chat and the crosshair over the lava pool at night, and the pause menu over both.
     'hud_lava': ('overworld', 18000, (X + 0.5, Y + 3, Z - 27.5), 180, 45),
     'menu': ('overworld', 18000, (X + 0.5, Y + 3, Z - 27.5), 180, 45),
 }
 WORLD = ['day_water', 'night_lights', 'glass', 'nether']
 # 🤖 Agent: What each HUD scene shows over the world: chat, and the pause menu (its blur and darkening) over it.
-# Clouds off over the sun: the world blends nothing over it there, so all that covers it is the HUD.
-HUD = {'hud_sun': ('no_clouds',), 'hud_lava': (), 'menu': ('pause',)}
+HUD = {'hud_sun': ('chat',), 'hud_lava': ('chat',), 'menu': ('chat', 'pause')}
+# 🤖 Agent: The options a scene turns off while it is shot. Over the sun, clouds and the vignette: either, drawn over
+# light above white, comes out brighter than over vanilla's clipped sky (Why gamma storage), well beyond where the
+# light passes white, so all that covers the sun's light there is the HUD.
+OFF = {'hud_sun': ('renderClouds', 'vignette'), 'sun': ('renderClouds', 'vignette')}
 
 
 def shoot(game, out, scene):
     where, day_time, (x, y, z), yaw, pitch = SCENES[scene]
+    shows, off = HUD.get(scene, ()), OFF.get(scene, ())
     game.command(f'execute in minecraft:{where} run time set {day_time}')
     game.command(f'execute in minecraft:{where} run tp @s {x} {y} {z} {yaw} {pitch}')
     game.ctl('look', yaw, pitch)
-    if scene in HUD:
+    for option in off:
+        game.ctl('options-set', option, 'false')
+    if 'chat' in shows:
         # 🤖 Agent: Chat lines over a see-through background, sent now: they fade on the client's ticks.
         game.ctl('options-set', 'chatVisibility', '0')
-        if 'no_clouds' in HUD[scene]:
-            game.ctl('options-set', 'renderClouds', 'false')
         for colour in ('white', 'yellow', 'red', 'aqua', 'white'):
             game.command(f'tellraw @s {{"text":"Chat over the light: {colour} text on its background","color":"{colour}"}}')
     game.settle()
-    if 'pause' in HUD.get(scene, ()):
-        # 🤖 Agent: The pause menu stops the ticks the waits count: a few seconds for it to show.
+    if 'pause' in shows:
+        # 🤖 Agent: The pause menu stops the ticks settle waits on; the screenshot is of a frame drawn after it.
         game.ctl('pause')
-        time.sleep(3)
+        game.ctl('wait-for', 'screen', 'paused', '--timeout', 30)
     game.ctl('screenshot', out / f'{scene}.png')
-    if scene in HUD:
-        if 'pause' in HUD[scene]:
-            game.ctl('close')
-        if 'no_clouds' in HUD[scene]:
-            game.ctl('options-set', 'renderClouds', 'true')
+    if 'pause' in shows:
+        game.ctl('close')
+    for option in off:
+        game.ctl('options-set', option, 'true')
+    if 'chat' in shows:
         game.ctl('options-set', 'chatVisibility', '2')
 
 
@@ -388,7 +394,7 @@ def set_hdr(game, on):
 
 SESSIONS = {
     # 🤖 Agent: name: (horizon-graphics.txt, extra environment, scenes, HDR turned off after the first shots)
-    'vanilla': ('', {}, WORLD + list(HUD), False),
+    'vanilla': ('', {}, WORLD + list(HUD) + ['sun'], False),
     # 🤖 Agent: An offered HDR output without a system report must leave Auto in SDR.
     'auto_unknown': ('hdr:auto\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
     'golden_hour': ('', {'HORIZON_SHADER_PACK': 'golden_hour'}, WORLD, False),
@@ -417,7 +423,7 @@ SESSIONS = {
     # 🤖 Agent: HDR Lighting off, at that headroom too, where the tone curve's knee is at white: the picture is SDR's
     # (hdr_gates).
     'float_unlit': ('hdr:true\nhdrLighting:false\nhdrPeak:300\n', {'HORIZON_HDR_FRAME': 'float',
-                    'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD), False),
+                    'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD) + ['sun'], False),
 }
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which HORIZON_STILL doesn't cover: off, as by default.
@@ -512,6 +518,8 @@ def session_checks(shots, sessions):
 ST2084 = (2610 / 16384, 2523 / 32, 3424 / 4096, 2413 / 128, 2392 / 128)
 # 🤖 Agent: Linear BT.709 to BT.2020, ITU-R BT.2087, by rows.
 BT2020 = ((0.6274, 0.3293, 0.0433), (0.0691, 0.9195, 0.0114), (0.0164, 0.0880, 0.8956))
+# 🤖 Agent: And back, ITU-R BT.2407.
+BT709 = ((1.6605, -0.5876, -0.0728), (-0.1246, 1.1329, -0.0083), (-0.0182, -0.1006, 1.1187))
 
 
 def pq(nits):
@@ -565,6 +573,21 @@ def shows(sdr, paper, cap=float('inf'), mapped=lambda light: light):
     return [c - 1 for c in hdr10(mapped(low), paper, cap)], [c + 1 for c in hdr10(mapped(high), paper, cap)]
 
 
+def unpq(code):
+    """The nits of a 10-bit PQ code: ST 2084's EOTF."""
+    m1, m2, c1, c2, c3 = ST2084
+    e = (code / 1023) ** (1 / m2)
+    return 10000 * (max(e - c1, 0) / (c2 - c3 * e)) ** (1 / m1)
+
+
+def above_white(path, paper):
+    """The pixels, (x, y), of an HDR shot whose light passes paper white on a BT.709 channel."""
+    nits = [unpq(code) / paper for code in range(1024)]
+    width, hdr = pixels(path)
+    return {(i % width, i // width) for i, h in enumerate(hdr)
+            if max(sum(m * nits[c] for m, c in zip(row, h)) for row in BT709) > 1}
+
+
 def setting(name, key, default=None):
     """A session's value of a horizon-graphics.txt key, after GRAPHICS's, else the game's default."""
     graphics = GRAPHICS + SESSIONS[name][0]
@@ -574,9 +597,10 @@ def setting(name, key, default=None):
 def hdr_gates(shots, sessions):
     """With HDR Lighting off (float_unlit), the picture is SDR's: its SDR screenshot is HDR off's within a step of
     rounding (two in at most 1 pixel in 10 000, where the float frame blends several times), and its HDR shot is
-    that screenshot's picture. Where the world's light passes white (the sun in hud_sun) the screenshot clips it and
-    the HDR shot keeps it, so the HDR shot is never darker there; the sky's later blends over the sun come out
-    brighter than vanilla's clipped ones (Why gamma storage), so hud_sun isn't held to HDR off.
+    that screenshot's picture. Where the sun's light passes white (above_white of the sun shot, in sun and hud_sun),
+    the screenshot clips it and the HDR shot keeps it, so there the HDR shot is only never darker; and the later
+    blends over that light come out brighter than vanilla's over its clipped sky (Why gamma storage), so there the
+    screenshot isn't held to HDR off.
     With HDR Lighting on, the SDR screenshot is the HDR shot through its shoulder (in the world scenes, outside the
     HUD), white HUD shows at UI Brightness times paper white, nothing passes the peak, and the night's lights pass
     paper white."""
@@ -606,20 +630,27 @@ def hdr_gates(shots, sessions):
                 continue
             ranges = {}
             if not lighting:
-                if scene != 'hud_sun' and 'vanilla' in sessions:
-                    _, plain = pixels(shots / f'vanilla.{scene}.png')
+                hot = set()
+                if scene in OFF:
+                    if not (shots / f'{name}.sun-hdr.png').exists():
+                        problems.append(f'{name}.{scene}: no sun shot to find where light passes white')
+                        continue
+                    hot = above_white(shots / f'{name}.sun-hdr.png', paper)
+                if 'vanilla' in sessions:
+                    width, plain = pixels(shots / f'vanilla.{scene}.png')
                     _, unlit = pixels(shots / f'{name}.{scene}.png')
-                    steps = [max(abs(a - b) for a, b in zip(p, q)) for p, q in zip(plain, unlit)]
-                    if max(steps) > 2 or 10000 * steps.count(2) > len(steps):
+                    steps = [max(abs(a - b) for a, b in zip(p, q)) for i, (p, q) in enumerate(zip(plain, unlit))
+                             if (i % width, i // width) not in hot]
+                    if max(steps, default=0) > 2 or 10000 * steps.count(2) > len(steps):
                         problems.append(f'{name}.{scene}: the SDR screenshot isn\'t HDR off\'s within rounding: '
                                         f'{len(steps) - steps.count(0) - steps.count(1)} pixels more than a step '
                                         f'apart, by up to {max(steps)}')
 
-                def test(s, h, *_, low_only=scene == 'hud_sun'):
+                def test(s, h, x, y, _):
                     if s not in ranges:
                         ranges[s] = shows(s, paper)
                     low, high = ranges[s]
-                    return all(lo <= c and (low_only or c <= hi) for c, lo, hi in zip(h, low, high))
+                    return all(lo <= c and ((x, y) in hot or c <= hi) for c, lo, hi in zip(h, low, high))
                 each(name, scene, test, 'the HDR shot isn\'t its SDR screenshot\'s picture')
                 continue
             top, white = 1023 * pq(peak) + 1, 1023 * pq(paper * ui / 100)
