@@ -209,6 +209,11 @@ fn mod_rows() -> &'static [FluidInfo] {
     *MOD_ROWS.read().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Whether a content root loaded any mod fluid: without one, nothing need look for them.
+pub fn mod_fluids_loaded() -> bool {
+    !mod_rows().is_empty()
+}
+
 /// Vanilla's fluids, in `minecraft:fluid` order.
 const VANILLA: [FluidInfo; 5] = {
     const fn row(

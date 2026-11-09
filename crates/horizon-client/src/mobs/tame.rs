@@ -676,7 +676,7 @@ fn stop_being_angry(m: &mut Mob) {
     m.ai.last_hurt_by_time = m.age as i32;
     m.ai.target = None;
     m.extra.angry_at = None;
-    m.extra.anger = 0;
+    super::neutral_anger::stop(m);
 }
 /// `NeutralMob.playerDied`: the anger at the player who died ends.
 pub fn forgive_dead_player(m: &mut Mob) {
