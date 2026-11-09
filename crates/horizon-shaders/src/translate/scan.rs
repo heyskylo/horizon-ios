@@ -79,6 +79,8 @@ pub(super) struct Stage<'p> {
     pub(super) sampler_functions: HashMap<String, Vec<bool>>,
     /// The pack's structs: each member's type and name with its array suffix.
     pub(super) structs: HashMap<String, Vec<(String, String)>>,
+    /// `out struct S { .. } s;`: the qualifiers and `S`, read with the declarators after `}`.
+    struct_qualifiers: Vec<usize>,
     pub(super) outputs: BTreeSet<u32>,
     pub(super) frag_coord: bool,
     /// Tokens written differently, by index.
@@ -342,6 +344,7 @@ impl<'p> Stage<'p> {
             trinary: Vec::new(),
             sampler_functions: HashMap::new(),
             structs: HashMap::new(),
+            struct_qualifiers: Vec::new(),
             outputs: BTreeSet::new(),
             frag_coord: false,
             gbuffers: false,
@@ -591,9 +594,26 @@ impl<'p> Stage<'p> {
 
     /// A statement at global scope, tokens `from..to` (without its `;`, or before a `{`).
     pub(super) fn global(&mut self, from: usize, to: usize, body: bool) {
-        let words: Vec<usize> = (from..to)
+        let mut words: Vec<usize> = (from..to)
             .filter(|&i| significant(self.tokens[i]))
             .collect();
+        // A struct defined in an interface declaration (GLSL 4.60, 4.1.8): `flat out struct S
+        // { .. } s;` declares `s` as `flat out S s;` would, after the definition.
+        let pending = std::mem::take(&mut self.struct_qualifiers);
+        if body {
+            if let Some(s) = words.iter().position(|&i| self.tokens[i] == "struct")
+                && let Some(&name) = words.get(s + 1)
+                && words[..s]
+                    .iter()
+                    .any(|&i| matches!(self.tokens[i], "in" | "out" | "varying"))
+            {
+                self.struct_qualifiers = words[..s].to_vec();
+                self.struct_qualifiers.push(name);
+                return;
+            }
+        } else {
+            words.splice(0..0, pending);
+        }
         // A prototype: a `(` before any `=`, and no storage qualifier.
         let paren = words
             .iter()
@@ -1137,5 +1157,28 @@ impl<'p> Stage<'p> {
             self.sampler_functions
                 .insert(self.tokens[name].to_owned(), params);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::translate::Target;
+    use crate::translate::tests::program;
+
+    #[test]
+    fn a_struct_defined_in_a_varyings_declaration_is_a_varying() {
+        // GLSL 4.60, 4.1.8: the qualifiers before `struct` apply to the declarators after `}`.
+        let vsh = "#version 120\nflat varying struct P { vec2 a; vec2 b; } p, q;\nvoid main() {\n    \
+                   gl_Position = ftransform();\n    p.a = vec2(1.0);\n    q.b = vec2(2.0);\n}\n";
+        let fsh = "#version 120\nflat varying struct P { vec2 a; vec2 b; } p, q;\n\
+                   void main() { gl_FragData[0] = vec4(p.a, q.b); }\n";
+        let p = program(
+            &[("composite.vsh", vsh), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        // `p` and `q`, each packed into one slot.
+        let inputs = p.fragment.entry_points[0].function.arguments.len();
+        assert_eq!(inputs, 2, "{inputs} inputs");
     }
 }
