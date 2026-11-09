@@ -5739,6 +5739,7 @@ mod magic_absorb_tests {
             attacker: Some(Who::Player),
             from: Some([4.0, 2.0, 3.0]),
             attacker_species: None,
+            attacker_uuid: None,
         };
         let sounds = |m: &Mob| -> Vec<(&'static str, [f64; 3], f32, f32)> {
             m.outbox
