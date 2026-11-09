@@ -1161,7 +1161,7 @@ impl Menu {
     fn enchant_changed(&mut self, env: &Env) {
         let enchantable = self.containers[MAIN][0]
             .as_ref()
-            .is_some_and(|s| env.enchantments.enchantable_of(s) > 0 && s.enchantments().is_empty());
+            .is_some_and(|s| crate::stations::is_enchantable(env.enchantments, s));
         if enchantable {
             self.enchant_changed = true;
         } else {
