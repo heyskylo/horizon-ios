@@ -48,4 +48,17 @@ def cases(cmd, setup):
         *setup('/summon item 12.5 201 7.5 {Item:{id:"minecraft:stone",count:1}}', '/setblock 9 201 7 minecraft:tnt'),
         *get(near('item', 12, 7), 'UUID'), *get(near('tnt', 9, 7), 'Motion'),
         *setup('/kill @e[type=!player]', '/setblock 8 201 7 minecraft:air'),
+        # SummonCommand.createEntity loads a mob summoned without NBT from `{id:..}`: yaw 0, with no draw from the
+        # level's random. (What finalizeSpawn then draws from the level's random is #12965.)
+        sync(5), *setup('/summon pig 12.5 201 1.5'),
+        *get(near('pig', 12, 1), 'Rotation'),
+        *setup('/kill @e[type=!player]'),
+        # A dispensed spawn egg: EntityType.create snaps the mob to Mth.wrapDegrees(level.random.nextFloat() * 360),
+        # so a draw of 180 or more reads back below zero. Two seeds, so that at least one draw is likely to wrap.
+        *[c for case, z in ((6, 3), (7, 5)) for c in (
+            *setup(f'/setblock 1 201 {z} minecraft:dispenser[facing=east]{{Items:[{{Slot:0b,id:"minecraft:pig_spawn_egg",count:1}}]}}'),
+            sync(case), {'op': 'crafter_tick', 'pos': [1, 201, z]},
+            *get(near('pig', 2, z), 'Rotation'),
+            *setup('/kill @e[type=!player]', f'/setblock 1 201 {z} minecraft:air'),
+        )],
     ]

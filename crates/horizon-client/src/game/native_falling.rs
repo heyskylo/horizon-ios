@@ -104,6 +104,7 @@ impl Game<'_> {
             no_gravity: false,
             drop_item: falling.drop_item,
             fall_distance: 0.0,
+            on_ground: false,
             stuck: Vec3::ZERO,
             damage,
             saved: None,
