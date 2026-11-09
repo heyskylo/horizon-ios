@@ -2314,7 +2314,7 @@ mod tests {
         let beacon = BlockEntity::Beacon(Box::new(beacon));
         // getUpdateTag (saveCustomOnly) carries Levels; loadAdditional never reads them.
         assert_eq!(
-            entity_tag(&beacon).unwrap().get("Levels"),
+            entity_tag(&beacon, false).unwrap().get("Levels"),
             Some(&Tag::Int(4))
         );
         let BlockEntity::Beacon(b) = load("minecraft:beacon", beacon) else {
