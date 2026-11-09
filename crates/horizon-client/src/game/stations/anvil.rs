@@ -15,6 +15,8 @@ pub(super) fn rename_box() -> horizon_client::ui::EditBox {
     edit.text_color = u32::MAX;
     // AnvilScreen also sets `setTextColorUneditable(-1)`: white either way.
     edit.text_color_uneditable = u32::MAX;
+    // AnvilScreen sets `setInvertHighlightedTextColor(false)`.
+    edit.invert_highlighted_text_color = false;
     edit.focused = true;
     edit.editable = false;
     edit

@@ -1234,6 +1234,9 @@ pub struct EditBox {
     /// `EditBox.textColorUneditable`: the colour of a box `setEditable(false)`
     /// made read-only, which still shows its value and caret.
     pub text_color_uneditable: u32,
+    /// `EditBox.setInvertHighlightedTextColor`: a selection draws its text
+    /// inverted (the default) or in the box's own colour (`AnvilScreen`).
+    pub invert_highlighted_text_color: bool,
     /// `EditBox.isEditable`: a read-only box keeps the focus, the caret keys
     /// and copy, but takes no typed text, Backspace/Delete or paste (`AnvilScreen`
     /// sets it by its input slot).
@@ -1530,6 +1533,7 @@ impl EditBox {
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
             text_color_uneditable: rgba(112, 112, 112, 255),
+            invert_highlighted_text_color: true,
             editable: true,
             message: String::new(),
             frame: None,
@@ -1887,7 +1891,11 @@ impl EditBox {
             let right = self.x + self.width;
             let (x0, x1) = (cursor_x.min(right), (hx - 1.0).min(right));
             let (a, b) = (x0.min(x1), x0.max(x1));
-            batch.text_highlight(atlas, (a, ty - 1.0, b - a, 11.0), true);
+            batch.text_highlight(
+                atlas,
+                (a, ty - 1.0, b - a, 11.0),
+                self.invert_highlighted_text_color,
+            );
         }
         if show_cursor {
             if insert {
