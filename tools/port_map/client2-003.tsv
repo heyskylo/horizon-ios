@@ -85,7 +85,7 @@ LevelExtractor.extractBlockDestroyAnimation	port	crates/horizon-client/src/game.
 LevelExtractor.extractGizmos	port	crates/horizon-client/src/game/debug_keys.rs::Game::debug_gizmos	the frame's debug gizmos
 LevelExtractor.extractPlayerState	inline	crates/horizon-client/src/game.rs::Game::render	player and hands read from the game state at draw time
 LevelExtractor.applyFrustum	port	crates/horizon-client-render/src/gfx/resident.rs::Resident::visible	the frustum decides which sections are visible
-LevelExtractor.setLevel	inline	crates/horizon-client/src/game.rs::Game::all_sections_changed	a new level rebuilds every loaded section (allChanged); the null-level branch is not separate
+LevelExtractor.setLevel	inline	crates/horizon-client/src/game/render_settings.rs::Game::all_sections_changed	a new level rebuilds every loaded section (allChanged); the null-level branch is not separate
 LevelExtractor.blockChanged	port	crates/horizon-client-render/src/world.rs::World::set	a block edit marks its 3x3x3 neighbourhood; gap: minor: the player-changed flag (update bit 8) is not kept
 LevelExtractor.setBlockDirty	port	crates/horizon-client-render/src/world.rs::World::set	marks the 3x3x3 section neighbourhood of an edited block
 LevelExtractor.setBlocksDirty	inline	crates/horizon-client-render/src/world.rs::World::set	each block of the range goes through the same 3x3x3 marking

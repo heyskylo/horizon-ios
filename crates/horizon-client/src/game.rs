@@ -9367,22 +9367,6 @@ impl Game<'_> {
             self.play_level_up(1, level);
         }
     }
-    /// The renderer for the window, with the current block sprites, GUI
-    /// atlas and world border texture.
-    /// A new renderer's atlas holds only the pack's sprites: what was drawn into it at run time
-    /// (skins, maps, the themed UI's glyphs and corners) has to be drawn again.
-    pub(super) fn forget_atlas_slots(&mut self) {
-        self.skin_slots.forget();
-        self.maps.slots.forget();
-        self.trim_slots.forget();
-        self.map_patches.clear();
-        self.kept_block_entities.get_mut().clear();
-        horizon_client::ui_theme::reset_atlas();
-    }
-
-    fn new_renderer(&self, window: Arc<Window>) -> Result<Renderer> {
-        self.renderer_for(window, &self.pack, &self.gui)
-    }
     /// Rebuild GPU-owned state after the backend reports device loss.
     fn recover_device(&mut self) -> Result<()> {
         if !self.renderer.as_ref().is_some_and(Renderer::device_lost) {
@@ -9443,34 +9427,6 @@ impl Game<'_> {
         self.adopt_renderer(renderer);
         log::info!("Horizon: graphics device recovered; rebuilding world meshes");
         Ok(())
-    }
-    /// A renderer made again from the resources loaded takes over: what named the old one's
-    /// atlas slots is forgotten, the world is meshed again, and the shader pack and the
-    /// settings are applied again.
-    pub(super) fn adopt_renderer(&mut self, mut renderer: Renderer) {
-        // A new renderer starts with the vanilla column and without the world border's wall.
-        renderer.clear_sections(self.world.layout());
-        self.border_renderer.invalidate();
-        self.renderer = Some(renderer);
-        self.forget_atlas_slots();
-        self.clear_lod();
-        self.pending_uploads.clear();
-        let context = self.worker_context();
-        self.streaming.reload_resources(&mut self.world, context);
-        self.native_shaders = native_shaders::NativeShaders::picking(&std::mem::take(
-            &mut self.native_shaders.picked,
-        ));
-        self.apply_ui_settings();
-    }
-    /// `LevelExtractor.allChanged`: displayed sections and mesh work are
-    /// discarded, then every loaded section is rebuilt.
-    fn all_sections_changed(&mut self) {
-        self.clear_lod();
-        self.pending_uploads.clear();
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.clear_sections(self.world.layout());
-        }
-        self.streaming.reload_sections(&mut self.world);
     }
     /// Whether precipitation at a column is snow (Biome.coldEnoughToSnow:
     /// height adjusted temperature) or none (no precipitation).
