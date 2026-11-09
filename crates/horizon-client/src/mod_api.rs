@@ -22,6 +22,7 @@ pub use crate::first_person::Hand;
 pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
 pub use crate::game::NativeAttributeModifier;
+pub use crate::game::NativeChunkLoad;
 pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
 pub use crate::game::NativeEffectV2;

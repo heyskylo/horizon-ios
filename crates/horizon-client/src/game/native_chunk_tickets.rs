@@ -5,6 +5,20 @@
 //! nor releases it and it isn't saved.
 use super::{Dim, Game};
 
+/// How far a chunk a mod asked for with `native_chunk_load_request` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeChunkLoad {
+    /// Asked for and not loaded yet (generating, loading from disk, or its
+    /// level opening); ask again after a tick.
+    Pending,
+    /// Loaded and ticking, as a `/forceload`ed chunk is.
+    Loaded,
+    /// Not asked for by this owner: the request was refused (off a server,
+    /// no namespace, past the world's edge, a dimension Horizon lacks) or
+    /// has been released.
+    Failed,
+}
+
 // Native mods use these; nothing in Horizon does.
 impl Game<'_> {
     /// Holds chunk `chunk` (`[x, z]`, block coordinates `>> 4`) of the level
@@ -36,13 +50,81 @@ impl Game<'_> {
         chunk: [i32; 2],
         hold: bool,
     ) -> bool {
-        let dim = match dimension {
-            "minecraft:overworld" => Dim::Overworld,
-            "minecraft:the_nether" => Dim::Nether,
-            "minecraft:the_end" => Dim::End,
-            _ => return false,
+        let Some(dim) = native_dim(dimension) else {
+            return false;
         };
         self.native_chunk_ticket(dim, owner, chunk, hold)
+    }
+
+    /// Asks for chunk `chunk` of the level `dimension` to be loaded (to
+    /// `FULL`, with its ring) without waiting for it, as Paper's
+    /// `getChunkAtAsync` with a plugin ticket: the server thread does not
+    /// block, the chunk comes in over the next ticks. It stays loaded and
+    /// ticking, as a `native_force_chunk_in` ticket's does, until
+    /// `native_chunk_load_release` for the same `owner`, namespaced as
+    /// there. Poll `native_chunk_load_state`. True when this owner's request
+    /// is new; false when it already had one or the request is refused. API
+    /// @API:chunk_load_async@.
+    pub(super) fn native_chunk_load_request(
+        &mut self,
+        owner: &str,
+        dimension: &str,
+        chunk: [i32; 2],
+    ) -> bool {
+        self.native_force_chunk_in(owner, dimension, chunk, true)
+    }
+
+    /// Where `owner`'s request for `chunk` of `dimension` stands
+    /// (`NativeChunkLoad`). Loads nothing. API @API:chunk_load_async@.
+    pub(super) fn native_chunk_load_state(
+        &self,
+        owner: &str,
+        dimension: &str,
+        chunk: [i32; 2],
+    ) -> NativeChunkLoad {
+        let asked = native_dim(dimension).is_some_and(|dim| {
+            self.mod_chunk_tickets
+                .get(&dim)
+                .and_then(|level| level.get(&(chunk[0], chunk[1])))
+                .is_some_and(|owners| owners.contains(owner))
+        });
+        if !asked || !self.native_authoritative() {
+            NativeChunkLoad::Failed
+        } else if self.native_chunk_is_loaded(dimension, chunk) {
+            NativeChunkLoad::Loaded
+        } else {
+            NativeChunkLoad::Pending
+        }
+    }
+
+    /// Whether chunk `chunk` of the level `dimension` is loaded now, in
+    /// place or in a level open with nobody in it. Loads and generates
+    /// nothing, and a level not open stays closed. False off a server. API
+    /// @API:chunk_load_async@.
+    pub(super) fn native_chunk_is_loaded(&self, dimension: &str, chunk: [i32; 2]) -> bool {
+        let Some(dim) = native_dim(dimension).filter(|_| self.native_authoritative()) else {
+            return false;
+        };
+        let world = if dim == self.dim {
+            &self.world
+        } else if let Some(world) = self.levels.parked_world(dim) {
+            world
+        } else {
+            return false;
+        };
+        world.chunks.contains_key(&(chunk[0], chunk[1]))
+    }
+
+    /// Lets go of `owner`'s request for `chunk` of `dimension`, so the chunk
+    /// can unload again once nothing else (a player, `/forceload`, another
+    /// owner) holds it. True when `owner` had one. API @API:chunk_load_async@.
+    pub(super) fn native_chunk_load_release(
+        &mut self,
+        owner: &str,
+        dimension: &str,
+        chunk: [i32; 2],
+    ) -> bool {
+        self.native_force_chunk_in(owner, dimension, chunk, false)
     }
 
     /// Hold or release `owner`'s ticket on `chunk` of `dim`'s level, and
@@ -115,5 +197,15 @@ impl Game<'_> {
             .collect();
         held.sort_unstable();
         held
+    }
+}
+
+/// The level a dimension id names, for the three Horizon has.
+fn native_dim(dimension: &str) -> Option<Dim> {
+    match dimension {
+        "minecraft:overworld" => Some(Dim::Overworld),
+        "minecraft:the_nether" => Some(Dim::Nether),
+        "minecraft:the_end" => Some(Dim::End),
+        _ => None,
     }
 }

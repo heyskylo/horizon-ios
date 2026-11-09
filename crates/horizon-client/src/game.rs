@@ -259,6 +259,8 @@ mod native_biome_colors;
 pub mod native_block_entity_draw;
 mod native_block_sprites;
 mod native_bots;
+#[cfg(test)]
+mod native_chunk_load_tests;
 mod native_chunk_snapshot;
 mod native_chunk_tickets;
 mod native_claimed_items;
@@ -556,6 +558,7 @@ pub use machines::native_fluids::NativeFluidTank;
 pub use maps::{NativeMapDecoration, NativeMapInfo};
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_chunk_snapshot::NativeChunkSnapshot;
+pub use native_chunk_tickets::NativeChunkLoad;
 pub use native_claimed_items::{NativeHeldItem, NativeHit, NativeModEvent};
 pub use native_client_world::{NativeBiomeId, NativeClientBiomes, NativeClientChunks};
 pub use native_components::NativeComponentError;
