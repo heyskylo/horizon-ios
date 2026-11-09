@@ -1908,6 +1908,17 @@ pub enum MobEvent {
         source: u32,
         state: horizon_world::registry::BlockStateId,
     },
+    /// `Level.gameEvent` from the block a mob landed on (`FarmlandBlock.turnToBaseBlock`'s
+    /// BLOCK_CHANGE from the mob that trampled it, `TurtleEggBlock.decreaseEggs`' and
+    /// `Level.destroyBlock`'s BLOCK_DESTROY with no source): the game posts it, a
+    /// sculk sensor, a calibrated sensor and a warden hear it.
+    LandingGameEvent {
+        event: &'static str,
+        at: [i32; 3],
+        /// The entity that caused the change, `None` for a destroyed egg.
+        source: Option<u32>,
+        state: horizon_world::registry::BlockStateId,
+    },
     AttackPlayer(f32, [f64; 3]),
     /// `Bee.doHurtTarget` on a player: a sting that lands leaves its stinger
     /// in them and poisons them for `poison_ticks` (none on easy).
@@ -4692,7 +4703,7 @@ impl EntityModelDocument {
     }
 
     /// The parsed document, for loaders that read several keys from it.
-    pub(crate) fn value(&self) -> &Value {
+    pub fn value(&self) -> &Value {
         &self.0
     }
 }

@@ -2560,6 +2560,19 @@ impl Game<'_> {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
                     self.post_game_event(event, at, ctx);
                 }
+                // `FarmlandBlock.turnToBaseBlock` and `TurtleEggBlock.decreaseEggs`:
+                // the landing's own block change posts its game event, from the
+                // mob that landed (`Context.of(entity, state)`) unless the block
+                // destroyed itself under it (`Context.of(state)`).
+                MobEvent::LandingGameEvent {
+                    event,
+                    at,
+                    source,
+                    state,
+                } => {
+                    let who = source.map(Who::Mob);
+                    self.post_block_game_event(event, at, who, Some(state));
+                }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
                 // above use their movement's flyDist/nextFlap threshold.

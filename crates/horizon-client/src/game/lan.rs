@@ -1720,7 +1720,7 @@ impl Game<'_> {
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
     ) {
-        if !guest.placed || guest.released || self.adv.tree.list.is_empty() {
+        if !guest.placed || guest.released || guest.fake || self.adv.tree.list.is_empty() {
             return;
         }
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
@@ -2219,11 +2219,18 @@ impl Game<'_> {
                         && g.placed
                     {
                         // The host's chat hears of the newcomer as the guests do.
+                        let (uuid, name) = (g.uuid, g.name.clone());
                         let who = self.player_text(&g.name, g.uuid);
-                        self.system_message(
+                        let mut line = Some(
                             Text::translate("multiplayer.player.joined", &[who])
                                 .with_color(horizon_client::text::YELLOW),
                         );
+                        self.lan = Some(host);
+                        self.native_player_join_message(uuid, &name, &mut line);
+                        host = self.lan.take()?;
+                        if let Some(line) = line {
+                            self.system_message(line);
+                        }
                     }
                     if let Some((uuid, name)) = host
                         .hub
@@ -2306,10 +2313,16 @@ impl Game<'_> {
                     } else if self.player.is_some() && guest.placed && !guest.quiet_leave {
                         // ServerGamePacketListenerImpl.removePlayerFromWorld.
                         let who = self.player_text(&guest.name, guest.uuid);
-                        self.system_message(
+                        let mut line = Some(
                             Text::translate("multiplayer.player.left", &[who])
                                 .with_color(horizon_client::text::YELLOW),
                         );
+                        self.lan = Some(host);
+                        self.native_player_leave_message(guest.uuid, &guest.name, &mut line);
+                        host = self.lan.take()?;
+                        if let Some(line) = line {
+                            self.system_message(line);
+                        }
                     }
                     if guest.placed && !host.players_told_left {
                         self.lan = Some(host);
@@ -2988,9 +3001,14 @@ impl Game<'_> {
         if !elsewhere {
             g.dimension = in_place;
         }
-        self.load_guest_records(host, conn);
-        // The mods say which commands the newcomer's tree keeps.
-        self.native_filter_commands(host, Some(conn));
+        // A fake player (a mod's bot) has no advancements, statistics or command tree to load or
+        // send.
+        let fake = host.hub.guest(conn).is_some_and(|g| g.fake);
+        if !fake {
+            self.load_guest_records(host, conn);
+            // The mods say which commands the newcomer's tree keeps.
+            self.native_filter_commands(host, Some(conn));
+        }
         let mut theirs = States::default();
         let entities = if elsewhere {
             if let Err(e) = self.enter_level(Some(host), level) {
@@ -3386,6 +3404,11 @@ impl Game<'_> {
             .loading_chunks(|g| super::game_mode::loads_chunks(rule, g.spectator()))
             .into_iter()
             .map(|chunk| (chunk, radius))
+            // Fake players load a small area.
+            .chain(
+                host.hub
+                    .fake_loading_areas(|g| super::game_mode::loads_chunks(rule, g.spectator())),
+            )
             .chain(
                 self.arrival_chunks(self.dim)
                     .into_iter()
