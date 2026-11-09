@@ -25,7 +25,7 @@ use horizon_world::{
         FluidSections, FluidTagId,
     },
     entity_fluid_tick::{self, EntityFluidTickWorld},
-    fluid::{FluidHeightWorld, FluidKind, FluidState},
+    fluid::{FluidHeightWorld, FluidKind, FluidState, FluidTemplate},
     fluid_flow::{FluidFlowWorld, flow_at},
     registry::BlockStateId,
     water_splash::{self, SplashParticle, WaterSplashWorld},
@@ -1321,15 +1321,15 @@ impl ArrowScene<'_, '_> {
             }
             if inside_fluid {
                 effects.advance(step);
-                match fluid.kind() {
+                match fluid.kind().template() {
                     // WaterFluid.entityInside.
-                    FluidKind::Water | FluidKind::FlowingWater => effects.apply(Effect::Extinguish),
+                    FluidTemplate::Water => effects.apply(Effect::Extinguish),
                     // LavaFluid.entityInside (lavaHurt does nothing to arrows).
-                    FluidKind::Lava | FluidKind::FlowingLava => {
+                    FluidTemplate::Lava => {
                         effects.apply(Effect::ClearFreeze);
                         effects.apply(Effect::LavaIgnite);
                     }
-                    FluidKind::Empty => {}
+                    FluidTemplate::Empty => {}
                 }
             }
         }

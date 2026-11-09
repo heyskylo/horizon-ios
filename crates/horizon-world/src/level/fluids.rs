@@ -6,7 +6,7 @@ use super::{
     update::{HORIZONTAL, above, below, rel},
 };
 use crate::{
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidKind, FluidState, FluidTemplate},
     registry::BlockStateId,
 };
 use horizon_core::{
@@ -24,22 +24,16 @@ const POSSIBLE_FLOW_DIRECTIONS: [Direction; 5] = [
     Direction::West,
 ];
 
+/// Whether a fluid behaves as water: its template, so a fluid copying water
+/// meets lava, waterlogs and drips as water does.
 fn is_water(kind: FluidKind) -> bool {
-    matches!(kind, FluidKind::Water | FluidKind::FlowingWater)
+    kind.template() == FluidTemplate::Water
 }
 fn source_of(kind: FluidKind) -> FluidKind {
-    if is_water(kind) {
-        FluidKind::Water
-    } else {
-        FluidKind::Lava
-    }
+    kind.source()
 }
 fn flowing_of(kind: FluidKind) -> FluidKind {
-    if is_water(kind) {
-        FluidKind::FlowingWater
-    } else {
-        FluidKind::FlowingLava
-    }
+    kind.flowing()
 }
 
 /// `FlowingFluid.SpreadContext`: per-spread caches keyed by horizontal offset.
@@ -107,12 +101,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn fast_lava(&self) -> bool {
         self.level.dimension_type().fast_lava
     }
-    /// `Fluid.getTickDelay`.
+    /// `Fluid.getTickDelay`: the fluid's own number, else its template's
+    /// (lava's is faster in an ultrawarm dimension).
     pub(crate) fn fluid_tick_delay(&self, kind: FluidKind) -> i32 {
-        match kind {
-            FluidKind::Empty => 0,
-            FluidKind::Water | FluidKind::FlowingWater => 5,
-            _ => {
+        if let Some(delay) = kind.numbers().tick_delay {
+            return delay;
+        }
+        match kind.template() {
+            FluidTemplate::Empty => 0,
+            FluidTemplate::Water => 5,
+            FluidTemplate::Lava => {
                 if self.fast_lava() {
                     10
                 } else {
@@ -121,21 +119,33 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
     }
+    /// `FlowingFluid.getDropOff`.
     fn drop_off(&self, kind: FluidKind) -> i32 {
+        if let Some(drop) = kind.numbers().drop_off {
+            return drop;
+        }
         if is_water(kind) || self.fast_lava() {
             1
         } else {
             2
         }
     }
+    /// `FlowingFluid.getSlopeFindDistance`.
     fn slope_find_distance(&self, kind: FluidKind) -> i32 {
+        if let Some(distance) = kind.numbers().slope_find_distance {
+            return distance;
+        }
         if is_water(kind) || self.fast_lava() {
             4
         } else {
             2
         }
     }
+    /// `FlowingFluid.canConvertToSource`: the template's game rule.
     fn can_convert_to_source(&self, kind: FluidKind) -> bool {
+        if let Some(convert) = kind.numbers().convert_to_source {
+            return convert;
+        }
         let rules = self.level.game_rules();
         if is_water(kind) {
             rules.water_source_conversion
@@ -628,10 +638,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let new_fluid = self.new_liquid(kind, pos, state);
             let delay = self.spread_delay(kind, pos, fluid, new_fluid);
             if new_fluid != fluid {
-                let name = match kind {
-                    FluidKind::Water | FluidKind::FlowingWater => "water",
-                    FluidKind::Lava | FluidKind::FlowingLava => "lava",
-                    FluidKind::Empty => return,
+                let name = match kind.template() {
+                    FluidTemplate::Water => "water",
+                    FluidTemplate::Lava => "lava",
+                    FluidTemplate::Empty => return,
                 };
                 if !self.level.allow_fluid_level_change(
                     pos,
