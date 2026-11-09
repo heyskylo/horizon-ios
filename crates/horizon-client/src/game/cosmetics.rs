@@ -527,7 +527,7 @@ impl Game<'_> {
                 }
             }
             // My emote: only while I show myself as a Horizon player (playing one says so).
-            let playing = self.cosmetics.emotes.sending();
+            let playing = c.emotes.sending();
             let looping = playing.as_ref().is_some_and(|(_, looping)| *looping);
             let wish = playing.map(|(id, _)| id).filter(|_| extras.horizon_listed);
             let o = &mut c.emote_out;

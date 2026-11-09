@@ -72,7 +72,8 @@ impl Game<'_> {
     /// The emote key let go: a held press plays what is hovered, a tap keeps the wheel open.
     pub(in crate::game) fn emote_wheel_released(&mut self) {
         let held = self
-            .emote_wheel
+            .cosmetics
+            .wheel
             .opened
             .is_some_and(|at| at.elapsed() >= HOLD);
         if held || self.cosmetics.wheel.hovered.is_some() {
@@ -89,7 +90,7 @@ impl Game<'_> {
                     && matches!(event.physical_key, PhysicalKey::Code(key)
                         if self.settings.keys.translate(key) == Some(Ok(KeyCode::KeyB))) =>
             {
-                self.cosmetics.wheel_released();
+                self.emote_wheel_released();
                 true
             }
             WindowEvent::MouseInput {
@@ -97,7 +98,7 @@ impl Game<'_> {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.cosmetics.wheel_click();
+                self.emote_wheel_click();
                 true
             }
             _ => false,

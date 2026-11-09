@@ -207,6 +207,7 @@ impl Game<'_> {
         }
         let now = self.player_model.as_ref().map_or(0.0, |m| m.age as f32);
         if self
+            .cosmetics
             .emotes
             .playing
             .as_ref()
@@ -231,6 +232,7 @@ impl Game<'_> {
     /// Once a tick: my emote, then the other players'.
     pub(in crate::game) fn tick_emotes(&mut self) {
         if let Some(done) = self
+            .cosmetics
             .emotes
             .loading
             .as_ref()
