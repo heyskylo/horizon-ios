@@ -8,7 +8,7 @@ use horizon_world::environment_attributes::{
 use horizon_world::environment_system::{BiomeBlend, Builder, Conditions, System};
 use horizon_world::environment_timeline::Timeline;
 use serde_json::Value as Json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -733,43 +733,6 @@ impl Resolver {
     }
 }
 
-/// The biome ids a `#tag` (`data/<namespace>/tags/worldgen/biome/<path>.json`) holds, nested
-/// tags included.
-fn biome_tag(
-    root: &Path,
-    tag: &str,
-    cache: &mut HashMap<String, HashSet<String>>,
-) -> HashSet<String> {
-    if let Some(hit) = cache.get(tag) {
-        return hit.clone();
-    }
-    cache.insert(tag.to_owned(), HashSet::new());
-    let (namespace, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
-    let file = root.join(format!("data/{namespace}/tags/worldgen/biome/{path}.json"));
-    let mut out = HashSet::new();
-    if let Ok(json) = horizon_world::json_file::read::<Json>(&file) {
-        for value in json["values"].as_array().into_iter().flatten() {
-            let id = value
-                .as_str()
-                .or_else(|| value["id"].as_str())
-                .unwrap_or_default();
-            match id.strip_prefix('#') {
-                Some(inner) => out.extend(biome_tag(root, inner, cache)),
-                None if !id.is_empty() => {
-                    out.insert(if id.contains(':') {
-                        id.to_owned()
-                    } else {
-                        format!("minecraft:{id}")
-                    });
-                }
-                None => {}
-            }
-        }
-    }
-    cache.insert(tag.to_owned(), out.clone());
-    out
-}
-
 /// The timeline ids a dimension type's `timelines` names: an id, a `#tag` or a list,
 /// tags resolved through `tags/timeline/` (their entries may be `{"id", "required"}`).
 fn timeline_ids(root: &Path, json: &Json, out: &mut Vec<String>, depth: u32) {
@@ -823,10 +786,14 @@ impl Environment {
             &root.join(format!("data/minecraft/dimension_type/{dimension}.json")),
         )?;
         let id = format!("minecraft:{dimension}");
+        let tags = crate::pack_tags::Tags::new(root);
         let mine: Vec<_> = packs
             .dimensions
             .iter()
-            .filter(|m| m.targets.matches(&id, |_| false))
+            .filter(|m| {
+                m.targets
+                    .matches(&id, |tag| tags.contains("dimension_type", tag, &id))
+            })
             .collect();
         let frame = Arc::new(RwLock::new(Frame::default()));
         let resolver = Resolver {
@@ -849,7 +816,6 @@ impl Environment {
         // Without biome data (a bare dimension type), there is no biome layer.
         let mut biomes = HashMap::new();
         let mut post = HashMap::new();
-        let tags = std::cell::RefCell::new(HashMap::new());
         if let Ok(folder) =
             horizon_world::json_folder::read(&root.join("data/minecraft/worldgen/biome"))
         {
@@ -865,8 +831,7 @@ impl Environment {
                 };
                 let mut post_map = AttributeMap::default();
                 for m in &packs.biomes {
-                    let in_tag =
-                        |tag: &str| biome_tag(root, tag, &mut tags.borrow_mut()).contains(&name);
+                    let in_tag = |tag: &str| tags.contains("worldgen/biome", tag, &name);
                     if m.targets.matches(&name, in_tag) {
                         resolver.apply(&mut map, &m.base);
                         resolver.apply(&mut post_map, &m.post_process);
