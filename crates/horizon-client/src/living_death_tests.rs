@@ -5,7 +5,7 @@ use horizon_client_core::text::Text;
 /// Sets the owner's message to `text`.
 struct Say(&'static str);
 impl Hooks for Say {
-    fn living_death_message(&self, _: u32, _: &str, event: &mut LivingDeathMessageEvent<'_, '_>) {
+    fn living_death_message(&self, event: &mut LivingDeathMessageEvent<'_>) {
         *event.message = Some(Text::literal(self.0));
     }
 }
@@ -13,7 +13,7 @@ impl Hooks for Say {
 /// Tells the owner nothing.
 struct Silence;
 impl Hooks for Silence {
-    fn living_death_message(&self, _: u32, _: &str, event: &mut LivingDeathMessageEvent<'_, '_>) {
+    fn living_death_message(&self, event: &mut LivingDeathMessageEvent<'_>) {
         *event.message = None;
     }
 }
@@ -21,7 +21,7 @@ impl Hooks for Silence {
 /// Silences only the message another mod already wrote.
 struct SilenceIf(&'static str);
 impl Hooks for SilenceIf {
-    fn living_death_message(&self, _: u32, _: &str, event: &mut LivingDeathMessageEvent<'_, '_>) {
+    fn living_death_message(&self, event: &mut LivingDeathMessageEvent<'_>) {
         if event.message.as_ref().is_some_and(|t| t.plain() == self.0) {
             *event.message = None;
         }
