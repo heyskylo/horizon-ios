@@ -15,7 +15,7 @@ use crate::{
     engine,
     supervisor::note,
 };
-use horizon_server_files::properties::{ServerProperties, SystemEntropy};
+use horizon_platform::server_files::properties::{ServerProperties, SystemEntropy};
 use serde_json::Value;
 use std::{
     io::{self, Read, Write},

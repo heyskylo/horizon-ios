@@ -1058,5 +1058,8 @@
   "horizon.studio.topbar.add_marker": "Add Marker",
   "horizon.studio.topbar.clear_keyframes": "🗑 Clear Keyframes",
   "horizon.studio.topbar.timeline_hud": "⏱ Timeline",
-  "horizon.studio.topbar.split_scene": "Split Scene"
+  "horizon.studio.topbar.split_scene": "Split Scene",
+  "horizon.recipes.fuel.options": "Hold SHIFT to pin this tooltip, then click an ingredient to view recipes.",
+  "horizon.recipes.fuel.any": "Any Fuel",
+  "horizon.recipes.fuel.minecraft": "Minecraft"
 }

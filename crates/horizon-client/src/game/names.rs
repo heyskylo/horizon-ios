@@ -773,7 +773,7 @@ impl Game<'_> {
             if n == last && marks.horizon {
                 let x = -self.gui.atlas.font.width_text(text) / 2.0 - 10.0;
                 // 8 text pixels square, a pixel left of the background.
-                for (mx, my, w, h, argb) in horizon_cosmetics::mark::MARK {
+                for &(mx, my, w, h, argb) in super::cosmetics::MARK {
                     let a = text_alpha * (argb >> 24) / 255;
                     batch.fill(
                         &self.gui.atlas,

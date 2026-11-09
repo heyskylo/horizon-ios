@@ -4,7 +4,8 @@
 //! length u32 LE + JSON). The game only calls [`set`] each frame: a change wakes the thread,
 //! which connects when Discord runs, retries every 15 s when it doesn't, keeps under Discord's
 //! update limit and clears the activity on quit. Nothing is sent with the setting off,
-//! or with `HORIZON_NO_DISCORD=1`.
+//! or with `HORIZON_NO_DISCORD=1`. It uses nothing else of the game (docs/layers.md: Horizon layer):
+//! `game/discord.rs` says what the player does.
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use crate::command::args::GameMode;
+use horizon_command::args::GameMode;
 
 /// The "Horizon" application on Discord's developer portal (public: it names the game). Its
 /// Rich Presence assets: `horizon`, the logo.
@@ -51,9 +52,11 @@ pub enum Play {
     Singleplayer,
     /// A server or someone else's LAN world. Its address and name are never shown.
     Multiplayer,
-    /// This world is open to LAN or friends; `players` counts the host.
+    /// This world is open to LAN or friends; `players` counts the host, `max` is how many
+    /// may join.
     Hosting {
         players: usize,
+        max: usize,
     },
 }
 
@@ -253,7 +256,7 @@ fn activity(status: Status, since: Option<u64>) -> Option<Value> {
             let (details, party) = match play {
                 Play::Singleplayer => ("Singleplayer", None),
                 Play::Multiplayer => ("Multiplayer", None),
-                Play::Hosting { players } => ("Hosting a world", Some(players)),
+                Play::Hosting { players, max } => ("Hosting a world", Some((players, max))),
             };
             (details, Some(place), party)
         }
@@ -265,8 +268,7 @@ fn activity(status: Status, since: Option<u64>) -> Option<Value> {
     if let Some(start) = since {
         a["timestamps"] = json!({"start": start});
     }
-    if let Some(players) = party {
-        let max = crate::lan::MAX_PLAYERS;
+    if let Some((players, max)) = party {
         a["party"] = json!({
             "id": format!("horizon-{}", std::process::id()),
             "size": [players.clamp(1, max), max],
@@ -531,7 +533,7 @@ mod tests {
         assert_eq!(multi["details"], "Multiplayer");
         assert_eq!(multi["state"], "In the End");
 
-        let host = world(Play::Hosting { players: 3 }, Dimension::Overworld);
+        let host = world(Play::Hosting { players: 3, max: 8 }, Dimension::Overworld);
         let host = activity(host, Some(5)).unwrap();
         assert_eq!(host["details"], "Hosting a world");
         assert_eq!(host["state"], "In the Overworld");
@@ -549,7 +551,8 @@ mod tests {
         assert_eq!(w.since, Some(20));
         // Another dimension, opening to LAN: the same visit.
         assert!(w.update(world(Play::Singleplayer, Dimension::Nether), 30));
-        assert!(w.update(world(Play::Hosting { players: 1 }, Dimension::Nether), 40));
+        let hosting = world(Play::Hosting { players: 1, max: 8 }, Dimension::Nether);
+        assert!(w.update(hosting, 40));
         assert_eq!(w.since, Some(20));
         assert!(w.update(Status::Menus, 50));
         assert_eq!(w.since, None);

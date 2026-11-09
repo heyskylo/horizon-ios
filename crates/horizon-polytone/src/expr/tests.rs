@@ -215,3 +215,19 @@ fn hue_saturation_and_brightness() {
 fn distances_between_two_points() {
     assert_eq!(num("dist(0, 0, 3, 4) + distSquare(0, 0, 3, 4)"), 30.0);
 }
+
+#[test]
+fn reads_only_names_what_a_program_may_read() {
+    let flat = |r: Root, name: &str| {
+        matches!(
+            (r, name),
+            (Root::Object, "x" | "z" | "biome") | (Root::Random, "noise")
+        )
+    };
+    let ok = |src: &str| Program::compile(src).unwrap().reads_only(&flat);
+    assert!(ok("0.5+(r.noise(o.x/60,5+o.z/60)*0.55)"));
+    assert!(ok("a = o.x; a > 3 ? 1 : 0"));
+    assert!(!ok("o.y / 128"));
+    assert!(!ok("r.noise(o.y, 0)"));
+    assert!(!ok("config('pack:option')"));
+}
