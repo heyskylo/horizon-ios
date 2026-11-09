@@ -982,6 +982,24 @@ mod tests {
     /// A chestplate a server made a glider: its patch adds `glider` and an
     /// `equippable` for the chest, or takes `glider` away again.
     #[test]
+    fn consumable_animation_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([("animation", Tag::String("drink".into()))])),
+        );
+        assert_eq!(
+            consumable_animation(&stack),
+            Some(horizon_world::consumable::UseAnimation::Drink)
+        );
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_animation(&stack), None);
+    }
+
+    #[test]
     fn a_servers_patch_makes_any_item_a_glider() {
         let with_patch = |patch: &[u8]| {
             let mut stack = ItemStack::new("minecraft:diamond_chestplate", 1);
