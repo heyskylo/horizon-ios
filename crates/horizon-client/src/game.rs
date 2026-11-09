@@ -49,6 +49,7 @@ fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOv
     }
 }
 
+mod activity;
 mod advancements;
 mod advancements_screen;
 mod agent;
@@ -128,8 +129,6 @@ mod decorated_pot;
 mod dedicated;
 mod deflect;
 mod dialogs;
-#[cfg(feature = "discord")]
-mod discord;
 mod dispense_fixture;
 mod dispenser;
 mod dragon;
@@ -6717,8 +6716,8 @@ impl Game<'_> {
                 .extend(out.drain(player_start..));
         }
         self.mark_motion(out.len(), 0);
-        // Companions in first person, trails and auras (game/cosmetics/fx.rs).
-        self.cosmetics_fx_geometry(camera, alpha, &mut out);
+        // What crates draw around players: first person, see-through (game/player_hooks.rs).
+        self.players_after_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
         self.fangs_geometry(camera, alpha, &mut out);
         self.block_item_display_geometry(camera, alpha, &mut out);
@@ -11253,8 +11252,7 @@ impl Game<'_> {
                     self.heal_hold_latches();
                     // For the hooks above the engine (the "I'm playing" ping): said when it changes.
                     horizon_hooks::engine::published(self.is_published());
-                    #[cfg(feature = "discord")]
-                    self.update_discord_presence();
+                    self.report_activity();
                     let steps = self.clock.advance(elapsed);
                     for _ in 0..steps {
                         let started = Instant::now();
@@ -12529,15 +12527,8 @@ pub fn run_with() -> Result<()> {
     if options.execution_role.is_client() {
         narrator::start(&early_settings);
     }
-    // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
-    #[cfg(feature = "discord")]
-    if options.dedicated.is_none() {
-        let automated = options.benchmark.is_some()
-            || options.offscreen
-            || options.frames.is_some()
-            || options.world_frames.is_some();
-        horizon_client::discord_presence::start(early_settings.extras.discord_presence, automated);
-    }
+    // A game window's hooks (Discord's presence): never for a server.
+    activity::client_started(&options, &early_settings);
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));

@@ -156,8 +156,8 @@ Horizon's own extras and its product, and every built-in address of an outside s
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
   `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
-  `horizon-official`, `horizon-official-servers`, `launcher/`. Still in engine crates today: `game/cosmetics.rs`, `game/emotes.rs`,
-  `game/discord.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
+  `horizon-official`, `horizon-official-servers`, `horizon-discord`, `launcher/`. Still in engine crates today:
+  `game/cosmetics.rs`, `game/emotes.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
 - **Rules:**
   - It uses the platform's public API only, never the engine.
   - Until it moves, every Horizon feature in the game sits behind the `horizon-extras` feature
