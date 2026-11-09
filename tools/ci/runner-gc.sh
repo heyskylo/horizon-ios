@@ -20,6 +20,19 @@ keep=${KEEP_PREPARED:-2}
 stale_min=$(( ${STALE_DAYS:-3} * 24 * 60 ))
 busy() { pgrep -f "$1/bin[^/]*/Runner.Worker" > /dev/null; }
 
+# Each checkout's .git (git-slim.sh, installed beside this script): actions/checkout turns gc off in the persistent
+# checkouts and fetches into them at every job, so the packs pile up (the desktop's reached 111 GB on 2026-11-09). The
+# nightly runner is included: the loop below only cleans build folders of the others.
+slim="$(dirname "$0")/git-slim.sh"
+for runner in "$root"/horizon "$root"/horizon-*; do
+  [ -d "$runner/_work/horizon/horizon/.git" ] || continue
+  busy "$runner" && continue
+  if [ -f "$slim" ]; then
+    bash "$slim" "$runner/_work/horizon/horizon" || echo "$(basename "$runner"): git-slim failed"
+  fi
+done
+[ -f "$slim" ] || echo "git-slim.sh is not beside runner-gc.sh: checkouts' .git not collected (docs/release-flow.md, Disk)"
+
 any_busy=0
 for runner in "$root"/horizon "$root"/horizon-[0-9]*; do
   [ -d "$runner/_work" ] || continue
