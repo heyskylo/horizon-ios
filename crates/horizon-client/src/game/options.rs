@@ -182,7 +182,11 @@ impl Game<'_> {
         if ui.controller_open() {
             ui.set_controller_context(context);
         }
-        ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
+        let output = self
+            .renderer
+            .as_ref()
+            .map_or(Default::default(), |r| *r.output());
+        ui.draw(&self.settings, output, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
         self.show_calibration(batch.height);
     }
@@ -587,7 +591,6 @@ impl Game<'_> {
                 &s.horizon,
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
             );
-            self.ui.options.set_output(*r.output());
         }
         let mut volumes = s.volumes;
         volumes[0] = 1.0;

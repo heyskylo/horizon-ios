@@ -519,9 +519,6 @@ impl Loading {
     }
 
     fn open_menu_options(&mut self, page: Page) {
-        if let Some(renderer) = &self.renderer {
-            self.menu.options.set_output(*renderer.output());
-        }
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
         self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[]);
@@ -1256,9 +1253,13 @@ impl Loading {
                 self.menu.win = None;
             }
         } else if self.menu.options_open {
+            let output = self
+                .renderer
+                .as_ref()
+                .map_or(Default::default(), |r| *r.output());
             self.menu
                 .options
-                .draw(&self.settings, batch, &gui.atlas, self.menu.cursor);
+                .draw(&self.settings, output, batch, &gui.atlas, self.menu.cursor);
         } else if let Some(title) = &mut self.menu.title {
             title.poll_backup();
             if std::mem::take(&mut title.onboarding_finished) {

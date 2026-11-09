@@ -1665,6 +1665,9 @@ pub struct OptionsUi {
     pub minecart_improvements: bool,
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
+    /// The output of the renderer the options are drawn for, as of the last draw. It lives
+    /// here, not on the graphics screen, which opening resets: `shell_mut` hands it over.
+    output: crate::gfx::EffectiveOutput,
     graphics: shell::Shell<crate::graphics_ui::GraphicsScreen>,
     /// Controller Settings, on the settings shell.
     controller: shell::Shell<crate::controller_ui::ControllerScreen>,
@@ -1749,6 +1752,7 @@ impl Default for OptionsUi {
             in_world: false,
             minecart_improvements: false,
             center_language: false,
+            output: crate::gfx::EffectiveOutput::NONE,
             graphics: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
@@ -2056,11 +2060,6 @@ fn pairs(opts: &[Opt]) -> Vec<Row> {
         .collect()
 }
 impl OptionsUi {
-    /// The output of the renderer the options are shown for: the graphics screen's rows and
-    /// calibration read its offer and report, not another window's.
-    pub fn set_output(&mut self, output: crate::gfx::EffectiveOutput) {
-        self.graphics.screen.output = output;
-    }
     /// No widget keeps the highlight a click gave it; a focus the keyboard
     /// moved stays.
     pub fn clear_click_focus(&mut self) {
@@ -2262,6 +2261,7 @@ impl OptionsUi {
         }
     }
     fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
+        self.graphics.screen.output = self.output;
         match self.page() {
             Page::Extras => Some(&mut self.extras),
             page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
@@ -2301,10 +2301,8 @@ impl OptionsUi {
                 }
                 shell::Output::Push(page) => {
                     if page == Page::HdrCalibration {
-                        self.calibration = Some(crate::hdr_calibration::Calibration::new(
-                            s,
-                            &self.graphics.screen.output,
-                        ));
+                        self.calibration =
+                            Some(crate::hdr_calibration::Calibration::new(s, &self.output));
                     }
                     self.push(page);
                 }
@@ -3637,13 +3635,18 @@ impl OptionsUi {
             Narratable::container_list(self.row_bands.len(), hovered_row, rect).key(key)
         });
     }
+    /// `output`: that of the renderer the options are drawn for, each draw, so the graphics
+    /// screen's rows and calibration read its offer and report as they are now, not another
+    /// window's, and not one from before the page opened.
     pub fn draw(
         &mut self,
         s: &Settings,
+        output: crate::gfx::EffectiveOutput,
         batch: &mut HudBatch,
         atlas: &HudAtlas,
         cursor: (f32, f32),
     ) {
+        self.output = output;
         let (w, h) = (batch.width, batch.height);
         if let Some(error) = &self.resource_error {
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
@@ -5286,6 +5289,10 @@ impl OptionsUi {
 mod tests {
     use super::*;
     use crate::extras_ui::ExtraRow;
+    use crate::gfx::EffectiveOutput;
+
+    /// A renderer whose destination offers nothing and whose display reports nothing.
+    const NONE: EffectiveOutput = EffectiveOutput::NONE;
 
     /// The window allows the input method only while `typing` says a search
     /// box has the focus (`Game::text_field_focused`), so a page without one
@@ -6137,16 +6144,28 @@ mod tests {
         );
         assert!(!ui.focus_from_keyboard);
         let _ = take_cursor();
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, over);
+        ui.draw(&s, NONE, &mut HudBatch::new([480, 480]), &atlas, over);
         assert_eq!(take_cursor(), Cursor::PointingHand);
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        ui.draw(
+            &s,
+            NONE,
+            &mut HudBatch::new([480, 480]),
+            &atlas,
+            (-10.0, -10.0),
+        );
         assert_eq!(take_cursor(), Cursor::Arrow, "focus is not mouse hover");
         assert!(
             ui.focus.is_some(),
             "moving the pointer does not clear focus"
         );
         ui.focus_from_keyboard = true;
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        ui.draw(
+            &s,
+            NONE,
+            &mut HudBatch::new([480, 480]),
+            &atlas,
+            (-10.0, -10.0),
+        );
         assert_eq!(
             take_cursor(),
             Cursor::Arrow,
@@ -6172,7 +6191,7 @@ mod tests {
             .expect("visible disabled button");
         let over = (button.x + 1.0, button.y + 1.0);
         let _ = take_cursor();
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, over);
+        ui.draw(&s, NONE, &mut HudBatch::new([480, 480]), &atlas, over);
         assert_eq!(take_cursor(), Cursor::NotAllowed);
         assert!(
             ui.click(
@@ -6191,7 +6210,13 @@ mod tests {
             ui.focus.is_none(),
             "an inactive widget rejects the click before focus"
         );
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        ui.draw(
+            &s,
+            NONE,
+            &mut HudBatch::new([480, 480]),
+            &atlas,
+            (-10.0, -10.0),
+        );
         assert_eq!(take_cursor(), Cursor::Arrow);
     }
 
@@ -6229,6 +6254,7 @@ mod tests {
         let mut on = HudBatch::new([480, 480]);
         ui.draw(
             &s,
+            NONE,
             &mut on,
             &atlas,
             (extra.x + extra.w / 2.0, extra.y + extra.h / 2.0),
@@ -6241,6 +6267,7 @@ mod tests {
         let mut off = HudBatch::new([480, 480]);
         ui.draw(
             &s,
+            NONE,
             &mut off,
             &atlas,
             (extra.x + extra.w + 40.0, extra.y + extra.h + 40.0),
@@ -6482,7 +6509,7 @@ mod tests {
                 .unwrap();
             let cursor = (option.x + 1.0, option.y + 1.0);
             let mut actual = HudBatch::new([480, 480]);
-            ui.draw(&s, &mut actual, &atlas, cursor);
+            ui.draw(&s, NONE, &mut actual, &atlas, cursor);
             let key = format!("options.inactivityFpsLimit.{mode}.tooltip");
             assert!(lang::has(&key));
             let mut expected = HudBatch::new([480, 480]);
@@ -7113,7 +7140,7 @@ mod tests {
         ui.show(Page::Language);
         let draw_hint = |ui: &mut OptionsUi| {
             let mut batch = HudBatch::new([960, 640]);
-            ui.draw(&settings, &mut batch, &atlas, (-1.0, -1.0));
+            ui.draw(&settings, NONE, &mut batch, &atlas, (-1.0, -1.0));
             let search = &ui.language_search;
             batch.vertices.iter().any(|v| {
                 v.color == rgba(170, 170, 170, 255)
@@ -7219,7 +7246,7 @@ mod tests {
             let row_y = if above { top - 5.0 } else { bottom - 16.0 };
             ui.scroll = row.y - row_y;
             let (x, width, height) = (row.x, row.w, row.h);
-            ui.draw(&s, &mut batch, &atlas, (-1.0, -1.0));
+            ui.draw(&s, NONE, &mut batch, &atlas, (-1.0, -1.0));
             let vertices: Vec<_> = batch
                 .vertices
                 .iter()
@@ -7740,6 +7767,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// What a window offering HDR10 shows the options when its system reports `system` HDR, Auto
+    /// saved.
+    fn auto_window(system: Option<bool>) -> EffectiveOutput {
+        use crate::gfx::output::tests::{snapshot, window};
+        let (caps, reading) = window(Some(crate::gfx::HdrOutput::Pq), system);
+        let auto = crate::graphics::Graphics {
+            hdr: crate::graphics::HdrMode::Auto,
+            ..Default::default()
+        };
+        snapshot(&auto, Default::default(), caps, reading)
+    }
+    /// Calibrate on the graphics screen's HDR page, clicked: whether calibration opened (its
+    /// row is blocked without an offer, or with Auto and no positive report).
+    fn calibrates(ui: &mut OptionsUi, s: &mut Settings, atlas: &HudAtlas) -> bool {
+        use crate::graphics_ui::{H, Item};
+        ui.graphics.show(crate::graphics_ui::Page::Hdr);
+        let (x, y) = ui
+            .graphics
+            .point_at(s, ui.size, Item::Horizon(H::HdrCalibrate));
+        ui.click(s, atlas, x, y, ui.size, ui.framebuffer, false, false);
+        ui.page() == Page::HdrCalibration
+    }
+
+    /// Opening the graphics screen keeps the offer and report of the renderer the options are
+    /// drawn for: the screen opens afresh, the output doesn't go with it.
+    #[test]
+    fn opening_the_graphics_screen_keeps_the_offer_and_report() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        s.horizon.hdr = crate::graphics::HdrMode::Auto;
+        let mut ui = OptionsUi {
+            size: (427.0, 240.0),
+            ..Default::default()
+        };
+        let batch = || HudBatch::new([427, 240]);
+        ui.draw(
+            &s,
+            auto_window(Some(true)),
+            &mut batch(),
+            &atlas,
+            (-1.0, -1.0),
+        );
+        ui.show(Page::Graphics);
+        assert!(calibrates(&mut ui, &mut s, &atlas));
+        // And again, from another page and back.
+        ui.back(&mut s);
+        ui.back(&mut s);
+        ui.show(Page::Graphics);
+        assert!(calibrates(&mut ui, &mut s, &atlas));
+    }
+
+    /// A report that changes while the graphics screen is open (Auto's system HDR turned on)
+    /// shows on the next draw, with no setting applied.
+    #[test]
+    fn a_changed_report_shows_without_an_apply() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        s.horizon.hdr = crate::graphics::HdrMode::Auto;
+        let mut ui = OptionsUi {
+            size: (427.0, 240.0),
+            ..Default::default()
+        };
+        let batch = || HudBatch::new([427, 240]);
+        ui.show(Page::Graphics);
+        ui.draw(
+            &s,
+            auto_window(Some(false)),
+            &mut batch(),
+            &atlas,
+            (-1.0, -1.0),
+        );
+        assert!(!calibrates(&mut ui, &mut s, &atlas));
+        ui.draw(
+            &s,
+            auto_window(Some(true)),
+            &mut batch(),
+            &atlas,
+            (-1.0, -1.0),
+        );
+        assert!(calibrates(&mut ui, &mut s, &atlas));
     }
 
     /// Shader packs, both kinds, are on the graphics screen's Shaders page: its Shader
