@@ -402,6 +402,21 @@ pub(super) fn named_mob_pickable(
 /// camera-relative bounds (`cull_skinned`).
 pub(super) type Skinned = Option<((usize, usize, u32), Option<(glam::Vec3, glam::Vec3)>)>;
 
+/// How a new mob's yaw is chosen, as its vanilla spawn path chooses it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum SpawnYaw {
+    /// `level.random.nextFloat() * 360`, unwrapped.
+    Level,
+    /// `EntityType.create(level, .., pos, reason, ..)` (spawn eggs, a
+    /// dispenser's eggs, mob buckets): `snapTo(.., Mth.wrapDegrees(level.random
+    /// .nextFloat() * 360), 0)`.
+    Created,
+    /// A yaw that takes no draw: `SummonCommand.createEntity` loads the mob
+    /// from its compound (0 without `Rotation`), and
+    /// `SpawnEggItem.spawnOffspringFromSpawnEgg` snaps the baby to 0.
+    Fixed(f32),
+}
+
 impl Game<'_> {
     /// A sulfur cube's attribute map (`LivingEntity.attributes`), from its
     /// type's defaults, before its first tick adopts the body's archetype
@@ -542,13 +557,18 @@ impl Game<'_> {
         at: [f64; 3],
         persistent: bool,
     ) -> Option<u32> {
-        self.spawn_mob_internal(kind, at, persistent, false, false, false)
+        self.spawn_mob_internal(kind, at, persistent, false, false, false, SpawnYaw::Level)
     }
     /// `SummonCommand` and `SpawnEggItem`: vanilla spawns the mob, but it
     /// never calls `Mob.setPersistenceRequired` for it, so the mob is not
     /// persistent: the despawn rule holds it like any other mob, and only
     /// its NBT can make it persistent.
-    pub(super) fn spawn_mob_spawned(&mut self, kind: &str, at: [f64; 3]) -> Option<u32> {
+    pub(super) fn spawn_mob_spawned(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        yaw: SpawnYaw,
+    ) -> Option<u32> {
         // Ender Dragons have their own entity implementation rather than a
         // `Mob` entry.  Spawn eggs still go through `SpawnEggItem.spawnMob`,
         // so route this special entity through the same spawned-entity path.
@@ -557,7 +577,7 @@ impl Game<'_> {
         }
         // The spawn is not a natural one (no jockeys, the patrol leader roll
         // stays), but the mob is not persistent.
-        let id = self.spawn_mob_for(kind, at, true, false)?;
+        let id = self.spawn_mob_reason_yaw(kind, at, true, false, false, yaw)?;
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.persistent = false;
         }
@@ -585,7 +605,27 @@ impl Game<'_> {
         scripted: bool,
         natural: bool,
     ) -> Option<u32> {
-        self.spawn_mob_internal(kind, at, persistent, scripted, natural, true)
+        self.spawn_mob_internal(
+            kind,
+            at,
+            persistent,
+            scripted,
+            natural,
+            true,
+            SpawnYaw::Level,
+        )
+    }
+    /// `spawn_mob_reason` with the new mob's yaw chosen as its vanilla path does.
+    pub(super) fn spawn_mob_reason_yaw(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        persistent: bool,
+        scripted: bool,
+        natural: bool,
+        yaw: SpawnYaw,
+    ) -> Option<u32> {
+        self.spawn_mob_internal(kind, at, persistent, scripted, natural, true, yaw)
     }
     fn spawn_mob_internal(
         &mut self,
@@ -595,6 +635,7 @@ impl Game<'_> {
         scripted: bool,
         natural: bool,
         finalize: bool,
+        yaw: SpawnYaw,
     ) -> Option<u32> {
         let kind = if kind.contains(':') {
             kind.to_owned()
@@ -603,7 +644,13 @@ impl Game<'_> {
         };
         let t = self.res.mob_types().get(&kind).cloned()?;
         self.next_entity += 1;
-        let yaw = self.world.random.next_float() * 360.0;
+        let yaw = match yaw {
+            SpawnYaw::Level => self.world.random.next_float() * 360.0,
+            SpawnYaw::Created => {
+                horizon_client::camera::wrap_degrees(self.world.random.next_float() * 360.0)
+            }
+            SpawnYaw::Fixed(yaw) => yaw,
+        };
         let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), yaw);
         mob.persistent = persistent;
         if finalize {
@@ -910,7 +957,7 @@ impl Game<'_> {
             None => self.default_summon_position()?,
         };
         let id = self
-            .spawn_mob_spawned(kind, at)
+            .spawn_mob_spawned(kind, at, SpawnYaw::Created)
             .ok_or_else(|| format!("unknown or unsupported mob {kind}"))?;
         if baby && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.extra.age = if m.species() == Species::Sniffer {
@@ -2559,6 +2606,19 @@ impl Game<'_> {
                 } => {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
                     self.post_game_event(event, at, ctx);
+                }
+                // `FarmlandBlock.turnToBaseBlock` and `TurtleEggBlock.decreaseEggs`:
+                // the landing's own block change posts its game event, from the
+                // mob that landed (`Context.of(entity, state)`) unless the block
+                // destroyed itself under it (`Context.of(state)`).
+                MobEvent::LandingGameEvent {
+                    event,
+                    at,
+                    source,
+                    state,
+                } => {
+                    let who = source.map(Who::Mob);
+                    self.post_block_game_event(event, at, who, Some(state));
                 }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
@@ -7419,8 +7479,11 @@ impl Game<'_> {
             (parent.species(), parent.extra.variant, parent.extra.color);
         let target = self.mob_entity(&self.mobs[index]);
         // SpawnEggItem.spawnOffspringFromSpawnEgg: `type.create(level, SPAWN_ITEM_USE)`
-        // creates the baby without finalizeSpawn.
-        let Some(id) = self.spawn_mob_raw(&kind, at, false) else {
+        // creates the baby without finalizeSpawn, and `snapTo(pos, 0, 0)` faces
+        // it south without a level-random draw.
+        let Some(id) =
+            self.spawn_mob_internal(&kind, at, false, false, false, false, SpawnYaw::Fixed(0.0))
+        else {
             return false;
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
@@ -7513,7 +7576,8 @@ impl Game<'_> {
             f64::from(p[1]),
             f64::from(p[2]) + 0.5,
         ];
-        let Some(id) = self.spawn_mob_spawned(&kind, at) else {
+        // SpawnEggItem.spawnMob: `EntityType.spawn`.
+        let Some(id) = self.spawn_mob_spawned(&kind, at, SpawnYaw::Created) else {
             return Ok(false);
         };
         // SpawnEggItem.spawnMob: `EntityType.create` finalizes the mob, then

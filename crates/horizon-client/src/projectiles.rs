@@ -245,6 +245,9 @@ pub struct Projectile {
     pub touching_water: bool,
     /// `Entity.noGravity` (`NoGravity` in its save): `getGravity` is 0.
     pub no_gravity: bool,
+    /// `Entity.onGround` (`OnGround` in its save). A projectile moves by
+    /// `setPos`, never `Entity.move`, so it keeps what it was loaded with.
+    pub on_ground: bool,
     /// `Entity.remainingFireTicks`: a thrown projectile that flew through a
     /// fire block burns for 160 ticks, with the flame drawn over it.
     pub fire_ticks: i32,
@@ -460,6 +463,7 @@ impl Projectile {
             bubble_surfaces: Vec::new(),
             touching_water: false,
             no_gravity: false,
+            on_ground: false,
             fire_ticks: 0,
             item,
             arrow: kind_is_arrow.then(|| {

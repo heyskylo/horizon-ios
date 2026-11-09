@@ -809,7 +809,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             .map_err(|e| invalid(e.to_string()))?;
     }
     let fluid_built = fluid_definitions
-        .build(|name, _| FluidKind::from_name(name).map(|kind| kind as u8))
+        .build(|name, _| FluidKind::from_name(name).map(|kind| kind.index() as u8))
         .map_err(|e| invalid(e.to_string()))?;
     let fluid_mask = |name: &str| -> u8 {
         fluid_built
