@@ -2509,18 +2509,7 @@ impl Game<'_> {
                 self.item_frames.retain(|f| f.id != id);
             }
             Target::Painting(id) => self.paintings.retain(|p| p.id != id),
-            Target::Boat(id) => {
-                // AbstractBoat.remove: a killed boat drops its lead.
-                if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                    self.release_vehicle_container(id);
-                    self.unpack_boat_loot(i, false);
-                    let b = self.boats.remove(i);
-                    // AbstractChestBoat.remove, after the live menu writes
-                    // back its slots.
-                    self.drop_vehicle_contents(b.position.components(), &b.items);
-                    self.boat_removed(&b);
-                }
-            }
+            Target::Boat(id) => self.kill_boat(id),
             Target::Cart(id) => {
                 self.release_vehicle_container(id);
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {

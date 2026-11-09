@@ -2066,7 +2066,7 @@ mod hopper_cart_transfer_tests {
                     {
                         assert_eq!(
                             items[slot],
-                            Some(ItemStack::new(format!("minecraft:{item}"), count))
+                            Some(ItemStack::new(&format!("minecraft:{item}"), count))
                         );
                     }
                     assert_eq!(items.iter().filter(|item| *item == &sentinel).count(), 24);
