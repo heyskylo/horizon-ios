@@ -158,9 +158,7 @@ impl Hub {
         if ac.config.runs(Check::Prediction) {
             let g = &mut self.guests[i];
             let (input, sprinting) = (g.input, g.client_sprinting);
-            g.record
-                .get_or_insert_default()
-                .tick_end(input, sprinting);
+            g.record.get_or_insert_default().tick_end(input, sprinting);
         }
         if !ac.config.runs(Check::Timer) {
             return;
