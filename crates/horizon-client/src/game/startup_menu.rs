@@ -353,6 +353,24 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
         .unwrap_or("Box<dyn Any>")
 }
 
+/// Resolve vanilla and native content before applying the selected resource packs.
+pub(super) fn startup_resource_root(
+    vanilla_root: &std::path::Path,
+    settings: &Settings,
+    dev_mods: &[PathBuf],
+) -> (PathBuf, Option<String>) {
+    let base = mods::content_root(
+        vanilla_root,
+        &settings.mods.enabled,
+        &settings.mods.disabled,
+        dev_mods,
+    );
+    match packs::startup_root(vanilla_root, &base, &settings.resource_packs, &[]) {
+        Ok(root) => (root, None),
+        Err(error) => (base, Some(error.to_string())),
+    }
+}
+
 /// Each generation has its own channel and progress. Pack changes wait for the
 /// old tail before starting another generation, including cache/global writes.
 pub(super) fn spawn_loader(
@@ -371,13 +389,7 @@ pub(super) fn spawn_loader(
     let handle = std::thread::Builder::new()
         .name("resource-loader".into())
         .spawn(move || {
-            let mut pack_error = None;
-            let base = mods::content_root(&vanilla_root, &settings.mods.enabled, &dev_mods);
-            let root = packs::startup_root(&vanilla_root, &base, &settings.resource_packs, &[])
-                .unwrap_or_else(|error| {
-                    pack_error = Some(error.to_string());
-                    base.clone()
-                });
+            let (root, pack_error) = startup_resource_root(&vanilla_root, &settings, &dev_mods);
             let result = load_resources(
                 root,
                 world.as_deref(),

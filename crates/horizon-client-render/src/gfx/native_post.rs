@@ -338,7 +338,7 @@ pub struct NativeFrame {
     reflection_sampler: wgpu::Sampler,
     /// The shadow map the stages read, and the camera that draws it when the pack asks for one.
     pub shadow_map: super::native_shadow::ShadowMap,
-    shadow_camera: Option<horizon_shaders::Shadow>,
+    shadow_camera: Option<horizon_render_pipeline::Shadow>,
     /// Whether the pack's material reads `reflection` (`NativePack::new`): else no mirror
     /// is drawn and `has_reflection` stays 0.
     pub reflects: bool,
@@ -1497,7 +1497,7 @@ pub fn frame_inputs(
     size: [u32; 2],
     seconds: f32,
     index: u32,
-    shadow: Option<&horizon_shaders::Shadow>,
+    shadow: Option<&horizon_render_pipeline::Shadow>,
 ) -> FrameInputs {
     let aspect = size[0] as f32 / size[1].max(1) as f32;
     let view = crate::camera::view_matrix(frame.yaw, frame.pitch);
@@ -2677,7 +2677,8 @@ file = \"b.wgsl\"
 
     /// On the layered HDR frame a 0.2 pack's light is tone mapped once: by Horizon's curve,
     /// the one HDR without a pack uses, when the pack has no `[tonemap]`, else by the pack's
-    /// alone, held to the headroom. In SDR Horizon's is a clip at white.
+    /// alone, held to the headroom. In SDR Horizon's is a clip at white. An HDR output switched
+    /// to scRGB and back to HDR10 (`Hdr::retargeted`) maps it once all the same.
     #[test]
     fn a_0_2_pack_is_tone_mapped_once_by_its_own_curve_or_horizons() {
         let Some((device, queue)) = device() else {
@@ -2687,8 +2688,9 @@ file = \"b.wgsl\"
         let light = 8.0f32;
         let (paper, peak) = (203.0, 1000.0);
         let headroom = peak / paper;
-        // The picture shown for that light, in linear light: (a pack's [tonemap], HDR).
-        let shown = |pack_curve: bool, hdr: bool| {
+        // The picture shown for that light, in linear light: (a pack's [tonemap], HDR, the
+        // output switched).
+        let shown = |pack_curve: bool, hdr: bool, switched: bool| {
             let (stage, file, source) = if pack_curve {
                 (
                     "[tonemap]",
@@ -2746,6 +2748,11 @@ file = \"b.wgsl\"
                 true,
             );
             (display.paper_white, display.peak) = (paper, peak);
+            if switched {
+                use super::super::hdr::Output::{Pq, ScRgb};
+                display = display.retargeted(&device, &queue, ScRgb);
+                display = display.retargeted(&device, &queue, Pq);
+            }
             let screen = display.frame(&device, [4, 4]);
             let usage =
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
@@ -2813,14 +2820,16 @@ file = \"b.wgsl\"
         // Horizon's curve once: BT.2390's EETF at 203 and 1000 nits puts light 8 at 4.82
         // (worked out apart from the shader, as in the HDR tone curve's own test). Clipped at
         // the headroom first, or mapped twice, it would land lower.
-        let horizon = shown(false, true);
-        assert!(near(horizon, 4.82043), "{horizon}");
-        // The pack's identity curve alone: the light held to the headroom, not eased again.
-        let pack = shown(true, true);
-        assert!(near(pack, headroom), "{pack}");
+        for switched in [false, true] {
+            let horizon = shown(false, true, switched);
+            assert!(near(horizon, 4.82043), "{switched}: {horizon}");
+            // The pack's identity curve alone: the light held to the headroom, not eased again.
+            let pack = shown(true, true, switched);
+            assert!(near(pack, headroom), "{switched}: {pack}");
+        }
         // SDR: a clip at white, the pack's or Horizon's.
         for pack_curve in [false, true] {
-            let sdr = shown(pack_curve, false);
+            let sdr = shown(pack_curve, false, false);
             assert!(near(sdr, 1.0), "{pack_curve}: {sdr}");
         }
     }

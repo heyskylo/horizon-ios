@@ -13,7 +13,9 @@ use super::{
     Game,
     entity::{Entity, EntityHandle, with_entity, with_entity_mut},
 };
-use horizon_client::collisions::{EntityCollisions, SceneCollisions, with_piston_noclip};
+use horizon_client::collisions::{
+    EntityCollisions, SceneCollisions, no_collision_empty, with_piston_noclip,
+};
 use horizon_client::motion::MotionWorld;
 use horizon_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, border::BorderGeometry};
 use horizon_core::position::BlockPos;
@@ -161,6 +163,33 @@ impl Game<'_> {
         if let Some(stuck) = stuck {
             self.creatures.projectiles[i].stuck_speed = stuck;
         }
+        // The bubble columns it went through push it too
+        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`), the
+        // projectiles whose own tick applies them.
+        if self.creatures.projectiles[i].applies_block_effects() {
+            let (world, registry, facts, collision) = (
+                &self.world,
+                self.pack.assets.registry,
+                self.res.facts(),
+                self.collision,
+            );
+            let p = &mut self.creatures.projectiles[i];
+            p.bubble_surfaces.clear();
+            p.bubble_columns_since(from, |at| {
+                horizon_client::motion::bubble_column_at(
+                    world,
+                    registry,
+                    facts,
+                    collision,
+                    BlockPos::new(at[0], at[1], at[2]),
+                )
+                .map(|c| (c.drag, c.surface))
+            });
+            let tops = std::mem::take(&mut p.bubble_surfaces);
+            for [x, y, z] in tops {
+                self.bubble_column_particles(BlockPos::new(x, y, z));
+            }
+        }
     }
 
     /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for the entity-sensing
@@ -195,6 +224,25 @@ impl Game<'_> {
                 b.entity_inside(level, ticks, pos);
             }
         });
+    }
+
+    /// `Entity.collide`'s `getEntityCollisions` for a body a piston or a
+    /// shulker lid pushes: the entities it can collide with
+    /// (`canCollideWith`, which for every mover but a vehicle is
+    /// `canBeCollidedWith`): a boat, a living shulker, a happy ghast held
+    /// still. A pushed boat or minecart collides by `canVehicleCollide`
+    /// instead, which this doesn't cover, and the player moves itself.
+    fn pushed_entity_colliders(&self, target: Target) -> Vec<Aabb> {
+        match target {
+            Target::Entity(EntityHandle::Boat(_) | EntityHandle::Cart(_)) => Vec::new(),
+            Target::Entity(handle) => {
+                let own = with_entity!(self, handle, entity => Entity::bounds(entity));
+                let mut boxes = self.item_entity_collisions();
+                boxes.retain(|b| *b != own);
+                boxes
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The collision view of the moving piston at `pos` takes the progress
@@ -255,6 +303,7 @@ impl Game<'_> {
                 self.shulker_push_player(movement);
                 return;
             }
+            let entities = self.pushed_entity_colliders(target);
             let Ok(moved) = pushed_movement(
                 SceneCollisions {
                     world: &self.world,
@@ -269,6 +318,7 @@ impl Game<'_> {
                 body.step_height,
                 body.on_ground,
                 None,
+                &entities,
             ) else {
                 return;
             };
@@ -666,6 +716,7 @@ impl Game<'_> {
             }
             _ => None,
         };
+        let entities = self.pushed_entity_colliders(target);
         let resolved = with_piston_noclip(piston_direction, || {
             pushed_movement(
                 SceneCollisions {
@@ -680,6 +731,7 @@ impl Game<'_> {
                 step_height,
                 on_ground,
                 tnt.as_ref().map(|t| t.3),
+                &entities,
             )
             .unwrap_or(Vec3::ZERO)
         });
@@ -834,7 +886,23 @@ impl Game<'_> {
                 }
             }
             Target::Entity(handle) => {
-                with_entity_mut!(self, handle, entity => entity.move_by_piston(movement))
+                with_entity_mut!(self, handle, entity => entity.move_by_piston(movement));
+                let Some(bounds) =
+                    with_entity!(self, handle, entity => entity.piston_release_bounds())
+                else {
+                    return;
+                };
+                let no_block_collision = {
+                    let mut scene = SceneCollisions {
+                        world: &self.world,
+                        binding: self.collision,
+                        subject: None,
+                    };
+                    no_collision_empty(&mut scene, bounds)
+                };
+                with_entity_mut!(self, handle, entity => {
+                    entity.release_after_piston(no_block_collision)
+                });
             }
         }
     }
@@ -894,19 +962,16 @@ fn pushed_movement<W>(
     step_height: f32,
     on_ground: bool,
     context: Option<CollisionContext<'_>>,
+    entities: &[Aabb],
 ) -> horizon_client::Result<Vec3>
 where
     W: BlockCollisionWorld<Error = std::io::Error> + EntityMovementWorld<Error = std::io::Error>,
 {
     // Without the entity's own context, the one `resolve` reads at its feet.
     let context = context.unwrap_or_else(|| CollisionContext::position(before.min_position().y));
-    EntityCollisions::with_border(blocks, border, at).resolve_with_context(
-        before,
-        movement,
-        step_height,
-        on_ground,
-        context,
-    )
+    let mut collisions = EntityCollisions::with_border(blocks, border, at);
+    collisions.entities = entities;
+    collisions.resolve_with_context(before, movement, step_height, on_ground, context)
 }
 
 #[cfg(test)]
@@ -935,6 +1000,7 @@ mod tests {
             0.0,
             false,
             None,
+            &[],
         )
         .expect("the push resolves");
         // The wall stops the body 0.4 blocks short of the whole push.
@@ -958,6 +1024,7 @@ mod tests {
             0.0,
             false,
             None,
+            &[],
         )
         .expect("the push resolves");
         assert!(

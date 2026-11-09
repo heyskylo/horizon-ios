@@ -3634,7 +3634,7 @@ def check_piston_entities(host, guest, out):
 
 
 def check_piston_push(host, guest, out):
-    """A moving piston pushes both players and a stationary mob on each host path."""
+    """A moving piston pushes players, a stationary mob and an arrow."""
     hx, _, hz = pos_of(host)
     x, y, z = (int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8)
     host('command', command=f'fill {x-4} {y-1} {z-4} {x+7} {y-1} {z+4} minecraft:stone')
@@ -3683,6 +3683,35 @@ def check_piston_push(host, guest, out):
     after = next(p['pos'][0] for p in pigs if p['id'] == pig['id'])
     results['pig'] = after - before
     assert results['pig'] > 0.3, f'piston did not push pig: {before} -> {after}'
+    host('command', command=f'setblock {x-1} {y} {z} minecraft:air')
+    host.wait(10)
+    host('command', command=(
+        f'summon minecraft:arrow {x+1.65} {y+1} {z+0.5} {{Motion:[0.0d,0d,0d]}}'
+    ))
+    host.wait(5)
+    arrow = min(
+        (p for p in host('status')['projectiles'] if p['kind'] == 'Arrow'),
+        key=lambda p: abs(p['position'][0] - (x + 1.65)),
+        default=None,
+    )
+    assert arrow is not None, 'summoned arrow is missing'
+    before = arrow['position'][0]
+    host('command', command=f'setblock {x-1} {y} {z} minecraft:redstone_block')
+    host.wait(30)
+    pushed = next(
+        (p for p in host('status')['projectiles'] if p['id'] == arrow['id']),
+        None,
+    )
+    assert pushed is not None, 'piston removed the arrow'
+    results['arrow'] = pushed['position'][0] - before
+    assert results['arrow'] > 0.3, f'piston did not push arrow: {before} -> {pushed["position"][0]}'
+    seen = next(
+        (p for p in guest('status')['projectiles'] if p['id'] == arrow['id']),
+        None,
+    )
+    assert seen is not None, 'guest did not receive the pushed arrow'
+    results['guest_arrow'] = seen['position'][0] - before
+    assert results['guest_arrow'] > 0.3, f'guest did not see arrow move: {before} -> {seen["position"][0]}'
     results.update(piston_push_at_border(host, guest))
     return results
 

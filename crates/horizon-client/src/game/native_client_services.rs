@@ -10,11 +10,7 @@ use horizon_client::{
     net::FRIEND,
 };
 use horizon_core::geometry::Vec3;
-#[cfg(feature = "friends")]
-use horizon_friends::invite::{self, Parsed};
 use std::borrow::Cow;
-#[cfg(feature = "friends")]
-use std::net::SocketAddr;
 use winit::keyboard::KeyCode;
 
 /// HUD and first-person hand visibility. Other hand-render restrictions still apply.
@@ -109,28 +105,11 @@ impl NativeWorldId {
     }
 }
 
-/// The part of a friend's invite anyone may see. A host's code is fresh each
-/// time it shares, so a friend's world is known for that sharing only. The
-/// relay is kept beside the addresses: two hosts on other networks can share
-/// a private address and the fixed direct port.
-#[cfg(feature = "friends")]
+/// The part of a friend's invite anyone may see (`net::tunnel::Resolver::public_part`). A host's
+/// code is fresh each time it shares, so a friend's world is known for that sharing only. Without
+/// Play with Friends no invite is read: a `friend:` world shows no part of it.
 fn invite_public_part(code: &str) -> String {
-    match invite::parse(code) {
-        Some(Parsed::Short(code)) => code.nameplate,
-        Some(Parsed::Long(invite)) => {
-            let relay = invite
-                .relay
-                .map(|r| format!("{}/{}", r.address, r.code.nameplate));
-            let endpoints = invite.endpoints.iter().map(SocketAddr::to_string);
-            endpoints.chain(relay).collect::<Vec<_>>().join(",")
-        }
-        None => String::new(),
-    }
-}
-/// Without Play with Friends no invite is read: a `friend:` world shows no part of it.
-#[cfg(not(feature = "friends"))]
-fn invite_public_part(_code: &str) -> String {
-    String::new()
+    horizon_client::net::tunnel::resolver().map_or_else(String::new, |r| r.public_part(code))
 }
 
 /// A living entity known to the client, before interpolation. No authoritative writes.
@@ -559,7 +538,7 @@ impl Game<'_> {
 mod tests {
     use super::*;
     #[cfg(feature = "friends")]
-    use horizon_friends::code::Code;
+    use horizon_friends::{code::Code, invite};
 
     #[test]
     fn a_world_is_its_save_in_single_player_and_its_address_on_a_server() {
@@ -576,6 +555,7 @@ mod tests {
     #[test]
     #[cfg(feature = "friends")]
     fn friends_worlds_are_told_apart_by_their_hosts_never_by_their_secrets() {
+        super::super::friends::tunnel::register();
         const PORT: u16 = 50000;
         const RELAY: &str = "relay.example.com:443";
         // A short code: its nameplate, then its secret.

@@ -1264,5 +1264,7 @@
   "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Déanta do Horizon {pin}: tógann an lainseálaí é ar {yours}, an ceann a imríonn tú, agus ar {pin} amháin mura dtiomsaíonn sé ansin",
   "{mods} didn't build on the Horizon you play: building on the one they were made for": "Níor tógadh {mods} ar an Horizon a imríonn tú: á dtógáil ar an gceann dar déanadh iad",
   "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Sa tógáil dheireanach, ar Horizon {commit} do {mods}, ní ar {horizon}",
-  "In the last build, on {horizon}": "Sa tógáil dheireanach, ar {horizon}"
+  "In the last build, on {horizon}": "Sa tógáil dheireanach, ar {horizon}",
+  "Duplicate native mod {id}.": "Duplicate native mod {id}.",
+  "Native and content mod ids differ.": "Native and content mod ids differ."
 }

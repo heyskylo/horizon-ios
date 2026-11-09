@@ -1185,7 +1185,7 @@ fn one(running: &mut bool, f: impl FnOnce() -> bool) -> bool {
 }
 /// `Swim`: deeper than the jump threshold, or in lava.
 fn swim_condition(m: &Mob) -> bool {
-    m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
+    m.floats()
 }
 /// The `Cx` the mob library's attacks take.
 pub(super) fn cx<'a, 'w>(
