@@ -2081,12 +2081,6 @@ fn follow_keymap(event: &mut WindowEvent) {
 #[cfg(test)]
 mod keymap_tests;
 
-/// Q throws the whole stack with Control down: the same modifier word the
-/// screens read (`has_control_down`), never a latched sprint toggle.
-fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
-    modifiers.control_key()
-}
-
 fn select_creative_tab(
     creative: &mut Creative,
     clicks: &mut horizon_client::container_screen::Clicks,
@@ -2227,7 +2221,7 @@ struct Game<'a> {
     /// The wheel and hovered slot of `BundleMouseActions`.
     bundle_mouse: bundles::BundleMouse,
     /// The last inventory click, for the double click that gathers a stack.
-    last_inv_click: Option<(std::time::Instant, usize, bool)>,
+    last_inv_click: Option<(std::time::Instant, Option<usize>, bool)>,
     /// `lastQuickMoved`: what the last Shift click moved, which a Shift
     /// double click moves every stack of.
     last_quick_moved: Option<ItemStack>,
@@ -6481,6 +6475,13 @@ impl Game<'_> {
         let (wi, hi) = (w as i32, h as i32);
         let in_studio = self.studio_replay.is_some();
         let show_hud = !self.ui.hide_gui && !in_studio;
+        // Hud.extractRenderState asks `Screen.isInGameUi` twice: such a screen
+        // defers the subtitles over itself, and keeps them while F1 hides the
+        // rest of the HUD.
+        let subtitles = subtitles(
+            show_hud,
+            in_game_ui(self.screen, self.book.is_some() || self.sign_edit.is_some()),
+        );
         self.ui.room = self.hud_room(w, h, show_hud);
         // What the gameplay guide keeps off starts after the view's full overlays.
         let mut guide_from = 0;
@@ -6708,6 +6709,13 @@ impl Game<'_> {
             self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
                 g.draw_scoreboard(batch);
             });
+            if subtitles != Subtitles::Hidden {
+                self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                    g.draw_subtitles(batch);
+                });
+            }
+        } else if subtitles == Subtitles::Deferred {
+            // F1 hid the HUD, but an in-game screen still shows the subtitles.
             self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
                 g.draw_subtitles(batch);
             });
@@ -7728,6 +7736,11 @@ impl Game<'_> {
         laps.lap("eg_block_entities");
         // Experience orbs (ExperienceOrbRenderer): pulsing billboards from a 4x4 icon sheet.
         self.mark_entity(out.len(), "minecraft:experience_orb");
+        // Shader packs can move vertices or use another camera. TAA's own
+        // sub-pixel projection shifts are covered by billboard_frustum's guard band.
+        let orb_view = billboard_frustum
+            .as_ref()
+            .filter(|_| self.pack_ids.is_none() && self.native_shaders.picked.is_empty());
         if let Some(r) = self
             .gui
             .atlas
@@ -7758,6 +7771,15 @@ impl Game<'_> {
             });
             for (o, at, partial) in live.chain(taken) {
                 let p = glam::DVec3::new(at[0], at[1] + 0.1, at[2]) - camera;
+                let c = p.as_vec3();
+                // A cheap eligibility test avoids six plane tests for visible
+                // sprites. The actual camera frustum still decides rejection,
+                // including when a native camera hook changes the view.
+                if orb_view.is_some_and(|view| {
+                    forward.dot(c) < 0.0 && !entity_culling::orb_in_view(view, c)
+                }) {
+                    continue;
+                }
                 let icon = o.icon();
                 let (du, dv) = ((r.u1 - r.u0) / 4.0, (r.v1 - r.v0) / 4.0);
                 let (u0, v0) = (r.u0 + (icon % 4) as f32 * du, r.v0 + (icon / 4) as f32 * dv);
@@ -7773,7 +7795,6 @@ impl Game<'_> {
                     o.position.z.floor() as i32,
                 );
                 let packed = o.render_light(i32::from(light));
-                let c = p.as_vec3();
                 // `ExperienceOrbRenderer.submit`: the quad runs from
                 // (-0.5, -0.25) to (0.5, 0.75) and is scaled by 0.3, so the
                 // sprite hangs a quarter of its height below the orb's centre.
@@ -8522,44 +8543,6 @@ impl Game<'_> {
             .borrow_mut()
             .restart(&mut self.skin_frame.borrow_mut());
         self.skin_frame.borrow_mut().clear_draws();
-    }
-    /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
-    fn apply_equipment(&mut self) {
-        let Some(player) = self.player.as_mut() else {
-            return;
-        };
-        for (attribute, id) in std::mem::take(&mut self.applied_modifiers) {
-            let _ = player.set_modifier_unclamped(&attribute, &id, 0.0, "add_value", false);
-        }
-        let slots = ["head", "chest", "legs", "feet"];
-        let mut equipped: Vec<(Option<&ItemStack>, &str)> = self
-            .armor
-            .iter()
-            .zip(slots)
-            .map(|(s, n)| (s.as_ref(), n))
-            .collect();
-        equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
-        equipped.push((self.offhand.as_ref(), "offhand"));
-        for (stack, slot) in equipped {
-            let Some(info) = stack.and_then(|s| world_items!(self).get(&s.item)) else {
-                continue;
-            };
-            for (attribute, id, amount, op, group) in &info.modifiers {
-                // The attack code still reads the held item's attack damage and
-                // speed directly; the map copy is what `/attribute` reports.
-                if !equipment_modifier_applies(group, slot) {
-                    continue;
-                }
-                if player
-                    .set_modifier_unclamped(attribute, id, *amount, op, true)
-                    .is_ok()
-                {
-                    self.applied_modifiers.push((attribute.clone(), id.clone()));
-                }
-            }
-        }
-        let _ = player.clamp_health_to_max();
-        self.apply_enchantment_attributes();
     }
     /// Voxel traversal that also stops at fluid source blocks (bucket pick).
     fn pick_fluid(&self) -> Option<Hit> {
@@ -12063,6 +12046,7 @@ impl Game<'_> {
                             self.stats_click(size);
                         }
                         Screen::Stats if button == MouseButton::Left => self.stats_release(),
+                        Screen::GameModeSwitcher if !pressed => self.switcher_release(button),
                         _ => {}
                     }
                 }
@@ -12417,9 +12401,8 @@ impl Game<'_> {
                     let updated = Instant::now();
                     self.track_toggle_screens();
                     self.heal_hold_latches();
-                    // For the "I'm playing" ping: an atomic, sent on when it changes.
-                    #[cfg(feature = "heartbeat")]
-                    horizon_client::heartbeat::set_lan(self.is_published());
+                    // For the hooks above the engine (the "I'm playing" ping): said when it changes.
+                    horizon_hooks::engine::published(self.is_published());
                     #[cfg(feature = "discord")]
                     self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
@@ -13682,8 +13665,8 @@ pub fn run_with() -> Result<()> {
     // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
-        #[cfg(feature = "heartbeat")]
-        horizon_client::heartbeat::start();
+        let version = horizon_client::telemetry::version();
+        horizon_hooks::engine::started(&horizon_hooks::Started::new(&version));
         let player_dir = horizon_client::logging::player_dir();
         // horizon-extras: the official server is Horizon's (docs/forking.md).
         if cfg!(feature = "horizon-extras")
@@ -13970,41 +13953,12 @@ pub(crate) fn closest_space_nudge(
     out
 }
 
-/// GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown, and only over
-/// a level. The F3 overlay stays on when the world closes, so it must not reach the panorama.
-fn debug_crosshair_drawn(
-    enabled: bool,
-    first_person: bool,
-    hide_gui: bool,
-    panorama: bool,
-) -> bool {
-    enabled && first_person && !hide_gui && !panorama
-}
+use subtitles::{Subtitles, in_game_ui, subtitles};
 
-/// GameRenderer.shouldRenderBlockOutline, and only over a level. A panorama frame (the title
-/// screen, LevelLoadingScreen's Reason.OTHER) replaces the level vanilla draws under it, so the
-/// player's target must not leave its outline there.
-fn block_outline_drawn(
-    hide_gui: bool,
-    entity_targeted: bool,
-    can_build: bool,
-    panorama: bool,
-) -> bool {
-    !hide_gui && !entity_targeted && can_build && !panorama
-}
+mod hud_render;
 
-/// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
-/// block, jigsaw and the test blocks.
-fn is_game_master_block(name: &str) -> bool {
-    horizon_client::command_block::Mode::of_block(name).is_some()
-        || matches!(
-            name,
-            "minecraft:structure_block"
-                | "minecraft:jigsaw"
-                | "minecraft:test_block"
-                | "minecraft:test_instance_block"
-        )
-}
+use hud_render::{block_outline_drawn, debug_crosshair_drawn, is_game_master_block};
+mod subtitles;
 
 #[cfg(test)]
 #[path = "game_tests.rs"]

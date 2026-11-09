@@ -2690,6 +2690,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-hooks"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-launcher"
 version = "0.2.0"
 dependencies = [
@@ -2787,6 +2791,7 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-hooks",
  "horizon-system",
 ]
 
