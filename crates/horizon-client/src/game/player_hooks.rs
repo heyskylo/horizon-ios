@@ -199,7 +199,7 @@ impl PartPoses for PosesOf<'_> {
     }
 }
 
-/// A player model drawn in the world pass, as a crate draws on it: posed on the GPU's skin path
+/// A player model drawn, as a crate draws on it: posed on the GPU's skin path
 /// when `gpu` (the mob pass's skin frame, begun; the bounds of what went there grow, for
 /// culling), else its vertices go to `out`.
 struct DrawPlayer<'a, 'g> {
@@ -336,11 +336,55 @@ impl Game<'_> {
             bounds = draw.bounds;
         }
         let worn = super::cosmetics::enabled()
-            .then(|| self.cosmetics_geometry(m, false, base, Some(camera), alpha, light, gpu, out))
+            .then(|| self.cosmetics_fx_of(m, false, base, camera, alpha, light, gpu, out))
             .flatten();
         match (bounds, worn) {
             (Some((l, h)), Some((lo, hi))) => Some((l.min(lo), h.max(hi))),
             (b, w) => b.or(w),
+        }
+    }
+
+    /// What crates draw on the window's own model `m` (its vertices to `out`): in the world in
+    /// third person (`Pass::World`, then the cosmetics' companion, trail and aura still drawn
+    /// here), or in the inventory's picture of it (`Pass::Picture`). `camera`: the world view's
+    /// camera, or the picture's.
+    pub(super) fn own_layers_geometry(
+        &self,
+        m: &Mob,
+        pass: Pass,
+        camera: glam::DVec3,
+        alpha: f32,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        let fx = pass == Pass::World && super::cosmetics::enabled();
+        if !engine::any() && !fx {
+            return;
+        }
+        let base = render::base_transform(m, alpha, camera);
+        if engine::any() {
+            let model = model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile()));
+            let mut draw = DrawPlayer {
+                game: self,
+                m,
+                pass,
+                base,
+                alpha,
+                light,
+                gpu: false,
+                out: &mut *out,
+                bounds: None,
+                body: None,
+                poses: Poses::pooled(),
+            };
+            engine::player_layers(&model, &mut draw);
+        }
+        if fx {
+            self.cosmetics_fx_of(m, true, base, camera, alpha, light, false, out);
         }
     }
 

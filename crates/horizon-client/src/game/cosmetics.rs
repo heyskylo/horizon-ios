@@ -66,8 +66,8 @@ pub(super) struct Cosmetics {
     /// Items drawn whose texture isn't in the atlas yet.
     uploads: RefCell<Vec<Arc<Item>>>,
     frame: Cell<u32>,
-    /// Kept between players so a frame of avatars allocates none: the wearer's body, an item.
-    poses: RefCell<(Poses, Poses)>,
+    /// Kept between players so a frame of avatars allocates none: a companion or an aura.
+    poses: RefCell<Poses>,
     /// Item files from a folder (`HORIZON_COSMETICS_LOCAL`): mannequins wear them too.
     local: bool,
     /// Companions, trails and auras.
@@ -1043,111 +1043,47 @@ impl Game<'_> {
         }
     }
 
-    /// The cosmetics `m` wears, on its bones. `gpu`: posed on the GPU (the mob pass's skin
-    /// frame, begun); the bounds of what went there come back, for culling. Else the vertices
-    /// go to `out`. `camera`: where the world view's camera is; None in a picture of the player
-    /// (the inventory), which shows no companion, trail or aura.
+    /// The companion, trail and aura `m` wears, in the world (`camera`: where the view's camera
+    /// is); the items on its bones are the hook's (`Seat::player_layers`). `gpu`: a companion
+    /// goes on the GPU's skin path (the mob pass's skin frame, begun) and the bounds of what went
+    /// there come back, for culling; else its vertices go to `out`.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn cosmetics_geometry(
+    pub(super) fn cosmetics_fx_of(
         &self,
         m: &Mob,
         own: bool,
         base: glam::Mat4,
-        camera: Option<glam::DVec3>,
+        camera: glam::DVec3,
         alpha: f32,
         light: u32,
         gpu: bool,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) -> Option<(glam::Vec3, glam::Vec3)> {
-        use horizon_client::mobs::{anim, render};
-        let worn = self.worn(m, own);
-        // An emote's props: its time and weight while it plays.
-        let ticks = m.age as f32 + alpha;
-        let emote = emotes::playing(m).and_then(|p| {
-            let (t, w) = p.at(ticks)?;
-            (p.item.vertices > 0).then_some((&p.item, t, w))
-        });
-        if worn.is_none() && emote.is_none() || horizon_client::mobs::trader::is_invisible(m) {
+        // "Name tags only": other players' styles beside their names, nothing around them.
+        let bodies = own || self.settings.extras.effective_others() == Others::Shown;
+        // The player's own in first person: only its companion, drawn after the drain of the
+        // first-person model (`cosmetics_fx_geometry`).
+        if !bodies || own && !self.own_body_in_view() {
             return None;
         }
-        // The avatar's body, posed as it is drawn.
-        let (key, _) = render::body(m);
-        let body = m.kind.layer(&key).unwrap_or(&m.kind.model);
-        let mut scratch = self.cosmetics.poses.borrow_mut();
-        let (body_poses, poses) = &mut *scratch;
-        // Others' items on the body are the hook's (`Seat::player_layers`): their companions,
-        // trails and auras alone are drawn here, on no bone.
-        if own {
-            body_poses.reset(body);
-            let data = self.res.mob_data();
-            anim::setup(m, &anim::state(m, alpha), body_poses, &data.animations);
+        let worn = self.worn(m, own)?;
+        if horizon_client::mobs::trader::is_invisible(m) {
+            return None;
         }
+        let mut poses = self.cosmetics.poses.borrow_mut();
         let mut bounds = None;
-        // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
-        // matrix: the head, the body and the two arms at most.
-        let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 4] = [None; 4];
-        // "Name tags only": other players' styles beside their names, nothing on their bodies.
-        let bodies = own || self.settings.extras.effective_others() == Others::Shown;
-        let worn_items = worn.iter().flat_map(|w| w.iter()).map(|i| (i, None));
-        let emote_items = emote.map(|(i, t, w)| (i, Some((t, w))));
-        for (item, emoting) in worn_items.chain(emote_items) {
-            if emoting.is_none() && !bodies {
-                continue;
-            }
-            if let (Some(camera), Slot::Companion | Slot::Trail | Slot::Aura) = (camera, item.slot)
-            {
-                // The player's own in first person: only its companion, drawn after the drain
-                // of the first-person model (`cosmetics_fx_geometry`).
-                if !(own && !self.own_body_in_view()) {
-                    let at = fx::Wearer {
-                        m,
-                        own,
-                        key: if own { OWN } else { m.id },
-                        base,
-                        camera,
-                        alpha,
-                        light,
-                    };
-                    bounds = self.cosmetics_fx(&at, item, gpu, bounds, poses, out);
-                }
-                continue;
-            }
-            if !own {
-                continue;
-            }
-            if emoting.is_none() && covered(super::player_hooks::gear(m), item.slot) {
-                continue;
-            }
-            let Some((models, uv)) = self.cosmetics_baked(item) else {
-                continue;
-            };
-            for (bone_of, model) in &models {
-                let known = bones.iter().flatten().find(|(b, _)| b == bone_of);
-                let bone = match known {
-                    Some(&(_, matrix)) => matrix,
-                    None => {
-                        let Some(matrix) =
-                            render::part_matrix(body, base, body_poses, bone_of.part(), 0.0)
-                        else {
-                            continue;
-                        };
-                        if let Some(free) = bones.iter_mut().find(|b| b.is_none()) {
-                            *free = Some((*bone_of, matrix));
-                        }
-                        matrix
-                    }
+        for item in worn.iter() {
+            if let Slot::Companion | Slot::Trail | Slot::Aura = item.slot {
+                let at = fx::Wearer {
+                    m,
+                    own,
+                    key: if own { OWN } else { m.id },
+                    base,
+                    camera,
+                    alpha,
+                    light,
                 };
-                poses.reset(model);
-                item.animate(ticks, |name, pose| *poses.get(name) = pose);
-                if let (Some((t, w)), Some(e)) = (emoting, &item.emote) {
-                    e.pose_props(t, |n| item.rest(n), |n, pose| *poses.get(n) = pose);
-                    // Props grow in and shrink out with the emote's blend.
-                    let root = poses.get(&model.name);
-                    for s in &mut root[6..9] {
-                        *s *= w;
-                    }
-                }
-                bounds = self.cosmetics_model(model, bone, poses, uv, light, gpu, bounds, out);
+                bounds = self.cosmetics_fx(&at, item, gpu, bounds, &mut poses, out);
             }
         }
         bounds
