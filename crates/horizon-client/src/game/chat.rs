@@ -1982,7 +1982,8 @@ impl Game<'_> {
         if std::fs::create_dir_all(&dir).is_err() {
             return None;
         }
-        let name = screenshot_name(&dir);
+        // A screenshot still being written has no file yet: its name is taken all the same.
+        let name = screenshot_name(&dir, &self.ui.screenshot_messages);
         let renderer = self.renderer.as_mut()?;
         let path = dir.join(name);
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
@@ -2067,7 +2068,7 @@ fn chat_box_text(text: &str) -> String {
         .filter(|&ch| ch >= ' ' && ch != '\u{7f}' && ch != '§')
         .collect()
 }
-pub fn screenshot_name(dir: &std::path::Path) -> String {
+pub fn screenshot_name(dir: &std::path::Path, pending: &[std::path::PathBuf]) -> String {
     // Util.getFilenameFormattedDateTime: the local date and time.
     let base = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
     let mut n = 1;
@@ -2077,7 +2078,8 @@ pub fn screenshot_name(dir: &std::path::Path) -> String {
         } else {
             format!("{base}_{n}.png")
         };
-        if !dir.join(&name).exists() {
+        let path = dir.join(&name);
+        if !path.exists() && !pending.contains(&path) {
             return name;
         }
         n += 1;
@@ -2117,6 +2119,22 @@ mod tests {
         assert!(should_discard_draft(ChatExit::Intentional, false));
         assert!(!should_discard_draft(ChatExit::Intentional, true));
         assert!(should_discard_draft(ChatExit::Done, true));
+    }
+
+    /// `Screenshot.getFile` picks the first free name of the second; an F2
+    /// screenshot still being written on its thread has no file yet, so a
+    /// second press in the same second takes the next name, not the same one.
+    #[test]
+    fn a_screenshot_being_written_keeps_its_name() {
+        let dir = std::env::temp_dir().join(format!("horizon-shots-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = screenshot_name(&dir, &[]);
+        let second = screenshot_name(&dir, &[dir.join(&first)]);
+        assert_ne!(first, second);
+        // Unless the clock turned to the next second in between.
+        let same_second = second.starts_with(first.trim_end_matches(".png"));
+        assert!(!same_second || second == first.replace(".png", "_2.png"), "{second}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
