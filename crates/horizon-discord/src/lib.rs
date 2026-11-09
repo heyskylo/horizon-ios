@@ -717,7 +717,13 @@ mod tests {
         assert_eq!(wanted(), Status::Off);
         let mut rows = Vec::new();
         SECTION.rows(&mut rows);
-        assert_eq!(rows, [Row::Toggle { label: LABEL, on: false }]);
+        assert_eq!(
+            rows,
+            [Row::Toggle {
+                label: LABEL,
+                on: false
+            }]
+        );
         let mut lines = Vec::new();
         Setting.save(&mut |k, v| lines.push(format!("{k}:{v}")));
         assert_eq!(lines, ["discordPresence:false"]);
