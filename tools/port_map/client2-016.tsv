@@ -33,7 +33,7 @@ InventoryScreen.extractBackground	inline	crates/horizon-client/src/game.rs::Game
 InventoryScreen.extractEntityInInventoryFollowsMouse	port	crates/horizon-client/src/game/perspective.rs::Game::draw_player_preview	gap: minor: player only; mounts use mount_menu.rs::draw_mob_preview. Head and body turn toward the cursor as vanilla
 InventoryScreen.mouseReleased	inline	crates/horizon-client/src/game/inventory_input.rs::Game::inventory_mouse_release	release goes through the slot path; a recipe-book press is handled first and has no separate release flag
 ItemCombinerScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	anvil and smithing backgrounds, with the error sprite
-JigsawBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
+JigsawBlockEditScreen	home	crates/horizon-client/src/game/jigsaw_edit.rs	JigsawEditor: boxes, priority tooltips (edit_tooltip), joint/levels/generate; the screen shell is block_editor.rs
 LecternScreen.createMenuControls	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	gap: player: Take Book and Done are drawn on every lectern; vanilla shows Take Book only with build permission (mayBuild)
 LoomScreen.init	skip:ui		bakes the banner flag model for the preview; the loom is drawn by screen_layout::loom
 LoomScreen.isScrollBarActive	port	crates/horizon-client/src/game/loom.rs::LoomState::offscreen_rows	gap: minor: more than 16 patterns (four rows of four); the displayPatterns check is at the call sites
