@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 415 adds a world warp (`native_world_warp`): WGSL every terrain and entity vertex goes through, with an optional per-pixel stage for terrain.
+//!
+//! API 414 adds a held world (`native_world_hold`): the terrain kept drawn as it stands while the world changes under it, and every change shown on one frame when let go.
+//!
 //! API 413 adds chunk tickets in a level nobody is in (`native_force_chunk_in`).
 //!
 //! API 412 adds chunks a mod keeps loaded and ticking (`native_force_chunk`, `native_forced_chunks`).
@@ -1013,6 +1017,7 @@ pub(crate) use horizon_client::mod_api::{
     ClientboundPlayPacket, NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap,
     NativeMod, NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
 };
+pub(crate) use horizon_client::mod_api::{NativeRecipeCategory, NativeRecipeLookup};
 use horizon_client::{
     atlas_sources::qualified,
     biome::{BiomeColors, SpawnEntry},
@@ -1172,9 +1177,25 @@ pub(super) use horizon_world::level::flags;
 
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
-pub(crate) const NATIVE_HOOKS_API: u32 = 413;
+pub(crate) const NATIVE_HOOKS_API: u32 = 415;
 
 impl GameLevel<'_> {
+    /// A crop, stem, cactus, sugar cane, bamboo, mushroom or vine on an
+    /// authoritative server grows or spreads at `pos` in `dimension`: the block
+    /// there changes from `from` to `to` (block names, state properties
+    /// included). Set `cancel` to leave it as it is. Covers crop, stem, cactus,
+    /// sugar cane and bamboo growth, grass spreading onto dirt, mushroom and
+    /// vine spread. Server-side. Pending API @API:block_grow@.
+    pub(super) fn native_block_grow(
+        &self,
+        dimension: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_grow(self, mod_api::mods(), dimension, pos, from, to, cancel);
+    }
     /// `EntityBlock.newBlockEntity` with the actual placed state. The first
     /// entity supplied owns the result. No response means no new entity.
     /// This is a creation callback, not a validity test: an existing entity
@@ -2547,6 +2568,15 @@ impl Game<'_> {
     pub(super) fn native_server_stopping(&mut self, dedicated: bool) {
         mod_api::dispatch_server_stopping(self, mod_api::mods(), dedicated);
     }
+    /// The server has stopped: its players are disconnected and its worlds
+    /// saved and closed (the end of a dedicated server's stop, after
+    /// `native_server_stopping`). Nothing reaches a player now; the last
+    /// place for a mod's own shutdown work that needs no player. Server-side;
+    /// `dedicated` tells a dedicated server from the single player one.
+    /// API @API:server_stopped@.
+    pub(super) fn native_server_stopped(&mut self, dedicated: bool) {
+        mod_api::dispatch_server_stopped(self, mod_api::mods(), dedicated);
+    }
     /// The config files native mods keep (NeoForge's `registerConfig`):
     /// push yours, each of a kind, with the text written to `config/` when
     /// the file is missing. Asked by the window when the game starts (its
@@ -3222,7 +3252,7 @@ impl Game<'_> {
     /// radius)` for only the sections inside circles. Not asking lets go, and every change
     /// shows on that frame. Asked once a frame while a world is shown, before the frame's
     /// section uploads, by each player's game (splitscreen: each its own). Client only.
-    /// API @API:world_hold@.
+    /// API 414.
     pub(super) fn native_world_hold(&self, hold: &mut WorldHold) {
         mod_api::dispatch_world_hold(self, mod_api::mods(), hold);
     }
@@ -3305,6 +3335,29 @@ impl Game<'_> {
     /// act on it when it is yours. API 2.
     pub(super) fn native_panel_event(&mut self, mod_id: &str, event: &NativePanelEvent) {
         mod_api::dispatch_panel_event(self, mod_api::mods(), mod_id, event);
+    }
+    /// A mod asked the recipe viewer to show `stack` (`native_show_recipes`):
+    /// its recipes, its uses, or what a key over it does in the viewer
+    /// (`NativeRecipeLookup`). A recipe viewer acts on it and sets `handled`,
+    /// so no other viewer does. Heard at the start of the frame after the ask,
+    /// once for each, in the order asked. Client-side. API @API:recipe_lookup@.
+    pub(super) fn native_recipe_lookup(
+        &mut self,
+        stack: &NativeStack,
+        lookup: &NativeRecipeLookup,
+        handled: &mut bool,
+    ) {
+        mod_api::dispatch_recipe_lookup(self, mod_api::mods(), stack, lookup, handled);
+    }
+    /// A recipe viewer asks for the mods' own recipe categories
+    /// (`native_collect_recipe_categories`): push yours, each with its id,
+    /// title, icon, catalysts and recipes, the outputs with their chances (a
+    /// fishing spot, a sieve, a machine). Asked again whenever a viewer wants
+    /// them; call `native_recipe_categories_changed` when yours change (the
+    /// server's data came), so viewers ask again. Client-side. API
+    /// @API:recipe_categories@.
+    pub(super) fn native_recipe_categories(&mut self, categories: &mut Vec<NativeRecipeCategory>) {
+        mod_api::dispatch_recipe_categories(self, mod_api::mods(), categories);
     }
     /// Block `block` (`mymod:machine`) gets a block entity
     /// (`EntityBlock.newBlockEntity`): set `entity` to its id and saved
@@ -4916,6 +4969,28 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_hanging_break(self, mod_api::mods(), player, kind, pos, cancel);
     }
+    /// A hanging entity (painting, item frame...) of `kind` at `pos` in
+    /// `dimension` is about to break. Set `cancel` to keep it. Same moment as
+    /// `native_hanging_break`, which still fires unchanged. Server-side.
+    /// Pending API @API:hanging_break_v2@.
+    pub(super) fn native_hanging_break_v2(
+        &mut self,
+        player: Option<u128>,
+        dimension: &str,
+        kind: &str,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_hanging_break_v2(
+            self,
+            mod_api::mods(),
+            player,
+            dimension,
+            kind,
+            pos,
+            cancel,
+        );
+    }
     /// A server player empties a bucket at `pos` (`fluid`: `minecraft:water`,
     /// `minecraft:lava`, `minecraft:powder_snow`; a fish or axolotl bucket
     /// empties `minecraft:water`): where `BucketItem.use` has found the block
@@ -4954,6 +5029,18 @@ impl Game<'_> {
         cancel: &mut bool,
     ) {
         mod_api::dispatch_tnt_primed(self, mod_api::mods(), player, pos, cancel);
+    }
+    /// A server player (or none) primes TNT at `pos` in `dimension`. Set
+    /// `cancel` to leave the block unlit. Same moment as `native_tnt_primed`,
+    /// which still fires unchanged. Server-side. Pending API @API:tnt_primed_v2@.
+    pub(super) fn native_tnt_primed_v2(
+        &mut self,
+        player: Option<u128>,
+        dimension: &str,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_tnt_primed_v2(self, mod_api::mods(), player, dimension, pos, cancel);
     }
     /// A server player selected a new hotbar slot. The player's state is not
     /// swapped in, and helpers that look them up through `self.lan` may find
@@ -6671,6 +6758,14 @@ impl Game<'_> {
         );
     }
 
+    /// A mob (`entity`, its `kind`) killed by a player is about to drop `xp`
+    /// experience points, in total: `LivingEntity.dropExperience`, before the
+    /// orbs are split and spawned. Change `xp`; zero or less drops no orbs.
+    /// Not asked for a mob that drops none. Server-side. Pending API
+    /// @API:living_experience_drop@.
+    pub(super) fn native_living_experience_drop(&mut self, entity: u32, kind: &str, xp: &mut i32) {
+        mod_api::dispatch_living_experience_drop(self, mod_api::mods(), entity, kind, xp);
+    }
     /// A mob or server player is about to die (NeoForge's `LivingDeathEvent`,
     /// vanilla's `LivingEntity.die`): its health has run out, and the loot,
     /// experience and death message have not run. `entity` is its id and
@@ -6746,6 +6841,13 @@ impl Game<'_> {
         );
     }
 
+    /// A thrown splash or lingering potion is about to apply its hit effects
+    /// at `pos`. Set `cancel` to leave the effects and the cloud out, and
+    /// `native_potion_splash` is not told. Server-side. Pending API
+    /// @API:potion_splash_v2@.
+    pub(super) fn native_potion_splash_v2(&mut self, item: &str, pos: [f64; 3], cancel: &mut bool) {
+        mod_api::dispatch_potion_splash_v2(self, mod_api::mods(), item, pos, cancel);
+    }
     /// A thrown splash or lingering potion applied its hit effects.
     /// 287.
     pub(super) fn native_potion_splash(&mut self, item: &str, pos: [f64; 3]) {
@@ -6808,6 +6910,31 @@ impl Game<'_> {
         );
     }
 
+    /// A mob (`entity`, its `kind`) is about to change the block at `pos` from
+    /// `from` to `to` (an enderman's block, a ravager's, a snow golem's, a
+    /// wither's). Set `cancel` to leave the block as it is: nothing changes and
+    /// `native_entity_change_block` is not told. Server-side. Pending API
+    /// @API:entity_change_block_v3@.
+    pub(super) fn native_entity_change_block_v3(
+        &mut self,
+        entity: u32,
+        kind: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_entity_change_block_v3(
+            self,
+            mod_api::mods(),
+            entity,
+            kind,
+            pos,
+            from,
+            to,
+            cancel,
+        );
+    }
     /// A mob changed a block at `pos`, after the new state was applied.
     /// 214.
     pub(super) fn native_entity_change_block(
@@ -7257,6 +7384,15 @@ impl Game<'_> {
             default_level,
             result,
         );
+    }
+    /// The permission groups a player belongs to (LuckPerms' groups, the ranks a permissions
+    /// mod keeps), as the mods name them: each mod adds names to `groups` in turn, sharing the
+    /// list, and nothing is named for a player with no groups. Asked through `&self`, like
+    /// `native_permission_check`; a provider reads what it knows and changes nothing. The first
+    /// name is the player's primary group (`native_primary_group`). Server-side.
+    /// API @API:permission_groups@.
+    pub(super) fn native_permission_groups(&self, player: u128, groups: &mut Vec<String>) {
+        mod_api::dispatch_permission_groups(self, mod_api::mods(), player, groups);
     }
     /// `native_player_commands_sent` with what the player's level leaves
     /// out: heard right after v1, at the same times, with `names` as v1 left
@@ -8477,14 +8613,24 @@ impl Game<'_> {
     /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
     /// before any block is hit. Take out the positions to spare; they keep
     /// their block and get no fire. Entities are hurt as before. Server-side.
-    /// API 22.
+    /// `source` is the entity that exploded (TNT, a minecart of TNT, a
+    /// creeper, a large fireball, an end crystal) with its kind, when the
+    /// engine knows it; `None` for the other blasts. API 22.
     pub(super) fn native_explosion_detonate(
         &mut self,
         dimension: &str,
         center: [f64; 3],
+        source: Option<(u32, &str)>,
         blocks: &mut Vec<[i32; 3]>,
     ) {
-        mod_api::dispatch_explosion_detonate(self, mod_api::mods(), dimension, center, blocks);
+        mod_api::dispatch_explosion_detonate(
+            self,
+            mod_api::mods(),
+            dimension,
+            center,
+            source,
+            blocks,
+        );
     }
     /// An explosion at `center` in `dimension`, about to break `blocks`, pushes
     /// `entity` (None for a player, whom `native_acting_player` names):
@@ -8881,6 +9027,21 @@ impl Game<'_> {
             to,
         );
     }
+    /// A player on the server had a stack change in one of their inventories:
+    /// `kind` is `Player`, `Ender`, `Cursor` or `Crafting`. Heard once per kind
+    /// that differs from what the mods last heard, after the players'
+    /// equipment in each tick, and a player's first tick counts from empty
+    /// (`native_players_inventory_changes`). Any cause is heard, vanilla's
+    /// clicks and pickups included. It only hears: change the inventory with
+    /// `native_set_inventory_slot` and its kin. A player away is not heard.
+    /// Server-side. Bundles that use it need `"hooks": @API:inventory_changed@`.
+    pub(super) fn native_inventory_changed(
+        &mut self,
+        uuid: u128,
+        kind: crate::mod_api::NativeInventoryKind,
+    ) {
+        mod_api::dispatch_inventory_changed(self, mod_api::mods(), uuid, kind);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for
@@ -8888,6 +9049,37 @@ impl Game<'_> {
     /// API 40.
     pub(super) fn native_player_died(&mut self, player: u128, cause: Option<&str>) {
         mod_api::dispatch_player_died(self, mod_api::mods(), player, cause);
+    }
+    /// `player` (`name`) is joining: the "joined the game" line the host's chat
+    /// shows (`line`). Set `line` to `None` to show nothing, or replace it. Only
+    /// the host's chat is asked: a dedicated server sends no such line. Server-side.
+    /// Pending API @API:player_join_message@.
+    pub(super) fn native_player_join_message(
+        &mut self,
+        player: u128,
+        name: &str,
+        line: &mut Option<Text>,
+    ) {
+        mod_api::dispatch_player_join_message(self, mod_api::mods(), player, name, line);
+    }
+    /// `player` (`name`) is leaving: the "left the game" line the host's chat
+    /// shows (`line`). Set `line` to `None` to show nothing, or replace it. Server-side.
+    /// Pending API @API:player_leave_message@.
+    pub(super) fn native_player_leave_message(
+        &mut self,
+        player: u128,
+        name: &str,
+        line: &mut Option<Text>,
+    ) {
+        mod_api::dispatch_player_leave_message(self, mod_api::mods(), player, name, line);
+    }
+
+    /// `player` (`name`) died, with the message the game rendered for them
+    /// (`message`, the death screen's and the team's line), whether or not
+    /// death messages are shown. Only hears: the message is not changed
+    /// here. Server-side. Pending API @API:player_died_v2@.
+    pub(super) fn native_player_died_v2(&mut self, player: u128, name: &str, message: &Text) {
+        mod_api::dispatch_player_died_v2(self, mod_api::mods(), player, name, message);
     }
     /// A new mob of `kind` joined `dimension` at `pos`: `natural` when the
     /// world's spawning made it, false when something else did (a breed, a
@@ -8930,13 +9122,13 @@ impl Game<'_> {
     /// kind in the game's entity lists (items, orbs, mobs, boats, minecarts,
     /// armor stands, primed TNT, falling blocks, projectiles, rockets,
     /// tridents, end crystals, the dragon, cushions, paintings, item frames),
-    /// once each, in the order they were created; check `kind`. A drop, an
-    /// orb, a mob, a `/summon` and a chunk's entities are told at once, any
-    /// other spawn between the tick's phases (it is checked after the blocks,
-    /// the vehicles, the projectiles, the items and the mobs, and at the
-    /// tick's end). A mod that cancels one of the others sees it removed
-    /// before it ticks again. Not told: the entities Horizon keeps without
-    /// simulating (displays, markers, interactions). Server-side.
+    /// and the entities Horizon keeps without simulating (block, item and text
+    /// displays, markers, interactions), once each, in the order they were
+    /// created; check `kind`. A drop, an orb, a mob, a `/summon` and a chunk's
+    /// entities are told at once, any other spawn between the tick's phases
+    /// (it is checked after the blocks, the vehicles, the projectiles, the
+    /// items and the mobs, and at the tick's end). A mod that cancels one of
+    /// the others sees it removed before it ticks again. Server-side.
     pub(super) fn native_entity_join_level(
         &mut self,
         dimension: &str,
@@ -10034,7 +10226,7 @@ pub(super) fn viewer_changes(
     changes
 }
 
-fn dimension_id(dimension: LevelDimension) -> &'static str {
+pub(super) fn dimension_id(dimension: LevelDimension) -> &'static str {
     match dimension {
         LevelDimension::Overworld => "minecraft:overworld",
         LevelDimension::Nether => "minecraft:the_nether",
@@ -10914,6 +11106,59 @@ impl Game<'_> {
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
     }
+    /// Plays a block of a mod's own audio (client, `host.push_voice`): `samples` are mono,
+    /// -1 to 1, at `sample_rate` hertz. `source` is the mod's own id for the speaker (a
+    /// player's UUID, say): each source's blocks play one after another in the order they were
+    /// pushed, and different sources play at once. `at` is where they were spoken, for
+    /// direction and a linear fade to silence at 48 blocks; none plays them centred. The call
+    /// queues and returns; the output callback mixes them with the game's sounds. A source
+    /// holds at most two seconds, and a burst past that is refused rather than delayed; at
+    /// most 64 sources play at once. False when nothing was queued: on a server, without an
+    /// audio device, nothing to play, or a cap. API @API:push_voice@.
+    pub(super) fn native_push_voice(
+        &mut self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        sample_rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.native_window()
+            && self
+                .audio
+                .push_voice(mod_id, source, samples, sample_rate, at)
+    }
+    /// Queues a toast of the mod's own in the toast slots the advancement
+    /// toasts use, drawn as an `AdvancementToast`: item `icon` (16 pixels; an
+    /// unknown item draws none), `title` in the frame label's place, yellow
+    /// (pink, and the challenge sound as it shows, with `challenge`), and
+    /// `description` as its white line, wrapped and faded in after the label
+    /// as an advancement's long title is. `native_toast_add` is asked first
+    /// with kind `mod` and `id` (the mod's own name for the toast, such as
+    /// `mymod:quest/first_steps`): a cancelled one isn't queued. True when
+    /// queued; false on a server, without a window and when cancelled. API
+    /// @API:add_toast@.
+    pub(super) fn native_add_toast(
+        &mut self,
+        id: &str,
+        icon: &str,
+        title: Text,
+        description: Text,
+        challenge: bool,
+    ) -> bool {
+        if !self.native_window() || !self.toast_allowed("mod", id) {
+            return false;
+        }
+        self.adv
+            .toasts
+            .push_back(super::advancements::Toast::of_mod(
+                icon,
+                title,
+                description,
+                challenge,
+            ));
+        true
+    }
     /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
     /// mod's own from its `assets/<id>/sounds.json`) at `at` for this
     /// player only, `delay` ticks from now (0 to 1200, a minute): a client
@@ -11592,7 +11837,7 @@ impl Game<'_> {
     /// inventory's, a crafting table's or a mod menu type's).
     /// Unlike the recipe book click, this doesn't require learning the recipe.
     pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
-        self.transfer_viewer_recipe(book_id);
+        self.transfer_viewer_recipe(book_id, false);
     }
     /// Creative mode only: gives the player `count` of `item`
     /// (`minecraft:diamond`) as taking it from the creative inventory does
@@ -11600,6 +11845,48 @@ impl Game<'_> {
     /// hotbar, then the inventory. The count is cut to one stack.
     pub(super) fn native_give(&mut self, item: &str, count: u32) -> Result<(), String> {
         self.recipe_give(item, count)
+    }
+    /// Asks the recipe viewer to show `stack`: its recipes (`Recipes`), its
+    /// uses (`Uses`), or to act on a key that went down over it in a screen
+    /// the mod draws (`Key`, so its recipe, uses and bookmark keys work there
+    /// as over its own list). The viewer hears it at the start of the next
+    /// frame (`native_recipe_lookup`), so a screen hook may ask; with no
+    /// viewer installed nothing happens. Client-side. API @API:recipe_lookup@.
+    pub(super) fn native_show_recipes(&self, stack: NativeStack, lookup: NativeRecipeLookup) {
+        let mut lookups = self
+            .recipe_tables
+            .lookups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // A burst of asks (a held key) keeps the newest few.
+        if lookups.len() >= 16 {
+            lookups.remove(0);
+        }
+        lookups.push((stack, lookup));
+    }
+    /// Every mod's own recipe categories, as `native_recipe_categories`
+    /// collects them: for a recipe viewer. Client-side. API
+    /// @API:recipe_categories@.
+    pub(super) fn native_collect_recipe_categories(&mut self) -> Vec<NativeRecipeCategory> {
+        let mut categories = Vec::new();
+        self.native_recipe_categories(&mut categories);
+        categories
+    }
+    /// A mod's recipe categories changed: recipe viewers see
+    /// `native_recipe_categories_version` move and collect them again.
+    /// Client-side. API @API:recipe_categories@.
+    pub(super) fn native_recipe_categories_changed(&self) {
+        self.recipe_tables
+            .categories_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// A number that changes each time a mod says its recipe categories
+    /// changed (`native_recipe_categories_changed`). Client-side. API
+    /// @API:recipe_categories@.
+    pub(super) fn native_recipe_categories_version(&self) -> u64 {
+        self.recipe_tables
+            .categories_version
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -12662,886 +12949,5 @@ fn mod_screen_opens(
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn held_durability_retains_the_stack_hand_and_explicit_break_slot() {
-        use crate::game::{Audio, Game, Hand, Options, Progress, Settings, load_resources};
-        use horizon_client::{items::ItemStack, motion::PlayerMotion};
-        use horizon_core::geometry::Vec3;
-        use horizon_world::player_inventory::EquipmentSlot;
-        let root = std::path::PathBuf::from(
-            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
-        );
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.0, 70.0, 0.0)).unwrap());
-        game.set_mode_id(0);
-        // Stage an acting guest: break events are queued instead of rendering local crumbs.
-        game.lan_acting = Some(1);
-        game.hand = Hand::Off;
-        let main = ItemStack::new("minecraft:stick", 3);
-        game.inventory[game.selected] = Some(main.clone());
-        let max = game
-            .items()
-            .get("minecraft:flint_and_steel")
-            .unwrap()
-            .max_damage;
-        game.offhand = Some(ItemStack::new("minecraft:flint_and_steel", 1));
-        game.damage_held_in_slot(1, EquipmentSlot::OffHand);
-        assert_eq!(game.offhand.as_ref().unwrap().damage, 1);
-        assert!(game.guest_equipment_breaks.is_empty());
-        for (explicit, event) in [(true, 48), (false, 47)] {
-            let mut tool = ItemStack::new("minecraft:flint_and_steel", 1);
-            tool.damage = max - 1;
-            game.offhand = Some(tool);
-            if explicit {
-                game.damage_held_in_slot(1, EquipmentSlot::OffHand);
-            } else {
-                game.damage_held(1);
-            }
-            assert!(game.offhand.is_none());
-            assert_eq!(game.inventory[game.selected], Some(main.clone()));
-            assert_eq!(game.guest_equipment_breaks.last().unwrap().0, event);
-        }
-        game.set_mode_id(1);
-        game.offhand = Some(ItemStack::new("minecraft:flint_and_steel", 1));
-        game.damage_held_in_slot(1, EquipmentSlot::OffHand);
-        assert_eq!(game.offhand.as_ref().unwrap().damage, 0);
-    }
-
-    #[test]
-    fn hand_pose_rejects_invalid_components() {
-        let identity = super::hand_pose_matrix([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-        assert_eq!(identity, glam::Mat4::IDENTITY);
-        assert_eq!(
-            super::hand_pose_matrix([
-                f32::NAN,
-                17.0,
-                f32::INFINITY,
-                3601.0,
-                -3601.0,
-                f32::NAN,
-                0.0
-            ]),
-            identity
-        );
-        let point = super::hand_pose_matrix([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 2.0])
-            .transform_point3(glam::Vec3::X);
-        assert_eq!(point, glam::Vec3::new(3.0, 2.0, 3.0));
-    }
-    #[test]
-    fn observed_overlay_prefers_first_open_screen() {
-        assert_eq!(
-            super::observed_overlay_id(&[(false, "sign"), (false, "book")]),
-            None
-        );
-        assert_eq!(
-            super::observed_overlay_id(&[(false, "sign"), (true, "book")]),
-            Some("book")
-        );
-        assert_eq!(
-            super::observed_overlay_id(&[(true, "sign"), (true, "book")]),
-            Some("sign")
-        );
-    }
-
-    /// Exercise the gameplay constructor, where name-based entities compete
-    /// with a mod block's sign template.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn mod_sign_constructor_prioritizes_templates_over_suffixes() {
-        use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
-        use horizon_client::mod_content::{ContentMod, build};
-        use horizon_mods::content::{Block, Content};
-
-        let base = std::path::PathBuf::from(
-            std::env::var_os("HORIZON_TEST_RESOURCES")
-                .expect("set HORIZON_TEST_RESOURCES to prepared resources"),
-        );
-        let root = std::env::temp_dir().join(format!(
-            "horizon-sign-constructor-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let cases = [
-            ("ruby:notice_banner", "minecraft:oak_sign", false),
-            ("ruby:board_shelf", "minecraft:oak_wall_sign", false),
-            ("ruby:lantern_head", "minecraft:oak_hanging_sign", true),
-            (
-                "ruby:bracket_skull",
-                "minecraft:oak_wall_hanging_sign",
-                true,
-            ),
-        ];
-        let mut content = Content::declared("ruby");
-        let blocks: Vec<_> = cases
-            .iter()
-            .map(|&(id, template, _)| (id, template))
-            .chain([("ruby:road_sign", "minecraft:stone")])
-            .map(|(id, template)| Block {
-                id: id.into(),
-                template: template.into(),
-                item: false,
-                ..Default::default()
-            })
-            .collect();
-        content.declare(&blocks, &[]).unwrap();
-        build(
-            &base,
-            &[ContentMod {
-                id: "ruby".into(),
-                content,
-            }],
-            &root,
-        )
-        .unwrap();
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!("no menu handoff"),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = super::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-
-        for (name, hanging) in cases
-            .map(|(name, _, hanging)| (name, hanging))
-            .into_iter()
-            .chain([
-                ("minecraft:oak_sign", false),
-                ("minecraft:oak_hanging_sign", true),
-            ])
-        {
-            match game.new_block_entity(name) {
-                Some(super::BlockEntity::Sign(sign)) => {
-                    assert_eq!(sign.hanging, hanging, "{name}")
-                }
-                entity => panic!("{name}: expected a sign, got {entity:?}"),
-            }
-        }
-        assert!(game.new_block_entity("ruby:road_sign").is_none());
-        assert!(matches!(
-            game.new_block_entity("minecraft:white_banner"),
-            Some(super::BlockEntity::Banner(_))
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A mod's own screen opens only over the world, never over another
-    /// screen, an overlay (the title screen, a book, loading, no window) or
-    /// another mod's; opening it again is a no-op.
-    #[test]
-    fn a_mod_screen_opens_only_over_the_world() {
-        use super::{Screen, mod_screen_opens};
-        assert_eq!(mod_screen_opens(Screen::Playing, false, None, "a"), None);
-        assert_eq!(
-            mod_screen_opens(Screen::Playing, true, None, "a"),
-            Some(false)
-        );
-        for other in [
-            Screen::Paused,
-            Screen::Inventory,
-            Screen::Chat,
-            Screen::Options,
-        ] {
-            assert_eq!(mod_screen_opens(other, false, None, "a"), Some(false));
-        }
-        assert_eq!(
-            mod_screen_opens(Screen::Mod, false, Some("a"), "a"),
-            Some(true)
-        );
-        assert_eq!(
-            mod_screen_opens(Screen::Mod, false, Some("b"), "a"),
-            Some(false)
-        );
-    }
-
-    /// The characters a `ScreenEvent.CharacterTyped.Pre` sees are the
-    /// printable ones of a text: a cancelled one leaves that text and a
-    /// control character (a key, not text) is never offered a hook.
-    #[test]
-    fn typed_text_keeps_control_characters_and_drops_cancelled_ones() {
-        let mut offered = Vec::new();
-        let left = super::screen_text_hooked("a\u{7f}b\u{1b}c", |c| {
-            offered.push(c);
-            c == 'b'
-        });
-        assert_eq!(offered, ['a', 'b', 'c']);
-        assert_eq!(left.as_deref(), Some("a\u{7f}\u{1b}c"));
-        // Every printable character cancelled: no text is left to type.
-        assert_eq!(super::screen_text_hooked("ab", |_| true), None);
-        // Nothing to offer: an empty text stays empty and keys alone stay whole.
-        assert_eq!(super::screen_text_hooked("", |_| true).as_deref(), Some(""));
-        assert_eq!(
-            super::screen_text_hooked("\u{7f}\t", |_| true).as_deref(),
-            Some("\u{7f}\t")
-        );
-        // What no hook cancels is handed back as it came in.
-        assert_eq!(
-            super::screen_text_hooked("hello", |_| false).as_deref(),
-            Some("hello")
-        );
-    }
-
-    /// The window's key path: a key whose press a mod cancelled still types
-    /// the characters no mod cancelled (vanilla's separate `charTyped`), while
-    /// the key characters never reach the text box.
-    #[test]
-    fn a_cancelled_key_still_types_the_characters_left() {
-        // `axb` with 'x' cancelled: the key went no further, `ab` still types.
-        assert_eq!(
-            super::chars_to_type("axb", |c| c == 'x').as_deref(),
-            Some("ab")
-        );
-        // Backspace, Escape and the like are keys, not text.
-        assert_eq!(
-            super::chars_to_type("a\u{7f}\u{1b}b", |_| false).as_deref(),
-            Some("ab")
-        );
-        // Every character cancelled: the box takes none of them.
-        assert_eq!(super::chars_to_type("ab", |_| true), None);
-        // Nothing typed: nothing to hand over.
-        assert_eq!(super::chars_to_type("", |_| false), None);
-    }
-
-    /// A mod's camera replaces vanilla's value by value; one that isn't finite keeps vanilla's.
-    #[test]
-    fn a_mod_camera_replaces_each_finite_value() {
-        use super::posed_camera;
-        let vanilla = (glam::DVec3::new(1.0, 2.0, 3.0), 10.0, 20.0);
-        assert_eq!(
-            posed_camera(vanilla, [-40.5, 90.0, 1e7], 270.0, -35.0),
-            (glam::DVec3::new(-40.5, 90.0, 1e7), 270.0, -35.0)
-        );
-        assert_eq!(
-            posed_camera(
-                vanilla,
-                [f64::NAN, 5.0, f64::INFINITY],
-                f32::NAN,
-                f32::NEG_INFINITY
-            ),
-            (glam::DVec3::new(1.0, 5.0, 3.0), 10.0, 20.0)
-        );
-    }
-
-    /// A shake is scaled by Distortion Effects, bounded on each axis, and a
-    /// value that isn't finite is none.
-    #[test]
-    fn a_shake_is_scaled_and_bounded() {
-        use super::{NativeShake, bounded_shake, shake_pose};
-        let shake = NativeShake {
-            pitch: 4.0,
-            yaw: -30.0,
-            roll: f32::NAN,
-            offset: [0.2, 2.0, f32::INFINITY],
-        };
-        assert_eq!(
-            bounded_shake(shake, 1.0),
-            NativeShake {
-                pitch: 4.0,
-                yaw: -10.0,
-                roll: 0.0,
-                offset: [0.2, 0.5, 0.0],
-            }
-        );
-        assert_eq!(bounded_shake(shake, 0.5).pitch, 2.0);
-        assert_eq!(bounded_shake(shake, 0.0), NativeShake::default());
-        assert_eq!(shake_pose(NativeShake::default()), glam::Mat4::IDENTITY);
-    }
-
-    /// A mod's shader values that aren't finite read as 0.
-    #[test]
-    fn shader_params_that_arent_finite_read_as_zero() {
-        let mut params = [[1.0; 4]; 8];
-        params[0] = [f32::NAN, 2.0, f32::INFINITY, -3.0];
-        let out = super::finite_params(params);
-        assert_eq!(out[0], [0.0, 2.0, 0.0, -3.0]);
-        assert_eq!(out[7], [1.0; 4]);
-    }
-
-    /// A client mod's sound needs a namespaced event, finite values and a
-    /// delay of a minute at most.
-    #[test]
-    fn a_local_sound_is_checked() {
-        use super::local_sound_ok;
-        let at = [0.5, 64.0, 0.5];
-        assert!(local_sound_ok("ironfall:boom_far", at, 8.0, 1.0, 140));
-        assert!(local_sound_ok(
-            "minecraft:entity.generic.explode",
-            at,
-            1.0,
-            1.0,
-            0
-        ));
-        assert!(!local_sound_ok("boom", at, 1.0, 1.0, 0));
-        assert!(!local_sound_ok("ironfall:", at, 1.0, 1.0, 0));
-        assert!(!local_sound_ok("Ironfall:Boom", at, 1.0, 1.0, 0));
-        assert!(!local_sound_ok(
-            "ironfall:boom",
-            [f64::NAN, 0.0, 0.0],
-            1.0,
-            1.0,
-            0
-        ));
-        assert!(!local_sound_ok("ironfall:boom", at, -1.0, 1.0, 0));
-        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, 1201));
-        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, -1));
-    }
-
-    /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
-    #[test]
-    fn sound_ids_are_identifiers() {
-        for id in [
-            "minecraft:block.note_block.harp",
-            "mymod:machine/hum",
-            "my_mod.x-1:a",
-        ] {
-            assert!(super::sound_id(id), "{id}");
-        }
-        for id in [
-            "",
-            "hum",
-            ":hum",
-            "mymod:",
-            "MyMod:hum",
-            "mymod:Hum",
-            "my/mod:hum",
-            "a:b c",
-        ] {
-            assert!(!super::sound_id(id), "{id}");
-        }
-    }
-
-    /// A mod's property write: none for a key or value the block lacks, the
-    /// state itself when it already has the value, else the new state.
-    #[test]
-    fn with_property_finds_the_state() {
-        let facts = br#"{"defaults":{"minecraft:air":0,"test:crop":1},"states":[
-            ["air",true,false,"","minecraft:air"],
-            ["crop0",false,false,"",{"id":"test:crop","properties":{"age":"0"}}],
-            ["crop1",false,false,"",{"id":"test:crop","properties":{"age":"1"}}]
-        ]}"#;
-        let registry = horizon_world::registry::BlockRegistry::from_facts_json(&facts[..]).unwrap();
-        use horizon_world::registry::BlockStateId;
-        let (age0, age1) = (BlockStateId(1), BlockStateId(2));
-        assert_eq!(
-            super::with_property(&registry, age0, "age", "0"),
-            Some(age0)
-        );
-        assert_eq!(
-            super::with_property(&registry, age0, "age", "1"),
-            Some(age1)
-        );
-        assert_eq!(super::with_property(&registry, age0, "age", "9"), None);
-        assert_eq!(super::with_property(&registry, age0, "lit", "true"), None);
-        // What both property setters write: nothing (false) when the
-        // property already has the value, as `Level.setBlock`.
-        assert_eq!(super::property_change(&registry, age0, "age", "0"), None);
-        assert_eq!(
-            super::property_change(&registry, age0, "age", "1"),
-            Some(age1)
-        );
-        assert_eq!(super::property_change(&registry, age0, "age", "9"), None);
-        assert_eq!(super::property_change(&registry, age0, "lit", "true"), None);
-    }
-
-    /// The state a mod block is placed in is built from its own default state
-    /// and one of its properties, its declared ones (`state_properties` in its
-    /// block file) included, and keeps the properties it already had.
-    #[test]
-    fn a_placement_state_is_built_from_a_blocks_own_properties() {
-        let facts = br#"{"defaults":{"minecraft:air":0,"test:pipe":1},"states":[
-            ["air",true,false,"","minecraft:air"],
-            ["north_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"north"}}],
-            ["east_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"east"}}],
-            ["north_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"north"}}],
-            ["east_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"east"}}]
-        ]}"#;
-        let registry = horizon_world::registry::BlockRegistry::from_facts_json(&facts[..]).unwrap();
-        use horizon_world::registry::BlockStateId;
-        let (north_gas, east_gas, east_items) = (BlockStateId(1), BlockStateId(2), BlockStateId(4));
-        // The declared property changes, and `carries` stays as it was.
-        assert_eq!(
-            super::with_property(&registry, north_gas, "facing", "east"),
-            Some(east_gas)
-        );
-        assert_eq!(
-            super::with_property(&registry, east_gas, "carries", "items"),
-            Some(east_items)
-        );
-        // A value the property does not have builds nothing.
-        assert_eq!(
-            super::with_property(&registry, east_gas, "facing", "up"),
-            None
-        );
-    }
-    /// Both property setters return false for a write that changes nothing:
-    /// each goes through `property_change`, none returns true on its own.
-    #[test]
-    fn property_setters_refuse_no_change() {
-        // A Windows checkout has CRLF line ends: the searches below look for "\n".
-        let source = include_str!("native_hooks.rs").replace("\r\n", "\n");
-        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
-        for head in [
-            "    pub(super) fn native_set_block_property(\n        &mut self,\n        ticks:",
-            "    pub(super) fn native_set_block_property_with(",
-        ] {
-            let body = code.split(head).nth(1).expect(head);
-            let body = &body[..body.find("\n    }\n").expect(head)];
-            assert!(body.contains("property_change("), "{head}");
-            assert!(!body.contains("return true"), "{head}");
-        }
-    }
-    /// horizon-mixins refuses targets whose body has a `cfg` or a macro:
-    /// the hook points and helpers must stay free of both. The launcher
-    /// reads the API line as it is.
-    /// A data packet for an old window leaves the open mod screen alone.
-    #[test]
-    fn mod_screen_data_is_its_windows_only() {
-        let mut s = super::OpenNativeScreen {
-            key: (0, 0, 0),
-            window: 4,
-            block: "gtmod:machine".into(),
-            screen: super::NativeScreen::default(),
-            data: Vec::new(),
-            extra: None,
-        };
-        assert!(s.set_data(4, 1, 7));
-        assert!(!s.set_data(3, 1, 99));
-        assert_eq!(s.data, [0, 7]);
-    }
-
-    #[test]
-    fn hook_points_stay_hookable() {
-        let source = include_str!("native_hooks.rs");
-        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
-        assert!(code.contains("\npub(crate) const NATIVE_HOOKS_API: u32 = "));
-        let lines = code.lines().filter(|l| !l.trim_start().starts_with("//"));
-        for line in lines {
-            assert!(!line.contains("cfg"), "a cfg in the hook points: {line}");
-            for mac in ["!(", "![", "! {", "!{"] {
-                assert!(!line.contains(mac), "a macro in the hook points: {line}");
-            }
-        }
-    }
-
-    #[test]
-    fn native_breathing_stays_hookable() {
-        let source = include_str!("../breathing.rs").replace("\r\n", "\n");
-        let hook = source.find("pub fn native_living_breathe(").unwrap();
-        // From its doc comment's first line, so an attribute above it counts.
-        let start = source[..hook].find("/// An entity's breathing").unwrap();
-        let body = &source[start..hook + source[hook..].find("\n}\n").unwrap()];
-        assert!(body.contains("#[inline(never)]"));
-        for line in body.lines() {
-            assert!(!line.contains("cfg"), "a cfg in the breathing hook: {line}");
-            for mac in ["!(", "![", "! {", "!{"] {
-                assert!(!line.contains(mac), "a macro in the breathing hook: {line}");
-            }
-        }
-    }
-
-    #[test]
-    fn native_loot_kinds_stay_hookable() {
-        let source = include_str!("../../../horizon-world/src/loot.rs").replace("\r\n", "\n");
-        for hook in [
-            "pub fn native_loot_function(",
-            "pub fn native_loot_condition(",
-        ] {
-            let at = source
-                .find(hook)
-                .unwrap_or_else(|| panic!("{hook} not found"));
-            let start = source[..at].rfind("///").unwrap();
-            let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
-            for line in body.lines() {
-                assert!(!line.contains("cfg"), "a cfg in a loot hook point: {line}");
-                for mac in ["!(", "![", "! {", "!{"] {
-                    assert!(!line.contains(mac), "a macro in a loot hook point: {line}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn native_ingredient_stays_hookable() {
-        let source = include_str!("../crafting.rs").replace("\r\n", "\n");
-        let at = source.find("pub fn native_ingredient(").unwrap();
-        let start = source[..at].rfind("///").unwrap();
-        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
-        for line in body.lines() {
-            assert!(
-                !line.contains("cfg"),
-                "a cfg in the ingredient hook: {line}"
-            );
-            for mac in ["!(", "![", "! {", "!{"] {
-                assert!(!line.contains(mac), "a macro: {line}");
-            }
-        }
-    }
-
-    #[test]
-    fn loot_table_load_stays_hookable() {
-        let source = include_str!("../../../horizon-world/src/loot.rs").replace("\r\n", "\n");
-        // From its doc comment's last line, so an attribute above it counts.
-        let hook = source.find("pub fn native_loot_table_load(").unwrap();
-        let start = source[..hook].rfind("///").unwrap();
-        let end = source[start..]
-            .find("\n}\n")
-            .or_else(|| source[start..].find("\r\n}\r\n"))
-            .unwrap();
-        let body = &source[start..start + end];
-        for line in body.lines() {
-            assert!(
-                !line.contains("cfg"),
-                "a cfg in the loot hook point: {line}"
-            );
-            for mac in ["!(", "![", "! {", "!{"] {
-                assert!(
-                    !line.contains(mac),
-                    "a macro in the loot hook point: {line}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn lifecycle_source_stays_hookable() {
-        let source = include_str!("native_lifecycle.rs");
-        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
-        for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
-            assert!(!line.contains("cfg"), "a cfg in lifecycle source: {line}");
-            for mac in ["!(", "![", "! {", "!{"] {
-                assert!(!line.contains(mac), "a macro in lifecycle source: {line}");
-            }
-        }
-    }
-
-    #[test]
-    fn catalog_matches_hook_points() {
-        use std::collections::BTreeSet;
-
-        let catalog: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../native-hooks.json")).unwrap();
-        let mut hooks = catalog["hooks"].as_array().unwrap().clone();
-        let fragments = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tools/native-hook-fragments");
-        for entry in std::fs::read_dir(fragments).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                let fragment: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-                hooks.extend(fragment["hooks"].as_array().unwrap().iter().cloned().map(
-                    |mut hook| {
-                        hook["version"] = 1.into();
-                        hook
-                    },
-                ));
-            }
-        }
-        let source = include_str!("native_hooks.rs");
-        let section = source
-            .split("/// The hook points. Each does nothing in Horizon.")
-            .nth(1)
-            .unwrap()
-            .split("/// Server-level helpers for native mods.")
-            .next()
-            .unwrap();
-        let level_section = source
-            .split("impl GameLevel<'_> {")
-            .nth(1)
-            .unwrap()
-            .split("\n}")
-            .next()
-            .unwrap();
-        let level_hooks: BTreeSet<_> = level_section
-            .lines()
-            .filter_map(|line| {
-                line.trim()
-                    .strip_prefix("pub(super) fn native_")?
-                    .split('(')
-                    .next()
-            })
-            .collect();
-        // Hook points that are free functions in other crates.
-        let free_hooks = |source: &'static str| -> BTreeSet<&'static str> {
-            source
-                .lines()
-                .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
-                .collect()
-        };
-        // The renderer's (`horizon_client_render::gfx::native_render`).
-        let render_hooks = free_hooks(include_str!(
-            "../../../horizon-client-render/src/gfx/native_render.rs"
-        ));
-        // Items' default components (`horizon_world::item_defaults`).
-        let item_hooks = free_hooks(include_str!("../../../horizon-world/src/item_defaults.rs"));
-        // The loot tables' hook point (`horizon_world::loot`).
-        let loot_hooks = free_hooks(include_str!("../../../horizon-world/src/loot.rs"));
-        // World generation's hook points (`horizon_world::worldgen::native_generate`).
-        let gen_hooks = free_hooks(include_str!(
-            "../../../horizon-world/src/worldgen/native_generate.rs"
-        ));
-        // The menu engine's (`horizon_client::menu`).
-        let menu_hooks = free_hooks(include_str!("../menu.rs"));
-        // The air supply's (`horizon_client::breathing`).
-        let breath_hooks = free_hooks(include_str!("../breathing.rs"));
-        // The crafting loaders' (`horizon_client_lib::crafting`).
-        let crafting_hooks = free_hooks(include_str!("../crafting.rs"));
-        let hunger_hooks = free_hooks(include_str!("../hunger.rs"));
-        let landing_hooks = free_hooks(include_str!("../landing.rs"));
-        let motion_hooks = free_hooks(include_str!("../motion.rs"));
-        let sound_hooks = free_hooks(include_str!("../sound_playback.rs"));
-        // The chat relay's (`horizon_client_lib::lan::hub::chat`).
-        let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
-        // The mob AI's (`horizon_client_lib::mobs::ai`).
-        let mob_hooks = free_hooks(include_str!("../mobs/ai.rs"));
-        // The connections' (`horizon_client_lib::lan::conn`).
-        let conn_hooks = free_hooks(include_str!("../lan/conn.rs"));
-        // The log writer's (`horizon_client_lib::native_client_hooks`).
-        let client_hooks = free_hooks(include_str!("../native_client_hooks.rs"));
-        let declared: BTreeSet<_> = section
-            .lines()
-            .chain(level_section.lines())
-            .filter_map(|line| {
-                line.trim()
-                    .strip_prefix("pub(super) fn native_")?
-                    .split('(')
-                    .next()
-            })
-            .chain(render_hooks.iter().copied())
-            .chain(item_hooks.iter().copied())
-            .chain(loot_hooks.iter().copied())
-            .chain(gen_hooks.iter().copied())
-            .chain(menu_hooks.iter().copied())
-            .chain(breath_hooks.iter().copied())
-            .chain(crafting_hooks.iter().copied())
-            .chain(hunger_hooks.iter().copied())
-            .chain(landing_hooks.iter().copied())
-            .chain(motion_hooks.iter().copied())
-            .chain(sound_hooks.iter().copied())
-            .chain(chat_hooks.iter().copied())
-            .chain(mob_hooks.iter().copied())
-            .chain(conn_hooks.iter().copied())
-            .chain(client_hooks.iter().copied())
-            .collect();
-        let mut names = BTreeSet::new();
-        let mut contracts = BTreeSet::new();
-        for hook in &hooks {
-            let name = hook["name"].as_str().unwrap();
-            let version = hook["version"].as_u64().unwrap();
-            assert!(
-                version > 0 && contracts.insert((name, version)),
-                "invalid or duplicate hook: {name} v{version}"
-            );
-            names.insert(name);
-            let target = if render_hooks.contains(name) {
-                format!("horizon_client_render::gfx::native_render::native_{name}")
-            } else if item_hooks.contains(name) {
-                format!("horizon_world::item_defaults::native_{name}")
-            } else if loot_hooks.contains(name) {
-                format!("horizon_world::loot::native_{name}")
-            } else if gen_hooks.contains(name) {
-                format!("horizon_world::worldgen::native_generate::native_{name}")
-            } else if crafting_hooks.contains(name) {
-                // crafting.rs compiles into horizon-client-lib (#5446's
-                // split): horizon-mixins resolves the crate by its package.
-                format!("horizon_client_lib::crafting::native_{name}")
-            } else if hunger_hooks.contains(name) {
-                format!("horizon_client_lib::hunger::native_{name}")
-            } else if landing_hooks.contains(name) {
-                format!("horizon_client_lib::landing::native_{name}")
-            } else if motion_hooks.contains(name) {
-                format!("horizon_client_lib::motion::native_{name}")
-            } else if sound_hooks.contains(name) {
-                format!("horizon_client_lib::sound_playback::native_{name}")
-            } else if chat_hooks.contains(name) {
-                format!("horizon_client_lib::lan::hub::chat::native_{name}")
-            } else if menu_hooks.contains(name) {
-                // menu.rs compiles into horizon-client-lib (#5446's
-                // split): horizon-mixins resolves the crate by its package.
-                format!("horizon_client_lib::menu::native_{name}")
-            } else if breath_hooks.contains(name) {
-                // breathing.rs compiles into horizon-client-lib too.
-                format!("horizon_client_lib::breathing::native_{name}")
-            } else if mob_hooks.contains(name) {
-                format!("horizon_client_lib::mobs::ai::native_{name}")
-            } else if conn_hooks.contains(name) {
-                format!("horizon_client_lib::lan::conn::native_{name}")
-            } else if client_hooks.contains(name) {
-                format!("horizon_client_lib::native_client_hooks::native_{name}")
-            } else if level_hooks.contains(name) {
-                format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
-            } else {
-                format!("horizon_client::game::native_hooks::Game<'_>::native_{name}")
-            };
-            assert_eq!(hook["target"].as_str().unwrap(), target);
-        }
-        assert_eq!(names, declared);
-        // Every target's crate really compiles its module: #5446 moved
-        // files between horizon-client and horizon-client-lib, and a
-        // target left on the old crate applies to no bundle — the string
-        // comparison above shares its expectation with the catalog, so it
-        // alone cannot catch a move. The first path segment after the
-        // crate must be a module of that crate's lib root.
-        let client_root = include_str!("../lib.rs");
-        let lib_root = include_str!("../client_lib.rs");
-        for hook in &hooks {
-            let target = hook["target"].as_str().unwrap();
-            let (root, crate_name, rest) =
-                if let Some(rest) = target.strip_prefix("horizon_client::") {
-                    (client_root, "horizon_client", rest)
-                } else if let Some(rest) = target.strip_prefix("horizon_client_lib::") {
-                    (lib_root, "horizon_client_lib", rest)
-                } else {
-                    // The other crates (render, world) are their own packages,
-                    // never split.
-                    continue;
-                };
-            let module = rest.split("::").next().unwrap_or(rest);
-            assert!(
-                root.contains(&format!("mod {module};")),
-                "{crate_name} does not compile module `{module}` (target {target})"
-            );
-        }
-    }
-
-    /// The damage hook gets a mob's source from its damage: the causing mob,
-    /// the direct one when it deals the damage itself.
-    #[test]
-    fn the_damage_hook_names_the_source() {
-        use super::{HurtSource, Hurting, hurt_server_args, mob_source};
-        use horizon_client::mobs::{Damage, DamageKind as K, Who};
-        let source = |kind, attacker| {
-            let s = mob_source(&Damage {
-                kind,
-                attacker,
-                from: None,
-                attacker_species: None,
-            });
-            (s.damage_type, s.causing, s.direct)
-        };
-        let zombie = Some(Who::Mob(3));
-        assert_eq!(source(K::MobAttack, zombie), ("minecraft:mob_attack", 3, 3));
-        assert_eq!(source(K::Thorns, zombie), ("minecraft:thorns", 3, 3));
-        assert_eq!(source(K::Arrow, zombie), ("minecraft:arrow", 3, 0));
-        let blast = source(K::Explosion, zombie);
-        assert_eq!(blast, ("minecraft:player_explosion", 3, 0));
-        // A player behind a mob's hit isn't known yet, nor is a fall's source.
-        let hit = source(K::PlayerAttack, Some(Who::Player));
-        assert_eq!(hit, ("minecraft:player_attack", 0, 0));
-        assert_eq!(source(K::Fall, None), ("minecraft:fall", 0, 0));
-        let arrow = HurtSource {
-            damage_type: "minecraft:arrow",
-            causing: 4,
-            direct: 0,
-        };
-        let player = (2, "minecraft:player", arrow);
-        assert_eq!(hurt_server_args(Hurting::Player(2, arrow)), player);
-        let dragon = (5, "minecraft:ender_dragon", arrow);
-        assert_eq!(hurt_server_args(Hurting::Dragon(5, arrow)), dragon);
-    }
-
-    /// A mod container opens a slot grid or a furnace's menu, by its slot
-    /// count; no menu with rules of its own (a brewing stand's, a crafter's).
-    #[test]
-    fn mod_menus_are_slot_grids_and_furnaces() {
-        use super::mod_menu;
-        assert_eq!(mod_menu("minecraft:hopper"), Some(("minecraft:hopper", 5)));
-        assert_eq!(mod_menu("minecraft:generic_9x3").map(|m| m.1), Some(27));
-        assert_eq!(mod_menu("minecraft:furnace").map(|m| m.1), Some(3));
-        assert_eq!(mod_menu("minecraft:brewing_stand"), None);
-        assert_eq!(mod_menu("hopper"), None);
-    }
-
-    /// The config folder is `config/` beside `options.txt`, made when
-    /// missing.
-    #[test]
-    fn config_dir_is_config_in_the_game_folder() {
-        // Callable without a game, from any hook.
-        let _: fn() -> Result<std::path::PathBuf, String> = super::Game::native_config_dir;
-        use super::config_dir;
-        let root = std::env::temp_dir().join(format!("horizon-config-dir-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        assert!(!root.join("config").exists());
-        let dir = config_dir(&root).unwrap();
-        assert_eq!(dir, root.join("config"));
-        assert!(dir.is_dir());
-        assert_eq!(config_dir(&root).unwrap(), dir);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// Vanilla's F3 draws a column in each top corner (`extractLines`, left
-    /// and right aligned), and its charts along the bottom.
-    #[test]
-    fn the_debug_screen_takes_both_top_corners_and_its_charts_corners() {
-        use super::{Corner, debug_takes};
-        for corner in Corner::ALL {
-            assert!(!debug_takes(corner, false, [true, true]), "{corner:?}");
-        }
-        assert!(debug_takes(Corner::TopLeft, true, [false, false]));
-        assert!(debug_takes(Corner::TopRight, true, [false, false]));
-        assert!(!debug_takes(Corner::BottomLeft, true, [false, false]));
-        assert!(!debug_takes(Corner::BottomRight, true, [false, false]));
-        assert!(debug_takes(Corner::BottomLeft, true, [true, false]));
-        assert!(!debug_takes(Corner::BottomRight, true, [true, false]));
-        assert!(debug_takes(Corner::BottomRight, true, [false, true]));
-    }
-
-    /// An image is taken whole, and only when it fits its slot.
-    #[test]
-    fn a_mod_image_is_taken_whole_and_only_when_it_fits() {
-        use super::mod_image_fits;
-        assert!(mod_image_fits(4, 2, 32, 1024, 1024));
-        assert!(mod_image_fits(1024, 1024, 1024 * 1024 * 4, 1024, 1024));
-        assert!(!mod_image_fits(0, 2, 0, 1024, 1024));
-        assert!(!mod_image_fits(4, 2, 31, 1024, 1024));
-        assert!(!mod_image_fits(4, 2, 33, 1024, 1024));
-        assert!(!mod_image_fits(2048, 1, 2048 * 4, 1024, 1024));
-    }
-}
+#[path = "native_hooks_tests.rs"]
+mod tests;

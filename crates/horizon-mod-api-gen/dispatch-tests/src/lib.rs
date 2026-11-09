@@ -1,3 +1,9 @@
+/// The game's `mod_api` types a hook names with a `crate::mod_api::` path.
+#[cfg(test)]
+mod mod_api {
+    #[derive(Clone, Copy)]
+    pub struct NativeInventoryKind;
+}
 #[cfg(test)]
 mod tests {
     include!("block_clone_item_tests.rs");
@@ -71,6 +77,9 @@ mod tests {
         pub(super) struct NativeMod;
         pub(super) struct NativePanelEvent;
         pub(super) struct NativeScreen;
+        pub(super) struct NativeStack;
+        pub(super) struct NativeRecipeLookup;
+        pub(super) struct NativeRecipeCategory;
         pub(super) struct ModBlockEntity;
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;

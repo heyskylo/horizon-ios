@@ -181,6 +181,11 @@ API 2 adds the item panel beside container screens and its recipe pages (`native
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
 recipe viewer needs.
 
+The pending `panel_style` helper, `native_panel_style(mod_id, style)`, lets a recipe viewer's panel look like one:
+`NativePanelStyle::Viewer` draws its page buttons as square buttons on a bar over the items and its search box with the
+viewer's skin, as Horizon's Recipes panel does; `NativePanelStyle::RecipeBook` (the default) keeps the recipe book's
+arrows. Only the drawing changes. Bundles need `"hooks": @API:panel_style@`.
+
 API 11 adds `GameLevel::native_send_particles` on authoritative servers. It sends supported
 vanilla particles to nearby players. Block particles require a valid block state. Item, trail and
 vibration particles are not supported by the current dispatch. Count zero sends one directional
@@ -394,6 +399,16 @@ vanilla's; a client makes its copy of the block entity with `native_block_entity
 alone): it is asked when a chunk holding it is sent and when its block changes, and the client merges it into the
 copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
 menus have their own data slots. Bundles that use it need `"hooks": 45`.
+
+Fields meant for the next client update only, not for the save (the items a processing particle shows):
+`ModBlockEntity::set_client_update_fields(Compound)` replaces the pending batch, `clear_client_update_fields` drops it
+and `take_client_update_fields` drains it. The owner adds the drained fields to its `native_block_entity_update_tag`
+result itself; setting them neither schedules an update nor is saved, compared or cloned, and repeated block changes
+may coalesce into one update.
+
+`native_block_clone_item(block, pos, state, &mut stack)` answers a block's `getCloneItemStack` for pick block
+(Ctrl+Pick) with the real state and position; the first mod that fills the stack owns the result, and no answer keeps
+vanilla's. An empty or unregistered stack picks nothing. Ctrl+Pick still adds the block entity's components afterwards.
 
 API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
@@ -1797,6 +1812,13 @@ API 412 adds `native_force_chunk(owner, chunk, hold)` holds a chunk of the level
 
 API 413 adds `native_force_chunk_in(owner, dimension, chunk, hold)`, `native_force_chunk` for a named level, which opens and ticks a level not open yet, so a mod can pre-generate the Nether and the End with nobody there. Bundles need "hooks": 413.
 
+API 414 adds a held world through `native_world_hold`: once a frame a client mod can hold the terrain's picture, all of it or
+only inside circles; sections on screen that change are meshed and uploaded but wait beside the ones drawn, and
+letting go shows them all on one frame ([Holding the world's picture](#holding-the-worlds-picture)). Bundles need
+`"hooks": 414`.
+
+API 415 adds a world warp through `native_world_warp`: once a frame a client mod may give WGSL (`world_warp(pos, section) -> Warped`, and optionally `world_fragment(f) -> Painted` after a line `// [fragments]`) that every terrain vertex, far terrain's tiles included, and entity vertex goes through, with sixteen floats it reads as `warp.params`. While it is on the frame culls nothing by where it was. A frame without one costs nothing more ([World warps](#world-warps)). Bundles need "hooks": 415.
+
 ## What the launcher does
 
 **Developing a mod?** Run `horizon-launcher settings native-profile dev` once, or pick "Dev build" in the Mods page's
@@ -2675,6 +2697,20 @@ server only.
   `native_player_view_distance(uuid)` is the distance the player has now. Both answer false/None for a player not online
   and inside a guest's packet hook, where the hub is taken out: call them from a tick or console hook. API
   @API:player_view_distance@.
+- **`native_set_player_fake(uuid, fake)`** (`native_view_distance.rs`): marks the player as a fake player, a mod's bot
+  with no client, or not. A fake player keeps only a small area loaded and ticking around it (its view distance plus
+  one, at most the server's plus one), its packets are cut to the few a bot needs (position, entity motion, the chunk
+  batch end, keep-alive, ping, combat kill and respawn), and it does not count for natural mob spawning. The mark lasts
+  until the player leaves. False off a server, for a player not online, and inside a guest's packet hook: call it from a
+  tick or console hook. API @API:set_player_fake@.
+- **`native_expect_fake_player(name, fake)`** (`native_view_distance.rs`): says that a player named `name` (any case)
+  will join as a fake player, or not any more. The player is fake from its first packet on, so its join sends and
+  builds nothing a client-less player cannot read (no login records, recipe book, command tree, player list or
+  advancements). False off a server. API @API:expect_fake_player@.
+- **`native_is_player_fake(uuid)`** (`native_view_distance.rs`): whether the player is a fake player, a mod's bot with no
+  client (marked by `native_set_player_fake`, or announced by name with `native_expect_fake_player`, which makes it fake from
+  its first packet on). False off a server and for a player not online; for a join hook that gets only a uuid. API
+  @API:is_player_fake@.
 - **`native_chunk_snapshot(dimension, [x, z])`** (`native_chunk_snapshot.rs`): a `NativeChunkSnapshot` of a loaded
   chunk of a level that is open (in place or with nobody in it), None for a chunk not loaded (nothing is loaded for
   it). It shares the chunk's sections until the level changes them, so it is cheap to take on the server thread and
@@ -3009,6 +3045,8 @@ None.
   and `hidden` level server mods set (Bukkit's `getPing`, `isOnGround`, `getAllowFlight`, `isFlying`,
   `isSneaking`, `getEyeHeight`, `getDisplayName`). For the acting player, `latency`, `nickname`, `hidden` and
   `address` read 0 or None while the hub is out of reach. Bundles need `"hooks": @API:server_player_state@`.
+- **`NativeServerPlayer.fake`** is true for a fake player, a mod's bot with no client (`native_set_player_fake`), so a
+  mod can leave out what only a client would show. Bundles need `"hooks": @API:server_player_fake@`.
 - Helper **`native_player_client(uuid) -> Option<NativeClientInfo>`** (`host.player_client`): the client's brand,
   language, the view distance it asks for, chat visibility, main hand and particle setting, the chunks the server
   sent it and its wire bytes in and out (Paper's `getClientBrandName`, `locale`, `getClientViewDistance`). It
@@ -3809,6 +3847,18 @@ chest's own slots, then the player's inventory, then the hotbar; an empty slot i
 counts the slots, this lists them. It is `None` on a server, while no server-opened menu is up (the window's own
 inventory, creative) and for a menu whose slots the client doesn't lay out (a lectern).
 
+`host.menu_slot_roles()` (client, `native_menu_slot_roles`, API @API:slot_roles@) says what each of those slots is for,
+in the same numbering, so an inventory mod (drags, the wheel, sorting, quick-stack) works in any menu without a list
+of menu type ids: `NativeSlotRole::Hotbar` and `Inventory` (the player's), `Equipment` (armour, the off hand, a
+mount's saddle and body armour), `Storage` (slots that only hold items: chests, barrels, shulker boxes, ender chests,
+hoppers, dispensers, droppers, a mount's chest, a content mod menu type's `links`), `CraftingGrid` (the inventory's
+2x2, the crafting table's and the crafter's 3x3, a mod menu type's `crafting` grid), `Result` (crafting, furnace and
+workstation results, a mod menu type's `results` and crafting result) and `Input` (any other slot: a furnace's input
+and fuel, a workstation's inputs, a mod menu type's slots its JSON gives no role). It is `None` where `menu_stacks` is.
+The enum is `#[non_exhaustive]`: treat a role you don't know as `Input`. An injection mod, which clicks by Horizon's
+own slot ids (`Game::slots`), asks `Game::native_slot_roles()` for `(slot, role)` pairs of the open menu screen
+instead; Horizon's sort buttons (the extras) use it too.
+
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
 
@@ -4042,13 +4092,36 @@ and `id` say which:
 - `tutorial`: the hint, `move`, `look`, `find_tree`, `punch_tree`, `open_inventory`, `craft_planks` or `socialInteractions`;
 - `system`: `narrator_toggle`, `pack_load_failure`, `pack_download` (a server pack batch's progress), `low_disk_space`,
   `chunk_load_failure` or `chunk_save_failure`;
-- `now_playing`: an empty id, each time the music toast shows a new song.
+- `now_playing`: an empty id, each time the music toast shows a new song;
+- `mod`: a mod's own toast (`native_add_toast`, below), with the id the mod gave it.
 
 Set `cancel` and the toast isn't queued, shown or sounded. As in vanilla, an update to a toast already queued or shown
 is not an add: more recipes joining the recipe toast, or a system toast taking new text (`SystemToast.addOrUpdate`).
 A cancelled tutorial hint isn't asked again while it stays the current hint; a cancelled system toast is asked again at
 its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
 Bundles need `"hooks": @API:toast_add@`.
+
+### Toasts a mod shows
+
+`native_push_voice(mod_id, source, samples, sample_rate, at)` (client, `host.push_voice`) plays a
+mod's own audio, such as a proximity voice chat's: mono samples from -1 to 1 at `sample_rate` hertz.
+`source` is the mod's own id for a speaker (a player's UUID, say): each source's blocks play one
+after another, in the order they were pushed, while different sources play at the same time. `at`
+is where they were spoken, for direction and a linear fade to silence at 48 blocks; none plays them
+centred. A source holds at most two seconds, and a burst past that is refused rather than delayed;
+at most 64 sources play at once. False when nothing was queued: on a server, without an audio
+device, with nothing to play or past a cap. Bundles need `"hooks": @API:push_voice@`.
+
+`native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own
+in the five slots the advancement, recipe and system toasts share, drawn as vanilla's `AdvancementToast`: the item
+`icon` at 16 pixels (an unknown item draws none), `title` where the advancement toast's frame label goes ("Advancement
+Made!"), yellow, and `description` under it in white. A description longer than one line is wrapped at 125 pixels and
+fades in after the title, as an advancement's long title does. With `challenge` the title is pink and the challenge
+sound plays as the toast leaves the queue. It stays up as long as an advancement toast (5 seconds times the
+notification time setting). `native_toast_add` hears it first as kind `mod` with the mod's `id` (`mymod:quest/first`),
+so a pack can hide them. True when queued; false on a server, without a window and when cancelled. A quest mod's
+server half tells the player's client half (mod messages) and the client half calls it. Bundles need
+`"hooks": @API:add_toast@`.
 
 ### The client's tick
 
@@ -4177,8 +4250,9 @@ Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water 
 than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
 and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
 a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
-cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
-mod's fluid yet, and no buckets of one.
+fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
+and may be named in fluid tags; tanks still take undeclared ids as before. A cauldron takes only water and lava, and the
+world itself has only vanilla's fluids: no source or flowing blocks of a mod's fluid yet, and no buckets of one.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
@@ -4637,7 +4711,7 @@ fn world_hold(&self, _host: &dyn Host, event: &mut WorldHoldEvent<'_>) {
 - Each player's game is asked for itself (splitscreen: one hold per player). The debug census lists
   `held_section_vertices`.
 
-Bundles need `"hooks": @API:world_hold@`.
+Bundles need `"hooks": 414`.
 
 ### Block textures
 
@@ -4769,6 +4843,38 @@ placement counts and takes from the player's inventory first, then the sources i
 and its comparators update. Every mod adds to the same list. With no answer the placement is vanilla's, from the
 inventory alone. A recipe viewer's craftable marks are still worked out on the client from the player's inventory.
 
+### Recipe viewers: lookups and categories
+
+A mod that draws items on screens of its own (a quest book, a guide) can open whatever recipe viewer is installed
+without depending on it. `native_show_recipes(stack, lookup)` (client, `host.show_recipes`) asks for `stack`'s recipes
+(`NativeRecipeLookup::Recipes`, a left click), its uses (`Uses`, a right click), or for what a key that went down over it
+does in the viewer (`Key("key.keyboard.a")`), so the viewer's own recipe, uses and bookmark keys work there as over its
+item list, however the player bound them. It only queues the ask, so a screen hook with `&dyn Host` may call it. The
+viewer hears it at the start of the next frame:
+
+```rust
+fn recipe_lookup(&self, host: &mut dyn Host, event: &mut RecipeLookupEvent<'_>) -> Flow {
+    match event.lookup {
+        NativeRecipeLookup::Recipes => open_recipes(host, event.stack),
+        NativeRecipeLookup::Uses => open_uses(host, event.stack),
+        NativeRecipeLookup::Key(key) if is_my_key(host, key) => act(host, key, event.stack),
+        _ => return Flow::Continue,
+    }
+    Flow::Cancel // handled: no other viewer hears it
+}
+```
+
+With no viewer installed nothing happens, and the asking mod works as before.
+
+`native_recipe_categories(categories)` (client) collects the mods' own recipe categories for a viewer: a fishing spot,
+a sieve, a machine. A `NativeRecipeCategory` has an id, a title and a subtitle in the player's language, an icon, its
+catalysts (the items or blocks that do it) and its recipes, each of input slots to outputs (`NativeChanceOutput`: the
+stack, the chance it comes each time, the count range, notes) with notes of its own. A viewer gets them with
+`native_collect_recipe_categories()` and gets them again when `native_recipe_categories_version()` moves; a mod moves
+it with `native_recipe_categories_changed()`, as when its server's data reaches it. The categories come from the
+client, so a mod whose data the server owns (loot tables a data pack may change) works them out on the server and sends
+them to its client half with its own messages, on join and after `/reload`.
+
 ### Menu links
 
 `native_menu_links(player, menu, pos, links)` is asked on the server each tick while `player` has a mod menu type with
@@ -4868,6 +4974,13 @@ into a generated game executable and calls `hooks()` in dependency order (a mod 
 depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+The package may depend on the bundle's own `[[crate]]`s by path, a sibling folder of the package in the bundle
+(`shared = { path = "../shared" }` from `engine/`, where `shared` is a `[[crate]]` with `path = "shared"`). The
+launcher points that dependency at the crate's staged copy, `native-crates/<mod>/<crate>`, so the crate is built once
+with the game, as a `[[crate]]`'s own is. Any other path is refused, since only the package's folder is copied.
+A crate used this way follows the same rules as a `[[crate]]`: no `horizon-client`, and only crates in Horizon's
+`Cargo.lock`.
 
 Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
 on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
@@ -5287,3 +5400,7 @@ unchanged. The list has already been shuffled; entity knockback and the shuffle'
 random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
 This is separate from `explosion_detonate`, and does not cancel the burst's sound,
 particles or entity effects. The pending fragment assigns its API number at merge.
+
+### Advancement displays
+
+The pending `advancement_display` helper (`host.advancement_display`) returns an `AdvancementDisplay` for an advancement id in the loaded tree: `title` and `description` as `Text` (the components as the datapack wrote them), `frame` as `task`, `goal` or `challenge`, `announce_to_chat` and `hidden`. It is None for an unknown id or one without a display. The helper loads the tree on first use, so it is for server-side reads, not hot paths. The pending fragment assigns its API number at merge (`@API:advancement_display@`).

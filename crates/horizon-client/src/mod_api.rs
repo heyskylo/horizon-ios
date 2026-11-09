@@ -21,10 +21,14 @@ pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
 pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
+pub use crate::game::NativeAttributeModifier;
 pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
+pub use crate::game::NativeEffectV2;
 pub use crate::game::NativeFluidTank;
+pub use crate::game::NativeInventoryError;
 pub use crate::game::NativeInventoryKind;
+pub use crate::game::NativeSlotRole;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
     NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
@@ -32,16 +36,16 @@ pub use crate::game::native_client_services::{
 };
 pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
-    NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,
-    NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion, NativeDataMapType,
-    NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit,
-    NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
-    NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
-    NativeStructureTemplate, NativeWorldDraw,
+    AdvancementDisplay, ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError,
+    NativeBlockRun, NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks,
+    NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion,
+    NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem,
+    NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender,
+    NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake,
+    NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gamerules::Value as GameRuleValue;
-/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API @API:world_hold@.
+/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API 414.
 pub use crate::gfx::WorldHold;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
@@ -437,6 +441,78 @@ pub struct NativeStack {
     pub components: String,
 }
 
+/// What a mod asks the recipe viewer to do with a stack
+/// (`native_show_recipes`, heard as `native_recipe_lookup`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeRecipeLookup {
+    /// The recipes that make it (JEI's R, a left click).
+    Recipes,
+    /// The recipes it is used in (JEI's U, a right click).
+    Uses,
+    /// A key (vanilla's name, `key.keyboard.a`) went down while the pointer
+    /// was on the stack in a screen the mod draws: the viewer acts on it as
+    /// over its own list (its recipe, uses and bookmark keys, as the player
+    /// bound them).
+    Key(String),
+}
+
+/// A category of a mod's own recipes for recipe viewers
+/// (`native_recipe_categories`): what a fishing spot, a sieve or a machine
+/// turns its inputs into, each output with its odds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeRecipeCategory {
+    /// Its id (`mymod:sifting`).
+    pub id: String,
+    /// Its name, as the mod words it in the player's language.
+    pub title: String,
+    /// One short line under the name, or "".
+    pub subtitle: String,
+    /// The tab's icon.
+    pub icon: NativeStack,
+    /// The items and blocks that do it (a rod, a sieve), as JEI's catalysts.
+    pub catalysts: Vec<NativeStack>,
+    pub recipes: Vec<NativeCategoryRecipe>,
+}
+
+/// One recipe of a [`NativeRecipeCategory`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeCategoryRecipe {
+    /// Its input slots, each with the stacks it takes; none for a recipe
+    /// with no input (a catch).
+    pub inputs: Vec<Vec<NativeStack>>,
+    pub outputs: Vec<NativeChanceOutput>,
+    /// Lines about the whole recipe.
+    pub notes: Vec<String>,
+}
+
+/// An output of a [`NativeCategoryRecipe`] that comes with a chance.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeChanceOutput {
+    pub stack: NativeStack,
+    /// The chance it comes, 0 to 1, each time the recipe runs (a catch, a
+    /// block broken).
+    pub chance: f32,
+    /// How many come when it does.
+    pub min: u32,
+    pub max: u32,
+    /// Lines about this output (`needs a brush`).
+    pub notes: Vec<String>,
+}
+
+/// How a native mod's item panel draws its page buttons and search box
+/// (`native_panel_style`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativePanelStyle {
+    /// The recipe book's page arrows and a plain search box (the default).
+    #[default]
+    RecipeBook,
+    /// A recipe viewer's: square page buttons on a bar over the items and
+    /// the viewer's search box, as Horizon's Recipes panel draws them.
+    Viewer,
+}
+
 /// What the player did on a native mod's panel (`native_panel_event`).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -608,6 +684,17 @@ pub struct NativeServerPlayer {
     /// The level a player needs to see this one, when a server mod hid them
     /// (`native_hide_player`).
     pub hidden: Option<u8>,
+    /// A fake player: a mod's bot with no client (`native_set_player_fake`), so a mod need not
+    /// build anything for it that only a client could show. API @API:server_player_fake@.
+    pub fake: bool,
+    /// Whether the player is using an item (`LivingEntity.isUsingItem`), and blocking with a
+    /// shield (using one). API @API:server_player_state@.
+    pub using_item: bool,
+    pub blocking: bool,
+    /// Sprinting (`Player.isSprinting`) and gliding with an elytra (`isFallFlying`).
+    /// API @API:server_player_state@.
+    pub sprinting: bool,
+    pub gliding: bool,
 }
 
 /// What a player's client told the server about itself, and what the server sent it
@@ -650,6 +737,9 @@ pub struct NativeCommand {
     /// The permission node that decides instead, when set
     /// ([`NativeCommand::permission`]). API @API:command_permission@.
     pub permission: Option<String>,
+    /// Whether the usage replaces vanilla's command of its name
+    /// ([`NativeCommand::replace_vanilla`]).
+    pub replace_vanilla: bool,
 }
 
 impl NativeCommand {
@@ -659,6 +749,7 @@ impl NativeCommand {
             usage: usage.to_owned(),
             level: 0,
             permission: None,
+            replace_vanilla: false,
         }
     }
     /// The same, for operators of `level` and above.
@@ -667,17 +758,28 @@ impl NativeCommand {
             usage: usage.to_owned(),
             level: level.min(4),
             permission: None,
+            replace_vanilla: false,
         }
     }
     /// The same, for the players who have the permission node `node`
     /// (Bukkit's `plugin.yml` `permission:`): the server asks
     /// `native_has_permission(player, node, level)` before it shows or runs
-    /// the command, so a permissions mod grants or refuses it whatever the
-    /// player's level, and without one the level decides as before. A
-    /// command's node is the first one its usages give.
+    /// the usage, so a permissions mod grants or refuses it whatever the
+    /// player's level, and without one the level decides as before. Each
+    /// usage has its own node: a command's root is shown when any of its
+    /// usages is allowed, and a line runs as the usage its words match.
     /// API @API:command_permission@.
     pub fn permission(mut self, node: &str) -> Self {
         self.permission = Some(node.to_owned());
+        self
+    }
+    /// The same, replacing vanilla's command of this name (Bukkit's plugin
+    /// command over a vanilla one, as Tab's `/bossbar`): vanilla's tree of
+    /// the name is left out of the players' trees, and their lines of it go
+    /// to the mods, which then answer every usage of it. Without it, a usage
+    /// of a vanilla name is left out.
+    pub fn replace_vanilla(mut self, on: bool) -> Self {
+        self.replace_vanilla = on;
         self
     }
 }
@@ -1169,6 +1271,11 @@ mod tests {
                 selected_slot: 0,
                 nickname: None,
                 hidden: None,
+                fake: false,
+                using_item: false,
+                blocking: false,
+                sprinting: false,
+                gliding: false,
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {

@@ -13,16 +13,19 @@ fn tooltip_position(
     (width, height): (f32, f32),
     (w, h): (f32, f32),
 ) -> (f32, f32) {
-    let mut x = x + 12.0;
-    let mut y = y - 12.0;
+    let mut x = (x + 12.0).round();
+    let mut y = (y - 12.0).round();
     if x + w > width - 4.0 {
         x = (x - 28.0 - w).max(4.0);
+    }
+    if x + w > width - 4.0 {
+        x = (width - w - 4.0).max(4.0);
     }
     if y + h + 3.0 > height {
         y = height - h - 3.0;
     }
     y = y.max(4.0);
-    (x, y)
+    (x.round(), y.round())
 }
 
 use super::{Game, Screen};
@@ -739,7 +742,7 @@ impl Game<'_> {
             // client menu only clears them without an enchantable item.
             Kind::Enchanting if self.remote.is_some() => {
                 let enchantable = s.inputs[0].as_ref().is_some_and(|i| {
-                    data.enchantments.enchantable(&i.item) > 0 && i.enchantments().is_empty()
+                    data.enchantments.enchantable_of(i) > 0 && i.enchantments().is_empty()
                 });
                 if !enchantable {
                     s.offers = Default::default();
@@ -2397,31 +2400,9 @@ impl Game<'_> {
             push(&mut lines, format!(" {p}"), rgba(170, 170, 170, 255));
             push(&mut lines, format!(" {m}"), rgba(170, 170, 170, 255));
         }
-        if display.shows("minecraft:stored_enchantments") {
-            for (text, curse) in e.tooltip(stack.stored_enchantments()) {
-                push(
-                    &mut lines,
-                    text,
-                    if curse {
-                        rgba(255, 85, 85, 255)
-                    } else {
-                        rgba(170, 170, 170, 255)
-                    },
-                );
-            }
-        }
-        if display.shows("minecraft:enchantments") {
-            for (text, curse) in e.tooltip(stack.enchantments()) {
-                push(
-                    &mut lines,
-                    text,
-                    if curse {
-                        rgba(255, 85, 85, 255)
-                    } else {
-                        rgba(170, 170, 170, 255)
-                    },
-                );
-            }
+        for (text, curse) in horizon_client::item_tooltip::enchantment_lines(stack, &display, e) {
+            let color = if curse { rgba(255, 85, 85, 255) } else { gray };
+            push(&mut lines, text, color);
         }
         // DyedItemColor.addToTooltip.
         if let Some((text, italic)) =
@@ -2701,6 +2682,7 @@ impl Game<'_> {
             8.0 + 2.0 + (lines.len() - 1) as f32 * 10.0
         };
         let h = text_h + extra[1];
+        let (w, h) = (w.ceil(), h.ceil());
         let (x, y) = tooltip_position((x, y), (width, height), (w, h));
         (x, y, w, h)
     }
@@ -3241,5 +3223,24 @@ mod cycling_tests {
         assert_eq!(additions[..m].len(), 7);
         assert_eq!(smithing_slot_icons(Some("minecraft:stick")).1, 0);
         assert_eq!(smithing_slot_icons(None).3, 0);
+    }
+
+    #[test]
+    fn tooltip_position_rounds_and_stays_within_bounds() {
+        let (x, y) = tooltip_position((10.3, 20.7), (640.0, 360.0), (100.0, 20.0));
+        assert_eq!((x, y), (22.0, 9.0));
+
+        // When overflowing right boundary, flips to left
+        let (x, _y) = tooltip_position((600.0, 50.0), (640.0, 360.0), (100.0, 20.0));
+        assert_eq!(x, 484.0);
+
+        // Clamps to min 4.0 margin
+        let (x, y) = tooltip_position((50.0, 50.0), (100.0, 100.0), (120.0, 20.0));
+        assert_eq!(x, 4.0);
+        assert_eq!(y, 38.0);
+
+        // Near top screen edge
+        let (_x, y) = tooltip_position((50.0, 5.0), (640.0, 360.0), (100.0, 20.0));
+        assert_eq!(y, 4.0);
     }
 }

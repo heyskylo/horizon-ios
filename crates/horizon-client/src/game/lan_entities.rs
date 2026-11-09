@@ -569,28 +569,10 @@ impl Game<'_> {
     /// Gives the entities Horizon keeps without an id one (`Entity.id`, from
     /// the same counter as the rest) before they are first tracked.
     pub(super) fn lan_assign_ids(&mut self) {
-        // LeashFenceKnotEntity: one per fence post with a lead on it
-        // (`notifyLeasheeRemoved` discards it once the last lead is gone).
-        let knots: Vec<[i32; 3]> = self
-            .mobs
-            .iter()
-            .filter(|m| !m.removed)
-            .filter_map(|m| match m.extra.leash {
-                Some(horizon_client::mobs::leash::Holder::Knot(p)) => Some(p),
-                _ => None,
-            })
-            .chain(self.boats.iter().filter_map(|b| match b.leash {
-                Some(horizon_client::mobs::leash::Holder::Knot(p)) => Some(p),
-                _ => None,
-            }))
-            .collect();
-        self.knot_ids.retain(|p, _| knots.contains(p));
-        for p in knots {
-            self.knot_ids.entry(p).or_insert_with(|| {
-                self.next_entity += 1;
-                self.next_entity
-            });
-        }
+        // LeashFenceKnotEntity: the tie made the knot of a fence post
+        // (game/leads.rs `tie_knot`); the tracker shows that same entity.
+        // `notifyLeasheeRemoved` discards it once the last lead is gone.
+        self.forget_untied_knots();
         let next = &mut self.next_entity;
         let mut give = |id: &mut u32| {
             assign_entity_id(next, id);
@@ -611,9 +593,6 @@ impl Game<'_> {
         self.potions.thrown_ids().for_each(&mut give);
         self.end.eye_ids().for_each(&mut give);
         self.breath_clouds.iter_mut().for_each(|b| give(&mut b.id));
-        self.dragon_fireballs
-            .iter_mut()
-            .for_each(|b| give(&mut b.id));
     }
 
     /// Primed TNT, falling blocks, projectiles, tridents, firework rockets and
@@ -648,7 +627,7 @@ impl Game<'_> {
                 "minecraft:falling_block",
                 at(f.position),
                 0.0,
-                false,
+                f.on_ground,
             );
             e.velocity = at(f.velocity);
             // getAddEntityPacket: the block state; DATA_START_POS.
@@ -669,7 +648,7 @@ impl Game<'_> {
                 Some(g) => g.entity_id,
                 None => owner(p.owner),
             };
-            let e = add_state(out, p.id, kind, at(p.position), p.yaw, false);
+            let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.on_ground);
             e.pitch = p.pitch;
             e.velocity = at(p.velocity);
             e.needs_sync = p.needs_sync;
@@ -679,8 +658,12 @@ impl Game<'_> {
             // Entity.DATA_SHARED_FLAGS_ID's FLAG_ONFIRE: Entity.baseTick's
             // `setSharedFlagOnFire(remainingFireTicks > 0)`, which a client's
             // isOnFire reads to draw the flames (a Flame bow's arrow).
-            if p.arrow.as_ref().is_some_and(|a| a.on_fire()) {
+            let fire = p.arrow.as_ref().map_or(p.synced_fire, |a| a.on_fire());
+            if fire {
                 e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
+            if p.air_supply != 300 {
+                e.meta.push((1, serializer::INT, Value::Int(p.air_supply)));
             }
             match &p.kind {
                 K::Arrow { critical, .. } => {
@@ -805,7 +788,14 @@ impl Game<'_> {
                 Some(g) => g.entity_id,
                 None => owner(Some(horizon_client::mobs::Who::Player)),
             };
-            let e = add_state(out, t.id, "minecraft:trident", at(t.position), t.yaw, false);
+            let e = add_state(
+                out,
+                t.id,
+                "minecraft:trident",
+                at(t.position),
+                t.yaw,
+                t.on_ground,
+            );
             e.pitch = t.pitch;
             e.velocity = at(t.velocity);
             // Projectile.getAddEntityPacket: the owner's id, the guest's that
@@ -844,7 +834,7 @@ impl Game<'_> {
                 "minecraft:firework_rocket",
                 at(r.position),
                 0.0,
-                false,
+                r.on_ground,
             );
             e.velocity = at(r.velocity);
             // DATA_ID_FIREWORKS_ITEM once set from a stack, DATA_ATTACHED_TO_TARGET,
@@ -895,11 +885,6 @@ impl Game<'_> {
             ),
             None,
         );
-        for b in self.dragon_fireballs.iter().filter(|b| b.id > after) {
-            let p = b.position;
-            let e = add_state(out, b.id, "minecraft:dragon_fireball", at(p), 0.0, false);
-            e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];
-        }
         for b in self.breath_clouds.iter().filter(|b| b.id > after) {
             // The hub is out of `self.lan` while these states are built, so
             // the particle must be encoded through the hub passed in: going

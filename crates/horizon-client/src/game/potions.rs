@@ -253,7 +253,13 @@ pub(super) fn potion_cloud_to_nbt(c: &Breath, uuid: [i32; 4], raw: Option<&Tag>)
         "potion_duration_scale".into(),
         Tag::Float(potion.settings.duration_scale.to_bits()),
     );
-    map.insert("potion_contents".into(), Tag::Compound(contents));
+    // Vanilla writes the key only while the contents differ from
+    // PotionContents.EMPTY: no effects and the default water colour.
+    if !(potion.effects.is_empty()
+        && potion.color == horizon_client_core::potions::BASE_POTION_COLOR)
+    {
+        map.insert("potion_contents".into(), Tag::Compound(contents));
+    }
     tag
 }
 
@@ -1441,7 +1447,13 @@ impl Game<'_> {
         };
         let mut landed = Vec::new();
         let mut deflected: Vec<u32> = Vec::new();
+        // ServerLevel.tick: only entities in entity-ticking chunks tick.
+        let ticking = self.entity_ticking_area();
         thrown.retain_mut(|t| {
+            if !ticking(t.position.x.floor() as i32, t.position.z.floor() as i32) {
+                t.previous = t.position;
+                return true;
+            }
             t.age += 1;
             // Projectile.tick: whether it has left its thrower's vehicle tree,
             // before it moves.
@@ -1580,9 +1592,15 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+            let mut cancel = false;
             if item != "minecraft:experience_bottle" {
-                self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                self.native_potion_splash_v2(&item, [at.x, at.y, at.z], &mut cancel);
+            }
+            if !cancel {
+                self.splash(&stack, at, mob, block, age, &owner, silent, motion);
+                if item != "minecraft:experience_bottle" {
+                    self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                }
             }
         }
     }
@@ -1608,7 +1626,13 @@ impl Game<'_> {
             .filter(|p| p.alive)
             .collect();
         let mut clouds = std::mem::take(&mut self.breath_clouds);
-        clouds.retain_mut(|c| c.potion.is_none() || self.tick_potion_cloud(c, &players));
+        // ServerLevel.tick: only entities in entity-ticking chunks tick.
+        let ticking = self.entity_ticking_area();
+        clouds.retain_mut(|c| {
+            c.potion.is_none()
+                || !ticking(c.at[0].floor() as i32, c.at[2].floor() as i32)
+                || self.tick_potion_cloud(c, &players)
+        });
         self.breath_clouds.append(&mut clouds);
     }
     /// `AreaEffectCloud.serverTick`: configured lifetime/radius changes and
@@ -1934,8 +1958,17 @@ impl Game<'_> {
                 (p.y + 0.2125).floor() as i32,
                 p.z.floor() as i32,
             );
+            // Frame generation and temporal upscaling follow its own flight; one not yet
+            // given an id (0) can't be told apart from another, so it keeps the camera's.
+            let motion = if t.id == 0 {
+                0
+            } else {
+                Self::MOTION_OBJECT | u64::from(t.id)
+            };
+            self.mark_motion(out.len(), motion);
             self.submit_item_world(&state, pose, vertex_light(light), out);
         }
+        self.mark_motion(out.len(), 0);
     }
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` with a source (a
     /// potion or a cloud): indirectMagic, not plain magic, credited to the
@@ -2699,50 +2732,8 @@ mod sound_on_added_tests {
 }
 
 #[cfg(test)]
-mod xp_bottle_tests {
-    use super::*;
-
-    /// `ThrownExperienceBottle.onHit` uses `awardWithDirection`: every fresh
-    /// orb starts 0.25 out from the face it hit, or back along the bottle's
-    /// motion after an entity hit, moving that way (#11388).
-    #[test]
-    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
-    fn bottle_orbs_start_away_from_what_it_hit() {
-        let mut game = super::super::native_machines::tests::server_game();
-        let bottle = ItemStack::new("minecraft:experience_bottle", 1);
-        let at = Vec3::new(8.5, 70.5, 8.5);
-        // (hit face, the bottle's motion, the axis and sign the orbs leave by)
-        for (face, motion, axis, sign) in [
-            (
-                Some(([9, 70, 8], Direction::West)),
-                Vec3::new(1.0, 0.0, 0.0),
-                0,
-                -1.0,
-            ),
-            (None, Vec3::new(0.0, 0.0, 1.0), 2, -1.0),
-        ] {
-            game.orbs.clear();
-            game.splash(
-                &bottle,
-                at,
-                None,
-                face,
-                0,
-                &PotionOwner::default(),
-                false,
-                motion,
-            );
-            assert!(!game.orbs.is_empty());
-            let at = [at.x, at.y, at.z];
-            for o in game.orbs.iter() {
-                let p = [o.position.x, o.position.y, o.position.z];
-                let v = [o.velocity.x, o.velocity.y, o.velocity.z];
-                assert!((p[axis] - (at[axis] + sign * 0.25)).abs() < 1e-9, "{p:?}");
-                assert!(v[axis] * sign >= 0.0, "{v:?}");
-            }
-        }
-    }
-}
+#[path = "xp_bottle_tests.rs"]
+mod xp_bottle_tests;
 
 #[cfg(test)]
 mod mob_absorption_max_tests {

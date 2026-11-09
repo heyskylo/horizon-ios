@@ -17,7 +17,7 @@
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{
-    Block, BlockShapes, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity,
+    Block, BlockShapes, Content, CreativeTab, EntityType, Fluid, MenuType, MobEffect, Rarity,
     StateProperty, StateValues,
 };
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
@@ -79,6 +79,14 @@ pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
     let mut effects: Vec<&MobEffect> = mods.iter().flat_map(|m| &m.content.effects).collect();
     effects.sort_by(|a, b| a.id.cmp(&b.id));
     effects
+}
+
+/// The mods' fluids in registry order, by id as effects are. Each takes two
+/// network ids after vanilla's, its source's then its flowing form's.
+pub fn fluids(mods: &[ContentMod]) -> Vec<&Fluid> {
+    let mut fluids: Vec<&Fluid> = mods.iter().flat_map(|m| &m.content.fluids).collect();
+    fluids.sort_by(|a, b| a.id.cmp(&b.id));
+    fluids
 }
 
 /// the mods' entity types in registry order, by id as effects are.
@@ -656,6 +664,7 @@ struct Plan<'a> {
     /// Every vanilla item id, including items omitted from the search tab.
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
+    fluids: Vec<&'a Fluid>,
     entity_types: Vec<&'a EntityType>,
     menu_types: Vec<&'a MenuType>,
     /// Vanilla's state count (the tables' length before).
@@ -1237,6 +1246,7 @@ impl<'a> Plan<'a> {
             items,
             vanilla_items,
             effects: mob_effects(mods),
+            fluids: fluids(mods),
             entity_types: entity_types(mods),
             menu_types: menu_types(mods),
             states: names.len(),
@@ -1602,6 +1612,14 @@ impl<'a> Plan<'a> {
                     let new_effects = self.effects.iter().map(|e| e.id.clone());
                     registries.push(("minecraft:mob_effect", new_effects.collect()));
                 }
+                // Fluid tags go by these ids: a mod fluid's source, then its flowing form.
+                if !self.fluids.is_empty() {
+                    let new_fluids = self
+                        .fluids
+                        .iter()
+                        .flat_map(|f| [f.id.clone(), f.flowing_id()]);
+                    registries.push(("minecraft:fluid", new_fluids.collect()));
+                }
                 if !self.entity_types.is_empty() {
                     let new_types = self.entity_types.iter().map(|t| t.id.clone());
                     registries.push(("minecraft:entity_type", new_types.collect()));
@@ -1660,6 +1678,14 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:mob_effect/ids") {
                     ids.extend(new_effects());
+                }
+                // Fluid tag files and fluid arguments.
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:fluid/ids") {
+                    ids.extend(
+                        self.fluids
+                            .iter()
+                            .flat_map(|f| [J::Str(f.id.clone()), J::Str(f.flowing_id())]),
+                    );
                 }
                 // entity type arguments and `type=` in selectors.
                 let new_types = || self.entity_types.iter().map(|t| J::Str(t.id.clone()));
@@ -2108,10 +2134,6 @@ fn place_in_biomes(
         return Err(format!("biome modifiers need {BIOMES}").into());
     }
     let mut doc = read_json(&base.join(BIOMES))?;
-    let biome_ids: BTreeSet<String> = match &doc {
-        J::Obj(o) => o.iter().map(|(k, _)| k.clone()).collect(),
-        _ => return Err(format!("{BIOMES}: not an object").into()),
-    };
     let biome_tags = bundle(biome_tags, BIOME_TAGS)?;
     let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
     let feature_tags = bundle(None, FEATURE_TAGS)?;
@@ -2133,7 +2155,6 @@ fn place_in_biomes(
         },
         false => BTreeMap::new(),
     };
-    let entity_ids: BTreeSet<String> = entity_categories.keys().cloned().collect();
     let mut entity_tags = BTreeMap::new();
     let vanilla_entity_tags = base.join("data/minecraft/tags/entity_type");
     if vanilla_entity_tags.is_dir() {
@@ -2155,28 +2176,18 @@ fn place_in_biomes(
             );
         }
     }
-    let changed = biomes::apply(
-        &mut doc,
-        modifiers,
-        &biomes::Registry {
-            what: "biome",
-            ids: &biome_ids,
-            tags: &biome_tags,
-        },
-        &biomes::Registry {
-            what: "placed feature",
-            ids: &placed,
-            tags: &feature_tags,
-        },
-        &biomes::Registry {
-            what: "entity type",
-            ids: &entity_ids,
-            tags: &entity_tags,
-        },
-        &entity_categories,
-        warnings,
-    )?;
-    for (id, text) in changed {
+    let mut saved = SavedModifiers {
+        modifiers: modifiers.iter().map(|m| m.source.clone()).collect(),
+        unmodified: BTreeMap::new(),
+        feature_tags,
+        entity_categories,
+        entity_tags,
+    };
+    let before = doc.clone();
+    for (id, text) in saved.apply(&mut doc, modifiers, &biome_tags, &placed, warnings)? {
+        if let Some(J::Str(old)) = before.get(&id) {
+            saved.unmodified.insert(id.clone(), old.clone());
+        }
         if let Some((ns, path)) = id.split_once(':') {
             let file = format!("data/{ns}/worldgen/biome/{path}.json");
             if out_path(overlay, &file).exists() {
@@ -2184,7 +2195,146 @@ fn place_in_biomes(
             }
         }
     }
+    overlay.write(MODIFIERS, &serde_json::to_vec(&saved)?)?;
     overlay.write(BIOMES, &serde_json::to_vec(&doc)?)
+}
+
+/// In a content root with biome modifiers: what applying them again over a
+/// world's data packs takes (`biome_modifiers_over_packs`).
+const MODIFIERS: &str = "biome-modifiers.json";
+
+/// The modifiers and the registries packs leave alone, as the content root
+/// applied them.
+#[derive(Serialize, Deserialize)]
+struct SavedModifiers {
+    /// Each modifier's mod, file and text, in the order they apply.
+    modifiers: Vec<[String; 3]>,
+    /// The biomes the modifiers changed, as they were before.
+    unmodified: BTreeMap<String, String>,
+    feature_tags: BTreeMap<String, String>,
+    entity_categories: BTreeMap<String, String>,
+    entity_tags: BTreeMap<String, String>,
+}
+
+impl SavedModifiers {
+    /// Applies `modifiers` to the biome bundle `doc`, its tags `biome_tags`
+    /// and the placed features `placed` (see `biomes::apply`).
+    fn apply(
+        &self,
+        doc: &mut J,
+        modifiers: &[biomes::Modifier],
+        biome_tags: &BTreeMap<String, String>,
+        placed: &BTreeSet<String>,
+        warnings: &mut Vec<String>,
+    ) -> Result<Vec<(String, String)>> {
+        let biome_ids: BTreeSet<String> = match &*doc {
+            J::Obj(o) => o.iter().map(|(k, _)| k.clone()).collect(),
+            _ => return Err(format!("{BIOMES}: not an object").into()),
+        };
+        let entity_ids: BTreeSet<String> = self.entity_categories.keys().cloned().collect();
+        biomes::apply(
+            doc,
+            modifiers,
+            &biomes::Registry {
+                what: "biome",
+                ids: &biome_ids,
+                tags: biome_tags,
+            },
+            &biomes::Registry {
+                what: "placed feature",
+                ids: placed,
+                tags: &self.feature_tags,
+            },
+            &biomes::Registry {
+                what: "entity type",
+                ids: &entity_ids,
+                tags: &self.entity_tags,
+            },
+            &self.entity_categories,
+            warnings,
+        )
+    }
+}
+
+/// A world's data packs (`packs`) with the content root `root`'s biome
+/// modifiers applied over them. NeoForge applies modifiers once every data
+/// pack is in, to the final biomes and tags: a pack's file for a biome
+/// (Terralith's `minecraft:plains`) keeps the mods' features and spawns, and
+/// a pack's biome its tags put under a modifier's selector gets them too.
+/// `None` when the root's biomes stand: no modifiers, or packs that bring no
+/// biome and no biome tag.
+pub fn biome_modifiers_over_packs(
+    root: &Path,
+    packs: &horizon_world::worldgen::overrides::WorldgenOverrides,
+) -> Result<Option<horizon_world::worldgen::overrides::WorldgenOverrides>> {
+    if packs.entries("biomes").next().is_none() && packs.tags("biome_tags").next().is_none() {
+        return Ok(None);
+    }
+    let Ok(bytes) = fs::read(root.join(MODIFIERS)) else {
+        return Ok(None);
+    };
+    let saved: SavedModifiers =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{MODIFIERS}: {e}"))?;
+    let read = |name: &str| -> Result<BTreeMap<String, String>> {
+        match fs::read(root.join(name)) {
+            Ok(b) => Ok(serde_json::from_slice(&b).map_err(|e| format!("{name}: {e}"))?),
+            Err(_) => Ok(BTreeMap::new()),
+        }
+    };
+    let mut warnings = Vec::new();
+    let mut modifiers = Vec::new();
+    for [m, file, text] in &saved.modifiers {
+        modifiers.extend(biomes::Modifier::read(m, file, text, &mut warnings)?);
+    }
+    // What the generator reads without the modifiers over the packs.
+    let packed = packs.apply("biomes", read(BIOMES)?);
+    let mut start = packed.clone();
+    for (id, text) in &saved.unmodified {
+        if packs.entries("biomes").all(|(p, _)| p != id) {
+            start.insert(id.clone(), text.clone());
+        }
+    }
+    let mut doc = J::Obj(start.into_iter().map(|(id, t)| (id, J::Str(t))).collect());
+    // Pack tag files after the root's, as the worldgen loader merges them.
+    let mut biome_tags = read(BIOME_TAGS)?;
+    for (id, pack, json) in packs.tags("biome_tags") {
+        let tag: J = match serde_json::from_str(json) {
+            Ok(tag) => tag,
+            Err(e) => {
+                warnings.push(format!("{pack}: tag {id}: {e}"));
+                continue;
+            }
+        };
+        let values = match tag.get("values") {
+            Some(J::Arr(v)) => v.as_slice(),
+            _ => &[],
+        };
+        let old = match tag.get("replace") {
+            Some(J::Bool(true)) => None,
+            _ => biome_tags.get(id).map(String::as_str),
+        };
+        let merged = merge_tag(old, values, id)?;
+        biome_tags.insert(id.to_owned(), merged);
+    }
+    let placed = packs
+        .apply("placed_features", read(PLACED_FEATURES)?)
+        .into_keys()
+        .collect();
+    saved.apply(&mut doc, &modifiers, &biome_tags, &placed, &mut warnings)?;
+    for warning in warnings {
+        log::warn!("Horizon: biome modifiers over data packs: {warning}");
+    }
+    let mut out = packs.clone();
+    if let J::Obj(entries) = doc {
+        for (id, text) in entries {
+            if let J::Str(text) = text
+                && packed.get(&id) != Some(&text)
+            {
+                out.set("biomes", &id, text);
+            }
+        }
+    }
+    Ok(Some(out))
 }
 
 #[path = "mod_content_biomes.rs"]
@@ -2959,10 +3109,11 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         )?;
     }
     // clients must agree on the block states and the items', mob effects',
-    // entity types' and menu types' network ids.
+    // fluids', entity types' and menu types' network ids.
     if !plan.blocks.is_empty()
         || !plan.items.is_empty()
         || !plan.effects.is_empty()
+        || !plan.fluids.is_empty()
         || !plan.entity_types.is_empty()
         || !plan.menu_types.is_empty()
     {
@@ -3081,6 +3232,7 @@ pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
     if !content.blocks.is_empty()
         || !content.items.is_empty()
         || !content.effects.is_empty()
+        || !content.fluids.is_empty()
         || !content.entity_types.is_empty()
         || !content.menu_types.is_empty()
         || !content.creative_tabs.is_empty()
