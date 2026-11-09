@@ -2744,3 +2744,6 @@ mod required_tag_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+include!("functions/typed_state_range_tests.rs");
