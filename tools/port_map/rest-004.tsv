@@ -124,7 +124,7 @@ LocalPlayer.moveTowardsClosestSpace	port	crates/horizon-client/src/game.rs::Game
 LocalPlayer.suffocatesAt	inline	crates/horizon-client/src/game.rs::closest_space_nudge	the suffocates_at closure tests a full collision cube that is also a full render cube, over the body's Y span
 LocalPlayer.setExperienceDisplayStartTickToTickCount	inline	crates/horizon-client/src/game/locator_bar.rs::Game::track_experience_display	
 LocalPlayer.handleEntityEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	gap: minor: only the permission events 24 to 28 of the local player
-LocalPlayer.startUsingItem	port	crates/horizon-client/src/game.rs::Game::use_hand	
+LocalPlayer.startUsingItem	port	crates/horizon-client/src/game/use_hand.rs::Game::use_hand	
 LocalPlayer.isSlowDueToUsingItem	port	crates/horizon-client/src/game.rs::Game::sync_player_body	the used item's UseEffects.canSprint reaches sprint's slow_item, which stops a sprint starting and ends one
 LocalPlayer.onSyncedDataUpdated	inline	crates/horizon-client/src/game/music.rs::Game::tick_sound_engine	starting to glide starts the elytra flying sound; the living flags are local state on this side
 LocalPlayer.jumpableVehicle	inline	crates/horizon-client/src/game/mounts.rs::Game::charge_mount_jump	gap: minor: saddle and jump-capable check only; no separate vehicle lookup
