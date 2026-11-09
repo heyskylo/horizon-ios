@@ -98,8 +98,12 @@ impl Game<'_> {
                 None => (None, None),
             },
         };
+        // The mod hooks hear no natural fence knot (#13036): its click
+        // keeps the knot's own path below.
         if let Some(id) = named
-            && let Some(entity) = self.level_entity(id)
+            && let Some(entity) = self
+                .level_entity(id)
+                .filter(|t| !matches!(t, commands::Target::Knot(_)))
         {
             // The point clicked, measured from the entity's position: a
             // guest's packet carries it, and the local player's is where the

@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "pick_block", "target": "horizon_client::game::native_world_edit::Game<'_>::native_pick_block"}
+  ],
+  "rust_summary": "`native_pick_block(eye, dir, range, fluids)`: the first block a ray meets in the level being ticked, for server code (a player's reach, a brush at range).",
+  "doc_summary": "`native_pick_block(eye, dir, range, fluids)` gives the first block a ray from `eye` along `dir` meets in the level being ticked, within `range` (at most 1024 blocks), with the block's position, the point it meets and its name, as the player's own view reads it; with `fluids`, a fluid block counts too. `dir` need not be a unit vector. None on a client, for a zero `dir` and with no hit in range. Bundles need \"hooks\": @API:pick_block@.",
+  "comments": ["crates/horizon-client/src/game/native_world_edit.rs"]
+}
