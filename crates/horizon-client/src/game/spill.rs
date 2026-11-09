@@ -40,6 +40,19 @@ pub(super) struct Pending {
     pub(super) copied: HashMap<[i32; 3], (String, Compound)>,
 }
 impl Pending {
+    /// `record` for the block entity at `pos` while it is still in `world`:
+    /// its custom name and lock come from there.
+    pub(super) fn record_from(
+        &mut self,
+        world: &horizon_client::world::World,
+        pos: [i32; 3],
+        entity: &BlockEntity,
+        block: &str,
+    ) {
+        let key = (pos[0], pos[1], pos[2]);
+        let name = world.block_names.get(&key).cloned();
+        self.record(pos, entity, block, name, world.block_lock(key));
+    }
     /// Remember what the block entity at `pos` copies into its own drop.
     /// Name and lock live outside the model: snapshot the actual lock before
     /// removal forgets its source. Only the supported shulker copy policy takes it.
@@ -472,10 +485,8 @@ impl GameLevel<'_> {
         let at = [pos.x, pos.y, pos.z];
         if let Some(entity) = self.world.block_entities.get(&key) {
             let entity = entity.clone();
-            let name = self.world.block_names.get(&key).cloned();
             let block = self.facts.get(state).name.clone();
-            self.pending
-                .record(at, &entity, &block, name, self.world.block_lock(key));
+            self.pending.record_from(self.world, at, &entity, &block);
         } else if let Some(tag) = saved_entity(self.world, [pos.x, pos.y, pos.z]) {
             self.pending.record_saved(at, &tag);
         }
