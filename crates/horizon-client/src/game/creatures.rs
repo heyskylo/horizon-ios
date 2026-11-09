@@ -2,6 +2,8 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod effect_instance;
+use effect_instance::mob_effect_instance;
 mod mob_geometry;
 mod projectile_world;
 mod pufferfish_player;
@@ -2754,6 +2756,13 @@ impl Game<'_> {
                     });
                     self.combat.explosion_source = source_mob;
                     self.combat.explosion_source_named = noted;
+                    let portal_proof = species == Species::SulfurCube
+                        && source_mob.is_some_and(|id| {
+                            self.portals
+                                .entities
+                                .get(&id)
+                                .is_some_and(|p| p.cooldown > 0)
+                        });
                     self.combat.explosion_cause = match species {
                         Species::Creeper => Some("minecraft:creeper"),
                         Species::Wither => Some("minecraft:wither"),
@@ -2783,7 +2792,11 @@ impl Game<'_> {
                         Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius, source))
                         }
-                        Species::SulfurCube => self.explode_sulfur_cube(at, radius, source),
+                        Species::SulfurCube => self.explode_sulfur_cube(
+                            at,
+                            radius,
+                            source.with_portal_proof(portal_proof),
+                        ),
                         _ => self.explode(at, radius, source),
                     };
                     self.combat.explosion_source = None;
@@ -7916,24 +7929,6 @@ fn knock_back(
         },
         v.z / 2.0 - zd / l * power,
     );
-}
-
-/// The instance a mob effect gives the player; `None` for a creative or
-/// spectator player (`immune`) unless it is ambient (the nautilus's Breath).
-fn mob_effect_instance(
-    effect: &'static str,
-    ticks: i32,
-    amplifier: i32,
-    ambient: bool,
-    immune: bool,
-) -> Option<horizon_client::effects::EffectInstance> {
-    if immune && !ambient {
-        return None;
-    }
-    let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
-    let mut instance = horizon_client::effects::EffectInstance::new(id, ticks, amplifier);
-    instance.ambient = ambient;
-    Some(instance)
 }
 
 #[cfg(test)]
