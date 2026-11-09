@@ -365,8 +365,12 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
             continue;
         }
         m.extra.ints[2 + k] = age + 10 + m.random.next_int_bound(10).unwrap_or(0);
-        m.extra.ints[4 + k] += 1;
-        if m.extra.ints[4 + k] > 16 {
+        // The idle volleys come only on Normal and Hard.
+        let idle_volleys = w.difficulty.base >= 2;
+        if idle_volleys {
+            m.extra.ints[4 + k] += 1;
+        }
+        if idle_volleys && m.extra.ints[4 + k] > 16 {
             // Mth.nextDouble(random, min, max) = nextDouble * (max - min) + min.
             let p = m.position;
             let r = &mut m.random;
@@ -545,6 +549,42 @@ pub fn scale(m: &Mob, alpha: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `WitherBoss.customServerAiStep` counts the side heads' idle updates
+    /// only on Normal and Hard: on Easy a wither with nothing to aim at fired
+    /// the random blue skulls all the same (#8840).
+    #[test]
+    fn idle_blue_skull_volleys_come_only_on_normal_and_hard() {
+        use crate::mobs::spawning::LocalDifficulty;
+        use std::sync::Arc;
+        let mut volleys = Vec::new();
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            for base in [1, 2, 3] {
+                let mut world = w.clone();
+                world.difficulty = LocalDifficulty::new(base, 0, 0, 0.0);
+                let kind = Arc::new(types.types["minecraft:wither"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
+                let mut events = Vec::new();
+                for age in 0..600 {
+                    m.age = age;
+                    custom_server_ai_step(&mut m, &world, &mut events);
+                }
+                volleys.push(
+                    events
+                        .iter()
+                        .filter(|e| {
+                            matches!(e, MobEvent::Projectile(p)
+                                if p.kind == ProjectileKind::WitherSkull { dangerous: true })
+                        })
+                        .count(),
+                );
+            }
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(volleys[0], 0, "easy");
+        assert!(volleys[1] > 0 && volleys[2] > 0, "{volleys:?}");
+    }
     #[test]
     fn head_rotlerp_keeps_negative_angles_unwrapped() {
         assert_eq!(head_rotlerp(-5.0, -20.0, 40.0), -20.0);

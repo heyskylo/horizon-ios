@@ -389,8 +389,11 @@ pub fn finalize(m: &mut Mob, triggered: bool, events: &mut Vec<MobEvent>) {
 fn at(m: &Mob) -> [f64; 3] {
     [m.position.x, m.position.y, m.position.z]
 }
+/// `Entity.playSound`: nothing from a silent warden.
 fn sound(m: &Mob, name: &'static str, volume: f32, pitch: f32, events: &mut Vec<MobEvent>) {
-    events.push(MobEvent::Sound(name, at(m), volume, pitch));
+    if !m.silent {
+        events.push(MobEvent::Sound(name, at(m), volume, pitch));
+    }
 }
 /// `LivingEntity.getVoicePitch` for an adult.
 fn voice_pitch(m: &mut Mob) -> f32 {
@@ -1076,6 +1079,25 @@ pub fn emissive_layers(m: &Mob, partial: f32) -> [(&'static str, &'static str, f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Entity.playSound` checks `isSilent`: a `Silent:1b` warden summoned
+    /// out of the ground still growled (#8835).
+    #[test]
+    fn a_silent_warden_climbs_out_without_a_sound() {
+        let sounds = |silent| {
+            let mut m = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+            register(&mut m);
+            m.silent = silent;
+            let mut events = Vec::new();
+            finalize(&mut m, true, &mut events);
+            events
+                .iter()
+                .filter(|e| matches!(e, MobEvent::Sound(..)))
+                .count()
+        };
+        assert_eq!(sounds(false), 1);
+        assert_eq!(sounds(true), 0);
+    }
 
     #[test]
     fn anger_levels_follow_the_thresholds() {
