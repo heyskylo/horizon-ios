@@ -1159,6 +1159,46 @@ impl<G: Goal + Clone + 'static> Goal for NotRetreating<G> {
     }
 }
 
+/// A goal of the fight activity: `HoglinAi.updateActivity` runs after the
+/// brain, so a hoglin given a target fights from the next tick on (here
+/// `brain_step` runs after the goals). The goal may start a tick early, as
+/// the goal selector picks new goals every other tick only and the brain
+/// every tick, but it acts only once the activity is fight.
+#[derive(Clone, Debug)]
+struct InFight<G>(G);
+impl<G: Goal + Clone + 'static> Goal for InFight<G> {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        self.0.flags()
+    }
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        self.0.can_use(m, cx)
+    }
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        self.0.can_continue(m, cx)
+    }
+    fn interruptable(&self) -> bool {
+        self.0.interruptable()
+    }
+    fn every_tick(&self) -> bool {
+        self.0.every_tick()
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.start(m, cx)
+    }
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.stop(m, cx)
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if m.extra.piglin.activity == Activity::Fight {
+            self.0.tick(m, cx)
+        }
+    }
+}
+
 /// A goal of the idle and avoid activities' movement: the ride activity has
 /// none of it (`PiglinAi.initRideHoglinActivity`), so it waits while the
 /// brain is in the ride activity.
@@ -1457,8 +1497,10 @@ pub fn register_hoglin(m: &mut Mob) {
     g.add(0, Float);
     // `HoglinAi.initRetreatActivity`: `SetWalkTargetAwayFrom.entity(AVOID_TARGET, 1.3, 15, false)`.
     g.add(1, WalkAway::retreat(1.3, 15.0, false));
-    // HoglinAi: MeleeAttack.create(40) for adults, 15 for babies.
-    g.add(2, MeleeAttack::new(1.0, true).intervals(40, 15));
+    // HoglinAi: MeleeAttack.create(40) for adults, 15 for babies, in the
+    // fight activity. Its `ATTACK_COOLING_DOWN` lives 40 brain ticks and
+    // `MemorySlot.tick` erases it on the 41st, so hits come 41 (16) apart.
+    g.add(2, InFight(MeleeAttack::new(1.0, true).intervals(41, 16)));
     g.add(3, NotRetreating(super::goals::Breed::new(1.0)));
     g.add(3, HoglinAvoidRepellent);
     // `HoglinAi.initIdleActivity`: an adult keeps away from the nearest adult

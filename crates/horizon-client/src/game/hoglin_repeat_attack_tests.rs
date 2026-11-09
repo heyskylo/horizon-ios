@@ -133,6 +133,31 @@ fn a_hoglin_keeps_attacking_its_attacker_beside_another_hit_hoglin() {
     );
 }
 
+fn hurt_time(game: &mut Game<'_>, uuid: &str) -> i32 {
+    let id = mob_id(game, uuid);
+    game.mobs.iter().find(|m| m.id == id).unwrap().hurt_time
+}
+
+/// Vanilla 26.3's hit pen: the hoglin enters the fight activity at the end of
+/// the tick after the hit (`HoglinAi.updateActivity` follows the brain), hits
+/// in the next one, and again 41 ticks later. The pig ticks after the hoglin,
+/// so it reads `HurtTime` 9 on the tick of each hit.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_hoglin_hits_from_its_second_fighting_tick_every_41_ticks() {
+    let mut game = game();
+    step(&mut game, 40);
+    assert!(game.run_command(&format!("damage {HOGLIN} 1 minecraft:mob_attack by {PIG}")));
+    let mut hits = Vec::new();
+    for tick in 1..=90 {
+        step(&mut game, 1);
+        if hurt_time(&mut game, PIG) == 9 {
+            hits.push(tick);
+        }
+    }
+    assert_eq!(hits, [2, 43, 84]);
+}
+
 /// Added controls (after the frozen baseline above).
 fn mob_id(game: &mut Game<'_>, uuid: &str) -> u32 {
     match game.target_with_uuid(horizon_client::save::uuid_from_text(uuid).unwrap()) {
