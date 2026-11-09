@@ -650,7 +650,7 @@ enum Screen {
     /// WorldOptionsScreen (game/lan_screen.rs).
     WorldOptions,
     /// Play with Friends, from the pause menu's Friends button
-    /// (`friends_screen`, game/friends.rs).
+    /// (game/friends.rs, game/friends/screen.rs).
     Friends,
     /// `SocialInteractionsScreen` (`social_screen`, game/social.rs).
     Social,
@@ -6475,18 +6475,6 @@ impl Game<'_> {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
         }
     }
-    /// `AbstractContainerScreen` keeps `isQuickCrafting` and the drag it
-    /// belongs to on the screen. Horizon keeps both on `Game` (`inv_clicks`,
-    /// `inv_drag`, `last_inv_click`), so they are dropped when the pointer
-    /// changes hands: a screen that opens or closes starts with its own
-    /// state, and a press whose release never reached the screen -- the
-    /// pointer left the window, or the screen closed first -- would
-    /// otherwise leave every later press on every later screen swallowed.
-    pub(super) fn reset_inventory_clicks(&mut self) {
-        self.inv_clicks.cancel_drag();
-        self.inv_drag = None;
-        self.last_inv_click = None;
-    }
     pub(super) fn close_container(&mut self) {
         // `Gui.setScreen` clears the old screen's focus before it goes: the
         // key that closed the container (Tab bound to the inventory) has
@@ -6529,20 +6517,6 @@ impl Game<'_> {
             self.world.modified.insert((key.0 >> 4, key.2 >> 4));
         }
         self.close_ender_chest();
-    }
-    /// A sound a menu click made the player play (a bundle's insert or
-    /// remove): `Entity.playSound` at the player.
-    pub(super) fn player_menu_sound(&mut self, sound: &str) {
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let at = [p.position.x, p.position.y, p.position.z];
-        let (volume, pitch) = if sound == horizon_client::bundle::INSERT_FAIL {
-            (1.0, 1.0)
-        } else {
-            (0.8, 0.8 + self.world.random.next_float() * 0.4)
-        };
-        self.audio.play(sound, Some(at), volume, pitch);
     }
     /// `Camera.setRotation`: the camera's orientation, turned round in
     /// third-person front view.

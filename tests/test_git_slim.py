@@ -13,11 +13,19 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools/ci/git-slim.sh"
+# Since git 2.5x, `git commit` starts `git maintenance run --auto` in the background after every commit, and its
+# default strategy repacks geometrically even with gc.auto=0: the packs these tests count were folded while they were
+# being counted (12 built, 3 found on the desktop's git 2.54). No user or system config, and no automatic maintenance.
+NO_AUTO_MAINTENANCE = {"gc.auto": "0", "maintenance.auto": "false", "gc.autoDetach": "false",
+                       "maintenance.autoDetach": "false"}
 ENV = {
-    **os.environ,
+    **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@localhost",
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@localhost",
-    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_COUNT": str(len(NO_AUTO_MAINTENANCE)),
+    **{f"GIT_CONFIG_{kind}_{i}": value for i, (key, val) in enumerate(NO_AUTO_MAINTENANCE.items())
+       for kind, value in (("KEY", key), ("VALUE", val))},
 }
 # The bash on PATH, as in test_pr_ready: Windows' CreateProcess looks in System32 before PATH, so a bare "bash" there is
 # WSL's (#5383), which can't see the host's paths.
