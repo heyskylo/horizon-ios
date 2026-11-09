@@ -28,7 +28,7 @@ use std::{
 
 /// `Entity.saveWithoutId`: materialize the mandatory fields of an entity
 /// whose simulation state is still represented by its loaded compound.
-fn write_static_entity_fields(tag: &mut Tag) {
+pub(super) fn write_static_entity_fields(tag: &mut Tag) {
     use horizon_client::{nbt_path::int_value, save::float};
 
     let int = |key, default| tag.get(key).and_then(int_value).unwrap_or(default);
