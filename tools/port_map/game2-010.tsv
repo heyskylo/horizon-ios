@@ -31,7 +31,7 @@ EnchantmentHelper.processBlockExperience	inline	crates/horizon-client/src/game.r
 EnchantmentHelper.processMobExperience	skip:other		no enchantment in the data uses mob_experience, so the amount never changes
 EnchantmentHelper.createBook	inline	crates/horizon-client/src/creative.rs::from_json	the search tab comes from creative-inventory.json, whose export carries the 171 enchanted book stacks (vanilla CreativeModeTabs generates them)
 EnchantmentHelper.runIterationOnItem	port	crates/horizon-items/src/item_data.rs::ItemStack::enchantments	the (enchantment, level) iteration; callers loop over it
-EnchantmentHelper.runIterationOnEquipment	inline	crates/horizon-client/src/game/enchant_effects.rs::Game::apply_enchantment_attributes	gap: minor: worn armor only; hand slots are not read
+EnchantmentHelper.runIterationOnEquipment	inline	crates/horizon-client/src/game/enchant_effects.rs::Game::apply_enchantment_attributes	worn armour, the main hand and the off hand are all read, each gated by its equipment group
 EnchantmentHelper.isImmuneToDamage	port	crates/horizon-client/src/game/enchant_effects.rs::Game::wears_burn_from_stepping_immunity	gap: minor: worn armor only; no requirements or damage source check
 EnchantmentHelper.modifyKnockback	port	crates/horizon-client/src/game/enchant_effects.rs::Game::extra_knockback	gap: minor: the player's held weapon; mob weapons are read in mobs/gear.rs
 EnchantmentHelper.doPostAttackEffects	port	crates/horizon-client/src/game/enchant_effects.rs::Game::post_attack	gap: minor: wind burst, thorns and Channeling's victim effect are separate fns

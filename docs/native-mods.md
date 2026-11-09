@@ -744,9 +744,13 @@ decides what happens: only `horizon-mod.toml` with `assets/` and `data/` is a co
 one file: `horizon-mod.toml`, `assets/` and `data/` are its content, checked as a content mod's
 (`horizon_mods::Content`) and left out of the build, and the two manifests name the same mod id. A `.hmod` with
 native code is never a WebAssembly mod: one carrying `mod.wasm` is refused with
-`horizon_mods::index::native::WASM_GONE`. An `.hnmod` (code only) keeps loading as before. The registry keeps
-publishing native mods as `.hnmod` until launchers and the game read native `.hmod`s. Every rule of the file is in
-[api/mod-files.md](api/mod-files.md).
+`horizon_mods::index::native::WASM_GONE`. An `.hnmod` (code only) keeps loading as before. The launcher can install
+native `.hmod` files from the registry, alongside legacy `.hnmod`s. A build validates the content and snapshots it
+under its own `native-content/<id>/`, then the game layers it through the normal content loader before loading
+sounds and textures. Updating the installed archive cannot change an older build's content; rebuilding without a
+mod removes its snapshot, and turning it off excludes its content. Namespace collisions follow the content mod
+rules. Put sound events in `assets/<namespace>/sounds.json` and their files in `assets/<namespace>/sounds/*.ogg`
+at the archive's top level, not under `mixins/`. Every rule of the file is in [api/mod-files.md](api/mod-files.md).
 
 ### Post-build steps
 
@@ -3602,8 +3606,8 @@ while no mod asks for it.
   `pos`. Set `cancel` to keep it.
 - **`native_dragon_egg_form(dimension, pos, cancel)`** (on `GameLevel`): the first Ender Dragon fight is about to place
   its egg at `pos`. Set `cancel` to leave the block unchanged.
-- **`native_fluid_level_change(dimension, pos, fluid, from, to, cancel)`** (on `GameLevel`): flowing `water` or `lava`
-  at `pos` is about to change level. Levels run from 0 through 8. Set `cancel` to keep the old level.
+- **`native_fluid_level_change(dimension, pos, fluid, from, to, cancel)`** (on `GameLevel`): flowing `water`, `lava`
+  or a mod fluid (by its id, `ruby:honey`) at `pos` is about to change level. Levels run from 0 through 8. Set `cancel` to keep the old level.
 - **`native_leaves_decay(dimension, pos, cancel)`** (on `GameLevel`): a non-persistent leaf block at distance 7 is
   about to decay. Set `cancel` to keep it.
 - **`native_inventory_block_start(player, name, pos, cancel)`**: a guest is about to open an inventory supplied by a
@@ -4291,8 +4295,9 @@ than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extr
 and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
 a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
 fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
-and may be named in fluid tags; tanks still take undeclared ids as before. A cauldron takes only water and lava, and the
-world itself has only vanilla's fluids: no source or flowing blocks of a mod's fluid yet, and no buckets of one.
+and may be named in fluid tags; tanks still take undeclared ids as before. A declared fluid with a `block` flows in the
+world as that block (`native_fluid_level_change` gets its id, `ruby:honey`, where vanilla's are `water` and `lava`); a
+cauldron takes only water and lava. Its `bucket` pours and picks it up as vanilla's do, so `native_bucket_empty` hears it with its id.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
@@ -5338,9 +5343,12 @@ A new hook needs its fragment in `tools/native-hook-fragments/` with its `mod_ap
 `let _ = (every, parameter);` (all its parameters, in order), and a run of `cargo run -p xtask -- mod-api`.
 That command only replaces the placeholder in `native_hooks.rs` with the `dispatch_<hook>` call; commit
 that source change and the fragment. The `horizon-mod-api-gen` build dependency generates the hook traits,
-`Host` methods and dispatch code into Cargo's `OUT_DIR` when the game and renderer build, including release
-builds. These generated Rust files are not kept in the source tree or committed, and no manual regeneration
-is needed after a merge. Every hook needs a `mod_api` entry: the build fails naming any hook without one.
+`Host` methods and dispatch code into Cargo's `OUT_DIR` when the game builds, including release builds.
+These generated Rust files are not kept in the source tree or committed, and no manual regeneration is
+needed after a merge. The one exception is the renderer's (`horizon-client-render`, an engine crate, which
+may not depend on the generator: [layers.md](layers.md)): its `RenderHooks` trait and dispatch are committed
+in `gfx/native_render/generated.rs`. A render hook's change rewrites that file when you run
+`cargo run -p xtask -- mod-api`, and the game's build fails while it is out of date. Every hook needs a `mod_api` entry: the build fails naming any hook without one.
 A body that is neither the
 placeholder nor already calls the dispatch is an error, and the generator never changes it. Hooks that are
 free functions outside `Game` are wired by hand: those crates can't see the mod list, so each calls a callback
