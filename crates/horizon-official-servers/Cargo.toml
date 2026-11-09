@@ -8,7 +8,7 @@ description = "Horizon's official server in the multiplayer list, and the withdr
 
 [dependencies]
 horizon-addresses = { path = "../horizon-addresses" }
-horizon-platform = { path = "../horizon-platform" }
+horizon-platform = { path = "../horizon-platform", features = ["protocol"] }
 log = "0.4"
 
 [lints]

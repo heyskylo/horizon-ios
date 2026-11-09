@@ -18,8 +18,6 @@ horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
-# Emotes pose the player model (`Mob::emote`, `mobs::anim::setup`).
-horizon-cosmetics = { path = "../horizon-cosmetics" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
 # Extension points for the crates above the engine (docs/layers.md, "How a Horizon crate plugs in").
