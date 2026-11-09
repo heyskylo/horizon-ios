@@ -730,6 +730,21 @@ impl Goal for SquidFlee {
         }
     }
 }
+/// `AbstractFish.removeWhenFarAway` and `Axolotl.removeWhenFarAway`: a fish or
+/// an axolotl with a custom name is never removed for distance, and one let out
+/// of a bucket is persistent before it (`isPersistenceRequired`).
+pub fn named_keeps_it(m: &Mob) -> bool {
+    m.custom_name.is_some()
+        && matches!(
+            m.species(),
+            Species::Cod
+                | Species::Salmon
+                | Species::TropicalFish
+                | Species::Pufferfish
+                | Species::Tadpole
+                | Species::Axolotl
+        )
+}
 /// `AbstractSchoolingFish`: cod, salmon and tropical fish.
 fn schooling(s: Species) -> bool {
     matches!(s, Species::Cod | Species::Salmon | Species::TropicalFish)
