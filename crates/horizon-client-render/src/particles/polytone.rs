@@ -1090,9 +1090,26 @@ const INITIALIZED: [&str; 13] = [
     "dz",
 ];
 
+/// Whether no block's collision shape overlaps `bb` (where the query fails, nothing does).
+fn unobstructed(level: &ParticleLevel<'_>, bb: horizon_core::geometry::Aabb) -> bool {
+    let mut scene = crate::collisions::SceneCollisions {
+        world: level.world,
+        binding: level.collision,
+        subject: None,
+    };
+    scene.cells_without_collision(bb) || scene.unobstructed(bb).unwrap_or(true)
+}
+
 impl super::ParticleController for Controller {
     fn tick(&mut self, p: &mut Particle, level: &ParticleLevel<'_>) -> ParticleUpdate {
         let mut update = ParticleUpdate::default();
+        // A particle with physics whose box starts inside a block's collision goes before its
+        // first tick, so none of its emitters run (measured on the mod: one spawned just under a
+        // block, where falling leaves start, never falls; one 0.01 clear of it does).
+        if self.ticks == 0 && self.def.has_physics && !unobstructed(level, p.bb) {
+            p.remove();
+            return update;
+        }
         if !p.advance_age() {
             return update;
         }
@@ -2241,6 +2258,112 @@ mod tests {
         p.stopped_by_collision = true;
         engine.tick_particle(&mut p, &level);
         assert!(p.removed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `scene`, with the torch a full block of collision: something a particle's box can start in.
+    fn solid_scene(blocks: &'static BlockRegistry) -> Scene {
+        use horizon_core::geometry::{Axis, VoxelShape};
+        let tag = |shape: VoxelShape| {
+            let sizes = shape.sizes();
+            let occupied = (0..sizes[2])
+                .flat_map(|z| {
+                    (0..sizes[1]).flat_map(move |y| (0..sizes[0]).map(move |x| (x, y, z)))
+                })
+                .map(|(x, y, z)| u8::from(shape.is_full(x as i32, y as i32, z as i32)))
+                .collect();
+            let (min, max) = shape.discrete_bounds();
+            let axes = shape
+                .cube_coordinate_axes()
+                .iter()
+                .enumerate()
+                .fold(0, |mask, (i, on)| mask | (i8::from(*on) << i));
+            let mut fields = vec![
+                ("occupied", Tag::ByteArray(occupied)),
+                ("cube", Tag::Byte(i8::from(shape.is_cube()))),
+                ("cube_axes", Tag::Byte(axes)),
+                ("discrete_min", Tag::IntArray(min.to_vec())),
+                ("discrete_max", Tag::IntArray(max.to_vec())),
+            ];
+            for (axis, name) in [(Axis::X, "x"), (Axis::Y, "y"), (Axis::Z, "z")] {
+                let bits = shape.coordinates(axis).iter().map(|v| v.to_bits() as i64);
+                fields.push((name, Tag::LongArray(bits.collect())));
+            }
+            Tag::compound(fields)
+        };
+        let names = || Tag::List(STATES.iter().map(|s| Tag::String((*s).into())).collect());
+        let cached = CachedCollisionRegistry::from_nbt(
+            &Tag::compound([
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+                ("states", names()),
+                (
+                    "shapes",
+                    Tag::List(vec![tag(VoxelShape::empty()), tag(VoxelShape::block())]),
+                ),
+                ("cached_shapes", Tag::IntArray(vec![0, 1])),
+            ]),
+            blocks,
+        )
+        .unwrap();
+        Scene {
+            collision: BlockCollisionRegistry::new(Arc::new(cached)).unwrap(),
+            ..scene(blocks)
+        }
+    }
+
+    #[test]
+    fn a_particle_with_physics_born_inside_a_block_goes_before_it_emits() {
+        let blocks = blocks();
+        let leaf = |physics| {
+            serde_json::json!({"has_physics": physics, "render_type": "invisible",
+                "initializer": {"lifetime": "20", "hitbox_size": "0.08"},
+                "particle_emitters": [{"particle": "test:mark", "chance": "1"}]})
+        };
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/leaf.json",
+                leaf(true),
+            ),
+            (
+                "assets/test/polytone/custom_particles/ghost.json",
+                leaf(false),
+            ),
+            (
+                "assets/test/polytone/custom_particles/mark.json",
+                serde_json::json!({"render_type": "invisible"}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [{"particle": "test:leaf", "chance": "1"}]}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/zombie.json",
+                serde_json::json!({"emitters": [{"particle": "test:ghost", "chance": "1"}]}),
+            ),
+        ]);
+        let scene = solid_scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+            cached_chunk: std::cell::Cell::new(None),
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        // The solid block is at (1, 64, 1): its bottom face is y 64.
+        let mut tick_one = |entity: &str, y: f64| {
+            engine.pending.clear();
+            engine.polytone_entity(&level, entity, [1.5, y, 1.5]);
+            let mut p = engine.pending.pop().unwrap();
+            engine.tick_particle(&mut p, &level);
+            (p.removed, engine.pending.len())
+        };
+        // 0.05 under the block, a 0.08 box reaches into it: gone, nothing emitted.
+        assert_eq!(tick_one("minecraft:player", 63.95), (true, 0));
+        // 0.01 clear of it, it lives and emits.
+        assert_eq!(tick_one("minecraft:player", 63.91), (false, 1));
+        // Without physics nothing collides.
+        assert_eq!(tick_one("minecraft:zombie", 63.95), (false, 1));
         std::fs::remove_dir_all(root).unwrap();
     }
 
