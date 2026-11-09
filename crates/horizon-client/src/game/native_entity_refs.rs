@@ -42,6 +42,9 @@ impl Game<'_> {
         }
         match self.level_entity(id)? {
             Target::Mob(id) if !self.mobs.iter().any(|m| m.id == id && !m.removed) => None,
+            // The mod API has no natural fence knots (#13036 adds them for
+            // commands only).
+            Target::Knot(_) => None,
             t => Some(t),
         }
     }

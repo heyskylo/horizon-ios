@@ -1654,11 +1654,9 @@ mod tests {
             "L'écran partagé est désactivé."
         );
         assert!(labels(&ui).contains(&"Écran partagé : Désactivé".to_owned()));
+        // German translates it now; a key a language lacks still falls back to the bundled
+        // English (lang's `layers_selected_language_over_english`).
         lang::set(lang::Language::load(&[], "de_de"));
-        assert_eq!(
-            ui.status_lines().unwrap()[0],
-            "Splitscreen is off.",
-            "untranslated new keys use bundled English"
-        );
+        assert_eq!(ui.status_lines().unwrap()[0], "Splitscreen ist aus.");
     }
 }

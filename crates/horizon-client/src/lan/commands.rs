@@ -153,7 +153,15 @@ impl CommandTree {
         } else {
             Value::Null
         };
-        for root in [&self.root, extra, &horizon] {
+        // A server mod's root of vanilla's name replaces vanilla's (`replace_vanilla`).
+        let mut vanilla = self.root.clone();
+        if let (Some(children), Some(mods)) = (
+            vanilla.get_mut("children").and_then(Value::as_object_mut),
+            extra.get("children").and_then(Value::as_object),
+        ) {
+            children.retain(|name, _| !mods.contains_key(name));
+        }
+        for root in [&vanilla, extra, &horizon] {
             fill(
                 root,
                 0,
@@ -444,6 +452,41 @@ mod tests {
         assert_eq!(properties("minecraft:entity", &p), vec![3]);
         let p: Value = serde_json::from_str(r#"{"type": "greedy"}"#).unwrap();
         assert_eq!(properties("brigadier:string", &p), vec![2]);
+    }
+
+    /// A mod's root of a vanilla name (`NativeCommand::replace_vanilla`)
+    /// takes vanilla's place in the merged tree: the client gets one `stop`,
+    /// the mod's, and the vanilla roots the mods don't name stay.
+    #[test]
+    fn a_mods_root_replaces_vanillas_of_its_name() {
+        let report: Value = serde_json::from_str(
+            r#"{"type":"root","children":{
+                "me":{"type":"literal","children":{"action":{"type":"argument","parser":"minecraft:message","executable":true}}},
+                "stop":{"type":"literal","executable":true}}}"#,
+        )
+        .unwrap();
+        let mods: Value = serde_json::from_str(
+            r#"{"type":"root","children":{
+                "stop":{"type":"literal","children":{"now":{"type":"literal","executable":true}}}}}"#,
+        )
+        .unwrap();
+        let tree = CommandTree { root: report };
+        let builtin = Builtin::default();
+        let packet = tree.packet_with(4, true, &builtin, &mods);
+        let stops: Vec<_> = packet.nodes.iter().filter(|n| n.name == "stop").collect();
+        assert_eq!(stops.len(), 1, "one root of the name");
+        assert!(
+            !stops[0].executable,
+            "the mod's root, not vanilla's executable one"
+        );
+        assert!(packet.nodes.iter().any(|n| n.name == "now"));
+        assert!(
+            packet.nodes.iter().any(|n| n.name == "me"),
+            "other roots stay"
+        );
+        let alone = tree.packet_with(4, true, &builtin, &Value::Null);
+        let stop = alone.nodes.iter().find(|n| n.name == "stop").unwrap();
+        assert!(stop.executable, "without a mod's root vanilla's is sent");
     }
 
     #[test]

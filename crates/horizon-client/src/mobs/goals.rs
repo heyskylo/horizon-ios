@@ -209,12 +209,9 @@ fn move_up_to_above_solid(w: &MobWorld, mut p: [i32; 3], above: i32) -> [i32; 3]
     }
     p
 }
-/// `Mob.isWithinHome(BlockPos)`.
-pub fn within_home(c: [i32; 3], r: i32, p: [i32; 3]) -> bool {
-    let d = |i: usize| i64::from(c[i] - p[i]);
-    let r = i64::from(r);
-    d(0) * d(0) + d(1) * d(1) + d(2) * d(2) < r * r
-}
+#[path = "home.rs"]
+mod home;
+pub use home::within_home;
 
 impl Mob {
     /// PathfinderMob.getWalkTargetValue.
@@ -1899,6 +1896,8 @@ impl Goal for HurtByTarget {
             && !(t.is_player && t.creative)
             // HurtByTargetGoal.canUse ends with canAttack(lastHurtByMob).
             && !m.spares_target(cx.w, by)
+            // TargetGoal.canAttack: Mob.isWithinHome(target.blockPosition()).
+            && m.within_home_at(t.position)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.bee && !super::bee::angry(m, cx.w) {
@@ -2171,8 +2170,10 @@ impl Goal for Tempt {
             return false;
         }
         let Some(p) = &cx.w.player else { return false };
-        // Attributes.TEMPT_RANGE default 10.
+        // Attributes.TEMPT_RANGE default 10; `TargetingConditions.forNonCombat`
+        // never picks a spectator.
         p.alive
+            && !p.spectator
             && (self.wants(&p.main_hand) || self.wants(&p.off_hand))
             && m.distance_sqr(p.position) <= 100.0
     }
@@ -3144,7 +3145,7 @@ mod built_by_player_tests {
 mod avoid_entity_targeting_tests {
     use super::*;
     use crate::mobs::world::test_player;
-    use crate::mobs::world::with_built_test_world;
+    use crate::mobs::world::{with_built_test_world, with_test_world};
     use std::sync::Arc;
 
     /// `(the player is inside the plain distance range, the goal picks them)`.
@@ -3231,6 +3232,47 @@ mod avoid_entity_targeting_tests {
             assert!(in_range, "the player is inside the plain distance range");
             assert!(picked, "the rabbit ignored a player in the open");
         }
+    }
+
+    /// `TemptGoal` finds its player with `TargetingConditions.forNonCombat()`,
+    /// which never picks a spectator: a spectator holding wheat does not tempt
+    /// an animal.
+    #[test]
+    fn a_spectator_does_not_tempt_an_animal() {
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+                p.main_hand = Some("minecraft:wheat".into());
+                p.spectator = spectator;
+                world.player = Some(p);
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(
+                    3,
+                    Tempt::new(1.25, Arc::from(vec!["minecraft:wheat".to_string()]), false),
+                );
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("Tempt"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player tempts; a spectator does not"
+        );
     }
 }
 

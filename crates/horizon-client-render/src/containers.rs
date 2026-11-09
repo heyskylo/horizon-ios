@@ -259,7 +259,10 @@ impl Campfire {
         for i in 0..4 {
             if self.progress[i] > 0 {
                 changed = true;
-                self.progress[i] = (self.progress[i] - 2).clamp(0, self.total[i]);
+                // `Mth.clamp(value, 0, cookingTime)`: min(max(value, 0), time).
+                // A negative time a command saved answers itself, where
+                // i32::clamp would panic (min > max).
+                self.progress[i] = (self.progress[i] - 2).max(0).min(self.total[i]);
             }
         }
         changed
@@ -316,7 +319,10 @@ impl SkullSkin {
 /// The item slots of the container `name`'s block carries, if any.
 fn container_size(name: &str) -> Option<usize> {
     match name {
-        "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => Some(27),
+        "minecraft:chest"
+        | "minecraft:trapped_chest"
+        | "minecraft:barrel"
+        | "minecraft:ender_chest" => Some(27),
         n if n.ends_with("copper_chest") => Some(27),
         "minecraft:hopper" => Some(HOPPER_SLOTS),
         "minecraft:dispenser" | "minecraft:dropper" => Some(9),
@@ -444,8 +450,22 @@ impl BlockEntity {
         if name == "minecraft:bell" {
             return Some(Self::Bell);
         }
+        if name == "minecraft:conduit" {
+            return Some(Self::Conduit(None));
+        }
+        if name == "minecraft:enchanting_table" {
+            return Some(Self::EnchantingTable);
+        }
         if name == "minecraft:daylight_detector" {
             return Some(Self::DaylightDetector);
+        }
+        if name == "minecraft:ender_chest" {
+            // EnderChestBlock.newBlockEntity: 27 slots, player-specific inventory.
+            return Some(Self::Chest(vec![None; 27]));
+        }
+        if name == "minecraft:end_portal" {
+            // EndPortalBlock.newBlockEntity: no data, only identity.
+            return Some(Self::EndPortal);
         }
         if name.ends_with("copper_golem_statue") {
             return Some(Self::CopperGolemStatue(Default::default()));
@@ -540,6 +560,9 @@ impl BlockEntity {
             Self::EndGateway(_) => name == "minecraft:end_gateway",
             Self::DaylightDetector => name == "minecraft:daylight_detector",
             Self::Bell => name == "minecraft:bell",
+            Self::Conduit(_) => name == "minecraft:conduit",
+            Self::EndPortal => name == "minecraft:end_portal",
+            Self::EnchantingTable => name == "minecraft:enchanting_table",
             Self::StructureBlock(_) => name == "minecraft:structure_block",
             Self::TestBlock(_) => name == "minecraft:test_block",
             Self::TestInstanceBlock(_) => name == "minecraft:test_instance_block",
@@ -579,6 +602,9 @@ impl BlockEntity {
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
             Self::Bell => "minecraft:bell",
+            Self::Conduit(_) => "minecraft:conduit",
+            Self::EndPortal => "minecraft:end_portal",
+            Self::EnchantingTable => "minecraft:enchanting_table",
             Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
@@ -614,6 +640,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => Vec::new(),
             Self::Mod(m) => m.items.iter().flatten().cloned().collect(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
@@ -645,6 +674,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &[],
             Self::Jukebox(j) => &j.items,
             Self::Crafter(c) => &c.items,
@@ -681,6 +713,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &mut [],
             Self::Jukebox(j) => &mut j.items,
             Self::Crafter(c) => &mut c.items,
@@ -932,5 +967,56 @@ mod tests {
             .sum();
         assert!((250..450).contains(&paid), "{paid}");
         assert!((0..100).all(|_| (1..=2).contains(&create_experience(1, 1.7, &mut random))));
+    }
+
+    /// An ender chest placed with /setblock gets its block entity (`EnderChestBlock.newBlockEntity`),
+    /// so `/data get block` answers with the entity and the chunk saves it.
+    #[test]
+    fn an_ender_chest_starts_as_a_block_entity() {
+        let entity = BlockEntity::for_block("minecraft:ender_chest").expect("an ender chest");
+        // `Chest` variant with 27 slots; `id()` reports the chest kind, block name comes from NBT.
+        assert_eq!(entity.id(), "minecraft:chest");
+        assert_eq!(entity.slots().len(), 27);
+        assert!(entity.slots()[0].is_none());
+        assert!(matches!(entity, BlockEntity::Chest(_)));
+        // `fits`: an ender chest entity fits an ender chest block.
+        assert!(entity.fits("minecraft:ender_chest"));
+        // A stone block is not an ender chest.
+        assert!(BlockEntity::for_block("minecraft:stone").is_none());
+    }
+
+    /// An end portal placed with /setblock gets its block entity (`EndPortalBlock.newBlockEntity`),
+    /// so `/data get block` answers with the entity and the chunk saves it.
+    #[test]
+    fn an_end_portal_starts_as_a_block_entity() {
+        let entity = BlockEntity::for_block("minecraft:end_portal").expect("an end portal");
+        assert_eq!(entity.id(), "minecraft:end_portal");
+        assert_eq!(entity.slots().len(), 0);
+        assert!(matches!(entity, BlockEntity::EndPortal));
+        // `fits`: an end portal entity fits an end portal block.
+        assert!(entity.fits("minecraft:end_portal"));
+        // A stone block is not an end portal.
+        assert!(BlockEntity::for_block("minecraft:stone").is_none());
+    }
+}
+
+#[cfg(test)]
+mod cooldown_negative_tests {
+    use super::*;
+
+    /// `CampfireBlockEntity.cooldownTick` clamps with `Mth.clamp(progress, 0,
+    /// cookingTime)` = `min(max(progress, 0), cookingTime)`. A cooking time a
+    /// command saved as negative answers itself, where `i32::clamp` (which
+    /// needs min <= max) would panic.
+    #[test]
+    fn a_negative_cooking_time_cools_to_itself() {
+        let mut c = Campfire::default();
+        c.progress[0] = 5;
+        c.total[0] = -1;
+        assert!(c.cooldown_tick());
+        assert_eq!(
+            c.progress[0], -1,
+            "Mth.clamp(3, 0, -1) is -1, as vanilla answers"
+        );
     }
 }
