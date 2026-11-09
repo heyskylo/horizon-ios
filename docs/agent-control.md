@@ -211,6 +211,10 @@ turn the switch off.
   under control. A game the player starts from the window is not, until they turn Agent Control
   on. An open socket lets any program of that user drive the game, so it opens only when an agent
   asked for the game, or when the player chose it.
+- **The window an agent opens** comes up without the focus (on Windows and macOS; X11 focuses it
+  anyway): the person keeps their keyboard, and the game keeps its pointer grab to itself, as
+  `--offscreen` does, so the system pointer is never taken, hidden or moved. Once the person
+  clicks into the window it is an ordinary one, and that click takes the pointer.
 - **Headless:** `horizon-ctl launch --headless` (`horizon-client --headless --control`) starts a
   game with no display, no window and no GPU: it runs where no display server is (an SSH session,
   a server) and runs its own loop instead of winit's (`game/headless.rs`), one frame a tick. It
@@ -320,6 +324,14 @@ Every input event carries who caused it: `user` (this computer's keyboard, mouse
 itself, such as a pad menu's click). This is how an agent tells its own actions from a person
 who took over mid-test.
 
+- While a screenshot sequence, a `HORIZON_TICK_SCRIPT` scenario or a `record-replay` runs, the
+  keyboard, mouse and pad at this computer don't reach the game, and what they do isn't
+  recorded: a stray key or mouse move can't spoil the run. The run's own input (the socket, the
+  replay) still plays. Clicking into the window or away from it takes effect when the run ends,
+  and the game's pointer grab stays inside the game until then, so the system pointer is never
+  taken or moved; closing the window still ends the run. A key held as the run starts stays
+  down until it is pressed again. Outside these runs nothing is held back; a game no one at
+  the computer should touch runs `--offscreen` or `--headless`.
 - `state` and `status` have an `input` section: `last_origin`, per-origin `counts`,
   `user_since_agent` and `last_user_age_s`.
 - `input-log [--since SEQ] [--limit N] [--origin ORIGIN]` lists the newest 512 input events:
