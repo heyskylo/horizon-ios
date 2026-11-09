@@ -101,6 +101,13 @@ pub fn enchantment_list(
     }
     list
 }
+/// `ItemStack.has(ENCHANTMENTS)`: all items have the component by default;
+/// a removal patch leaves none and `ItemStack.isEnchantable` is false.
+fn has_enchantments_component(stack: &ItemStack) -> bool {
+    !stack
+        .data()
+        .is_some_and(|d| d.other("!minecraft:enchantments").is_some())
+}
 /// `EnchantmentMenu.slotsChanged` for an enchantable item.
 pub fn enchant_offers(
     e: &Enchantments,
@@ -112,9 +119,13 @@ pub fn enchant_offers(
     let mut offers = EnchantOffers::default();
     let Some(stack) = stack else { return offers };
     // ItemStack.isEnchantable: enchantable component and no enchantments yet.
-    if e.enchantable_of(stack) == 0 || !stack.enchantments().is_empty() {
+    if !has_enchantments_component(stack)
+        || e.enchantable_of(stack) == 0
+        || !stack.enchantments().is_empty()
+    {
         return offers;
     }
+
     let mut random = LegacyRandom::new(i64::from(seed));
     for i in 0..3 {
         offers.costs[i] = e.enchantment_cost_of(&mut random, i, bookcases, stack);
@@ -1672,6 +1683,27 @@ mod tests {
         );
         assert_eq!(increased_repair_cost(0), 1);
         assert_eq!(increased_repair_cost(3), 7);
+    }
+
+    /// Enchanting: `ItemStack.isEnchantable` needs the enchantments component
+    /// present; a removal patch leaves no offers.
+    #[test]
+    fn enchanting_needs_the_stacks_enchantments_component() {
+        let e = sample();
+        let items = sample_items();
+        let mut removed = sword(&[]);
+        removed.data_mut().set_other(
+            "!minecraft:enchantments",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            enchant_offers(&e, &items, 1234, 15, Some(&removed)).costs,
+            [0, 0, 0]
+        );
+        assert_ne!(
+            enchant_offers(&e, &items, 1234, 15, Some(&sword(&[]))).costs,
+            [0, 0, 0]
+        );
     }
 
     /// Checks against the prepared vanilla resources when they are present.

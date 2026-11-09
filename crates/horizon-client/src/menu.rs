@@ -1158,9 +1158,12 @@ impl Menu {
     /// `EnchantmentMenu.slotsChanged`: no costs or clues without an
     /// enchantable item; with one, a level fills them (`enchant_changed`).
     fn enchant_changed(&mut self, env: &Env) {
-        let enchantable = self.containers[MAIN][0]
-            .as_ref()
-            .is_some_and(|s| env.enchantments.enchantable_of(s) > 0 && s.enchantments().is_empty());
+        let enchantable = self.containers[MAIN][0].as_ref().is_some_and(|s| {
+            env.enchantments.enchantable_of(s) > 0
+                && s.enchantments().is_empty()
+                && s.data()
+                    .is_none_or(|d| d.other("!minecraft:enchantments").is_none())
+        });
         if enchantable {
             self.enchant_changed = true;
         } else {
