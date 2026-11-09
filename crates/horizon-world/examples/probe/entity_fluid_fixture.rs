@@ -83,7 +83,7 @@ impl World<'_> {
 }
 impl FluidMembership for World<'_> {
     fn fluid_in_tag(&self, fluid: FluidKind, tag: FluidTagId) -> bool {
-        self.op["tags"][tag.0 as usize].as_u64().unwrap() & (1 << (fluid as u8)) != 0
+        self.op["tags"][tag.0 as usize].as_u64().unwrap() & (1 << fluid.index()) != 0
     }
 }
 impl FluidInteractionWorld for World<'_> {
@@ -437,7 +437,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(
                     w.out,
                     "tracker {} {:016x} {}",
-                    t.fluid as u8,
+                    t.fluid.index() as u8,
                     f64_bits(t.height),
                     t.eyes_inside
                 )?;

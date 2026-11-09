@@ -67,6 +67,18 @@ pub fn faded(colour: u32, factor: f32) -> u32 {
     (colour & 0x00FF_FFFF) | ((alpha.round() as u32) << 24)
 }
 
+/// `a` to `b` at `t` (0 to 1), each 8-bit channel of the batch's colour on its own.
+pub(crate) fn mix_colour(a: u32, b: u32, t: f32) -> u32 {
+    if a == b {
+        return a;
+    }
+    let channel = |shift: u32| {
+        let (p, q) = (((a >> shift) & 0xFF) as f32, ((b >> shift) & 0xFF) as f32);
+        ((p + (q - p) * t).round().clamp(0.0, 255.0) as u32) << shift
+    };
+    channel(0) | channel(8) | channel(16) | channel(24)
+}
+
 /// The UV of the atlas's white texel, which every flat shape samples.
 fn white(atlas: &HudAtlas) -> [f32; 2] {
     let w = atlas.white;

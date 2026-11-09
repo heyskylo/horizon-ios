@@ -15,6 +15,7 @@ use horizon_client::{
     items::ItemStack,
     lan::data::component_nbt,
     mod_api::{NativeCommandInfo, NativeCommandResult},
+    server::user_lists::{NameAndId, WhiteEntry},
     text::Text,
 };
 use horizon_protocol::packets::play::{self, Clientbound as C};
@@ -87,8 +88,15 @@ fn usage_nodes(usage: &str) -> Result<Vec<(String, Value, bool)>, String> {
             if optional_seen {
                 return Err(format!("`{usage}`: `{word}` follows an optional argument"));
             }
-            let literal = !word.is_empty()
-                && word
+            // A command's name may start with slashes (WorldEdit's `//set`
+            // is the root `/set`); the typed line arrives without its first slash.
+            let checked = if out.is_empty() {
+                word.trim_start_matches('/')
+            } else {
+                word
+            };
+            let literal = !checked.is_empty()
+                && checked
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c));
             if !literal {
@@ -123,11 +131,71 @@ fn usage_nodes(usage: &str) -> Result<Vec<(String, Value, bool)>, String> {
     Ok(out)
 }
 
+/// A usage's root as the tree keys it (its slashes kept).
+fn usage_root(usage: &str) -> &str {
+    usage.split(' ').next().unwrap_or_default()
+}
+
+/// The words a line types, its root without the slashes a usage may start with.
+fn typed_words(line: &str) -> Vec<&str> {
+    line.split(' ')
+        .enumerate()
+        .map(|(i, w)| if i == 0 { w.trim_start_matches('/') } else { w })
+        .collect()
+}
+
+/// The literal words a usage starts with (`eco give` for `eco give <player:player>`), its root
+/// without slashes.
+fn literal_words(usage: &str) -> Vec<&str> {
+    usage
+        .split_whitespace()
+        .take_while(|w| !w.starts_with(['<', '[']))
+        .enumerate()
+        .map(|(i, w)| if i == 0 { w.trim_start_matches('/') } else { w })
+        .collect()
+}
+
+/// The usage a line runs: among the usages whose literal words start the line and whose arguments
+/// take its words, the one with the most literal words (the first of equals). None when no usage
+/// takes the line.
+fn usage_for_line<'h>(usages: &'h [NativeCommand], line: &str) -> Option<&'h NativeCommand> {
+    let typed = typed_words(line);
+    let mut best: Option<(usize, &NativeCommand)> = None;
+    for usage in usages {
+        let Ok(nodes) = usage_nodes(&usage.usage) else {
+            continue;
+        };
+        let literal = literal_words(&usage.usage);
+        let required = nodes.iter().filter(|n| !n.2).count();
+        let greedy = nodes.iter().any(|n| n.1["properties"]["type"] == "greedy");
+        let fits = typed.len() >= required && (typed.len() <= nodes.len() || greedy);
+        let starts =
+            literal.len() <= typed.len() && literal.iter().zip(&typed).all(|(a, b)| a == b);
+        if fits && starts && best.is_none_or(|(n, _)| literal.len() > n) {
+            best = Some((literal.len(), usage));
+        }
+    }
+    best.map(|(_, usage)| usage)
+}
+
+/// The roots of the mods' commands that have a permission node on some usage, sorted.
+fn permission_roots(usages: &[NativeCommand]) -> Vec<String> {
+    let mut roots: Vec<String> = usages
+        .iter()
+        .filter(|u| u.permission.is_some())
+        .map(|u| usage_root(&u.usage).to_owned())
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 /// Native mods' commands as a root in the commands report's format
 /// (`lan::commands`, which sends each player what their level allows), and
 /// each command's level: the lowest of its usages. A node is runnable where
 /// only optional arguments follow it. A command vanilla has (`vanilla`
-/// answers) or a usage that doesn't parse is left out, with why.
+/// answers) or a usage that doesn't parse is left out, with why, unless the
+/// usage replaces vanilla's (`NativeCommand::replace_vanilla`).
 pub(super) fn command_tree(
     commands: &[NativeCommand],
     vanilla: impl Fn(&str) -> bool,
@@ -143,7 +211,7 @@ pub(super) fn command_tree(
                 continue;
             }
         };
-        if vanilla(&nodes[0].0) {
+        if vanilla(&nodes[0].0) && !command.replace_vanilla {
             problems.push(format!("`{}`: vanilla has /{}", command.usage, nodes[0].0));
             continue;
         }
@@ -274,6 +342,18 @@ fn vanilla_command_info(d: &Dispatcher, label: &str) -> Option<NativeCommandInfo
 fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> NativeServerPlayer {
     // Abilities.invulnerable, flying and mayfly, as `ServerPlayer.onUpdateAbilities` sends them.
     let abilities = g.ability_flags();
+    // LivingEntity.DATA_LIVING_ENTITY_FLAGS: 1 while using, 2 when it is the off hand's item.
+    let using_item = g.living_flags & 1 != 0;
+    let using_slot = if g.living_flags & 2 != 0 {
+        super::shield::OFFHAND_SLOT
+    } else {
+        g.selected
+    };
+    let blocking = using_item
+        && g.inventory
+            .get(using_slot)
+            .and_then(|s| s.as_ref())
+            .is_some_and(|s| &*s.item == "minecraft:shield");
     NativeServerPlayer {
         uuid: g.uuid,
         name: g.name.clone(),
@@ -301,6 +381,11 @@ fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> Nativ
         selected_slot: g.selected as u8,
         nickname: host.hub.nicknames.get(&g.uuid).cloned(),
         hidden: host.hub.hidden.get(&g.uuid).copied(),
+        fake: g.fake,
+        using_item,
+        blocking,
+        sprinting: g.sprinting,
+        gliding: g.fall_flying,
     }
 }
 
@@ -325,6 +410,16 @@ impl Game<'_> {
     /// the acting player; false when they aren't on.
     pub(super) fn native_tell(&mut self, uuid: u128, line: Text) -> bool {
         self.native_send(uuid, system_chat(&line))
+    }
+    /// A line in chat as that player, disguised: no signature, named as the player is shown, to
+    /// every player who shows chat (a mod's character, a bot's line). `line` keeps its styling,
+    /// so click and hover events work as in `native_tell`. False when the player isn't on, and
+    /// inside a player's hook, where the hub is out of reach. API @API:chat_as@.
+    pub(super) fn native_chat_as(&self, uuid: u128, line: Text) -> bool {
+        let Some(host) = &self.lan else {
+            return false;
+        };
+        host.hub.chat_as(uuid, component_nbt(&line.component()))
     }
     /// A line over that player's hotbar (the action bar), also inside a
     /// player's hook for the acting player; false when they aren't on. API 21.
@@ -623,13 +718,88 @@ impl Game<'_> {
         } else {
             log::info!("{plain}");
         }
+        self.send_system_line(&line);
+    }
+    /// A system line in every player's chat, as `native_broadcast` sends it
+    /// but neither in the server's log nor past the mods' `broadcast_message`
+    /// hook (a mod's own line, which it logs itself). API @API:join_leave_helpers@.
+    pub(super) fn native_broadcast_quiet(&self, line: Text) {
+        self.send_system_line(&line);
+    }
+    fn send_system_line(&self, line: &Text) {
         let Some(host) = &self.lan else {
             return;
         };
-        let packet = system_chat(&line);
+        let packet = system_chat(line);
         for g in host.hub.guests.iter().filter(|g| g.placed) {
             host.hub.send_to(g.conn, &packet);
         }
+    }
+    /// The server's motd from server.properties, as the list ping shows it;
+    /// empty when no server runs. API @API:join_leave_helpers@.
+    pub(super) fn native_motd(&self) -> String {
+        self.lan
+            .as_ref()
+            .map(|lan| lan.hub.lan.shared.motd())
+            .unwrap_or_default()
+    }
+    /// Whether a player has played on the open world before: their player
+    /// data file is there (`players/data/<uuid>.dat`). False when no world
+    /// is open. API @API:join_leave_helpers@.
+    pub(super) fn native_has_played_before(&self, uuid: u128) -> bool {
+        !self.world_root.as_os_str().is_empty()
+            && horizon_client::lan::playerdata::path(&self.world_root, uuid).is_file()
+    }
+
+    /// Writes a line to the server's log at `level` (`INFO`, `WARN` or
+    /// `ERROR`), in the console's format on a dedicated server. API @API:server_log@.
+    pub(super) fn native_log(&self, level: &str, line: &str) {
+        if self.options.dedicated.is_some() {
+            super::dedicated::log(level, line);
+        } else {
+            match level {
+                "WARN" => log::warn!("{line}"),
+                "ERROR" => log::error!("{line}"),
+                _ => log::info!("{line}"),
+            }
+        }
+    }
+    /// Adds a player to the dedicated server's whitelist (`whitelist add`
+    /// in the console, the file saved as it does). True when they were not
+    /// on it; false when no dedicated server runs or they already are.
+    /// API @API:whitelist_edit@.
+    pub(super) fn native_whitelist_add(&self, uuid: u128, name: &str) -> bool {
+        let Some(lists) = &self.server_lists else {
+            return false;
+        };
+        let user = NameAndId {
+            id: uuid,
+            name: name.to_owned(),
+        };
+        let mut l = lists.lock().unwrap();
+        if l.white.contains(&user) {
+            return false;
+        }
+        l.white.add(WhiteEntry { user });
+        true
+    }
+    /// Removes a player from the dedicated server's whitelist (`whitelist
+    /// remove`); with the whitelist on, the players no longer on it are
+    /// disconnected. True when they were on it; false when no dedicated
+    /// server runs or they were not. API @API:whitelist_edit@.
+    pub(super) fn native_whitelist_remove(&mut self, uuid: u128, name: &str) -> bool {
+        let Some(lists) = self.server_lists.clone() else {
+            return false;
+        };
+        let user = NameAndId {
+            id: uuid,
+            name: name.to_owned(),
+        };
+        let removed = lists.lock().unwrap().white.remove(&user);
+        if removed {
+            self.kick_unlisted_players(&lists);
+        }
+        removed
     }
     /// Posts a line to the dedicated server's event stream (`GET /api/v1/events`)
     /// as an `announce` event, which horizon-server's Discord bridge relays when
@@ -695,7 +865,13 @@ impl Game<'_> {
             selected_slot: self.selected as u8,
             nickname: hub.as_ref().and_then(|h| h.nickname.clone()),
             hidden: hub.as_ref().and_then(|h| h.hidden),
+            fake: false,
             address: hub.map(|h| h.address).unwrap_or_default(),
+            using_item: self.using.is_some(),
+            blocking: self.using.is_some()
+                && self.held().is_some_and(|s| &*s.item == "minecraft:shield"),
+            sprinting: p.sprinting,
+            gliding: p.fall_flying,
         })
     }
     /// The permission level of a player who is on the server or joining it:
@@ -1345,16 +1521,7 @@ impl Game<'_> {
                 .iter()
                 .any(|c| c.usage.split(' ').next() == Some(name.as_str()))
         });
-        for command in &commands {
-            let root = command.usage.split(' ').next().unwrap_or_default();
-            if let Some(node) = &command.permission
-                && levels.contains_key(root)
-                && !host.native_command_nodes.iter().any(|(r, _)| r == root)
-            {
-                host.native_command_nodes
-                    .push((root.to_owned(), node.clone()));
-            }
-        }
+        // Each usage keeps its own node and level (`usage_for_line`, `permission_roots`).
         host.native_usages = commands
             .into_iter()
             .filter(|c| {
@@ -1401,18 +1568,20 @@ impl Game<'_> {
             let above = host.hub.command_names_above(conn);
             let mut kept = names.clone();
             let mut hidden = above.clone();
-            // A mod's command with a permission node: the node decides.
+            // A mod's command with a permission node on some usage: its root is shown when any
+            // usage is allowed.
             let level = host.hub.guest(conn).map_or(0, |g| g.permission);
-            for (root, node) in &host.native_command_nodes {
-                let needs = Self::native_command_level(host, root).unwrap_or(4);
-                let allowed = self.has_permission_at(uuid, node, needs, level);
-                let shown = kept.contains(root);
-                if allowed && !shown && hidden.contains(root) {
-                    hidden.retain(|n| n != root);
-                    kept.push(root.clone());
+            for root in permission_roots(&host.native_usages) {
+                let allowed = host.native_usages.iter().any(|u| {
+                    usage_root(&u.usage) == root.as_str() && self.usage_allowed(uuid, u, level)
+                });
+                let shown = kept.contains(&root);
+                if allowed && !shown && hidden.contains(&root) {
+                    hidden.retain(|n| n != &root);
+                    kept.push(root);
                 } else if !allowed && shown {
-                    kept.retain(|n| n != root);
-                    hidden.push(root.clone());
+                    kept.retain(|n| n != &root);
+                    hidden.push(root);
                 }
             }
             let placed = host.hub.guest(conn).is_some_and(|g| g.placed);
@@ -1460,38 +1629,74 @@ impl Game<'_> {
     /// slash), when a mod registered it.
     pub(super) fn native_command_level(host: &LanHost, line: &str) -> Option<u8> {
         let name = line.split(' ').next().unwrap_or_default();
-        host.native_commands.as_ref()?.get(name).copied()
+        let commands = host.native_commands.as_ref()?;
+        commands
+            .get(name)
+            .or_else(|| commands.get(&format!("/{name}")))
+            .copied()
     }
 
-    /// The permission node of a mod's command (`line`, without its slash),
-    /// when it has one (`NativeCommand::permission`).
+    /// The permission node of the usage a mod's command line runs
+    /// (`line`, without its slash), when it has one (`NativeCommand::permission`).
+    /// Where no usage takes the line, the root's first node.
     pub(super) fn native_command_node<'h>(host: &'h LanHost, line: &str) -> Option<&'h str> {
-        let name = line.split(' ').next().unwrap_or_default();
-        host.native_command_nodes
-            .iter()
-            .find(|(root, _)| root == name)
-            .map(|(_, node)| node.as_str())
+        match usage_for_line(&host.native_usages, line) {
+            Some(usage) => usage.permission.as_deref(),
+            None => {
+                let root = typed_words(line).first().copied().unwrap_or_default();
+                host.native_usages
+                    .iter()
+                    .filter(|u| usage_root(&u.usage).trim_start_matches('/') == root)
+                    .find_map(|u| u.permission.as_deref())
+            }
+        }
+    }
+
+    /// Whether `uuid` at `permission` may run `usage`: its node decides when it has one (asked with
+    /// the usage's level), else the usage's level.
+    fn usage_allowed(&self, uuid: u128, usage: &NativeCommand, permission: u8) -> bool {
+        match &usage.permission {
+            Some(node) => self.has_permission_at(uuid, node, usage.level, permission),
+            None => usage.level <= permission,
+        }
+    }
+
+    /// Whether `uuid` at `permission` may run `line`: as the usage it matches, or, where no usage
+    /// takes its words, as any usage of its root.
+    fn line_allowed(
+        &self,
+        uuid: u128,
+        usages: &[NativeCommand],
+        line: &str,
+        permission: u8,
+    ) -> bool {
+        match usage_for_line(usages, line) {
+            Some(usage) => self.usage_allowed(uuid, usage, permission),
+            None => {
+                let root = typed_words(line).first().copied().unwrap_or_default();
+                usages.iter().any(|u| {
+                    usage_root(&u.usage).trim_start_matches('/') == root
+                        && self.usage_allowed(uuid, u, permission)
+                })
+            }
+        }
     }
 
     /// A guest's command for the mods, inside their swap
-    /// (`run_guest_command`): true when one ran it. A command with a
+    /// (`run_guest_command`): true when one ran it. A usage with a
     /// permission node asks `native_has_permission` instead of comparing
     /// levels.
     pub(super) fn perform_native_command(&mut self, conn: u32, permission: u8, line: &str) -> bool {
         let Some(host) = &self.lan else {
             return false;
         };
-        let Some(level) = Self::native_command_level(host, line) else {
+        if Self::native_command_level(host, line).is_none() {
             return false;
-        };
+        }
         let Some(g) = host.hub.guest(conn) else {
             return false;
         };
-        let allowed = match Self::native_command_node(host, line) {
-            Some(node) => self.has_permission_at(g.uuid, node, level, permission),
-            None => level <= permission,
-        };
-        if !allowed {
+        if !self.line_allowed(g.uuid, &host.native_usages, line, permission) {
             return false;
         }
         let player = NativeServerPlayer {
@@ -1698,6 +1903,40 @@ mod tests {
         assert!(t["children"]["warp"].get("permissions").is_none());
         let set = &t["children"]["warp"]["children"]["set"];
         assert_eq!(set["permissions"]["permission"]["level"], "gamemasters");
+    }
+
+    #[test]
+    fn each_usage_runs_with_its_own_node() {
+        let commands = [
+            NativeCommand::new("eco").permission("eco.see"),
+            NativeCommand::op("eco give <player:player> <amount:integer>", 3)
+                .permission("eco.give"),
+            NativeCommand::op("eco reset", 4),
+        ];
+        let usage = |line: &str| usage_for_line(&commands, line).map(|u| u.usage.clone());
+        let node = |line: &str| usage_for_line(&commands, line).and_then(|u| u.permission.clone());
+        assert_eq!(usage("eco").as_deref(), Some("eco"));
+        assert_eq!(
+            usage("/eco give bob 5").as_deref(),
+            Some("eco give <player:player> <amount:integer>")
+        );
+        assert_eq!(usage("eco give bob"), None, "too few words");
+        assert_eq!(usage("eco bob"), None, "the root takes no word");
+        assert_eq!(node("eco give bob 5").as_deref(), Some("eco.give"));
+        assert_eq!(node("eco reset"), None, "a usage without a node");
+        assert_eq!(permission_roots(&commands), ["eco"]);
+    }
+
+    #[test]
+    fn a_replacing_usage_takes_a_vanilla_name() {
+        let (t, levels, problems) =
+            tree(&[NativeCommand::new("give <x:integer>").replace_vanilla(true)]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(levels["give"], 0);
+        assert_eq!(
+            t["children"]["give"]["children"]["x"]["parser"],
+            "brigadier:integer"
+        );
     }
 
     #[test]

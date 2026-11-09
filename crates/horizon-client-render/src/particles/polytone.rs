@@ -11,8 +11,8 @@ use crate::environment::Frame;
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_polytone::expr::{Host, Program, Root, Value as V};
 use horizon_polytone::particles::{
-    BlockEmitters, CustomParticle, Emitter, EntityEmitters, LiquidAffinity, RenderType,
-    SoundEmitter,
+    BlockEmitters, CustomParticle, Emitter, EntityEmitters, LiquidAffinity, ParticleModifier,
+    RenderType, SoundEmitter,
 };
 use horizon_world::registry::BlockRegistry;
 use serde_json::Value as Json;
@@ -37,10 +37,15 @@ pub struct Registry {
     blocks: &'static BlockRegistry,
     /// Each custom particle type's colormap (`colormap`), by type id.
     tints: HashMap<String, Arc<Tint>>,
+    /// Each model particle type's faces (`model`), by type id.
+    models: HashMap<String, Arc<super::polytone_model::ParticleModel>>,
     /// Sound ids as the engine's sound queue holds them, interned once.
     sound_names: Mutex<HashMap<String, &'static str>>,
     /// Sounds the custom particles played this tick (`ParticleEngine::tick` plays them).
     sounds: Mutex<Vec<Sound>>,
+    /// The particle modifiers with their colormaps, and by particle type the ones aimed at it.
+    particle_modifiers: Vec<(ParticleModifier, Option<Tint>)>,
+    modifiers_by_type: Mutex<HashMap<String, Arc<[usize]>>>,
 }
 
 /// A sound for the engine's queue: id, position, volume, pitch, delayed by the distance.
@@ -151,6 +156,7 @@ impl Registry {
         let mut types = HashMap::new();
         let mut modifiers = Vec::new();
         let mut entity_modifiers = Vec::new();
+        let mut particle_modifiers = Vec::new();
         let namespaces = std::fs::read_dir(pack_root.join("assets"))
             .into_iter()
             .flatten()
@@ -173,6 +179,28 @@ impl Registry {
                 match EntityEmitters::parse(&json, implicit.as_deref()) {
                     Ok(Some(m)) if !m.emitters.is_empty() => entity_modifiers.push(Arc::new(m)),
                     Ok(_) => {}
+                    Err(e) => log::warn!("{relative}: {e}"),
+                }
+            }
+            for (relative, json) in json_files(pack_root, &polytone.join("particle_modifiers")) {
+                let implicit = horizon_polytone::implicit_id(&relative, "particle_modifiers");
+                match ParticleModifier::parse(&json, implicit.as_deref()) {
+                    // A filter needs the block or item a particle carries, which particles here
+                    // only keep as a sprite: such a modifier would hit the wrong particles.
+                    Ok(Some(m)) if m.filter.is_some() => {
+                        log::warn!("{relative}: particle modifier filters aren't supported yet");
+                    }
+                    Ok(Some(m)) => {
+                        let tint = m.colormap.as_ref().and_then(|json| {
+                            let tint = Tint::read(pack_root, json);
+                            if tint.is_none() {
+                                log::warn!("{relative}: colormap {json} not found");
+                            }
+                            tint
+                        });
+                        particle_modifiers.push((m, tint));
+                    }
+                    Ok(None) => {}
                     Err(e) => log::warn!("{relative}: {e}"),
                 }
             }
@@ -212,6 +240,12 @@ impl Registry {
                     .clone()
             })
             .collect();
+        let models = super::polytone_model::read_models(
+            pack_root,
+            types
+                .iter()
+                .filter_map(|(id, def)| Some((id, def.render.get("model")?))),
+        );
         let tints = types
             .iter()
             .filter_map(|(id, def)| {
@@ -235,8 +269,11 @@ impl Registry {
             configs,
             blocks,
             tints,
+            models,
             sound_names: Mutex::default(),
             sounds: Mutex::default(),
+            particle_modifiers,
+            modifiers_by_type: Mutex::default(),
         }
     }
 
@@ -244,6 +281,29 @@ impl Registry {
         self.types.is_empty()
             && self.block_emitters.iter().all(Option::is_none)
             && self.entity_modifiers.is_empty()
+            && self.particle_modifiers.is_empty()
+    }
+
+    /// Whether any pack modifies vanilla or mod particles (`particle_modifiers`).
+    pub(super) fn modifies_particles(&self) -> bool {
+        !self.particle_modifiers.is_empty()
+    }
+
+    /// The particle modifiers aimed at a particle type (`minecraft:flame`), in the order read;
+    /// particle tags aren't resolved here.
+    fn modifiers_for(&self, id: &str) -> Arc<[usize]> {
+        let mut cache = self
+            .modifiers_by_type
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(found) = cache.get(id) {
+            return found.clone();
+        }
+        let found: Arc<[usize]> = (0..self.particle_modifiers.len())
+            .filter(|&i| self.particle_modifiers[i].0.targets.matches(id, |_| false))
+            .collect();
+        cache.insert(id.to_owned(), found.clone());
+        found
     }
 
     /// A sound id as the engine's sound queue holds it.
@@ -661,7 +721,7 @@ impl Host for Ctx<'_> {
             (CAMERA, "x" | "y" | "z") => num(frame.camera[axis(name)]),
             (CAMERA, "viewDistance") => num(f64::from(frame.render_distance * 16)),
             (CAMERA, _) => self.positional(ParticleLevel::block_at(frame.camera), name, args),
-            (GLOBAL, "rain") => num(f64::from(frame.rain)),
+            (GLOBAL, "rain") => num(frame.global_rain()),
             (GLOBAL, "time") => num(frame.game_time as f64),
             (GLOBAL, "dayTime") => num(frame.day_time as f64),
             (GLOBAL, "skyType") => num(f64::from(frame.sky_type)),
@@ -1127,13 +1187,19 @@ pub(super) fn make(
     particle.gravity = 0.0;
     particle.has_physics = def.has_physics;
     let mut frames = 0;
-    // A model particle (`model`) isn't drawn yet: it still ticks and emits. A GPU particle is
-    // drawn from its record instead (`polytone_gpu`).
+    // A model particle draws its model's faces; one whose model is missing still ticks and
+    // emits. A GPU particle is drawn from its record instead (`polytone_gpu`).
+    let model = registry.models.get(name).cloned();
     let hidden = def.render_type == RenderType::Invisible
-        || def.render.contains_key("model")
+        || (def.render.contains_key("model") && model.is_none())
         || def.gpu.is_some();
-    match engine.mod_sets.get(name) {
-        Some(&(set, _)) => {
+    // A mod's sprite set, or for a type replacing a vanilla one, that type's.
+    let set = engine.mod_sets.get(name).map(|&(set, _)| set).or_else(|| {
+        let vanilla = name.strip_prefix("minecraft:")?;
+        engine.sets.get(&ParticleType::from_name(vanilla)?).copied()
+    });
+    match set {
+        Some(set) => {
             let sprites = engine.set_sprites.get(set as usize)?;
             frames = sprites.len();
             particle.set = Some(set);
@@ -1145,9 +1211,15 @@ pub(super) fn make(
             particle.sprite = Sprite::Index(*sprites.get(pick).or(sprites.first())?);
         }
         None if hidden => {}
+        None if model.is_some() => {}
         None => return None,
     }
     particle.no_render = hidden;
+    if let Some(model) = model {
+        // The sprite lookup that admits a particle to drawing: its first face's.
+        particle.sprite = Sprite::Named(model.quads[0].sprite.clone());
+        particle.model = Some(model);
+    }
     particle.orientation = super::polytone_gpu::Orientation::parse(&def.rotation_mode);
     particle.additive = def.render_type == RenderType::AdditiveTranslucent;
     // `light_level`: the block light the particle gives itself (wiki "Custom Particle Types"),
@@ -1206,6 +1278,70 @@ pub(super) fn make(
     }));
     Some(particle)
 }
+
+/// Runs the packs' particle modifiers aimed at `id` on a particle that was just made: each
+/// expression once, against the particle as its constructor left it (`size` scales it, `speed`
+/// sets its power, as vanilla's `Particle.scale` and `setPower`).
+pub(super) fn modify(registry: &Registry, id: &str, p: &mut Particle) {
+    let modifiers = registry.modifiers_for(id);
+    if modifiers.is_empty() {
+        return;
+    }
+    let Ok(frame) = registry.frame.read() else {
+        return;
+    };
+    let mut random = std::mem::replace(&mut p.random, LegacyRandom::new(0));
+    let (mut custom, mut customs) = (0.0, BTreeMap::new());
+    for &i in modifiers.iter() {
+        let (modifier, tint) = &registry.particle_modifiers[i];
+        let mut ctx = Ctx {
+            subject: Subject::Particle(p),
+            random: &mut random,
+            custom: &mut custom,
+            customs: &mut customs,
+            frame: &frame,
+            registry,
+            level: None,
+            blocks: Vec::new(),
+        };
+        // Every expression reads the particle before this modifier changes it.
+        let value =
+            |ctx: &mut Ctx, key: &str| modifier.fields.get(key).and_then(|prog| eval(prog, ctx));
+        let values = MODIFIED.map(|key| value(&mut ctx, key));
+        let tinted = tint.as_ref().and_then(|t| t.sample(&mut ctx));
+        drop(ctx);
+        let [color, red, green, blue, alpha, life, size, speed] = values;
+        if let Some(rgb) = tinted {
+            p.rgba[..3].copy_from_slice(&rgb);
+        }
+        if let Some(c) = color {
+            let c = c as i64;
+            for (channel, shift) in [16, 8, 0].into_iter().enumerate() {
+                p.rgba[channel] = ((c >> shift) & 0xff) as f32 / 255.0;
+            }
+        }
+        for (channel, v) in [red, green, blue, alpha].into_iter().enumerate() {
+            if let Some(v) = v {
+                p.rgba[channel] = v as f32;
+            }
+        }
+        if let Some(life) = life {
+            p.lifetime = life as i32;
+        }
+        if let Some(size) = size {
+            p.scale(size as f32);
+        }
+        if let Some(speed) = speed {
+            p.set_power(speed as f32);
+        }
+    }
+    p.random = random;
+}
+
+/// The fields a particle modifier sets, in the order `modify` applies them.
+const MODIFIED: [&str; 8] = [
+    "color", "red", "green", "blue", "alpha", "life", "size", "speed",
+];
 
 impl ParticleEngine {
     /// The emitters of the packs' entity modifiers aimed at `entity` (its type, as
@@ -1876,6 +2012,52 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn particle_modifiers_scale_power_and_recolour_their_particles_once() {
+        let root = pack(&[
+            (
+                "assets/minecraft/polytone/particle_modifiers/flame.json",
+                serde_json::json!({"size": "2", "life": "LIFETIME + 5", "red": "0.5", "speed": "2"}),
+            ),
+            (
+                "assets/pack/polytone/particle_modifiers/smoky.json",
+                serde_json::json!({"targets": ["minecraft:smoke"], "color": "0x336699"}),
+            ),
+        ]);
+        let registry = Registry::read(&root, Default::default(), blocks());
+        let flame = || {
+            let mut p = Particle::blank(ParticleType::Flame, [0.0; 3]);
+            p.size = 0.1;
+            p.lifetime = 10;
+            p.velocity = [0.25, f64::from(0.1f32), -0.5];
+            p
+        };
+        let mut p = flame();
+        modify(&registry, "minecraft:flame", &mut p);
+        // `size` multiplies, `speed` is vanilla's power: x and z doubled, a y of 0.1 kept.
+        assert_eq!((p.size, p.lifetime, p.rgba[0]), (0.2, 15, 0.5));
+        assert_eq!(p.velocity, [0.5, f64::from(0.1f32), -1.0]);
+        // Another type's modifier, by its targets: the packed colour.
+        let mut p = flame();
+        modify(&registry, "minecraft:smoke", &mut p);
+        assert_eq!(
+            &p.rgba[..3],
+            &[
+                0x33 as f32 / 255.0,
+                0x66 as f32 / 255.0,
+                0x99 as f32 / 255.0
+            ]
+        );
+        assert_eq!((p.size, p.lifetime), (0.1, 10));
+        // No modifier aimed at it: untouched.
+        let mut p = flame();
+        modify(&registry, "minecraft:soul_fire_flame", &mut p);
+        assert_eq!(
+            (p.size, p.lifetime, p.velocity),
+            (0.1, 10, [0.25, f64::from(0.1f32), -0.5])
+        );
+    }
+
     /// The freepack's light rays come from an emitter with physics that rests beside a leaf and
     /// emits every tick of its life: resting is not being still, only a stopped fall is.
     #[test]
@@ -1910,6 +2092,32 @@ mod tests {
         p.stopped_by_collision = true;
         engine.tick_particle(&mut p, &level);
         assert!(p.removed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_pack_custom_particle_replaces_the_vanilla_type_of_its_id() {
+        let root = pack(&[(
+            "assets/minecraft/polytone/custom_particles/flame.json",
+            serde_json::json!({"has_physics": false, "initializer": {"lifetime": "33", "size": "0.75"}}),
+        )]);
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks()));
+        // The vanilla flame's sprite set (what the pack's particles/flame.json lists).
+        engine.sets.insert(ParticleType::Flame, 1);
+        engine.set_sprites.push(vec![20, 21]);
+        engine.create(
+            &ParticleOptions::simple(ParticleType::Flame),
+            [1.0, 65.0, 1.0],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.len(), 1);
+        let p = &engine.pending[0];
+        assert!(
+            p.controller.is_some(),
+            "the pack's particle, not vanilla's flame"
+        );
+        assert_eq!((p.lifetime, p.size), (33, 0.75));
+        assert!(matches!(p.sprite, Sprite::Index(20)));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

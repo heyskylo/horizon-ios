@@ -1932,7 +1932,9 @@ impl Game<'_> {
     }
 
     fn pad_show_os_pointer(&mut self, show: bool) {
-        if self.pad.menu.os_hidden != show {
+        // While the game's grab is internal the system pointer stays as it is; the first poll
+        // after shows or hides it.
+        if self.pad.menu.os_hidden != show || self.internal_grab() {
             return;
         }
         self.pad.menu.os_hidden = !show;

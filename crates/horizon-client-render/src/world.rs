@@ -108,6 +108,9 @@ pub struct World {
     pub inhabited: FxHashMap<(i32, i32), i64>,
     pub game_time: i64,
     pub day_time: i64,
+    /// The End's world clock (`WorldClocks.THE_END`, the End sky flash's), saved apart from
+    /// the game time and, like every clock, still while `advance_time` is off.
+    pub end_clock: i64,
     pub weather: Weather,
     /// Every block position written since the log was last drained, kept
     /// only while the world is open to the network (see `lan`).
@@ -238,6 +241,7 @@ impl World {
             inhabited: FxHashMap::default(),
             game_time: 0,
             day_time: 1000,
+            end_clock: 0,
             weather: Weather::default(),
             block_log: None,
             block_log_held: Vec::new(),

@@ -15,7 +15,7 @@ use horizon_core::{
 use horizon_world::{
     block_landing::LandingEntityKind,
     entity_fluid::{CurrentAccumulator, CurrentTarget},
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidState, FluidTemplate},
     fluid_flow::{FluidFlowWorld, flow_at},
     movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
     registry::BlockStateId,
@@ -235,10 +235,10 @@ impl MobWorld<'_> {
                 for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
                     let p = BlockPos::new(x, y, z);
                     let state = self.fluid_tables.fluid(self.world.block(x, y, z));
-                    let current = match state.kind() {
-                        FluidKind::Empty => continue,
-                        FluidKind::Water | FluidKind::FlowingWater => &mut water,
-                        FluidKind::Lava | FluidKind::FlowingLava => &mut lava,
+                    let current = match state.kind().template() {
+                        FluidTemplate::Empty => continue,
+                        FluidTemplate::Water => &mut water,
+                        FluidTemplate::Lava => &mut lava,
                     };
                     let surface = f64::from(y) + self.fluid_height(x, y, z).1;
                     if surface < lo.y {
@@ -1354,8 +1354,51 @@ impl Mob {
         let stands_on_fluid = self.kind.flags.lava_walker && w.fluid(x, y, z) == Fluid::Lava;
         if self.is_in_liquid() && self.affected_by_fluids() && !stands_on_fluid {
             self.travel_in_fluid(w, input, events);
+        } else if self.extra.fall_flying {
+            self.travel_fall_flying(w, input, events);
         } else {
             self.travel_in_air(w, input, events);
+        }
+    }
+    /// `LivingEntity.travelFallFlying`: use the mob's existing authoritative move
+    /// and damage routes, with the shared `updateFallFlyingMovement` arithmetic.
+    fn travel_fall_flying(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+        if self.on_climbable(w) {
+            self.travel_in_air(w, input, events);
+            self.extra.fall_flying = false;
+            return;
+        }
+        let before = (self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z).sqrt();
+        self.velocity = crate::motion::fall_flying_movement(
+            self.velocity,
+            self.head_pitch,
+            self.yaw,
+            self.effective_gravity(),
+        );
+        self.do_move(w, events);
+        if self.horizontal_collision {
+            let damage = ((before
+                - (self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z).sqrt())
+                * 10.0
+                - 3.0) as f32;
+            if damage > 0.0 {
+                let monster = super::ai::is_monster(self.species());
+                let sound = match (monster, damage as i32 > 4) {
+                    (true, true) => "entity.hostile.big_fall",
+                    (true, false) => "entity.hostile.small_fall",
+                    (false, true) => "entity.generic.big_fall",
+                    (false, false) => "entity.generic.small_fall",
+                };
+                if !self.silent {
+                    events.push(MobEvent::Sound(
+                        sound,
+                        [self.position.x, self.position.y, self.position.z],
+                        1.0,
+                        1.0,
+                    ));
+                }
+                self.damage(damage, super::Damage::of(super::DamageKind::FlyIntoWall));
+            }
         }
     }
     /// LivingEntity.travelFlying: no gravity, `0.91F` drag in the air,
@@ -2937,6 +2980,55 @@ mod tests {
                         "{events:?}"
                     );
                 }
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+
+    /// `FarmlandBlock.turnToBaseBlock`: a mob whose landing tramples farmland
+    /// posts `block_change` at the block, with the mob as its source, so a sculk
+    /// sensor, a calibrated sensor and a warden hear it - right after the write.
+    #[test]
+    fn a_mob_trampling_farmland_posts_block_change_from_it() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let state = registry.default_state("minecraft:farmland").unwrap();
+                world.set(0, 0, 0, state).unwrap();
+            },
+            |w, types| {
+                let dirt = w.registry.default_state("minecraft:dirt").unwrap();
+                let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                let mut mob = Mob::new(7, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
+                mob.fall_distance = 5.0;
+                let mut events = Vec::new();
+                mob.fall_on_block(w, &mut events);
+                // The write, then the event the rule posts for it.
+                assert!(
+                    matches!(
+                        events.as_slice(),
+                        [
+                            MobEvent::SetBlock {
+                                pos: [0, 0, 0],
+                                state,
+                            },
+                            MobEvent::LandingGameEvent {
+                                event: "minecraft:block_change",
+                                at: [0, 0, 0],
+                                source: Some(7),
+                                state: affected,
+                            },
+                            ..
+                        ] if *state == dirt && *affected == dirt
+                    ),
+                    "{events:?}"
+                );
             },
         );
         // Without the vanilla data under .local/horizon-client the world
