@@ -1407,8 +1407,13 @@ mod tests {
         }
         let root =
             PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources"));
-        let source = std::env::current_dir().unwrap().join("drop-fixtures");
-        std::fs::create_dir_all(&source).unwrap();
+        let game_dir = std::env::current_dir().unwrap();
+        assert!(
+            std::fs::read_dir(&game_dir).unwrap().next().is_none(),
+            "run the built test executable directly from an empty scratch game directory"
+        );
+        let source = game_dir.join("drop-fixtures");
+        std::fs::create_dir(&source).unwrap();
         for name in ["Startup pack", "Game pack"] {
             let path = source.join(name);
             std::fs::create_dir_all(&path).unwrap();
