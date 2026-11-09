@@ -189,7 +189,6 @@ mod tests {
     }
 }
 
-use super::Mob;
 use horizon_world::nbt::{Compound, Tag};
 
 /// `finalizeSpawn`'s memories (`m.extra.memories`) as `Brain.Packed` writes
