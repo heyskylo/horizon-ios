@@ -19,8 +19,8 @@ pub use horizon_client_render::{
     hdr_calibration, hud, hud_kit, hud_layout, hud_overlays, inventory_effects, java_text,
     jigsaw_block, json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap,
     mipmap, mod_browser, mod_list, model_library, models, multiline_edit, native_emissive,
-    options_file, options_fixes, options_ui, overlay, pack_browser, pack_palette, pack_screen,
-    packs, pad_cursor, pad_glyph, par, particles, poi_sections, polytone_colors,
+    options_file, options_fixes, options_ui, overlay, pack_browser, pack_formats, pack_hooks,
+    pack_palette, pack_screen, packs, pad_cursor, pad_glyph, par, particles, poi_sections,
     polytone_creative_tabs, polytone_post, post_chain, potent_sulfur, preedit, providers, pvp,
     pvp_hud, random_source, screen_draw, screen_effects, sculk, section_mask, server_terrain,
     settings, shader_options, shader_pack_list, signs, skins, social, sound_engine, sound_events,
@@ -70,7 +70,6 @@ pub mod falling_block;
 pub mod fire_render;
 pub mod first_person;
 pub mod flatgen;
-pub mod friends_screen;
 pub mod furnace;
 pub mod game_mode_switcher;
 pub mod game_rules_screen;
@@ -170,6 +169,7 @@ pub use horizon_client_input::gamepad;
 pub use horizon_client_input::gameplay_guide;
 pub use horizon_client_input::held;
 pub use horizon_client_input::input;
+pub use horizon_client_input::input_source;
 pub use horizon_client_input::interaction_input;
 pub use horizon_client_input::key_names;
 pub use horizon_client_input::keybinds;

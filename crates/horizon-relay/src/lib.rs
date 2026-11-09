@@ -114,6 +114,12 @@ impl Config {
         if let Some(v) = var::<f64>("RELAY_GLOBAL_UNKNOWN_PER_MIN") {
             c.global_unknown_per_min = v;
         }
+        if let Some(v) = var::<f64>("RELAY_NAMEPLATE_UNKNOWN_PER_MIN") {
+            c.rates.nameplate_unknown_per_min = v;
+        }
+        if let Some(v) = var::<f64>("RELAY_NAMEPLATE_UNKNOWN_BURST") {
+            c.rates.nameplate_unknown_burst = v;
+        }
         if let Some(v) = var::<u8>("RELAY_PER_ADDRESS_LIMITS") {
             c.per_address = v != 0;
         }
@@ -668,8 +674,8 @@ fn join(
     let now = Instant::now();
     state.joins.fetch_add(1, Ordering::Relaxed);
     // The budgets for unknown codes (the site's, then the global one) are checked before the
-    // lookup, so a refusal says nothing about whether the nameplate exists. The site's comes first:
-    // emptying the global budget takes many sites, not the /64s of one home's /56.
+    // lookup, so a refusal says nothing about whether the nameplate exists. The site's comes
+    // first: emptying the global budget takes many sites, not the /64s of one home's /56.
     let allowed = {
         let mut limiter = locked(&state.limiter);
         limiter.allow_join(peer.ip(), now) && limiter.site_unknown_has(peer.ip(), now)
@@ -681,6 +687,15 @@ fn join(
     let Some(nameplate) = code::parse_nameplate(nameplate) else {
         return refuse(&mut stream, ErrorCode::BadRequest);
     };
+    // The nameplate's own budget: what one address set can take of the global unknown budget for
+    // a single short code. Checked before the lookup like the other budgets, so a refusal says
+    // nothing about whether the code exists. It counts unknown short codes only, so a wrong secret
+    // for an existing code stays the host's limit (five, then it retires the code), not the
+    // relay's.
+    if !locked(&state.limiter).nameplate_unknown_has(&nameplate, now) {
+        state.rate_limited.fetch_add(1, Ordering::Relaxed);
+        return refuse(&mut stream, ErrorCode::RateLimited);
+    }
     let session = random_u64();
     let (atx, arx) = sync_channel(1);
     let lookup = {
@@ -720,6 +735,7 @@ fn join(
             {
                 let mut limiter = locked(&state.limiter);
                 limiter.unknown(peer.ip(), now);
+                limiter.nameplate_unknown_take(&nameplate, now);
                 limiter.site_unknown_take(peer.ip(), now);
             }
             locked(&state.global_unknown).try_take(now);

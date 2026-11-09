@@ -22,10 +22,10 @@ What changes in that build:
 | Extra | Where it lives | The gate |
 |---|---|---|
 | Cosmetics, emotes and the emote wheel, "Show me as a Horizon player" | `game/cosmetics.rs` (+ `cosmetics/fx.rs`, `cosmetics/emotes.rs`, `cosmetics/emote_wheel.rs`), crate `horizon-cosmetics` | `game::cosmetics::enabled()`: the service is never asked, nothing is drawn, B opens no wheel |
-| The official server added to the server list | `multiplayer.rs` (`add_official_server`) | their call at startup (`game.rs`, `fn run`) |
+| The official server added to the server list, the withdrawn partner server taken out | crate `horizon-official-servers` | registered only by the official executable (`horizon-official`); horizon-client's own executable has none |
 | Horizon Settings (Extras, PvP & HUD, Splitscreen, Studio, AI Agent, Discord) and Mods (with the registry browser) | `options_ui.rs` (`Page::Horizon` and below), `extras_ui.rs`, `extras.rs`, `pvp.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_hud.rs` | the Options screen shows vanilla's greyed Telemetry Data instead (`options_ui::HORIZON_EXTRAS`, set in `entry.rs`) |
 | Discord Rich Presence | `discord_presence.rs`, `game/discord.rs` | the `discord` feature, which `horizon-extras` turns on |
-| Play with Friends | `game/friends.rs`, `friends_screen.rs`, crate `horizon-friends` | the `friends` feature (`game/friends_off.rs` stands in) |
+| Play with Friends | hosting: `game/friends.rs`, `game/friends/screen.rs`; joining: crate `horizon-friends` (`game`) | hosting: the `friends` feature (`game/friends_off.rs` stands in); joining: only the official executable registers it ([layers.md](layers.md#how-a-horizon-crate-plugs-in)) |
 | The anonymous "I'm playing" ping | crate `horizon-heartbeat` | not in horizon-client at all: only the official executable (`horizon-official`) registers it ([layers.md](layers.md#how-a-horizon-crate-plugs-in)) |
 
 Credits & Attribution then says where the official build is (`horizon.plain.official`).
@@ -46,3 +46,23 @@ gate guards.
 - The mod runtime: nothing installs a mod without the launcher, so it stays idle.
 - The `horizon` brand reply to a Horizon server, for its protocol extensions (`net.rs`).
 - Agent control (`--control`, `horizon-ctl`), controllers, HDR, shader packs.
+
+## Microsoft sign-in in a fork
+
+Horizon's Microsoft sign-in runs under one Azure app registration, whose client ID release builds
+read from the repository variable `HORIZON_MSA_CLIENT_ID` (docs/microsoft-account.md). That
+registration, and Mojang's approval of it for the Minecraft services, are for Horizon's own builds
+only. They do not pass to forks, ports or derived launchers, whatever their licence.
+
+- A fork, port or derived launcher that signs players in registers its own Azure app and applies for
+  its own approval from Mojang/Microsoft (the App ID review in docs/microsoft-account.md).
+- Its builds must not ship, embed, download or otherwise fetch Horizon's client ID, and must not tell
+  players to set `HORIZON_MSA_CLIENT_ID` to it. Sign-ins made with it would appear to Microsoft and
+  Mojang as Horizon's, which the project does not accept.
+- The MIT licence covers the code, not the app registration: copying the code gives no right to use
+  Horizon's client ID.
+- Horizon may restrict, rotate or revoke its client ID at any time, which breaks every build that
+  uses it, and reports misuse to Microsoft, Mojang and the hosting platform.
+
+A build made from source without a client ID of its own says that sign-in is not configured; that is
+the expected state for a fork until its own app is approved.

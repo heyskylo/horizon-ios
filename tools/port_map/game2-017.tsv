@@ -28,7 +28,7 @@ ChestBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_b
 ChestBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	Items
 ChestBlockEntity.stopOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::container_opener_event	opener count down (close side), spectators excluded
 ChestBlockEntity.swapContents	missing		only `UpgradeData.BlockFixers` (the old-world upgrade of a double chest) asks for it, and the chunk upgrade does not swap chest halves
-ChestBlockEntity.recheckOpen	missing		only the copper golems' openers are rechecked, every five ticks (`recheck_golem_openers`); a player's openers are counted at open and close (`container_openers_changed`) and never when the block beside the chest changes
+ChestBlockEntity.recheckOpen	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	the chest's scheduled tick (ContainerOpenersCounter.scheduleRecheck, every five ticks while someone has it open) recounts its openers through `recheck_container_openers`, broadcasts the lid block event and updates a trapped chest's neighbours when the count changes
 ChestLidController.tickLid	port	crates/horizon-client-render/src/block_entity_anim.rs::ChestLid::tick	lid openness step of 0.1 per tick
 ChiseledBookShelfBlockEntity.removeItem	port	crates/horizon-client/src/game/machines.rs::Game::take_one	removes one item from the slot
 ChiseledBookShelfBlockEntity.setItem	port	crates/horizon-client/src/game/chiseled_bookshelf.rs::Game::use_chiseled_bookshelf	player insert path; slot update via chiseled_bookshelf_update_state
@@ -69,7 +69,7 @@ DispenserBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::deco
 DispenserBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	Items (9 slots)
 EnderChestBlockEntity.startOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::container_opener_event	opener count up (open side)
 EnderChestBlockEntity.stopOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::container_opener_event	opener count down (close side)
-EnderChestBlockEntity.recheckOpen	missing		no player opener recount when the block beside an ender chest changes: the openers are counted at open and close only (`container_openers_changed`)
+EnderChestBlockEntity.recheckOpen	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	the ender chest's scheduled tick recounts its openers through `recheck_container_openers` and broadcasts the lid block event; the tick re-schedules itself while anyone has it open
 HopperBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	gap: minor: TransferCooldown is not saved (transient state in machines.rs)
 HopperBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	gap: minor: TransferCooldown is not saved (transient state in machines.rs)
 HopperBlockEntity.setItem	port	crates/horizon-client/src/game/machines.rs::Game::try_move_in_item	gap: minor: unpackLootTable(null) on set is not done here
