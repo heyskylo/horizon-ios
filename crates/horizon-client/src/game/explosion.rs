@@ -2039,6 +2039,7 @@ mod tests {
 #[cfg(test)]
 mod explicit_source_tests {
     use super::*;
+    use crate::game::native_explosions::NativeBlast;
     use horizon_client::{mobs::Mob, motion::PlayerMotion};
 
     #[test]
@@ -2110,5 +2111,12 @@ mod explicit_source_tests {
             assert_eq!(game.combat.explosion_owner, Some(99));
             assert!(game.combat.explicit_explosion_cause.is_none());
         }
+        game.options.dedicated = Some(Vec::new());
+        game.combat.explicit_explosion_cause = Some(None);
+        game.combat.blast_guest = Some(17);
+        let center = [8.5, 64.0, 8.5];
+        assert!(game.native_explode("minecraft:overworld", center, 0.1, false, NativeBlast::Keep));
+        assert_eq!(game.combat.blast_guest, Some(17));
+        assert!(matches!(game.combat.explicit_explosion_cause, Some(None)));
     }
 }
