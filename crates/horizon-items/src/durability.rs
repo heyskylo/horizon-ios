@@ -35,9 +35,10 @@ pub fn stack_max_damage(items: &Items, stack: &ItemStack) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::item_data::{command_components, decode_components};
+    use crate::item_data::{command_components, decode_components, encode_components_with_items};
     use crate::item_nbt::{item_from_nbt, item_to_nbt};
     use horizon_world::loot::PackOverlay;
+    use horizon_world::nbt::Tag;
     use std::fs;
 
     /// A normally non-durable item type becomes damageable when the stack
@@ -50,7 +51,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("horizon-durability-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
-        fs::write(root.join("items.json"), r#"{"minecraft:stick":{}}"#).unwrap();
+        fs::write(
+            root.join("items.json"),
+            r#"{"minecraft:stick":{},"minecraft:diamond_pickaxe":{"minecraft:max_damage":1561}}"#,
+        )
+        .unwrap();
         let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
         let mut stick = ItemStack::new("minecraft:stick", 1);
 
@@ -79,6 +84,19 @@ mod tests {
             (stick.damage, stick.extra) = decode_components(Some(&components));
             assert_eq!(stack_max_damage(&items, &stick), wanted, "{patch:?}");
         }
+
+        // Saved against the prototype, the stick keeps its zero DAMAGE, while a durable
+        // items explicit zero equals its prototypes DAMAGE and is dropped (`fromPatch`).
+        let zero = command_components("[max_damage=20,damage=0]").unwrap();
+        (stick.damage, stick.extra) = decode_components(Some(&zero));
+        let saved = encode_components_with_items(&stick, &items).unwrap();
+        assert_eq!(saved.get("minecraft:damage"), Some(&Tag::Int(0)));
+        let mut pickaxe = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        (pickaxe.damage, pickaxe.extra) = decode_components(Some(&zero));
+        let saved = encode_components_with_items(&pickaxe, &items).unwrap();
+        assert_eq!(saved.get("minecraft:damage"), None);
+        assert_eq!(saved.get("minecraft:max_damage"), Some(&Tag::Int(20)));
+        assert_eq!(stack_max_damage(&items, &pickaxe), 20);
 
         // MAX_DAMAGE alone does not supply DAMAGE.
         let only = command_components("[max_damage=20]").unwrap();

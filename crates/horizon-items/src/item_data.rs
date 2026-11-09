@@ -862,17 +862,27 @@ pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
 /// Context-free callers and the live `components_tag` view stay unchanged.
 pub fn encode_components_with_items(stack: &ItemStack, items: &crate::items::Items) -> Option<Tag> {
     let mut components = encode_components(stack)?;
+    let Some(prototype) = items.get(&stack.item) else {
+        return Some(components);
+    };
     // PatchedDataComponentMap.set removes values equal to the prototype.
-    if let Some(prototype) = items.get(&stack.item)
-        && prototype
-            .components
-            .iter()
-            .any(|id| id == "minecraft:max_stack_size")
+    let same_stack_size = prototype
+        .components
+        .iter()
+        .any(|id| id == "minecraft:max_stack_size")
         && matches!(components.get("minecraft:max_stack_size"), Some(Tag::Int(size))
-            if *size > 0 && *size as u32 == prototype.max_stack)
-        && let Tag::Compound(entries) = &mut components
-    {
-        entries.remove(&JavaString::from("minecraft:max_stack_size"));
+            if *size > 0 && *size as u32 == prototype.max_stack);
+    // A durable prototype carries DAMAGE 0 (`Item.Properties.durability`), so the
+    // explicit zero `components_tag` keeps for a stack-declared MAX_DAMAGE equals it.
+    let same_damage =
+        prototype.max_damage > 0 && matches!(components.get("minecraft:damage"), Some(Tag::Int(0)));
+    if let Tag::Compound(entries) = &mut components {
+        if same_stack_size {
+            entries.remove(&JavaString::from("minecraft:max_stack_size"));
+        }
+        if same_damage {
+            entries.remove(&JavaString::from("minecraft:damage"));
+        }
         if entries.is_empty() {
             return None;
         }
