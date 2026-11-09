@@ -244,7 +244,7 @@ fn arch_label(build: &str, machine: &str) -> String {
 }
 
 /// `PRETTY_NAME` of /etc/os-release and the kernel, or the system's own version string.
-fn operating_system() -> String {
+pub(crate) fn operating_system() -> String {
     let arch = arch_label(std::env::consts::ARCH, machine_arch());
     let version = if cfg!(target_os = "linux") {
         let name = read("/etc/os-release").and_then(|t| {

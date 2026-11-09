@@ -1,6 +1,8 @@
 // Adapted from Starling's touch.rs tests (see the header of touch.rs).
 use super::*;
 
+mod gestures;
+
 fn role(t: &TouchControls, id: u64) -> Role {
     t.fingers[&id].0
 }

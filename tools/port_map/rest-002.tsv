@@ -28,7 +28,7 @@ StatePropertiesPredicate.Builder.hasProperty	skip:java		builder
 StatePropertiesPredicate.ExactMatcher.match	inline	crates/horizon-client/src/advancements.rs::block	exact value compare of the state map
 StatePropertiesPredicate.PropertyMatcher.match	inline	crates/horizon-client/src/advancements.rs::block	present property compared by block()
 StatePropertiesPredicate.PropertyMatcher.checkState	skip:data		load-time check that the property exists
-StatePropertiesPredicate.RangedMatcher.match	inline	crates/horizon-client/src/advancements.rs::block	gap: minor: ranges compare numeric property values only
+StatePropertiesPredicate.RangedMatcher.match	inline	crates/horizon-client/src/advancements.rs::block	registered legal-domain parsing and inclusive typed comparison; pinned vanilla Boolean/Integer/Direction/remaining enums; unavailable registry fails closed
 TagPredicate.codec	skip:java		codec
 TagPredicate.is	skip:java		builder
 TagPredicate.isNot	skip:java		builder

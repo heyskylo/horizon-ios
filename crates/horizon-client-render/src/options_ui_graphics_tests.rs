@@ -143,3 +143,34 @@ fn the_graphics_screens_wheel_scrolls_even_over_a_slider_being_changed() {
     assert_eq!(s.horizon.chunk_updates, 16);
     assert!(ui.graphics.scroll_amount() > before);
 }
+
+/// A window holding HDR output back (a start failed on its driver) shows it on the HDR page
+/// as soon as the graphics screen opens, with no setting applied: the row's line, and
+/// Calibrate blocked, where the same window not holding it back calibrates.
+#[test]
+fn a_held_hdr_start_shows_as_the_graphics_screen_opens() {
+    use crate::gfx::output::tests::{snapshot, window};
+    let atlas = atlas();
+    let mut s = Settings::default();
+    s.horizon.hdr = crate::graphics::HdrMode::Auto;
+    s.horizon.hdr_failed_start = Some("Vulkan 10de:2684 GPU; driver; 1.0; os".into());
+    let (mut caps, reading) = window(Some(crate::gfx::HdrOutput::Pq), Some(true));
+    for held in [true, false] {
+        caps.held = held;
+        let mut ui = OptionsUi {
+            size: (427.0, 240.0),
+            ..Default::default()
+        };
+        let output = snapshot(&s.horizon, Default::default(), caps, reading);
+        ui.draw(
+            &s,
+            output,
+            &mut HudBatch::new([427, 240]),
+            &atlas,
+            (-1.0, -1.0),
+        );
+        ui.show(Page::Graphics);
+        assert!(calibrates(&mut ui, &mut s, &atlas) != held, "held {held}");
+        assert_eq!(ui.graphics.screen.output.held, held);
+    }
+}
