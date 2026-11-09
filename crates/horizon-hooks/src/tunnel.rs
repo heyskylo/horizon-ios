@@ -1,13 +1,12 @@
 //! Addresses a higher layer opens a tunnel for: `friend:<code>`, Play with Friends' invite codes
-//! (a Horizon feature, docs/play-with-friends.md). The engine keeps the address form and the join;
-//! the [`Resolver`] registered at startup reads the codes and opens the tunnel, which the client
-//! then reaches on a loopback port like any server. Without one (the server build, a build without
-//! Horizon's extras) no code is one, and such an address is refused, never retried.
+//! (a Horizon crate, docs/play-with-friends.md). The engine keeps the address form and the join
+//! (`net.rs`); the [`Resolver`] a registered hook offers ([`Hooks::tunnel`](crate::Hooks::tunnel))
+//! reads the codes and opens the tunnel, which the client then reaches on a loopback port like any
+//! server. Without one (horizon-client's own executable, the server build) no code is one, and
+//! such an address is refused, never retried.
 //!
 //! Hosting needs no hook here: the tunnel's host end connects to the world's LAN port over
 //! loopback, so its guests are LAN guests.
-use std::sync::OnceLock;
-
 /// What starts a tunnel address.
 pub const PREFIX: &str = "friend:";
 
@@ -48,16 +47,4 @@ pub trait Resolver: Send + Sync {
         relay: Option<String>,
         progress: &mut dyn FnMut(Progress),
     ) -> Result<Opened, String>;
-}
-
-static RESOLVER: OnceLock<Box<dyn Resolver>> = OnceLock::new();
-
-/// Registers the resolver, once at startup. False when one already was (the first one stays).
-pub fn register(resolver: Box<dyn Resolver>) -> bool {
-    RESOLVER.set(resolver).is_ok()
-}
-
-/// The registered resolver, if any.
-pub fn resolver() -> Option<&'static dyn Resolver> {
-    RESOLVER.get().map(|r| &**r)
 }

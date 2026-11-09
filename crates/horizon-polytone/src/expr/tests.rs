@@ -231,3 +231,114 @@ fn reads_only_names_what_a_program_may_read() {
     assert!(!ok("r.noise(o.y, 0)"));
     assert!(!ok("config('pack:option')"));
 }
+
+/// A host whose methods answer every kind of value, and record the arguments they get.
+struct Kinds {
+    age: f64,
+    seen: Vec<String>,
+    /// Answers `o.age` and `o.life` by field too, as the particles' host does.
+    fields: bool,
+}
+impl Host for Kinds {
+    fn root(&mut self, root: Root) -> Value {
+        match root {
+            Root::Object => Value::Object(1),
+            Root::Random => Value::Object(2),
+            _ => Value::Object(3),
+        }
+    }
+    fn method(&mut self, _: &Value, name: &str, args: &[Value]) -> Result<Value, String> {
+        self.seen.push(format!("{name}{args:?}"));
+        Ok(match name {
+            "age" => Value::Num(self.age),
+            "life" => Value::Num(140.0),
+            "custom" => Value::Num(if args.is_empty() { 0.3 } else { 2.0 }),
+            "inWater" => Value::Bool(self.age > 50.0),
+            "biome" => Value::Str("minecraft:plains".into()),
+            "empty" => Value::Str("".into()),
+            "me" => Value::Object(7),
+            "noise" => Value::Num(args.iter().map(Value::num).sum::<f64>().sin()),
+            "fail" => return Err("no such thing".into()),
+            _ => Value::Null,
+        })
+    }
+    fn function(&mut self, _: &str, _: &[Value]) -> Result<Value, String> {
+        Ok(Value::Null)
+    }
+    fn field(&mut self, root: Root, field: Field) -> Option<Value> {
+        if !self.fields || root != Root::Object {
+            return None;
+        }
+        match field {
+            Field::Age => Some(Value::Num(self.age)),
+            Field::Life => Some(Value::Num(140.0)),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn the_fast_path_answers_what_the_interpreter_does() {
+    let corpus = [
+        "(0.7 + 0.3*sin(o.age*0.18 + o.custom*13000)) * min(o.age/(o.life*0.15),1)",
+        "0.5+(r.noise(o.age/60,5+o.age/60)*0.55)",
+        "o.age > 40",
+        "o.age >= 40 && o.age < 90",
+        "!(o.age > 3)",
+        "o.age > 10 || o.fail",
+        "o.age > 70 ? 1 : 0.25",
+        "o.age > 70 ? o.age : o.life",
+        "o.age > 70 ? o.biome : o.life",
+        "o.inWater",
+        "o.inWater ? 2 : 3",
+        "!o.inWater",
+        "o.biome ? 1 : 0",
+        "o.empty ? 1 : 0",
+        "o.me ? 1 : 0",
+        "o.biome + 1",
+        "-o.inWater",
+        "o.custom('glow') + 1",
+        "o.custom(o.age > 3)",
+        "r.noise(o.inWater, 2)",
+        "o.fail + 1",
+        "o.age % 7 - 2 ^ 3",
+        "clamp(o.age, 10, 20) / 0",
+        "o.age == 3",
+        "2 == 2",
+        "1 != 2 ? o.age : 0",
+        "max(o.age, o.life) - min(o.age, 1)",
+        "o.age > 3 ? o.age > 5 : o.inWater",
+    ];
+    for src in corpus {
+        let program = Program::compile(src).unwrap();
+        let cases = [0.0, 3.0, 45.0, 75.0, 139.0]
+            .into_iter()
+            .flat_map(|a| [(a, false), (a, true)]);
+        for (age, fields) in cases {
+            let mut fast_host = Kinds {
+                age,
+                seen: Vec::new(),
+                fields,
+            };
+            let mut slow_host = Kinds {
+                age,
+                seen: Vec::new(),
+                fields,
+            };
+            let fast = program.eval(&mut fast_host);
+            let slow = program.interpret(&mut slow_host);
+            let same = match (&fast, &slow) {
+                (Ok(Value::Num(a)), Ok(Value::Num(b))) => a.to_bits() == b.to_bits(),
+                (a, b) => a == b,
+            };
+            assert!(same, "{src} at {age}: fast {fast:?}, interpreter {slow:?}");
+            // A field the host answers skips its call; the interpreter makes it by name.
+            if !fields {
+                assert_eq!(fast_host.seen, slow_host.seen, "{src} at {age}: the calls");
+            }
+        }
+    }
+    // The fast path covers the particles' and colormaps' plain arithmetic.
+    assert!(Program::compile(corpus[0]).unwrap().fast.is_some());
+    assert!(Program::compile(corpus[1]).unwrap().fast.is_some());
+}
