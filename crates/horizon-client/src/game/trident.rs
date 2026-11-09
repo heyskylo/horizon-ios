@@ -44,14 +44,18 @@ pub(super) struct ThrownTrident {
     owner_uuid: Option<[i32; 4]>,
     /// `Entity.isNoGravity`: `AbstractArrow.applyGravity` then skips the pull.
     pub(super) no_gravity: bool,
+    /// `Entity.onGround`: moved by `setPos`, it keeps the one it was loaded with.
+    pub(super) on_ground: bool,
     /// `Entity.remainingFireTicks`; on clients, the synchronized on-fire flag.
     pub(super) fire_ticks: i32,
+    /// `AbstractArrow.soundEvent`: the trident's own until it first hits a block.
+    sound_event: String,
     /// Water membership from the preceding `baseTick` (not updated while stuck).
     was_touching_water: bool,
     /// `Entity.random`, used for the extinguishing sound and a breeze's turn.
     random: horizon_core::random::LegacyRandom,
     /// `AbstractArrow.lastState`: the block it stuck in; not saved.
-    last_state: Option<horizon_world::registry::BlockStateId>,
+    pub(super) last_state: Option<horizon_world::registry::BlockStateId>,
     /// `Projectile.lastDeflectedBy`: the breeze that already turned this trident.
     deflected_by: Option<u32>,
     /// `Entity.tickCount`: `ProjectileUtil.computeMargin` grows with it.
@@ -77,14 +81,28 @@ struct Catcher {
 }
 impl ThrownTrident {
     /// A trident loaded from its NBT (`AbstractArrow.readAdditionalSaveData`).
-    pub(super) fn from_nbt(n: horizon_client::entity_nbt::TridentNbt) -> Self {
+    pub(super) fn from_nbt(
+        n: horizon_client::entity_nbt::TridentNbt,
+        tag: &horizon_world::nbt::Tag,
+        registry: &horizon_world::registry::BlockRegistry,
+    ) -> Self {
         let mut t = Self::remote(0, n.position, n.yaw, n.pitch);
-        t.load_nbt(n);
+        t.load_nbt(n, tag, registry);
         t
     }
     /// `ThrownTrident.readAdditionalSaveData` on a new or resident entity;
     /// `/data` keeps its runtime identity, random and tick count.
-    pub(super) fn load_nbt(&mut self, n: horizon_client::entity_nbt::TridentNbt) {
+    pub(super) fn load_nbt(
+        &mut self,
+        n: horizon_client::entity_nbt::TridentNbt,
+        tag: &horizon_world::nbt::Tag,
+        registry: &horizon_world::registry::BlockRegistry,
+    ) {
+        // `inBlockState` (`BlockState.CODEC`) is `lastState`; absent or
+        // unreadable reads as null.
+        self.last_state = tag
+            .get("inBlockState")
+            .and_then(|s| horizon_client::entity_nbt::state_from_nbt(registry, s));
         self.position = n.position;
         self.previous = n.position;
         self.yaw = n.yaw;
@@ -102,15 +120,18 @@ impl ThrownTrident {
         self.owner_uuid = n.owner;
         self.guest = None;
         self.no_gravity = n.no_gravity;
+        self.on_ground = n.on_ground;
         self.fire_ticks = n.fire_ticks;
+        self.sound_event = n.sound_event;
     }
     /// `AbstractArrow.addAdditionalSaveData` + `DealtDamage`.
     pub(super) fn to_nbt(
         &self,
         uuid: [i32; 4],
+        registry: &horizon_world::registry::BlockRegistry,
         raw: Option<&horizon_world::nbt::Tag>,
     ) -> horizon_world::nbt::Tag {
-        horizon_client::entity_nbt::trident_to_nbt(
+        let mut tag = horizon_client::entity_nbt::trident_to_nbt(
             &horizon_client::entity_nbt::TridentSave {
                 position: self.position,
                 motion: self.velocity,
@@ -125,12 +146,26 @@ impl ThrownTrident {
                 has_been_shot: self.has_been_shot,
                 owner: self.owner_uuid,
                 no_gravity: self.no_gravity,
+                on_ground: self.on_ground,
                 fire_ticks: self.fire_ticks,
+                sound_event: &self.sound_event,
                 item: &self.stack,
             },
             uuid,
             raw,
-        )
+        );
+        // `AbstractArrow.addAdditionalSaveData`: `storeNullable("inBlockState")`,
+        // never a stale value from the loaded compound.
+        if let horizon_world::nbt::Tag::Compound(map) = &mut tag {
+            map.remove(&"inBlockState".into());
+            if let Some(state) = self.last_state {
+                map.insert(
+                    "inBlockState".into(),
+                    horizon_client::entity_nbt::state_to_nbt(registry, state),
+                );
+            }
+        }
+        tag
     }
     /// A trident a server sent (`handleAddEntity`): placed and moved by it.
     pub(super) fn remote(id: u32, position: Vec3, yaw: f32, pitch: f32) -> Self {
@@ -155,7 +190,9 @@ impl ThrownTrident {
             has_been_shot: false,
             owner_uuid: None,
             no_gravity: false,
+            on_ground: false,
             fire_ticks: 0,
+            sound_event: horizon_client::entity_nbt::TRIDENT_HIT_GROUND.to_owned(),
             was_touching_water: false,
             random: horizon_core::random::LegacyRandom::new(i64::from(id)),
             age: 0,
@@ -164,6 +201,29 @@ impl ThrownTrident {
             deflected_by: None,
             last_state: None,
         }
+    }
+    /// `AbstractArrow.onHitBlock`: plays `getHitGroundSoundEvent()`, then
+    /// `setSoundEvent(SoundEvents.ARROW_HIT)` for every later hit and the save.
+    fn hit_ground_sound(&mut self) -> String {
+        std::mem::replace(
+            &mut self.sound_event,
+            "minecraft:entity.arrow.hit".to_owned(),
+        )
+    }
+    /// `AbstractArrow.tick` in flight, before it moves: the rotation turns a
+    /// fifth of the way (`Projectile.lerpRotation`) toward the movement the
+    /// tick starts with, which faces back while it flies without physics.
+    fn turn_towards_movement(&mut self) {
+        use horizon_core::geometry::trig::atan2_degrees;
+        let m = self.velocity;
+        let y_rot = if self.no_physics {
+            atan2_degrees(-m.x, -m.z)
+        } else {
+            atan2_degrees(m.x, m.z)
+        };
+        let x_rot = atan2_degrees(m.y, m.horizontal_distance());
+        self.pitch = horizon_client::arrows::lerp_rotation(self.pitch, x_rot);
+        self.yaw = horizon_client::arrows::lerp_rotation(self.yaw, y_rot);
     }
     /// `AbstractArrow.shouldFall`: stuck, and nothing solid within 0.06 of it.
     fn should_fall(&self, scene: &horizon_client::arrows::ArrowScene<'_, '_>) -> bool {
@@ -524,7 +584,9 @@ impl Game<'_> {
             has_been_shot: false,
             owner_uuid: Some(owner_uuid),
             no_gravity: false,
+            on_ground: false,
             fire_ticks: 0,
+            sound_event: horizon_client::entity_nbt::TRIDENT_HIT_GROUND.to_owned(),
             was_touching_water: false,
             random: horizon_core::random::LegacyRandom::new(i64::from(id)),
             age: 0,
@@ -824,12 +886,14 @@ impl Game<'_> {
                     self.trident_block_effects(&mut t, at, at);
                 }
             } else if t.no_physics {
+                t.turn_towards_movement();
                 t.position = Vec3::new(
                     t.position.x + t.velocity.x,
                     t.position.y + t.velocity.y,
                     t.position.z + t.velocity.z,
                 );
             } else {
+                t.turn_towards_movement();
                 // Mobs on the path, then blocks.
                 let mut hit_mob = None;
                 // ProjectileUtil.computeMargin: the boxes it meets grow from
@@ -1078,12 +1142,9 @@ impl Game<'_> {
                         t.in_ground = true;
                         t.last_state = Some(self.world.block(block.x, block.y, block.z));
                         t.shake = 7;
-                        self.audio.play(
-                            "minecraft:item.trident.hit_ground",
-                            Some([stop.x, stop.y, stop.z]),
-                            1.0,
-                            1.0,
-                        );
+                        let sound = t.hit_ground_sound();
+                        self.audio
+                            .play(&sound, Some([stop.x, stop.y, stop.z]), 1.0, 1.0);
                     } else {
                         // A MISS moves the whole segment.
                         t.position =
@@ -1100,9 +1161,6 @@ impl Game<'_> {
                         t.velocity.y * drag - gravity,
                         t.velocity.z * drag,
                     );
-                    let h = (t.velocity.x * t.velocity.x + t.velocity.z * t.velocity.z).sqrt();
-                    t.yaw = t.velocity.x.atan2(t.velocity.z).to_degrees() as f32;
-                    t.pitch = t.velocity.y.atan2(h).to_degrees() as f32;
                 }
             }
             if !t.no_physics {
@@ -1209,6 +1267,8 @@ impl Game<'_> {
             _ => None,
         });
         for (t, at) in live.chain(taken) {
+            // Frame generation and temporal upscaling follow its own flight and spin.
+            self.mark_motion(out.len(), Self::MOTION_OBJECT | u64::from(t.id));
             let p = glam::DVec3::from_array(at) - camera;
             let base = glam::Mat4::from_translation(p.as_vec3())
                 * glam::Mat4::from_rotation_y((t.yaw - 90.0).to_radians())
@@ -1263,6 +1323,7 @@ impl Game<'_> {
                 );
             }
         }
+        self.mark_motion(out.len(), 0);
     }
 }
 horizon_client::impl_joined!(ThrownTrident);
@@ -1271,6 +1332,97 @@ horizon_client::impl_joined!(ThrownTrident);
 mod tests {
     use super::{ThrownTrident, breeze_deflect};
     use horizon_core::geometry::Vec3;
+
+    /// A trident summoned at rest still reads pitch 0 after its first tick
+    /// and -17.999998 after the second, when it starts falling; one summoned
+    /// with Motion [0, 0.5, 0] reads 17.999998 after its first (#13168).
+    #[test]
+    fn a_flying_trident_turns_a_fifth_of_the_way_each_tick() {
+        let mut t = ThrownTrident::remote(1, Vec3::ZERO, 0.0, 0.0);
+        t.turn_towards_movement();
+        assert_eq!((t.yaw, t.pitch), (0.0, 0.0));
+        t.velocity = Vec3::new(0.0, -0.05, 0.0);
+        t.turn_towards_movement();
+        assert_eq!((t.yaw, t.pitch), (0.0, -17.999998));
+        let mut up = ThrownTrident::remote(2, Vec3::ZERO, 0.0, 0.0);
+        up.velocity = Vec3::new(0.0, 0.5, 0.0);
+        up.turn_towards_movement();
+        assert_eq!(up.pitch, 17.999998);
+    }
+
+    /// A block registry with air and stone, for save round trips.
+    fn stone_registry() -> horizon_world::registry::BlockRegistry {
+        use horizon_world::{nbt::Tag, registry::BlockRegistry};
+        BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![
+                    Tag::compound([("id", Tag::String("minecraft:air".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:stone".into()))]),
+                ]),
+            ),
+            (
+                "defaults",
+                Tag::compound([
+                    ("minecraft:air", Tag::Int(0)),
+                    ("minecraft:stone", Tag::Int(1)),
+                ]),
+            ),
+        ]))
+        .unwrap()
+    }
+
+    /// A trident hits its first block with its own sound and every later one
+    /// with `entity.arrow.hit`, which is what it saves and keeps across a
+    /// reload (#13172).
+    #[test]
+    fn a_trident_hits_with_its_own_sound_once() {
+        use horizon_world::nbt::Tag;
+        let registry = stone_registry();
+        let saved =
+            |t: &ThrownTrident| t.to_nbt([0; 4], &registry, None).get("SoundEvent").cloned();
+        let sound = |id: &str| Some(Tag::String(id.into()));
+        let mut t = ThrownTrident::remote(1, Vec3::ZERO, 0.0, 0.0);
+        assert_eq!(saved(&t), sound("minecraft:item.trident.hit_ground"));
+        assert_eq!(t.hit_ground_sound(), "minecraft:item.trident.hit_ground");
+        assert_eq!(saved(&t), sound("minecraft:entity.arrow.hit"));
+        let tag = t.to_nbt([0; 4], &registry, None);
+        let n = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
+        let mut back = ThrownTrident::from_nbt(n, &tag, &registry);
+        assert_eq!(back.hit_ground_sound(), "minecraft:entity.arrow.hit");
+        // readAdditionalSaveData: no SoundEvent, or no identifier, is the default.
+        let pos = ("Pos", Tag::List(vec![Tag::Double(0); 3]));
+        for tag in [
+            Tag::compound([pos.clone()]),
+            Tag::compound([pos, ("SoundEvent", Tag::String("Not An Id".into()))]),
+        ] {
+            let n = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
+            assert_eq!(n.sound_event, "minecraft:item.trident.hit_ground");
+        }
+    }
+
+    /// `AbstractArrow` saves `lastState` as `inBlockState` and reads it back.
+    #[test]
+    fn a_trident_round_trips_its_in_block_state() {
+        use horizon_world::nbt::Tag;
+        let registry = stone_registry();
+        let mut t = ThrownTrident::remote(1, Vec3::ZERO, 0.0, 0.0);
+        assert!(
+            t.to_nbt([1; 4], &registry, None)
+                .get("inBlockState")
+                .is_none()
+        );
+        t.last_state = registry.default_state("minecraft:stone");
+        let tag = t.to_nbt([1; 4], &registry, None);
+        assert_eq!(
+            tag.get("inBlockState"),
+            Some(&Tag::String("minecraft:stone".into()))
+        );
+        let loaded = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
+        let back = ThrownTrident::from_nbt(loaded, &tag, &registry);
+        assert_eq!(back.last_state, t.last_state);
+    }
 
     /// `AbstractArrow.startFalling` on `new Random(42)`: its first three
     /// `nextFloat() * 0.2F` draws (computed from Java's LCG) scale x, y, z.

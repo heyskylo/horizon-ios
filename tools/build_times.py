@@ -690,7 +690,7 @@ def run(args, root=None, cargo=None):
     if os.environ.get("CARGO_INCREMENTAL"):
         report["warnings"].append("CARGO_INCREMENTAL is set, which overrides the profiles' incremental setting")
     out_dir = Path(args.out_dir) if args.out_dir else root / WORK / "reports"
-    base = Path(args.target_dir) if args.target_dir else root / WORK
+    base = Path(args.target_dir).resolve() if args.target_dir else root / WORK
     log_dir = root / WORK / "logs"
     print(f"{report['commit']['short']} on {report['machine'].get('os')}, {report['jobs']['jobs']} jobs "
           f"({report['jobs']['source']})", flush=True)

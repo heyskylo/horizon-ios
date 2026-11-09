@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     block_properties::BlockProperty,
-    fluid::FluidKind,
+    fluid::FluidTemplate,
     registry::{BlockRegistry, BlockStateId},
 };
 use horizon_core::geometry::Direction;
@@ -179,11 +179,13 @@ impl TreeBlocks {
                 *flag |= LIQUID;
             }
             if let Some(fluid) = bindings.fluids.state(id) {
-                match fluid.kind() {
-                    FluidKind::Water => *flag |= WATER_SOURCE | WATER_FLUID | ANY_FLUID,
-                    FluidKind::FlowingWater => *flag |= WATER_FLUID | ANY_FLUID,
-                    FluidKind::Lava | FluidKind::FlowingLava => *flag |= LAVA_FLUID | ANY_FLUID,
-                    FluidKind::Empty => {}
+                match fluid.kind().template() {
+                    FluidTemplate::Water if fluid.is_source() => {
+                        *flag |= WATER_SOURCE | WATER_FLUID | ANY_FLUID
+                    }
+                    FluidTemplate::Water => *flag |= WATER_FLUID | ANY_FLUID,
+                    FluidTemplate::Lava => *flag |= LAVA_FLUID | ANY_FLUID,
+                    FluidTemplate::Empty => {}
                 }
                 if fluid.is_source() {
                     *flag |= FLUID_SOURCE;

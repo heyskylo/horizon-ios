@@ -120,15 +120,31 @@ pub struct BiomeTemperature {
     settings: BiomeTemperatureSettings,
     values: HashMap<i64, f32>,
     order: VecDeque<i64>,
+    /// Entries kept before the oldest goes: vanilla's 1,024 ([`Self::new`]).
+    limit: usize,
 }
+/// Vanilla's `Biome.temperatureCache` size.
+const VANILLA_TEMPERATURE_CACHE: usize = 1024;
+/// A generation worker's cache size ([`BiomeTemperature::for_generation`]).
+pub const GENERATION_TEMPERATURE_CACHE: usize = 256;
 impl BiomeTemperature {
     pub fn new(settings: BiomeTemperatureSettings) -> Self {
         // Empty until used: a decoration region makes one per biome, and
         // most biomes never ask for a temperature.
+        Self::with_limit(settings, VANILLA_TEMPERATURE_CACHE)
+    }
+    /// A generation worker's cache: [`GENERATION_TEMPERATURE_CACHE`] entries. Within one generator the
+    /// sea level never changes, so a value is a pure function of the position and the cache only saves
+    /// work; a worker keeps one per biome for good, which at vanilla's size held tens of MB.
+    pub fn for_generation(settings: BiomeTemperatureSettings) -> Self {
+        Self::with_limit(settings, GENERATION_TEMPERATURE_CACHE)
+    }
+    fn with_limit(settings: BiomeTemperatureSettings, limit: usize) -> Self {
         Self {
             settings,
             values: HashMap::new(),
             order: VecDeque::new(),
+            limit,
         }
     }
     pub fn settings(&self) -> BiomeTemperatureSettings {
@@ -147,7 +163,7 @@ impl BiomeTemperature {
         let value = self.settings.height_adjusted(position, sea_level);
         // NaN is both the missing-value sentinel and a possible stored value.
         // Recomputing an existing NaN at capacity still evicts the oldest key.
-        if self.values.len() == 1024 {
+        if self.values.len() >= self.limit {
             let first = self.order.pop_front().expect("full cache has entries");
             self.values.remove(&first);
         }
@@ -192,4 +208,48 @@ impl BiomeTemperature {
 /// Fixed biome-information noise shared by temperature and placement rules.
 pub fn biome_info_noise(x: f64, z: f64) -> f32 {
     noises().info.get2(x, z)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A generation worker's smaller cache answers what vanilla's does, position by position, whatever it
+    /// still holds: within one generator the value depends only on the position.
+    #[test]
+    fn a_generation_cache_answers_as_vanillas() {
+        let settings = BiomeTemperatureSettings {
+            base_temperature: 0.2,
+            modifier: TemperatureModifier::Frozen,
+            has_precipitation: true,
+            downfall: 0.5,
+        };
+        let mut vanilla = BiomeTemperature::new(settings);
+        let mut small = BiomeTemperature::for_generation(settings);
+        let mut seed = 0x9e37_79b9_u32;
+        for _ in 0..20_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            // A small area, so positions come back after the small cache let them go.
+            let at = BlockPos::new(
+                (seed % 40) as i32 - 20,
+                60 + (seed >> 8) as i32 % 60,
+                (seed >> 16) as i32 % 40 - 20,
+            );
+            assert_eq!(
+                small.temperature(at, 63).to_bits(),
+                vanilla.temperature(at, 63).to_bits(),
+                "{at:?}"
+            );
+        }
+        assert_eq!(
+            small.cached_temperatures().len(),
+            GENERATION_TEMPERATURE_CACHE
+        );
+        assert_eq!(
+            vanilla.cached_temperatures().len(),
+            VANILLA_TEMPERATURE_CACHE
+        );
+    }
 }

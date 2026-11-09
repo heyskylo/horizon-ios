@@ -98,10 +98,19 @@ pub(crate) struct PickedPack {
     pub draws_flat: bool,
     /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`: the frame is float.
     pub linear: bool,
-    /// HDR is on under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the
-    /// frame is the layered float one where HDR output is offered
-    /// (docs/design/hdr-linear-light.md, The HUD and menus).
+    /// Under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is the
+    /// layered float one where HDR output is on (docs/design/hdr-linear-light.md, The HUD and
+    /// menus; the renderer decides, `FrameRequest::hdr_float`).
     pub hdr_float: bool,
+}
+impl PickedPack {
+    /// What it asks of the renderer's frame.
+    pub(crate) fn frame(self) -> horizon_client::gfx::FrameRequest {
+        horizon_client::gfx::FrameRequest {
+            linear_pack: self.linear,
+            hdr_float: self.hdr_float,
+        }
+    }
 }
 
 pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -> PickedPack {
@@ -127,9 +136,7 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
     PickedPack {
         draws_flat: active && pack_draws_flat(&path),
         linear,
-        hdr_float: (!active || linear)
-            && settings.horizon.hdr_wanted()
-            && super::native_shaders::linear_frame_switch(),
+        hdr_float: (!active || linear) && super::native_shaders::linear_frame_switch(),
     }
 }
 
@@ -808,11 +815,11 @@ fn terrain_state_ids(
                 return [-1, -1];
             };
             let fluid = FluidState::from_block(state).unwrap_or(FluidState::EMPTY);
-            let name = match fluid.kind() {
-                FluidKind::Water | FluidKind::FlowingWater => "minecraft:water",
-                FluidKind::Lava | FluidKind::FlowingLava => "minecraft:lava",
-                FluidKind::Empty => return [material(state), -1],
-            };
+            if fluid.kind() == FluidKind::Empty {
+                return [material(state), -1];
+            }
+            // The liquid block is named after its source fluid.
+            let name = fluid.kind().source().name();
             let fluid = if state.name == name {
                 Some(state)
             } else {

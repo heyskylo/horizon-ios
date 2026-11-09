@@ -8,6 +8,8 @@ impl Game<'_> {
     /// as the screen's constructor and `containerTick` do.
     pub(super) fn refresh_creative_tabs(&mut self) {
         let permissions = self.can_use_game_master_blocks() && self.settings.operator_items_tab;
+        let enchantments = Arc::clone(self.enchantments());
+        self.creative_screen.set_enchantments(enchantments);
         self.creative_screen
             .set_permissions(permissions, &self.pack.names);
     }
@@ -80,7 +82,9 @@ impl Game<'_> {
         let selected = self.creative_screen.selected;
         // Only what is drawn of the tabs: their stacks stay where they are.
         let tabs = self.creative_screen.tab_headers();
-        let tab = &tabs[selected.min(tabs.len() - 1)];
+        let Some(tab) = tabs.get(selected.min(tabs.len().saturating_sub(1))) else {
+            return;
+        };
         let tab_sprite = |t: &horizon_client::creative::Tab, on: bool| {
             format!(
                 "gui/sprites/container/creative_inventory/tab_{}_{}_{}",

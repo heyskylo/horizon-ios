@@ -167,6 +167,7 @@ impl Game<'_> {
                 || self.settings.extras.pvp.tweaks.clear_lava,
             full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
+            environment: self.pack.polytone_colors.env,
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
         if !self.settings.horizon.fog {
@@ -469,6 +470,7 @@ impl Game<'_> {
     }
 
     pub(super) fn tick_particles(&mut self) {
+        self.update_animation_inputs();
         let mut laps = horizon_client::spans::laps();
         let eye = self.eye_position();
         if let Some(e) = eye {
@@ -724,6 +726,31 @@ impl Game<'_> {
         }
     }
 }
+impl Game<'_> {
+    /// What the packs' Polytone animation modes read this tick (wiki "Variant Textures"): the
+    /// time of day, the weather, and for expressions the packs' Polytone frame, or the time and
+    /// weather alone when no Polytone pack makes one.
+    fn update_animation_inputs(&mut self) {
+        let (rain, thunder) = self.view_weather(0.0);
+        let day_time = self.view_day_time();
+        let frame = self
+            .pack
+            .polytone_particles
+            .as_ref()
+            .and_then(|p| p.frame.read().ok().map(|f| f.clone()))
+            .unwrap_or_else(|| horizon_client::environment::Frame {
+                rain,
+                thunder,
+                game_time: self.world.game_time,
+                day_time,
+                ..Default::default()
+            });
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_animation_inputs(day_time, [rain, thunder], Some(&frame));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Properties, World, splash_height};

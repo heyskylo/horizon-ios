@@ -635,14 +635,17 @@ impl Game<'_> {
         let (Ok(container), Ok(id)) = (reader.varint(), reader.string(512)) else {
             return;
         };
-        if reader.remaining() != 0 {
-            return;
-        }
+        // A trailing 1 asks for as many sets as the items allow.
+        let all = match reader.remaining() {
+            0 => false,
+            1 => reader.u8() == Ok(1),
+            _ => return,
+        };
         let result = if container == 0 && (g.menu.is_some() || g.creative()) {
             Err(TransferError::Unavailable)
         } else {
             self.lan_apply_recipe(host, gi, container, |menu, env| {
-                menu.transfer_recipe(env, &id)
+                menu.transfer_recipe(env, &id, all)
             })
             .unwrap_or(Err(TransferError::Unavailable))
         };

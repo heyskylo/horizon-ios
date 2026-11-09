@@ -28,6 +28,7 @@ pub use crate::game::NativeEffectV2;
 pub use crate::game::NativeFluidTank;
 pub use crate::game::NativeInventoryError;
 pub use crate::game::NativeInventoryKind;
+pub use crate::game::NativeSlotRole;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
     NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
@@ -35,13 +36,13 @@ pub use crate::game::native_client_services::{
 };
 pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
-    AdvancementDisplay, ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError,
-    NativeBlockRun, NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks,
-    NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion,
-    NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem,
-    NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender,
-    NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake,
-    NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
+    AdvancementDisplay, ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockNbt,
+    NativeBlockReadError, NativeBlockRun, NativeClientBiomes, NativeClientChunks, NativeClock,
+    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
+    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
+    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
+    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
+    NativeShake, NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gamerules::Value as GameRuleValue;
 /// What a mod asks of the terrain's picture each frame (`native_world_hold`). API 414.
@@ -118,6 +119,21 @@ use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
 pub use winit::keyboard::KeyCode;
+
+/// How far a chunk a mod asked for with `native_chunk_load_request` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeChunkLoad {
+    /// Asked for and not loaded yet (generating, loading from disk, or its
+    /// level opening); ask again after a tick.
+    Pending,
+    /// Loaded: its blocks can be read and written (the mod's ticket keeps
+    /// it loaded, as a `/forceload`ed chunk is).
+    Loaded,
+    /// Not asked for by this owner: the request was refused (off a server,
+    /// no namespace, past the world's edge, a dimension Horizon lacks) or
+    /// has been released.
+    Failed,
+}
 
 /// An owned fluid payload. Component additions and removals are preserved exactly;
 /// the amount is in millibuckets. Empty/negative stacks are not transferable.
@@ -440,6 +456,97 @@ pub struct NativeStack {
     pub components: String,
 }
 
+/// One item a loot table can drop and its odds (`native_loot_odds`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeLootOdds {
+    /// The item (`minecraft:flint`).
+    pub item: String,
+    /// Its components beyond the item's own, in vanilla's item syntax, or "".
+    pub components: String,
+    /// The chance at least one comes from one roll of the whole table.
+    pub chance: f64,
+    /// How many come when it does: the fewest one drop gives, and the most
+    /// the table can give at once.
+    pub min: u32,
+    pub max: u32,
+    /// The conditions on its way that could not be judged here (a tool when
+    /// none was named, the weather, a killer), as short lines; they were
+    /// taken as met.
+    pub conditions: Vec<String>,
+}
+
+/// What a mod asks the recipe viewer to do with a stack
+/// (`native_show_recipes`, heard as `native_recipe_lookup`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeRecipeLookup {
+    /// The recipes that make it (JEI's R, a left click).
+    Recipes,
+    /// The recipes it is used in (JEI's U, a right click).
+    Uses,
+    /// A key (vanilla's name, `key.keyboard.a`) went down while the pointer
+    /// was on the stack in a screen the mod draws: the viewer acts on it as
+    /// over its own list (its recipe, uses and bookmark keys, as the player
+    /// bound them).
+    Key(String),
+}
+
+/// A category of a mod's own recipes for recipe viewers
+/// (`native_recipe_categories`): what a fishing spot, a sieve or a machine
+/// turns its inputs into, each output with its odds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeRecipeCategory {
+    /// Its id (`mymod:sifting`).
+    pub id: String,
+    /// Its name, as the mod words it in the player's language.
+    pub title: String,
+    /// One short line under the name, or "".
+    pub subtitle: String,
+    /// The tab's icon.
+    pub icon: NativeStack,
+    /// The items and blocks that do it (a rod, a sieve), as JEI's catalysts.
+    pub catalysts: Vec<NativeStack>,
+    pub recipes: Vec<NativeCategoryRecipe>,
+}
+
+/// One recipe of a [`NativeRecipeCategory`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeCategoryRecipe {
+    /// Its input slots, each with the stacks it takes; none for a recipe
+    /// with no input (a catch).
+    pub inputs: Vec<Vec<NativeStack>>,
+    pub outputs: Vec<NativeChanceOutput>,
+    /// Lines about the whole recipe.
+    pub notes: Vec<String>,
+}
+
+/// An output of a [`NativeCategoryRecipe`] that comes with a chance.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeChanceOutput {
+    pub stack: NativeStack,
+    /// The chance it comes, 0 to 1, each time the recipe runs (a catch, a
+    /// block broken).
+    pub chance: f32,
+    /// How many come when it does.
+    pub min: u32,
+    pub max: u32,
+    /// Lines about this output (`needs a brush`).
+    pub notes: Vec<String>,
+}
+
+/// How a native mod's item panel draws its page buttons and search box
+/// (`native_panel_style`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativePanelStyle {
+    /// The recipe book's page arrows and a plain search box (the default).
+    #[default]
+    RecipeBook,
+    /// A recipe viewer's: square page buttons on a bar over the items and
+    /// the viewer's search box, as Horizon's Recipes panel draws them.
+    Viewer,
+}
+
 /// What the player did on a native mod's panel (`native_panel_event`).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -611,6 +718,9 @@ pub struct NativeServerPlayer {
     /// The level a player needs to see this one, when a server mod hid them
     /// (`native_hide_player`).
     pub hidden: Option<u8>,
+    /// A fake player: a mod's bot with no client (`native_set_player_fake`), so a mod need not
+    /// build anything for it that only a client could show. API @API:server_player_fake@.
+    pub fake: bool,
     /// Whether the player is using an item (`LivingEntity.isUsingItem`), and blocking with a
     /// shield (using one). API @API:server_player_state@.
     pub using_item: bool,
@@ -1111,6 +1221,32 @@ pub use generated::Hooks;
 #[doc(hidden)]
 pub use generated::*;
 
+/// Runs `body` in a fresh process of this test binary: `mod_api::MODS` is set once per process, and
+/// another test that set it first would make this one's `set` fail. The parent starts the binary again
+/// for just this test (`--exact`, `--include-ignored`) and requires that exactly one test ran and passed; the
+/// child sees `OWN_PROCESS` and runs `body` itself.
+#[cfg(test)]
+pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
+    const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
+    if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
+        return body();
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--include-ignored", "--test-threads=1"])
+        .env(OWN_PROCESS, name)
+        .output()
+        .unwrap();
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && report.contains("test result: ok. 1 passed;"),
+        "{name} failed in its own process:\n{report}"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1123,6 +1259,13 @@ mod tests {
     /// turned on; a test's own list is never switched.
     #[test]
     fn a_mod_turned_off_is_skipped_until_turned_on() {
+        crate::mod_api::in_own_process(
+            "mod_api::tests::a_mod_turned_off_is_skipped_until_turned_on",
+            a_mod_turned_off_is_skipped_until_turned_on_in_own_process,
+        );
+    }
+
+    fn a_mod_turned_off_is_skipped_until_turned_on_in_own_process() {
         name_mods(&["quiet", "broken"]);
         let _ = MODS.set(Arc::from(vec![
             Box::new(Quiet) as Box<dyn Hooks>,
@@ -1195,6 +1338,7 @@ mod tests {
                 selected_slot: 0,
                 nickname: None,
                 hidden: None,
+                fake: false,
                 using_item: false,
                 blocking: false,
                 sprinting: false,
