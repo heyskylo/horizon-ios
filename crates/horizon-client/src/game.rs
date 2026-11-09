@@ -289,6 +289,7 @@ mod native_entity_state;
 mod native_explosions;
 mod native_falling;
 mod native_fluid_render;
+mod native_guards;
 mod native_hooks;
 mod native_host_bridge;
 mod native_inventories;
@@ -359,6 +360,7 @@ mod particle_culling;
 mod passengers;
 mod persist;
 mod perspective;
+mod physical_trigger;
 mod pick_entity;
 mod pickups;
 mod piglins;
@@ -583,7 +585,7 @@ pub use native_slot_roles::NativeSlotRole;
 pub use native_structures::{NativeStructureBlock, NativeStructureTemplate};
 pub use native_world_columns::NativeColumnBlocks;
 pub use native_world_draw::NativeWorldDraw;
-pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
+pub use native_world_edit::{NativeBlockEdit, NativeBlockNbt, NativeBlockRun, NativeHeightmap};
 pub use native_world_read::NativeBlockReadError;
 use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
 use resource_loader::{
@@ -783,6 +785,10 @@ struct GameLevel<'w> {
     player_box: Option<([f64; 3], [f64; 3])>,
     /// The LAN guests in this level who trigger blocks (not spectators).
     guest_boxes: Vec<([f64; 3], [f64; 3])>,
+    /// Whose `guest_boxes` are, in order.
+    guest_box_uuids: Vec<u128>,
+    /// Whose `player_box` is: the acting player (`native_player_physical_trigger`).
+    player_box_uuid: u128,
     /// Other players that block placement during a guest turn, whose hub is
     /// borrowed out; None outside one, where `guest_boxes` are those players.
     building_player_boxes: Option<Vec<([f64; 3], [f64; 3])>>,
@@ -1699,36 +1705,20 @@ impl LevelAccess for GameLevel<'_> {
     /// the minecarts and the other entities that don't ignore block triggers,
     /// and for `EntityQuery::Arrows` the arrows.
     fn count_entities(&self, area: Aabb, query: EntityQuery) -> usize {
-        let hit = |(lo, hi): &([f64; 3], [f64; 3])| {
-            area.intersects(Aabb::new(
-                Vec3::new(lo[0], lo[1], lo[2]),
-                Vec3::new(hi[0], hi[1], hi[2]),
-            ))
-        };
-        let carts = || self.cart_boxes.iter().filter(|b| hit(b)).count();
-        let others = || {
-            self.crystals
-                .iter()
-                .map(dragon::Crystal::bounds)
-                .chain(self.trigger_hooks.iter().map(|&(bounds, _)| bounds))
-                .chain(self.trigger_extras.iter().copied())
-                .filter(|b| area.intersects(*b))
-                .count()
-        };
-        let arrows = || self.arrow_boxes.iter().filter(|b| hit(b)).count();
-        let players = || {
-            self.player_box
-                .iter()
-                .chain(&self.guest_boxes)
-                .filter(|b| hit(b))
-                .count()
-        };
-        match query {
-            EntityQuery::Minecart => carts(),
-            EntityQuery::Arrows => arrows(),
-            EntityQuery::Mobs => players() + self.count_triggers::<true>(area),
-            EntityQuery::Everything => players() + self.count_triggers::<false>(area) + others(),
-        }
+        self.count_entities_for(area, query, |_| true)
+    }
+    /// The plate or tripwire `block` at `pos` is set off by a player only when
+    /// the mods let them (`native_player_physical_trigger`).
+    fn count_entities_at(
+        &self,
+        pos: BlockPos,
+        block: &str,
+        area: Aabb,
+        query: EntityQuery,
+    ) -> usize {
+        self.count_entities_for(area, query, |player| {
+            self.allow_physical_trigger(player, pos, block)
+        })
     }
     fn emit(&mut self, event: LevelEvent) {
         match event {
@@ -2792,9 +2782,9 @@ struct Game<'a> {
     mod_chunk_tickets: HashMap<Dim, HashMap<(i32, i32), std::collections::BTreeSet<String>>>,
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
-    /// The item columns for one pass of the players' pickups
-    /// (`tick_guests`), rebuilt after any write to the items (a pickup, a
-    /// command, an explosion): see `item_columns`.
+    /// Item columns for the players' pickups (`tick_guests`) and hopper carts
+    /// (`tick_carts`), exact at any time: any write to the items (a move, a
+    /// pickup, a command) makes them scan, then rebuild (`StampedItemColumns`).
     pickup_columns: Option<machines::StampedItemColumns>,
     /// Where the mobs are, while the block entities tick (potent sulfur gas).
     pass_mobs: Option<potent_sulfur::PassMobs>,
@@ -4195,7 +4185,9 @@ impl Game<'_> {
                 (b.min_position().components(), b.max_position().components())
             })
             .collect();
-        let guest_boxes = self.lan_block_trigger_boxes();
+        let (guest_box_uuids, guest_boxes): (Vec<_>, Vec<_>) =
+            self.lan_block_trigger_boxes().into_iter().unzip();
+        let player_box_uuid = horizon_client::lan::playerdata::ints_uuid(self.acting_uuid());
         let building_player_boxes = self
             .lan_acting
             .is_some()
@@ -4290,6 +4282,8 @@ impl Game<'_> {
             thundering: thunder > 0.9,
             player_box,
             guest_boxes,
+            guest_box_uuids,
+            player_box_uuid,
             building_player_boxes,
             player_collision,
             biomes: world_biomes!(self),
@@ -6610,44 +6604,6 @@ impl Game<'_> {
             } else {
                 self.draw_mount_hud(&mut batch, wi, hi)
             };
-            // The one bar above the hotbar: the mount's jump bar, the locator
-            // bar (with its background) or the experience bar, with the level
-            // number that a survival player always has.
-            self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
-                if contextual == ContextualBar::JumpableVehicle {
-                    g.draw_jump_bar(batch, wi, hi);
-                }
-                if contextual == ContextualBar::Locator {
-                    let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
-                    horizon_client::ui::nine_slice(
-                        batch,
-                        &g.gui.atlas,
-                        sprite,
-                        x as f32,
-                        y as f32,
-                        w as f32,
-                        h as f32,
-                        u32::MAX,
-                    );
-                }
-                if has_experience && g.player.is_some() {
-                    let atlas = &g.gui.atlas;
-                    let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
-                    let draws = hud_layout::experience(
-                        wi,
-                        hi,
-                        g.experience.progress,
-                        g.experience.level,
-                        contextual == ContextualBar::Experience,
-                        &width,
-                    );
-                    hud_layout::paint(batch, atlas, &draws);
-                }
-                if contextual == ContextualBar::Locator {
-                    let draws = g.locator_bar_draws(wi, hi);
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
-                }
-            });
             let (visual_ticks, visual_millis) = (self.visual_ticks(), self.visual_millis());
             if !self.creative
                 && !spectator
@@ -6715,6 +6671,43 @@ impl Game<'_> {
                     self.audio.capture = capture;
                 }
             }
+            // After the health rows (Hud.extractHotbarAndDecorations), the one bar above the hotbar:
+            // the jump bar, the locator bar or the experience bar, with the level number.
+            self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
+                if contextual == ContextualBar::JumpableVehicle {
+                    g.draw_jump_bar(batch, wi, hi);
+                }
+                if contextual == ContextualBar::Locator {
+                    let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
+                    horizon_client::ui::nine_slice(
+                        batch,
+                        &g.gui.atlas,
+                        sprite,
+                        x as f32,
+                        y as f32,
+                        w as f32,
+                        h as f32,
+                        u32::MAX,
+                    );
+                }
+                if has_experience && g.player.is_some() {
+                    let atlas = &g.gui.atlas;
+                    let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
+                    let draws = hud_layout::experience(
+                        wi,
+                        hi,
+                        g.experience.progress,
+                        g.experience.level,
+                        contextual == ContextualBar::Experience,
+                        &width,
+                    );
+                    hud_layout::paint(batch, atlas, &draws);
+                }
+                if contextual == ContextualBar::Locator {
+                    let draws = g.locator_bar_draws(wi, hi);
+                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                }
+            });
             if !spectator {
                 self.gui_layer("minecraft:selected_item_name", &mut batch, |g, batch| {
                     g.draw_selected_name(batch, !g.creative);
@@ -12231,17 +12224,13 @@ impl Game<'_> {
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Win => {
                     self.win_key(&event)?
                 }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Social => {
-                    self.social_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
-                    self.command_block_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::DebugOptions => {
-                    self.debug_options_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::BlockEditor => {
-                    self.block_editor_key(&event)
+                // These screens consume presses; releases still reach the
+                // bound gameplay mapping below, so a movement key pressed
+                // before the screen opened doesn't stay held after it closes.
+                WindowEvent::KeyboardInput { event, .. }
+                    if self.screen.takes_presses() && event.state == ElementState::Pressed =>
+                {
+                    self.screen_press(&event)
                 }
                 // Options consumes presses; releases still reach the bound
                 // gameplay mapping below, including sneak/sprint toggles.

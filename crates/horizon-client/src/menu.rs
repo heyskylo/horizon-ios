@@ -17,6 +17,7 @@ use crate::{
 use std::sync::Arc;
 
 mod bundle;
+mod equippable;
 pub mod place;
 
 /// `ServerPlayer.getRecipeBook`: whether the player knows a recipe.
@@ -1437,32 +1438,17 @@ impl Menu {
     fn may_place(&self, env: &Env, s: usize, stack: &ItemStack) -> bool {
         match self.slots[s].role {
             Role::Plain | Role::CreativeDisplay => true,
-            Role::Armor(eq) => env
-                .items
-                .get(&stack.item)
-                .and_then(|i| {
-                    let slot = match i.equip_slot.as_deref()? {
-                        "feet" => 0,
-                        "legs" => 1,
-                        "chest" => 2,
-                        "head" => 3,
-                        _ => return None,
-                    };
-                    let allowed = i
-                        .equip_allowed
-                        .as_ref()
-                        .is_none_or(|a| a.contains("minecraft:player"));
-                    Some(slot == eq && allowed)
-                })
-                .unwrap_or(false),
-            // LivingEntity.isEquippableInSlot: the item's equippable slot,
+            Role::Armor(eq) => Self::equippable(env, stack).is_some_and(|e| {
+                ["feet", "legs", "chest", "head"]
+                    .iter()
+                    .position(|s| *s == e.slot)
+                    == Some(eq)
+                    && e.allows("minecraft:player")
+            }),
+            // LivingEntity.isEquippableInSlot: the stack's equippable slot,
             // and the mount among its allowed entities.
-            Role::MountEquip(slot) => env.items.get(&stack.item).is_some_and(|i| {
-                i.equip_slot.as_deref() == Some(slot)
-                    && self
-                        .mount
-                        .as_deref()
-                        .is_some_and(|m| i.equip_allowed.as_ref().is_none_or(|a| a.contains(m)))
+            Role::MountEquip(slot) => Self::equippable(env, stack).is_some_and(|e| {
+                e.slot == slot && self.mount.as_deref().is_some_and(|m| e.allows(m))
             }),
             Role::Shulker => fits_inside_container_items(stack),
             Role::Mod | Role::ModResult => self.mod_slot(s, stack).0,
@@ -2166,11 +2152,7 @@ enum Equip {
 
 impl Menu {
     fn equip(env: &Env, stack: &ItemStack) -> Equip {
-        match env
-            .items
-            .get(&stack.item)
-            .and_then(|i| i.equip_slot.as_deref())
-        {
+        match Self::equippable(env, stack).map(|e| e.slot).as_deref() {
             Some("feet") => Equip::Armor(0),
             Some("legs") => Equip::Armor(1),
             Some("chest") => Equip::Armor(2),
@@ -3448,7 +3430,7 @@ pub(crate) mod tests {
     use crate::{banner::Banners, brewing::Brewing, crafting::Recipes};
     use horizon_world::loot::PackOverlay;
 
-    fn stack(item: &str, count: u32) -> Option<ItemStack> {
+    pub(crate) fn stack(item: &str, count: u32) -> Option<ItemStack> {
         Some(ItemStack {
             item: format!("minecraft:{item}").into(),
             count,
@@ -4104,7 +4086,7 @@ pub(crate) mod tests {
 
     /// A mod menu type laid out as `CraftingMenu`: the result in slot 0, the
     /// grid in 1 to 9, as many container slots as the table's.
-    fn mod_crafting_table() -> Kind {
+    pub(crate) fn mod_crafting_table() -> Kind {
         Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {
             id: "test:station",
             slots: 10,
@@ -4240,7 +4222,7 @@ pub(crate) mod tests {
             );
             // A furnace needs 8 cobblestone, which no one has: nothing moves.
             let before = station.sources.clone();
-            let refused = station.transfer_recipe(env, "minecraft:furnace");
+            let refused = station.transfer_recipe(env, "minecraft:furnace", false);
             assert_eq!(refused, Err(place::TransferError::Missing));
             assert_eq!(station.sources, before);
         });
